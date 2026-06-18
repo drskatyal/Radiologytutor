@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-neutral-950 text-neutral-100;
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm outline-none focus:border-yellow-500;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium text-neutral-400;
+  }
+  .btn-primary {
+    @apply rounded bg-yellow-500 px-3 py-2 font-medium text-black hover:bg-yellow-400 disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply rounded border border-neutral-700 px-3 py-2 text-neutral-200 hover:border-neutral-500 disabled:opacity-50;
+  }
+  .btn-recording {
+    @apply rounded bg-red-600 px-3 py-2 font-medium text-white hover:bg-red-500;
+  }
+  .icon-btn {
+    @apply rounded px-1.5 text-xs text-neutral-400 hover:bg-neutral-800;
+  }
+}
+
+/* Pulsing finding marker */
+@keyframes marker-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 16px rgba(250, 204, 21, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(250, 204, 21, 0);
+  }
+}
+
+.marker-pulse {
+  animation: marker-pulse 1.6s infinite;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.marker-fade-in {
+  animation: fade-in 0.4s ease-out;
+}
