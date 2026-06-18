@@ -48,18 +48,30 @@ import { cn } from "@/components/ui/cn";
 
 // Tools selectable on the LEFT mouse button. Pan/Zoom/Scroll also keep their
 // wheel/middle/right bindings so the usual PACS mouse scheme still works.
-const PRIMARY_TOOLS: { name: string; label: string }[] = [
+//
+// `annotation: true` marks the measurement/markup tools. These place annotations
+// in world space and rely on per-image plane metadata (PixelSpacing /
+// ImageOrientationPatient / ImagePositionPatient). Studies that lack it — e.g.
+// the tiny synthetic multiframe MR we bundle as an offline sample — can't drive
+// these tools correctly (lengths come out in pixels, ROIs/angles misbehave), so
+// we DISABLE them rather than present dead controls. Real DICOMweb studies carry
+// the metadata, so the tools light up automatically for uploaded cases.
+const PRIMARY_TOOLS: { name: string; label: string; annotation?: boolean }[] = [
   { name: "WindowLevel", label: "Window / Level" },
   { name: "Pan", label: "Pan" },
   { name: "Zoom", label: "Zoom" },
   { name: "StackScroll", label: "Scroll" },
-  { name: "Length", label: "Length" },
-  { name: "Angle", label: "Angle" },
-  { name: "EllipticalROI", label: "Ellipse ROI" },
-  { name: "RectangleROI", label: "Rectangle ROI" },
-  { name: "Probe", label: "Probe" },
-  { name: "ArrowAnnotate", label: "Arrow" },
+  { name: "Length", label: "Length", annotation: true },
+  { name: "Angle", label: "Angle", annotation: true },
+  { name: "EllipticalROI", label: "Ellipse ROI", annotation: true },
+  { name: "RectangleROI", label: "Rectangle ROI", annotation: true },
+  { name: "Probe", label: "Probe", annotation: true },
+  { name: "ArrowAnnotate", label: "Arrow", annotation: true },
 ];
+
+const ANNOTATION_TOOL_NAMES = new Set(
+  PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
+);
 
 // Minimal structural type for the bits of a StackViewport we drive.
 interface DrivableViewport {
@@ -109,6 +121,42 @@ function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: nu
 }
 function wwWcToVoi(ww: number, wc: number): { lower: number; upper: number } {
   return { lower: wc - ww / 2, upper: wc + ww / 2 };
+}
+
+/**
+ * Does this image carry the spatial metadata annotation tools need?
+ *
+ * Cornerstone's `imagePlaneModule` provider fills in identity defaults (1mm
+ * spacing, axis-aligned cosines, origin 0) and flags them via `usingDefaultValues`
+ * when the source DICOM omits PixelSpacing / ImageOrientationPatient /
+ * ImagePositionPatient. Measurements made against those defaults are meaningless
+ * (px, not mm), so we treat a study as annotatable only when it provides REAL
+ * pixel spacing. Returns false (and never throws) when metadata is missing.
+ */
+function imageSupportsAnnotation(
+  metaData: { get: (type: string, imageId: string) => unknown },
+  imageId: string
+): boolean {
+  try {
+    const plane = metaData.get("imagePlaneModule", imageId) as
+      | {
+          usingDefaultValues?: boolean;
+          rowPixelSpacing?: number | null;
+          columnPixelSpacing?: number | null;
+          imageOrientationPatient?: ArrayLike<number> | null;
+        }
+      | undefined;
+    if (!plane) return false;
+    if (plane.usingDefaultValues) return false;
+    const hasSpacing =
+      !!plane.rowPixelSpacing &&
+      !!plane.columnPixelSpacing &&
+      plane.rowPixelSpacing > 0 &&
+      plane.columnPixelSpacing > 0;
+    return hasSpacing;
+  } catch {
+    return false;
+  }
 }
 
 async function buildImageIds(source: ViewerSource): Promise<string[]> {
@@ -166,6 +214,9 @@ export default function CornerstoneViewer({
   const [inverted, setInverted] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [presetOpen, setPresetOpen] = useState(false);
+  // Whether the loaded series carries the spatial metadata annotation tools
+  // need. False for the bundled sample → those tools render disabled, not dead.
+  const [annotationsEnabled, setAnnotationsEnabled] = useState(false);
 
   const presets = presetsForModality(modality);
 
@@ -204,9 +255,6 @@ export default function CornerstoneViewer({
         });
 
         const viewport = engine.getViewport(viewportId) as unknown as DrivableViewport;
-        await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
-        viewport.render();
-        viewportRef.current = viewport;
 
         const {
           addTool,
@@ -225,7 +273,10 @@ export default function CornerstoneViewer({
           Enums: toolsEnums,
         } = tools;
 
-        // Register every tool once, then add them all to the group.
+        // Register every tool once, then add them all to the group. Per the
+        // Cornerstone3D v5 docs the tool group + viewport must be wired up
+        // BEFORE the stack is loaded/rendered so the annotation interaction +
+        // SVG layer are in place for the very first interaction.
         [
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
@@ -243,7 +294,8 @@ export default function CornerstoneViewer({
         tg.addViewport(viewportId, renderingEngineId);
 
         const { MouseBindings } = toolsEnums;
-        // Fixed bindings: wheel = scroll, right = zoom, middle = pan.
+        // Fixed bindings: wheel = scroll, right = zoom, middle = pan. These are
+        // permanent and never move to/from the left button.
         tg.setToolActive(StackScrollTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Wheel }],
         });
@@ -254,37 +306,52 @@ export default function CornerstoneViewer({
           bindings: [{ mouseButton: MouseBindings.Auxiliary }],
         });
 
-        // Left button: pick from the toolbar (default window/level). Pan, Zoom
-        // and Scroll keep their wheel/middle/right bindings even when not the
-        // left tool, so the standard PACS mouse scheme is always live.
+        // Left (Primary) button: whichever tool is picked in the toolbar.
+        //
+        // ROOT CAUSE of "annotation tools don't draw": Cornerstone's
+        // `setToolActive` MERGES new bindings into a tool's existing ones and
+        // never removes them, and `getActiveToolForMouseEvent` returns the
+        // FIRST Active tool whose bindings include the pressed button. The old
+        // `setLeftTool` only ever ADDED a Primary binding to the newly-selected
+        // tool without stripping it from the previously-selected one, so e.g.
+        // WindowLevel (added to the group first) kept its Primary binding and
+        // kept winning the left button — the annotation tool was "active" but
+        // never received the mousedown, so nothing drew. Manipulation tools
+        // looked fine only because they also have wheel/right/middle bindings.
+        //
+        // Fix: track the current left-button tool and, on switch, explicitly
+        // remove ONLY the Primary binding from the outgoing tool before giving
+        // it to the incoming one — so exactly one tool ever owns the left button.
+        // (The same algorithm is modelled + unit-tested in lib/toolBindings.ts.)
+        let leftTool: string | null = null;
         const setLeftTool = (name: string) => {
-          for (const { name: t } of PRIMARY_TOOLS) {
-            if (t === name) {
-              const extra =
-                t === "Pan"
-                  ? [{ mouseButton: MouseBindings.Auxiliary }]
-                  : t === "Zoom"
-                  ? [{ mouseButton: MouseBindings.Secondary }]
-                  : t === "StackScroll"
-                  ? [{ mouseButton: MouseBindings.Wheel }]
-                  : [];
-              tg.setToolActive(t, {
-                bindings: [{ mouseButton: MouseBindings.Primary }, ...extra],
-              });
-            } else if (t === "Pan") {
-              tg.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
-            } else if (t === "Zoom") {
-              tg.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
-            } else if (t === "StackScroll") {
-              tg.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
-            } else {
-              tg.setToolPassive(t);
-            }
+          const primary = { mouseButton: MouseBindings.Primary };
+          if (leftTool && leftTool !== name) {
+            // Drop only the Primary binding from the outgoing tool. Pan/Zoom/
+            // Scroll keep their permanent wheel/right/middle bindings (and stay
+            // active); WindowLevel/annotation tools become passive.
+            tg.setToolPassive(leftTool, { removeAllBindings: [primary] });
           }
+          tg.setToolActive(name, { bindings: [primary] });
+          leftTool = name;
           setActiveTool(name);
         };
         setLeftTool("WindowLevel");
         setLeftToolRef.current = setLeftTool;
+
+        await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
+        viewport.render();
+        viewportRef.current = viewport;
+
+        // Now that the series is loaded and its metadata registered, decide
+        // whether the annotation tools are usable on this study. If the active
+        // left tool happened to be an (about-to-be-disabled) annotation tool,
+        // fall back to Window/Level so we never leave a dead tool selected.
+        const annotatable = imageSupportsAnnotation(core.metaData, imageIds[0]);
+        setAnnotationsEnabled(annotatable);
+        if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
+          setLeftTool("WindowLevel");
+        }
 
         // --- Record: emit ordered viewer state changes ----------------------
         // We read CURRENT values off the viewport in the handler (never trust
@@ -542,17 +609,26 @@ export default function CornerstoneViewer({
       </span>
       <span className="mx-0.5 h-6 w-px bg-strong/70" />
 
-      {PRIMARY_TOOLS.map((t) => (
-        <ToolButton
-          key={t.name}
-          label={t.label}
-          active={activeTool === t.name}
-          disabled={!ready}
-          onClick={() => setLeftToolRef.current(t.name)}
-        >
-          <ToolIcon name={t.name} />
-        </ToolButton>
-      ))}
+      {PRIMARY_TOOLS.map((t) => {
+        // Annotation tools need spatial metadata; disable (don't hide) them on
+        // studies that lack it, with a tooltip that explains why.
+        const blocked = !!t.annotation && !annotationsEnabled;
+        return (
+          <ToolButton
+            key={t.name}
+            label={
+              blocked
+                ? `${t.label} — needs a study with spatial metadata`
+                : t.label
+            }
+            active={activeTool === t.name}
+            disabled={!ready || blocked}
+            onClick={() => setLeftToolRef.current(t.name)}
+          >
+            <ToolIcon name={t.name} />
+          </ToolButton>
+        );
+      })}
 
       <span className="mx-0.5 h-6 w-px bg-strong/70" />
 
@@ -651,6 +727,14 @@ export default function CornerstoneViewer({
       {showToolbar && (
         <p className="mt-2 text-xs text-muted">
           Wheel scroll · right-drag zoom · middle-drag pan · left button = selected tool
+          {ready && !annotationsEnabled && (
+            <>
+              {" · "}
+              <span className="text-warning">
+                measurement tools need a study with spatial metadata
+              </span>
+            </>
+          )}
         </p>
       )}
     </div>
