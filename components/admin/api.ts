@@ -4,10 +4,15 @@
 import {
   OrthancUnavailableError,
   type AdminCaseRow,
+  type Author,
+  type BodySystem,
   type Case,
   type CaseStatus,
   type CaseStudyRef,
+  type Course,
+  type Difficulty,
   type Patient,
+  type Playlist,
   type SeriesMeta,
   type Study,
   type UploadResult,
@@ -31,6 +36,140 @@ export async function fetchPatients(): Promise<Patient[]> {
   return (await json<{ patients: Patient[] }>(res)).patients;
 }
 
+// ---------------------------------------------------------------------------
+// Library: authors
+// ---------------------------------------------------------------------------
+
+export async function fetchAuthors(): Promise<Author[]> {
+  const res = await fetch("/api/admin/authors", { cache: "no-store" });
+  return (await json<{ authors: Author[] }>(res)).authors;
+}
+
+export interface AuthorInput {
+  name: string;
+  bio?: string;
+  institution?: string;
+  avatarUrl?: string;
+}
+
+export async function createAuthor(input: AuthorInput): Promise<Author> {
+  const res = await fetch("/api/admin/authors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return (await json<{ author: Author }>(res)).author;
+}
+
+export async function updateAuthor(
+  id: string,
+  patch: Partial<AuthorInput>
+): Promise<Author> {
+  const res = await fetch(`/api/admin/authors/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return (await json<{ author: Author }>(res)).author;
+}
+
+export async function deleteAuthor(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/authors/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  await json<{ ok: true }>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Library: courses
+// ---------------------------------------------------------------------------
+
+export async function fetchCourses(): Promise<Course[]> {
+  const res = await fetch("/api/admin/courses", { cache: "no-store" });
+  return (await json<{ courses: Course[] }>(res)).courses;
+}
+
+export interface CourseInput {
+  title: string;
+  description?: string;
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  authorId?: string;
+  caseIds?: string[];
+  status?: CaseStatus;
+}
+
+export async function createCourse(input: CourseInput): Promise<Course> {
+  const res = await fetch("/api/admin/courses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return (await json<{ course: Course }>(res)).course;
+}
+
+export async function updateCourse(
+  id: string,
+  patch: Partial<CourseInput>
+): Promise<Course> {
+  const res = await fetch(`/api/admin/courses/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return (await json<{ course: Course }>(res)).course;
+}
+
+export async function deleteCourse(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/courses/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  await json<{ ok: true }>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Library: playlists
+// ---------------------------------------------------------------------------
+
+export async function fetchPlaylists(): Promise<Playlist[]> {
+  const res = await fetch("/api/admin/playlists", { cache: "no-store" });
+  return (await json<{ playlists: Playlist[] }>(res)).playlists;
+}
+
+export interface PlaylistInput {
+  title: string;
+  description?: string;
+  caseIds?: string[];
+}
+
+export async function createPlaylist(input: PlaylistInput): Promise<Playlist> {
+  const res = await fetch("/api/admin/playlists", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return (await json<{ playlist: Playlist }>(res)).playlist;
+}
+
+export async function updatePlaylist(
+  id: string,
+  patch: Partial<PlaylistInput>
+): Promise<Playlist> {
+  const res = await fetch(`/api/admin/playlists/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return (await json<{ playlist: Playlist }>(res)).playlist;
+}
+
+export async function deletePlaylist(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/playlists/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  await json<{ ok: true }>(res);
+}
+
 export interface CreateCaseStudyInput {
   studyInstanceUID: string;
   seriesInstanceUIDs?: string[];
@@ -50,6 +189,10 @@ export interface CreateCaseInput {
   patientId?: string;
   patientName?: string;
   studies?: CreateCaseStudyInput[];
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  tags?: string[];
+  authorId?: string;
 }
 
 export async function createCase(input: CreateCaseInput): Promise<Case> {
@@ -67,6 +210,10 @@ export interface UpdateCaseInput {
   specialty?: string | null;
   status?: CaseStatus;
   studyRefs?: CaseStudyRef[];
+  difficulty?: Difficulty | null;
+  system?: BodySystem | null;
+  tags?: string[];
+  authorId?: string | null;
 }
 
 export async function updateCase(

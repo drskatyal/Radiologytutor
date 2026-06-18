@@ -154,6 +154,17 @@ export interface CaseData {
   specialty?: string;
   /** Studies/series this case draws on — supports prior vs current. */
   studyRefs?: CaseStudyRef[];
+
+  // --- Library taxonomy (optional; back-compat — older seed cases omit these) -
+  /** Learner-facing difficulty tier for the catalog. */
+  difficulty?: Difficulty;
+  /** Anatomical / body-system taxonomy for filtering the catalog. */
+  system?: BodySystem;
+  /** Free-form teaching tags (e.g. "fracture", "PE", "incidentaloma"). */
+  tags?: string[];
+  /** The Author who authored this case (attribution in the catalog). */
+  authorId?: string;
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -175,6 +186,40 @@ export interface StructuredFinding {
 
 export type UserRole = "admin" | "author" | "student";
 export type CaseStatus = "draft" | "published";
+
+// ----------------------------------------------------------------------------
+// Library taxonomy (CLAUDE.md §2 — the catalog turns a pile of cases into a
+// teaching LIBRARY). Difficulty + body system drive the filterable catalog.
+// ----------------------------------------------------------------------------
+
+export type Difficulty = "beginner" | "intermediate" | "advanced";
+
+/** Body-system taxonomy used to organise and filter the catalog. */
+export type BodySystem =
+  | "Neuro"
+  | "MSK"
+  | "Chest"
+  | "Cardiac"
+  | "Abdominal"
+  | "GU"
+  | "Head & Neck"
+  | "Paediatric"
+  | "Vascular";
+
+/** Canonical ordered lists — the single source of truth for UI + validation. */
+export const DIFFICULTIES: Difficulty[] = ["beginner", "intermediate", "advanced"];
+
+export const BODY_SYSTEMS: BodySystem[] = [
+  "Neuro",
+  "MSK",
+  "Chest",
+  "Cardiac",
+  "Abdominal",
+  "GU",
+  "Head & Neck",
+  "Paediatric",
+  "Vascular",
+];
 
 /** A tenant. All cases/patients/studies belong to exactly one org. */
 export interface Org {
@@ -257,6 +302,66 @@ export interface Case extends CaseData {
   status: CaseStatus;
   specialty?: string;
   studyRefs?: CaseStudyRef[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================================================
+// Library entities (CLAUDE.md §2):  Author · Course · Playlist
+//
+// These turn the flat case list into a real teaching LIBRARY. They are org-
+// scoped like Patient/Study and persist through the SAME store seam in
+// lib/cases.ts, so they work on JSON-on-volume today and MongoDB later.
+// ============================================================================
+
+/**
+ * A teacher/contributor credited on cases and courses. Attribution only — auth
+ * (the `User` above) is a separate seam; an Author is the public teaching face.
+ */
+export interface Author {
+  id: string;
+  orgId: string;
+  name: string;
+  /** Optional avatar image URL (falls back to initials in the UI). */
+  avatarUrl?: string;
+  /** Short teaching bio shown on the author profile page. */
+  bio?: string;
+  /** Institution / department affiliation. */
+  institution?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A curated, ordered teaching unit grouping multiple cases (e.g. "Chest CT
+ * Essentials"). Has its own difficulty/system taxonomy and an author.
+ */
+export interface Course {
+  id: string;
+  orgId: string;
+  title: string;
+  description?: string;
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  authorId?: string;
+  /** Ordered case IDs that make up the course. */
+  caseIds: string[];
+  status: CaseStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A lightweight, ordered list of cases (Spotify-style). Unlike a Course it has
+ * no taxonomy/author — it's a simple curated rail ("Continue", "By system").
+ */
+export interface Playlist {
+  id: string;
+  orgId: string;
+  title: string;
+  description?: string;
+  /** Ordered case IDs in the playlist. */
+  caseIds: string[];
   createdAt: string;
   updatedAt: string;
 }

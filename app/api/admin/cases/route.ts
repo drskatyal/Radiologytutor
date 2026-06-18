@@ -19,7 +19,33 @@ import {
   createStudy,
   getStudyByUID,
 } from "@/lib/cases";
-import type { Case, CaseStudyRef, CaseStatus, Patient, Study } from "@/lib/types";
+import {
+  BODY_SYSTEMS,
+  DIFFICULTIES,
+  type BodySystem,
+  type Case,
+  type CaseStudyRef,
+  type CaseStatus,
+  type Difficulty,
+  type Patient,
+  type Study,
+} from "@/lib/types";
+
+function asSystem(v: unknown): BodySystem | undefined {
+  return typeof v === "string" && (BODY_SYSTEMS as string[]).includes(v)
+    ? (v as BodySystem)
+    : undefined;
+}
+function asDifficulty(v: unknown): Difficulty | undefined {
+  return typeof v === "string" && (DIFFICULTIES as string[]).includes(v)
+    ? (v as Difficulty)
+    : undefined;
+}
+function cleanTags(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const tags = v.map((t) => String(t).trim()).filter(Boolean);
+  return tags.length ? tags : undefined;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,6 +100,11 @@ interface CreateCaseBody {
   patientName?: string;
   /** Studies to create under the patient and link to the case. */
   studies?: StudyInput[];
+  /** Library taxonomy. */
+  difficulty?: string;
+  system?: string;
+  tags?: string[];
+  authorId?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -135,6 +166,10 @@ export async function POST(req: NextRequest) {
       pacsbinBaseUrl: "/cornerstone",
       patientId: patient?.id,
       studyRefs: studyRefs.length ? studyRefs : undefined,
+      difficulty: asDifficulty(body.difficulty),
+      system: asSystem(body.system),
+      tags: cleanTags(body.tags),
+      authorId: body.authorId || undefined,
     });
 
     return NextResponse.json({ case: created, patient, studies: createdStudies });

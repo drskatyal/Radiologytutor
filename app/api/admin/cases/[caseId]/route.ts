@@ -16,12 +16,35 @@ import {
   updateCaseForOrg,
   deleteCaseForOrg,
 } from "@/lib/cases";
-import type { CaseStatus, CaseStudyRef } from "@/lib/types";
+import {
+  BODY_SYSTEMS,
+  DIFFICULTIES,
+  type BodySystem,
+  type CaseStatus,
+  type CaseStudyRef,
+  type Difficulty,
+} from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ORG = DEFAULT_ORG_ID;
+
+function asSystem(v: unknown): BodySystem | undefined {
+  return typeof v === "string" && (BODY_SYSTEMS as string[]).includes(v)
+    ? (v as BodySystem)
+    : undefined;
+}
+function asDifficulty(v: unknown): Difficulty | undefined {
+  return typeof v === "string" && (DIFFICULTIES as string[]).includes(v)
+    ? (v as Difficulty)
+    : undefined;
+}
+function cleanTags(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const tags = v.map((t) => String(t).trim()).filter(Boolean);
+  return tags.length ? tags : undefined;
+}
 
 export async function GET(
   _req: NextRequest,
@@ -40,6 +63,10 @@ interface PatchBody {
   specialty?: string | null;
   status?: CaseStatus;
   studyRefs?: CaseStudyRef[];
+  difficulty?: string | null;
+  system?: string | null;
+  tags?: string[];
+  authorId?: string | null;
 }
 
 export async function PATCH(
@@ -63,6 +90,10 @@ export async function PATCH(
       patch.status = body.status;
     }
     if (Array.isArray(body.studyRefs)) patch.studyRefs = body.studyRefs;
+    if (body.difficulty !== undefined) patch.difficulty = asDifficulty(body.difficulty);
+    if (body.system !== undefined) patch.system = asSystem(body.system);
+    if (body.tags !== undefined) patch.tags = cleanTags(body.tags);
+    if (body.authorId !== undefined) patch.authorId = body.authorId || undefined;
 
     const updated = await updateCaseForOrg(ORG, params.caseId, patch);
     if (!updated) {

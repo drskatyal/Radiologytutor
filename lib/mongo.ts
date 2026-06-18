@@ -120,6 +120,15 @@ export function ensureIndexes(): Promise<void> {
           // Studies: list-by-org, and a patient's studies within an org.
           db.collection("studies").createIndex({ orgId: 1 }),
           db.collection("studies").createIndex({ orgId: 1, patientId: 1 }),
+          // Library entities: list-by-org for the catalog rails / management.
+          db.collection("authors").createIndex({ orgId: 1 }),
+          db.collection("courses").createIndex({ orgId: 1 }),
+          db.collection("courses").createIndex({ orgId: 1, status: 1 }),
+          db.collection("playlists").createIndex({ orgId: 1 }),
+          // Catalog facet/filter queries on cases.
+          db.collection("cases").createIndex({ orgId: 1, system: 1 }),
+          db.collection("cases").createIndex({ orgId: 1, difficulty: 1 }),
+          db.collection("cases").createIndex({ orgId: 1, authorId: 1 }),
         ]);
       } catch {
         // Indexes are an optimization; never block reads/writes if they fail.

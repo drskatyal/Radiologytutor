@@ -5,7 +5,7 @@
 // optimistic publish/unpublish, delete-with-confirm, and the create/edit modals.
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, LayoutGrid, Plus } from "lucide-react";
+import { CircleAlert, Library, LayoutGrid, Plus } from "lucide-react";
 import {
   Button,
   EmptyState,
@@ -19,20 +19,25 @@ import { useCallbackRef } from "./useCallbackRef";
 import { CaseList } from "./CaseList";
 import { CreateCaseModal } from "./CreateCaseModal";
 import { EditCaseModal } from "./EditCaseModal";
+import { LibraryManager } from "./LibraryManager";
 import {
   deleteCase as apiDeleteCase,
+  fetchAuthors,
   fetchCases,
   fetchPatients,
   updateCase as apiUpdateCase,
 } from "./api";
-import type { AdminCaseRow, Case, CaseStatus, Patient } from "./types";
+import type { AdminCaseRow, Author, Case, CaseStatus, Patient } from "./types";
 
 type Filter = "all" | CaseStatus;
+type Section = "cases" | "library";
 
 export function AdminConsole() {
   const { toast } = useToast();
+  const [section, setSection] = useState<Section>("cases");
   const [cases, setCases] = useState<AdminCaseRow[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [authors, setAuthors] = useState<Author[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -45,9 +50,14 @@ export function AdminConsole() {
 
   const reload = useCallbackRef(async () => {
     try {
-      const [cs, ps] = await Promise.all([fetchCases(), fetchPatients()]);
+      const [cs, ps, au] = await Promise.all([
+        fetchCases(),
+        fetchPatients(),
+        fetchAuthors(),
+      ]);
       setCases(cs);
       setPatients(ps);
+      setAuthors(au);
       setLoadError(null);
     } catch (e) {
       setLoadError((e as Error).message);
@@ -148,31 +158,45 @@ export function AdminConsole() {
     <>
       <PageHeader
         title="Admin"
-        description="Upload studies and manage your organization's teaching cases."
+        description="Upload studies and manage your organization's teaching cases and library."
         actions={
-          <Button
-            onClick={() => setCreateOpen(true)}
-            leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}
-          >
-            New case
-          </Button>
+          section === "cases" && (
+            <Button
+              onClick={() => setCreateOpen(true)}
+              leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}
+            >
+              New case
+            </Button>
+          )
         }
       >
-        {!loading && !loadError && cases.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
           <Tabs
-            value={filter}
-            onValueChange={(v) => setFilter(v as Filter)}
+            value={section}
+            onValueChange={(v) => setSection(v as Section)}
             items={[
-              { value: "all", label: "All", count: counts.all },
-              { value: "published", label: "Published", count: counts.published },
-              { value: "draft", label: "Drafts", count: counts.draft },
+              { value: "cases", label: "Cases", icon: <LayoutGrid className="h-4 w-4" /> },
+              { value: "library", label: "Library", icon: <Library className="h-4 w-4" /> },
             ]}
           />
-        )}
+          {section === "cases" && !loading && !loadError && cases.length > 0 && (
+            <Tabs
+              value={filter}
+              onValueChange={(v) => setFilter(v as Filter)}
+              items={[
+                { value: "all", label: "All", count: counts.all },
+                { value: "published", label: "Published", count: counts.published },
+                { value: "draft", label: "Drafts", count: counts.draft },
+              ]}
+            />
+          )}
+        </div>
       </PageHeader>
 
       <div className="mx-auto max-w-6xl px-6 py-6">
-        {loading ? (
+        {section === "library" ? (
+          <LibraryManager cases={cases} authors={authors} onAuthorsChanged={setAuthors} />
+        ) : loading ? (
           <LoadingList />
         ) : loadError ? (
           <EmptyState
@@ -218,6 +242,7 @@ export function AdminConsole() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         patients={patients}
+        authors={authors}
         onCreated={() => {
           // The modal shows its own success step + next-step actions and closes
           // itself; we just refresh the list (and patients, for new ones) in the
@@ -228,6 +253,7 @@ export function AdminConsole() {
 
       <EditCaseModal
         caseId={editId}
+        authors={authors}
         onClose={() => setEditId(null)}
         onSaved={(updated) => {
           mergeCase(updated);

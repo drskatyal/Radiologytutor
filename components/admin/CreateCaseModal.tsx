@@ -29,11 +29,17 @@ import {
 import { DicomDropzone } from "./DicomDropzone";
 import { SeriesPicker, type SeriesOption } from "./SeriesPicker";
 import { createCase, fetchOrthancStatus, type CreateCaseInput } from "./api";
+import { difficultyLabel } from "@/lib/taxonomy";
 import {
+  BODY_SYSTEMS,
+  DIFFICULTIES,
   MODALITIES,
   SPECIALTIES,
   STUDY_ROLES,
+  type Author,
+  type BodySystem,
   type Case,
+  type Difficulty,
   type Patient,
   type StudyRole,
   type UploadResult,
@@ -126,11 +132,13 @@ export function CreateCaseModal({
   open,
   onClose,
   patients,
+  authors = [],
   onCreated,
 }: {
   open: boolean;
   onClose: () => void;
   patients: Patient[];
+  authors?: Author[];
   onCreated: (created: Case) => void;
 }) {
   const { toast } = useToast();
@@ -140,6 +148,10 @@ export function CreateCaseModal({
   const [titleTouched, setTitleTouched] = useState(false);
   const [modality, setModality] = useState("CT");
   const [specialty, setSpecialty] = useState("");
+  const [difficulty, setDifficulty] = useState<Difficulty | "">("");
+  const [system, setSystem] = useState<BodySystem | "">("");
+  const [tags, setTags] = useState("");
+  const [authorId, setAuthorId] = useState("");
   const [patientMode, setPatientMode] = useState<"new" | "existing">("new");
   const [patientName, setPatientName] = useState("");
   const [patientId, setPatientId] = useState("");
@@ -165,6 +177,10 @@ export function CreateCaseModal({
     setTitleTouched(false);
     setModality("CT");
     setSpecialty("");
+    setDifficulty("");
+    setSystem("");
+    setTags("");
+    setAuthorId("");
     setPatientMode("new");
     setPatientName("");
     setPatientId("");
@@ -254,6 +270,13 @@ export function CreateCaseModal({
         modality,
         specialty: specialty || undefined,
         status: "draft",
+        difficulty: difficulty || undefined,
+        system: system || undefined,
+        tags: tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        authorId: authorId || undefined,
         ...(patientMode === "existing"
           ? { patientId }
           : { patientName: patientName.trim() }),
@@ -494,6 +517,68 @@ export function CreateCaseModal({
               )}
             </Field>
           </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Difficulty">
+              {(p) => (
+                <Select
+                  {...p}
+                  value={difficulty}
+                  onChange={(e) => setDifficulty(e.target.value as Difficulty | "")}
+                >
+                  <option value="">Unspecified</option>
+                  {DIFFICULTIES.map((d) => (
+                    <option key={d} value={d}>
+                      {difficultyLabel(d)}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="System">
+              {(p) => (
+                <Select
+                  {...p}
+                  value={system}
+                  onChange={(e) => setSystem(e.target.value as BodySystem | "")}
+                >
+                  <option value="">Unspecified</option>
+                  {BODY_SYSTEMS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="Author">
+              {(p) => (
+                <Select
+                  {...p}
+                  value={authorId}
+                  onChange={(e) => setAuthorId(e.target.value)}
+                >
+                  <option value="">Unattributed</option>
+                  {authors.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          </div>
+
+          <Field label="Tags" hint="Comma-separated, e.g. fracture, PE, incidentaloma.">
+            {(p) => (
+              <Input
+                {...p}
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                placeholder="fracture, comparison, follow-up"
+              />
+            )}
+          </Field>
         </section>
 
         {/* Step 3 — patient */}

@@ -2,9 +2,31 @@
 // response shapes (app/api/admin/**) so the client stays in lockstep without
 // importing lib/cases (the data layer is server-only — §3).
 
-import type { Case, CaseStatus, CaseStudyRef, Patient, Study } from "@/lib/types";
+import type {
+  Author,
+  BodySystem,
+  Case,
+  CaseStatus,
+  CaseStudyRef,
+  Course,
+  Difficulty,
+  Patient,
+  Playlist,
+  Study,
+} from "@/lib/types";
 
-export type { Case, CaseStatus, CaseStudyRef, Patient, Study };
+export type {
+  Author,
+  BodySystem,
+  Case,
+  CaseStatus,
+  CaseStudyRef,
+  Course,
+  Difficulty,
+  Patient,
+  Playlist,
+  Study,
+};
 
 /** A case row enriched for the admin list (matches AdminCaseRow on the server). */
 export interface AdminCaseRow extends Case {
@@ -81,3 +103,7 @@ export const SPECIALTIES = [
   "Nuclear medicine",
   "Interventional",
 ];
+
+// Re-export the canonical taxonomy lists (from lib/types) so the modals have a
+// single source of truth for the difficulty / body-system pickers.
+export { DIFFICULTIES, BODY_SYSTEMS } from "@/lib/types";

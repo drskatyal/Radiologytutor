@@ -18,13 +18,19 @@ import {
 } from "@/components/ui";
 import { fetchCaseDetail, updateCase } from "./api";
 import { formatStudyDate } from "./format";
+import { difficultyLabel } from "@/lib/taxonomy";
 import {
+  BODY_SYSTEMS,
+  DIFFICULTIES,
   MODALITIES,
   SPECIALTIES,
   STUDY_ROLES,
+  type Author,
+  type BodySystem,
   type Case,
   type CaseStatus,
   type CaseStudyRef,
+  type Difficulty,
   type Patient,
   type Study,
   type StudyRole,
@@ -42,10 +48,12 @@ interface LinkRow {
 
 export function EditCaseModal({
   caseId,
+  authors = [],
   onClose,
   onSaved,
 }: {
   caseId: string | null;
+  authors?: Author[];
   onClose: () => void;
   onSaved: (updated: Case) => void;
 }) {
@@ -58,6 +66,10 @@ export function EditCaseModal({
   const [modality, setModality] = useState("CT");
   const [specialty, setSpecialty] = useState("");
   const [status, setStatus] = useState<CaseStatus>("draft");
+  const [difficulty, setDifficulty] = useState<Difficulty | "">("");
+  const [system, setSystem] = useState<BodySystem | "">("");
+  const [tags, setTags] = useState("");
+  const [authorId, setAuthorId] = useState("");
   const [patient, setPatient] = useState<Patient | null>(null);
   const [links, setLinks] = useState<LinkRow[]>([]);
 
@@ -73,6 +85,10 @@ export function EditCaseModal({
         setModality(c.modality || "CT");
         setSpecialty(c.specialty ?? "");
         setStatus(c.status);
+        setDifficulty(c.difficulty ?? "");
+        setSystem(c.system ?? "");
+        setTags((c.tags ?? []).join(", "));
+        setAuthorId(c.authorId ?? "");
         setPatient(patient);
         const refByUid = new Map<string, CaseStudyRef>(
           (c.studyRefs ?? []).map((r) => [r.studyInstanceUID, r])
@@ -127,6 +143,13 @@ export function EditCaseModal({
         specialty: specialty || null,
         status,
         studyRefs,
+        difficulty: difficulty || null,
+        system: system || null,
+        tags: tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        authorId: authorId || null,
       });
       toast({ title: "Case updated", variant: "success" });
       onSaved(updated);
@@ -211,6 +234,68 @@ export function EditCaseModal({
               )}
             </Field>
           </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Difficulty">
+              {(p) => (
+                <Select
+                  {...p}
+                  value={difficulty}
+                  onChange={(e) => setDifficulty(e.target.value as Difficulty | "")}
+                >
+                  <option value="">Unspecified</option>
+                  {DIFFICULTIES.map((d) => (
+                    <option key={d} value={d}>
+                      {difficultyLabel(d)}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="System">
+              {(p) => (
+                <Select
+                  {...p}
+                  value={system}
+                  onChange={(e) => setSystem(e.target.value as BodySystem | "")}
+                >
+                  <option value="">Unspecified</option>
+                  {BODY_SYSTEMS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="Author">
+              {(p) => (
+                <Select
+                  {...p}
+                  value={authorId}
+                  onChange={(e) => setAuthorId(e.target.value)}
+                >
+                  <option value="">Unattributed</option>
+                  {authors.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          </div>
+
+          <Field label="Tags" hint="Comma-separated, e.g. fracture, PE, incidentaloma.">
+            {(p) => (
+              <Input
+                {...p}
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                placeholder="fracture, comparison, follow-up"
+              />
+            )}
+          </Field>
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">

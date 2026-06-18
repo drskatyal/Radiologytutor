@@ -1,24 +1,39 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { Mic, Sparkles, Workflow } from "lucide-react";
-import { listCasesForOrg, DEFAULT_ORG_ID } from "@/lib/cases";
-import { EmptyState } from "@/components/ui";
-import { CaseGrid } from "@/components/CaseGrid";
+import {
+  DEFAULT_ORG_ID,
+  listCatalogCases,
+  getCatalogFacets,
+  listAuthors,
+  listCourses,
+  listPlaylists,
+} from "@/lib/cases";
+import { Skeleton } from "@/components/ui";
+import { Catalog } from "@/components/catalog/Catalog";
+import type { CatalogResponse } from "@/components/catalog/types";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const cases = await listCasesForOrg(DEFAULT_ORG_ID);
-  // Students see published teaching cases; fall back to all if none published
-  // yet (fresh demo).
-  const published = cases.filter((c) => c.status === "published");
-  const visible = published.length > 0 ? published : cases;
+  // The catalog is the library landing. Load the unfiltered, published view
+  // server-side so the page renders instantly; the client takes over filtering.
+  const [cases, facets, authors, courses, playlists] = await Promise.all([
+    listCatalogCases(DEFAULT_ORG_ID, { status: "published" }),
+    getCatalogFacets(DEFAULT_ORG_ID),
+    listAuthors(DEFAULT_ORG_ID),
+    listCourses(DEFAULT_ORG_ID, { status: "published" }),
+    listPlaylists(DEFAULT_ORG_ID),
+  ]);
+
+  const initial: CatalogResponse = { cases, facets, authors, courses, playlists };
+  const firstCaseId = cases[0]?.caseId;
 
   return (
     <>
       {/* ── Flagship hero band ─────────────────────────────────────────────── */}
       <section className="relative overflow-hidden border-b border-subtle">
-        {/* Layered ambience: faint grid + accent glow, all subtle. */}
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 bg-grid-faint bg-[size:36px_36px] opacity-[0.4] [mask-image:radial-gradient(60rem_30rem_at_50%_-6rem,black,transparent)]"
@@ -30,21 +45,21 @@ export default async function HomePage() {
         <div className="relative mx-auto max-w-6xl px-6 py-16 sm:py-20">
           <div className="inline-flex items-center gap-2 rounded-full border border-subtle bg-elevated/60 px-3 py-1 text-xs font-medium text-secondary shadow-sm backdrop-blur">
             <Sparkles className="h-3.5 w-3.5 text-accent" />
-            Voice-narrated teaching, powered by an AI tutor
+            A teaching library, narrated by an AI tutor
           </div>
           <h1 className="mt-5 max-w-3xl font-display text-4xl font-semibold leading-[1.08] tracking-tightest text-primary sm:text-5xl">
             Read every study like the
             <span className="text-accent"> attending is beside you.</span>
           </h1>
           <p className="mt-4 max-w-xl text-base leading-relaxed text-secondary">
-            FlowRad Learn replays real DICOM cases as guided, multi-step
-            walk-throughs — the viewer animates to each finding while the tutor
-            narrates and answers your questions by voice.
+            Browse a curated library of real DICOM cases by system and difficulty,
+            follow guided multi-step walk-throughs, and ask the tutor anything by
+            voice.
           </p>
           <div className="mt-7 flex flex-wrap items-center gap-3">
-            {visible.length > 0 && (
+            {firstCaseId && (
               <Link
-                href={`/case/${visible[0].caseId}`}
+                href={`/case/${firstCaseId}`}
                 className="group inline-flex h-11 items-center gap-2 rounded-lg bg-accent px-5 text-sm font-medium text-accent-foreground shadow-sm transition-[box-shadow,filter] hover:shadow-glow hover:brightness-[1.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
               >
                 Start a case
@@ -62,48 +77,14 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* ── Case library ───────────────────────────────────────────────────── */}
+      {/* ── The library catalog ────────────────────────────────────────────── */}
       <div className="mx-auto max-w-6xl px-6 py-10">
-        <div className="mb-5 flex items-baseline justify-between gap-4">
-          <h2 className="font-display text-lg font-semibold tracking-tight text-primary">
-            Teaching cases
-          </h2>
-          {visible.length > 0 && (
-            <span className="text-sm tabular-nums text-muted">
-              {visible.length} available
-            </span>
-          )}
-        </div>
-
-        {visible.length === 0 ? (
-          <EmptyState
-            icon={<Workflow />}
-            title="No cases yet"
-            description="Upload a study and build your first teaching case to see it here."
-            action={
-              <Link
-                href="/admin"
-                className="inline-flex h-10 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-accent-foreground shadow-sm transition-[box-shadow,filter] hover:shadow-glow hover:brightness-[1.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
-              >
-                Go to Admin
-              </Link>
-            }
-          />
-        ) : (
-          <CaseGrid
-            cases={visible.map((c) => ({
-              caseId: c.caseId,
-              title: c.title,
-              modality: c.modality,
-              specialty: c.specialty,
-              status: c.status,
-              findingCount: c.findings.length,
-            }))}
-          />
-        )}
+        <Suspense fallback={<Skeleton className="h-64 w-full" />}>
+          <Catalog initial={initial} />
+        </Suspense>
       </div>
 
-      <CasesPrefetcher caseIds={visible.map((c) => c.caseId)} />
+      <CasesPrefetcher caseIds={cases.map((c) => c.caseId)} />
     </>
   );
 }

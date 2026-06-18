@@ -7,6 +7,10 @@
   "patientId": "pat_demo",
   "status": "published",
   "specialty": "General",
+  "difficulty": "beginner",
+  "system": "Chest",
+  "tags": ["search pattern", "windowing", "comparison"],
+  "authorId": "auth_demo",
   "studyRefs": [
     {
       "studyInstanceUID": "1.2.840.113619.2.demo.pacsbin.current",
