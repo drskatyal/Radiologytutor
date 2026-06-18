@@ -69,6 +69,50 @@ export interface Keyframe {
   marker?: Marker;
 }
 
+// ============================================================================
+// Record & Replay — the self-hosted (Cornerstone) model.
+//
+// While the teacher holds the record hotkey we capture an ORDERED, timestamped
+// log of every viewer state change (scroll/window/zoom/pan/annotation/cursor)
+// plus their narration audio. Replay re-applies the SAME events in the SAME
+// order, locked to the audio clock — an exact retrace. No segmentation, no
+// automation: record a list, replay a list.
+// ============================================================================
+
+/** A single timestamped viewer state change (`t` = ms from record start). */
+export type RecordedEvent =
+  | { t: number; type: "slice"; index: number }
+  | { t: number; type: "voi"; ww: number; wc: number }
+  | { t: number; type: "camera"; zoom: number; pan: [number, number] }
+  | { t: number; type: "invert"; value: boolean }
+  | { t: number; type: "cursor"; x: number; y: number } // normalized [0,1]
+  | {
+      t: number;
+      type: "annotation";
+      shape: MarkerShape;
+      from: [number, number]; // normalized [0,1]
+      to: [number, number];
+    };
+
+/** Event shape before the recorder stamps it with a timestamp. */
+export type ViewerEvent =
+  | { type: "slice"; index: number }
+  | { type: "voi"; ww: number; wc: number }
+  | { type: "camera"; zoom: number; pan: [number, number] }
+  | { type: "invert"; value: boolean }
+  | { type: "cursor"; x: number; y: number }
+  | { type: "annotation"; shape: MarkerShape; from: [number, number]; to: [number, number] };
+
+/** One finding's recorded demonstration: ordered events + narration audio. */
+export interface RecordedTrack {
+  durationMs: number;
+  /** The starting viewer state (slice index + W/L) so replay can prime it. */
+  start: { sliceIndex: number; ww?: number; wc?: number };
+  events: RecordedEvent[];
+  /** URL/key of the teacher's narration audio (their real voice). */
+  audioUrl?: string;
+}
+
 export interface Finding {
   id: string;
   label: string;
@@ -79,6 +123,8 @@ export interface Finding {
   marker: Marker;
   /** Recorded dynamic flow (snap between these). Absent for a single view. */
   keyframes?: Keyframe[];
+  /** Self-hosted record/replay: ordered state-change log + narration audio. */
+  track?: RecordedTrack;
   durationMs?: number;
   /** Default guided-tour sequence (search-pattern order). */
   order: number;
