@@ -18,7 +18,8 @@ narrates and answers questions.
 - **ElevenLabs** for tutor narration (speech out); falls back to the browser's
   `speechSynthesis` if no key is set
 - Mic capture via `MediaRecorder` (audio → server → Gemini)
-- Persistence: JSON files under `/data` (one per case). Migrating to MongoDB later.
+- Persistence: JSON-on-volume by default; **set `MONGODB_URI` to run on MongoDB**
+  with no code changes (see [Database](#database)).
 
 ## Pacsbin integration (researched)
 
@@ -92,6 +93,35 @@ in place (client-side routing). If in-place, animation is effectively free.
 `data/knee-acl-01.json` is a sample knee case. Replace
 `pacsbinBaseUrl` with a real Pacsbin viewer token and fix the series/image IDs
 to match that case before playback will render real images.
+
+## Database
+
+The data layer (`lib/cases.ts`) sits behind a store seam: a `Collection`
+interface with two implementations chosen at runtime by the `collection()`
+factory.
+
+- **Default — JSON-on-volume.** With no `MONGODB_URI` set, cases/patients/studies
+  persist as JSON files under `DATA_DIR` (default `./data`; point it at a Railway
+  Volume to survive redeploys). This is what the demo and `npm test` use — **no
+  database required.**
+- **MongoDB — set one env var.** Set `MONGODB_URI` and the *entire* app silently
+  switches to MongoDB (`lib/mongo.ts`). No caller or API changes. Unset it to go
+  back to JSON.
+
+Either store **self-seeds from `/seed`** the first time it is empty, so a fresh
+DB isn't blank. The Mongo connection is a cached singleton (no connection storm
+on serverless / hot-reload) and connects **lazily on first use** — importing the
+data layer at build time never touches the network. Indexes for fast org-scoped
+lists are created once on first connect: `orgId` and `orgId+status` on cases,
+`orgId` on patients, `orgId` and `orgId+patientId` on studies.
+
+**Turn it on (MongoDB Atlas):**
+
+1. Create a free cluster at https://www.mongodb.com/atlas and a database user.
+2. Allow your app's IP (or `0.0.0.0/0` for Railway) under Network Access.
+3. Copy the connection string (`mongodb+srv://USER:PASS@cluster…`) into
+   `MONGODB_URI` (in `.env.local` locally, or the Railway service variables).
+4. Optionally set `MONGODB_DB` (default `flowrad`). Redeploy/restart — done.
 
 ## Tests
 
