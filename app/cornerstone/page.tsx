@@ -8,11 +8,28 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BUNDLED_CASE, PUBLIC_DEMO, type ViewerSource } from "../../lib/viewerSource";
+import {
+  BUNDLED_CASE,
+  PUBLIC_DEMO,
+  type ViewerSource,
+} from "../../lib/viewerSource";
+import { Spinner, Tabs } from "@/components/ui";
+import { PageHeader } from "@/components/AppShell";
+import { cn } from "@/components/ui/cn";
 
 const CornerstoneViewer = dynamic(
   () => import("../../components/CornerstoneViewer"),
-  { ssr: false, loading: () => <p style={{ color: "#9aa" }}>Loading viewer…</p> }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex aspect-square w-full items-center justify-center rounded-xl bg-imaging text-muted">
+        <span className="flex items-center gap-2 text-sm">
+          <Spinner size="sm" label="Loading viewer" />
+          Loading viewer…
+        </span>
+      </div>
+    ),
+  }
 );
 
 const PACSBIN_DEMO =
@@ -41,43 +58,56 @@ export default function CornerstoneSpikePage() {
     }
   }, []);
 
+  const sourceIsBundled = source === BUNDLED_CASE;
+  const sourceIsPublic = source === PUBLIC_DEMO;
+
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, color: "#e8eaed" }}>
-      <h1 style={{ fontSize: 20, marginBottom: 4 }}>Viewer comparison</h1>
-      <p style={{ fontSize: 13, color: "#9aa", marginTop: 0 }}>
-        Toggle between the embedded Pacsbin viewer and our self-hosted
-        Cornerstone3D viewer.
-      </p>
+    <>
+      <PageHeader
+        title="Viewer comparison"
+        description="Toggle between the embedded Pacsbin viewer and our self-hosted Cornerstone3D viewer."
+        actions={
+          <Tabs
+            items={[
+              { value: "cornerstone", label: "Our Viewer" },
+              { value: "pacsbin", label: "Pacsbin" },
+            ]}
+            value={mode}
+            onValueChange={(v) => setMode(v as Mode)}
+          />
+        }
+      />
 
-      <div style={{ display: "inline-flex", gap: 0, marginBottom: 16, border: "1px solid #345", borderRadius: 8, overflow: "hidden" }}>
-        <ToggleButton active={mode === "pacsbin"} onClick={() => setMode("pacsbin")}>
-          Pacsbin
-        </ToggleButton>
-        <ToggleButton active={mode === "cornerstone"} onClick={() => setMode("cornerstone")}>
-          Our Viewer (Cornerstone3D)
-        </ToggleButton>
-      </div>
-
-      {mode === "pacsbin" ? (
-        <iframe
-          src={PACSBIN_DEMO}
-          style={{ width: "100%", aspectRatio: "1 / 1", border: "none", background: "#000", borderRadius: 8 }}
-          allow="fullscreen"
-        />
-      ) : (
-        <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10, fontSize: 12 }}>
-            <SourceChip active={source === BUNDLED_CASE} onClick={() => setSource(BUNDLED_CASE)}>
-              Bundled MR (offline)
-            </SourceChip>
-            <SourceChip active={source === PUBLIC_DEMO} onClick={() => setSource(PUBLIC_DEMO)}>
-              Public CT (DICOMweb)
-            </SourceChip>
+      <div className="mx-auto max-w-3xl px-6 py-8">
+        {mode === "pacsbin" ? (
+          <iframe
+            src={PACSBIN_DEMO}
+            title="Pacsbin viewer"
+            className="aspect-square w-full rounded-xl border border-subtle bg-imaging"
+            allow="fullscreen"
+          />
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-muted">Source</span>
+              <SourceChip
+                active={sourceIsBundled}
+                onClick={() => setSource(BUNDLED_CASE)}
+              >
+                Bundled MR (offline)
+              </SourceChip>
+              <SourceChip
+                active={sourceIsPublic}
+                onClick={() => setSource(PUBLIC_DEMO)}
+              >
+                Public CT (DICOMweb)
+              </SourceChip>
+            </div>
+            <CornerstoneViewer source={source} />
           </div>
-          <CornerstoneViewer source={source} />
-        </>
-      )}
-    </main>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -92,41 +122,16 @@ function SourceChip({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      style={{
-        padding: "4px 10px",
-        borderRadius: 999,
-        border: `1px solid ${active ? "#2d6cdf" : "#345"}`,
-        background: active ? "#19315f" : "transparent",
-        color: active ? "#cfe0ff" : "#9aa",
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ToggleButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "8px 14px",
-        fontSize: 13,
-        border: "none",
-        cursor: "pointer",
-        background: active ? "#2d6cdf" : "transparent",
-        color: active ? "#fff" : "#9aa",
-      }}
+      aria-pressed={active}
+      className={cn(
+        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+        active
+          ? "border-accent/40 bg-accent/15 text-accent"
+          : "border-strong text-secondary hover:border-strong hover:text-primary"
+      )}
     >
       {children}
     </button>

@@ -1,30 +1,41 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { Inter } from "next/font/google";
+import { AppShell } from "@/components/AppShell";
 import "./globals.css";
+
+// Inter, our product typeface. Exposed as `--font-sans` (see tailwind.config).
+// next/font self-hosts the font at build time; if Google can't be reached the
+// `fallback` system stack keeps the build (and the UI) working.
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-sans",
+  fallback: [
+    "ui-sans-serif",
+    "system-ui",
+    "-apple-system",
+    "Segoe UI",
+    "Roboto",
+    "Helvetica Neue",
+    "Arial",
+    "sans-serif",
+  ],
+});
 
 export const metadata: Metadata = {
   title: "FlowRad Learn",
   description: "Interactive, voice-narrated radiology teaching cases.",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en">
+    <html lang="en" className={inter.variable}>
       <body>
-        <header className="border-b border-neutral-800 px-6 py-3 flex items-center gap-6">
-          <Link href="/" className="font-semibold tracking-tight text-yellow-400">
-            FlowRad Learn
-          </Link>
-          <nav className="flex gap-4 text-sm text-neutral-400">
-            <Link href="/" className="hover:text-neutral-100">
-              Cases
-            </Link>
-            <Link href="/author" className="hover:text-neutral-100">
-              Author
-            </Link>
-          </nav>
-        </header>
-        <main>{children}</main>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
