@@ -1,42 +1,25 @@
-// POST /api/tutor
-// Body: { caseId, mode: "guided"|"socratic"|"free", messages: {role,text}[] }
+// POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
 //
-// The student-facing AI tutor. Gemini Flash with tool-calling. The model
-// decides when to drive the viewer by emitting function calls; the FRONTEND
-// executes them (animations are visual side-effects). We pass the full finding
-// list in the system instruction so the model can both pick the right tool and
-// narrate the finding in the same turn.
+// Body:  { caseId, mode, messages: {role,text}[], question?, currentFindingId? }
+// Reply: { answer: string, action: TeachingViewerAction }
+//
+// This runs the TEACHING PLAN: given the case + findings context and the
+// student's (already-transcribed) question, Gemini returns the spoken answer
+// plus an optional viewer action (show_finding / next_in_tour / prev_in_tour /
+// set_window) that the FRONTEND executes to drive our self-hosted viewer.
+//
+// Transcription is a SEPARATE call (/api/transcribe) — we never merge them.
+// `messages` is the prior chat history; `question` is the current turn (when
+// omitted, the last user message is used as the question).
 
 import { NextRequest, NextResponse } from "next/server";
-import { generate, type FunctionDeclaration, type GeminiContent } from "@/lib/gemini";
+import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCase } from "@/lib/cases";
 import type { CaseData } from "@/lib/types";
 
 export const runtime = "nodejs";
 
-// Tools that drive the viewer. With Pacsbin 2.0 we snap to recorded state
-// blobs, so the tools are show_finding (jump to a finding, replaying its flow)
-// and next_in_tour. (set_window/compare need decoded-state synthesis — future
-// work, or a self-hosted viewer.)
-const TOOLS: FunctionDeclaration[] = [
-  {
-    name: "show_finding",
-    description:
-      "Jump the viewer to a finding (replaying its recorded flow), reveal its marker, and narrate it. Use the finding's id.",
-    parameters: {
-      type: "object",
-      properties: { findingId: { type: "string", description: "Finding id, e.g. f1" } },
-      required: ["findingId"],
-    },
-  },
-  {
-    name: "next_in_tour",
-    description: "Advance to the next finding by tour order and narrate it.",
-    parameters: { type: "object", properties: {} },
-  },
-];
-
-function findingsBrief(data: CaseData): string {
+function findingsContext(data: CaseData): string {
   return data.findings
     .slice()
     .sort((a, b) => a.order - b.order)
@@ -48,83 +31,55 @@ function findingsBrief(data: CaseData): string {
     .join("\n");
 }
 
-function systemPrompt(data: CaseData, mode: string): string {
-  const base = `You are a radiology tutor guiding a student through the case "${data.title}" (${data.modality}).
-You control a medical image viewer ONLY through these tools: show_finding, set_window, compare, next_in_tour.
-You cannot see the images yourself — rely on the finding list below.
-
-Findings (in tour order):
-${findingsBrief(data)}
-
-Narration rules:
-- When you reveal a finding (show_finding / next_in_tour), narrate its description and teaching points in 1-3 spoken sentences. Warm, concise, exam-room tone.
-- Keep text suitable for text-to-speech: no markdown, no bullet symbols, no IDs spoken aloud.
-- Call a tool whenever the student should see something. You may call a tool AND provide narration text in the same turn.`;
-
-  if (mode === "socratic") {
-    return (
-      base +
-      `
-
-MODE: SOCRATIC. Do NOT reveal a finding until the student has attempted it. First ask about their search pattern or what they expect to see. Prompt and hint. Only call show_finding after the student has made an attempt or explicitly asks to see the answer.`
-    );
-  }
-  if (mode === "free") {
-    return (
-      base +
-      `
-
-MODE: FREE EXPLORE. The student navigates on their own. Answer their questions. When they ask to see something ("show me the ACL"), match it to a finding and call show_finding. Do not auto-advance.`
-    );
-  }
-  return (
-    base +
-    `
-
-MODE: GUIDED TOUR. Walk through the findings in order. Start by calling show_finding for the first finding (lowest order) and narrating it. When the student says continue/next, call next_in_tour. Answer questions along the way.`
-  );
+interface InMessage {
+  role: "user" | "assistant";
+  text: string;
 }
 
 export async function POST(req: NextRequest) {
+  if (!geminiConfigured()) {
+    return NextResponse.json(
+      { error: "The AI tutor is unavailable — GEMINI_API_KEY is not set." },
+      { status: 503 }
+    );
+  }
+
   try {
-    const { caseId, mode = "guided", messages = [], audio } = await req.json();
-    const data = await getCase(String(caseId));
+    const body = await req.json();
+    const caseId = String(body.caseId ?? "");
+    const mode = (body.mode ?? "guided") as "guided" | "socratic" | "free";
+    const messages = (body.messages ?? []) as InMessage[];
+    const currentFindingId = body.currentFindingId
+      ? String(body.currentFindingId)
+      : undefined;
+
+    const data = await getCase(caseId);
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
 
-    const contents: GeminiContent[] = (messages as { role: string; text: string }[]).map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.text }],
-    }));
+    // The question is the explicit `question`, else the last user message.
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const question =
+      typeof body.question === "string" && body.question.trim()
+        ? String(body.question)
+        : (lastUser?.text ?? "");
 
-    // Cold start with no messages: seed an opening instruction.
-    if (contents.length === 0) {
-      contents.push({ role: "user", parts: [{ text: "Begin the session." }] });
-    }
+    // History = the turns before the current question (so we don't duplicate it).
+    const history =
+      lastUser && messages[messages.length - 1]?.text === question
+        ? messages.slice(0, -1)
+        : messages;
 
-    // Voice turn: Gemini does STT. Attach the audio to the final user turn so
-    // the model hears the spoken question directly.
-    if (audio?.base64) {
-      let lastUser = [...contents].reverse().find((c) => c.role === "user");
-      if (!lastUser) {
-        lastUser = { role: "user", parts: [] };
-        contents.push(lastUser);
-      }
-      lastUser.parts.unshift({
-        inlineData: { mimeType: audio.mime || "audio/webm", data: audio.base64 },
-      });
-    }
-
-    const result = await generate({
-      systemInstruction: systemPrompt(data, String(mode)),
-      temperature: 0.4,
-      tools: TOOLS,
-      contents,
+    const result = await runTeachingPlan({
+      question,
+      history,
+      caseTitle: data.title,
+      modality: data.modality,
+      mode,
+      findingsContext: findingsContext(data),
+      currentFindingId,
     });
 
-    return NextResponse.json({
-      text: result.text,
-      functionCalls: result.functionCalls,
-    });
+    return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
