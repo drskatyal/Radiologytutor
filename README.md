@@ -12,23 +12,39 @@ narrates and answers questions.
 ## Stack
 
 - Next.js 14 (App Router, TypeScript) + Tailwind
-- Gemini Flash (Google AI Studio) for (a) structuring dictated findings into
-  JSON and (b) the student-facing tutor agent with tool-calling
-- Web Speech API (browser) for mic capture + narration in the demo
-- Persistence: JSON files under `/data` (one per case)
+- **Gemini Flash (Google AI Studio) does all model calls:** speech-to-text on
+  dictation/voice questions (multimodal audio in), structuring dictated findings
+  into JSON, and the student tutor agent with tool-calling
+- **ElevenLabs** for tutor narration (speech out); falls back to the browser's
+  `speechSynthesis` if no key is set
+- Mic capture via `MediaRecorder` (audio → server → Gemini)
+- Persistence: JSON files under `/data` (one per case). Migrating to MongoDB later.
+
+## Pacsbin integration (researched)
+
+Pacsbin's embed client API (`new PacsbinClient()`) is minimal — only
+`setTool()`, `toggleAnnotations()`, `noPageScrollWheel()`. **All viewport state
+(series/image/ww/wc/scale/translation/layout) is set via URL query params only**
+(colon-keyed: `s:1`, `i:1`, `ww:1`, …), with **no read-back and no postMessage
+state stream.** So real-time control = rapid URL writes to the iframe, and we
+draw our own marker overlay (Pacsbin's native annotations hidden via `an=false`).
+This confirms the architecture in `lib/pacsbinUrl.ts`.
+Docs: https://docs.pacsbin.com/viewer-url-options
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env.local   # add your Google AI Studio key
+cp .env.example .env.local   # add your keys
 npm run dev                  # http://localhost:3000
 ```
 
 Set in `.env.local`:
 
-- `GEMINI_API_KEY` — from https://aistudio.google.com/apikey
+- `GEMINI_API_KEY` — from https://aistudio.google.com/apikey (required)
 - `GEMINI_MODEL` — Flash model id (default `gemini-flash-latest`)
+- `ELEVENLABS_API_KEY` — narration voice (optional; falls back to browser TTS)
+- `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL` — voice + model selection
 
 ## Routes
 
@@ -40,8 +56,9 @@ Set in `.env.local`:
 
 ## API routes (all Gemini calls are server-side)
 
-- `POST /api/structure-finding` — transcript → strict JSON `{label, description, teachingPoints[]}`
-- `POST /api/tutor` — chat + tool-calling (`show_finding`, `set_window`, `compare`, `next_in_tour`)
+- `POST /api/structure-finding` — transcript **or audio** → strict JSON `{label, description, teachingPoints[]}`
+- `POST /api/tutor` — chat (text **or audio** turn) + tool-calling (`show_finding`, `set_window`, `compare`, `next_in_tour`)
+- `POST /api/tts` — text → ElevenLabs audio stream (narration)
 - `GET|POST /api/cases`, `/api/cases/[caseId]`, `.../findings`, `.../reorder` — persistence
 
 ## Architecture notes

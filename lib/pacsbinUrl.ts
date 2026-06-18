@@ -26,9 +26,12 @@ export interface ChromeOptions {
   titles?: boolean;
   caseData?: boolean;
   toolbar?: boolean;
+  /** `an` = Pacsbin's native annotations. We draw our own marker overlay, so
+   * hide these on playback to avoid clashing visuals. */
+  an?: boolean;
 }
 
-/** Clean playback chrome: strip all Pacsbin UI. */
+/** Clean playback chrome: strip all Pacsbin UI + native annotations. */
 export const PLAYBACK_CHROME: ChromeOptions = {
   header: false,
   caseNavigation: false,
@@ -36,6 +39,7 @@ export const PLAYBACK_CHROME: ChromeOptions = {
   titles: false,
   caseData: false,
   toolbar: false,
+  an: false,
 };
 
 /** Authoring chrome: keep the toolbar so the tutor can scroll/window/zoom. */
@@ -47,8 +51,6 @@ export const AUTHOR_CHROME: ChromeOptions = {
   caseData: false,
   toolbar: true,
 };
-
-const VIEWPORT_PARAM_KEYS = ["s", "i", "ww", "wc", "scale", "translation"] as const;
 
 function num(value: string | null): number | undefined {
   if (value == null || value.trim() === "") return undefined;
