@@ -245,3 +245,104 @@ export async function runTransition(
 
   return url;
 }
+
+// ---------------------------------------------------------------------------
+// Track replay: play back a RECORDED dynamic flow.
+//
+// A finding's `track` is a timeline of viewport keyframes (captured from
+// Pacsbin's own state events, or from our controls — replay is agnostic to
+// how it was captured). We resample the timeline at a fixed fps and apply the
+// interpolated viewport each frame, so scroll + window + zoom move together
+// exactly as recorded, scaled by `speed`.
+// ---------------------------------------------------------------------------
+
+export interface TrackKeyframe {
+  t: number;
+  viewport: Viewport;
+}
+
+export interface TrackPlayOptions {
+  fps?: number;
+  /** Playback speed multiplier (1 = recorded speed, 1.5 = faster). */
+  speed?: number;
+  signal?: AbortSignal;
+  /** Called when the active keyframe changes (e.g. to move a marker). */
+  onKeyframe?: (index: number) => void;
+}
+
+function interpolateViewport(a: Viewport, b: Viewport, tt: number): Viewport {
+  const lerpNum = (x?: number, y?: number) =>
+    x === undefined || y === undefined ? (x ?? y) : lerp(x, y, tt);
+
+  // Slice: interpolate numerically, preserving any non-numeric id prefix.
+  const fromN = asInt(a.i1);
+  const toN = asInt(b.i1);
+  const i1 =
+    fromN !== null && toN !== null
+      ? withSliceNumber(b.i1, Math.round(lerp(fromN, toN, tt)))
+      : tt < 1
+      ? a.i1
+      : b.i1;
+
+  const [ax, ay] = parseTranslation(a.translation1);
+  const [bx, by] = parseTranslation(b.translation1);
+
+  return {
+    layout: tt < 1 ? a.layout : b.layout,
+    s1: tt < 1 ? a.s1 : b.s1, // series doesn't interpolate
+    i1,
+    ww1: lerpNum(a.ww1, b.ww1),
+    wc1: lerpNum(a.wc1, b.wc1),
+    scale1: lerpNum(a.scale1, b.scale1),
+    translation1:
+      a.translation1 || b.translation1
+        ? `${lerp(ax, bx, tt).toFixed(1)},${lerp(ay, by, tt).toFixed(1)}`
+        : undefined,
+  };
+}
+
+export async function runTrack(
+  baseUrl: string,
+  track: TrackKeyframe[],
+  apply: ApplyUrl,
+  chrome: ChromeOptions,
+  opts: TrackPlayOptions = {}
+): Promise<void> {
+  if (track.length === 0) return;
+  const fps = opts.fps ?? 25;
+  const speed = opts.speed ?? 1;
+  const frameMs = 1000 / fps;
+
+  if (track.length === 1) {
+    apply(buildViewerUrl(baseUrl, track[0].viewport, chrome));
+    opts.onKeyframe?.(0);
+    return;
+  }
+
+  const totalMs = track[track.length - 1].t - track[0].t;
+  const t0 = track[0].t;
+  let seg = 0;
+
+  for (let elapsed = 0; elapsed <= totalMs; elapsed += frameMs * speed) {
+    if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const now = t0 + elapsed;
+
+    // Advance to the segment containing `now`.
+    while (seg < track.length - 2 && now >= track[seg + 1].t) {
+      seg++;
+      opts.onKeyframe?.(seg);
+    }
+
+    const a = track[seg];
+    const b = track[seg + 1];
+    const span = Math.max(1, b.t - a.t);
+    const tt = Math.min(1, Math.max(0, (now - a.t) / span));
+
+    apply(buildViewerUrl(baseUrl, interpolateViewport(a.viewport, b.viewport, tt), chrome));
+    await sleep(frameMs, opts.signal);
+  }
+
+  // Land exactly on the final keyframe.
+  apply(buildViewerUrl(baseUrl, track[track.length - 1].viewport, chrome));
+  opts.onKeyframe?.(track.length - 1);
+}
