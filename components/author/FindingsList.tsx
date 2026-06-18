@@ -16,6 +16,10 @@ interface FindingsListProps {
   onMove: (findingId: string, dir: -1 | 1) => void;
   /** Commit a fully reordered id sequence. */
   onReorder: (orderedIds: string[]) => void;
+  /** Preview a single finding in the student player. */
+  onPreview?: (findingId: string) => void;
+  /** Bubble per-finding unsaved-edit state up to the workspace guard. */
+  onDirtyChange?: (findingId: string, dirty: boolean) => void;
 }
 
 export function FindingsList({
@@ -24,6 +28,8 @@ export function FindingsList({
   onDeleteFinding,
   onMove,
   onReorder,
+  onPreview,
+  onDirtyChange,
 }: FindingsListProps) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -61,6 +67,8 @@ export function FindingsList({
             onSave={onSaveFinding}
             onDelete={onDeleteFinding}
             onMove={onMove}
+            onPreview={onPreview}
+            onDirtyChange={onDirtyChange}
             dragging={dragId === f.id}
             dropTarget={overId === f.id && dragId !== f.id}
             onDragStart={() => setDragId(f.id)}

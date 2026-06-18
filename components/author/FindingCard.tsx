@@ -20,6 +20,7 @@ import type { Finding, StructuredFinding } from "@/lib/types";
 import {
   draftsDiffer,
   hasErrors,
+  LIMITS,
   normalizeDraft,
   toDraft,
   validateDraft,
@@ -34,6 +35,7 @@ import {
   GripIcon,
   LayersIcon,
   PencilIcon,
+  PlayIcon,
   PlusIcon,
   SparkleIcon,
   TargetIcon,
@@ -48,6 +50,10 @@ interface FindingCardProps {
   onSave: (findingId: string, patch: Partial<Finding>) => Promise<void>;
   onDelete: (findingId: string) => void;
   onMove: (findingId: string, dir: -1 | 1) => void;
+  /** Preview this finding's playback as a student would see it. */
+  onPreview?: (findingId: string) => void;
+  /** Report unsaved-edit state up so the page can guard navigation. */
+  onDirtyChange?: (findingId: string, dirty: boolean) => void;
   /** Drag handlers (HTML5 DnD) wired by the parent list. */
   dragging?: boolean;
   dropTarget?: boolean;
@@ -63,6 +69,8 @@ export function FindingCard({
   onSave,
   onDelete,
   onMove,
+  onPreview,
+  onDirtyChange,
   dragging,
   dropTarget,
   onDragStart,
@@ -87,6 +95,16 @@ export function FindingCard({
   const errors = validateDraft(draft);
   const dirty = draftsDiffer(draft, original);
   const hasFlow = (finding.keyframes?.length ?? 0) > 1;
+  const hasTrack = !!finding.track && (finding.track.events?.length ?? 0) > 0;
+  const previewable = hasFlow || hasTrack || !!finding.state.trim();
+
+  // Surface unsaved edits to the page so it can guard navigation. Cleared when
+  // we leave edit mode or unmount.
+  const unsaved = editing && dirty;
+  useEffect(() => {
+    onDirtyChange?.(finding.id, unsaved);
+  }, [unsaved, finding.id, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(finding.id, false), [finding.id, onDirtyChange]);
 
   function startEdit() {
     setDraft(toDraft(finding));
@@ -95,6 +113,10 @@ export function FindingCard({
   }
 
   function cancelEdit() {
+    // Guard against silently dropping in-progress edits.
+    if (dirty && !window.confirm("Discard your unsaved changes to this finding?")) {
+      return;
+    }
     setDraft(toDraft(finding));
     setEditing(false);
   }
@@ -178,22 +200,32 @@ export function FindingCard({
 
         <div className="min-w-0 flex-1">
           {editing ? (
-            <Field error={errors.label} className="gap-1">
-              {(p) => (
-                <Input
-                  {...p}
-                  ref={labelRef}
-                  className="h-9"
-                  placeholder="Finding label (e.g. ACL tear)"
-                  value={draft.label}
-                  onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") commit();
-                    if (e.key === "Escape") cancelEdit();
-                  }}
-                />
-              )}
-            </Field>
+            <div className="flex items-start gap-2">
+              <Field error={errors.label} className="flex-1 gap-1">
+                {(p) => (
+                  <Input
+                    {...p}
+                    ref={labelRef}
+                    className="h-9"
+                    placeholder="Finding label (e.g. ACL tear)"
+                    maxLength={LIMITS.label}
+                    value={draft.label}
+                    onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commit();
+                      if (e.key === "Escape") cancelEdit();
+                    }}
+                  />
+                )}
+              </Field>
+              <Badge
+                variant={dirty ? "warning" : "neutral"}
+                className="mt-1 animate-fade-in"
+                title={dirty ? "You have unsaved changes" : "No changes yet"}
+              >
+                {dirty ? "Unsaved" : "No changes"}
+              </Badge>
+            </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-sm font-semibold text-primary">
@@ -254,7 +286,15 @@ export function FindingCard({
       <div className="space-y-4 px-4 py-4">
         {editing ? (
           <>
-            <Field label="Description">
+            <Field
+              label="Description"
+              error={errors.description}
+              hint={
+                !errors.description
+                  ? `${draft.description.trim().length}/${LIMITS.description}`
+                  : undefined
+              }
+            >
               {(p) => (
                 <Textarea
                   {...p}
@@ -278,6 +318,7 @@ export function FindingCard({
                   variant="ghost"
                   leadingIcon={<PlusIcon />}
                   onClick={addPoint}
+                  disabled={draft.teachingPoints.length >= LIMITS.teachingPoints}
                 >
                   Add point
                 </Button>
@@ -297,8 +338,15 @@ export function FindingCard({
                         className="h-9 text-sm"
                         placeholder="Teaching point…"
                         value={pt}
+                        maxLength={LIMITS.teachingPoint}
                         aria-label={`Teaching point ${i + 1}`}
                         onChange={(e) => setPoint(i, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            addPoint();
+                          }
+                        }}
                       />
                       <IconButton
                         size="sm"
@@ -311,6 +359,11 @@ export function FindingCard({
                     </li>
                   ))}
                 </ul>
+              )}
+              {errors.teachingPoints && (
+                <p role="alert" className="text-xs text-danger">
+                  {errors.teachingPoints}
+                </p>
               )}
             </div>
 
@@ -379,6 +432,17 @@ export function FindingCard({
               >
                 Edit
               </Button>
+              {onPreview && previewable && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  leadingIcon={<PlayIcon />}
+                  onClick={() => onPreview(finding.id)}
+                  title="Open this finding in the student player"
+                >
+                  Preview
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"

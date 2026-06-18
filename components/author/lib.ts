@@ -33,14 +33,33 @@ export function normalizeDraft(d: FindingDraft): FindingDraft {
   };
 }
 
+/** Sensible limits so the structured text stays teaching-card sized. */
+export const LIMITS = {
+  label: 80,
+  description: 600,
+  teachingPoint: 200,
+  teachingPoints: 8,
+} as const;
+
 export interface DraftErrors {
   label?: string;
+  description?: string;
+  teachingPoints?: string;
 }
 
-/** Validation: a finding must at least have a label. */
+/** Validation: a finding must at least have a label; everything stays in range. */
 export function validateDraft(d: FindingDraft): DraftErrors {
   const errors: DraftErrors = {};
   if (!d.label.trim()) errors.label = "A label is required.";
+  else if (d.label.trim().length > LIMITS.label)
+    errors.label = `Keep the label under ${LIMITS.label} characters.`;
+  if (d.description.trim().length > LIMITS.description)
+    errors.description = `Keep the description under ${LIMITS.description} characters.`;
+  const points = d.teachingPoints.map((p) => p.trim()).filter(Boolean);
+  if (points.length > LIMITS.teachingPoints)
+    errors.teachingPoints = `Use at most ${LIMITS.teachingPoints} teaching points.`;
+  else if (points.some((p) => p.length > LIMITS.teachingPoint))
+    errors.teachingPoints = `Keep each teaching point under ${LIMITS.teachingPoint} characters.`;
   return errors;
 }
 
@@ -120,37 +139,66 @@ export async function reorderFindings(
   return jsonOrThrow(res);
 }
 
-/** Run Gemini structuring over a transcript. Returns the structured result. */
-export async function structureFinding(transcript: string): Promise<StructuredFinding> {
+/**
+ * Distinguishes "AI is switched off" (no Gemini key) from a real failure, so the
+ * UI can offer the manual path instead of treating it as an error. The route
+ * surfaces the missing key as a 503 OR (today) as a 500 whose message mentions
+ * GEMINI_API_KEY — we treat both as "unavailable" and never as a dead end.
+ */
+export class AiUnavailableError extends Error {
+  constructor() {
+    super("AI structuring is off — no Gemini key is configured.");
+    this.name = "AiUnavailableError";
+  }
+}
+
+function looksLikeMissingKey(status: number, message: unknown): boolean {
+  if (status === 503) return true;
+  return typeof message === "string" && /GEMINI_API_KEY/i.test(message);
+}
+
+/**
+ * POST to /api/structure-finding with either a transcript or audio. Throws
+ * {@link AiUnavailableError} when Gemini isn't configured so callers can degrade
+ * to the manual path; throws a normal Error for genuine failures.
+ */
+async function structureRequest(
+  body: { transcript: string } | { audioBase64: string; audioMime: string }
+): Promise<StructuredFinding> {
   const res = await fetch("/api/structure-finding", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ transcript }),
+    body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "Failed to structure finding");
+  if (!res.ok) {
+    if (looksLikeMissingKey(res.status, data?.error)) throw new AiUnavailableError();
+    throw new Error(data?.error || "Failed to structure finding");
+  }
   return data as StructuredFinding;
+}
+
+/** Run Gemini structuring over a transcript. Returns the structured result. */
+export async function structureFinding(transcript: string): Promise<StructuredFinding> {
+  return structureRequest({ transcript });
 }
 
 /**
  * Structure a finding directly from recorded narration audio (Gemini does STT +
- * structuring in one call). Returns null when Gemini isn't configured (503) so
- * the recorder flow degrades gracefully — the author still gets the track and
- * fills the text in by hand.
+ * structuring in one call). Returns null when Gemini isn't configured so the
+ * recorder flow degrades gracefully — the author still gets the track and fills
+ * the text in by hand.
  */
 export async function structureFindingFromAudio(
   base64: string,
   mime: string
 ): Promise<StructuredFinding | null> {
-  const res = await fetch("/api/structure-finding", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audioBase64: base64, audioMime: mime }),
-  });
-  if (res.status === 503) return null;
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "Failed to structure finding");
-  return data as StructuredFinding;
+  try {
+    return await structureRequest({ audioBase64: base64, audioMime: mime });
+  } catch (e) {
+    if (e instanceof AiUnavailableError) return null;
+    throw e;
+  }
 }
 
 /** Upload narration audio; returns the durable same-origin URL to store. */

@@ -19,7 +19,7 @@ import {
 } from "@/components/ui";
 import type { Finding, StructuredFinding } from "@/lib/types";
 import { extractState } from "@/lib/pacsbinUrl";
-import { structureFinding } from "./lib";
+import { AiUnavailableError, LIMITS, structureFinding } from "./lib";
 import { SparkleIcon, PlusIcon, CloseIcon, CheckIcon } from "./icons";
 
 interface AddFindingDialogProps {
@@ -36,6 +36,7 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
   const [structuring, setStructuring] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [draft, setDraft] = useState<StructuredFinding>(EMPTY);
   const [viewerUrl, setViewerUrl] = useState("");
   const [structured, setStructured] = useState(false);
@@ -46,6 +47,7 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
       setStructuring(false);
       setSaving(false);
       setError("");
+      setNotice("");
       setDraft(EMPTY);
       setViewerUrl("");
       setStructured(false);
@@ -56,12 +58,25 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
     if (!transcript.trim()) return;
     setStructuring(true);
     setError("");
+    setNotice("");
     try {
       const result = await structureFinding(transcript.trim());
       setDraft(result);
       setStructured(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to structure");
+      if (e instanceof AiUnavailableError) {
+        // No Gemini key — never a dead end. Seed the description with the raw
+        // notes so nothing is lost and let them edit the fields by hand.
+        setDraft((d) => ({
+          ...d,
+          description: d.description.trim() ? d.description : transcript.trim(),
+        }));
+        setNotice(
+          "AI structuring is off (no Gemini key). Your notes are kept below — edit the fields and add a label to save."
+        );
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to structure");
+      }
     } finally {
       setStructuring(false);
     }
@@ -161,6 +176,12 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
           </div>
         </div>
 
+        {notice && (
+          <p className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
+            {notice}
+          </p>
+        )}
+
         {structuring && (
           <div className="flex items-center gap-3 rounded-xl border border-subtle bg-surface px-4 py-3 text-sm text-secondary">
             <Spinner size="sm" />
@@ -181,6 +202,7 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
                 {...p}
                 placeholder="Short finding name (e.g. ACL tear)"
                 value={draft.label}
+                maxLength={LIMITS.label}
                 onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
               />
             )}
@@ -192,6 +214,7 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
                 rows={3}
                 placeholder="One or two sentences describing the finding…"
                 value={draft.description}
+                maxLength={LIMITS.description}
                 onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
               />
             )}
@@ -204,6 +227,7 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
                 size="sm"
                 variant="ghost"
                 leadingIcon={<PlusIcon />}
+                disabled={draft.teachingPoints.length >= LIMITS.teachingPoints}
                 onClick={() =>
                   setDraft((d) => ({ ...d, teachingPoints: [...d.teachingPoints, ""] }))
                 }
@@ -224,6 +248,7 @@ export function AddFindingDialog({ open, onClose, onCreate }: AddFindingDialogPr
                       placeholder="Teaching point…"
                       aria-label={`Teaching point ${i + 1}`}
                       value={pt}
+                      maxLength={LIMITS.teachingPoint}
                       onChange={(e) => setPoint(i, e.target.value)}
                     />
                     <IconClose

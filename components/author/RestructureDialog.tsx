@@ -17,7 +17,7 @@ import {
   cn,
 } from "@/components/ui";
 import type { StructuredFinding } from "@/lib/types";
-import { structureFinding, type FindingDraft } from "./lib";
+import { AiUnavailableError, structureFinding, type FindingDraft } from "./lib";
 import { SparkleIcon } from "./icons";
 
 interface RestructureDialogProps {
@@ -38,6 +38,7 @@ export function RestructureDialog({
   const [transcript, setTranscript] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [proposal, setProposal] = useState<StructuredFinding | null>(null);
 
   // Reset every time the dialog opens so each run starts clean.
@@ -46,6 +47,7 @@ export function RestructureDialog({
       setTranscript("");
       setBusy(false);
       setError("");
+      setNotice("");
       setProposal(null);
     }
   }, [open]);
@@ -54,11 +56,18 @@ export function RestructureDialog({
     if (!transcript.trim()) return;
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const result = await structureFinding(transcript.trim());
       setProposal(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to structure");
+      if (e instanceof AiUnavailableError) {
+        setNotice(
+          "AI structuring is off (no Gemini key). Close this and edit the finding's fields directly — your text is safe."
+        );
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to structure");
+      }
     } finally {
       setBusy(false);
     }
@@ -119,6 +128,12 @@ export function RestructureDialog({
         {error && (
           <p role="alert" className="text-xs text-danger">
             {error}
+          </p>
+        )}
+
+        {notice && (
+          <p className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
+            {notice}
           </p>
         )}
 

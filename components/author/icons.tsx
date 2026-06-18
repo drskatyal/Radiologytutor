@@ -119,3 +119,29 @@ export function DocIcon() {
     </svg>
   );
 }
+
+export function PlayIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" stroke="none">
+      <path d="M6 4.5v11a1 1 0 001.5.87l9-5.5a1 1 0 000-1.74l-9-5.5A1 1 0 006 4.5z" />
+    </svg>
+  );
+}
+
+export function MicIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <rect x="7.5" y="2.5" width="5" height="9" rx="2.5" />
+      <path d="M4.5 9a5.5 5.5 0 0011 0M10 14.5V17" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function InfoIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <circle cx="10" cy="10" r="7" />
+      <path d="M10 9v4.5M10 6.5h.01" strokeLinecap="round" />
+    </svg>
+  );
+}

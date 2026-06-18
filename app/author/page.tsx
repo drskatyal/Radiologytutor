@@ -11,7 +11,7 @@
 // Every write is optimistic with a toast and rollback on failure. Metadata
 // (title/modality/status) is read-only here — editing it is Admin's job.
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/AppShell";
 import {
@@ -27,6 +27,7 @@ import { CasePicker } from "@/components/author/CasePicker";
 import { FindingsList } from "@/components/author/FindingsList";
 import { AddFindingDialog } from "@/components/author/AddFindingDialog";
 import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
+import { useUnsavedGuard } from "@/components/author/useUnsavedGuard";
 import {
   addFinding,
   deleteFinding,
@@ -35,7 +36,14 @@ import {
   patchFinding,
   reorderFindings,
 } from "@/components/author/lib";
-import { BackIcon, LayersIcon, PlusIcon } from "@/components/author/icons";
+import {
+  BackIcon,
+  InfoIcon,
+  LayersIcon,
+  MicIcon,
+  PlayIcon,
+  PlusIcon,
+} from "@/components/author/icons";
 
 export default function AuthorPage() {
   return (
@@ -129,6 +137,33 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
   const [showRecord, setShowRecord] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Finding | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [undo, setUndo] = useState<{ finding: Finding } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+  }, []);
+
+  // Track which findings have unsaved inline edits so we can guard navigation.
+  const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set());
+  const hasUnsaved = dirtyIds.size > 0;
+  const { confirmDiscard } = useUnsavedGuard(hasUnsaved);
+
+  const onDirtyChange = useCallback((findingId: string, dirty: boolean) => {
+    setDirtyIds((prev) => {
+      const has = prev.has(findingId);
+      if (dirty === has) return prev;
+      const next = new Set(prev);
+      if (dirty) next.add(findingId);
+      else next.delete(findingId);
+      return next;
+    });
+  }, []);
+
+  function leaveTo(path: string) {
+    if (!confirmDiscard()) return;
+    router.push(path);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -167,15 +202,18 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
     try {
       const updated = await patchFinding(caseId, findingId, patch);
       setCaseData(updated);
+      onDirtyChange(findingId, false);
       toast({ variant: "success", title: "Finding saved" });
     } catch (e) {
       setCaseData(snapshot);
       toast({
         variant: "danger",
-        title: "Couldn't save finding",
-        description: e instanceof Error ? e.message : undefined,
+        title: "Couldn't save — your edits are kept",
+        description:
+          (e instanceof Error ? e.message : "Something went wrong.") +
+          " Press Save again to retry.",
       });
-      throw e; // let the card stay in edit mode
+      throw e; // let the card stay in edit mode so nothing is lost
     }
   }
 
@@ -192,8 +230,12 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
     try {
       const updated = await deleteFinding(caseId, target.id);
       setCaseData(updated);
-      toast({ variant: "success", title: "Finding deleted" });
       setDeleteTarget(null);
+      // Offer a brief window to undo (re-create the exact finding).
+      setUndo({ finding: target });
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+      undoTimer.current = setTimeout(() => setUndo(null), 8000);
+      toast({ variant: "success", title: "Finding deleted" });
     } catch (e) {
       setCaseData(snapshot);
       toast({
@@ -203,6 +245,24 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
       });
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function undoDelete() {
+    if (!undo) return;
+    const { finding } = undo;
+    setUndo(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    try {
+      const updated = await addFinding(caseId, finding);
+      setCaseData(updated);
+      toast({ variant: "success", title: "Finding restored" });
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't restore finding",
+        description: e instanceof Error ? e.message : undefined,
+      });
     }
   }
 
@@ -261,11 +321,13 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
       variant="ghost"
       size="sm"
       leadingIcon={<BackIcon />}
-      onClick={() => router.push("/author")}
+      onClick={() => leaveTo("/author")}
     >
       All cases
     </Button>
   );
+
+  const openPreview = () => leaveTo(`/case/${caseData?.caseId ?? ""}`);
 
   if (loading) return <WorkspaceSkeleton back={backButton} />;
 
@@ -278,9 +340,14 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
             title="Couldn't open this case"
             description={error || "The case may have been removed."}
             action={
-              <Button variant="secondary" onClick={() => router.push("/author")}>
-                Back to cases
-              </Button>
+              <div className="flex items-center justify-center gap-2">
+                <Button variant="secondary" onClick={load}>
+                  Try again
+                </Button>
+                <Button variant="ghost" onClick={() => router.push("/author")}>
+                  Back to cases
+                </Button>
+              </div>
             }
           />
         </div>
@@ -301,6 +368,11 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
               </Badge>
             )}
             {caseData.specialty && <Badge variant="neutral">{caseData.specialty}</Badge>}
+            {hasUnsaved && (
+              <Badge variant="warning" dot title="You have unsaved edits">
+                Unsaved edits
+              </Badge>
+            )}
             <span className="text-xs text-muted">·</span>
             <span className="text-xs text-muted">{caseData.caseId}</span>
           </span>
@@ -312,15 +384,16 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => router.push(`/case/${caseData.caseId}`)}
+                leadingIcon={<PlayIcon />}
+                onClick={openPreview}
               >
-                Preview playback
+                Preview as student
               </Button>
             )}
             <Button
               variant="secondary"
               size="sm"
-              leadingIcon={<RecordDotIcon />}
+              leadingIcon={<MicIcon />}
               onClick={() => setShowRecord(true)}
             >
               Record finding
@@ -333,6 +406,46 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
       />
 
       <div className="mx-auto max-w-4xl px-6 py-6">
+        {/* Plain-language guidance — the radiologist always knows the next step. */}
+        <div className="mb-5 flex items-start gap-3 rounded-xl border border-subtle bg-surface px-4 py-3 text-sm text-secondary [&_svg]:h-4 [&_svg]:w-4">
+          <span className="mt-0.5 shrink-0 text-info">
+            <InfoIcon />
+          </span>
+          <p className="leading-relaxed">
+            {findings.length === 0 ? (
+              <>
+                Start by <span className="font-medium text-primary">recording</span> a
+                narrated walk-through, or <span className="font-medium text-primary">adding</span>{" "}
+                a finding and typing it in. You can edit, reorder and preview everything
+                afterwards.
+              </>
+            ) : (
+              <>
+                Click <span className="font-medium text-primary">Edit</span> on a finding to
+                fix its text, drag to reorder the teaching sequence, then{" "}
+                <span className="font-medium text-primary">Preview as student</span> to see the
+                replay. Every change saves automatically.
+              </>
+            )}
+          </p>
+        </div>
+
+        {/* Undo banner after a delete (works without an action-slot toast). */}
+        {undo && (
+          <div className="mb-4 flex animate-fade-up items-center justify-between gap-3 rounded-xl border border-strong bg-elevated px-4 py-3 text-sm">
+            <span className="text-secondary">
+              Deleted{" "}
+              <span className="font-medium text-primary">
+                {undo.finding.label || "finding"}
+              </span>
+              .
+            </span>
+            <Button size="sm" variant="secondary" onClick={undoDelete}>
+              Undo
+            </Button>
+          </div>
+        )}
+
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
             Teaching sequence
@@ -348,12 +461,21 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
         {findings.length === 0 ? (
           <EmptyState
             icon={<LayersIcon />}
-            title="No findings yet"
-            description="Add the first finding to start building this case's teaching sequence."
+            title="No findings yet — record your first read"
+            description="Record a narrated walk-through of the study, or add a finding and type it in. Either way you can refine it afterwards."
             action={
-              <Button leadingIcon={<PlusIcon />} onClick={() => setShowAdd(true)}>
-                Add finding
-              </Button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button leadingIcon={<MicIcon />} onClick={() => setShowRecord(true)}>
+                  Record finding
+                </Button>
+                <Button
+                  variant="secondary"
+                  leadingIcon={<PlusIcon />}
+                  onClick={() => setShowAdd(true)}
+                >
+                  Add finding
+                </Button>
+              </div>
             }
           />
         ) : (
@@ -365,6 +487,8 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
             }
             onMove={move}
             onReorder={applyReorder}
+            onPreview={openPreview}
+            onDirtyChange={onDirtyChange}
           />
         )}
       </div>
@@ -413,15 +537,6 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-
-function RecordDotIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4">
-      <circle cx="10" cy="10" r="7" />
-      <circle cx="10" cy="10" r="3" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
 
 function WorkspaceSkeleton({ back }: { back: React.ReactNode }) {
   return (

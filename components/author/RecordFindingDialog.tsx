@@ -15,7 +15,7 @@
 // The recording surface uses the bundled sample image (the viewer source is a
 // swappable seam); the captured track replays identically wherever it's shown.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Button,
   Badge,
@@ -31,7 +31,7 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
-import { structureFindingFromAudio, uploadAudio } from "./lib";
+import { LIMITS, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
   open: boolean;
@@ -41,6 +41,9 @@ interface RecordFindingDialogProps {
 }
 
 const EMPTY: StructuredFinding = { label: "", description: "", teachingPoints: [] };
+
+/** Mic availability, so we can guide the author instead of failing silently. */
+type MicStatus = "unknown" | "granted" | "denied" | "unsupported";
 
 export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDialogProps) {
   const controls = useRef<CornerstoneControls | null>(null);
@@ -53,16 +56,61 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [mic, setMic] = useState<MicStatus>("unknown");
+
+  // Probe mic availability when the dialog opens so we can guide up front,
+  // never fail silently. The Permissions API isn't everywhere; fall back to
+  // "unknown" (we'll learn the real answer when they hit record).
+  useEffect(() => {
+    if (!open) return;
+    if (!rr.supported) {
+      setMic("unsupported");
+      return;
+    }
+    let alive = true;
+    const perms = (navigator as Navigator & { permissions?: Permissions }).permissions;
+    perms
+      ?.query({ name: "microphone" as PermissionName })
+      .then((status) => {
+        if (!alive) return;
+        setMic(
+          status.state === "granted"
+            ? "granted"
+            : status.state === "denied"
+              ? "denied"
+              : "unknown"
+        );
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [open, rr.supported]);
 
   // Remount the stage per open so the viewer/recorder reset cleanly.
   if (!open) return null;
 
   const hasTrack = !!rr.track && rr.track.events.length > 0;
+  const errors = validateDraft(draft);
+  const canSave = !!draft.label.trim() && !errors.label;
+  const micBlocked = mic === "denied" || mic === "unsupported";
 
   const onReady = (c: CornerstoneControls) => {
     controls.current = c;
     setReady(true);
   };
+
+  async function beginRecording() {
+    setError("");
+    await rr.startRecording();
+    // If a track is in progress now, the mic prompt was accepted (or skipped).
+    // We can't read the recorder's grant directly, so reconcile via Permissions.
+    const perms = (navigator as Navigator & { permissions?: Permissions }).permissions;
+    perms
+      ?.query({ name: "microphone" as PermissionName })
+      .then((s) => setMic(s.state === "denied" ? "denied" : s.state === "granted" ? "granted" : mic))
+      .catch(() => {});
+  }
 
   async function structureFromRecording() {
     if (!rr.audio) {
@@ -88,37 +136,46 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
   }
 
   async function save() {
-    if (!hasTrack) {
-      setError("Record a walk-through first (hold Alt+X).");
+    // Label is the only hard requirement — a recording is encouraged but never
+    // mandatory (mic blocked / nothing captured must still let them save text).
+    if (!draft.label.trim()) {
+      setError("Give the finding a short label, then save.");
       return;
     }
-    if (!draft.label.trim()) {
-      setError("A label is required.");
+    if (errors.label) {
+      setError(errors.label);
       return;
     }
     setSaving(true);
     setError("");
     try {
-      const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-      // Persist the narration audio (if any) and attach its durable URL.
-      if (rr.audio) {
-        try {
-          track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-        } catch {
-          // Non-fatal: keep the silent retrace if the upload fails.
-        }
-      }
-      await onCreate({
+      const base: Partial<Finding> = {
         label: draft.label.trim(),
         description: draft.description.trim(),
         teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
-        // A finding needs a state + marker to be valid; the recorded track is
-        // the real flow, so a placeholder state + centre marker suffice.
+        // A finding needs a state + marker to be valid. When a track exists it's
+        // the real flow; otherwise a placeholder state + centre marker suffice
+        // (the author can record/refine the viewer flow later).
         state: " ",
         marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
-        track,
-        durationMs: track.durationMs,
-      });
+      };
+
+      if (hasTrack) {
+        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
+        // Persist the narration audio (if any) and attach its durable URL.
+        if (rr.audio) {
+          try {
+            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
+          } catch {
+            // Non-fatal: keep the silent retrace if the upload fails — the
+            // recording is never lost, just narrated silently.
+          }
+        }
+        base.track = track;
+        base.durationMs = track.durationMs;
+      }
+
+      await onCreate(base);
       handleClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create finding");
@@ -155,13 +212,29 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
           <Button variant="ghost" onClick={handleClose} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={save} loading={saving} disabled={!hasTrack || !draft.label.trim()}>
+          <Button onClick={save} loading={saving} disabled={!canSave}>
             Save finding
           </Button>
         </>
       }
     >
       <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+        {/* Mic blocked / unsupported — never a dead end: explain the manual path. */}
+        {micBlocked && (
+          <div className="rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-secondary">
+            <p className="font-medium text-warning">
+              {mic === "unsupported"
+                ? "This browser can't record audio"
+                : "Microphone access is blocked"}
+            </p>
+            <p className="mt-1 leading-relaxed">
+              {mic === "unsupported"
+                ? "You can still build this finding — type the label, description and teaching points below and save."
+                : "Allow the microphone in your browser's address-bar settings to narrate, or just type the finding below and save without narration."}
+            </p>
+          </div>
+        )}
+
         {/* Capture stage */}
         <div className="overflow-hidden rounded-xl border border-subtle">
           <RecordStage
@@ -189,7 +262,11 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
               Stop replay
             </Button>
           ) : (
-            <Button size="sm" onClick={() => rr.startRecording()} disabled={!ready}>
+            <Button
+              size="sm"
+              onClick={beginRecording}
+              disabled={!ready || mic === "unsupported"}
+            >
               {hasTrack ? "Re-record" : "Record"}
             </Button>
           )}
@@ -207,17 +284,44 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
             onClick={structureFromRecording}
             loading={structuring}
             disabled={!rr.audio || rr.phase !== "idle"}
+            title={
+              !rr.audio
+                ? "Record some narration first to structure it with AI"
+                : undefined
+            }
           >
             Structure from narration
           </Button>
           {hasTrack && (
-            <Badge variant="success">
+            <Badge variant={rr.audio ? "success" : "neutral"}>
               {(rr.track!.durationMs / 1000).toFixed(1)}s · {rr.track!.events.length} events
               {rr.audio ? " · voice" : " · silent"}
             </Badge>
           )}
-          {!rr.supported && <Badge variant="warning">Mic unavailable</Badge>}
+          {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
+          {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
         </div>
+
+        {/* Hotkey + silent-track hints. */}
+        {rr.phase === "idle" && !micBlocked && (
+          <p className="text-xs text-muted">
+            Tip: navigate the viewer and hold{" "}
+            <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
+              Alt
+            </kbd>
+            {" + "}
+            <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
+              X
+            </kbd>{" "}
+            to record while you talk. The hotkey is ignored while you type.
+          </p>
+        )}
+        {hasTrack && !rr.audio && rr.phase === "idle" && (
+          <p className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
+            Captured a silent walk-through (no narration recorded). You can re-record
+            with audio, or save it as-is and type the teaching text below.
+          </p>
+        )}
 
         {notice && (
           <p className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
@@ -233,6 +337,7 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
                 {...p}
                 placeholder="Short finding name (e.g. ACL tear)"
                 value={draft.label}
+                maxLength={LIMITS.label}
                 onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
               />
             )}
@@ -244,6 +349,7 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
                 rows={3}
                 placeholder="One or two sentences describing the finding…"
                 value={draft.description}
+                maxLength={LIMITS.description}
                 onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
               />
             )}
@@ -255,6 +361,7 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
               <Button
                 size="sm"
                 variant="ghost"
+                disabled={draft.teachingPoints.length >= LIMITS.teachingPoints}
                 onClick={() =>
                   setDraft((d) => ({ ...d, teachingPoints: [...d.teachingPoints, ""] }))
                 }
@@ -275,6 +382,7 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
                       placeholder="Teaching point…"
                       aria-label={`Teaching point ${i + 1}`}
                       value={pt}
+                      maxLength={LIMITS.teachingPoint}
                       onChange={(e) => setPoint(i, e.target.value)}
                     />
                     <button
