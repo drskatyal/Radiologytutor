@@ -1,0 +1,65 @@
+{
+  "caseId": "knee-acl-01",
+  "title": "Knee MRI — ACL tear",
+  "modality": "MR",
+  "pacsbinBaseUrl": "https://pacsbin.com/viewer/REPLACE_WITH_REAL_TOKEN",
+  "findings": [
+    {
+      "id": "f1",
+      "label": "ACL tear",
+      "description": "Complete discontinuity of the ACL fibres at the femoral attachment with surrounding oedema.",
+      "teachingPoints": [
+        "Empty notch sign",
+        "Check for pivot-shift bone bruise pattern"
+      ],
+      "viewport": {
+        "layout": "1x1",
+        "s1": "SAG-PD-FS",
+        "i1": "18",
+        "ww1": 800,
+        "wc1": 400,
+        "scale1": 1.75,
+        "translation1": "49.6,-35.9"
+      },
+      "marker": { "x_pct": 0.48, "y_pct": 0.52, "shape": "circle" },
+      "order": 1
+    },
+    {
+      "id": "f2",
+      "label": "Pivot-shift bone bruise",
+      "description": "Bone marrow oedema at the lateral femoral condyle and posterolateral tibial plateau, the classic pivot-shift contusion pattern.",
+      "teachingPoints": [
+        "Lateral femoral condyle + posterolateral tibia",
+        "Strongly associated with ACL rupture"
+      ],
+      "viewport": {
+        "layout": "1x1",
+        "s1": "SAG-PD-FS",
+        "i1": "26",
+        "ww1": 900,
+        "wc1": 450,
+        "scale1": 1.4,
+        "translation1": "20.0,-10.0"
+      },
+      "marker": { "x_pct": 0.62, "y_pct": 0.4, "shape": "circle" },
+      "order": 2
+    },
+    {
+      "id": "f3",
+      "label": "Joint effusion",
+      "description": "Moderate suprapatellar joint effusion, a non-specific but supportive sign of acute internal derangement.",
+      "teachingPoints": ["Assess effusion on the sagittal and axial fluid-sensitive sequences"],
+      "viewport": {
+        "layout": "1x1",
+        "s1": "SAG-PD-FS",
+        "i1": "12",
+        "ww1": 800,
+        "wc1": 400,
+        "scale1": 1.0,
+        "translation1": "0,0"
+      },
+      "marker": { "x_pct": 0.35, "y_pct": 0.25, "shape": "arrow" },
+      "order": 3
+    }
+  ]
+}
