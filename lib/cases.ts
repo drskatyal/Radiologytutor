@@ -105,16 +105,17 @@ function ensureDataDir(): Promise<void> {
  */
 async function seedIfEmpty(): Promise<void> {
   try {
-    const existing = (await fs.readdir(DATA_DIR)).filter((f) => f.endsWith(".json"));
-    if (existing.length > 0) return;
-    // Cases live at the root.
-    await copyJsonFiles(SEED_DIR, DATA_DIR);
-    // Entity subdirectories mirror the store layout.
+    // Cases live at the DATA_DIR root — seed only if there are none.
+    const rootJson = (await fs.readdir(DATA_DIR)).filter((f) => f.endsWith(".json"));
+    if (rootJson.length === 0) await copyJsonFiles(SEED_DIR, DATA_DIR);
+    // Each entity subdir seeds INDEPENDENTLY if it is empty — so a store that
+    // predates a collection (e.g. an existing volume from before courses
+    // existed) still gets that collection's seed data on next boot.
     for (const sub of ["patients", "studies", "authors", "courses", "playlists"] as const) {
-      const src = path.join(SEED_DIR, sub);
       const dst = path.join(DATA_DIR, sub);
       await fs.mkdir(dst, { recursive: true });
-      await copyJsonFiles(src, dst);
+      const existing = (await fs.readdir(dst)).filter((f) => f.endsWith(".json"));
+      if (existing.length === 0) await copyJsonFiles(path.join(SEED_DIR, sub), dst);
     }
   } catch {
     // Best-effort seeding; never block reads/writes.
@@ -267,9 +268,9 @@ function ensureMongoReady(): Promise<void> {
 /** Seed an empty Mongo `cases` collection from committed `/seed` data. */
 async function seedMongoIfEmpty(): Promise<void> {
   const db = await getDb();
-  // Mirror JsonCollection: "empty" is decided by the cases collection.
-  const count = await db.collection("cases").estimatedDocumentCount();
-  if (count > 0) return;
+  // Seed each collection INDEPENDENTLY if it is empty — so a DB that predates a
+  // collection (e.g. courses/playlists added later) still gets its seed data,
+  // while never duplicating an already-populated collection.
   for (const name of [
     "cases",
     "patients",
@@ -278,6 +279,8 @@ async function seedMongoIfEmpty(): Promise<void> {
     "courses",
     "playlists",
   ] as const) {
+    const count = await db.collection(name).estimatedDocumentCount();
+    if (count > 0) continue;
     const records = await readSeedRecords<{ id: string }>(name);
     if (records.length === 0) continue;
     const docs = records.map(({ id, ...rest }) => ({ _id: id, ...rest }));
