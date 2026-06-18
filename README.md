@@ -41,10 +41,11 @@ npm run dev                  # http://localhost:3000
 
 Set in `.env.local`:
 
-- `GEMINI_API_KEY` — from https://aistudio.google.com/apikey (required)
+- `GEMINI_API_KEY` — from https://aistudio.google.com/apikey (required). One key
+  powers STT, the web-grounded tutor, and text-to-speech.
 - `GEMINI_MODEL` — Flash model id (default `gemini-flash-latest`)
-- `ELEVENLABS_API_KEY` — narration voice (optional; falls back to browser TTS)
-- `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL` — voice + model selection
+- `GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE` — tutor voice (defaults
+  `gemini-2.5-flash-preview-tts` / `Kore`; falls back to browser TTS if absent)
 
 ## Routes
 
