@@ -2,8 +2,11 @@
 
 // A compact, selectable list of series within a study. Clicking a row toggles
 // whether the case uses that series; the radio marks the primary series (kept
-// first in the case's seriesInstanceUIDs so the viewer opens on it).
+// first in the case's seriesInstanceUIDs so the viewer opens on it). When a
+// study + first-instance UID are known, each row shows a small cover thumbnail
+// rendered straight from the DICOMweb proxy.
 
+import { useState } from "react";
 import { Badge } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 
@@ -12,6 +15,44 @@ export interface SeriesOption {
   label: string;
   modality?: string;
   instanceCount?: number;
+  /** Parent study UID + first SOP UID — together enough for a cover thumbnail. */
+  studyInstanceUID?: string;
+  firstInstanceUID?: string;
+}
+
+/** WADO-RS rendered cover for the series' first instance (small JPEG). */
+function thumbUrl(o: SeriesOption): string | null {
+  if (!o.studyInstanceUID || !o.firstInstanceUID) return null;
+  return (
+    `/api/dicomweb/studies/${encodeURIComponent(o.studyInstanceUID)}` +
+    `/series/${encodeURIComponent(o.seriesInstanceUID)}` +
+    `/instances/${encodeURIComponent(o.firstInstanceUID)}/rendered?viewport=96,96`
+  );
+}
+
+function SeriesThumb({ option }: { option: SeriesOption }) {
+  const [errored, setErrored] = useState(false);
+  const url = thumbUrl(option);
+  const showImage = url && !errored;
+  return (
+    <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-md border border-subtle bg-black">
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt=""
+          loading="lazy"
+          className="h-full w-full object-cover"
+          onError={() => setErrored(true)}
+        />
+      ) : (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-5 w-5 text-muted">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path d="M3 15l4-4 3 3 4-5 7 7" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+    </div>
+  );
 }
 
 export function SeriesPicker({
@@ -60,6 +101,7 @@ export function SeriesPicker({
                   className="h-4 w-4 shrink-0 accent-accent"
                   aria-label={`Use series ${s.label}`}
                 />
+                <SeriesThumb option={s} />
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium text-primary">
                     {s.label}

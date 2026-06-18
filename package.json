@@ -10,6 +10,7 @@
     "test": "tsx --test lib/*.test.ts"
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
     "@cornerstonejs/core": "^5.0.10",
     "@cornerstonejs/dicom-image-loader": "^5.0.10",
     "@cornerstonejs/tools": "^5.0.10",

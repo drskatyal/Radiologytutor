@@ -17,14 +17,39 @@ export interface AdminCaseRow extends Case {
 export interface UploadedSeries {
   studyInstanceUID: string;
   seriesInstanceUID: string;
-  description: string;
+  studyDescription: string;
+  seriesDescription?: string;
+  modality?: string;
+  studyDate?: string;
+  /** Internal Orthanc handle for the parent study (server-only truth). */
+  orthancStudyId?: string;
+  /** First SOP Instance UID in the series — enough for a cover thumbnail. */
+  firstInstanceUID?: string;
   instances: number;
 }
 
+/** A file that was rejected or failed to store, with a human-readable reason. */
+export interface SkippedFile {
+  name: string;
+  reason: string;
+}
+
+/** Result of uploading one batch of files (one POST /api/upload call). */
 export interface UploadResult {
   stored: number;
   series: UploadedSeries[];
-  errors: string[];
+  /** Files that reached the server but failed to store, with reasons. */
+  failed: SkippedFile[];
+  /** Files the server recognized as non-DICOM / junk and ignored. */
+  skipped: SkippedFile[];
+}
+
+/** Raised by uploadDicom when the imaging archive isn't configured (HTTP 503). */
+export class OrthancUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OrthancUnavailableError";
+  }
 }
 
 /** Compact series metadata (mirrors SeriesMeta from lib/orthanc). */

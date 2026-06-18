@@ -3,21 +3,31 @@
 // Create-case flow: upload one or more DICOM studies → set title / modality /
 // specialty / patient → pick each study's series + primary + role → create the
 // Case (with its Patient + Studies + study links) via the admin API.
+//
+// Designed for a non-technical author (a radiologist, not an engineer):
+//   • imaging is optional — if the archive isn't connected, the rest of the
+//     flow still works and imaging can be linked later;
+//   • uploaded instances are grouped study→series automatically and reviewed
+//     with thumbnails, modality, and image counts;
+//   • re-uploading the same study (same StudyInstanceUID) merges, never dupes;
+//   • title/modality/patient are validated inline with helpful defaults;
+//   • on success we confirm and offer an obvious next step.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Badge,
   Button,
   Field,
+  IconButton,
   Input,
   Modal,
   Select,
   useToast,
 } from "@/components/ui";
-import { IconButton } from "@/components/ui";
 import { DicomDropzone } from "./DicomDropzone";
 import { SeriesPicker, type SeriesOption } from "./SeriesPicker";
-import { createCase, type CreateCaseInput } from "./api";
+import { createCase, fetchOrthancStatus, type CreateCaseInput } from "./api";
 import {
   MODALITIES,
   SPECIALTIES,
@@ -28,12 +38,14 @@ import {
   type UploadResult,
 } from "./types";
 
-/** One uploaded study staged for the case (grouped from an upload result). */
+/** One uploaded study staged for the case (grouped from upload result[s]). */
 interface StagedStudy {
   key: string;
   studyInstanceUID: string;
   description: string;
   modality?: string;
+  studyDate?: string;
+  orthancStudyId?: string;
   series: SeriesOption[];
   /** Series UIDs the case uses (first = primary). */
   selected: string[];
@@ -41,36 +53,72 @@ interface StagedStudy {
   role: StudyRole;
 }
 
-/** Group a raw upload result into one staged study per StudyInstanceUID. */
-function stageFromUpload(result: UploadResult): StagedStudy[] {
-  const byStudy = new Map<string, StagedStudy>();
+/**
+ * Merge an upload result (one batch) into the staged-studies list, grouping by
+ * StudyInstanceUID and by SeriesInstanceUID so multiple batches of the SAME
+ * study/series accumulate instead of duplicating. Returns the next list plus
+ * the first newly-seen study (for metadata auto-fill).
+ */
+function mergeUpload(
+  prev: StagedStudy[],
+  result: UploadResult
+): { next: StagedStudy[]; firstNewStudy?: StagedStudy } {
+  const next = prev.map((s) => ({ ...s, series: [...s.series], selected: [...s.selected] }));
+  const byUid = new Map(next.map((s) => [s.studyInstanceUID, s]));
+  let firstNewStudy: StagedStudy | undefined;
+
   for (const s of result.series) {
-    let staged = byStudy.get(s.studyInstanceUID);
-    if (!staged) {
-      staged = {
+    let study = byUid.get(s.studyInstanceUID);
+    if (!study) {
+      study = {
         key: s.studyInstanceUID,
         studyInstanceUID: s.studyInstanceUID,
-        description: s.description || "Uploaded study",
+        description: s.studyDescription || "Uploaded study",
+        modality: s.modality,
+        studyDate: s.studyDate,
+        orthancStudyId: s.orthancStudyId,
         series: [],
         selected: [],
-        role: "current",
+        // First study uploaded is "current"; later ones default to "prior".
+        role: next.length === 0 ? "current" : "prior",
       };
-      byStudy.set(s.studyInstanceUID, staged);
+      byUid.set(s.studyInstanceUID, study);
+      next.push(study);
+      if (!firstNewStudy) firstNewStudy = study;
     }
-    staged.series.push({
-      seriesInstanceUID: s.seriesInstanceUID,
-      label: s.description || `Series …${s.seriesInstanceUID.slice(-6)}`,
-      instanceCount: s.instances,
-    });
-  }
-  // Default: select the first series of each study as primary.
-  for (const staged of byStudy.values()) {
-    if (staged.series[0]) {
-      staged.selected = [staged.series[0].seriesInstanceUID];
-      staged.primary = staged.series[0].seriesInstanceUID;
+    if (!study.orthancStudyId && s.orthancStudyId) study.orthancStudyId = s.orthancStudyId;
+    if (!study.modality && s.modality) study.modality = s.modality;
+    if (!study.studyDate && s.studyDate) study.studyDate = s.studyDate;
+
+    const existing = study.series.find((x) => x.seriesInstanceUID === s.seriesInstanceUID);
+    if (existing) {
+      existing.instanceCount = (existing.instanceCount ?? 0) + s.instances;
+      if (!existing.modality && s.modality) existing.modality = s.modality;
+      if (!existing.firstInstanceUID && s.firstInstanceUID)
+        existing.firstInstanceUID = s.firstInstanceUID;
+    } else {
+      study.series.push({
+        seriesInstanceUID: s.seriesInstanceUID,
+        label:
+          s.seriesDescription ||
+          s.studyDescription ||
+          `Series …${s.seriesInstanceUID.slice(-6)}`,
+        modality: s.modality,
+        instanceCount: s.instances,
+        studyInstanceUID: s.studyInstanceUID,
+        firstInstanceUID: s.firstInstanceUID,
+      });
     }
   }
-  return [...byStudy.values()];
+
+  // Ensure every study has a primary/selection default (first series).
+  for (const study of next) {
+    if (study.selected.length === 0 && study.series[0]) {
+      study.selected = [study.series[0].seriesInstanceUID];
+      study.primary = study.series[0].seriesInstanceUID;
+    }
+  }
+  return { next, firstNewStudy };
 }
 
 export function CreateCaseModal({
@@ -85,7 +133,10 @@ export function CreateCaseModal({
   onCreated: (created: Case) => void;
 }) {
   const { toast } = useToast();
+  const router = useRouter();
+
   const [title, setTitle] = useState("");
+  const [titleTouched, setTitleTouched] = useState(false);
   const [modality, setModality] = useState("CT");
   const [specialty, setSpecialty] = useState("");
   const [patientMode, setPatientMode] = useState<"new" | "existing">("new");
@@ -93,9 +144,24 @@ export function CreateCaseModal({
   const [patientId, setPatientId] = useState("");
   const [studies, setStudies] = useState<StagedStudy[]>([]);
   const [saving, setSaving] = useState(false);
+  /** null = unknown/checking; true/false once the status route answers. */
+  const [imagingOk, setImagingOk] = useState<boolean | null>(null);
+  const [created, setCreated] = useState<Case | null>(null);
+
+  // Check imaging availability once the dialog opens, so we can show the calm
+  // "not connected" path instead of letting an upload fail loudly.
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    fetchOrthancStatus().then((ok) => active && setImagingOk(ok));
+    return () => {
+      active = false;
+    };
+  }, [open]);
 
   function reset() {
     setTitle("");
+    setTitleTouched(false);
     setModality("CT");
     setSpecialty("");
     setPatientMode("new");
@@ -103,6 +169,7 @@ export function CreateCaseModal({
     setPatientId("");
     setStudies([]);
     setSaving(false);
+    setCreated(null);
   }
 
   function close() {
@@ -112,18 +179,12 @@ export function CreateCaseModal({
   }
 
   function handleUploaded(result: UploadResult) {
-    const staged = stageFromUpload(result);
     setStudies((prev) => {
-      // Dedupe by studyInstanceUID; later studies become priors by default.
-      const existing = new Set(prev.map((s) => s.studyInstanceUID));
-      const additions = staged
-        .filter((s) => !existing.has(s.studyInstanceUID))
-        .map((s) => ({ ...s, role: prev.length ? ("prior" as StudyRole) : s.role }));
-      const next = [...prev, ...additions];
-      // Auto-fill modality + title from the first study if still default/empty.
-      if (additions[0]) {
-        if (!title.trim()) setTitle(additions[0].description);
-        if (additions[0].modality) setModality(additions[0].modality);
+      const { next, firstNewStudy } = mergeUpload(prev, result);
+      if (firstNewStudy) {
+        // Auto-fill title + modality from the first study when still untouched.
+        if (!titleTouched && !title.trim()) setTitle(firstNewStudy.description);
+        if (firstNewStudy.modality) setModality(firstNewStudy.modality);
       }
       return next;
     });
@@ -153,6 +214,13 @@ export function CreateCaseModal({
     updateStudy(key, { primary: uid });
   }
 
+  const titleError =
+    titleTouched && !title.trim() ? "Give the case a short, descriptive title." : undefined;
+  const patientError =
+    patientMode === "existing" && patients.length === 0
+      ? "No patients yet — create a new one above."
+      : undefined;
+
   const canSubmit = useMemo(() => {
     if (!title.trim()) return false;
     if (patientMode === "new" && !patientName.trim()) return false;
@@ -174,6 +242,8 @@ export function CreateCaseModal({
           seriesInstanceUIDs: s.series.map((x) => x.seriesInstanceUID),
           description: s.description,
           modality: s.modality,
+          studyDate: s.studyDate,
+          orthancStudyId: s.orthancStudyId,
           caseSeriesInstanceUIDs: ordered,
           role: s.role,
         };
@@ -188,14 +258,16 @@ export function CreateCaseModal({
           : { patientName: patientName.trim() }),
         studies: studyPayload.length ? studyPayload : undefined,
       };
-      const created = await createCase(input);
+      const result = await createCase(input);
       toast({
         title: "Case created",
-        description: `"${created.title}" saved as a draft.`,
+        description: `"${result.title}" saved as a draft.`,
         variant: "success",
       });
-      reset();
-      onCreated(created);
+      onCreated(result);
+      // Switch to the success step (don't reset yet — we need the new id).
+      setCreated(result);
+      setSaving(false);
     } catch (e) {
       toast({
         title: "Could not create case",
@@ -206,6 +278,63 @@ export function CreateCaseModal({
     }
   }
 
+  const totalImages = studies.reduce(
+    (n, s) => n + s.series.reduce((m, x) => m + (x.instanceCount ?? 0), 0),
+    0
+  );
+
+  // -- Success step -----------------------------------------------------------
+  if (created) {
+    return (
+      <Modal
+        open={open}
+        onClose={close}
+        size="md"
+        title="Case created"
+        footer={
+          <>
+            <Button variant="ghost" onClick={close}>
+              Close
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                close();
+                router.push(`/case/${encodeURIComponent(created.caseId)}`);
+              }}
+            >
+              Open case
+            </Button>
+            <Button
+              onClick={() => {
+                close();
+                router.push(`/author?case=${encodeURIComponent(created.caseId)}`);
+              }}
+            >
+              Add findings
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col items-center gap-3 py-2 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/15 text-success">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-6 w-6">
+              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <p className="text-sm text-secondary">
+            <span className="font-medium text-primary">{created.title}</span> is saved as a draft.
+          </p>
+          <p className="max-w-sm text-xs text-muted">
+            Next, record the teaching walk-through and mark each finding in the author
+            workspace. The case stays hidden from students until you publish it.
+          </p>
+        </div>
+      </Modal>
+    );
+  }
+
+  // -- Create form ------------------------------------------------------------
   return (
     <Modal
       open={open}
@@ -227,10 +356,38 @@ export function CreateCaseModal({
       <div className="flex max-h-[65vh] flex-col gap-6 overflow-y-auto pr-1">
         {/* Step 1 — imaging */}
         <section className="flex flex-col gap-3">
-          <SectionLabel step={1} title="Imaging" />
-          <DicomDropzone onUploaded={handleUploaded} disabled={saving} />
+          <SectionLabel step={1} title="Imaging" optional />
+          {imagingOk === false ? (
+            <div className="flex items-start gap-3 rounded-xl border border-info/30 bg-info/5 px-4 py-3">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="mt-0.5 h-4 w-4 shrink-0 text-info">
+                <circle cx="10" cy="10" r="8" />
+                <path d="M10 9v5M10 6h.01" strokeLinecap="round" />
+              </svg>
+              <div className="text-xs leading-relaxed text-secondary">
+                <p className="font-medium text-primary">Imaging archive not connected</p>
+                <p className="mt-0.5 text-muted">
+                  You can still create this case now and link a study later — just fill in
+                  the details below and click Create case.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <DicomDropzone
+              onUploaded={handleUploaded}
+              onImagingUnavailable={() => setImagingOk(false)}
+              disabled={saving}
+            />
+          )}
+
           {studies.length > 0 && (
             <div className="flex flex-col gap-3">
+              {totalImages > 0 && (
+                <p className="text-xs text-muted">
+                  {studies.length} stud{studies.length === 1 ? "y" : "ies"} ·{" "}
+                  <span className="tabular-nums">{totalImages}</span> image
+                  {totalImages === 1 ? "" : "s"} uploaded
+                </p>
+              )}
               {studies.map((s, i) => (
                 <div
                   key={s.key}
@@ -241,8 +398,11 @@ export function CreateCaseModal({
                       <div className="truncate text-sm font-medium text-primary">
                         {s.description}
                       </div>
-                      <div className="mt-0.5 text-xs text-muted">
-                        {s.series.length} series · {s.selected.length} selected
+                      <div className="mt-0.5 flex items-center gap-2 text-xs text-muted">
+                        <span>
+                          {s.series.length} series · {s.selected.length} selected
+                        </span>
+                        {s.modality && <span>· {s.modality}</span>}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
@@ -281,9 +441,9 @@ export function CreateCaseModal({
                     onToggle={(uid) => toggleSeries(s.key, uid)}
                     onSetPrimary={(uid) => setPrimary(s.key, uid)}
                   />
-                  {i === 0 && studies.length > 1 && (
+                  {i === 0 && studies.length === 1 && imagingOk !== false && (
                     <p className="mt-2 text-xs text-muted">
-                      Tip: upload another study to add a prior or comparison.
+                      Tip: upload another study above to add a prior or comparison.
                     </p>
                   )}
                 </div>
@@ -295,18 +455,20 @@ export function CreateCaseModal({
         {/* Step 2 — metadata */}
         <section className="flex flex-col gap-4">
           <SectionLabel step={2} title="Case details" />
-          <Field label="Title" required>
+          <Field label="Title" required error={titleError}>
             {(p) => (
               <Input
                 {...p}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
+                onBlur={() => setTitleTouched(true)}
                 placeholder="e.g. Acute appendicitis on CT"
+                autoFocus
               />
             )}
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Modality">
+            <Field label="Modality" hint="Auto-filled from the study when known.">
               {(p) => (
                 <Select
                   {...p}
@@ -374,7 +536,7 @@ export function CreateCaseModal({
               )}
             </Field>
           ) : (
-            <Field label="Patient" required>
+            <Field label="Patient" required error={patientError}>
               {(p) => (
                 <Select
                   {...p}
@@ -391,7 +553,7 @@ export function CreateCaseModal({
               )}
             </Field>
           )}
-          {studies.length === 0 && (
+          {studies.length === 0 && imagingOk !== false && (
             <Badge variant="info" className="self-start">
               You can create the case now and link imaging later.
             </Badge>
@@ -402,13 +564,22 @@ export function CreateCaseModal({
   );
 }
 
-function SectionLabel({ step, title }: { step: number; title: string }) {
+function SectionLabel({
+  step,
+  title,
+  optional,
+}: {
+  step: number;
+  title: string;
+  optional?: boolean;
+}) {
   return (
     <div className="flex items-center gap-2">
       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold tabular-nums text-accent">
         {step}
       </span>
       <h3 className="text-sm font-semibold text-primary">{title}</h3>
+      {optional && <span className="text-xs text-muted">Optional</span>}
     </div>
   );
 }

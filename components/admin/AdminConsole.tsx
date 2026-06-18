@@ -232,8 +232,9 @@ export function AdminConsole() {
         onClose={() => setCreateOpen(false)}
         patients={patients}
         onCreated={() => {
-          setCreateOpen(false);
-          setLoading(true);
+          // The modal shows its own success step + next-step actions and closes
+          // itself; we just refresh the list (and patients, for new ones) in the
+          // background so the new draft appears.
           reload();
         }}
       />
