@@ -1,18 +1,47 @@
 // ============================================================================
 // lib/cases.ts
 //
-// Demo persistence: one JSON file per case under /data. Server-only (uses fs).
-// Swap this module for a real DB later without touching callers.
+// Demo persistence: one JSON file per case. Server-only (uses fs).
+//
+// The store directory is DATA_DIR (env-overridable) so it can point at a
+// Railway persistent Volume — that survives redeploys with no database. On an
+// empty store we seed from the committed `/seed` cases so demos always have
+// sample data. Swap this whole module for MongoDB later without touching callers.
 // ============================================================================
 
 import { promises as fs } from "fs";
 import path from "path";
 import type { CaseData, Finding } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// Mount a Railway Volume here (e.g. /app/data) and the JSON store persists.
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+// Committed sample cases used to seed an empty store.
+const SEED_DIR = path.join(process.cwd(), "seed");
+
+let seeded = false;
 
 async function ensureDataDir(): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });
+  if (!seeded) {
+    seeded = true;
+    await seedIfEmpty();
+  }
+}
+
+/** Copy committed seed cases into the store the first time it's empty. */
+async function seedIfEmpty(): Promise<void> {
+  try {
+    const existing = (await fs.readdir(DATA_DIR)).filter((f) => f.endsWith(".json"));
+    if (existing.length > 0) return;
+    const seeds = await fs.readdir(SEED_DIR).catch(() => [] as string[]);
+    for (const f of seeds) {
+      if (f.endsWith(".json")) {
+        await fs.copyFile(path.join(SEED_DIR, f), path.join(DATA_DIR, f));
+      }
+    }
+  } catch {
+    // Best-effort seeding; never block reads/writes.
+  }
 }
 
 function caseFilePath(caseId: string): string {
