@@ -1,36 +1,37 @@
 "use client";
 
 // Self-hosted Cornerstone3D stack viewer — the "Our Viewer" half of the
-// Pacsbin ⇄ Ours toggle. Renders a DICOM series from any DICOMweb (WADO-RS)
-// source with scroll / window-level / zoom / pan tools.
+// Pacsbin ⇄ Ours toggle. Renders a DICOM series with scroll / window-level /
+// zoom / pan tools.
 //
-// Must be loaded with `next/dynamic({ ssr:false })` — it uses WebGL, the DOM,
-// and web workers, none of which exist during server rendering.
+// Two source modes:
+//   - "wadouri": load a DICOM file bundled in /public (no server, no CORS) —
+//     this is the default so a case ALWAYS renders.
+//   - "wadors":  load a series from a DICOMweb server (our future Orthanc, or
+//     a public demo source).
+//
+// Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
 import { useEffect, useRef, useState } from "react";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
+import { BUNDLED_CASE, type ViewerSource } from "../lib/viewerSource";
 
-// A public DICOMweb CT used by the official Cornerstone examples — lets us spike
-// the viewer with a real study before our own Orthanc backend exists.
-export const DEMO_SOURCE = {
-  wadoRsRoot: "https://d3t6nz73ql33tx.cloudfront.net/dicomweb",
-  StudyInstanceUID:
-    "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463",
-  SeriesInstanceUID:
-    "1.3.6.1.4.1.14519.5.2.1.7009.2403.226151125820845824875394858561",
-};
-
-export interface CornerstoneViewerProps {
-  wadoRsRoot?: string;
-  StudyInstanceUID?: string;
-  SeriesInstanceUID?: string;
+async function buildImageIds(source: ViewerSource): Promise<string[]> {
+  if (source.kind === "wadouri") {
+    // frame index is 1-based in the wadouri imageId (loader subtracts 1).
+    return Array.from(
+      { length: source.frames },
+      (_, i) => `wadouri:${source.url}?frame=${i + 1}`
+    );
+  }
+  return createImageIdsAndCacheMetaData(source);
 }
 
 export default function CornerstoneViewer({
-  wadoRsRoot = DEMO_SOURCE.wadoRsRoot,
-  StudyInstanceUID = DEMO_SOURCE.StudyInstanceUID,
-  SeriesInstanceUID = DEMO_SOURCE.SeriesInstanceUID,
-}: CornerstoneViewerProps) {
+  source = BUNDLED_CASE,
+}: {
+  source?: ViewerSource;
+}) {
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   const [status, setStatus] = useState("Initializing viewer…");
@@ -44,7 +45,6 @@ export default function CornerstoneViewer({
       started.current = true;
 
       try {
-        // Dynamic imports keep Cornerstone out of the server bundle entirely.
         const core = await import("@cornerstonejs/core");
         const loader = await import("@cornerstonejs/dicom-image-loader");
         const tools = await import("@cornerstonejs/tools");
@@ -54,11 +54,7 @@ export default function CornerstoneViewer({
         await loader.init({ maxWebWorkers: 1 });
 
         setStatus("Loading series…");
-        const imageIds = await createImageIdsAndCacheMetaData({
-          StudyInstanceUID,
-          SeriesInstanceUID,
-          wadoRsRoot,
-        });
+        const imageIds = await buildImageIds(source);
         if (disposed || !elementRef.current) return;
 
         const renderingEngineId = "flowrad-engine";
@@ -117,7 +113,7 @@ export default function CornerstoneViewer({
           });
         }
 
-        setStatus(`${imageIds.length} images — scroll to navigate`);
+        setStatus(`${imageIds.length} images — scroll to navigate, drag to window-level`);
       } catch (err) {
         console.error("CornerstoneViewer error", err);
         setStatus(`Error: ${(err as Error).message}`);
@@ -132,7 +128,7 @@ export default function CornerstoneViewer({
         /* ignore */
       }
     };
-  }, [wadoRsRoot, StudyInstanceUID, SeriesInstanceUID]);
+  }, [source]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
