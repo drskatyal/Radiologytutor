@@ -6,7 +6,7 @@
 // a public demo CT; once Orthanc + per-case DICOM UIDs land, both sides show
 // the SAME case for a true side-by-side comparison.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { BUNDLED_CASE, PUBLIC_DEMO, type ViewerSource } from "../../lib/viewerSource";
 
@@ -23,6 +23,23 @@ type Mode = "pacsbin" | "cornerstone";
 export default function CornerstoneSpikePage() {
   const [mode, setMode] = useState<Mode>("cornerstone");
   const [source, setSource] = useState<ViewerSource>(BUNDLED_CASE);
+
+  // If opened with ?study=&series= (e.g. from the upload page), load that
+  // uploaded study from Orthanc via the same-origin DICOMweb proxy.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const study = p.get("study");
+    const series = p.get("series");
+    if (study && series) {
+      setSource({
+        kind: "wadors",
+        wadoRsRoot: p.get("root") || "/api/dicomweb",
+        StudyInstanceUID: study,
+        SeriesInstanceUID: series,
+      });
+      setMode("cornerstone");
+    }
+  }, []);
 
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, color: "#e8eaed" }}>
