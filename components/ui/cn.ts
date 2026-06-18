@@ -1,26 +1,17 @@
 /**
- * Tiny className combiner. Joins truthy values with a space and dedupes
- * whitespace. We avoid a dependency (clsx/tailwind-merge) to keep the
- * design-system foundation self-contained.
+ * Class-name combiner used across the design system.
+ *
+ * Built on `clsx` (conditional joins) + `tailwind-merge` (last-wins conflict
+ * resolution) so component callers can safely override Tailwind utilities via a
+ * `className` prop without fighting specificity. The exported `ClassValue` type
+ * and `cn(...)` signature are unchanged from the original hand-rolled helper, so
+ * every existing import keeps working.
  */
-export type ClassValue =
-  | string
-  | number
-  | null
-  | false
-  | undefined
-  | ClassValue[];
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export type { ClassValue };
 
 export function cn(...inputs: ClassValue[]): string {
-  const out: string[] = [];
-  for (const input of inputs) {
-    if (!input) continue;
-    if (Array.isArray(input)) {
-      const inner = cn(...input);
-      if (inner) out.push(inner);
-    } else {
-      out.push(String(input));
-    }
-  }
-  return out.join(" ");
+  return twMerge(clsx(inputs));
 }

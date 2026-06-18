@@ -18,10 +18,10 @@ export function Card({
   return (
     <div
       className={cn(
-        "rounded-xl border border-subtle bg-elevated shadow-sm",
+        "relative rounded-xl border border-subtle bg-elevated shadow-sm surface-hairline",
         padded && "p-5",
         interactive &&
-          "transition-colors duration-150 hover:border-strong hover:bg-elevated/70",
+          "transition-[transform,border-color,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-md",
         className
       )}
       {...props}

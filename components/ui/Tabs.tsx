@@ -1,5 +1,8 @@
 "use client";
 
+import { useId } from "react";
+import * as TabsPrimitive from "@radix-ui/react-tabs";
+import { motion } from "framer-motion";
 import { cn } from "./cn";
 
 export interface TabItem {
@@ -20,7 +23,11 @@ export interface TabsProps {
   variant?: "segmented" | "underline";
 }
 
-/** Controlled tab switcher. Roving via native button focus + arrow keys. */
+/**
+ * Controlled tab switcher built on Radix Tabs (roving focus, arrow-key nav,
+ * ARIA). A shared `layoutId` gives the active state a smooth sliding indicator.
+ * Same controlled `TabsProps` API as before.
+ */
 export function Tabs({
   items,
   value,
@@ -28,99 +35,84 @@ export function Tabs({
   className,
   variant = "segmented",
 }: TabsProps) {
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    const idx = items.findIndex((i) => i.value === value);
-    const dir = e.key === "ArrowRight" ? 1 : -1;
-    for (let n = 1; n <= items.length; n++) {
-      const next = items[(idx + dir * n + items.length * n) % items.length];
-      if (next && !next.disabled) {
-        onValueChange(next.value);
-        break;
-      }
-    }
-  };
+  const isUnderline = variant === "underline";
+  // Scope the sliding-indicator animation to this instance so multiple Tabs on
+  // one page never share (and fight over) a layout animation.
+  const layoutGroup = useId();
 
-  if (variant === "underline") {
-    return (
-      <div
-        role="tablist"
-        onKeyDown={onKeyDown}
-        className={cn("flex items-center gap-1 border-b border-subtle", className)}
+  return (
+    <TabsPrimitive.Root
+      value={value}
+      onValueChange={onValueChange}
+      activationMode="automatic"
+    >
+      <TabsPrimitive.List
+        className={cn(
+          isUnderline
+            ? "flex items-center gap-1 border-b border-subtle"
+            : "inline-flex items-center gap-1 rounded-lg border border-subtle bg-surface p-1 shadow-sm surface-hairline",
+          className
+        )}
       >
         {items.map((item) => {
           const active = item.value === value;
           return (
-            <button
+            <TabsPrimitive.Trigger
               key={item.value}
-              role="tab"
-              type="button"
-              aria-selected={active}
+              value={item.value}
               disabled={item.disabled}
-              tabIndex={active ? 0 : -1}
-              onClick={() => onValueChange(item.value)}
               className={cn(
-                "relative -mb-px flex items-center gap-2 px-3 py-2.5 text-sm font-medium transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-t-md",
-                "disabled:opacity-40 disabled:pointer-events-none",
-                active
-                  ? "border-b-2 border-accent text-primary"
-                  : "border-b-2 border-transparent text-secondary hover:text-primary"
+                "relative flex items-center gap-2 text-sm font-medium transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+                "disabled:pointer-events-none disabled:opacity-40",
+                isUnderline
+                  ? cn(
+                      "-mb-px rounded-t-md px-3 py-2.5",
+                      active ? "text-primary" : "text-secondary hover:text-primary"
+                    )
+                  : cn(
+                      "rounded-md px-3 py-1.5",
+                      active ? "text-primary" : "text-secondary hover:text-primary"
+                    )
               )}
             >
+              {active && (
+                <motion.span
+                  layoutId={isUnderline ? undefined : `tab-pill-${layoutGroup}`}
+                  aria-hidden="true"
+                  className={cn(
+                    "absolute inset-0 -z-10",
+                    isUnderline
+                      ? "rounded-none"
+                      : "rounded-md bg-elevated shadow-sm"
+                  )}
+                  transition={{ type: "spring", duration: 0.3, bounce: 0.18 }}
+                />
+              )}
               {item.icon}
               {item.label}
               {typeof item.count === "number" && (
-                <span className="rounded-full bg-elevated px-1.5 text-xs tabular-nums text-muted">
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 text-xs tabular-nums text-muted",
+                    isUnderline ? "bg-elevated" : "bg-canvas"
+                  )}
+                >
                   {item.count}
                 </span>
               )}
-            </button>
+              {isUnderline && active && (
+                <motion.span
+                  layoutId={`tab-underline-${layoutGroup}`}
+                  aria-hidden="true"
+                  className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-accent"
+                  transition={{ type: "spring", duration: 0.3, bounce: 0.18 }}
+                />
+              )}
+            </TabsPrimitive.Trigger>
           );
         })}
-      </div>
-    );
-  }
-
-  return (
-    <div
-      role="tablist"
-      onKeyDown={onKeyDown}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg border border-subtle bg-surface p-1",
-        className
-      )}
-    >
-      {items.map((item) => {
-        const active = item.value === value;
-        return (
-          <button
-            key={item.value}
-            role="tab"
-            type="button"
-            aria-selected={active}
-            disabled={item.disabled}
-            tabIndex={active ? 0 : -1}
-            onClick={() => onValueChange(item.value)}
-            className={cn(
-              "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface",
-              "disabled:opacity-40 disabled:pointer-events-none",
-              active
-                ? "bg-elevated text-primary shadow-sm"
-                : "text-secondary hover:text-primary"
-            )}
-          >
-            {item.icon}
-            {item.label}
-            {typeof item.count === "number" && (
-              <span className="rounded-full bg-canvas px-1.5 text-xs tabular-nums text-muted">
-                {item.count}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+      </TabsPrimitive.List>
+    </TabsPrimitive.Root>
   );
 }

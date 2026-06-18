@@ -45,6 +45,24 @@ import {
   type WindowPreset,
 } from "../lib/windowPresets";
 import { cn } from "@/components/ui/cn";
+import {
+  Activity,
+  ChevronDown,
+  Circle,
+  Contrast,
+  Crosshair,
+  Eraser,
+  Move,
+  MoveUpRight,
+  Ruler,
+  Settings2,
+  Square,
+  Layers as LayersIconL,
+  RotateCcw,
+  Triangle,
+  ZoomIn,
+  type LucideIcon,
+} from "lucide-react";
 
 // Tools selectable on the LEFT mouse button. Pan/Zoom/Scroll also keep their
 // wheel/middle/right bindings so the usual PACS mouse scheme still works.
@@ -594,20 +612,17 @@ export default function CornerstoneViewer({
 
   // Floating PACS-style toolbar — shown in BOTH demo and driven modes.
   const toolbar = (
-    <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/70 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55">
+    <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/60 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55 surface-hairline">
       {/* Brand mark */}
       <span className="flex select-none items-center gap-1.5 pl-1 pr-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="h-3.5 w-3.5">
-            <circle cx="12" cy="12" r="8" />
-            <path d="M12 4v16M4 12h16" strokeLinecap="round" opacity="0.55" />
-          </svg>
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent-sheen text-accent-foreground shadow-sm">
+          <Activity className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
         </span>
-        <span className="hidden text-[11px] font-semibold tracking-tight text-primary sm:inline">
+        <span className="hidden font-display text-[11px] font-semibold tracking-tight text-primary sm:inline">
           FlowRad
         </span>
       </span>
-      <span className="mx-0.5 h-6 w-px bg-strong/70" />
+      <span className="mx-0.5 h-6 w-px bg-strong/60" />
 
       {PRIMARY_TOOLS.map((t) => {
         // Annotation tools need spatial metadata; disable (don't hide) them on
@@ -652,9 +667,7 @@ export default function CornerstoneViewer({
         >
           <ToolIcon name="Preset" />
           <span className="max-w-[6rem] truncate tabular-nums">{activePresetLabel}</span>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3">
-            <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <ChevronDown className="h-3 w-3" strokeWidth={2.2} aria-hidden="true" />
         </button>
         {presetOpen && (
           <div
@@ -767,8 +780,8 @@ function ToolButton({
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
         "disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "bg-accent text-accent-foreground shadow-sm"
-          : "text-secondary hover:bg-surface hover:text-primary active:scale-95"
+          ? "bg-accent-sheen text-accent-foreground shadow-sm"
+          : "text-secondary hover:bg-overlay hover:text-primary active:scale-95"
       )}
     >
       {children}
@@ -805,109 +818,27 @@ function PresetItem({
   );
 }
 
+// PACS toolbar glyphs, mapped to lucide icons. Each tool keeps its name; only
+// the rendered glyph changed (no Cornerstone tool binding is touched).
+const TOOL_ICONS: Record<string, LucideIcon> = {
+  WindowLevel: Contrast,
+  Pan: Move,
+  Zoom: ZoomIn,
+  StackScroll: LayersIconL,
+  Length: Ruler,
+  Angle: Triangle,
+  EllipticalROI: Circle,
+  RectangleROI: Square,
+  Probe: Crosshair,
+  ArrowAnnotate: MoveUpRight,
+  Preset: Settings2,
+  Invert: Contrast,
+  Reset: RotateCcw,
+  Clear: Eraser,
+};
+
 function ToolIcon({ name }: { name: string }) {
-  const p = {
-    className: "h-4 w-4",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.8,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  switch (name) {
-    case "WindowLevel":
-      return (
-        <svg {...p}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
-        </svg>
-      );
-    case "Pan":
-      return (
-        <svg {...p}>
-          <path d="M12 3v18M3 12h18M9.5 5.5 12 3l2.5 2.5M9.5 18.5 12 21l2.5-2.5M5.5 9.5 3 12l2.5 2.5M18.5 9.5 21 12l-2.5 2.5" />
-        </svg>
-      );
-    case "Zoom":
-      return (
-        <svg {...p}>
-          <circle cx="11" cy="11" r="6" />
-          <path d="M20 20l-3.6-3.6M11 8.5v5M8.5 11h5" />
-        </svg>
-      );
-    case "StackScroll":
-      return (
-        <svg {...p}>
-          <rect x="6" y="3" width="12" height="18" rx="3" />
-          <path d="M12 7v6M9.5 9.5 12 7l2.5 2.5" />
-        </svg>
-      );
-    case "Length":
-      return (
-        <svg {...p}>
-          <path d="M5 19 19 5M5.5 15.5l3 3M9.5 11.5l3 3M13.5 7.5l3 3" />
-        </svg>
-      );
-    case "Angle":
-      return (
-        <svg {...p}>
-          <path d="M4 20h16M4 20 18 6M4 20a9 9 0 0 0 5-7" />
-        </svg>
-      );
-    case "EllipticalROI":
-      return (
-        <svg {...p}>
-          <ellipse cx="12" cy="12" rx="9" ry="6" />
-        </svg>
-      );
-    case "RectangleROI":
-      return (
-        <svg {...p}>
-          <rect x="4" y="6" width="16" height="12" rx="1.5" />
-        </svg>
-      );
-    case "Probe":
-      return (
-        <svg {...p}>
-          <circle cx="12" cy="12" r="2.5" />
-          <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-        </svg>
-      );
-    case "ArrowAnnotate":
-      return (
-        <svg {...p}>
-          <path d="M5 19 19 5M12 5h7v7" />
-        </svg>
-      );
-    case "Preset":
-      return (
-        <svg {...p}>
-          <path d="M4 8h10M18 8h2M4 16h2M10 16h10" />
-          <circle cx="16" cy="8" r="2" fill="currentColor" stroke="none" />
-          <circle cx="8" cy="16" r="2" fill="currentColor" stroke="none" />
-        </svg>
-      );
-    case "Invert":
-      return (
-        <svg {...p}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
-        </svg>
-      );
-    case "Reset":
-      return (
-        <svg {...p}>
-          <path d="M4 12a8 8 0 1 1 2.4 5.7M4 12V7M4 12h5" />
-        </svg>
-      );
-    case "Clear":
-      return (
-        <svg {...p}>
-          <path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" />
-        </svg>
-      );
-    default:
-      return null;
-  }
+  const Icon = TOOL_ICONS[name];
+  if (!Icon) return null;
+  return <Icon className="h-4 w-4" strokeWidth={1.9} aria-hidden="true" />;
 }

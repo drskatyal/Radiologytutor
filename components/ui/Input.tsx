@@ -1,11 +1,12 @@
 import { forwardRef } from "react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "./cn";
 
 const CONTROL_BASE =
-  "w-full rounded-lg border border-strong bg-canvas px-3 text-sm text-primary " +
-  "placeholder:text-muted transition-colors duration-150 " +
-  "hover:border-strong focus:border-accent focus:outline-none " +
-  "focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-0 " +
+  "w-full rounded-lg border border-strong bg-canvas/80 px-3 text-sm text-primary shadow-sm " +
+  "placeholder:text-muted transition-[border-color,box-shadow,background-color] duration-150 " +
+  "hover:border-strong/80 focus:border-accent focus:bg-canvas focus:outline-none " +
+  "focus-visible:ring-2 focus-visible:ring-accent/35 focus-visible:ring-offset-0 " +
   "disabled:cursor-not-allowed disabled:opacity-50 " +
   "aria-[invalid=true]:border-danger aria-[invalid=true]:focus:border-danger " +
   "aria-[invalid=true]:focus-visible:ring-danger/40";
@@ -58,16 +59,10 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
         >
           {children}
         </select>
-        <svg
+        <ChevronDown
           aria-hidden="true"
-          viewBox="0 0 20 20"
           className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.75"
-        >
-          <path d="M6 8l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        />
       </div>
     );
   }
