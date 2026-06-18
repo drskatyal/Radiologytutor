@@ -1,34 +1,41 @@
-// Core data model for FlowRad Learn.
-// NOTE: series/image are ALWAYS stored as string IDs (integers break when
-// series are reordered or images are deleted). Markers are stored as
-// percentages of the overlay box so they remap onto the same anatomy once we
-// lock the same viewport state at playback time.
+// Core data model for FlowRad Learn — aligned to the REAL Pacsbin 2.0 viewer.
+//
+// Pacsbin 2.0 (Vue + Cornerstone3D) encodes the whole viewer as ONE object
+// serialized into the `state` query param as gzip(JSON) -> base64url. We can't
+// read it back out of the cross-origin iframe, so the tutor pastes a Pacsbin
+// URL and we keep its `state` blob verbatim (lossless, no re-encoding needed to
+// replay). We decode it server-side only when the AI needs to know what's shown.
 
 export type MarkerShape = "circle" | "arrow";
 
-export interface Viewport {
-  /** Pacsbin layout, e.g. "1x1" or "2x1". */
-  layout: string;
-  /** Series id (string) for viewport 1. */
-  s1: string;
-  /** Image/slice id (string) for viewport 1. */
-  i1: string;
-  /** Window width for viewport 1. */
-  ww1?: number;
-  /** Window center for viewport 1. */
-  wc1?: number;
-  /** Zoom factor for viewport 1. */
-  scale1?: number;
-  /** Pan for viewport 1 as "x,y" floats in pixels. */
-  translation1?: string;
+/** One viewport tile inside Pacsbin's decoded state (for inspection / AI).
+ * Covers both "stack" (2D slice) and "volume" (MPR/3D) viewports. */
+export interface PacsbinViewport {
+  type: string; // "stack" | "volume"
+  studyId?: string;
+  seriesId?: string;
+  instanceId?: string; // displayed slice (stack viewports only)
+  focalPoint?: number[];
+  viewUp?: number[];
+  viewPlaneNormal?: number[];
+  ww?: number;
+  wc?: number;
+  zoom?: number;
+  pan?: number[];
+  invert?: boolean;
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  // Volume / MPR viewports:
+  slabThickness?: number;
+  blendMode?: number; // 0 composite, MIP/MinIP/Average etc.
+}
 
-  // Optional second viewport, used for compare (2x1) layouts.
-  s2?: string;
-  i2?: string;
-  ww2?: number;
-  wc2?: number;
-  scale2?: number;
-  translation2?: string;
+/** Pacsbin 2.0 decoded viewer state. */
+export interface ViewerState {
+  viewMode: string; // "grid" | "crosshairs" | "volume"
+  layout: number[]; // [rows, cols]
+  viewports: PacsbinViewport[];
 }
 
 export interface Marker {
@@ -40,15 +47,15 @@ export interface Marker {
 }
 
 /**
- * One recorded moment in a finding's dynamic flow. Because radiology teaching
- * on CT/MRI is a *motion* (scrubbing the stack, windowing, zooming), a finding
- * is a TRACK of these keyframes, captured as the tutor drives our controls.
- * `t` is milliseconds from the start of the recording.
+ * One recorded moment in a finding's dynamic flow. `state` is Pacsbin's
+ * encoded `state` blob captured at that moment; `t` is ms from the start of
+ * the recording. Because setting `state` reloads the cross-origin iframe,
+ * playback SNAPS between keyframes (smooth in-iframe scrubbing isn't possible
+ * with Pacsbin; that needs a self-hosted Cornerstone3D viewer later).
  */
 export interface Keyframe {
   t: number;
-  viewport: Viewport;
-  /** Optional moving marker (a finding tracked across slices). */
+  state: string;
   marker?: Marker;
 }
 
@@ -57,17 +64,11 @@ export interface Finding {
   label: string;
   description: string;
   teachingPoints: string[];
-  /** Representative ("poster") viewport — first keyframe / key slice. Always
-   * present for the findings list and for single-shot fallback playback. */
-  viewport: Viewport;
+  /** Pacsbin encoded `state` for the primary/poster view (first keyframe). */
+  state: string;
   marker: Marker;
-  /**
-   * Recorded dynamic flow. When present, playback replays this timeline in
-   * sync with narration instead of a single synthesised transition. Absent on
-   * legacy single-image findings.
-   */
-  track?: Keyframe[];
-  /** Total recording duration in ms (track end), if recorded. */
+  /** Recorded dynamic flow (snap between these). Absent for a single view. */
+  keyframes?: Keyframe[];
   durationMs?: number;
   /** Default guided-tour sequence (search-pattern order). */
   order: number;
@@ -77,7 +78,7 @@ export interface CaseData {
   caseId: string;
   title: string;
   modality: string;
-  /** Base Pacsbin viewer URL, e.g. https://pacsbin.com/viewer/<token>. */
+  /** Base Pacsbin viewer URL, e.g. https://pacsbin.com/viewer/case/<shortId>. */
   pacsbinBaseUrl: string;
   findings: Finding[];
 }

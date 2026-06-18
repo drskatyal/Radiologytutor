@@ -1,215 +1,195 @@
 // ============================================================================
 // lib/pacsbinUrl.ts
 //
-// The ONLY place that knows how Pacsbin encodes viewport state in URLs.
-// Everything Pacsbin-specific lives here so a future viewer (Cornerstone3D,
-// LiteVNA, etc.) can replace it without touching the UI or the data model.
+// The ONLY place that knows how Pacsbin 2.0 encodes viewer state in URLs.
+// Swap this module to retarget another viewer (e.g. self-hosted Cornerstone3D)
+// without touching the UI or data model.
 //
-// Pacsbin controls are one-way: we SET viewport state by changing URL query
-// params. There is no way to read state back out of the iframe. So:
-//   - buildViewerUrl(): emit a URL that locks a given viewport + chrome state.
-//   - parseViewportFromUrl(): reverse-parse a Pacsbin "bookmark / link-to-image"
-//     URL (which the tutor pastes) into our Viewport model.
+// Pacsbin 2.0 (Vue + Cornerstone3D) serializes the whole viewer as ONE object
+//   { viewMode, layout:[rows,cols], viewports:[{seriesId, instanceId, ww, wc,
+//     zoom, pan, viewUp, viewPlaneNormal, focalPoint, ...}] }
+// into the `state` query param as: gzip(JSON) -> base64url.
 //
-// Param convention (per viewport index, 1-based):
-//   s:1, i:1, ww:1, wc:1, scale:1, translation:1   and   layout=rowsxcols
+// We CANNOT read state out of the cross-origin iframe, so the tutor pastes a
+// Pacsbin URL and we keep its `state` blob VERBATIM (lossless, no re-encoding
+// needed to replay). decode/encode are provided for inspection + synthesis.
 // ============================================================================
 
-import type { Viewport } from "./types";
+import type { ViewerState } from "./types";
 
-/** Display chrome params. On playback we strip everything; in authoring we
- * keep the toolbar so the tutor can navigate. */
+/** Display chrome params seen on real Pacsbin 2.0 URLs. */
 export interface ChromeOptions {
   header?: boolean;
-  caseNavigation?: boolean;
-  seriesList?: boolean;
-  titles?: boolean;
   caseData?: boolean;
-  toolbar?: boolean;
-  /** `an` = Pacsbin's native annotations. We draw our own marker overlay, so
-   * hide these on playback to avoid clashing visuals. */
+  /** `an` = native annotations (we draw our own marker, so hide on playback). */
   an?: boolean;
+  overlay?: boolean;
+  title?: boolean;
 }
 
-/** Clean playback chrome: strip all Pacsbin UI + native annotations. */
+/** Clean playback chrome: strip Pacsbin UI + native annotations. */
 export const PLAYBACK_CHROME: ChromeOptions = {
   header: false,
-  caseNavigation: false,
-  seriesList: false,
-  titles: false,
   caseData: false,
-  toolbar: false,
   an: false,
+  overlay: false,
+  title: false,
 };
 
-/** Authoring chrome: keep the toolbar so the tutor can scroll/window/zoom. */
+/** Authoring chrome: keep the header/tools so the tutor can navigate. */
 export const AUTHOR_CHROME: ChromeOptions = {
-  header: false,
-  caseNavigation: false,
-  seriesList: true,
-  titles: false,
-  caseData: false,
-  toolbar: true,
+  header: true,
+  caseData: true,
+  an: true,
+  overlay: true,
+  title: true,
 };
 
-function num(value: string | null): number | undefined {
-  if (value == null || value.trim() === "") return undefined;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
+export interface ParsedUrl {
+  baseUrl: string;
+  /** Encoded `state` param verbatim (may be empty if none present). */
+  state: string;
+  chrome: ChromeOptions;
 }
 
-/**
- * Reverse-parse a Pacsbin bookmark URL into a Viewport.
- * Tolerant: ignores params it doesn't recognise, handles missing optional
- * fields, and reads up to two viewports (for compare layouts).
- */
-export function parseViewportFromUrl(url: string): Viewport {
-  const params = extractParams(url);
-
-  const layout = params.get("layout") ?? "1x1";
-
-  const viewport: Viewport = {
-    layout,
-    s1: params.get("s:1") ?? "",
-    i1: params.get("i:1") ?? "",
-    ww1: num(params.get("ww:1")),
-    wc1: num(params.get("wc:1")),
-    scale1: num(params.get("scale:1")),
-    translation1: params.get("translation:1") ?? undefined,
+/** Pull the base viewer URL, the encoded `state`, and chrome flags out of a
+ * pasted Pacsbin URL. Tolerant of missing pieces. */
+export function parsePacsbinUrl(url: string): ParsedUrl {
+  const { params, base } = splitUrl(url);
+  const boolOf = (k: string): boolean | undefined => {
+    const v = params.get(k);
+    if (v == null) return undefined;
+    return v === "true" || v === "1";
   };
-
-  // Second viewport (compare). Only attach if present.
-  const s2 = params.get("s:2");
-  if (s2) {
-    viewport.s2 = s2;
-    viewport.i2 = params.get("i:2") ?? "";
-    viewport.ww2 = num(params.get("ww:2"));
-    viewport.wc2 = num(params.get("wc:2"));
-    viewport.scale2 = num(params.get("scale:2"));
-    viewport.translation2 = params.get("translation:2") ?? undefined;
-  }
-
-  return viewport;
+  return {
+    baseUrl: base,
+    state: params.get("state") ?? "",
+    chrome: {
+      header: boolOf("header"),
+      caseData: boolOf("caseData"),
+      an: boolOf("an"),
+      overlay: boolOf("overlay"),
+      title: boolOf("title"),
+    },
+  };
 }
 
-/** Extract the base viewer URL (origin + path, no query) from any Pacsbin URL. */
+/** Just the encoded `state` blob from a pasted URL ("" if none). */
+export function extractState(url: string): string {
+  return parsePacsbinUrl(url).state;
+}
+
+/** Base viewer URL (origin + path, no query). */
 export function parseBaseUrl(url: string): string {
   try {
     const u = new URL(url);
     return `${u.origin}${u.pathname}`;
   } catch {
-    // Fall back to chopping at the first "?".
     return url.split("?")[0];
   }
 }
 
 /**
- * Build a Pacsbin viewer URL that locks the given viewport and chrome state.
- * Only emits viewport params that are defined, so partial viewports (e.g. a
- * bookmark without scale/translation) round-trip cleanly.
+ * Build a viewer URL that loads a given encoded `state` with chrome flags.
+ * `state` is Pacsbin's base64url blob (already URL-safe) — emitted verbatim.
  */
 export function buildViewerUrl(
   baseUrl: string,
-  viewport: Viewport,
+  state: string,
   chrome: ChromeOptions = {}
 ): string {
-  const params = new URLSearchParams();
-
-  params.set("layout", viewport.layout || "1x1");
-
-  appendViewport(params, 1, {
-    s: viewport.s1,
-    i: viewport.i1,
-    ww: viewport.ww1,
-    wc: viewport.wc1,
-    scale: viewport.scale1,
-    translation: viewport.translation1,
-  });
-
-  if (viewport.s2) {
-    appendViewport(params, 2, {
-      s: viewport.s2,
-      i: viewport.i2,
-      ww: viewport.ww2,
-      wc: viewport.wc2,
-      scale: viewport.scale2,
-      translation: viewport.translation2,
-    });
-  }
-
-  for (const [key, value] of Object.entries(chrome)) {
-    if (value !== undefined) params.set(key, String(value));
-  }
-
   const base = parseBaseUrl(baseUrl);
-  return `${base}?${decodeParams(params)}`;
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(chrome)) {
+    if (value !== undefined) parts.push(`${key}=${value}`);
+  }
+  if (state) parts.push(`state=${state}`);
+  return parts.length ? `${base}?${parts.join("&")}` : base;
 }
 
-interface ViewportSlot {
-  s?: string;
-  i?: string;
-  ww?: number;
-  wc?: number;
-  scale?: number;
-  translation?: string;
+// ---------------------------------------------------------------------------
+// Encode / decode the `state` blob.  gzip(JSON) <-> base64url, isomorphic via
+// the Web Streams Compression API (browser + Node 18+).
+// ---------------------------------------------------------------------------
+
+export async function decodeState(stateParam: string): Promise<ViewerState> {
+  const bytes = base64urlToBytes(stateParam);
+  const json = await gunzip(bytes);
+  return JSON.parse(json) as ViewerState;
 }
 
-function appendViewport(params: URLSearchParams, index: number, slot: ViewportSlot) {
-  if (slot.s) params.set(`s:${index}`, slot.s);
-  if (slot.i) params.set(`i:${index}`, slot.i);
-  if (slot.ww !== undefined) params.set(`ww:${index}`, String(slot.ww));
-  if (slot.wc !== undefined) params.set(`wc:${index}`, String(slot.wc));
-  if (slot.scale !== undefined) params.set(`scale:${index}`, String(slot.scale));
-  if (slot.translation) params.set(`translation:${index}`, slot.translation);
+export async function encodeState(state: ViewerState): Promise<string> {
+  const gz = await gzip(JSON.stringify(state));
+  return bytesToBase64url(gz);
 }
 
-/**
- * URLSearchParams percent-encodes the ":" in our keys and the "," in
- * translation. Pacsbin expects those literal, so decode them back. Other
- * values stay encoded.
- */
-function decodeParams(params: URLSearchParams): string {
-  return params
-    .toString()
-    .replace(/%3A/gi, ":")
-    .replace(/%2C/gi, ",");
+/** One-line human summary of a decoded state, for AI context / display. */
+export function summarizeState(state: ViewerState): string {
+  const [rows, cols] = state.layout ?? [1, 1];
+  const panes = state.viewports
+    .map((v, i) => {
+      const wl = v.ww != null ? ` W/L ${Math.round(v.ww)}/${Math.round(v.wc ?? 0)}` : "";
+      const z = v.zoom != null ? ` zoom ${v.zoom.toFixed(2)}` : "";
+      return `pane ${i}: series ${short(v.seriesId)} slice ${short(v.instanceId)}${wl}${z}`;
+    })
+    .join("; ");
+  return `${rows}x${cols} ${state.viewMode ?? "grid"} — ${panes}`;
 }
 
-function extractParams(url: string): URLSearchParams {
+function short(id?: string): string {
+  return id ? `…${id.slice(-6)}` : "?";
+}
+
+// ---------------------------------------------------------------------------
+// internals
+// ---------------------------------------------------------------------------
+
+function splitUrl(url: string): { params: URLSearchParams; base: string } {
   try {
-    return new URL(url).searchParams;
+    const u = new URL(url);
+    return { params: u.searchParams, base: `${u.origin}${u.pathname}` };
   } catch {
     const qIndex = url.indexOf("?");
-    return new URLSearchParams(qIndex >= 0 ? url.slice(qIndex + 1) : url);
+    const query = qIndex >= 0 ? url.slice(qIndex + 1) : "";
+    return { params: new URLSearchParams(query), base: url.split("?")[0] };
   }
 }
 
-/**
- * Convenience: replace ONLY the slice (i:index) on an existing built URL.
- * Used by the animation runner to step through slices cheaply without
- * rebuilding the whole viewport each frame.
- */
-export function withSlice(url: string, sliceId: string, index = 1): string {
-  return replaceParam(url, `i:${index}`, sliceId);
+function base64urlToBytes(s: string): Uint8Array {
+  let b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  if (typeof atob === "function") {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  return new Uint8Array(Buffer.from(b64, "base64"));
 }
 
-/** Replace ONLY window width/center on an existing URL. */
-export function withWindow(url: string, ww: number, wc: number, index = 1): string {
-  return replaceParam(replaceParam(url, `ww:${index}`, String(ww)), `wc:${index}`, String(wc));
+function bytesToBase64url(bytes: Uint8Array): string {
+  let b64: string;
+  if (typeof btoa === "function") {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    b64 = btoa(bin);
+  } else {
+    b64 = Buffer.from(bytes).toString("base64");
+  }
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** Replace ONLY scale + translation on an existing URL. */
-export function withZoomPan(url: string, scale: number, translation: string, index = 1): string {
-  return replaceParam(
-    replaceParam(url, `scale:${index}`, String(scale)),
-    `translation:${index}`,
-    translation
+async function gunzip(bytes: Uint8Array): Promise<string> {
+  const ds = new DecompressionStream("gzip");
+  const stream = new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(ds));
+  return stream.text();
+}
+
+async function gzip(text: string): Promise<Uint8Array> {
+  const cs = new CompressionStream("gzip");
+  const stream = new Response(
+    new Blob([text]).stream().pipeThrough(cs)
   );
-}
-
-function replaceParam(url: string, key: string, value: string): string {
-  const [base, query = ""] = url.split("?");
-  const params = new URLSearchParams(query);
-  params.set(key, value);
-  return `${base}?${decodeParams(params)}`;
+  const buf = await stream.arrayBuffer();
+  return new Uint8Array(buf);
 }
