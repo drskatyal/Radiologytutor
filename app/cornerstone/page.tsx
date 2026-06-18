@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import dynamic from "next/dynamic";
+import { BUNDLED_CASE, PUBLIC_DEMO, type ViewerSource } from "../../lib/viewerSource";
 
 const CornerstoneViewer = dynamic(
   () => import("../../components/CornerstoneViewer"),
@@ -21,6 +22,7 @@ type Mode = "pacsbin" | "cornerstone";
 
 export default function CornerstoneSpikePage() {
   const [mode, setMode] = useState<Mode>("cornerstone");
+  const [source, setSource] = useState<ViewerSource>(BUNDLED_CASE);
 
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, color: "#e8eaed" }}>
@@ -46,9 +48,45 @@ export default function CornerstoneSpikePage() {
           allow="fullscreen"
         />
       ) : (
-        <CornerstoneViewer />
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, fontSize: 12 }}>
+            <SourceChip active={source === BUNDLED_CASE} onClick={() => setSource(BUNDLED_CASE)}>
+              Bundled MR (offline)
+            </SourceChip>
+            <SourceChip active={source === PUBLIC_DEMO} onClick={() => setSource(PUBLIC_DEMO)}>
+              Public CT (DICOMweb)
+            </SourceChip>
+          </div>
+          <CornerstoneViewer source={source} />
+        </>
       )}
     </main>
+  );
+}
+
+function SourceChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "4px 10px",
+        borderRadius: 999,
+        border: `1px solid ${active ? "#2d6cdf" : "#345"}`,
+        background: active ? "#19315f" : "transparent",
+        color: active ? "#cfe0ff" : "#9aa",
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
