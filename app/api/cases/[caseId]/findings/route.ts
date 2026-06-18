@@ -24,6 +24,8 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       state: body.state,
       marker: body.marker,
       keyframes: body.keyframes,
+      // Self-hosted record/replay: ordered event log + narration audio.
+      track: body.track,
       durationMs: body.durationMs,
       order: body.order ?? 0,
     };

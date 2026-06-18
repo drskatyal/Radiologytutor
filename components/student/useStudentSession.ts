@@ -20,8 +20,10 @@ import { useRecorder } from "@/components/useRecorder";
 import { useToast, type MicState } from "@/components/ui";
 import { speak, stopSpeaking } from "@/lib/speak";
 import { findingViewerState } from "@/lib/viewerController";
+import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
-import type { CaseData, Finding, Marker } from "@/lib/types";
+import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
+import type { CaseData, Marker } from "@/lib/types";
 
 export type SessionMode = "guided" | "socratic" | "free";
 
@@ -60,9 +62,14 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   const recorder = useRecorder();
 
   const controls = useRef<CornerstoneControls | null>(null);
+  const overlay = useRef<ReplayOverlayHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // The currently-running finding replay (recorded track), if any.
+  const replayRef = useRef<ReplayController | null>(null);
+  const replayAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const [ready, setReady] = useState(false);
+  const [replaying, setReplaying] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [marker, setMarker] = useState<Marker | null>(null);
   const [markerVisible, setMarkerVisible] = useState(false);
@@ -91,15 +98,70 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     setReady(true);
   }, []);
 
+  // Stop any in-flight finding replay (track retrace + its narration audio).
+  const stopReplay = useCallback(() => {
+    replayRef.current?.cancel();
+    replayRef.current = null;
+    if (replayAudioRef.current) {
+      replayAudioRef.current.pause();
+      replayAudioRef.current = null;
+    }
+    overlay.current?.clear();
+    setReplaying(false);
+  }, []);
+
   // --- Drive the viewer to a finding ---------------------------------------
+  // If the finding has a recorded `track`, replay it EXACTLY (retrace + laser
+  // pointer overlay + the teacher's recorded narration audio). Otherwise fall
+  // back to the smooth showState animation to the finding's static view.
   const revealFinding = useCallback(
     async (index: number) => {
       const finding = orderedFindings[index];
       if (!finding || !controls.current) return;
+      stopReplay();
       setMarkerVisible(false);
 
-      // Spread findings across the stack by tour order as a slice hint, then
-      // refine from the finding's recorded camera/VOI when available.
+      const track = finding.track;
+      if (track && track.events.length > 0) {
+        setActiveIndex(index);
+        // The recorded marker is part of the retrace, so hold the static marker.
+        setMarker(null);
+
+        let audioEl: HTMLAudioElement | null = null;
+        if (track.audioUrl) {
+          audioEl = new Audio(track.audioUrl);
+          replayAudioRef.current = audioEl;
+          audioEl.play().catch(() => {});
+        }
+
+        setReplaying(true);
+        replayRef.current = startReplay(
+          track,
+          {
+            applyEvent: (e) => controls.current?.applyEvent(e),
+            getStartState: () => controls.current?.getStartState() ?? { sliceIndex: 0 },
+          },
+          {
+            audio: audioEl,
+            overlay: {
+              cursor: (x, y) => overlay.current?.cursor(x, y),
+              annotation: (e) => overlay.current?.annotation(e),
+              clear: () => overlay.current?.clear(),
+            },
+            onEnd: () => {
+              replayAudioRef.current = null;
+              setReplaying(false);
+              // Land on the static marker so the finding stays highlighted.
+              setMarker(finding.marker ?? null);
+              setMarkerVisible(true);
+            },
+          }
+        );
+        return;
+      }
+
+      // No track: spread findings across the stack by tour order as a slice
+      // hint, then refine from the finding's recorded camera/VOI when available.
       const total = Math.max(1, orderedFindings.length);
       const sliceHint = total > 1 ? index / (total - 1) : 0.5;
       const view = (await findingViewerState(finding, sliceHint)) ?? { sliceFraction: sliceHint };
@@ -109,7 +171,7 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       setMarker(finding.marker ?? null);
       setMarkerVisible(true);
     },
-    [orderedFindings]
+    [orderedFindings, stopReplay]
   );
 
   // --- Execute a tutor viewer action ---------------------------------------
@@ -193,24 +255,26 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
       stopSpeaking();
+      stopReplay();
       const history = turnsRef.current;
       setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed }]);
       runTutor(trimmed, history);
     },
-    [busy, runTutor]
+    [busy, runTutor, stopReplay]
   );
 
   // --- Voice question: CALL 1 (transcribe) then CALL 2 (tutor) -------------
   const onMicStart = useCallback(async () => {
     if (busy) return;
     stopSpeaking();
+    stopReplay();
     try {
       await recorder.start();
       setPhase("recording");
     } catch {
       toast({ title: "Microphone blocked", description: "Allow mic access to ask by voice.", variant: "warning" });
     }
-  }, [busy, recorder, toast]);
+  }, [busy, recorder, toast, stopReplay]);
 
   const onMicStop = useCallback(async () => {
     const rec = await recorder.stop();
@@ -262,9 +326,10 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     (index: number) => {
       if (busy || !ready) return;
       stopSpeaking();
+      stopReplay();
       revealFinding(index);
     },
-    [busy, ready, revealFinding]
+    [busy, ready, revealFinding, stopReplay]
   );
   const next = useCallback(() => goTo(Math.min(activeIndexRef.current + 1, orderedFindings.length - 1)), [goTo, orderedFindings.length]);
   const prev = useCallback(() => goTo(Math.max(activeIndexRef.current - 1, 0)), [goTo]);
@@ -283,10 +348,12 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     }
   }, [ready, orderedFindings.length, revealFinding]);
 
-  // Cleanup: stop audio + abort any in-flight tutor call on unmount.
+  // Cleanup: stop audio/replay + abort any in-flight tutor call on unmount.
   useEffect(
     () => () => {
       stopSpeaking();
+      replayRef.current?.cancel();
+      replayAudioRef.current?.pause();
       abortRef.current?.abort();
     },
     []
@@ -294,7 +361,9 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
 
   return {
     controls,
+    overlay,
     ready,
+    replaying,
     activeIndex,
     marker,
     markerVisible,

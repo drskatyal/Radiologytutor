@@ -131,3 +131,36 @@ export async function structureFinding(transcript: string): Promise<StructuredFi
   if (!res.ok) throw new Error(data?.error || "Failed to structure finding");
   return data as StructuredFinding;
 }
+
+/**
+ * Structure a finding directly from recorded narration audio (Gemini does STT +
+ * structuring in one call). Returns null when Gemini isn't configured (503) so
+ * the recorder flow degrades gracefully — the author still gets the track and
+ * fills the text in by hand.
+ */
+export async function structureFindingFromAudio(
+  base64: string,
+  mime: string
+): Promise<StructuredFinding | null> {
+  const res = await fetch("/api/structure-finding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audioBase64: base64, audioMime: mime }),
+  });
+  if (res.status === 503) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Failed to structure finding");
+  return data as StructuredFinding;
+}
+
+/** Upload narration audio; returns the durable same-origin URL to store. */
+export async function uploadAudio(base64: string, mimeType: string): Promise<string> {
+  const res = await fetch("/api/audio", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base64, mimeType }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Failed to upload audio");
+  return String(data.url);
+}

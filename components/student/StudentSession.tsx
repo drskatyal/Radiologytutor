@@ -50,11 +50,14 @@ export default function StudentSession({
       <section className="relative min-h-0 bg-imaging">
         <StudentViewer
           source={source}
+          modality={caseData.modality}
           controls={s.controls}
+          overlay={s.overlay}
           onReady={s.onViewerReady}
           marker={s.marker}
           // Markers belong to the real study — never paint them on a sample.
           markerVisible={s.markerVisible && imagingResolved}
+          replaying={s.replaying}
           ready={s.ready}
         />
         {/* Floating case label — top-right so it clears the viewer toolbar. */}

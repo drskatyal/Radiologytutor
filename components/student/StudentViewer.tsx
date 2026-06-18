@@ -12,6 +12,7 @@ import { Skeleton, Spinner } from "@/components/ui";
 import type { ViewerSource } from "@/lib/viewerSource";
 import type { Marker } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
+import { ReplayOverlay, type ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { FindingMarker } from "./FindingMarker";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
@@ -21,23 +22,32 @@ const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer")
 
 export function StudentViewer({
   source,
+  modality,
   controls,
+  overlay,
   onReady,
   marker,
   markerVisible,
+  replaying,
   ready,
 }: {
   source: ViewerSource;
+  modality?: string;
   controls: MutableRefObject<CornerstoneControls | null>;
+  /** Receives the animated replay overlay handle (laser pointer / annotations). */
+  overlay: MutableRefObject<ReplayOverlayHandle | null>;
   onReady: (c: CornerstoneControls) => void;
   marker: Marker | null;
   markerVisible: boolean;
+  /** True while a recorded finding track is retracing. */
+  replaying: boolean;
   ready: boolean;
 }) {
   return (
     <div className="relative h-full w-full overflow-hidden bg-imaging">
       <CornerstoneViewer
         source={source}
+        modality={modality}
         controls={controls}
         showToolbar={false}
         onReady={onReady}
@@ -48,6 +58,15 @@ export function StudentViewer({
       <div className="pointer-events-none absolute inset-0">
         {marker && <FindingMarker marker={marker} visible={markerVisible} />}
       </div>
+
+      {/* Animated replay overlay — laser pointer + annotation draw-in during a
+          recorded track retrace. Non-interactive layer over the viewer. */}
+      <ReplayOverlay
+        ref={(h) => {
+          overlay.current = h;
+        }}
+        active={replaying}
+      />
 
       {/* Warming skeleton until the series is decoded. */}
       {!ready && <ViewerSkeleton label="Warming images…" />}

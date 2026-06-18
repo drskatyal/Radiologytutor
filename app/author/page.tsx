@@ -26,6 +26,7 @@ import type { CaseData, Finding } from "@/lib/types";
 import { CasePicker } from "@/components/author/CasePicker";
 import { FindingsList } from "@/components/author/FindingsList";
 import { AddFindingDialog } from "@/components/author/AddFindingDialog";
+import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
 import {
   addFinding,
   deleteFinding,
@@ -125,6 +126,7 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [showRecord, setShowRecord] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Finding | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -315,6 +317,14 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
                 Preview playback
               </Button>
             )}
+            <Button
+              variant="secondary"
+              size="sm"
+              leadingIcon={<RecordDotIcon />}
+              onClick={() => setShowRecord(true)}
+            >
+              Record finding
+            </Button>
             <Button size="sm" leadingIcon={<PlusIcon />} onClick={() => setShowAdd(true)}>
               Add finding
             </Button>
@@ -365,6 +375,12 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
         onCreate={createFinding}
       />
 
+      <RecordFindingDialog
+        open={showRecord}
+        onClose={() => setShowRecord(false)}
+        onCreate={createFinding}
+      />
+
       <Modal
         open={!!deleteTarget}
         onClose={() => !deleting && setDeleteTarget(null)}
@@ -397,6 +413,15 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+
+function RecordDotIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4">
+      <circle cx="10" cy="10" r="7" />
+      <circle cx="10" cy="10" r="3" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 function WorkspaceSkeleton({ back }: { back: React.ReactNode }) {
   return (
