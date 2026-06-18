@@ -13,8 +13,28 @@ const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 export interface GeminiPart {
   text?: string;
+  /** Inline audio/image bytes (base64). Gemini Flash is multimodal — we send
+   * mic audio here so Gemini does STT + reasoning in one call. */
+  inlineData?: { mimeType: string; data: string };
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
+}
+
+/** Build a user content part list from optional text + optional audio. */
+export function userParts(opts: {
+  text?: string;
+  audioBase64?: string;
+  audioMime?: string;
+}): GeminiPart[] {
+  const parts: GeminiPart[] = [];
+  if (opts.audioBase64) {
+    parts.push({
+      inlineData: { mimeType: opts.audioMime || "audio/webm", data: opts.audioBase64 },
+    });
+  }
+  if (opts.text) parts.push({ text: opts.text });
+  if (parts.length === 0) parts.push({ text: "" });
+  return parts;
 }
 
 export interface GeminiContent {

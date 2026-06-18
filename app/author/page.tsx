@@ -8,7 +8,7 @@
 
 import { useRef, useState } from "react";
 import ViewerFrame, { type ViewerFrameHandle } from "@/components/ViewerFrame";
-import { useDictation } from "@/components/useDictation";
+import { useRecorder } from "@/components/useRecorder";
 import {
   parseViewportFromUrl,
   parseBaseUrl,
@@ -130,8 +130,9 @@ function AuthorWorkspace({
   } | null>(null);
   const [structuring, setStructuring] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [transcript, setTranscript] = useState("");
 
-  const dictation = useDictation();
+  const recorder = useRecorder();
 
   const authorSrc = buildViewerUrl(caseData.pacsbinBaseUrl, defaultViewport(caseData), AUTHOR_CHROME);
 
@@ -145,14 +146,20 @@ function AuthorWorkspace({
     viewerRef.current?.setSrc(locked);
   }
 
-  async function structure() {
-    if (!dictation.transcript.trim()) return;
+  // Structure from a typed transcript and/or recorded audio (Gemini does STT).
+  async function structure(audio?: { base64: string; mimeType: string }) {
+    if (!audio && !transcript.trim()) return;
     setStructuring(true);
+    setSaveError("");
     try {
       const res = await fetch("/api/structure-finding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: dictation.transcript }),
+        body: JSON.stringify({
+          transcript: transcript.trim() || undefined,
+          audioBase64: audio?.base64,
+          audioMime: audio?.mimeType,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to structure");
@@ -161,6 +168,16 @@ function AuthorWorkspace({
       setSaveError(e instanceof Error ? e.message : "Failed");
     } finally {
       setStructuring(false);
+    }
+  }
+
+  // Toggle dictation: start recording, or stop and send the audio to Gemini.
+  async function toggleDictation() {
+    if (recorder.recording) {
+      const rec = await recorder.stop();
+      if (rec) await structure({ base64: rec.base64, mimeType: rec.mimeType });
+    } else {
+      await recorder.start();
     }
   }
 
@@ -195,7 +212,7 @@ function AuthorWorkspace({
     setMarker(null);
     setPlacingMarker(false);
     setStructured(null);
-    dictation.reset();
+    setTranscript("");
   }
 
   async function removeFinding(id: string) {
@@ -289,33 +306,34 @@ function AuthorWorkspace({
             </button>
           </div>
 
-          {/* Step c: dictate */}
+          {/* Step c: dictate (Gemini Flash does speech-to-text) */}
           <div>
             <label className="label">3. Dictate finding</label>
-            {dictation.supported ? (
+            {recorder.supported ? (
               <button
-                onClick={dictation.listening ? dictation.stop : dictation.start}
-                className={`w-full text-sm ${dictation.listening ? "btn-recording" : "btn-secondary"}`}
+                onClick={toggleDictation}
+                disabled={structuring}
+                className={`w-full text-sm ${recorder.recording ? "btn-recording" : "btn-secondary"}`}
               >
-                {dictation.listening ? "● Stop recording" : "🎙 Start dictation"}
+                {recorder.recording ? "● Stop & transcribe" : "🎙 Dictate (AI transcribes)"}
               </button>
             ) : (
               <p className="text-xs text-neutral-500">
-                Mic not supported in this browser — type the finding below.
+                Mic not available — type the finding below.
               </p>
             )}
             <textarea
               className="input mt-2 h-20 text-xs"
               placeholder="e.g. Sagittal T2, ACL tear at the femoral attachment, complete fibre discontinuity, teaching point empty notch sign."
-              value={dictation.transcript}
-              onChange={(e) => dictation.setTranscript(e.target.value)}
+              value={transcript}
+              onChange={(e) => setTranscript(e.target.value)}
             />
             <button
-              onClick={structure}
-              disabled={structuring}
+              onClick={() => structure()}
+              disabled={structuring || (!transcript.trim() && !recorder.recording)}
               className="btn-secondary mt-1 w-full text-sm"
             >
-              {structuring ? "Structuring…" : "Structure with AI"}
+              {structuring ? "Structuring…" : "Structure typed text with AI"}
             </button>
           </div>
 

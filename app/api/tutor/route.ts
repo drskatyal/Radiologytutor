@@ -107,7 +107,7 @@ MODE: GUIDED TOUR. Walk through the findings in order. Start by calling show_fin
 
 export async function POST(req: NextRequest) {
   try {
-    const { caseId, mode = "guided", messages = [] } = await req.json();
+    const { caseId, mode = "guided", messages = [], audio } = await req.json();
     const data = await getCase(String(caseId));
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
 
@@ -119,6 +119,19 @@ export async function POST(req: NextRequest) {
     // Cold start with no messages: seed an opening instruction.
     if (contents.length === 0) {
       contents.push({ role: "user", parts: [{ text: "Begin the session." }] });
+    }
+
+    // Voice turn: Gemini does STT. Attach the audio to the final user turn so
+    // the model hears the spoken question directly.
+    if (audio?.base64) {
+      let lastUser = [...contents].reverse().find((c) => c.role === "user");
+      if (!lastUser) {
+        lastUser = { role: "user", parts: [] };
+        contents.push(lastUser);
+      }
+      lastUser.parts.unshift({
+        inlineData: { mimeType: audio.mime || "audio/webm", data: audio.base64 },
+      });
     }
 
     const result = await generate({

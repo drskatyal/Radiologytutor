@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ViewerFrame, { type ViewerFrameHandle } from "@/components/ViewerFrame";
-import { useDictation } from "@/components/useDictation";
+import { useRecorder } from "@/components/useRecorder";
 import { speak, stopSpeaking } from "@/lib/speak";
 import { buildViewerUrl, PLAYBACK_CHROME } from "@/lib/pacsbinUrl";
 import { runTransition, animateWindow } from "@/lib/viewerController";
@@ -35,12 +35,13 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
   const [marker, setMarker] = useState<Marker | null>(null);
   const [markerVisible, setMarkerVisible] = useState(false);
   const [started, setStarted] = useState(false);
+  const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
 
   // The viewport currently shown — the "from" for the next transition.
   const currentViewportRef = useRef<Viewport>(firstOrEmpty(caseData));
   const tourIndexRef = useRef<number>(-1);
 
-  const dictation = useDictation();
+  const recorder = useRecorder();
 
   const initialSrc = useMemo(
     () => buildViewerUrl(caseData.pacsbinBaseUrl, firstOrEmpty(caseData), PLAYBACK_CHROME),
@@ -98,6 +99,7 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
           // Fade in the marker after the transition settles.
           setMarker(finding.marker);
           setMarkerVisible(true);
+          setActiveFindingId(finding.id);
         } else if (call.name === "set_window") {
           const ww = Number(call.args.ww);
           const wc = Number(call.args.wc);
@@ -130,6 +132,7 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
           currentViewportRef.current = compareVp;
           setMarker(a.marker);
           setMarkerVisible(true);
+          setActiveFindingId(a.id);
         }
       } catch (e) {
         // AbortError is expected when a new transition supersedes this one.
@@ -141,15 +144,16 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
     [apply, caseData, findingById, initialSrc, orderedFindings]
   );
 
-  // Send a turn to the tutor and apply its response.
+  // Send a turn to the tutor and apply its response. `audio` carries a spoken
+  // question (Gemini does STT); the matching user message text may be a stub.
   const sendTurn = useCallback(
-    async (history: ChatMessage[]) => {
+    async (history: ChatMessage[], audio?: { base64: string; mime: string }) => {
       setBusy(true);
       try {
         const res = await fetch("/api/tutor", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ caseId: caseData.caseId, mode, messages: history }),
+          body: JSON.stringify({ caseId: caseData.caseId, mode, messages: history, audio }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Tutor error");
@@ -181,11 +185,26 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
   function send(text: string) {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
+    stopSpeaking(); // barge-in: cut narration when the student speaks/types
     const next: ChatMessage[] = [...messages, { role: "user", text: trimmed }];
     setMessages(next);
     setInput("");
-    dictation.reset();
     sendTurn(next);
+  }
+
+  // Push-to-talk: toggle recording. Starting cuts narration (barge-in);
+  // stopping sends the audio to the tutor (Gemini transcribes + answers).
+  async function toggleVoice() {
+    if (recorder.recording) {
+      const rec = await recorder.stop();
+      if (!rec || busy) return;
+      const next: ChatMessage[] = [...messages, { role: "user", text: "🎙 (voice question)" }];
+      setMessages(next);
+      sendTurn(next, { base64: rec.base64, mime: rec.mimeType });
+    } else {
+      stopSpeaking();
+      await recorder.start();
+    }
   }
 
   // Stop speech + animations when leaving.
@@ -224,6 +243,29 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
             ))}
           </div>
         </div>
+
+        {/* Findings rail: progress + per-finding Q&A. Click to ask about one. */}
+        {started && (
+          <div className="border-b border-neutral-800 px-3 py-2">
+            <div className="flex flex-wrap gap-1">
+              {orderedFindings.map((f, i) => (
+                <button
+                  key={f.id}
+                  onClick={() => send(`Tell me about ${f.label}.`)}
+                  disabled={busy}
+                  title={f.label}
+                  className={`max-w-[160px] truncate rounded px-2 py-1 text-[11px] disabled:opacity-50 ${
+                    activeFindingId === f.id
+                      ? "bg-yellow-500 text-black"
+                      : "border border-neutral-700 text-neutral-300 hover:border-neutral-500"
+                  }`}
+                >
+                  {i + 1}. {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {!started ? (
@@ -276,19 +318,13 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
                   Next finding →
                 </button>
               )}
-              {dictation.supported && (
+              {recorder.supported && (
                 <button
-                  onClick={() => {
-                    if (dictation.listening) {
-                      dictation.stop();
-                      if (dictation.transcript) send(dictation.transcript);
-                    } else {
-                      dictation.start();
-                    }
-                  }}
-                  className={`flex-1 text-sm ${dictation.listening ? "btn-recording" : "btn-secondary"}`}
+                  onClick={toggleVoice}
+                  disabled={busy && !recorder.recording}
+                  className={`flex-1 text-sm ${recorder.recording ? "btn-recording" : "btn-secondary"}`}
                 >
-                  {dictation.listening ? "● Stop & send" : "🎙 Ask by voice"}
+                  {recorder.recording ? "● Stop & ask" : "🎙 Ask by voice"}
                 </button>
               )}
             </div>
