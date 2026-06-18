@@ -7,26 +7,31 @@
 // single call site.
 //
 //   ┌─────────────────────────────────────────────────────────────────────┐
-//   │  MONGODB-SWAP SEAM                                                     │
-//   │  The only store-specific code lives in the `JsonCollection` class and │
-//   │  the `collection<T>()` factory below (marked "STORE SEAM"). To move   │
-//   │  to MongoDB, reimplement that one class against a Mongo collection    │
-//   │  (find/findOne/insertOne/updateOne/deleteOne) and have `collection()` │
-//   │  return it. The exported API functions stay byte-for-byte identical.  │
+//   │  MONGODB-SWAP SEAM (realized)                                          │
+//   │  The only store-specific code lives in the `JsonCollection` /         │
+//   │  `MongoCollection` classes and the `collection<T>()` factory below    │
+//   │  (marked "STORE SEAM"). Both classes implement the SAME `Collection`  │
+//   │  interface (all/get/put/remove). The factory picks one at runtime:    │
+//   │  if `MONGODB_URI` is configured -> MongoCollection, else the default  │
+//   │  JsonCollection (JSON-on-volume). The exported API functions below    │
+//   │  stay byte-for-byte identical regardless of which store is active.    │
 //   └─────────────────────────────────────────────────────────────────────┘
 //
 // Multi-tenancy: everything is scoped by `orgId` (CLAUDE.md §4a). Auth is a
 // seam now (single demo org); the exported functions already take/derive an
 // `orgId` so real auth slots in without a refactor.
 //
-// The store directory is DATA_DIR (env-overridable) so it can point at a
-// Railway persistent Volume — that survives redeploys with no database. On an
-// empty store we seed from the committed `/seed` cases so demos always have
-// sample data.
+// Store selection is ENV-GATED and LAZY: with no `MONGODB_URI` the app uses the
+// JSON-on-volume store under DATA_DIR (env-overridable) so it can point at a
+// Railway persistent Volume that survives redeploys with no database. Set
+// `MONGODB_URI` and the entire data layer silently runs on MongoDB instead —
+// no caller changes. Either store seeds itself from the committed `/seed` cases
+// the first time it is empty, so demos always have sample data.
 // ============================================================================
 
 import { promises as fs } from "fs";
 import path from "path";
+import type { Collection as MongoNativeCollection } from "mongodb";
 import type {
   CaseData,
   Case,
@@ -36,6 +41,7 @@ import type {
   Patient,
   Study,
 } from "./types";
+import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 
 // ---------------------------------------------------------------------------
 // Tenancy
@@ -120,6 +126,33 @@ async function copyJsonFiles(src: string, dst: string): Promise<void> {
   }
 }
 
+type CollectionName = "cases" | "patients" | "studies";
+
+/**
+ * Read and parse every committed seed record for one logical collection. Cases
+ * live at the SEED_DIR root (back-compat layout); patients/studies nest in a
+ * subdirectory. Used by the MongoDB store to seed an empty DB the same way the
+ * JSON store copies files. Tolerates a missing directory / malformed file.
+ */
+async function readSeedRecords<T extends { id: string }>(name: CollectionName): Promise<T[]> {
+  const dir = name === "cases" ? SEED_DIR : path.join(SEED_DIR, name);
+  const files = await fs.readdir(dir).catch(() => [] as string[]);
+  const records: T[] = [];
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const raw = await fs.readFile(path.join(dir, f), "utf-8");
+      const parsed = JSON.parse(raw) as Partial<T> & { id?: string; caseId?: string };
+      // Cases are keyed by caseId on disk; mirror it to `id` for the store.
+      const id = parsed.id ?? parsed.caseId;
+      if (id) records.push({ ...(parsed as T), id });
+    } catch {
+      // Skip malformed seed files rather than aborting the whole seed.
+    }
+  }
+  return records;
+}
+
 /** Sanitize an id so it can safely become a filename (no path traversal). */
 function safeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -185,10 +218,116 @@ class JsonCollection<T extends { id: string }> implements Collection<T> {
   }
 }
 
-/** STORE SEAM: the one factory to reimplement when moving to MongoDB. */
-function collection<T extends { id: string }>(
-  name: "cases" | "patients" | "studies"
-): Collection<T> {
+// ============================================================================
+// STORE SEAM — MongoDB implementation (env-gated; active when MONGODB_URI set).
+//
+// Implements the SAME `Collection<T>` interface as JsonCollection over a native
+// Mongo collection. We use our string `id` as the Mongo `_id` so there is no
+// extra mapping table — `_id` and `id` are the same value. Records already carry
+// `orgId`, so tenant scoping (done by the API functions below) is unchanged.
+//
+// Connection is lazy: the MongoClient only connects on the first read/write
+// (never at import/build time). On first use we ensure indexes and seed an empty
+// DB from the committed `/seed` data, mirroring JsonCollection's seedIfEmpty.
+// ============================================================================
+
+/** Records as stored in Mongo: our string `id` doubles as the `_id`. */
+type MongoDoc<T> = Omit<T, "id"> & { _id: string };
+
+// One-process guards so we only ensure indexes / seed once across all three
+// collections (not once per collection).
+let mongoInitReady: Promise<void> | null = null;
+
+/** Ensure indexes exist and the DB is seeded if empty (idempotent, once). */
+function ensureMongoReady(): Promise<void> {
+  if (!mongoInitReady) {
+    mongoInitReady = (async () => {
+      await ensureIndexes();
+      await seedMongoIfEmpty();
+    })().catch((err) => {
+      // Allow a later call to retry (e.g. transient connection failure).
+      mongoInitReady = null;
+      throw err;
+    });
+  }
+  return mongoInitReady;
+}
+
+/** Seed an empty Mongo `cases` collection from committed `/seed` data. */
+async function seedMongoIfEmpty(): Promise<void> {
+  const db = await getDb();
+  // Mirror JsonCollection: "empty" is decided by the cases collection.
+  const count = await db.collection("cases").estimatedDocumentCount();
+  if (count > 0) return;
+  for (const name of ["cases", "patients", "studies"] as const) {
+    const records = await readSeedRecords<{ id: string }>(name);
+    if (records.length === 0) continue;
+    const docs = records.map(({ id, ...rest }) => ({ _id: id, ...rest }));
+    // Idempotent under races: ignore duplicate-key on _id if two invocations
+    // seed concurrently.
+    await db
+      .collection(name)
+      .insertMany(docs as never[], { ordered: false })
+      .catch(() => undefined);
+  }
+}
+
+class MongoCollection<T extends { id: string }> implements Collection<T> {
+  constructor(private readonly name: CollectionName) {}
+
+  private async coll(): Promise<MongoNativeCollection<MongoDoc<T>>> {
+    await ensureMongoReady();
+    const db = await getDb();
+    return db.collection<MongoDoc<T>>(this.name);
+  }
+
+  /** Map a stored Mongo doc back to our domain record (`_id` -> `id`). */
+  private fromDoc(doc: MongoDoc<T>): T {
+    const { _id, ...rest } = doc;
+    return { ...rest, id: _id } as unknown as T;
+  }
+
+  async all(): Promise<T[]> {
+    const coll = await this.coll();
+    const docs = await coll.find({}).toArray();
+    return docs.map((d) => this.fromDoc(d as MongoDoc<T>));
+  }
+
+  async get(id: string): Promise<T | null> {
+    const coll = await this.coll();
+    const doc = await coll.findOne({ _id: id } as never);
+    return doc ? this.fromDoc(doc as MongoDoc<T>) : null;
+  }
+
+  async put(record: T): Promise<T> {
+    const coll = await this.coll();
+    const { id, ...rest } = record;
+    // Upsert by _id so create and update share one code path (like writeFile).
+    await coll.replaceOne(
+      { _id: id } as never,
+      { _id: id, ...(rest as Omit<T, "id">) } as never,
+      { upsert: true }
+    );
+    return record;
+  }
+
+  async remove(id: string): Promise<boolean> {
+    const coll = await this.coll();
+    const res = await coll.deleteOne({ _id: id } as never);
+    return res.deletedCount > 0;
+  }
+}
+
+/**
+ * STORE SEAM: the one factory that selects the active store. With `MONGODB_URI`
+ * configured every collection is a `MongoCollection`; otherwise the JSON-on-
+ * volume `JsonCollection` is used (the default/fallback so the demo and tests
+ * run with no database). No caller is aware of which store is returned.
+ */
+function collection<T extends { id: string }>(name: CollectionName): Collection<T> {
+  if (mongoConfigured()) {
+    return new MongoCollection<T>(name);
+  }
   // Cases live at the DATA_DIR root (subdir "") for back-compat with the
   // original one-file-per-case layout; other entities nest in a subdirectory.
   return new JsonCollection<T>(name === "cases" ? "" : name);
