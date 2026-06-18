@@ -2,18 +2,24 @@
 
 // Self-hosted Cornerstone3D stack viewer — the "Our Viewer" of FlowRad Learn.
 // It owns the full feature set we get from rendering DICOM ourselves: scroll,
-// window/level, zoom, pan, native annotations, AND — crucially — programmatic,
-// SMOOTHLY INTERPOLATED driving of the camera/VOI/slice for the guided student
-// walk-through (the whole point of self-hosting vs a cross-origin iframe).
+// window/level, zoom, pan, native annotations, AND — crucially — programmatic
+// driving of the camera/VOI/slice for BOTH:
+//   • the guided student walk-through (smoothly INTERPOLATED, via showState), and
+//   • exact record → replay (DENSE event re-application, via applyEvent).
 //
 // Two modes, one component:
-//   • Demo (default): the original toolbar + status line. Unchanged behavior,
-//     used by /cornerstone.
-//   • Driven: pass `controls` (a ref) + `showToolbar={false}` and the student
-//     session drives the viewport via the imperative handle below.
+//   • Demo (default): the full PACS toolbar + status line. Used by /cornerstone,
+//     /record and the author capture surface.
+//   • Driven: pass `controls` (a ref) + `showToolbar={false}` and the caller
+//     drives the viewport via the imperative handle below.
 //
 // Mouse: wheel = scroll, right-drag = zoom, middle-drag = pan. The LEFT button
 // runs whichever tool is picked in the toolbar (window/level by default).
+//
+// RECORD/REPLAY: pass `onEvent` to receive an ordered stream of viewer state
+// changes (slice / voi / camera / invert) read straight off the viewport — we
+// never trust event-detail shapes. Camera/VOI are throttled (~50ms) but order
+// is preserved. `applyEvent` re-applies one recorded event (the replay path).
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
@@ -31,14 +37,22 @@ import {
   lerp,
   type CornerstoneViewerState,
 } from "../lib/viewerController";
+import type { RecordedEvent, ViewerEvent } from "../lib/types";
+import {
+  WINDOW_PRESETS,
+  FULL_DYNAMIC_ID,
+  presetsForModality,
+  type WindowPreset,
+} from "../lib/windowPresets";
 import { cn } from "@/components/ui/cn";
 
-// Tools selectable on the LEFT mouse button. Pan/Zoom also keep their
-// middle/right bindings so the usual PACS mouse scheme still works.
+// Tools selectable on the LEFT mouse button. Pan/Zoom/Scroll also keep their
+// wheel/middle/right bindings so the usual PACS mouse scheme still works.
 const PRIMARY_TOOLS: { name: string; label: string }[] = [
   { name: "WindowLevel", label: "Window / Level" },
   { name: "Pan", label: "Pan" },
   { name: "Zoom", label: "Zoom" },
+  { name: "StackScroll", label: "Scroll" },
   { name: "Length", label: "Length" },
   { name: "Angle", label: "Angle" },
   { name: "EllipticalROI", label: "Ellipse ROI" },
@@ -65,9 +79,10 @@ interface DrivableViewport {
 }
 
 /**
- * Imperative handle the student session uses to drive the viewer. All numeric
- * transitions (VOI/zoom/pan) are interpolated with requestAnimationFrame for
- * smooth, cinematic step changes; slice changes snap (decoding a new slice).
+ * Imperative handle for driving the viewer. Two complementary paths:
+ *   • showState/setWindow — smooth, INTERPOLATED transitions (guided tour).
+ *   • applyEvent          — exact re-application of ONE recorded event (replay).
+ * Plus the record-side reads (getStartState) and toggles (setInvert).
  */
 export interface CornerstoneControls {
   /** Whether the viewer has loaded its series and is drivable. */
@@ -78,8 +93,14 @@ export interface CornerstoneControls {
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
   /** Adjust window width/center (VOI), interpolated. */
   setWindow: (windowWidth: number, windowCenter: number, durationMs?: number) => void;
+  /** Set inversion explicitly (record/replay + toolbar). */
+  setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
   reset: () => void;
+  /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
+  applyEvent: (e: RecordedEvent) => void;
+  /** Current slice/window — used to prime a recording/replay. */
+  getStartState: () => { sliceIndex: number; ww?: number; wc?: number };
 }
 
 function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: number } | null {
@@ -105,37 +126,53 @@ export default function CornerstoneViewer({
   source = BUNDLED_CASE,
   controls,
   showToolbar = true,
+  modality,
   onReady,
+  onEvent,
   className,
 }: {
   source?: ViewerSource;
-  /** Pass a ref to receive the imperative drive handle (student session). */
+  /** Pass a ref to receive the imperative drive handle (student/record session). */
   controls?: MutableRefObject<CornerstoneControls | null>;
   /** Hide the demo toolbar/status line (driven/student mode). */
   showToolbar?: boolean;
+  /** Modality (e.g. "CT") — picks the relevant Window/Level presets. */
+  modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /** Record hook: ordered viewer state changes (slice/voi/camera/invert). */
+  onEvent?: (e: ViewerEvent) => void;
   /** Wrapper class (the viewer fills it; imaging surface stays pure black). */
   className?: string;
 }) {
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
-  // Stable handle the toolbar uses to switch the left-button tool after init.
+  // Stable handles the toolbar uses after init.
   const setLeftToolRef = useRef<(name: string) => void>(() => {});
   const resetRef = useRef<() => void>(() => {});
   const clearRef = useRef<() => void>(() => {});
+  const invertRef = useRef<(value?: boolean) => void>(() => {});
+  const applyPresetRef = useRef<(p: WindowPreset | null) => void>(() => {});
   // Live viewport + the most recent rAF tween cancel fn (so we never overlap).
   const viewportRef = useRef<DrivableViewport | null>(null);
   const cancelTweenRef = useRef<() => void>(() => {});
-  const invertRef = useRef<() => void>(() => {});
+  // Latest onEvent — stored in a ref so listeners always call the current one.
+  const onEventRef = useRef<typeof onEvent>(onEvent);
+  onEventRef.current = onEvent;
+
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState("WindowLevel");
   const [ready, setReady] = useState(false);
   const [inverted, setInverted] = useState(false);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [presetOpen, setPresetOpen] = useState(false);
+
+  const presets = presetsForModality(modality);
 
   useEffect(() => {
     let disposed = false;
     let renderingEngine: { destroy: () => void } | null = null;
+    let detachListeners: () => void = () => {};
     const toolGroupId = "flowrad-tg";
 
     (async () => {
@@ -217,8 +254,9 @@ export default function CornerstoneViewer({
           bindings: [{ mouseButton: MouseBindings.Auxiliary }],
         });
 
-        // Left button: pick from the toolbar (default window/level). Pan and
-        // Zoom keep their middle/right bindings even when not the left tool.
+        // Left button: pick from the toolbar (default window/level). Pan, Zoom
+        // and Scroll keep their wheel/middle/right bindings even when not the
+        // left tool, so the standard PACS mouse scheme is always live.
         const setLeftTool = (name: string) => {
           for (const { name: t } of PRIMARY_TOOLS) {
             if (t === name) {
@@ -227,6 +265,8 @@ export default function CornerstoneViewer({
                   ? [{ mouseButton: MouseBindings.Auxiliary }]
                   : t === "Zoom"
                   ? [{ mouseButton: MouseBindings.Secondary }]
+                  : t === "StackScroll"
+                  ? [{ mouseButton: MouseBindings.Wheel }]
                   : [];
               tg.setToolActive(t, {
                 bindings: [{ mouseButton: MouseBindings.Primary }, ...extra],
@@ -235,6 +275,8 @@ export default function CornerstoneViewer({
               tg.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
             } else if (t === "Zoom") {
               tg.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
+            } else if (t === "StackScroll") {
+              tg.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
             } else {
               tg.setToolPassive(t);
             }
@@ -244,40 +286,139 @@ export default function CornerstoneViewer({
         setLeftTool("WindowLevel");
         setLeftToolRef.current = setLeftTool;
 
+        // --- Record: emit ordered viewer state changes ----------------------
+        // We read CURRENT values off the viewport in the handler (never trust
+        // the event-detail shape across Cornerstone versions). Camera/VOI are
+        // throttled ~50ms; order is preserved (latest value wins per window).
+        const emit = (e: ViewerEvent) => onEventRef.current?.(e);
+
+        let lastCamEmit = 0;
+        let lastVoiEmit = 0;
+        const THROTTLE = 50;
+
+        const emitSlice = () => {
+          const vp = viewportRef.current;
+          if (!vp) return;
+          emit({ type: "slice", index: vp.getCurrentImageIdIndex() });
+        };
+        const emitVoi = () => {
+          const vp = viewportRef.current;
+          if (!vp) return;
+          const now = performance.now();
+          if (now - lastVoiEmit < THROTTLE) return;
+          lastVoiEmit = now;
+          const v = voiToWwWc(vp.getProperties().voiRange);
+          if (v) emit({ type: "voi", ww: v.ww, wc: v.wc });
+        };
+        const emitCamera = () => {
+          const vp = viewportRef.current;
+          if (!vp) return;
+          const now = performance.now();
+          if (now - lastCamEmit < THROTTLE) return;
+          lastCamEmit = now;
+          emit({ type: "camera", zoom: vp.getZoom(), pan: vp.getPan() });
+        };
+
+        const el = elementRef.current;
+        const csEvents = core.Enums.Events;
+        const stackEvt = csEvents.STACK_NEW_IMAGE;
+        const voiEvt = csEvents.VOI_MODIFIED;
+        const camEvt = csEvents.CAMERA_MODIFIED;
+        el.addEventListener(stackEvt, emitSlice as EventListener);
+        el.addEventListener(voiEvt, emitVoi as EventListener);
+        el.addEventListener(camEvt, emitCamera as EventListener);
+        detachListeners = () => {
+          el.removeEventListener(stackEvt, emitSlice as EventListener);
+          el.removeEventListener(voiEvt, emitVoi as EventListener);
+          el.removeEventListener(camEvt, emitCamera as EventListener);
+        };
+
         resetRef.current = () => {
           cancelTweenRef.current();
           viewport.resetCamera();
           viewport.resetProperties?.();
           viewport.render();
+          setInverted(viewport.getProperties().invert ?? false);
+          setActivePreset(null);
         };
         clearRef.current = () => {
           annotation.state.removeAllAnnotations();
           viewport.render();
         };
-        invertRef.current = () => {
+        invertRef.current = (value?: boolean) => {
           const cur = viewport.getProperties().invert ?? false;
-          viewport.setProperties({ invert: !cur });
+          const next = value ?? !cur;
+          viewport.setProperties({ invert: next });
           viewport.render();
-          setInverted(!cur);
+          setInverted(next);
+          // A user-driven toggle is part of the record stream; a programmatic
+          // set (replay) is not (it would echo back into the recording).
+          if (value === undefined) emit({ type: "invert", value: next });
         };
 
-        // --- Build the imperative drive handle ------------------------------
-        const setWindow = (
-          ww: number,
-          wc: number,
-          durationMs = 500
-        ): void => {
+        // --- Replay: re-apply ONE recorded event verbatim (snaps, no tween) -
+        const applyEvent = (e: RecordedEvent) => {
+          const vp = viewportRef.current;
+          if (!vp) return;
+          cancelTweenRef.current();
+          switch (e.type) {
+            case "slice": {
+              const ids = vp.getImageIds();
+              const idx = Math.max(0, Math.min(ids.length - 1, e.index));
+              if (idx !== vp.getCurrentImageIdIndex()) void vp.setImageIdIndex(idx);
+              break;
+            }
+            case "voi":
+              vp.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
+              break;
+            case "camera":
+              vp.setZoom(e.zoom);
+              vp.setPan(e.pan);
+              break;
+            case "invert":
+              vp.setProperties({ invert: e.value });
+              setInverted(e.value);
+              break;
+            // cursor/annotation are overlay-only — not viewer state.
+          }
+          vp.render();
+        };
+
+        const getStartState = (): { sliceIndex: number; ww?: number; wc?: number } => {
+          const vp = viewportRef.current;
+          if (!vp) return { sliceIndex: 0 };
+          const v = voiToWwWc(vp.getProperties().voiRange);
+          return { sliceIndex: vp.getCurrentImageIdIndex(), ww: v?.ww, wc: v?.wc };
+        };
+
+        // --- Smooth (interpolated) driving for the guided tour --------------
+        const setWindow = (ww: number, wc: number, durationMs = 500): void => {
           const vp = viewportRef.current;
           if (!vp) return;
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
           cancelTweenRef.current();
           cancelTweenRef.current = tween(durationMs, (e) => {
-            const w = lerp(from.ww, ww, e);
-            const c = lerp(from.wc, wc, e);
-            vp.setProperties({ voiRange: wwWcToVoi(w, c) });
+            vp.setProperties({
+              voiRange: wwWcToVoi(lerp(from.ww, ww, e), lerp(from.wc, wc, e)),
+            });
             vp.render();
           });
         };
+
+        const applyPreset = (p: WindowPreset | null) => {
+          if (!p) {
+            // Full dynamic: reset to the series' own VOI.
+            const vp = viewportRef.current;
+            cancelTweenRef.current();
+            vp?.resetProperties?.();
+            vp?.render();
+            setActivePreset(FULL_DYNAMIC_ID);
+            return;
+          }
+          setWindow(p.ww, p.wc, 320);
+          setActivePreset(p.id);
+        };
+        applyPresetRef.current = applyPreset;
 
         const showStateFn = async (
           state: CornerstoneViewerState,
@@ -299,7 +440,6 @@ export default function CornerstoneViewer({
             }
           }
 
-          // Capture starts for the interpolated fields.
           const fromVoi = voiToWwWc(vp.getProperties().voiRange);
           const toWw = state.windowWidth ?? fromVoi?.ww;
           const toWc = state.windowCenter ?? fromVoi?.wc;
@@ -331,7 +471,10 @@ export default function CornerstoneViewer({
           imageCount: imageIds.length,
           showState: showStateFn,
           setWindow,
+          setInvert: (v: boolean) => invertRef.current(v),
           reset: () => resetRef.current(),
+          applyEvent,
+          getStartState,
         };
         if (controls) controls.current = handle;
         onReady?.(handle);
@@ -347,6 +490,7 @@ export default function CornerstoneViewer({
     return () => {
       disposed = true;
       cancelTweenRef.current();
+      detachListeners();
       viewportRef.current = null;
       if (controls) controls.current = null;
       try {
@@ -358,9 +502,46 @@ export default function CornerstoneViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
-  // Floating PACS-style icon toolbar — shown in BOTH demo and driven modes.
+  // Close the preset menu on outside click / Escape.
+  const presetMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!presetOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!presetMenuRef.current?.contains(e.target as Node)) setPresetOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPresetOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [presetOpen]);
+
+  const activePresetLabel =
+    activePreset === FULL_DYNAMIC_ID
+      ? "Full dynamic"
+      : WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? "W/L";
+
+  // Floating PACS-style toolbar — shown in BOTH demo and driven modes.
   const toolbar = (
-    <div className="pointer-events-auto absolute left-2 top-2 z-20 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-0.5 rounded-xl border border-strong/70 bg-elevated/85 p-1 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/60">
+    <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/70 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55">
+      {/* Brand mark */}
+      <span className="flex select-none items-center gap-1.5 pl-1 pr-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="h-3.5 w-3.5">
+            <circle cx="12" cy="12" r="8" />
+            <path d="M12 4v16M4 12h16" strokeLinecap="round" opacity="0.55" />
+          </svg>
+        </span>
+        <span className="hidden text-[11px] font-semibold tracking-tight text-primary sm:inline">
+          FlowRad
+        </span>
+      </span>
+      <span className="mx-0.5 h-6 w-px bg-strong/70" />
+
       {PRIMARY_TOOLS.map((t) => (
         <ToolButton
           key={t.name}
@@ -372,7 +553,67 @@ export default function CornerstoneViewer({
           <ToolIcon name={t.name} />
         </ToolButton>
       ))}
-      <span className="mx-0.5 h-5 w-px bg-strong/70" />
+
+      <span className="mx-0.5 h-6 w-px bg-strong/70" />
+
+      {/* Window/Level preset menu */}
+      <div className="relative" ref={presetMenuRef}>
+        <button
+          type="button"
+          disabled={!ready}
+          aria-haspopup="menu"
+          aria-expanded={presetOpen}
+          aria-label="Window/Level presets"
+          onClick={() => setPresetOpen((o) => !o)}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-all duration-150",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+            "disabled:cursor-not-allowed disabled:opacity-40",
+            presetOpen || activePreset
+              ? "bg-accent/15 text-accent"
+              : "text-secondary hover:bg-surface hover:text-primary"
+          )}
+        >
+          <ToolIcon name="Preset" />
+          <span className="max-w-[6rem] truncate tabular-nums">{activePresetLabel}</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3">
+            <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        {presetOpen && (
+          <div
+            role="menu"
+            aria-label="Window/Level presets"
+            className="absolute left-0 top-full z-30 mt-1.5 w-48 origin-top-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated/95 p-1 shadow-lg backdrop-blur"
+          >
+            <PresetItem
+              label="Full dynamic"
+              hint="series default"
+              active={activePreset === FULL_DYNAMIC_ID}
+              onClick={() => {
+                applyPresetRef.current(null);
+                setPresetOpen(false);
+              }}
+            />
+            <span className="my-1 block h-px bg-strong/50" />
+            {presets.map((p) => (
+              <PresetItem
+                key={p.id}
+                label={p.label}
+                hint={`${p.ww} / ${p.wc}`}
+                active={activePreset === p.id}
+                onClick={() => {
+                  applyPresetRef.current(p);
+                  setPresetOpen(false);
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <span className="mx-0.5 h-6 w-px bg-strong/70" />
+
       <ToolButton label="Invert" active={inverted} disabled={!ready} onClick={() => invertRef.current()}>
         <ToolIcon name="Invert" />
       </ToolButton>
@@ -451,6 +692,35 @@ function ToolButton({
   );
 }
 
+function PresetItem({
+  label,
+  hint,
+  active,
+  onClick,
+}: {
+  label: string;
+  hint: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={active}
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        active ? "bg-accent/15 text-accent" : "text-secondary hover:bg-surface hover:text-primary"
+      )}
+    >
+      <span className="font-medium">{label}</span>
+      <span className="tabular-nums text-muted">{hint}</span>
+    </button>
+  );
+}
+
 function ToolIcon({ name }: { name: string }) {
   const p = {
     className: "h-4 w-4",
@@ -480,6 +750,13 @@ function ToolIcon({ name }: { name: string }) {
         <svg {...p}>
           <circle cx="11" cy="11" r="6" />
           <path d="M20 20l-3.6-3.6M11 8.5v5M8.5 11h5" />
+        </svg>
+      );
+    case "StackScroll":
+      return (
+        <svg {...p}>
+          <rect x="6" y="3" width="12" height="18" rx="3" />
+          <path d="M12 7v6M9.5 9.5 12 7l2.5 2.5" />
         </svg>
       );
     case "Length":
@@ -517,6 +794,14 @@ function ToolIcon({ name }: { name: string }) {
       return (
         <svg {...p}>
           <path d="M5 19 19 5M12 5h7v7" />
+        </svg>
+      );
+    case "Preset":
+      return (
+        <svg {...p}>
+          <path d="M4 8h10M18 8h2M4 16h2M10 16h10" />
+          <circle cx="16" cy="8" r="2" fill="currentColor" stroke="none" />
+          <circle cx="8" cy="16" r="2" fill="currentColor" stroke="none" />
         </svg>
       );
     case "Invert":

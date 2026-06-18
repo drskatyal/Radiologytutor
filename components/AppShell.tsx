@@ -33,6 +33,16 @@ const NAV: NavLink[] = [
     ),
   },
   {
+    href: "/record",
+    label: "Record",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75">
+        <circle cx="10" cy="10" r="7" />
+        <circle cx="10" cy="10" r="3" fill="currentColor" stroke="none" />
+      </svg>
+    ),
+  },
+  {
     href: "/admin",
     label: "Admin",
     icon: (
