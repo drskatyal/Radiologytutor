@@ -43,6 +43,17 @@ export default async function CasePage({ params }: { params: { caseId: string } 
 
   const manifest = await buildPrefetchManifest(params.caseId, DEFAULT_ORG_ID);
   const source = resolveSource(manifest);
+  // True only when the case's OWN study resolved from Orthanc. When false we
+  // show a neutral sample image but suppress finding markers (they belong to
+  // the real study, not the sample) and flag it honestly.
+  const imagingResolved = manifest?.hasImaging ?? false;
 
-  return <StudentSession caseData={caseData} source={source} manifest={manifest} />;
+  return (
+    <StudentSession
+      caseData={caseData}
+      source={source}
+      manifest={manifest}
+      imagingResolved={imagingResolved}
+    />
+  );
 }

@@ -21,10 +21,13 @@ export default function StudentSession({
   caseData,
   source,
   manifest,
+  imagingResolved,
 }: {
   caseData: CaseData;
   source: ViewerSource;
   manifest: PrefetchManifest | null;
+  /** True when the case's own study resolved from Orthanc (vs a sample image). */
+  imagingResolved: boolean;
 }) {
   const [mode, setMode] = useState<SessionMode>("guided");
   const s = useStudentSession(caseData, mode);
@@ -50,13 +53,15 @@ export default function StudentSession({
           controls={s.controls}
           onReady={s.onViewerReady}
           marker={s.marker}
-          markerVisible={s.markerVisible}
+          // Markers belong to the real study — never paint them on a sample.
+          markerVisible={s.markerVisible && imagingResolved}
           ready={s.ready}
         />
-        {/* Floating case label over the imaging surface. */}
-        <div className="pointer-events-none absolute left-4 top-4 flex animate-fade-up items-center gap-2">
+        {/* Floating case label — top-right so it clears the viewer toolbar. */}
+        <div className="pointer-events-none absolute right-4 top-4 flex animate-fade-up flex-wrap items-center justify-end gap-2">
           <Badge variant="neutral">{caseData.title}</Badge>
           {subtitle && <Badge variant="accent">{subtitle}</Badge>}
+          {!imagingResolved && <Badge variant="warning">Sample imaging</Badge>}
         </div>
       </section>
 

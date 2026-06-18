@@ -17,7 +17,13 @@
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import { BUNDLED_CASE, type ViewerSource } from "../lib/viewerSource";
 import {
@@ -25,16 +31,20 @@ import {
   lerp,
   type CornerstoneViewerState,
 } from "../lib/viewerController";
+import { cn } from "@/components/ui/cn";
 
-// Tools selectable on the LEFT mouse button (mutually exclusive).
-const LEFT_TOOLS: { name: string; label: string }[] = [
-  { name: "WindowLevel", label: "Window/Level" },
+// Tools selectable on the LEFT mouse button. Pan/Zoom also keep their
+// middle/right bindings so the usual PACS mouse scheme still works.
+const PRIMARY_TOOLS: { name: string; label: string }[] = [
+  { name: "WindowLevel", label: "Window / Level" },
+  { name: "Pan", label: "Pan" },
+  { name: "Zoom", label: "Zoom" },
   { name: "Length", label: "Length" },
   { name: "Angle", label: "Angle" },
-  { name: "ArrowAnnotate", label: "Arrow" },
-  { name: "RectangleROI", label: "Rectangle" },
-  { name: "EllipticalROI", label: "Ellipse" },
+  { name: "EllipticalROI", label: "Ellipse ROI" },
+  { name: "RectangleROI", label: "Rectangle ROI" },
   { name: "Probe", label: "Probe" },
+  { name: "ArrowAnnotate", label: "Arrow" },
 ];
 
 // Minimal structural type for the bits of a StackViewport we drive.
@@ -46,8 +56,8 @@ interface DrivableViewport {
   getImageIds: () => string[];
   getCurrentImageIdIndex: () => number;
   setImageIdIndex: (i: number) => Promise<void> | void;
-  getProperties: () => { voiRange?: { lower: number; upper: number } };
-  setProperties: (p: { voiRange?: { lower: number; upper: number } }) => void;
+  getProperties: () => { voiRange?: { lower: number; upper: number }; invert?: boolean };
+  setProperties: (p: { voiRange?: { lower: number; upper: number }; invert?: boolean }) => void;
   getZoom: () => number;
   setZoom: (z: number) => void;
   getPan: () => [number, number];
@@ -117,9 +127,11 @@ export default function CornerstoneViewer({
   // Live viewport + the most recent rAF tween cancel fn (so we never overlap).
   const viewportRef = useRef<DrivableViewport | null>(null);
   const cancelTweenRef = useRef<() => void>(() => {});
+  const invertRef = useRef<() => void>(() => {});
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState("WindowLevel");
   const [ready, setReady] = useState(false);
+  const [inverted, setInverted] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -205,13 +217,24 @@ export default function CornerstoneViewer({
           bindings: [{ mouseButton: MouseBindings.Auxiliary }],
         });
 
-        // Left button: pick from the toolbar (default window/level).
+        // Left button: pick from the toolbar (default window/level). Pan and
+        // Zoom keep their middle/right bindings even when not the left tool.
         const setLeftTool = (name: string) => {
-          for (const { name: t } of LEFT_TOOLS) {
+          for (const { name: t } of PRIMARY_TOOLS) {
             if (t === name) {
+              const extra =
+                t === "Pan"
+                  ? [{ mouseButton: MouseBindings.Auxiliary }]
+                  : t === "Zoom"
+                  ? [{ mouseButton: MouseBindings.Secondary }]
+                  : [];
               tg.setToolActive(t, {
-                bindings: [{ mouseButton: MouseBindings.Primary }],
+                bindings: [{ mouseButton: MouseBindings.Primary }, ...extra],
               });
+            } else if (t === "Pan") {
+              tg.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
+            } else if (t === "Zoom") {
+              tg.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
             } else {
               tg.setToolPassive(t);
             }
@@ -230,6 +253,12 @@ export default function CornerstoneViewer({
         clearRef.current = () => {
           annotation.state.removeAllAnnotations();
           viewport.render();
+        };
+        invertRef.current = () => {
+          const cur = viewport.getProperties().invert ?? false;
+          viewport.setProperties({ invert: !cur });
+          viewport.render();
+          setInverted(!cur);
         };
 
         // --- Build the imperative drive handle ------------------------------
@@ -329,62 +358,187 @@ export default function CornerstoneViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
-  // Driven mode: the viewer fills its container; the parent owns the chrome.
-  if (!showToolbar) {
-    return (
+  // Floating PACS-style icon toolbar — shown in BOTH demo and driven modes.
+  const toolbar = (
+    <div className="pointer-events-auto absolute left-2 top-2 z-20 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-0.5 rounded-xl border border-strong/70 bg-elevated/85 p-1 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/60">
+      {PRIMARY_TOOLS.map((t) => (
+        <ToolButton
+          key={t.name}
+          label={t.label}
+          active={activeTool === t.name}
+          disabled={!ready}
+          onClick={() => setLeftToolRef.current(t.name)}
+        >
+          <ToolIcon name={t.name} />
+        </ToolButton>
+      ))}
+      <span className="mx-0.5 h-5 w-px bg-strong/70" />
+      <ToolButton label="Invert" active={inverted} disabled={!ready} onClick={() => invertRef.current()}>
+        <ToolIcon name="Invert" />
+      </ToolButton>
+      <ToolButton label="Reset view" disabled={!ready} onClick={() => resetRef.current()}>
+        <ToolIcon name="Reset" />
+      </ToolButton>
+      <ToolButton label="Clear annotations" disabled={!ready} onClick={() => clearRef.current()}>
+        <ToolIcon name="Clear" />
+      </ToolButton>
+    </div>
+  );
+
+  return (
+    <div className={cn("relative", showToolbar ? "w-full" : "h-full w-full", className)}>
       <div
         ref={elementRef}
-        className={className ?? "h-full w-full bg-imaging"}
+        className={cn(
+          "bg-imaging",
+          showToolbar
+            ? "aspect-square w-full overflow-hidden rounded-xl border border-subtle"
+            : "absolute inset-0"
+        )}
         onContextMenu={(e) => e.preventDefault()}
         aria-label="DICOM viewer"
         role="img"
       />
-    );
-  }
-
-  // Demo mode: original inline-styled toolbar + status line (unchanged).
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {LEFT_TOOLS.map((t) => (
-          <button
-            key={t.name}
-            disabled={!ready}
-            onClick={() => setLeftToolRef.current(t.name)}
-            style={toolBtnStyle(activeTool === t.name)}
-          >
-            {t.label}
-          </button>
-        ))}
-        <span style={{ flex: 1 }} />
-        <button disabled={!ready} onClick={() => resetRef.current()} style={toolBtnStyle(false)}>
-          Reset
-        </button>
-        <button disabled={!ready} onClick={() => clearRef.current()} style={toolBtnStyle(false)}>
-          Clear
-        </button>
-      </div>
-
-      <div
-        ref={elementRef}
-        style={{ width: "100%", aspectRatio: "1 / 1", background: "#000" }}
-        onContextMenu={(e) => e.preventDefault()}
-      />
-      <p style={{ fontSize: 12, color: "#9aa", margin: 0 }}>
-        {status} · wheel = scroll, right-drag = zoom, middle-drag = pan, left = selected tool
-      </p>
+      {toolbar}
+      {!ready && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <span className="rounded-md bg-elevated/80 px-3 py-1.5 text-xs text-muted backdrop-blur">
+            {status}
+          </span>
+        </div>
+      )}
+      {showToolbar && (
+        <p className="mt-2 text-xs text-muted">
+          Wheel scroll · right-drag zoom · middle-drag pan · left button = selected tool
+        </p>
+      )}
     </div>
   );
 }
 
-function toolBtnStyle(active: boolean): React.CSSProperties {
-  return {
-    padding: "5px 10px",
-    fontSize: 12,
-    borderRadius: 6,
-    border: `1px solid ${active ? "#2d6cdf" : "#345"}`,
-    background: active ? "#2d6cdf" : "transparent",
-    color: active ? "#fff" : "#9aa",
-    cursor: "pointer",
+function ToolButton({
+  label,
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+        active
+          ? "bg-accent text-accent-foreground shadow-sm"
+          : "text-secondary hover:bg-surface hover:text-primary active:scale-95"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolIcon({ name }: { name: string }) {
+  const p = {
+    className: "h-4 w-4",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
   };
+  switch (name) {
+    case "WindowLevel":
+      return (
+        <svg {...p}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "Pan":
+      return (
+        <svg {...p}>
+          <path d="M12 3v18M3 12h18M9.5 5.5 12 3l2.5 2.5M9.5 18.5 12 21l2.5-2.5M5.5 9.5 3 12l2.5 2.5M18.5 9.5 21 12l-2.5 2.5" />
+        </svg>
+      );
+    case "Zoom":
+      return (
+        <svg {...p}>
+          <circle cx="11" cy="11" r="6" />
+          <path d="M20 20l-3.6-3.6M11 8.5v5M8.5 11h5" />
+        </svg>
+      );
+    case "Length":
+      return (
+        <svg {...p}>
+          <path d="M5 19 19 5M5.5 15.5l3 3M9.5 11.5l3 3M13.5 7.5l3 3" />
+        </svg>
+      );
+    case "Angle":
+      return (
+        <svg {...p}>
+          <path d="M4 20h16M4 20 18 6M4 20a9 9 0 0 0 5-7" />
+        </svg>
+      );
+    case "EllipticalROI":
+      return (
+        <svg {...p}>
+          <ellipse cx="12" cy="12" rx="9" ry="6" />
+        </svg>
+      );
+    case "RectangleROI":
+      return (
+        <svg {...p}>
+          <rect x="4" y="6" width="16" height="12" rx="1.5" />
+        </svg>
+      );
+    case "Probe":
+      return (
+        <svg {...p}>
+          <circle cx="12" cy="12" r="2.5" />
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+        </svg>
+      );
+    case "ArrowAnnotate":
+      return (
+        <svg {...p}>
+          <path d="M5 19 19 5M12 5h7v7" />
+        </svg>
+      );
+    case "Invert":
+      return (
+        <svg {...p}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "Reset":
+      return (
+        <svg {...p}>
+          <path d="M4 12a8 8 0 1 1 2.4 5.7M4 12V7M4 12h5" />
+        </svg>
+      );
+    case "Clear":
+      return (
+        <svg {...p}>
+          <path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12" />
+        </svg>
+      );
+    default:
+      return null;
+  }
 }
