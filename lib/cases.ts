@@ -40,6 +40,11 @@ import type {
   Finding,
   Patient,
   Study,
+  Author,
+  Course,
+  Playlist,
+  Difficulty,
+  BodySystem,
 } from "./types";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 
@@ -104,8 +109,8 @@ async function seedIfEmpty(): Promise<void> {
     if (existing.length > 0) return;
     // Cases live at the root.
     await copyJsonFiles(SEED_DIR, DATA_DIR);
-    // Entity subdirectories (patients, studies) mirror the store layout.
-    for (const sub of ["patients", "studies"] as const) {
+    // Entity subdirectories mirror the store layout.
+    for (const sub of ["patients", "studies", "authors", "courses", "playlists"] as const) {
       const src = path.join(SEED_DIR, sub);
       const dst = path.join(DATA_DIR, sub);
       await fs.mkdir(dst, { recursive: true });
@@ -126,7 +131,13 @@ async function copyJsonFiles(src: string, dst: string): Promise<void> {
   }
 }
 
-type CollectionName = "cases" | "patients" | "studies";
+type CollectionName =
+  | "cases"
+  | "patients"
+  | "studies"
+  | "authors"
+  | "courses"
+  | "playlists";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -259,7 +270,14 @@ async function seedMongoIfEmpty(): Promise<void> {
   // Mirror JsonCollection: "empty" is decided by the cases collection.
   const count = await db.collection("cases").estimatedDocumentCount();
   if (count > 0) return;
-  for (const name of ["cases", "patients", "studies"] as const) {
+  for (const name of [
+    "cases",
+    "patients",
+    "studies",
+    "authors",
+    "courses",
+    "playlists",
+  ] as const) {
     const records = await readSeedRecords<{ id: string }>(name);
     if (records.length === 0) continue;
     const docs = records.map(({ id, ...rest }) => ({ _id: id, ...rest }));
@@ -340,6 +358,9 @@ type CaseStored = Case & { id: string };
 const patients = collection<Patient>("patients");
 const studies = collection<Study>("studies");
 const casesStore = collection<CaseStored>("cases");
+const authorsStore = collection<Author>("authors");
+const coursesStore = collection<Course>("courses");
+const playlistsStore = collection<Playlist>("playlists");
 
 function toStored(c: Case): CaseStored {
   return { ...c, id: c.caseId };
@@ -482,6 +503,10 @@ export interface CreateCaseInput {
   specialty?: string;
   status?: CaseStatus;
   studyRefs?: CaseStudyRef[];
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  tags?: string[];
+  authorId?: string;
 }
 
 /** Create a new case under an org. Returns the created entity. */
@@ -499,6 +524,10 @@ export async function createCaseForOrg(orgId: string, input: CreateCaseInput): P
     specialty: input.specialty,
     status: input.status ?? "draft",
     studyRefs: input.studyRefs,
+    difficulty: input.difficulty,
+    system: input.system,
+    tags: input.tags,
+    authorId: input.authorId,
     createdAt: now,
     updatedAt: now,
   };
@@ -510,7 +539,17 @@ export async function createCaseForOrg(orgId: string, input: CreateCaseInput): P
 export type UpdateCaseInput = Partial<
   Pick<
     Case,
-    "title" | "modality" | "pacsbinBaseUrl" | "patientId" | "specialty" | "status" | "studyRefs"
+    | "title"
+    | "modality"
+    | "pacsbinBaseUrl"
+    | "patientId"
+    | "specialty"
+    | "status"
+    | "studyRefs"
+    | "difficulty"
+    | "system"
+    | "tags"
+    | "authorId"
   >
 >;
 
@@ -759,4 +798,294 @@ export async function listStudiesChronological(
     if (b.studyDate) return 1;
     return a.createdAt.localeCompare(b.createdAt);
   });
+}
+
+// ============================================================================
+// Catalog — the filterable case library (CLAUDE.md §2). A single org-scoped
+// query that the public /api/catalog route and the catalog pages share.
+// ============================================================================
+
+export interface CatalogFilter {
+  system?: BodySystem;
+  difficulty?: Difficulty;
+  modality?: string;
+  specialty?: string;
+  authorId?: string;
+  /** Free-text search over title / tags / specialty. */
+  q?: string;
+  /** Filter by publication status (defaults to all when omitted). */
+  status?: CaseStatus;
+  /** Sort key. Defaults to most-recently-updated. */
+  sort?: "recent" | "title" | "difficulty";
+}
+
+const DIFFICULTY_RANK: Record<Difficulty, number> = {
+  beginner: 0,
+  intermediate: 1,
+  advanced: 2,
+};
+
+/**
+ * List an org's cases matching a set of catalog filters. All filters are AND-ed;
+ * omitted filters don't constrain. Back-compatible: cases without the new
+ * taxonomy fields simply don't match `system`/`difficulty`/`author` filters but
+ * always appear in the unfiltered catalog.
+ */
+export async function listCatalogCases(
+  orgId: string,
+  filter: CatalogFilter = {}
+): Promise<Case[]> {
+  const all = (await casesStore.all()).map(normalizeCase).filter((c) => c.orgId === orgId);
+  const q = filter.q?.trim().toLowerCase();
+
+  const matched = all.filter((c) => {
+    if (filter.status && c.status !== filter.status) return false;
+    if (filter.system && c.system !== filter.system) return false;
+    if (filter.difficulty && c.difficulty !== filter.difficulty) return false;
+    if (filter.modality && c.modality !== filter.modality) return false;
+    if (filter.specialty && c.specialty !== filter.specialty) return false;
+    if (filter.authorId && c.authorId !== filter.authorId) return false;
+    if (q) {
+      const haystack = [
+        c.title,
+        c.specialty ?? "",
+        c.modality,
+        c.system ?? "",
+        ...(c.tags ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const sort = filter.sort ?? "recent";
+  return matched.sort((a, b) => {
+    if (sort === "title") return a.title.localeCompare(b.title);
+    if (sort === "difficulty") {
+      const ra = a.difficulty ? DIFFICULTY_RANK[a.difficulty] : 99;
+      const rb = b.difficulty ? DIFFICULTY_RANK[b.difficulty] : 99;
+      if (ra !== rb) return ra - rb;
+      return a.title.localeCompare(b.title);
+    }
+    return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+  });
+}
+
+/** Distinct facet values present in an org's cases — to populate filter UIs. */
+export interface CatalogFacets {
+  systems: BodySystem[];
+  difficulties: Difficulty[];
+  modalities: string[];
+  specialties: string[];
+}
+
+export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
+  const all = (await casesStore.all()).map(normalizeCase).filter((c) => c.orgId === orgId);
+  const systems = new Set<BodySystem>();
+  const difficulties = new Set<Difficulty>();
+  const modalities = new Set<string>();
+  const specialties = new Set<string>();
+  for (const c of all) {
+    if (c.system) systems.add(c.system);
+    if (c.difficulty) difficulties.add(c.difficulty);
+    if (c.modality) modalities.add(c.modality);
+    if (c.specialty) specialties.add(c.specialty);
+  }
+  return {
+    systems: [...systems],
+    difficulties: [...difficulties],
+    modalities: [...modalities].sort(),
+    specialties: [...specialties].sort(),
+  };
+}
+
+// ============================================================================
+// orgId-scoped Author API
+// ============================================================================
+
+export async function listAuthors(orgId: string): Promise<Author[]> {
+  const all = await authorsStore.all();
+  return all.filter((a) => a.orgId === orgId).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getAuthor(orgId: string, authorId: string): Promise<Author | null> {
+  const a = await authorsStore.get(authorId);
+  return a && a.orgId === orgId ? a : null;
+}
+
+export interface CreateAuthorInput {
+  id?: string;
+  name: string;
+  avatarUrl?: string;
+  bio?: string;
+  institution?: string;
+}
+
+export async function createAuthor(orgId: string, input: CreateAuthorInput): Promise<Author> {
+  const now = nowIso();
+  const author: Author = {
+    id: input.id ? safeId(input.id) : genId("auth"),
+    orgId,
+    name: input.name,
+    avatarUrl: input.avatarUrl,
+    bio: input.bio,
+    institution: input.institution,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await authorsStore.put(author);
+  return author;
+}
+
+export async function updateAuthor(
+  orgId: string,
+  authorId: string,
+  patch: Partial<Pick<Author, "name" | "avatarUrl" | "bio" | "institution">>
+): Promise<Author | null> {
+  const current = await getAuthor(orgId, authorId);
+  if (!current) return null;
+  const updated: Author = { ...current, ...patch, id: authorId, orgId, updatedAt: nowIso() };
+  await authorsStore.put(updated);
+  return updated;
+}
+
+export async function deleteAuthor(orgId: string, authorId: string): Promise<boolean> {
+  const current = await getAuthor(orgId, authorId);
+  if (!current) return false;
+  return authorsStore.remove(authorId);
+}
+
+// ============================================================================
+// orgId-scoped Course API
+// ============================================================================
+
+export async function listCourses(orgId: string, opts: { status?: CaseStatus } = {}): Promise<Course[]> {
+  const all = await coursesStore.all();
+  return all
+    .filter((c) => c.orgId === orgId)
+    .filter((c) => (opts.status ? c.status === opts.status : true))
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {
+  const c = await coursesStore.get(courseId);
+  return c && c.orgId === orgId ? c : null;
+}
+
+export interface CreateCourseInput {
+  id?: string;
+  title: string;
+  description?: string;
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  authorId?: string;
+  caseIds?: string[];
+  status?: CaseStatus;
+}
+
+export async function createCourse(orgId: string, input: CreateCourseInput): Promise<Course> {
+  const now = nowIso();
+  const course: Course = {
+    id: input.id ? safeId(input.id) : genId("course"),
+    orgId,
+    title: input.title,
+    description: input.description,
+    difficulty: input.difficulty,
+    system: input.system,
+    authorId: input.authorId,
+    caseIds: input.caseIds ?? [],
+    status: input.status ?? "draft",
+    createdAt: now,
+    updatedAt: now,
+  };
+  await coursesStore.put(course);
+  return course;
+}
+
+export async function updateCourse(
+  orgId: string,
+  courseId: string,
+  patch: Partial<
+    Pick<Course, "title" | "description" | "difficulty" | "system" | "authorId" | "caseIds" | "status">
+  >
+): Promise<Course | null> {
+  const current = await getCourse(orgId, courseId);
+  if (!current) return null;
+  const updated: Course = { ...current, ...patch, id: courseId, orgId, updatedAt: nowIso() };
+  await coursesStore.put(updated);
+  return updated;
+}
+
+export async function deleteCourse(orgId: string, courseId: string): Promise<boolean> {
+  const current = await getCourse(orgId, courseId);
+  if (!current) return false;
+  return coursesStore.remove(courseId);
+}
+
+// ============================================================================
+// orgId-scoped Playlist API
+// ============================================================================
+
+export async function listPlaylists(orgId: string): Promise<Playlist[]> {
+  const all = await playlistsStore.all();
+  return all
+    .filter((p) => p.orgId === orgId)
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function getPlaylist(orgId: string, playlistId: string): Promise<Playlist | null> {
+  const p = await playlistsStore.get(playlistId);
+  return p && p.orgId === orgId ? p : null;
+}
+
+export interface CreatePlaylistInput {
+  id?: string;
+  title: string;
+  description?: string;
+  caseIds?: string[];
+}
+
+export async function createPlaylist(orgId: string, input: CreatePlaylistInput): Promise<Playlist> {
+  const now = nowIso();
+  const playlist: Playlist = {
+    id: input.id ? safeId(input.id) : genId("pl"),
+    orgId,
+    title: input.title,
+    description: input.description,
+    caseIds: input.caseIds ?? [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  await playlistsStore.put(playlist);
+  return playlist;
+}
+
+export async function updatePlaylist(
+  orgId: string,
+  playlistId: string,
+  patch: Partial<Pick<Playlist, "title" | "description" | "caseIds">>
+): Promise<Playlist | null> {
+  const current = await getPlaylist(orgId, playlistId);
+  if (!current) return null;
+  const updated: Playlist = { ...current, ...patch, id: playlistId, orgId, updatedAt: nowIso() };
+  await playlistsStore.put(updated);
+  return updated;
+}
+
+export async function deletePlaylist(orgId: string, playlistId: string): Promise<boolean> {
+  const current = await getPlaylist(orgId, playlistId);
+  if (!current) return false;
+  return playlistsStore.remove(playlistId);
+}
+
+/**
+ * Resolve an ordered list of case IDs into full cases, preserving order and
+ * dropping any that no longer exist (or belong to another org). Shared by the
+ * course/playlist pages so a curated rail never renders dangling references.
+ */
+export async function getCasesByIds(orgId: string, caseIds: string[]): Promise<Case[]> {
+  const resolved = await Promise.all(caseIds.map((id) => getCaseForOrg(orgId, id)));
+  return resolved.filter((c): c is Case => c != null);
 }
