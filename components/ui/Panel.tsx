@@ -25,15 +25,17 @@ export function Panel({
   return (
     <section
       className={cn(
-        "flex min-h-0 flex-col overflow-hidden rounded-xl border border-subtle bg-surface",
+        "flex min-h-0 flex-col overflow-hidden rounded-xl border border-subtle bg-surface shadow-sm surface-hairline",
         className
       )}
       {...props}
     >
       {(title || actions) && (
-        <header className="flex items-center justify-between gap-3 border-b border-subtle px-4 py-3">
+        <header className="flex items-center justify-between gap-3 border-b border-subtle bg-elevated/40 px-4 py-3">
           {title ? (
-            <div className="text-sm font-semibold text-primary">{title}</div>
+            <div className="text-[13px] font-semibold tracking-tight text-primary">
+              {title}
+            </div>
           ) : (
             <span />
           )}

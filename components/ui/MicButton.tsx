@@ -1,5 +1,7 @@
 "use client";
 
+import { motion, useReducedMotion } from "framer-motion";
+import { Mic, Square } from "lucide-react";
 import { cn } from "./cn";
 import { Spinner } from "./Spinner";
 
@@ -17,19 +19,6 @@ export interface MicButtonProps {
   className?: string;
 }
 
-const MicIcon = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-6 w-6">
-    <rect x="9" y="3" width="6" height="11" rx="3" />
-    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" strokeLinecap="round" />
-  </svg>
-);
-
-const StopIcon = (
-  <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-    <rect x="6" y="6" width="12" height="12" rx="2.5" />
-  </svg>
-);
-
 /**
  * Polished push-to-talk control. Stateless w.r.t. audio — it only reflects the
  * `state` prop and fires `onStart`/`onStop`. Three states: idle, recording
@@ -43,6 +32,7 @@ export function MicButton({
   label,
   className,
 }: MicButtonProps) {
+  const reduce = useReducedMotion();
   const isRecording = state === "recording";
   const isProcessing = state === "processing";
 
@@ -66,31 +56,44 @@ export function MicButton({
 
   return (
     <div className={cn("flex items-center gap-3", className)}>
-      <button
-        type="button"
-        aria-label={ariaLabel}
-        aria-pressed={isRecording}
-        disabled={disabled || isProcessing}
-        onClick={handleClick}
-        className={cn(
-          "relative flex h-14 w-14 items-center justify-center rounded-full transition-all duration-200",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
-          "disabled:cursor-not-allowed disabled:opacity-60",
-          isRecording
-            ? "animate-mic-pulse bg-danger text-white"
-            : isProcessing
-              ? "bg-elevated text-secondary"
-              : "bg-accent text-accent-foreground hover:bg-accent/90 hover:scale-105 active:scale-95 shadow-md"
+      <div className="relative">
+        {/* Soft halo behind the idle button — calm, premium, draws the eye. */}
+        {!isRecording && !isProcessing && !reduce && (
+          <motion.span
+            aria-hidden="true"
+            className="absolute inset-0 -z-10 rounded-full bg-accent/30 blur-md"
+            animate={{ opacity: [0.4, 0.75, 0.4], scale: [0.95, 1.08, 0.95] }}
+            transition={{ duration: 3, ease: "easeInOut", repeat: Infinity }}
+          />
         )}
-      >
-        {isProcessing ? (
-          <Spinner size="md" label="Processing" />
-        ) : isRecording ? (
-          StopIcon
-        ) : (
-          MicIcon
-        )}
-      </button>
+        <motion.button
+          type="button"
+          aria-label={ariaLabel}
+          aria-pressed={isRecording}
+          disabled={disabled || isProcessing}
+          onClick={handleClick}
+          whileTap={reduce ? undefined : { scale: 0.93 }}
+          whileHover={reduce || isRecording || isProcessing ? undefined : { scale: 1.05 }}
+          className={cn(
+            "relative flex h-14 w-14 items-center justify-center rounded-full transition-colors duration-200",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+            "disabled:cursor-not-allowed disabled:opacity-60",
+            isRecording
+              ? "animate-mic-pulse bg-danger text-white"
+              : isProcessing
+                ? "bg-elevated text-secondary"
+                : "bg-accent text-accent-foreground shadow-md hover:shadow-glow"
+          )}
+        >
+          {isProcessing ? (
+            <Spinner size="md" label="Processing" />
+          ) : isRecording ? (
+            <Square className="h-5 w-5 fill-current" strokeWidth={0} />
+          ) : (
+            <Mic className="h-6 w-6" />
+          )}
+        </motion.button>
+      </div>
       <span
         className={cn(
           "text-sm font-medium tabular-nums",

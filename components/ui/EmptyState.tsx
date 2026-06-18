@@ -20,20 +20,29 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-dashed border-strong bg-surface/50 px-6 py-12 text-center",
+        "relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-strong bg-surface/60 px-6 py-14 text-center shadow-sm",
         className
       )}
     >
+      {/* Faint accent wash behind the icon for depth. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-1/2 top-8 h-32 w-32 -translate-x-1/2 rounded-full bg-accent/10 blur-3xl"
+      />
       {icon && (
-        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-elevated text-secondary [&_svg]:h-6 [&_svg]:w-6">
+        <div className="relative mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-subtle bg-elevated text-accent shadow-md surface-hairline [&_svg]:h-6 [&_svg]:w-6">
           {icon}
         </div>
       )}
-      <h3 className="text-sm font-semibold text-primary">{title}</h3>
+      <h3 className="relative font-display text-base font-semibold tracking-tight text-primary">
+        {title}
+      </h3>
       {description && (
-        <p className="mt-1 max-w-sm text-sm text-muted">{description}</p>
+        <p className="relative mt-1.5 max-w-sm text-sm leading-relaxed text-muted">
+          {description}
+        </p>
       )}
-      {action && <div className="mt-5">{action}</div>}
+      {action && <div className="relative mt-6">{action}</div>}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
+import * as Dialog from "@radix-ui/react-dialog";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { X } from "lucide-react";
 import { cn } from "./cn";
 import { IconButton } from "./IconButton";
 
@@ -23,7 +24,11 @@ export interface ModalProps {
   children?: React.ReactNode;
 }
 
-/** Accessible modal dialog. Closes on Escape, backdrop click, and ✕. */
+/**
+ * Accessible modal dialog built on Radix Dialog (focus trap, scroll lock,
+ * Escape + backdrop close, ARIA wiring) with framer-motion spring transitions.
+ * Same `ModalProps` API as before: drive it with `open` / `onClose`.
+ */
 export function Modal({
   open,
   onClose,
@@ -33,69 +38,88 @@ export function Modal({
   size = "md",
   children,
 }: ModalProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
+  const reduce = useReducedMotion();
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    // Focus the panel for keyboard users.
-    panelRef.current?.focus();
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [open, onClose]);
+  return (
+    <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
+      <AnimatePresence>
+        {open && (
+          <Dialog.Portal forceMount>
+            <Dialog.Overlay asChild forceMount>
+              <motion.div
+                className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.16, ease: "easeOut" }}
+              />
+            </Dialog.Overlay>
 
-  if (!open || typeof document === "undefined") return null;
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <Dialog.Content
+                asChild
+                forceMount
+                onOpenAutoFocus={(e) => {
+                  // Avoid grabbing focus onto the first field abruptly; the panel
+                  // itself is focusable, matching prior behaviour.
+                  e.preventDefault();
+                }}
+                aria-describedby={description ? undefined : undefined}
+              >
+                <motion.div
+                  className={cn(
+                    "relative w-full overflow-hidden rounded-2xl border border-subtle bg-elevated shadow-lg surface-hairline focus:outline-none",
+                    SIZES[size]
+                  )}
+                  initial={reduce ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={reduce ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.98 }}
+                  transition={
+                    reduce
+                      ? { duration: 0.12 }
+                      : { type: "spring", duration: 0.32, bounce: 0.18 }
+                  }
+                  tabIndex={-1}
+                >
+                  {/* Accent hairline along the top edge for a premium seam. */}
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/50 to-transparent"
+                  />
+                  <div className="flex items-start justify-between gap-4 border-b border-subtle px-5 py-4">
+                    <div className="min-w-0">
+                      {title && (
+                        <Dialog.Title className="font-display text-base font-semibold tracking-tight text-primary">
+                          {title}
+                        </Dialog.Title>
+                      )}
+                      {description && (
+                        <Dialog.Description className="mt-0.5 text-sm text-muted">
+                          {description}
+                        </Dialog.Description>
+                      )}
+                    </div>
+                    <Dialog.Close asChild>
+                      <IconButton aria-label="Close dialog" size="sm">
+                        <X />
+                      </IconButton>
+                    </Dialog.Close>
+                  </div>
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div
-        className="absolute inset-0 animate-overlay-in bg-black/70 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className={cn(
-          "relative z-10 w-full animate-modal-in rounded-2xl border border-subtle bg-elevated shadow-lg focus:outline-none",
-          SIZES[size]
-        )}
-      >
-        {(title || true) && (
-          <div className="flex items-start justify-between gap-4 border-b border-subtle px-5 py-4">
-            <div className="min-w-0">
-              {title && (
-                <h2 className="text-base font-semibold text-primary">{title}</h2>
-              )}
-              {description && (
-                <p className="mt-0.5 text-sm text-muted">{description}</p>
-              )}
+                  {children && (
+                    <div className="px-5 py-4 text-sm text-secondary">{children}</div>
+                  )}
+                  {footer && (
+                    <div className="flex items-center justify-end gap-2 border-t border-subtle bg-surface/40 px-5 py-4">
+                      {footer}
+                    </div>
+                  )}
+                </motion.div>
+              </Dialog.Content>
             </div>
-            <IconButton aria-label="Close dialog" size="sm" onClick={onClose}>
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75">
-                <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-              </svg>
-            </IconButton>
-          </div>
+          </Dialog.Portal>
         )}
-        {children && <div className="px-5 py-4 text-sm text-secondary">{children}</div>}
-        {footer && (
-          <div className="flex items-center justify-end gap-2 border-t border-subtle px-5 py-4">
-            {footer}
-          </div>
-        )}
-      </div>
-    </div>,
-    document.body
+      </AnimatePresence>
+    </Dialog.Root>
   );
 }

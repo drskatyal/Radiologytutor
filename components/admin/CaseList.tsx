@@ -6,6 +6,7 @@
 // screens and stacked cards on narrow ones.
 
 import Link from "next/link";
+import { Eye, Pencil, Trash2 } from "lucide-react";
 import { Badge, Button, IconButton } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { formatUpdated, STATUS_BADGE } from "./format";
@@ -104,10 +105,7 @@ export function CaseList({
                   aria-label={`Open ${c.title} in viewer`}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-secondary transition-colors hover:bg-elevated hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas [&_svg]:h-4 [&_svg]:w-4"
                 >
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75">
-                    <path d="M2.5 10S5 4.5 10 4.5 17.5 10 17.5 10 15 15.5 10 15.5 2.5 10 2.5 10z" strokeLinejoin="round" />
-                    <circle cx="10" cy="10" r="2.25" />
-                  </svg>
+                  <Eye aria-hidden="true" />
                 </Link>
                 <Button
                   size="sm"
@@ -124,10 +122,7 @@ export function CaseList({
                   onClick={() => onEdit(c)}
                   disabled={busy}
                 >
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75">
-                    <path d="M4 13.5V16h2.5L15 7.5 12.5 5 4 13.5z" strokeLinejoin="round" />
-                    <path d="M11.5 6l2.5 2.5" strokeLinecap="round" />
-                  </svg>
+                  <Pencil aria-hidden="true" />
                 </IconButton>
                 <IconButton
                   aria-label={`Delete ${c.title}`}
@@ -136,9 +131,7 @@ export function CaseList({
                   onClick={() => onDelete(c)}
                   disabled={busy}
                 >
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75">
-                    <path d="M5 6h10M8 6V4.5h4V6M6.5 6l.5 9h6l.5-9" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <Trash2 aria-hidden="true" />
                 </IconButton>
               </div>
             </li>

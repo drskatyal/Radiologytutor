@@ -10,6 +10,7 @@
 // view; this surface stays focused on the conversation.
 
 import { useEffect, useRef, useState } from "react";
+import { Globe, Mic, Play, Square } from "lucide-react";
 import { Badge, Spinner, cn, type MicState } from "@/components/ui";
 import { Composer } from "./Composer";
 import type { OrbState } from "./AgentOrb";
@@ -188,10 +189,7 @@ function ChatBubble({
         >
           {turn.voice && isUser && (
             <span className="mr-1.5 inline-flex translate-y-0.5 text-accent-foreground/80" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0M12 18v3" strokeLinecap="round" />
-              </svg>
+              <Mic className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
           )}
           {turn.pending ? (
@@ -233,13 +231,9 @@ function ReplayVoiceButton({ speaking, onClick }: { speaking: boolean; onClick: 
       )}
     >
       {speaking ? (
-        <svg viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3" aria-hidden="true">
-          <rect x="6" y="6" width="12" height="12" rx="2" />
-        </svg>
+        <Square className="h-3 w-3" fill="currentColor" aria-hidden="true" />
       ) : (
-        <svg viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3" aria-hidden="true">
-          <path d="M8 5v14l11-7z" />
-        </svg>
+        <Play className="h-3 w-3" fill="currentColor" aria-hidden="true" />
       )}
       {speaking ? "Stop" : "Replay voice"}
     </button>
@@ -300,17 +294,5 @@ function SourceChip({ source }: { source: ChatSource }) {
 }
 
 function GlobeIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      className="h-3.5 w-3.5 shrink-0 text-muted"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18" strokeLinecap="round" />
-    </svg>
-  );
+  return <Globe className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />;
 }

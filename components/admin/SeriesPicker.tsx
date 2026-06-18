@@ -7,6 +7,7 @@
 // rendered straight from the DICOMweb proxy.
 
 import { useState } from "react";
+import { ImageIcon } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 
@@ -46,10 +47,7 @@ function SeriesThumb({ option }: { option: SeriesOption }) {
           onError={() => setErrored(true)}
         />
       ) : (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-5 w-5 text-muted">
-          <rect x="3" y="5" width="18" height="14" rx="2" />
-          <path d="M3 15l4-4 3 3 4-5 7 7" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <ImageIcon className="h-5 w-5 text-muted" aria-hidden="true" />
       )}
     </div>
   );

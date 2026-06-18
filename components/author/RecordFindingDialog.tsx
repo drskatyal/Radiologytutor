@@ -16,6 +16,7 @@
 // swappable seam); the captured track replays identically wherever it's shown.
 
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import {
   Button,
   Badge,
@@ -396,9 +397,7 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
                       }
                       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-secondary transition-colors hover:bg-danger/15 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                     >
-                      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-3.5 w-3.5">
-                        <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-                      </svg>
+                      <X className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
                   </li>
                 ))}

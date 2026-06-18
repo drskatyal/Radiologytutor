@@ -8,6 +8,15 @@ import {
   useRef,
   useState,
 } from "react";
+import * as ToastPrimitive from "@radix-ui/react-toast";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import {
+  CheckCircle2,
+  Info,
+  TriangleAlert,
+  X,
+  XCircle,
+} from "lucide-react";
 import { cn } from "./cn";
 
 type ToastVariant = "default" | "success" | "warning" | "danger" | "info";
@@ -42,92 +51,97 @@ const ACCENTS: Record<ToastVariant, string> = {
 
 const ICONS: Record<ToastVariant, React.ReactNode> = {
   default: null,
-  success: (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4 text-success">
-      <path d="M4 10l4 4 8-9" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  ),
-  warning: (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4 text-warning">
-      <path d="M10 6v5M10 14h.01" strokeLinecap="round" />
-    </svg>
-  ),
-  danger: (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4 text-danger">
-      <path d="M6 6l8 8M14 6l-8 8" strokeLinecap="round" />
-    </svg>
-  ),
-  info: (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-4 w-4 text-info">
-      <path d="M10 9v5M10 6h.01" strokeLinecap="round" />
-    </svg>
-  ),
+  success: <CheckCircle2 className="h-4 w-4 text-success" />,
+  warning: <TriangleAlert className="h-4 w-4 text-warning" />,
+  danger: <XCircle className="h-4 w-4 text-danger" />,
+  info: <Info className="h-4 w-4 text-info" />,
 };
 
-/** Wrap the app once (in the shell). Provides `useToast()`. */
+/**
+ * Wrap the app once (in the shell). Provides `useToast()`.
+ *
+ * Built on Radix Toast for accessibility (swipe-to-dismiss, hotkey, live
+ * region) with framer-motion entrance/exit. The imperative API — `toast(opts)`
+ * returning a numeric id and `dismiss(id)` — is unchanged.
+ */
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
+  const reduce = useReducedMotion();
 
   const dismiss = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const toast = useCallback(
-    (opts: ToastOptions) => {
-      const id = nextId.current++;
-      const item: ToastItem = {
-        id,
-        title: opts.title,
-        description: opts.description,
-        variant: opts.variant ?? "default",
-        duration: opts.duration ?? 4000,
-      };
-      setToasts((prev) => [...prev, item]);
-      if (item.duration > 0) {
-        setTimeout(() => dismiss(id), item.duration);
-      }
-      return id;
-    },
-    [dismiss]
-  );
+  const toast = useCallback((opts: ToastOptions) => {
+    const id = nextId.current++;
+    const item: ToastItem = {
+      id,
+      title: opts.title,
+      description: opts.description,
+      variant: opts.variant ?? "default",
+      duration: opts.duration ?? 4000,
+    };
+    setToasts((prev) => [...prev, item]);
+    return id;
+  }, []);
 
   const value = useMemo(() => ({ toast, dismiss }), [toast, dismiss]);
 
   return (
     <ToastContext.Provider value={value}>
-      {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-full max-w-sm flex-col gap-2">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            role="status"
-            className={cn(
-              "pointer-events-auto relative flex animate-fade-up items-start gap-3 overflow-hidden rounded-xl border border-subtle bg-elevated py-3 pl-4 pr-3 shadow-lg",
-              "before:absolute before:inset-y-0 before:left-0 before:w-1",
-              ACCENTS[t.variant]
-            )}
-          >
-            {ICONS[t.variant] && <div className="mt-0.5 shrink-0">{ICONS[t.variant]}</div>}
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-primary">{t.title}</p>
-              {t.description && (
-                <p className="mt-0.5 text-sm text-muted">{t.description}</p>
-              )}
-            </div>
-            <button
-              type="button"
-              aria-label="Dismiss notification"
-              onClick={() => dismiss(t.id)}
-              className="shrink-0 rounded-md p-1 text-muted transition-colors hover:bg-surface hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+      <ToastPrimitive.Provider swipeDirection="right">
+        {children}
+
+        <AnimatePresence>
+          {toasts.map((t) => (
+            <ToastPrimitive.Root
+              key={t.id}
+              asChild
+              forceMount
+              duration={t.duration === 0 ? Infinity : t.duration}
+              onOpenChange={(open) => {
+                if (!open) dismiss(t.id);
+              }}
             >
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-3.5 w-3.5">
-                <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-              </svg>
-            </button>
-          </div>
-        ))}
-      </div>
+              <motion.li
+                layout
+                initial={reduce ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={reduce ? { opacity: 0 } : { opacity: 0, x: 24, scale: 0.96 }}
+                transition={{ type: "spring", duration: 0.36, bounce: 0.2 }}
+                className={cn(
+                  "pointer-events-auto relative flex items-start gap-3 overflow-hidden rounded-xl border border-subtle bg-elevated py-3 pl-4 pr-3 shadow-lg surface-hairline",
+                  "before:absolute before:inset-y-0 before:left-0 before:w-1",
+                  ACCENTS[t.variant]
+                )}
+              >
+                {ICONS[t.variant] && (
+                  <div className="mt-0.5 shrink-0">{ICONS[t.variant]}</div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <ToastPrimitive.Title className="text-sm font-medium text-primary">
+                    {t.title}
+                  </ToastPrimitive.Title>
+                  {t.description && (
+                    <ToastPrimitive.Description className="mt-0.5 text-sm text-muted">
+                      {t.description}
+                    </ToastPrimitive.Description>
+                  )}
+                </div>
+                <ToastPrimitive.Close
+                  aria-label="Dismiss notification"
+                  className="shrink-0 rounded-md p-1 text-muted transition-colors hover:bg-surface hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </ToastPrimitive.Close>
+              </motion.li>
+            </ToastPrimitive.Root>
+          ))}
+        </AnimatePresence>
+
+        <ToastPrimitive.Viewport className="pointer-events-none fixed bottom-4 right-4 z-[60] m-0 flex w-full max-w-sm list-none flex-col gap-2 p-0 outline-none" />
+      </ToastPrimitive.Provider>
     </ToastContext.Provider>
   );
 }

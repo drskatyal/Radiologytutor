@@ -5,6 +5,7 @@
 // optimistic publish/unpublish, delete-with-confirm, and the create/edit modals.
 
 import { useEffect, useMemo, useState } from "react";
+import { CircleAlert, LayoutGrid, Plus } from "lucide-react";
 import {
   Button,
   EmptyState,
@@ -151,11 +152,7 @@ export function AdminConsole() {
         actions={
           <Button
             onClick={() => setCreateOpen(true)}
-            leadingIcon={
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.9" className="h-4 w-4">
-                <path d="M10 4v12M4 10h12" strokeLinecap="round" />
-              </svg>
-            }
+            leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}
           >
             New case
           </Button>
@@ -179,12 +176,7 @@ export function AdminConsole() {
           <LoadingList />
         ) : loadError ? (
           <EmptyState
-            icon={
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
-                <path d="M12 8v5M12 16h.01" strokeLinecap="round" />
-                <circle cx="12" cy="12" r="9" />
-              </svg>
-            }
+            icon={<CircleAlert aria-hidden="true" />}
             title="Couldn't load cases"
             description={loadError}
             action={
@@ -201,12 +193,7 @@ export function AdminConsole() {
           />
         ) : cases.length === 0 ? (
           <EmptyState
-            icon={
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-                <rect x="3" y="5" width="18" height="14" rx="2" />
-                <path d="M3 9h18M8 5v14" strokeLinecap="round" />
-              </svg>
-            }
+            icon={<LayoutGrid aria-hidden="true" />}
             title="No cases yet"
             description="Upload a DICOM study to create your first teaching case."
             action={<Button onClick={() => setCreateOpen(true)}>Create a case</Button>}

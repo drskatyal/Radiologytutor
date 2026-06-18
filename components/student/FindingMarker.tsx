@@ -5,6 +5,7 @@
 // computed left/top use inline style (allowed for truly dynamic values per
 // CLAUDE.md §0). Pulses with the accent token; fades in on reveal.
 
+import { ArrowDown } from "lucide-react";
 import { cn } from "@/components/ui";
 import type { Marker } from "@/lib/types";
 
@@ -28,16 +29,11 @@ export function FindingMarker({
         style={position}
         aria-hidden="true"
       >
-        <svg viewBox="0 0 24 32" className="h-9 w-7 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
-          <path
-            d="M12 31V8M12 31l-5-6M12 31l5-6M12 8l-5 6M12 8l5 6"
-            className="stroke-accent"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          />
-        </svg>
+        <ArrowDown
+          className="h-9 w-7 text-accent drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+          strokeWidth={2.5}
+          aria-hidden="true"
+        />
       </div>
     );
   }

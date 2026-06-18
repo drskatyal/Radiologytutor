@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Check, Info, X } from "lucide-react";
 import {
   Badge,
   Button,
@@ -318,9 +319,7 @@ export function CreateCaseModal({
       >
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/15 text-success">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-6 w-6">
-              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <Check className="h-6 w-6" aria-hidden="true" />
           </div>
           <p className="text-sm text-secondary">
             <span className="font-medium text-primary">{created.title}</span> is saved as a draft.
@@ -359,10 +358,7 @@ export function CreateCaseModal({
           <SectionLabel step={1} title="Imaging" optional />
           {imagingOk === false ? (
             <div className="flex items-start gap-3 rounded-xl border border-info/30 bg-info/5 px-4 py-3">
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75" className="mt-0.5 h-4 w-4 shrink-0 text-info">
-                <circle cx="10" cy="10" r="8" />
-                <path d="M10 9v5M10 6h.01" strokeLinecap="round" />
-              </svg>
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-info" aria-hidden="true" />
               <div className="text-xs leading-relaxed text-secondary">
                 <p className="font-medium text-primary">Imaging archive not connected</p>
                 <p className="mt-0.5 text-muted">
@@ -428,9 +424,7 @@ export function CreateCaseModal({
                           setStudies((prev) => prev.filter((x) => x.key !== s.key))
                         }
                       >
-                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.75">
-                          <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-                        </svg>
+                        <X aria-hidden="true" />
                       </IconButton>
                     </div>
                   </div>

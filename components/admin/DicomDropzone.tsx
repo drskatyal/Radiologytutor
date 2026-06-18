@@ -16,6 +16,7 @@
 // parent groups them into studies (deduped by StudyInstanceUID).
 
 import { useRef, useState } from "react";
+import { UploadCloud } from "lucide-react";
 import { Badge, Button, Spinner, useToast } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import {
@@ -299,10 +300,7 @@ export function DicomDropzone({
           {busy ? (
             <Spinner size="md" label="Uploading" />
           ) : (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="h-6 w-6">
-              <path d="M12 16V4M7 9l5-5 5 5" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
-            </svg>
+            <UploadCloud className="h-6 w-6" aria-hidden="true" />
           )}
         </div>
         <p className="text-sm text-secondary">
