@@ -1,16 +1,16 @@
 "use client";
 
-// /case/[caseId] playback. Clean Pacsbin embed + animated marker overlay +
-// AI tutor chat panel. The tutor (server route) emits function calls; we
-// execute them here by driving lib/viewerController against the iframe.
+// /case/[caseId] playback (Pacsbin 2.0). Clean embed + animated marker overlay
+// + AI tutor chat. The tutor emits function calls; we execute them by snapping
+// the iframe to recorded `state` blobs (single view or a keyframe flow).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ViewerFrame, { type ViewerFrameHandle } from "@/components/ViewerFrame";
 import { useRecorder } from "@/components/useRecorder";
 import { speak, stopSpeaking } from "@/lib/speak";
 import { buildViewerUrl, PLAYBACK_CHROME } from "@/lib/pacsbinUrl";
-import { runTransition, runTrack, animateWindow } from "@/lib/viewerController";
-import type { CaseData, Finding, Marker, Viewport } from "@/lib/types";
+import { showState, playKeyframes } from "@/lib/viewerController";
+import type { CaseData, Finding, Marker } from "@/lib/types";
 
 type Mode = "guided" | "socratic" | "free";
 
@@ -18,7 +18,6 @@ interface ChatMessage {
   role: "user" | "assistant";
   text: string;
 }
-
 interface FunctionCall {
   name: string;
   args: Record<string, unknown>;
@@ -37,124 +36,74 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
   const [started, setStarted] = useState(false);
   const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
 
-  // The viewport currently shown — the "from" for the next transition.
-  const currentViewportRef = useRef<Viewport>(firstOrEmpty(caseData));
   const tourIndexRef = useRef<number>(-1);
-
   const recorder = useRecorder();
-
-  const initialSrc = useMemo(
-    () => buildViewerUrl(caseData.pacsbinBaseUrl, firstOrEmpty(caseData), PLAYBACK_CHROME),
-    [caseData]
-  );
-
-  const apply = useCallback((url: string) => {
-    viewerRef.current?.setSrc(url);
-  }, []);
-
-  const findingById = useCallback(
-    (id: string) => caseData.findings.find((f) => f.id === id),
-    [caseData]
-  );
 
   const orderedFindings = useMemo(
     () => caseData.findings.slice().sort((a, b) => a.order - b.order),
     [caseData]
   );
 
-  // Execute one tutor tool call (visual side-effects).
+  const initialSrc = useMemo(
+    () => buildViewerUrl(caseData.pacsbinBaseUrl, orderedFindings[0]?.state ?? "", PLAYBACK_CHROME),
+    [caseData, orderedFindings]
+  );
+
+  const apply = useCallback((url: string) => viewerRef.current?.setSrc(url), []);
+  const findingById = useCallback(
+    (id: string) => caseData.findings.find((f) => f.id === id),
+    [caseData]
+  );
+
+  // Reveal a finding: snap to its state (or replay its keyframe flow), then
+  // fade in the marker.
+  const revealFinding = useCallback(
+    async (finding: Finding, signal: AbortSignal) => {
+      setMarkerVisible(false);
+      setMarker(null);
+      if (finding.keyframes && finding.keyframes.length > 1) {
+        await playKeyframes(caseData.pacsbinBaseUrl, finding.keyframes, apply, PLAYBACK_CHROME, {
+          signal,
+          onKeyframe: (i) => {
+            const m = finding.keyframes![i].marker;
+            if (m) {
+              setMarker(m);
+              setMarkerVisible(true);
+            }
+          },
+        });
+      } else {
+        showState(caseData.pacsbinBaseUrl, finding.state, apply, PLAYBACK_CHROME);
+      }
+      setMarker(finding.marker);
+      setMarkerVisible(true);
+      setActiveFindingId(finding.id);
+    },
+    [apply, caseData.pacsbinBaseUrl]
+  );
+
   const executeCall = useCallback(
     async (call: FunctionCall) => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
-      const signal = ac.signal;
-
       try {
-        if (call.name === "show_finding" || call.name === "next_in_tour") {
-          let finding: Finding | undefined;
-          if (call.name === "next_in_tour") {
-            tourIndexRef.current = Math.min(
-              tourIndexRef.current + 1,
-              orderedFindings.length - 1
-            );
-            finding = orderedFindings[tourIndexRef.current];
-          } else {
-            finding = findingById(String(call.args.findingId));
-            tourIndexRef.current = orderedFindings.findIndex((f) => f.id === finding?.id);
-          }
-          if (!finding) return;
-
-          setMarkerVisible(false);
-          setMarker(null);
-          if (finding.track && finding.track.length > 1) {
-            // Replay the recorded dynamic flow (scroll/window/zoom over time).
-            await runTrack(caseData.pacsbinBaseUrl, finding.track, apply, PLAYBACK_CHROME, {
-              signal,
-            });
-          } else {
-            // Single-shot finding: synthesise a clean transition to it.
-            await runTransition(
-              caseData.pacsbinBaseUrl,
-              currentViewportRef.current,
-              finding.viewport,
-              apply,
-              PLAYBACK_CHROME,
-              { signal }
-            );
-          }
-          currentViewportRef.current =
-            finding.track?.[finding.track.length - 1]?.viewport ?? finding.viewport;
-          // Fade in the marker after the transition settles.
-          setMarker(finding.marker);
-          setMarkerVisible(true);
-          setActiveFindingId(finding.id);
-        } else if (call.name === "set_window") {
-          const ww = Number(call.args.ww);
-          const wc = Number(call.args.wc);
-          const cur = currentViewportRef.current;
-          await animateWindow(
-            viewerRef.current?.getSrc() ?? initialSrc,
-            cur.ww1 ?? ww,
-            cur.wc1 ?? wc,
-            ww,
-            wc,
-            apply,
-            { signal }
-          );
-          currentViewportRef.current = { ...cur, ww1: ww, wc1: wc };
-        } else if (call.name === "compare") {
-          const a = findingById(String(call.args.findingIdA));
-          const b = findingById(String(call.args.findingIdB));
-          if (!a || !b) return;
-          const compareVp: Viewport = {
-            ...a.viewport,
-            layout: "2x1",
-            s2: b.viewport.s1,
-            i2: b.viewport.i1,
-            ww2: b.viewport.ww1,
-            wc2: b.viewport.wc1,
-            scale2: b.viewport.scale1,
-            translation2: b.viewport.translation1,
-          };
-          apply(buildViewerUrl(caseData.pacsbinBaseUrl, compareVp, PLAYBACK_CHROME));
-          currentViewportRef.current = compareVp;
-          setMarker(a.marker);
-          setMarkerVisible(true);
-          setActiveFindingId(a.id);
+        let finding: Finding | undefined;
+        if (call.name === "next_in_tour") {
+          tourIndexRef.current = Math.min(tourIndexRef.current + 1, orderedFindings.length - 1);
+          finding = orderedFindings[tourIndexRef.current];
+        } else if (call.name === "show_finding") {
+          finding = findingById(String(call.args.findingId));
+          tourIndexRef.current = orderedFindings.findIndex((f) => f.id === finding?.id);
         }
+        if (finding) await revealFinding(finding, ac.signal);
       } catch (e) {
-        // AbortError is expected when a new transition supersedes this one.
-        if (!(e instanceof DOMException && e.name === "AbortError")) {
-          console.error(e);
-        }
+        if (!(e instanceof DOMException && e.name === "AbortError")) console.error(e);
       }
     },
-    [apply, caseData, findingById, initialSrc, orderedFindings]
+    [findingById, orderedFindings, revealFinding]
   );
 
-  // Send a turn to the tutor and apply its response. `audio` carries a spoken
-  // question (Gemini does STT); the matching user message text may be a stub.
   const sendTurn = useCallback(
     async (history: ChatMessage[], audio?: { base64: string; mime: string }) => {
       setBusy(true);
@@ -166,19 +115,15 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Tutor error");
-
-        // Execute tool calls in sequence, then narrate.
         for (const call of (data.functionCalls ?? []) as FunctionCall[]) {
           await executeCall(call);
         }
-
         if (data.text) {
           setMessages((m) => [...m, { role: "assistant", text: data.text }]);
           speak(data.text);
         }
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "Tutor error";
-        setMessages((m) => [...m, { role: "assistant", text: `⚠️ ${msg}` }]);
+        setMessages((m) => [...m, { role: "assistant", text: `⚠️ ${e instanceof Error ? e.message : "Tutor error"}` }]);
       } finally {
         setBusy(false);
       }
@@ -194,15 +139,13 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
   function send(text: string) {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
-    stopSpeaking(); // barge-in: cut narration when the student speaks/types
+    stopSpeaking();
     const next: ChatMessage[] = [...messages, { role: "user", text: trimmed }];
     setMessages(next);
     setInput("");
     sendTurn(next);
   }
 
-  // Push-to-talk: toggle recording. Starting cuts narration (barge-in);
-  // stopping sends the audio to the tutor (Gemini transcribes + answers).
   async function toggleVoice() {
     if (recorder.recording) {
       const rec = await recorder.stop();
@@ -216,11 +159,13 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
     }
   }
 
-  // Stop speech + animations when leaving.
-  useEffect(() => () => {
-    stopSpeaking();
-    abortRef.current?.abort();
-  }, []);
+  useEffect(
+    () => () => {
+      stopSpeaking();
+      abortRef.current?.abort();
+    },
+    []
+  );
 
   return (
     <div className="grid grid-cols-[1fr_380px] h-[calc(100vh-49px)]">
@@ -242,9 +187,7 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
                 onClick={() => setMode(m)}
                 disabled={started}
                 className={`flex-1 rounded px-2 py-1 text-xs capitalize ${
-                  mode === m
-                    ? "bg-yellow-500 text-black"
-                    : "border border-neutral-700 text-neutral-400"
+                  mode === m ? "bg-yellow-500 text-black" : "border border-neutral-700 text-neutral-400"
                 } disabled:opacity-50`}
               >
                 {m}
@@ -253,7 +196,6 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
           </div>
         </div>
 
-        {/* Findings rail: progress + per-finding Q&A. Click to ask about one. */}
         {started && (
           <div className="border-b border-neutral-800 px-3 py-2">
             <div className="flex flex-wrap gap-1">
@@ -282,21 +224,14 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
               <p className="text-sm text-neutral-400 mb-4">
                 Mode: <span className="capitalize text-neutral-200">{mode}</span>
               </p>
-              <button onClick={start} className="btn-primary text-sm">
-                Start session
-              </button>
+              <button onClick={start} className="btn-primary text-sm">Start session</button>
             </div>
           ) : (
             messages.map((m, i) => (
-              <div
-                key={i}
-                className={`text-sm ${m.role === "user" ? "text-right" : ""}`}
-              >
+              <div key={i} className={`text-sm ${m.role === "user" ? "text-right" : ""}`}>
                 <span
                   className={`inline-block rounded-lg px-3 py-2 ${
-                    m.role === "user"
-                      ? "bg-neutral-800"
-                      : "bg-neutral-900 border border-neutral-800"
+                    m.role === "user" ? "bg-neutral-800" : "bg-neutral-900 border border-neutral-800"
                   }`}
                 >
                   {m.text}
@@ -317,9 +252,7 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && send(input)}
               />
-              <button onClick={() => send(input)} disabled={busy} className="btn-primary text-sm">
-                Send
-              </button>
+              <button onClick={() => send(input)} disabled={busy} className="btn-primary text-sm">Send</button>
             </div>
             <div className="flex gap-2">
               {mode === "guided" && (
@@ -342,9 +275,4 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
       </aside>
     </div>
   );
-}
-
-function firstOrEmpty(c: CaseData): Viewport {
-  const ordered = c.findings.slice().sort((a, b) => a.order - b.order);
-  return ordered[0]?.viewport ?? { layout: "1x1", s1: "", i1: "" };
 }

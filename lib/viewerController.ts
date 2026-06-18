@@ -1,53 +1,27 @@
 // ============================================================================
 // lib/viewerController.ts
 //
-// The thing that makes playback feel real: instead of jumping straight to the
-// target viewport, we animate via rapid URL updates against the Pacsbin iframe.
-//
-// We only ever SET the iframe src (one-way control). The caller owns the
-// iframe element and passes a setter. The controller interpolates slice /
-// window / zoom-pan and steps the src each frame.
-//
-// Transition order: scroll -> window -> zoom/pan -> (caller fades in marker
-// + narrates). See runTransition().
-//
-// PERFORMANCE NOTE (see project README "Pacsbin caching test"): this assumes
-// Pacsbin caches the series in-browser so rapid i: updates animate smoothly.
-// If a case refetches every slice, lower the fps / raise `sliceStep` to use
-// keyframes, or set `mode: "snap"` to skip the scroll animation for that case.
+// Playback driver for Pacsbin 2.0. We control the viewer by setting its `state`
+// query param on the iframe. Changing `state` reloads the cross-origin iframe
+// (it's a Vue SPA query param), so we SNAP between recorded keyframes rather
+// than scrubbing frame-by-frame. Smooth in-iframe scrubbing isn't possible
+// with Pacsbin; that would need a self-hosted Cornerstone3D viewer (the encoded
+// fields — seriesId/instanceId/ww/wc/zoom/pan/camera — map 1:1, so a later
+// migration is clean).
 // ============================================================================
 
-import type { Viewport } from "./types";
-import { buildViewerUrl, withSlice, withWindow, withZoomPan, type ChromeOptions } from "./pacsbinUrl";
+import { buildViewerUrl, type ChromeOptions } from "./pacsbinUrl";
+import type { Keyframe } from "./types";
 
 export type ApplyUrl = (url: string) => void;
 
-export interface TransitionOptions {
-  /** ~25fps scroll by default. */
-  sliceFrameMs?: number;
-  /** Animate every Nth slice (1 = every slice). Raise for laggy cases. */
-  sliceStep?: number;
-  /** Window interpolation: number of frames and per-frame delay. */
-  windowFrames?: number;
-  windowFrameMs?: number;
-  /** Zoom/pan interpolation. */
-  zoomFrames?: number;
-  zoomFrameMs?: number;
-  /** "snap" skips scroll interpolation (fallback for non-caching cases). */
-  mode?: "animate" | "snap";
-  /** Abort signal — animation stops cleanly when aborted. */
+export interface PlayOptions {
   signal?: AbortSignal;
+  /** Cap the wait between keyframes so long pauses don't stall playback. */
+  maxGapMs?: number;
+  /** Called as each keyframe is shown (e.g. to move the marker). */
+  onKeyframe?: (index: number) => void;
 }
-
-const DEFAULTS: Required<Omit<TransitionOptions, "signal">> = {
-  sliceFrameMs: 40,
-  sliceStep: 1,
-  windowFrames: 20,
-  windowFrameMs: 30,
-  zoomFrames: 20,
-  zoomFrameMs: 30,
-  mode: "animate",
-};
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -64,285 +38,42 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Numeric slice ids let us interpolate. Non-numeric ids fall back to snap. */
-function asInt(id: string | undefined): number | null {
-  if (!id) return null;
-  const digits = id.replace(/[^0-9-]/g, "");
-  if (digits === "" || digits === "-") return null;
-  const n = parseInt(digits, 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Rebuild a slice id preserving any non-numeric prefix (e.g. "IMG-42"). */
-function withSliceNumber(templateId: string, n: number): string {
-  const m = templateId.match(/^(\D*)(-?\d+)(\D*)$/);
-  if (!m) return String(n);
-  return `${m[1]}${n}${m[3]}`;
-}
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
-function parseTranslation(t?: string): [number, number] {
-  if (!t) return [0, 0];
-  const [x, y] = t.split(",").map(Number);
-  return [Number.isFinite(x) ? x : 0, Number.isFinite(y) ? y : 0];
-}
-
-/**
- * Step the slice index from -> to, frame by frame, updating only i:1.
- * `currentUrl` must already encode the target series (we change only slice).
- */
-export async function animateScroll(
-  currentUrl: string,
-  fromSliceId: string,
-  toSliceId: string,
+/** Snap the viewer to a single encoded state. */
+export function showState(
+  baseUrl: string,
+  state: string,
   apply: ApplyUrl,
-  opts: TransitionOptions = {}
-): Promise<string> {
-  const o = { ...DEFAULTS, ...opts };
-  const from = asInt(fromSliceId);
-  const to = asInt(toSliceId);
-
-  // Can't interpolate non-numeric ids — snap to target.
-  if (o.mode === "snap" || from === null || to === null || from === to) {
-    const url = withSlice(currentUrl, toSliceId);
-    apply(url);
-    return url;
-  }
-
-  const dir = to > from ? 1 : -1;
-  let url = currentUrl;
-  for (let s = from; dir > 0 ? s <= to : s >= to; s += dir * o.sliceStep) {
-    url = withSlice(currentUrl, withSliceNumber(toSliceId, s));
-    apply(url);
-    await sleep(o.sliceFrameMs, opts.signal);
-  }
-  // Guarantee we land exactly on target.
-  url = withSlice(currentUrl, toSliceId);
+  chrome: ChromeOptions
+): string {
+  const url = buildViewerUrl(baseUrl, state, chrome);
   apply(url);
   return url;
 }
 
-/** Interpolate ww/wc over windowFrames. */
-export async function animateWindow(
-  currentUrl: string,
-  fromWW: number,
-  fromWC: number,
-  toWW: number,
-  toWC: number,
-  apply: ApplyUrl,
-  opts: TransitionOptions = {}
-): Promise<string> {
-  const o = { ...DEFAULTS, ...opts };
-  let url = currentUrl;
-  if (o.mode === "snap") {
-    url = withWindow(currentUrl, toWW, toWC);
-    apply(url);
-    return url;
-  }
-  for (let f = 1; f <= o.windowFrames; f++) {
-    const t = f / o.windowFrames;
-    url = withWindow(currentUrl, Math.round(lerp(fromWW, toWW, t)), Math.round(lerp(fromWC, toWC, t)));
-    apply(url);
-    await sleep(o.windowFrameMs, opts.signal);
-  }
-  return url;
-}
-
-/** Interpolate scale + translation over zoomFrames. */
-export async function animateZoomPan(
-  currentUrl: string,
-  fromScale: number,
-  fromTrans: string,
-  toScale: number,
-  toTrans: string,
-  apply: ApplyUrl,
-  opts: TransitionOptions = {}
-): Promise<string> {
-  const o = { ...DEFAULTS, ...opts };
-  const [fx, fy] = parseTranslation(fromTrans);
-  const [tx, ty] = parseTranslation(toTrans);
-  let url = currentUrl;
-  if (o.mode === "snap") {
-    url = withZoomPan(currentUrl, toScale, toTrans);
-    apply(url);
-    return url;
-  }
-  for (let f = 1; f <= o.zoomFrames; f++) {
-    const t = f / o.zoomFrames;
-    const scale = +lerp(fromScale, toScale, t).toFixed(4);
-    const trans = `${lerp(fx, tx, t).toFixed(1)},${lerp(fy, ty, t).toFixed(1)}`;
-    url = withZoomPan(currentUrl, scale, trans);
-    apply(url);
-    await sleep(o.zoomFrameMs, opts.signal);
-  }
-  return url;
-}
-
 /**
- * Full transition from one viewport to another:
- *   scroll -> window -> zoom/pan.
- * The caller fades in the marker and narrates AFTER this resolves.
- *
- * `from` may be undefined (first finding) — we then snap to the target's
- * series/window/zoom and only animate the slice from the target's own start.
+ * Replay a recorded flow by snapping to each keyframe's state at its recorded
+ * timing (relative to the first keyframe), so narration stays roughly in sync.
  */
-export async function runTransition(
+export async function playKeyframes(
   baseUrl: string,
-  from: Viewport | undefined,
-  to: Viewport,
+  keyframes: Keyframe[],
   apply: ApplyUrl,
   chrome: ChromeOptions,
-  opts: TransitionOptions = {}
-): Promise<string> {
-  // If switching series (or no prior state), build the full target viewport
-  // but start at the FROM slice so the scroll has somewhere to travel.
-  const sameSeries = from && from.s1 === to.s1;
-
-  // Establish a base URL locked to the target series with the *starting*
-  // window/zoom so window/zoom animate afterwards.
-  const startVp: Viewport = {
-    ...to,
-    i1: sameSeries && from?.i1 ? from.i1 : to.i1,
-    ww1: from?.ww1 ?? to.ww1,
-    wc1: from?.wc1 ?? to.wc1,
-    scale1: from?.scale1 ?? to.scale1,
-    translation1: from?.translation1 ?? to.translation1,
-  };
-  let url = buildViewerUrl(baseUrl, startVp, chrome);
-  apply(url);
-
-  // 1. scroll
-  if (to.i1) {
-    url = await animateScroll(url, startVp.i1, to.i1, apply, opts);
-  }
-  // 2. window
-  if (to.ww1 !== undefined && to.wc1 !== undefined) {
-    url = await animateWindow(
-      url,
-      startVp.ww1 ?? to.ww1,
-      startVp.wc1 ?? to.wc1,
-      to.ww1,
-      to.wc1,
-      apply,
-      opts
-    );
-  }
-  // 3. zoom/pan
-  if (to.scale1 !== undefined) {
-    url = await animateZoomPan(
-      url,
-      startVp.scale1 ?? to.scale1,
-      startVp.translation1 ?? "0,0",
-      to.scale1,
-      to.translation1 ?? "0,0",
-      apply,
-      opts
-    );
-  }
-
-  return url;
-}
-
-// ---------------------------------------------------------------------------
-// Track replay: play back a RECORDED dynamic flow.
-//
-// A finding's `track` is a timeline of viewport keyframes (captured from
-// Pacsbin's own state events, or from our controls — replay is agnostic to
-// how it was captured). We resample the timeline at a fixed fps and apply the
-// interpolated viewport each frame, so scroll + window + zoom move together
-// exactly as recorded, scaled by `speed`.
-// ---------------------------------------------------------------------------
-
-export interface TrackKeyframe {
-  t: number;
-  viewport: Viewport;
-}
-
-export interface TrackPlayOptions {
-  fps?: number;
-  /** Playback speed multiplier (1 = recorded speed, 1.5 = faster). */
-  speed?: number;
-  signal?: AbortSignal;
-  /** Called when the active keyframe changes (e.g. to move a marker). */
-  onKeyframe?: (index: number) => void;
-}
-
-function interpolateViewport(a: Viewport, b: Viewport, tt: number): Viewport {
-  const lerpNum = (x?: number, y?: number) =>
-    x === undefined || y === undefined ? (x ?? y) : lerp(x, y, tt);
-
-  // Slice: interpolate numerically, preserving any non-numeric id prefix.
-  const fromN = asInt(a.i1);
-  const toN = asInt(b.i1);
-  const i1 =
-    fromN !== null && toN !== null
-      ? withSliceNumber(b.i1, Math.round(lerp(fromN, toN, tt)))
-      : tt < 1
-      ? a.i1
-      : b.i1;
-
-  const [ax, ay] = parseTranslation(a.translation1);
-  const [bx, by] = parseTranslation(b.translation1);
-
-  return {
-    layout: tt < 1 ? a.layout : b.layout,
-    s1: tt < 1 ? a.s1 : b.s1, // series doesn't interpolate
-    i1,
-    ww1: lerpNum(a.ww1, b.ww1),
-    wc1: lerpNum(a.wc1, b.wc1),
-    scale1: lerpNum(a.scale1, b.scale1),
-    translation1:
-      a.translation1 || b.translation1
-        ? `${lerp(ax, bx, tt).toFixed(1)},${lerp(ay, by, tt).toFixed(1)}`
-        : undefined,
-  };
-}
-
-export async function runTrack(
-  baseUrl: string,
-  track: TrackKeyframe[],
-  apply: ApplyUrl,
-  chrome: ChromeOptions,
-  opts: TrackPlayOptions = {}
+  opts: PlayOptions = {}
 ): Promise<void> {
-  if (track.length === 0) return;
-  const fps = opts.fps ?? 25;
-  const speed = opts.speed ?? 1;
-  const frameMs = 1000 / fps;
+  if (keyframes.length === 0) return;
+  const maxGap = opts.maxGapMs ?? 4000;
+  let prevT = keyframes[0].t;
 
-  if (track.length === 1) {
-    apply(buildViewerUrl(baseUrl, track[0].viewport, chrome));
-    opts.onKeyframe?.(0);
-    return;
-  }
-
-  const totalMs = track[track.length - 1].t - track[0].t;
-  const t0 = track[0].t;
-  let seg = 0;
-
-  for (let elapsed = 0; elapsed <= totalMs; elapsed += frameMs * speed) {
+  for (let i = 0; i < keyframes.length; i++) {
     if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const now = t0 + elapsed;
-
-    // Advance to the segment containing `now`.
-    while (seg < track.length - 2 && now >= track[seg + 1].t) {
-      seg++;
-      opts.onKeyframe?.(seg);
+    const kf = keyframes[i];
+    if (i > 0) {
+      const wait = Math.min(Math.max(0, kf.t - prevT), maxGap);
+      if (wait > 0) await sleep(wait, opts.signal);
     }
-
-    const a = track[seg];
-    const b = track[seg + 1];
-    const span = Math.max(1, b.t - a.t);
-    const tt = Math.min(1, Math.max(0, (now - a.t) / span));
-
-    apply(buildViewerUrl(baseUrl, interpolateViewport(a.viewport, b.viewport, tt), chrome));
-    await sleep(frameMs, opts.signal);
+    apply(buildViewerUrl(baseUrl, kf.state, chrome));
+    opts.onKeyframe?.(i);
+    prevT = kf.t;
   }
-
-  // Land exactly on the final keyframe.
-  apply(buildViewerUrl(baseUrl, track[track.length - 1].viewport, chrome));
-  opts.onKeyframe?.(track.length - 1);
 }

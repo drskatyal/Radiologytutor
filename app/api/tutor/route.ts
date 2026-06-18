@@ -14,39 +14,19 @@ import type { CaseData } from "@/lib/types";
 
 export const runtime = "nodejs";
 
+// Tools that drive the viewer. With Pacsbin 2.0 we snap to recorded state
+// blobs, so the tools are show_finding (jump to a finding, replaying its flow)
+// and next_in_tour. (set_window/compare need decoded-state synthesis — future
+// work, or a self-hosted viewer.)
 const TOOLS: FunctionDeclaration[] = [
   {
     name: "show_finding",
     description:
-      "Run the full animated transition to a finding, reveal its marker, and narrate it. Use the finding's id.",
+      "Jump the viewer to a finding (replaying its recorded flow), reveal its marker, and narrate it. Use the finding's id.",
     parameters: {
       type: "object",
       properties: { findingId: { type: "string", description: "Finding id, e.g. f1" } },
       required: ["findingId"],
-    },
-  },
-  {
-    name: "set_window",
-    description: "Animate a window width/center change on the current slice.",
-    parameters: {
-      type: "object",
-      properties: {
-        ww: { type: "number", description: "Window width" },
-        wc: { type: "number", description: "Window center" },
-      },
-      required: ["ww", "wc"],
-    },
-  },
-  {
-    name: "compare",
-    description: "Set a 2x1 layout and load two findings side by side for comparison.",
-    parameters: {
-      type: "object",
-      properties: {
-        findingIdA: { type: "string" },
-        findingIdB: { type: "string" },
-      },
-      required: ["findingIdA", "findingIdB"],
     },
   },
   {

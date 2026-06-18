@@ -10,9 +10,9 @@ export const runtime = "nodejs";
 export async function POST(req: NextRequest, { params }: { params: { caseId: string } }) {
   try {
     const body = (await req.json()) as Partial<Finding>;
-    if (!body.viewport || !body.marker) {
+    if (!body.state || !body.marker) {
       return NextResponse.json(
-        { error: "viewport and marker are required" },
+        { error: "state and marker are required" },
         { status: 400 }
       );
     }
@@ -21,8 +21,10 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       label: body.label || "Untitled finding",
       description: body.description || "",
       teachingPoints: body.teachingPoints || [],
-      viewport: body.viewport,
+      state: body.state,
       marker: body.marker,
+      keyframes: body.keyframes,
+      durationMs: body.durationMs,
       order: body.order ?? 0,
     };
     const updated = await addFinding(params.caseId, finding);

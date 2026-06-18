@@ -1,104 +1,76 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  parseViewportFromUrl,
+  parsePacsbinUrl,
+  extractState,
   parseBaseUrl,
   buildViewerUrl,
-  withSlice,
-  withWindow,
-  withZoomPan,
+  decodeState,
+  encodeState,
+  summarizeState,
   PLAYBACK_CHROME,
 } from "./pacsbinUrl.ts";
 
-const BOOKMARK =
-  "https://pacsbin.com/viewer/abc123?layout=1x1&s:1=SER-9&i:1=IMG-42&ww:1=800&wc:1=400&scale:1=1.75&translation:1=49.6,-35.9&toolbar=true";
+// A real Pacsbin 2.0 state blob (gzip(JSON) -> base64url) captured from the viewer.
+const REAL_STATE =
+  "H4sIAAAAAAAACrWQy27UQBBF_6XWlVZVP6v7C2BBlE3YjGbReGxk4bgtu5PREOXfUZsRCBBoNuyqpHOvrs4rvIz9-UM59ZDg8zqeAGHKl_JcIR0Y9RF3YClr3SAdXqFeloZuNXdfAGGrz6fL-xMk8MQ6eDJa-sESRT1kK5-GrkH9OvbbTyrYX6nOEiCM81bz3PX_4tq8oXR5eijjvE_UVgUnZJBVdEYYjVdOxITr8scF0uGOFDM7i-0wxhskFcUGc4Uepjz392V9yhOkA6ngmHWDvSd27SCyjo8I5zMkbgVw7iAJc9v90q8V0pCnrUdYS811LDMkQvhayhMkUsFIZIQlz60f6YgwTOPy7keqfR-v3xv-J82sb9Os_Z-aWUmUEPDOKa2jNSikSILIb55b4a4uhhh3dRxF9F9EEzNH3Bkve0quki1F912yJhuUu8UzKwrR-Zs9H9--AQzo7Ov_AgAA";
 
-test("parseViewportFromUrl extracts all viewport fields as strings/numbers", () => {
-  const vp = parseViewportFromUrl(BOOKMARK);
-  assert.equal(vp.layout, "1x1");
-  assert.equal(vp.s1, "SER-9");
-  assert.equal(vp.i1, "IMG-42");
-  assert.equal(vp.ww1, 800);
-  assert.equal(vp.wc1, 400);
-  assert.equal(vp.scale1, 1.75);
-  assert.equal(vp.translation1, "49.6,-35.9");
-  assert.equal(typeof vp.s1, "string");
-  assert.equal(typeof vp.i1, "string");
+const URL_WITH_STATE = `https://pacsbin.com/viewer/case/WJUZ1VRmoL?header=true&caseData=true&an=true&overlay=true&title=true&state=${REAL_STATE}`;
+
+test("parsePacsbinUrl extracts base, state and chrome flags", () => {
+  const p = parsePacsbinUrl(URL_WITH_STATE);
+  assert.equal(p.baseUrl, "https://pacsbin.com/viewer/case/WJUZ1VRmoL");
+  assert.equal(p.state, REAL_STATE);
+  assert.equal(p.chrome.header, true);
+  assert.equal(p.chrome.an, true);
 });
 
-test("parseViewportFromUrl tolerates a bookmark with only series/image/ww/wc", () => {
-  const vp = parseViewportFromUrl(
-    "https://pacsbin.com/viewer/x?layout=1x1&s:1=A&i:1=B&ww:1=600&wc:1=300"
-  );
-  assert.equal(vp.s1, "A");
-  assert.equal(vp.i1, "B");
-  assert.equal(vp.ww1, 600);
-  assert.equal(vp.scale1, undefined);
-  assert.equal(vp.translation1, undefined);
+test("extractState returns the state blob verbatim", () => {
+  assert.equal(extractState(URL_WITH_STATE), REAL_STATE);
 });
 
-test("parseViewportFromUrl reads a second viewport for compare layouts", () => {
-  const vp = parseViewportFromUrl(
-    "https://pacsbin.com/viewer/x?layout=2x1&s:1=A&i:1=1&s:2=B&i:2=2&ww:2=500&wc:2=250"
-  );
-  assert.equal(vp.layout, "2x1");
-  assert.equal(vp.s2, "B");
-  assert.equal(vp.i2, "2");
-  assert.equal(vp.ww2, 500);
+test("extractState returns empty string when no state", () => {
+  assert.equal(extractState("https://pacsbin.com/viewer/case/abc"), "");
 });
 
-test("parseBaseUrl strips query string", () => {
-  assert.equal(parseBaseUrl(BOOKMARK), "https://pacsbin.com/viewer/abc123");
+test("parseBaseUrl strips the query", () => {
+  assert.equal(parseBaseUrl(URL_WITH_STATE), "https://pacsbin.com/viewer/case/WJUZ1VRmoL");
 });
 
-test("buildViewerUrl round-trips through parseViewportFromUrl", () => {
-  const vp = parseViewportFromUrl(BOOKMARK);
-  const built = buildViewerUrl("https://pacsbin.com/viewer/abc123", vp, PLAYBACK_CHROME);
-  const reparsed = parseViewportFromUrl(built);
-  assert.deepEqual(reparsed, vp);
+test("buildViewerUrl emits the state verbatim with playback chrome", () => {
+  const url = buildViewerUrl("https://pacsbin.com/viewer/case/WJUZ1VRmoL", REAL_STATE, PLAYBACK_CHROME);
+  assert.ok(url.includes(`state=${REAL_STATE}`), "state passed through unmodified");
+  assert.ok(url.includes("header=false"));
+  assert.ok(url.includes("an=false"));
 });
 
-test("buildViewerUrl keeps ':' and ',' literal (not percent-encoded)", () => {
-  const built = buildViewerUrl(
-    "https://pacsbin.com/viewer/abc123",
-    parseViewportFromUrl(BOOKMARK),
-    PLAYBACK_CHROME
-  );
-  assert.ok(built.includes("s:1=SER-9"), "series param uses literal colon");
-  assert.ok(built.includes("translation:1=49.6,-35.9"), "translation uses literal comma");
-  assert.ok(!built.includes("%3A"));
-  assert.ok(!built.includes("%2C"));
+test("buildViewerUrl with no state yields just base+chrome", () => {
+  const url = buildViewerUrl("https://pacsbin.com/viewer/case/x", "", PLAYBACK_CHROME);
+  assert.ok(!url.includes("state="));
+  assert.ok(url.includes("header=false"));
 });
 
-test("buildViewerUrl applies playback chrome params", () => {
-  const built = buildViewerUrl(
-    "https://pacsbin.com/viewer/abc123",
-    parseViewportFromUrl(BOOKMARK),
-    PLAYBACK_CHROME
-  );
-  assert.ok(built.includes("toolbar=false"));
-  assert.ok(built.includes("seriesList=false"));
-  assert.ok(built.includes("header=false"));
+test("decodeState decodes the real blob into the 2.0 schema", async () => {
+  const state = await decodeState(REAL_STATE);
+  assert.equal(state.viewMode, "grid");
+  assert.deepEqual(state.layout, [1, 2]);
+  assert.equal(state.viewports.length, 2);
+  assert.equal(state.viewports[0].ww, 1363);
+  assert.equal(state.viewports[0].wc, 811);
+  assert.equal(typeof state.viewports[0].seriesId, "string");
+  assert.equal(typeof state.viewports[0].instanceId, "string");
 });
 
-test("withSlice replaces only the i:1 param", () => {
-  const next = withSlice(BOOKMARK, "IMG-43");
-  const vp = parseViewportFromUrl(next);
-  assert.equal(vp.i1, "IMG-43");
-  assert.equal(vp.s1, "SER-9"); // unchanged
-  assert.equal(vp.ww1, 800); // unchanged
+test("encodeState -> decodeState round-trips the object", async () => {
+  const original = await decodeState(REAL_STATE);
+  const reencoded = await encodeState(original);
+  const back = await decodeState(reencoded);
+  assert.deepEqual(back, original);
 });
 
-test("withWindow replaces only ww/wc", () => {
-  const vp = parseViewportFromUrl(withWindow(BOOKMARK, 1200, 600));
-  assert.equal(vp.ww1, 1200);
-  assert.equal(vp.wc1, 600);
-  assert.equal(vp.i1, "IMG-42");
-});
-
-test("withZoomPan replaces only scale/translation", () => {
-  const vp = parseViewportFromUrl(withZoomPan(BOOKMARK, 2.5, "10,20"));
-  assert.equal(vp.scale1, 2.5);
-  assert.equal(vp.translation1, "10,20");
-  assert.equal(vp.i1, "IMG-42");
+test("summarizeState produces a human summary", async () => {
+  const state = await decodeState(REAL_STATE);
+  const s = summarizeState(state);
+  assert.ok(s.includes("1x2"));
+  assert.ok(s.toLowerCase().includes("pane"));
 });

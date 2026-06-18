@@ -1,29 +1,31 @@
 "use client";
 
-// /author — tutor flow.
-// 1. Attach a Pacsbin case (paste viewer URL).
-// 2. Add findings: paste Pacsbin bookmark -> parse viewport (read-only confirm),
-//    click overlay -> marker, dictate -> Gemini structures the text, save.
-// 3. List / delete / reorder findings.
+// /author — tutor flow (Pacsbin 2.0).
+// 1. Add case: paste the (shared) Pacsbin viewer URL / case link.
+// 2. Add findings:
+//    a. Navigate in Pacsbin, copy its URL, paste here -> we keep the encoded
+//       `state` blob (slice/window/zoom/pan/plane/layout — everything).
+//       Capture multiple for a dynamic flow (each = a timestamped keyframe).
+//    b. Click the spot on the overlay -> marker (stored as percentages).
+//    c. Dictate -> Gemini structures { label, description, teachingPoints }.
+//    d. Save.
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import ViewerFrame, { type ViewerFrameHandle } from "@/components/ViewerFrame";
 import { useRecorder } from "@/components/useRecorder";
-import { subscribeState, type StateMessage } from "@/lib/pacsbinClient";
 import {
-  parseViewportFromUrl,
+  extractState,
   parseBaseUrl,
   buildViewerUrl,
+  decodeState,
+  summarizeState,
   AUTHOR_CHROME,
 } from "@/lib/pacsbinUrl";
-import type { CaseData, Finding, Keyframe, Marker, Viewport } from "@/lib/types";
+import type { CaseData, Finding, Keyframe, Marker } from "@/lib/types";
 
 export default function AuthorPage() {
   const [caseData, setCaseData] = useState<CaseData | null>(null);
-
-  if (!caseData) {
-    return <AttachCase onAttached={setCaseData} />;
-  }
+  if (!caseData) return <AttachCase onAttached={setCaseData} />;
   return <AuthorWorkspace caseData={caseData} setCaseData={setCaseData} />;
 }
 
@@ -39,10 +41,7 @@ function AttachCase({ onAttached }: { onAttached: (c: CaseData) => void }) {
 
   async function submit() {
     setError("");
-    if (!caseId || !title || !url) {
-      setError("Case id, title and Pacsbin URL are required.");
-      return;
-    }
+    if (!caseId || !title || !url) return setError("Case id, title and Pacsbin URL are required.");
     setBusy(true);
     try {
       const res = await fetch("/api/cases", {
@@ -62,46 +61,27 @@ function AttachCase({ onAttached }: { onAttached: (c: CaseData) => void }) {
 
   return (
     <div className="max-w-lg mx-auto px-6 py-10">
-      <h1 className="text-2xl font-semibold mb-1">Attach a case</h1>
+      <h1 className="text-2xl font-semibold mb-1">Add a case</h1>
       <p className="text-neutral-400 mb-6 text-sm">
-        Paste the Pacsbin viewer URL for the case. The toolbar stays on so you can
-        navigate while authoring.
+        Paste the <b>shared</b> Pacsbin viewer link for the study (a public/share
+        link loads without login). Use the case header tools to navigate while authoring.
       </p>
       <div className="space-y-3">
-        <Field label="Case id (used as filename)">
-          <input
-            className="input"
-            placeholder="knee-acl-01"
-            value={caseId}
-            onChange={(e) => setCaseId(e.target.value)}
-          />
+        <Field label="Case id (filename)">
+          <input className="input" placeholder="knee-acl-01" value={caseId} onChange={(e) => setCaseId(e.target.value)} />
         </Field>
         <Field label="Title">
-          <input
-            className="input"
-            placeholder="Knee MRI — ACL tear"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
+          <input className="input" placeholder="Knee MRI — ACL tear" value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
         <Field label="Modality">
-          <input
-            className="input"
-            value={modality}
-            onChange={(e) => setModality(e.target.value)}
-          />
+          <input className="input" value={modality} onChange={(e) => setModality(e.target.value)} />
         </Field>
-        <Field label="Pacsbin viewer URL">
-          <input
-            className="input"
-            placeholder="https://pacsbin.com/viewer/<token>"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
+        <Field label="Pacsbin shared viewer URL">
+          <input className="input" placeholder="https://pacsbin.com/viewer/case/<id>" value={url} onChange={(e) => setUrl(e.target.value)} />
         </Field>
         {error && <p className="text-red-400 text-sm">{error}</p>}
         <button onClick={submit} disabled={busy} className="btn-primary w-full">
-          {busy ? "Attaching…" : "Attach case"}
+          {busy ? "Adding…" : "Add case"}
         </button>
       </div>
     </div>
@@ -120,8 +100,9 @@ function AuthorWorkspace({
   const viewerRef = useRef<ViewerFrameHandle>(null);
 
   // Draft finding being authored.
-  const [bookmarkUrl, setBookmarkUrl] = useState("");
-  const [viewport, setViewport] = useState<Viewport | null>(null);
+  const [pastedUrl, setPastedUrl] = useState("");
+  const [keyframes, setKeyframes] = useState<Keyframe[]>([]);
+  const [summary, setSummary] = useState("");
   const [marker, setMarker] = useState<Marker | null>(null);
   const [placingMarker, setPlacingMarker] = useState(false);
   const [structured, setStructured] = useState<{
@@ -130,93 +111,41 @@ function AuthorWorkspace({
     teachingPoints: string[];
   } | null>(null);
   const [structuring, setStructuring] = useState(false);
-  const [saveError, setSaveError] = useState("");
   const [transcript, setTranscript] = useState("");
-
-  // Flow recording (the dynamic CT/MRI path): capture a timeline of viewport
-  // keyframes while the tutor narrates. Keyframes come from Pacsbin's own
-  // state events when available, or from manual bookmark captures otherwise.
-  const [flowRecording, setFlowRecording] = useState(false);
-  const [track, setTrack] = useState<Keyframe[]>([]);
+  const [saveError, setSaveError] = useState("");
   const recStartRef = useRef<number>(0);
-  const flowRecordingRef = useRef(false);
-  const latestViewportRef = useRef<Viewport | null>(null);
-
-  // Live "signal monitor": what (if anything) Pacsbin posts via postMessage.
-  const [signalCount, setSignalCount] = useState(0);
-  const [lastSignal, setLastSignal] = useState<StateMessage | null>(null);
-  const [emitsState, setEmitsState] = useState<boolean | null>(null);
 
   const recorder = useRecorder();
 
-  const authorSrc = buildViewerUrl(caseData.pacsbinBaseUrl, defaultViewport(caseData), AUTHOR_CHROME);
+  const initialSrc = buildViewerUrl(
+    caseData.pacsbinBaseUrl,
+    caseData.findings[0]?.state ?? "",
+    AUTHOR_CHROME
+  );
 
-  // Subscribe to Pacsbin's postMessage channel to discover + capture its state.
-  useEffect(() => {
-    const iframe = viewerRef.current?.getIframe();
-    if (!iframe) return;
-    const unsub = subscribeState(iframe, (msg) => {
-      setSignalCount((c) => c + 1);
-      setLastSignal(msg);
-      if (msg.viewport) {
-        setEmitsState(true);
-        latestViewportRef.current = msg.viewport;
-        // Auto-capture a keyframe while recording.
-        if (flowRecordingRef.current) {
-          pushKeyframe(msg.viewport);
-        }
-      }
-    });
-    return unsub;
-    // viewerRef is stable; subscribe once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Capture the current Pacsbin view as a keyframe from the pasted URL.
+  async function captureKeyframe() {
+    setSaveError("");
+    const state = extractState(pastedUrl.trim());
+    if (!state) return setSaveError("That URL has no Pacsbin `state` — copy the viewer URL after navigating.");
 
-  function pushKeyframe(vp: Viewport) {
-    const t = Math.max(0, Date.now() - recStartRef.current);
-    setTrack((tr) => [...tr, { t, viewport: vp }]);
-  }
+    const now = Date.now();
+    if (keyframes.length === 0) recStartRef.current = now;
+    const t = now - recStartRef.current;
+    setKeyframes((k) => [...k, { t, state }]);
+    setPastedUrl("");
 
-  // Start/stop the flow recording. Audio runs in parallel (Gemini transcribes).
-  async function toggleFlowRecording() {
-    if (flowRecording) {
-      flowRecordingRef.current = false;
-      setFlowRecording(false);
-      const rec = await recorder.stop();
-      if (rec) await structure({ base64: rec.base64, mimeType: rec.mimeType });
-    } else {
-      setTrack([]);
-      recStartRef.current = Date.now();
-      flowRecordingRef.current = true;
-      setFlowRecording(true);
-      // Seed the first keyframe from the last known viewport, if any.
-      if (latestViewportRef.current) pushKeyframe(latestViewportRef.current);
-      else if (viewport) pushKeyframe(viewport);
-      await recorder.start();
+    // Jump the author embed to this exact view so the marker lands correctly.
+    viewerRef.current?.setSrc(buildViewerUrl(caseData.pacsbinBaseUrl, state, AUTHOR_CHROME));
+
+    // Best-effort decoded summary.
+    try {
+      setSummary(summarizeState(await decodeState(state)));
+    } catch {
+      setSummary("(state captured; could not decode summary)");
     }
   }
 
-  // Manual keyframe capture (fallback when Pacsbin doesn't emit state):
-  // tutor pastes the current Pacsbin bookmark mid-recording.
-  function captureKeyframeFromBookmark() {
-    if (!bookmarkUrl.trim()) return;
-    const vp = parseViewportFromUrl(bookmarkUrl);
-    latestViewportRef.current = vp;
-    if (flowRecording) pushKeyframe(vp);
-    else setViewport(vp);
-  }
-
-  function parseBookmark() {
-    if (!bookmarkUrl.trim()) return;
-    const vp = parseViewportFromUrl(bookmarkUrl);
-    setViewport(vp);
-    // Jump the author iframe to this exact view so the tutor can place the
-    // marker on the right anatomy.
-    const locked = buildViewerUrl(parseBaseUrl(bookmarkUrl) || caseData.pacsbinBaseUrl, vp, AUTHOR_CHROME);
-    viewerRef.current?.setSrc(locked);
-  }
-
-  // Structure from a typed transcript and/or recorded audio (Gemini does STT).
   async function structure(audio?: { base64: string; mimeType: string }) {
     if (!audio && !transcript.trim()) return;
     setStructuring(true);
@@ -241,7 +170,6 @@ function AuthorWorkspace({
     }
   }
 
-  // Toggle dictation: start recording, or stop and send the audio to Gemini.
   async function toggleDictation() {
     if (recorder.recording) {
       const rec = await recorder.stop();
@@ -253,21 +181,19 @@ function AuthorWorkspace({
 
   async function saveFinding() {
     setSaveError("");
-    // Poster viewport = first keyframe if we recorded a flow, else the captured one.
-    const posterViewport = track[0]?.viewport ?? viewport;
-    if (!posterViewport) return setSaveError("Record a flow or capture a viewport first.");
+    if (keyframes.length === 0) return setSaveError("Capture at least one Pacsbin view first.");
     if (!marker) return setSaveError("Click on the image to place a marker.");
     if (!structured) return setSaveError("Dictate and structure the finding first.");
 
-    const hasTrack = track.length > 1;
+    const hasFlow = keyframes.length > 1;
     const finding: Partial<Finding> = {
       label: structured.label,
       description: structured.description,
       teachingPoints: structured.teachingPoints,
-      viewport: posterViewport,
+      state: keyframes[0].state,
       marker,
-      track: hasTrack ? track : undefined,
-      durationMs: hasTrack ? track[track.length - 1].t : undefined,
+      keyframes: hasFlow ? keyframes : undefined,
+      durationMs: hasFlow ? keyframes[keyframes.length - 1].t : undefined,
       order: caseData.findings.length + 1,
     };
     const res = await fetch(`/api/cases/${caseData.caseId}/findings`, {
@@ -282,21 +208,17 @@ function AuthorWorkspace({
   }
 
   function resetDraft() {
-    setBookmarkUrl("");
-    setViewport(null);
+    setPastedUrl("");
+    setKeyframes([]);
+    setSummary("");
     setMarker(null);
     setPlacingMarker(false);
     setStructured(null);
     setTranscript("");
-    setTrack([]);
-    flowRecordingRef.current = false;
-    setFlowRecording(false);
   }
 
   async function removeFinding(id: string) {
-    const res = await fetch(`/api/cases/${caseData.caseId}/findings/${id}`, {
-      method: "DELETE",
-    });
+    const res = await fetch(`/api/cases/${caseData.caseId}/findings/${id}`, { method: "DELETE" });
     const data = await res.json();
     if (res.ok) setCaseData(data);
   }
@@ -318,11 +240,10 @@ function AuthorWorkspace({
 
   return (
     <div className="grid grid-cols-[1fr_380px] h-[calc(100vh-49px)]">
-      {/* Viewer + overlay */}
       <div className="relative">
         <ViewerFrame
           ref={viewerRef}
-          initialSrc={authorSrc}
+          initialSrc={initialSrc}
           marker={marker}
           markerVisible
           onOverlayClick={
@@ -342,114 +263,48 @@ function AuthorWorkspace({
         )}
       </div>
 
-      {/* Authoring panel */}
       <aside className="border-l border-neutral-800 overflow-y-auto p-4 space-y-5">
         <div>
           <h2 className="font-semibold">{caseData.title}</h2>
           <p className="text-xs text-neutral-500">{caseData.caseId}</p>
         </div>
 
-        {/* Pacsbin signal monitor — discovers whether Pacsbin emits viewport
-            state via postMessage (so we can store ITS state, not a scrubber). */}
-        <section className="space-y-2 rounded-lg border border-neutral-800 p-3">
-          <h3 className="text-sm font-semibold text-sky-400">Pacsbin signal monitor</h3>
-          <p className="text-[11px] text-neutral-500">
-            Navigate the case in Pacsbin and watch for state messages. If state
-            appears here, we capture it directly.
-          </p>
-          <div className="text-xs text-neutral-300">
-            Messages received: <span className="font-mono">{signalCount}</span>
-            {emitsState === true && (
-              <span className="ml-2 rounded bg-green-900 px-1.5 py-0.5 text-green-300">
-                viewport state detected ✓
-              </span>
-            )}
-            {emitsState === null && signalCount === 0 && (
-              <span className="ml-2 text-neutral-500">none yet</span>
-            )}
-            {emitsState === null && signalCount > 0 && (
-              <span className="ml-2 text-amber-400">
-                messages seen, but no recognizable viewport
-              </span>
-            )}
-          </div>
-          {lastSignal && (
-            <pre className="max-h-28 overflow-auto rounded bg-neutral-900 p-2 text-[10px] text-neutral-400">
-              {JSON.stringify(lastSignal.viewport ?? lastSignal.raw, null, 2)}
-            </pre>
-          )}
-        </section>
-
-        {/* Flow recording — the dynamic CT/MRI path. */}
-        <section className="space-y-2 rounded-lg border border-neutral-800 p-3">
-          <h3 className="text-sm font-semibold text-yellow-400">Record dynamic flow</h3>
-          <p className="text-[11px] text-neutral-500">
-            Press record and narrate while you scroll / window / zoom. We capture
-            a timeline + your voice; playback replays the whole motion.
-          </p>
-          <button
-            onClick={toggleFlowRecording}
-            disabled={structuring}
-            className={`w-full text-sm ${flowRecording ? "btn-recording" : "btn-primary"}`}
-          >
-            {flowRecording
-              ? `● Stop recording (${track.length} keyframes)`
-              : "🎬 Record flow + narration"}
-          </button>
-          {flowRecording && emitsState !== true && (
-            <button
-              onClick={captureKeyframeFromBookmark}
-              className="btn-secondary w-full text-xs"
-            >
-              + Capture keyframe from pasted bookmark
-            </button>
-          )}
-          {track.length > 0 && (
-            <div className="text-[11px] text-neutral-400">
-              Recorded {track.length} keyframes
-              {track.length > 1 && ` over ${(track[track.length - 1].t / 1000).toFixed(1)}s`}.
-            </div>
-          )}
-        </section>
-
         <section className="space-y-3 rounded-lg border border-neutral-800 p-3">
           <h3 className="text-sm font-semibold text-yellow-400">
-            Finding details {track.length > 1 ? "(flow recorded)" : "(static)"}
+            Add finding {keyframes.length > 1 ? "(flow)" : keyframes.length === 1 ? "(static)" : ""}
           </h3>
 
-          {/* Step a: bookmark (also a manual keyframe source while recording) */}
+          {/* Step 1: capture view(s) */}
           <div>
-            <label className="label">1. Paste Pacsbin bookmark URL</label>
+            <label className="label">1. Capture Pacsbin view(s)</label>
             <textarea
               className="input h-16 text-xs"
-              placeholder="Pacsbin link-to-image URL…"
-              value={bookmarkUrl}
-              onChange={(e) => setBookmarkUrl(e.target.value)}
+              placeholder="Paste the Pacsbin viewer URL after navigating to the finding…"
+              value={pastedUrl}
+              onChange={(e) => setPastedUrl(e.target.value)}
             />
-            <button onClick={parseBookmark} className="btn-secondary mt-1 w-full text-sm">
-              Parse viewport
+            <button onClick={captureKeyframe} className="btn-secondary mt-1 w-full text-sm">
+              + Capture view {keyframes.length > 0 ? `(${keyframes.length} so far)` : ""}
             </button>
-            {viewport && (
-              <pre className="mt-2 max-h-32 overflow-auto rounded bg-neutral-900 p-2 text-[11px] text-neutral-400">
-                {JSON.stringify(viewport, null, 2)}
-              </pre>
+            {summary && <p className="mt-1 text-[11px] text-neutral-400">{summary}</p>}
+            {keyframes.length > 1 && (
+              <p className="text-[11px] text-neutral-500">
+                {keyframes.length} keyframes over {(keyframes[keyframes.length - 1].t / 1000).toFixed(1)}s — playback snaps through them.
+              </p>
             )}
           </div>
 
-          {/* Step b: marker */}
+          {/* Step 2: marker */}
           <div>
             <label className="label">2. Place marker</label>
-            <button
-              onClick={() => setPlacingMarker(true)}
-              className="btn-secondary w-full text-sm"
-            >
+            <button onClick={() => setPlacingMarker(true)} className="btn-secondary w-full text-sm">
               {marker
                 ? `Marker at ${(marker.x_pct * 100).toFixed(0)}%, ${(marker.y_pct * 100).toFixed(0)}% — click to replace`
                 : "Click to place marker"}
             </button>
           </div>
 
-          {/* Step c: dictate (Gemini Flash does speech-to-text) */}
+          {/* Step 3: dictate */}
           <div>
             <label className="label">3. Dictate finding</label>
             {recorder.supported ? (
@@ -461,19 +316,17 @@ function AuthorWorkspace({
                 {recorder.recording ? "● Stop & transcribe" : "🎙 Dictate (AI transcribes)"}
               </button>
             ) : (
-              <p className="text-xs text-neutral-500">
-                Mic not available — type the finding below.
-              </p>
+              <p className="text-xs text-neutral-500">Mic not available — type below.</p>
             )}
             <textarea
               className="input mt-2 h-20 text-xs"
-              placeholder="e.g. Sagittal T2, ACL tear at the femoral attachment, complete fibre discontinuity, teaching point empty notch sign."
+              placeholder="e.g. Sagittal, ACL tear at the femoral attachment, complete fibre discontinuity, teaching point empty notch sign."
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
             />
             <button
               onClick={() => structure()}
-              disabled={structuring || (!transcript.trim() && !recorder.recording)}
+              disabled={structuring || !transcript.trim()}
               className="btn-secondary mt-1 w-full text-sm"
             >
               {structuring ? "Structuring…" : "Structure typed text with AI"}
@@ -482,71 +335,46 @@ function AuthorWorkspace({
 
           {structured && (
             <div className="rounded bg-neutral-900 p-2 text-xs space-y-1">
-              <div>
-                <span className="text-neutral-500">Label:</span> {structured.label}
-              </div>
-              <div>
-                <span className="text-neutral-500">Description:</span> {structured.description}
-              </div>
+              <div><span className="text-neutral-500">Label:</span> {structured.label}</div>
+              <div><span className="text-neutral-500">Description:</span> {structured.description}</div>
               {structured.teachingPoints.length > 0 && (
-                <div>
-                  <span className="text-neutral-500">Teaching:</span>{" "}
-                  {structured.teachingPoints.join("; ")}
-                </div>
+                <div><span className="text-neutral-500">Teaching:</span> {structured.teachingPoints.join("; ")}</div>
               )}
             </div>
           )}
 
           {saveError && <p className="text-red-400 text-xs">{saveError}</p>}
           <div className="flex gap-2">
-            <button onClick={saveFinding} className="btn-primary flex-1 text-sm">
-              Save finding
-            </button>
-            <button onClick={resetDraft} className="btn-secondary text-sm">
-              Clear
-            </button>
+            <button onClick={saveFinding} className="btn-primary flex-1 text-sm">Save finding</button>
+            <button onClick={resetDraft} className="btn-secondary text-sm">Clear</button>
           </div>
         </section>
 
-        {/* Findings list */}
         <section>
-          <h3 className="text-sm font-semibold mb-2">
-            Findings ({caseData.findings.length})
-          </h3>
+          <h3 className="text-sm font-semibold mb-2">Findings ({caseData.findings.length})</h3>
           <ol className="space-y-2">
             {caseData.findings.map((f, i) => (
-              <li
-                key={f.id}
-                className="rounded border border-neutral-800 p-2 text-sm flex items-start gap-2"
-              >
+              <li key={f.id} className="rounded border border-neutral-800 p-2 text-sm flex items-start gap-2">
                 <span className="text-neutral-500 w-5 shrink-0">{i + 1}.</span>
                 <div className="flex-1">
-                  <div className="font-medium">{f.label}</div>
+                  <div className="font-medium">
+                    {f.label}
+                    {f.keyframes && f.keyframes.length > 1 && (
+                      <span className="ml-1 text-[10px] text-sky-400">flow·{f.keyframes.length}</span>
+                    )}
+                  </div>
                   <div className="text-xs text-neutral-400">{f.description}</div>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <button onClick={() => move(f.id, -1)} className="icon-btn" title="Up">
-                    ↑
-                  </button>
-                  <button onClick={() => move(f.id, 1)} className="icon-btn" title="Down">
-                    ↓
-                  </button>
-                  <button
-                    onClick={() => removeFinding(f.id)}
-                    className="icon-btn text-red-400"
-                    title="Delete"
-                  >
-                    ✕
-                  </button>
+                  <button onClick={() => move(f.id, -1)} className="icon-btn" title="Up">↑</button>
+                  <button onClick={() => move(f.id, 1)} className="icon-btn" title="Down">↓</button>
+                  <button onClick={() => removeFinding(f.id)} className="icon-btn text-red-400" title="Delete">✕</button>
                 </div>
               </li>
             ))}
           </ol>
           {caseData.findings.length > 0 && (
-            <a
-              href={`/case/${caseData.caseId}`}
-              className="btn-primary mt-4 block text-center text-sm"
-            >
+            <a href={`/case/${caseData.caseId}`} className="btn-primary mt-4 block text-center text-sm">
               Open student playback →
             </a>
           )}
@@ -554,15 +382,6 @@ function AuthorWorkspace({
       </aside>
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-
-function defaultViewport(c: CaseData): Viewport {
-  // Use the first finding's series if we have one, else a bare 1x1.
-  const first = c.findings[0];
-  if (first) return first.viewport;
-  return { layout: "1x1", s1: "", i1: "" };
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
