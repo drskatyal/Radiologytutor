@@ -6,16 +6,17 @@
 //    click overlay -> marker, dictate -> Gemini structures the text, save.
 // 3. List / delete / reorder findings.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ViewerFrame, { type ViewerFrameHandle } from "@/components/ViewerFrame";
 import { useRecorder } from "@/components/useRecorder";
+import { subscribeState, type StateMessage } from "@/lib/pacsbinClient";
 import {
   parseViewportFromUrl,
   parseBaseUrl,
   buildViewerUrl,
   AUTHOR_CHROME,
 } from "@/lib/pacsbinUrl";
-import type { CaseData, Finding, Marker, Viewport } from "@/lib/types";
+import type { CaseData, Finding, Keyframe, Marker, Viewport } from "@/lib/types";
 
 export default function AuthorPage() {
   const [caseData, setCaseData] = useState<CaseData | null>(null);
@@ -132,9 +133,78 @@ function AuthorWorkspace({
   const [saveError, setSaveError] = useState("");
   const [transcript, setTranscript] = useState("");
 
+  // Flow recording (the dynamic CT/MRI path): capture a timeline of viewport
+  // keyframes while the tutor narrates. Keyframes come from Pacsbin's own
+  // state events when available, or from manual bookmark captures otherwise.
+  const [flowRecording, setFlowRecording] = useState(false);
+  const [track, setTrack] = useState<Keyframe[]>([]);
+  const recStartRef = useRef<number>(0);
+  const flowRecordingRef = useRef(false);
+  const latestViewportRef = useRef<Viewport | null>(null);
+
+  // Live "signal monitor": what (if anything) Pacsbin posts via postMessage.
+  const [signalCount, setSignalCount] = useState(0);
+  const [lastSignal, setLastSignal] = useState<StateMessage | null>(null);
+  const [emitsState, setEmitsState] = useState<boolean | null>(null);
+
   const recorder = useRecorder();
 
   const authorSrc = buildViewerUrl(caseData.pacsbinBaseUrl, defaultViewport(caseData), AUTHOR_CHROME);
+
+  // Subscribe to Pacsbin's postMessage channel to discover + capture its state.
+  useEffect(() => {
+    const iframe = viewerRef.current?.getIframe();
+    if (!iframe) return;
+    const unsub = subscribeState(iframe, (msg) => {
+      setSignalCount((c) => c + 1);
+      setLastSignal(msg);
+      if (msg.viewport) {
+        setEmitsState(true);
+        latestViewportRef.current = msg.viewport;
+        // Auto-capture a keyframe while recording.
+        if (flowRecordingRef.current) {
+          pushKeyframe(msg.viewport);
+        }
+      }
+    });
+    return unsub;
+    // viewerRef is stable; subscribe once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function pushKeyframe(vp: Viewport) {
+    const t = Math.max(0, Date.now() - recStartRef.current);
+    setTrack((tr) => [...tr, { t, viewport: vp }]);
+  }
+
+  // Start/stop the flow recording. Audio runs in parallel (Gemini transcribes).
+  async function toggleFlowRecording() {
+    if (flowRecording) {
+      flowRecordingRef.current = false;
+      setFlowRecording(false);
+      const rec = await recorder.stop();
+      if (rec) await structure({ base64: rec.base64, mimeType: rec.mimeType });
+    } else {
+      setTrack([]);
+      recStartRef.current = Date.now();
+      flowRecordingRef.current = true;
+      setFlowRecording(true);
+      // Seed the first keyframe from the last known viewport, if any.
+      if (latestViewportRef.current) pushKeyframe(latestViewportRef.current);
+      else if (viewport) pushKeyframe(viewport);
+      await recorder.start();
+    }
+  }
+
+  // Manual keyframe capture (fallback when Pacsbin doesn't emit state):
+  // tutor pastes the current Pacsbin bookmark mid-recording.
+  function captureKeyframeFromBookmark() {
+    if (!bookmarkUrl.trim()) return;
+    const vp = parseViewportFromUrl(bookmarkUrl);
+    latestViewportRef.current = vp;
+    if (flowRecording) pushKeyframe(vp);
+    else setViewport(vp);
+  }
 
   function parseBookmark() {
     if (!bookmarkUrl.trim()) return;
@@ -183,16 +253,21 @@ function AuthorWorkspace({
 
   async function saveFinding() {
     setSaveError("");
-    if (!viewport) return setSaveError("Paste a Pacsbin bookmark URL first.");
+    // Poster viewport = first keyframe if we recorded a flow, else the captured one.
+    const posterViewport = track[0]?.viewport ?? viewport;
+    if (!posterViewport) return setSaveError("Record a flow or capture a viewport first.");
     if (!marker) return setSaveError("Click on the image to place a marker.");
     if (!structured) return setSaveError("Dictate and structure the finding first.");
 
+    const hasTrack = track.length > 1;
     const finding: Partial<Finding> = {
       label: structured.label,
       description: structured.description,
       teachingPoints: structured.teachingPoints,
-      viewport,
+      viewport: posterViewport,
       marker,
+      track: hasTrack ? track : undefined,
+      durationMs: hasTrack ? track[track.length - 1].t : undefined,
       order: caseData.findings.length + 1,
     };
     const res = await fetch(`/api/cases/${caseData.caseId}/findings`, {
@@ -213,6 +288,9 @@ function AuthorWorkspace({
     setPlacingMarker(false);
     setStructured(null);
     setTranscript("");
+    setTrack([]);
+    flowRecordingRef.current = false;
+    setFlowRecording(false);
   }
 
   async function removeFinding(id: string) {
@@ -271,10 +349,75 @@ function AuthorWorkspace({
           <p className="text-xs text-neutral-500">{caseData.caseId}</p>
         </div>
 
-        <section className="space-y-3 rounded-lg border border-neutral-800 p-3">
-          <h3 className="text-sm font-semibold text-yellow-400">Add finding</h3>
+        {/* Pacsbin signal monitor — discovers whether Pacsbin emits viewport
+            state via postMessage (so we can store ITS state, not a scrubber). */}
+        <section className="space-y-2 rounded-lg border border-neutral-800 p-3">
+          <h3 className="text-sm font-semibold text-sky-400">Pacsbin signal monitor</h3>
+          <p className="text-[11px] text-neutral-500">
+            Navigate the case in Pacsbin and watch for state messages. If state
+            appears here, we capture it directly.
+          </p>
+          <div className="text-xs text-neutral-300">
+            Messages received: <span className="font-mono">{signalCount}</span>
+            {emitsState === true && (
+              <span className="ml-2 rounded bg-green-900 px-1.5 py-0.5 text-green-300">
+                viewport state detected ✓
+              </span>
+            )}
+            {emitsState === null && signalCount === 0 && (
+              <span className="ml-2 text-neutral-500">none yet</span>
+            )}
+            {emitsState === null && signalCount > 0 && (
+              <span className="ml-2 text-amber-400">
+                messages seen, but no recognizable viewport
+              </span>
+            )}
+          </div>
+          {lastSignal && (
+            <pre className="max-h-28 overflow-auto rounded bg-neutral-900 p-2 text-[10px] text-neutral-400">
+              {JSON.stringify(lastSignal.viewport ?? lastSignal.raw, null, 2)}
+            </pre>
+          )}
+        </section>
 
-          {/* Step a: bookmark */}
+        {/* Flow recording — the dynamic CT/MRI path. */}
+        <section className="space-y-2 rounded-lg border border-neutral-800 p-3">
+          <h3 className="text-sm font-semibold text-yellow-400">Record dynamic flow</h3>
+          <p className="text-[11px] text-neutral-500">
+            Press record and narrate while you scroll / window / zoom. We capture
+            a timeline + your voice; playback replays the whole motion.
+          </p>
+          <button
+            onClick={toggleFlowRecording}
+            disabled={structuring}
+            className={`w-full text-sm ${flowRecording ? "btn-recording" : "btn-primary"}`}
+          >
+            {flowRecording
+              ? `● Stop recording (${track.length} keyframes)`
+              : "🎬 Record flow + narration"}
+          </button>
+          {flowRecording && emitsState !== true && (
+            <button
+              onClick={captureKeyframeFromBookmark}
+              className="btn-secondary w-full text-xs"
+            >
+              + Capture keyframe from pasted bookmark
+            </button>
+          )}
+          {track.length > 0 && (
+            <div className="text-[11px] text-neutral-400">
+              Recorded {track.length} keyframes
+              {track.length > 1 && ` over ${(track[track.length - 1].t / 1000).toFixed(1)}s`}.
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-3 rounded-lg border border-neutral-800 p-3">
+          <h3 className="text-sm font-semibold text-yellow-400">
+            Finding details {track.length > 1 ? "(flow recorded)" : "(static)"}
+          </h3>
+
+          {/* Step a: bookmark (also a manual keyframe source while recording) */}
           <div>
             <label className="label">1. Paste Pacsbin bookmark URL</label>
             <textarea

@@ -39,13 +39,36 @@ export interface Marker {
   shape: MarkerShape;
 }
 
+/**
+ * One recorded moment in a finding's dynamic flow. Because radiology teaching
+ * on CT/MRI is a *motion* (scrubbing the stack, windowing, zooming), a finding
+ * is a TRACK of these keyframes, captured as the tutor drives our controls.
+ * `t` is milliseconds from the start of the recording.
+ */
+export interface Keyframe {
+  t: number;
+  viewport: Viewport;
+  /** Optional moving marker (a finding tracked across slices). */
+  marker?: Marker;
+}
+
 export interface Finding {
   id: string;
   label: string;
   description: string;
   teachingPoints: string[];
+  /** Representative ("poster") viewport — first keyframe / key slice. Always
+   * present for the findings list and for single-shot fallback playback. */
   viewport: Viewport;
   marker: Marker;
+  /**
+   * Recorded dynamic flow. When present, playback replays this timeline in
+   * sync with narration instead of a single synthesised transition. Absent on
+   * legacy single-image findings.
+   */
+  track?: Keyframe[];
+  /** Total recording duration in ms (track end), if recorded. */
+  durationMs?: number;
   /** Default guided-tour sequence (search-pattern order). */
   order: number;
 }

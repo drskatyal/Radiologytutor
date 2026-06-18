@@ -18,6 +18,8 @@ export interface ViewerFrameHandle {
   /** Set the iframe URL directly (used by the animation runner). */
   setSrc: (url: string) => void;
   getSrc: () => string;
+  /** The underlying iframe — used to subscribe to Pacsbin postMessage state. */
+  getIframe: () => HTMLIFrameElement | null;
 }
 
 interface Props {
@@ -45,6 +47,7 @@ const ViewerFrame = forwardRef<ViewerFrameHandle, Props>(function ViewerFrame(
       if (iframeRef.current) iframeRef.current.src = url;
     },
     getSrc: () => iframeRef.current?.src ?? currentSrc,
+    getIframe: () => iframeRef.current,
   }));
 
   function handleClick(e: MouseEvent<HTMLDivElement>) {

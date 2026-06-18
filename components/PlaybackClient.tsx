@@ -9,7 +9,7 @@ import ViewerFrame, { type ViewerFrameHandle } from "@/components/ViewerFrame";
 import { useRecorder } from "@/components/useRecorder";
 import { speak, stopSpeaking } from "@/lib/speak";
 import { buildViewerUrl, PLAYBACK_CHROME } from "@/lib/pacsbinUrl";
-import { runTransition, animateWindow } from "@/lib/viewerController";
+import { runTransition, runTrack, animateWindow } from "@/lib/viewerController";
 import type { CaseData, Finding, Marker, Viewport } from "@/lib/types";
 
 type Mode = "guided" | "socratic" | "free";
@@ -87,15 +87,24 @@ export default function PlaybackClient({ caseData }: { caseData: CaseData }) {
 
           setMarkerVisible(false);
           setMarker(null);
-          await runTransition(
-            caseData.pacsbinBaseUrl,
-            currentViewportRef.current,
-            finding.viewport,
-            apply,
-            PLAYBACK_CHROME,
-            { signal }
-          );
-          currentViewportRef.current = finding.viewport;
+          if (finding.track && finding.track.length > 1) {
+            // Replay the recorded dynamic flow (scroll/window/zoom over time).
+            await runTrack(caseData.pacsbinBaseUrl, finding.track, apply, PLAYBACK_CHROME, {
+              signal,
+            });
+          } else {
+            // Single-shot finding: synthesise a clean transition to it.
+            await runTransition(
+              caseData.pacsbinBaseUrl,
+              currentViewportRef.current,
+              finding.viewport,
+              apply,
+              PLAYBACK_CHROME,
+              { signal }
+            );
+          }
+          currentViewportRef.current =
+            finding.track?.[finding.track.length - 1]?.viewport ?? finding.viewport;
           // Fade in the marker after the transition settles.
           setMarker(finding.marker);
           setMarkerVisible(true);
