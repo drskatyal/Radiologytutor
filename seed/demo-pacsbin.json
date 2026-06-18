@@ -3,6 +3,19 @@
   "title": "Demo case — Pacsbin 2.0",
   "modality": "CT",
   "pacsbinBaseUrl": "https://pacsbin.com/viewer/case/WJUZ1VRmoL",
+  "orgId": "org_demo",
+  "patientId": "pat_demo",
+  "status": "published",
+  "specialty": "General",
+  "studyRefs": [
+    {
+      "studyInstanceUID": "1.2.840.113619.2.demo.pacsbin.current",
+      "role": "current",
+      "order": 1
+    }
+  ],
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z",
   "findings": [
     {
       "id": "f1",

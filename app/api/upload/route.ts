@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   orthancConfigured,
-  orthancStoreInstance,
+  orthancIngestInstance,
   orthancStudyUIDs,
   orthancSeriesUID,
 } from "@/lib/orthanc";
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   for (const file of files) {
     try {
-      const res = await orthancStoreInstance(await file.arrayBuffer());
+      const res = await orthancIngestInstance(await file.arrayBuffer());
       stored++;
       const existing = seriesMap.get(res.ParentSeries);
       if (existing) existing.count++;
