@@ -1,9 +1,14 @@
 "use client";
 
-// Tutor narration playback. Prefers ElevenLabs (via our /api/tts route);
-// falls back to the browser speechSynthesis if the key is missing or the
-// request fails. Supports barge-in: stopSpeaking() cancels both paths so the
-// student can interrupt and ask a question.
+// Tutor answer playback. Prefers Gemini TTS (via our /api/tts route); falls
+// back to the browser speechSynthesis if GEMINI_API_KEY is missing or the
+// request fails. This is a vendor seam — the exported interface (speak /
+// stopSpeaking) never changes, so swapping the TTS backend (Gemini today,
+// ElevenLabs later) touches only /api/tts. Supports barge-in: stopSpeaking()
+// cancels both paths so the student can interrupt and ask a question.
+//
+// Scope: live tutor answers ONLY. The teacher's recorded lesson narration is
+// separate audio played by the replay engine and never routed through here.
 
 let currentAudio: HTMLAudioElement | null = null;
 

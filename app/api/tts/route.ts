@@ -1,23 +1,24 @@
 // POST /api/tts
 // Body: { text: string }
-// Returns: audio/mpeg stream from ElevenLabs (the tutor's narration voice).
+// Returns: audio/wav bytes synthesized by Gemini TTS (the tutor's voice).
 //
-// Server-only — keeps ELEVENLABS_API_KEY off the client. If the key is
-// missing, returns 503 so the client can fall back to browser speechSynthesis.
+// Server-only — keeps GEMINI_API_KEY off the client. This is the SAME vendor
+// seam as the rest of our AI (one key: GEMINI_API_KEY). If the key is missing
+// or synthesis fails, we return a JSON error with `fallback: true` so the
+// client gracefully falls back to the browser's built-in speechSynthesis.
+//
+// Used ONLY for live tutor answers — the teacher's recorded lesson narration
+// is its own audio and is never routed through here.
 
 import { NextRequest, NextResponse } from "next/server";
+import { geminiConfigured, synthesizeSpeech } from "@/lib/gemini";
 
 export const runtime = "nodejs";
 
-// A warm, clear default voice. Override with ELEVENLABS_VOICE_ID.
-const DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM"; // "Rachel"
-const MODEL = process.env.ELEVENLABS_MODEL || "eleven_turbo_v2_5";
-
 export async function POST(req: NextRequest) {
-  const key = process.env.ELEVENLABS_API_KEY;
-  if (!key) {
+  if (!geminiConfigured()) {
     return NextResponse.json(
-      { error: "ELEVENLABS_API_KEY not set", fallback: true },
+      { error: "GEMINI_API_KEY not set", fallback: true },
       { status: 503 }
     );
   }
@@ -28,42 +29,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "text is required" }, { status: 400 });
     }
 
-    const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE;
-    const res = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
-      {
-        method: "POST",
-        headers: {
-          "xi-api-key": key,
-          "Content-Type": "application/json",
-          Accept: "audio/mpeg",
-        },
-        body: JSON.stringify({
-          text,
-          model_id: MODEL,
-          voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.15 },
-        }),
-      }
-    );
+    const { audio, mimeType } = await synthesizeSpeech(text);
 
-    if (!res.ok) {
-      const detail = await res.text();
-      return NextResponse.json(
-        { error: `ElevenLabs error ${res.status}: ${detail}`, fallback: true },
-        { status: 502 }
-      );
-    }
-
-    // Stream the audio straight through to the browser.
-    return new NextResponse(res.body, {
+    return new NextResponse(audio as unknown as BodyInit, {
       status: 200,
       headers: {
-        "Content-Type": "audio/mpeg",
+        "Content-Type": mimeType,
         "Cache-Control": "no-store",
       },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message, fallback: true }, { status: 500 });
+    return NextResponse.json({ error: message, fallback: true }, { status: 502 });
   }
 }

@@ -77,6 +77,7 @@ export default function StudentSession({
               { value: "guided", label: "Guided" },
               { value: "socratic", label: "Socratic" },
               { value: "free", label: "Free" },
+              { value: "reporting", label: "Reporting" },
             ]}
             value={mode}
             onValueChange={(v) => setMode(v as SessionMode)}

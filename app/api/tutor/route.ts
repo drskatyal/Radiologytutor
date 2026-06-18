@@ -47,7 +47,11 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const caseId = String(body.caseId ?? "");
-    const mode = (body.mode ?? "guided") as "guided" | "socratic" | "free";
+    const mode = (body.mode ?? "guided") as
+      | "guided"
+      | "socratic"
+      | "free"
+      | "reporting";
     const messages = (body.messages ?? []) as InMessage[];
     const currentFindingId = body.currentFindingId
       ? String(body.currentFindingId)

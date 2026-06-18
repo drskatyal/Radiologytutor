@@ -25,7 +25,13 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, Marker } from "@/lib/types";
 
-export type SessionMode = "guided" | "socratic" | "free";
+export type SessionMode = "guided" | "socratic" | "free" | "reporting";
+
+/** A web source cited by the tutor (from Google Search grounding). */
+export interface ChatSource {
+  title: string;
+  url: string;
+}
 
 /** What the session is doing right now (drives the status UI). */
 export type SessionPhase =
@@ -45,6 +51,8 @@ export interface ChatTurn {
   pending?: boolean;
   /** An assistant turn that is an error message. */
   error?: boolean;
+  /** Web sources the tutor cited (assistant turns; from grounding). */
+  sources?: ChatSource[];
 }
 
 interface ViewerAction {
@@ -231,8 +239,16 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         }
 
         const answer = String(data.answer ?? "").trim();
+        const sources: ChatSource[] = Array.isArray(data.sources)
+          ? (data.sources as ChatSource[])
+              .filter((s) => s && typeof s.url === "string" && s.url)
+              .map((s) => ({ url: s.url, title: s.title || s.url }))
+          : [];
         if (answer) {
-          setTurns((prev) => [...prev, { id: nextId(), role: "assistant", text: answer }]);
+          setTurns((prev) => [
+            ...prev,
+            { id: nextId(), role: "assistant", text: answer, sources },
+          ]);
           setPhase("speaking");
           speak(answer, () => setPhase((p) => (p === "speaking" ? "idle" : p)));
         } else {
