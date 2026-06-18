@@ -27,6 +27,16 @@ import type { CaseData, Marker } from "@/lib/types";
 
 export type SessionMode = "guided" | "socratic" | "free" | "reporting";
 
+/** The agent orb's visible mood (mirrors AgentOrb's OrbState). */
+export type OrbState = "idle" | "listening" | "thinking" | "searching" | "speaking";
+
+// Cues that suggest the tutor will reach for the web (Google Search grounding).
+// We can't know grounding is happening until sources come back (the /api/tutor
+// call isn't streamed), so we light the "searching" orb when the question reads
+// like it needs outside evidence. See the API wish in the PR notes.
+const WEB_CUES =
+  /\b(latest|recent|guideline|guidelines|evidence|study|studies|research|literature|paper|trial|recommend|recommended|statistic|prevalence|incidence|criteria|classification|acr|fleischner|bi-?rads|lung-?rads|society|consensus|published)\b/i;
+
 /** A web source cited by the tutor (from Google Search grounding). */
 export interface ChatSource {
   title: string;
@@ -83,6 +93,18 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   const [markerVisible, setMarkerVisible] = useState(false);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [phase, setPhase] = useState<SessionPhase>("idle");
+  // True while a "thinking" turn looks like it's reaching for the web — drives
+  // the orb's distinct "searching" animation (see WEB_CUES above).
+  const [searching, setSearching] = useState(false);
+  // A gentle synthetic input level (0..1) while recording, so the orb's mic
+  // rings feel alive. We avoid a second getUserMedia/AnalyserNode (the recorder
+  // owns the stream); this is a rhythmic affordance, not a true VU meter.
+  const [micLevel, setMicLevel] = useState(0);
+  // The turn whose voice is currently being (re)played, for the ▶ control.
+  const [speakingTurnId, setSpeakingTurnId] = useState<string | null>(null);
+  // false once any AI call returns 503 (GEMINI_API_KEY missing) — lets the UI
+  // show a friendly, honest limitation without guessing server config.
+  const [aiAvailable, setAiAvailable] = useState(true);
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
@@ -99,6 +121,39 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
 
   const micState: MicState =
     phase === "recording" ? "recording" : phase === "transcribing" ? "processing" : "idle";
+
+  // The single source of truth for the agent orb's mood.
+  const orbState: OrbState =
+    phase === "recording"
+      ? "listening"
+      : phase === "transcribing"
+        ? "thinking"
+        : phase === "thinking"
+          ? searching
+            ? "searching"
+            : "thinking"
+          : phase === "speaking"
+            ? "speaking"
+            : "idle";
+
+  // Drive the synthetic mic level while recording; settle to 0 otherwise.
+  useEffect(() => {
+    if (phase !== "recording") {
+      setMicLevel(0);
+      return;
+    }
+    let raf = 0;
+    let t = 0;
+    const tick = () => {
+      t += 0.18;
+      // Layered sines + a little jitter → an organic, never-flat pulse.
+      const base = 0.45 + 0.35 * Math.abs(Math.sin(t)) + 0.18 * Math.sin(t * 2.7);
+      setMicLevel(Math.max(0, Math.min(1, base + (Math.random() - 0.5) * 0.12)));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [phase]);
 
   // --- Viewer ready ---------------------------------------------------------
   const onViewerReady = useCallback((c: CornerstoneControls) => {
@@ -212,6 +267,9 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   const runTutor = useCallback(
     async (question: string, history: ChatTurn[]) => {
       setPhase("thinking");
+      // Light the "searching" orb up front when the question reads like it
+      // needs outside evidence; sources arriving below confirm it after.
+      setSearching(WEB_CUES.test(question));
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -232,7 +290,13 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
           }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Tutor error");
+        if (!res.ok) {
+          // 503 means GEMINI_API_KEY isn't set — surface it as a friendly,
+          // persistent limitation rather than a transient error toast.
+          if (res.status === 503) setAiAvailable(false);
+          throw new Error(data.error || "Tutor error");
+        }
+        setAiAvailable(true);
 
         if (data.action && data.action.type !== "none") {
           await executeAction(data.action as ViewerAction);
@@ -244,17 +308,24 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
               .filter((s) => s && typeof s.url === "string" && s.url)
               .map((s) => ({ url: s.url, title: s.title || s.url }))
           : [];
+        setSearching(false);
         if (answer) {
+          const id = nextId();
           setTurns((prev) => [
             ...prev,
-            { id: nextId(), role: "assistant", text: answer, sources },
+            { id, role: "assistant", text: answer, sources },
           ]);
           setPhase("speaking");
-          speak(answer, () => setPhase((p) => (p === "speaking" ? "idle" : p)));
+          setSpeakingTurnId(id);
+          speak(answer, () => {
+            setSpeakingTurnId((cur) => (cur === id ? null : cur));
+            setPhase((p) => (p === "speaking" ? "idle" : p));
+          });
         } else {
           setPhase("idle");
         }
       } catch (e) {
+        setSearching(false);
         if (e instanceof DOMException && e.name === "AbortError") return;
         const msg = e instanceof Error ? e.message : "Tutor error";
         setTurns((prev) => [...prev, { id: nextId(), role: "assistant", text: msg, error: true }]);
@@ -312,7 +383,10 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         body: JSON.stringify({ audio: { base64: rec.base64, mime: rec.mimeType } }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Transcription failed");
+      if (!res.ok) {
+        if (res.status === 503) setAiAvailable(false);
+        throw new Error(data.error || "Transcription failed");
+      }
 
       const transcript = String(data.transcript ?? "").trim();
       if (!transcript) {
@@ -353,9 +427,34 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   const onStopSpeaking = useCallback(() => {
     if (phase === "speaking") {
       stopSpeaking();
+      setSpeakingTurnId(null);
       setPhase("idle");
     }
   }, [phase]);
+
+  // Replay (or stop replaying) a tutor turn's voice on demand — the ▶ control
+  // on assistant bubbles. Re-speaking interrupts any current speech (barge-in).
+  const replayTurn = useCallback(
+    (turn: ChatTurn) => {
+      if (turn.role !== "assistant" || turn.error || !turn.text) return;
+      // Toggle off if this exact turn is the one currently speaking.
+      if (speakingTurnId === turn.id) {
+        stopSpeaking();
+        setSpeakingTurnId(null);
+        if (phase === "speaking") setPhase("idle");
+        return;
+      }
+      stopSpeaking();
+      stopReplay();
+      setPhase("speaking");
+      setSpeakingTurnId(turn.id);
+      speak(turn.text, () => {
+        setSpeakingTurnId((cur) => (cur === turn.id ? null : cur));
+        setPhase((p) => (p === "speaking" ? "idle" : p));
+      });
+    },
+    [speakingTurnId, phase, stopReplay]
+  );
 
   // Auto-open the first finding once the viewer is ready (guided start).
   useEffect(() => {
@@ -397,5 +496,12 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     next,
     prev,
     goTo,
+    // Agent-orb + premium chat surface state.
+    orbState,
+    micLevel,
+    searching,
+    speakingTurnId,
+    aiAvailable,
+    replayTurn,
   };
 }
