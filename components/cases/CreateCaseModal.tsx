@@ -28,7 +28,11 @@ import {
 } from "@/components/ui";
 import { DicomDropzone } from "./DicomDropzone";
 import { SeriesPicker, type SeriesOption } from "./SeriesPicker";
-import { createCase, fetchOrthancStatus, type CreateCaseInput } from "./api";
+import {
+  createCase,
+  fetchOrthancStatus,
+  type CreateCaseInput,
+} from "@/components/admin/api";
 import { difficultyLabel } from "@/lib/taxonomy";
 import {
   BODY_SYSTEMS,
@@ -43,7 +47,7 @@ import {
   type Patient,
   type StudyRole,
   type UploadResult,
-} from "./types";
+} from "@/components/admin/types";
 
 /** One uploaded study staged for the case (grouped from upload result[s]). */
 interface StagedStudy {

@@ -68,12 +68,12 @@ import {
 // wheel/middle/right bindings so the usual PACS mouse scheme still works.
 //
 // `annotation: true` marks the measurement/markup tools. These place annotations
-// in world space and rely on per-image plane metadata (PixelSpacing /
-// ImageOrientationPatient / ImagePositionPatient). Studies that lack it — e.g.
-// the tiny synthetic multiframe MR we bundle as an offline sample — can't drive
-// these tools correctly (lengths come out in pixels, ROIs/angles misbehave), so
-// we DISABLE them rather than present dead controls. Real DICOMweb studies carry
-// the metadata, so the tools light up automatically for uploaded cases.
+// in world space; only the real-world MEASUREMENT (mm vs px) needs per-image
+// PixelSpacing — the tools still DRAW correctly without it. So we keep them
+// ENABLED by default and only disable them when a study POSITIVELY has no pixel
+// spacing at all (e.g. the tiny synthetic multiframe MR we bundle as an offline
+// sample). Real DICOMweb / uploaded studies keep the tools live — at worst a
+// measurement falls back to pixels, which is far better than a dead control.
 const PRIMARY_TOOLS: { name: string; label: string; annotation?: boolean }[] = [
   { name: "WindowLevel", label: "Window / Level" },
   { name: "Pan", label: "Pan" },
@@ -142,14 +142,28 @@ function wwWcToVoi(ww: number, wc: number): { lower: number; upper: number } {
 }
 
 /**
- * Does this image carry the spatial metadata annotation tools need?
+ * Should the annotation tools be ENABLED for this image?
  *
- * Cornerstone's `imagePlaneModule` provider fills in identity defaults (1mm
- * spacing, axis-aligned cosines, origin 0) and flags them via `usingDefaultValues`
- * when the source DICOM omits PixelSpacing / ImageOrientationPatient /
- * ImagePositionPatient. Measurements made against those defaults are meaningless
- * (px, not mm), so we treat a study as annotatable only when it provides REAL
- * pixel spacing. Returns false (and never throws) when metadata is missing.
+ * The tools always DRAW; they only need per-image `PixelSpacing` to report a
+ * real-world measurement (mm). So we default to enabled and only return false
+ * when we POSITIVELY confirm the study has no usable pixel spacing.
+ *
+ * Cornerstone3D v5's wadors `imagePlaneModule` provider (verified against
+ * cornerstone3D/packages/dicomImageLoader/.../wadors/metaData/metaDataProvider.ts)
+ * ALWAYS returns an object — never undefined — and sets `usingDefaultValues:true`
+ * if ANY of PixelSpacing / ImageOrientationPatient / ImagePositionPatient is
+ * absent. The old gate keyed off `usingDefaultValues`, so a real uploaded study
+ * that had valid PixelSpacing but no ImagePositionPatient/Orientation got its
+ * measure tools wrongly killed. We now ignore that flag and look ONLY at whether
+ * pixel spacing is explicitly present-and-zero/invalid.
+ *
+ * `pixelSpacing` (the raw [row,col] array) is set ONLY when DICOM PixelSpacing
+ * was present; when absent the provider leaves it undefined but fills
+ * row/columnPixelSpacing with the 1mm default. To avoid a false negative when
+ * the provider returns nothing yet (metadata not registered / unknown image),
+ * we treat undefined/unknown as ENABLED — only a value we can read AND that is
+ * explicitly the missing-spacing default (no `pixelSpacing` array, default 1mm
+ * via `usingDefaultValues`) AND has no real spacing disables the tools.
  */
 function imageSupportsAnnotation(
   metaData: { get: (type: string, imageId: string) => unknown },
@@ -159,21 +173,37 @@ function imageSupportsAnnotation(
     const plane = metaData.get("imagePlaneModule", imageId) as
       | {
           usingDefaultValues?: boolean;
+          pixelSpacing?: ArrayLike<number> | null;
           rowPixelSpacing?: number | null;
           columnPixelSpacing?: number | null;
-          imageOrientationPatient?: ArrayLike<number> | null;
         }
       | undefined;
-    if (!plane) return false;
+    // No metadata resolved yet (or no provider answered): assume enabled.
+    if (!plane) return true;
+
+    // If the loader exposes the raw DICOM PixelSpacing array, trust it directly:
+    // present + positive ⇒ real spacing ⇒ enabled.
+    const ps = plane.pixelSpacing;
+    if (ps && ps.length >= 2) {
+      return Number(ps[0]) > 0 && Number(ps[1]) > 0;
+    }
+
+    // No raw array: distinguish "real row/col spacing" from the 1mm default the
+    // provider substitutes for missing PixelSpacing. Only positively disable
+    // when the spacing IS the substituted default (usingDefaultValues set) — i.e.
+    // we know PixelSpacing was absent. Anything else stays enabled.
     if (plane.usingDefaultValues) return false;
+
     const hasSpacing =
       !!plane.rowPixelSpacing &&
       !!plane.columnPixelSpacing &&
-      plane.rowPixelSpacing > 0 &&
-      plane.columnPixelSpacing > 0;
-    return hasSpacing;
+      Number(plane.rowPixelSpacing) > 0 &&
+      Number(plane.columnPixelSpacing) > 0;
+    // Unknown spacing (no flag, no values) ⇒ assume enabled rather than dead.
+    return hasSpacing || (plane.rowPixelSpacing == null && plane.columnPixelSpacing == null);
   } catch {
-    return false;
+    // Never let a metadata hiccup kill the tools.
+    return true;
   }
 }
 
@@ -232,9 +262,11 @@ export default function CornerstoneViewer({
   const [inverted, setInverted] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [presetOpen, setPresetOpen] = useState(false);
-  // Whether the loaded series carries the spatial metadata annotation tools
-  // need. False for the bundled sample → those tools render disabled, not dead.
-  const [annotationsEnabled, setAnnotationsEnabled] = useState(false);
+  // Whether the annotation tools are enabled. Default ENABLED — we only flip to
+  // disabled once we POSITIVELY confirm a study has no pixel spacing (e.g. the
+  // bundled sample). This avoids the false-negative that killed the tools on
+  // real wadors/uploaded studies before their plane metadata had resolved.
+  const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
 
   const presets = presetsForModality(modality);
 
@@ -361,15 +393,46 @@ export default function CornerstoneViewer({
         viewport.render();
         viewportRef.current = viewport;
 
-        // Now that the series is loaded and its metadata registered, decide
-        // whether the annotation tools are usable on this study. If the active
-        // left tool happened to be an (about-to-be-disabled) annotation tool,
-        // fall back to Window/Level so we never leave a dead tool selected.
-        const annotatable = imageSupportsAnnotation(core.metaData, imageIds[0]);
-        setAnnotationsEnabled(annotatable);
-        if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
-          setLeftTool("WindowLevel");
-        }
+        // Decide whether the annotation tools stay enabled. Tools start ENABLED;
+        // we only disable when we can POSITIVELY confirm the study has no pixel
+        // spacing. Plane metadata may not have resolved yet right after setStack
+        // (wadors registers it up-front, but wadouri only parses on first load),
+        // so we evaluate now AND re-check once the first image actually renders —
+        // and we sample a few imageIds, treating any one with real spacing as
+        // proof the study is annotatable. If the active left tool is an
+        // annotation tool we're disabling, fall back to Window/Level so we never
+        // leave a dead tool selected.
+        const sampleIds = imageIds.slice(
+          0,
+          Math.min(imageIds.length, 4)
+        );
+        const evaluateAnnotatable = () => {
+          // Enabled if metadata is unknown OR any sampled image has real spacing.
+          const annotatable = sampleIds.some((id) =>
+            imageSupportsAnnotation(core.metaData, id)
+          );
+          setAnnotationsEnabled(annotatable);
+          if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
+            setLeftTool("WindowLevel");
+          }
+        };
+        evaluateAnnotatable();
+        // Re-check once the first frame has loaded + its metadata is parsed, so a
+        // study whose plane module wasn't ready at setStack still settles
+        // correctly (one-shot — no need to listen forever).
+        const recheckEl = elementRef.current;
+        const recheck = () => {
+          recheckEl?.removeEventListener(
+            core.Enums.Events.IMAGE_RENDERED,
+            recheck as EventListener
+          );
+          evaluateAnnotatable();
+        };
+        recheckEl?.addEventListener(
+          core.Enums.Events.IMAGE_RENDERED,
+          recheck as EventListener,
+          { once: true }
+        );
 
         // --- Record: emit ordered viewer state changes ----------------------
         // We read CURRENT values off the viewport in the handler (never trust
@@ -625,15 +688,16 @@ export default function CornerstoneViewer({
       <span className="mx-0.5 h-6 w-px bg-strong/60" />
 
       {PRIMARY_TOOLS.map((t) => {
-        // Annotation tools need spatial metadata; disable (don't hide) them on
-        // studies that lack it, with a tooltip that explains why.
+        // Annotation tools stay enabled by default; we only disable (never hide)
+        // them on a study we've confirmed has no pixel spacing, with a tooltip
+        // that explains why.
         const blocked = !!t.annotation && !annotationsEnabled;
         return (
           <ToolButton
             key={t.name}
             label={
               blocked
-                ? `${t.label} — needs a study with spatial metadata`
+                ? `${t.label} — this study has no pixel spacing for measurements`
                 : t.label
             }
             active={activeTool === t.name}
@@ -744,7 +808,7 @@ export default function CornerstoneViewer({
             <>
               {" · "}
               <span className="text-warning">
-                measurement tools need a study with spatial metadata
+                this study has no pixel spacing — measurement tools are disabled
               </span>
             </>
           )}

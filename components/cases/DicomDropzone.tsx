@@ -23,8 +23,8 @@ import {
   OrthancUnavailableError,
   type SkippedFile,
   type UploadResult,
-} from "./types";
-import { uploadDicomBatch } from "./api";
+} from "@/components/admin/types";
+import { uploadDicomBatch } from "@/components/admin/api";
 
 /** How many files we send per request. Keeps each POST small and resumable. */
 const BATCH_SIZE = 20;

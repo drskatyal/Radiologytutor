@@ -17,7 +17,7 @@ import {
 import { PageHeader } from "@/components/AppShell";
 import { useCallbackRef } from "./useCallbackRef";
 import { CaseList } from "./CaseList";
-import { CreateCaseModal } from "./CreateCaseModal";
+import { CreateCaseModal } from "@/components/cases/CreateCaseModal";
 import { EditCaseModal } from "./EditCaseModal";
 import { LibraryManager } from "./LibraryManager";
 import {

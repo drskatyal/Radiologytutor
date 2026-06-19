@@ -3,18 +3,26 @@
 // The case picker: a grid of selectable case tiles shown before a case is
 // opened for review. Loading -> shimmer skeletons; empty -> EmptyState.
 
-import { Badge, Card, EmptyState, Skeleton, cn } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, Skeleton, cn } from "@/components/ui";
 import type { CaseData } from "@/lib/types";
-import { DocIcon, LayersIcon } from "./icons";
+import { DocIcon, LayersIcon, PlusIcon } from "./icons";
 
 interface CasePickerProps {
   cases: CaseData[];
   loading: boolean;
   error: string;
   onSelect: (caseId: string) => void;
+  /** Start the create-case-from-upload flow (shown on the empty state). */
+  onCreate?: () => void;
 }
 
-export function CasePicker({ cases, loading, error, onSelect }: CasePickerProps) {
+export function CasePicker({
+  cases,
+  loading,
+  error,
+  onSelect,
+  onCreate,
+}: CasePickerProps) {
   if (loading) {
     return (
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -40,7 +48,14 @@ export function CasePicker({ cases, loading, error, onSelect }: CasePickerProps)
       <EmptyState
         icon={<DocIcon />}
         title="No cases yet"
-        description="Cases are created in Admin. Once a case exists, open it here to review and edit its findings."
+        description="Upload a DICOM study to create your first teaching case, then record and mark its findings here."
+        action={
+          onCreate ? (
+            <Button leadingIcon={<PlusIcon />} onClick={onCreate}>
+              New case
+            </Button>
+          ) : undefined
+        }
       />
     );
   }

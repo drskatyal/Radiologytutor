@@ -28,6 +28,12 @@ import { FindingsList } from "@/components/author/FindingsList";
 import { AddFindingDialog } from "@/components/author/AddFindingDialog";
 import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
 import { useUnsavedGuard } from "@/components/author/useUnsavedGuard";
+import { CreateCaseModal } from "@/components/cases/CreateCaseModal";
+import {
+  fetchAuthors,
+  fetchPatients,
+} from "@/components/admin/api";
+import type { Author, Patient } from "@/components/admin/types";
 import {
   addFinding,
   deleteFinding,
@@ -85,6 +91,11 @@ function CaseSelection() {
   const [cases, setCases] = useState<CaseData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Author-side create-case flow: same modal admin uses, so authors can upload
+  // a study and create a teaching case, then drop straight into authoring it.
+  const [createOpen, setCreateOpen] = useState(false);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [authors, setAuthors] = useState<Author[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -99,17 +110,40 @@ function CaseSelection() {
       } finally {
         if (alive) setLoading(false);
       }
+      // Patients + authors power the create-case modal's pickers. Best-effort:
+      // a failure here just means the modal opens with empty pickers (the author
+      // can still create a new patient inline), so we never block the list.
+      try {
+        const [ps, au] = await Promise.all([fetchPatients(), fetchAuthors()]);
+        if (alive) {
+          setPatients(ps);
+          setAuthors(au);
+        }
+      } catch {
+        /* non-fatal — the modal degrades gracefully */
+      }
     })();
     return () => {
       alive = false;
     };
   }, [toast]);
 
+  const newCaseButton = (
+    <Button
+      size="sm"
+      leadingIcon={<PlusIcon />}
+      onClick={() => setCreateOpen(true)}
+    >
+      New case
+    </Button>
+  );
+
   return (
     <div className="animate-fade-in">
       <PageHeader
         title="Author"
-        description="Pick a case to review and refine its findings — structured text, teaching sequence and more."
+        description="Pick a case to review and refine its findings — or upload a study to start a new one."
+        actions={newCaseButton}
       />
       <div className="mx-auto max-w-6xl px-6 py-6">
         <CasePicker
@@ -117,8 +151,23 @@ function CaseSelection() {
           loading={loading}
           error={error}
           onSelect={(id) => router.push(`/author?case=${encodeURIComponent(id)}`)}
+          onCreate={() => setCreateOpen(true)}
         />
       </div>
+
+      <CreateCaseModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        patients={patients}
+        authors={authors}
+        onCreated={(created) => {
+          // The modal shows its own success step (Open case / Add findings). We
+          // close it and route the author straight into authoring the new case
+          // so they can record/mark findings without an extra hop.
+          setCreateOpen(false);
+          router.push(`/author?case=${encodeURIComponent(created.caseId)}`);
+        }}
+      />
     </div>
   );
 }
