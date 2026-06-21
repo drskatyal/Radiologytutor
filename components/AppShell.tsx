@@ -9,23 +9,51 @@ import {
   PenLine,
   Radio,
   ShieldCheck,
+  ScanLine,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "./ui/cn";
 import { ToastProvider } from "./ui";
 
-interface NavLink {
+interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
 }
 
-const NAV: NavLink[] = [
-  { href: "/", label: "Cases", icon: LayoutGrid },
-  { href: "/author", label: "Author", icon: PenLine },
-  { href: "/record", label: "Record", icon: Radio },
-  { href: "/admin", label: "Admin", icon: ShieldCheck },
+interface NavGroup {
+  /** Section label rendered above the group. Omit for the lead group. */
+  label?: string;
+  items: NavItem[];
+}
+
+/**
+ * Information architecture — three intentional surfaces plus a clearly-labelled
+ * developer area for internal spikes. The grouping is role-aware in spirit:
+ * Library (everyone), Teach (authors), Manage (admins).
+ */
+const NAV: NavGroup[] = [
+  {
+    items: [{ href: "/", label: "Library", icon: LayoutGrid }],
+  },
+  {
+    label: "Teach",
+    items: [
+      { href: "/author", label: "Studio", icon: PenLine },
+      { href: "/admin", label: "Manage", icon: ShieldCheck },
+    ],
+  },
+  {
+    label: "Developer",
+    items: [
+      { href: "/record", label: "Record lab", icon: Radio },
+      { href: "/cornerstone", label: "Viewer lab", icon: ScanLine },
+    ],
+  },
 ];
+
+/** Flattened list, used for the compact mobile bar. */
+const FLAT_NAV: NavItem[] = NAV.flatMap((g) => g.items);
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
@@ -58,6 +86,52 @@ function Wordmark() {
   );
 }
 
+function NavRow({
+  item,
+  active,
+}: {
+  item: NavItem;
+  active: boolean;
+}) {
+  const Icon = item.icon;
+  return (
+    <Link
+      href={item.href}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        active
+          ? "text-primary"
+          : "text-secondary hover:bg-overlay/60 hover:text-primary"
+      )}
+    >
+      {active && (
+        <motion.span
+          layoutId="nav-active"
+          aria-hidden="true"
+          className="absolute inset-0 -z-10 rounded-lg border border-subtle bg-elevated shadow-sm surface-hairline"
+          transition={{ type: "spring", duration: 0.35, bounce: 0.2 }}
+        />
+      )}
+      {active && (
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-accent"
+        />
+      )}
+      <Icon
+        className={cn(
+          "h-[18px] w-[18px] shrink-0 transition-colors",
+          active ? "text-accent" : "text-muted group-hover:text-secondary"
+        )}
+        strokeWidth={2}
+      />
+      {item.label}
+    </Link>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
 
@@ -74,53 +148,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Wordmark />
           </Link>
 
-          <nav className="flex flex-1 flex-col gap-0.5 px-3 py-2">
-            <p className="px-3 pb-1.5 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-              Workspace
-            </p>
-            {NAV.map((link) => {
-              const active = isActive(pathname, link.href);
-              const Icon = link.icon;
-              return (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  aria-current={active ? "page" : undefined}
-                  className={cn(
-                    "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-                    active
-                      ? "text-primary"
-                      : "text-secondary hover:bg-overlay/60 hover:text-primary"
-                  )}
-                >
-                  {active && (
-                    <motion.span
-                      layoutId="nav-active"
-                      aria-hidden="true"
-                      className="absolute inset-0 -z-10 rounded-lg border border-subtle bg-elevated shadow-sm surface-hairline"
-                      transition={{ type: "spring", duration: 0.35, bounce: 0.2 }}
-                    />
-                  )}
-                  {active && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-accent"
-                    />
-                  )}
-                  <Icon
-                    className={cn(
-                      "h-[18px] w-[18px] shrink-0 transition-colors",
-                      active
-                        ? "text-accent"
-                        : "text-muted group-hover:text-secondary"
-                    )}
-                    strokeWidth={2}
+          <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
+            {NAV.map((group, gi) => (
+              <div key={group.label ?? `group-${gi}`} className="flex flex-col gap-0.5">
+                {group.label && (
+                  <p className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+                    {group.label}
+                  </p>
+                )}
+                {group.items.map((item) => (
+                  <NavRow
+                    key={item.href}
+                    item={item}
+                    active={isActive(pathname, item.href)}
                   />
-                  {link.label}
-                </Link>
-              );
-            })}
+                ))}
+              </div>
+            ))}
           </nav>
 
           <div className="border-t border-subtle px-5 py-4">
@@ -142,15 +186,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Wordmark />
             </Link>
             <nav className="ml-auto flex gap-1">
-              {NAV.map((link) => {
-                const active = isActive(pathname, link.href);
-                const Icon = link.icon;
+              {FLAT_NAV.map((item) => {
+                const active = isActive(pathname, item.href);
+                const Icon = item.icon;
                 return (
                   <Link
-                    key={link.href}
-                    href={link.href}
+                    key={item.href}
+                    href={item.href}
                     aria-current={active ? "page" : undefined}
-                    aria-label={link.label}
+                    aria-label={item.label}
                     className={cn(
                       "flex h-9 w-9 items-center justify-center rounded-md transition-colors",
                       active
@@ -175,6 +219,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 export interface PageHeaderProps {
   title: React.ReactNode;
   description?: React.ReactNode;
+  /** Breadcrumb / back row rendered above the title (small, muted). */
+  breadcrumbs?: React.ReactNode;
   /** Right-aligned actions (buttons, etc.). */
   actions?: React.ReactNode;
   /** Optional content rendered below the title row (e.g. tabs). */
@@ -183,12 +229,14 @@ export interface PageHeaderProps {
 }
 
 /**
- * Standard page header — title + optional description and right-aligned
- * actions. Use at the top of each page so chrome stays consistent.
+ * Standard page header — an optional breadcrumb row, a title + description, and
+ * right-aligned actions. Its inner width/padding match `PageContainer` so the
+ * chrome and the body line up edge-to-edge on every page.
  */
 export function PageHeader({
   title,
   description,
+  breadcrumbs,
   actions,
   children,
   className,
@@ -205,14 +253,19 @@ export function PageHeader({
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-accent/25 to-transparent"
       />
-      <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-6">
+      <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-7 sm:px-8">
+        {breadcrumbs && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+            {breadcrumbs}
+          </div>
+        )}
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="font-display text-[22px] font-semibold tracking-tight text-primary">
               {title}
             </h1>
             {description && (
-              <p className="mt-1.5 text-sm text-muted">{description}</p>
+              <div className="mt-1.5 text-sm text-muted">{description}</div>
             )}
           </div>
           {actions && (

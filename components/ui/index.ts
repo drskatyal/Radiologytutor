@@ -26,5 +26,7 @@ export { Tabs } from "./Tabs";
 export type { TabsProps, TabItem } from "./Tabs";
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
+export { PageContainer, SectionHeading } from "./Page";
+export type { PageContainerProps, SectionHeadingProps } from "./Page";
 export { MicButton } from "./MicButton";
 export type { MicButtonProps, MicState } from "./MicButton";
