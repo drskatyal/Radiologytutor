@@ -12,9 +12,11 @@ import {
   type Course,
   type Difficulty,
   type Patient,
+  type PatientSex,
   type Playlist,
   type SeriesMeta,
   type Study,
+  type TargetLevel,
   type UploadResult,
 } from "./types";
 
@@ -181,7 +183,21 @@ export interface CreateCaseStudyInput {
   role?: CaseStudyRef["role"];
 }
 
-export interface CreateCaseInput {
+/** Exam-grade teaching details shared by create + update inputs. */
+export interface CaseDetailsInput {
+  clinicalHistory?: string;
+  patientAge?: string;
+  patientSex?: PatientSex;
+  technique?: string;
+  primaryDiagnosis?: string;
+  differentials?: string[];
+  targetLevel?: TargetLevel;
+  learningObjectives?: string[];
+  discussion?: string;
+  references?: string[];
+}
+
+export interface CreateCaseInput extends CaseDetailsInput {
   title: string;
   modality: string;
   specialty?: string;
@@ -204,7 +220,7 @@ export async function createCase(input: CreateCaseInput): Promise<Case> {
   return (await json<{ case: Case }>(res)).case;
 }
 
-export interface UpdateCaseInput {
+export interface UpdateCaseInput extends CaseDetailsInput {
   title?: string;
   modality?: string;
   specialty?: string | null;

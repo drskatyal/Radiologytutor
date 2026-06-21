@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BODY_SYSTEMS, DIFFICULTIES } from "./types.ts";
+import {
+  BODY_SYSTEMS,
+  DIFFICULTIES,
+  PATIENT_SEXES,
+  TARGET_LEVELS,
+} from "./types.ts";
 import {
   difficultyLabel,
   difficultyBadgeVariant,
@@ -42,4 +47,12 @@ test("every body system has a caption", () => {
     assert.equal(typeof SYSTEM_CAPTION[s], "string");
     assert.ok(SYSTEM_CAPTION[s].length > 0);
   }
+});
+
+test("ships the canonical patient-sex values", () => {
+  assert.deepEqual(PATIENT_SEXES, ["M", "F", "other", "unknown"]);
+});
+
+test("ships the canonical target-level tiers in teaching order", () => {
+  assert.deepEqual(TARGET_LEVELS, ["R1", "R2", "R3", "registrar", "fellow", "CME"]);
 });

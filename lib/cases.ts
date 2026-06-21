@@ -45,6 +45,8 @@ import type {
   Playlist,
   Difficulty,
   BodySystem,
+  PatientSex,
+  TargetLevel,
 } from "./types";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 
@@ -510,6 +512,17 @@ export interface CreateCaseInput {
   system?: BodySystem;
   tags?: string[];
   authorId?: string;
+  // Exam-grade teaching details (all optional; additive / back-compat).
+  clinicalHistory?: string;
+  patientAge?: string;
+  patientSex?: PatientSex;
+  technique?: string;
+  primaryDiagnosis?: string;
+  differentials?: string[];
+  targetLevel?: TargetLevel;
+  learningObjectives?: string[];
+  discussion?: string;
+  references?: string[];
 }
 
 /** Create a new case under an org. Returns the created entity. */
@@ -531,6 +544,17 @@ export async function createCaseForOrg(orgId: string, input: CreateCaseInput): P
     system: input.system,
     tags: input.tags,
     authorId: input.authorId,
+    // Exam-grade teaching details.
+    clinicalHistory: input.clinicalHistory,
+    patientAge: input.patientAge,
+    patientSex: input.patientSex,
+    technique: input.technique,
+    primaryDiagnosis: input.primaryDiagnosis,
+    differentials: input.differentials,
+    targetLevel: input.targetLevel,
+    learningObjectives: input.learningObjectives,
+    discussion: input.discussion,
+    references: input.references,
     createdAt: now,
     updatedAt: now,
   };
@@ -553,6 +577,17 @@ export type UpdateCaseInput = Partial<
     | "system"
     | "tags"
     | "authorId"
+    // Exam-grade teaching details.
+    | "clinicalHistory"
+    | "patientAge"
+    | "patientSex"
+    | "technique"
+    | "primaryDiagnosis"
+    | "differentials"
+    | "targetLevel"
+    | "learningObjectives"
+    | "discussion"
+    | "references"
   >
 >;
 

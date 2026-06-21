@@ -17,7 +17,7 @@ import {
 import { PageHeader } from "@/components/AppShell";
 import { useCallbackRef } from "./useCallbackRef";
 import { CaseList } from "./CaseList";
-import { CreateCaseModal } from "@/components/cases/CreateCaseModal";
+import { UploadCaseWizard } from "@/components/cases/UploadCaseWizard";
 import { EditCaseModal } from "./EditCaseModal";
 import { LibraryManager } from "./LibraryManager";
 import {
@@ -238,15 +238,15 @@ export function AdminConsole() {
         )}
       </div>
 
-      <CreateCaseModal
+      <UploadCaseWizard
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         patients={patients}
         authors={authors}
         onCreated={() => {
-          // The modal shows its own success step + next-step actions and closes
-          // itself; we just refresh the list (and patients, for new ones) in the
-          // background so the new draft appears.
+          // The wizard persists the case then routes into the recording studio;
+          // we refresh the list in the background so the new draft is here on
+          // return.
           reload();
         }}
       />

@@ -11,8 +11,10 @@ import type {
   Course,
   Difficulty,
   Patient,
+  PatientSex,
   Playlist,
   Study,
+  TargetLevel,
 } from "@/lib/types";
 
 export type {
@@ -24,8 +26,10 @@ export type {
   Course,
   Difficulty,
   Patient,
+  PatientSex,
   Playlist,
   Study,
+  TargetLevel,
 };
 
 /** A case row enriched for the admin list (matches AdminCaseRow on the server). */
@@ -105,5 +109,23 @@ export const SPECIALTIES = [
 ];
 
 // Re-export the canonical taxonomy lists (from lib/types) so the modals have a
-// single source of truth for the difficulty / body-system pickers.
-export { DIFFICULTIES, BODY_SYSTEMS } from "@/lib/types";
+// single source of truth for the difficulty / body-system / level pickers.
+export { DIFFICULTIES, BODY_SYSTEMS, PATIENT_SEXES, TARGET_LEVELS } from "@/lib/types";
+
+/** Sentence-case labels for the canonical target-level tiers (UI display). */
+export const TARGET_LEVEL_LABELS: Record<TargetLevel, string> = {
+  R1: "Resident — R1",
+  R2: "Resident — R2",
+  R3: "Resident — R3",
+  registrar: "Registrar",
+  fellow: "Fellow",
+  CME: "CME / Attending",
+};
+
+/** Labels for the canonical patient-sex values (UI display). */
+export const PATIENT_SEX_LABELS: Record<PatientSex, string> = {
+  M: "Male",
+  F: "Female",
+  other: "Other",
+  unknown: "Unknown",
+};

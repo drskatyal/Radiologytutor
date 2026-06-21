@@ -28,7 +28,7 @@ import { FindingsList } from "@/components/author/FindingsList";
 import { AddFindingDialog } from "@/components/author/AddFindingDialog";
 import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
 import { useUnsavedGuard } from "@/components/author/useUnsavedGuard";
-import { CreateCaseModal } from "@/components/cases/CreateCaseModal";
+import { UploadCaseWizard } from "@/components/cases/UploadCaseWizard";
 import {
   fetchAuthors,
   fetchPatients,
@@ -155,17 +155,18 @@ function CaseSelection() {
         />
       </div>
 
-      <CreateCaseModal
+      <UploadCaseWizard
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         patients={patients}
         authors={authors}
         onCreated={(created) => {
-          // The modal shows its own success step (Open case / Add findings). We
-          // close it and route the author straight into authoring the new case
-          // so they can record/mark findings without an extra hop.
-          setCreateOpen(false);
-          router.push(`/author?case=${encodeURIComponent(created.caseId)}`);
+          // The wizard persists the case then routes straight into the recording
+          // studio (steps 3–4). We just refresh the local list so it's there if
+          // the author comes back.
+          setCases((prev) =>
+            prev.some((c) => c.caseId === created.caseId) ? prev : [created, ...prev]
+          );
         }}
       />
     </div>

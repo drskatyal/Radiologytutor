@@ -24,6 +24,7 @@ import {
   type CaseStudyRef,
   type Difficulty,
 } from "@/lib/types";
+import { pickPresentDetails } from "../caseDetails";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,6 +68,17 @@ interface PatchBody {
   system?: string | null;
   tags?: string[];
   authorId?: string | null;
+  // Exam-grade teaching details (applied only when present; see pickPresentDetails).
+  clinicalHistory?: string;
+  patientAge?: string;
+  patientSex?: string;
+  technique?: string;
+  primaryDiagnosis?: string;
+  differentials?: string[];
+  targetLevel?: string;
+  learningObjectives?: string[];
+  discussion?: string;
+  references?: string[];
 }
 
 export async function PATCH(
@@ -94,6 +106,9 @@ export async function PATCH(
     if (body.system !== undefined) patch.system = asSystem(body.system);
     if (body.tags !== undefined) patch.tags = cleanTags(body.tags);
     if (body.authorId !== undefined) patch.authorId = body.authorId || undefined;
+    // Exam-grade teaching details: apply only the keys present in the body so an
+    // omitted field is untouched (present-but-blank clears it).
+    Object.assign(patch, pickPresentDetails(body as Record<string, unknown>));
 
     const updated = await updateCaseForOrg(ORG, params.caseId, patch);
     if (!updated) {

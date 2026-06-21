@@ -30,6 +30,7 @@ import {
   type Patient,
   type Study,
 } from "@/lib/types";
+import { coerceCaseDetails } from "./caseDetails";
 
 function asSystem(v: unknown): BodySystem | undefined {
   return typeof v === "string" && (BODY_SYSTEMS as string[]).includes(v)
@@ -105,6 +106,17 @@ interface CreateCaseBody {
   system?: string;
   tags?: string[];
   authorId?: string;
+  // Exam-grade teaching details (validated via coerceCaseDetails).
+  clinicalHistory?: string;
+  patientAge?: string;
+  patientSex?: string;
+  technique?: string;
+  primaryDiagnosis?: string;
+  differentials?: string[];
+  targetLevel?: string;
+  learningObjectives?: string[];
+  discussion?: string;
+  references?: string[];
 }
 
 export async function POST(req: NextRequest) {
@@ -170,6 +182,8 @@ export async function POST(req: NextRequest) {
       system: asSystem(body.system),
       tags: cleanTags(body.tags),
       authorId: body.authorId || undefined,
+      // Exam-grade teaching details (trimmed + canonical-list validated).
+      ...coerceCaseDetails(body),
     });
 
     return NextResponse.json({ case: created, patient, studies: createdStudies });

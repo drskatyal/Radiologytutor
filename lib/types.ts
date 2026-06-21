@@ -170,6 +170,33 @@ export interface CaseData {
   /** The Author who authored this case (attribution in the catalog). */
   authorId?: string;
 
+  // --- Exam-grade teaching details (optional; back-compat) ------------------
+  // A radiology educator (FRCR/RANZCR/ACR) authors a case the way they teach it:
+  // a clinical stem, the diagnosis + a ranked differential, pedagogy (level +
+  // objectives) and a discussion with references. All optional so older seed
+  // cases keep validating (the `normalizeCase` discipline, §6).
+
+  /** Presenting clinical history / stem shown before the read. */
+  clinicalHistory?: string;
+  /** Patient age as a teaching label (e.g. "54", "6 months") — non-PHI. */
+  patientAge?: string;
+  /** Patient sex (canonical PATIENT_SEXES). */
+  patientSex?: PatientSex;
+  /** Imaging technique / protocol / sequence (e.g. "Portal-venous CT abdomen"). */
+  technique?: string;
+  /** The teaching diagnosis (the "answer"). */
+  primaryDiagnosis?: string;
+  /** Ranked differential diagnoses (most → least likely). */
+  differentials?: string[];
+  /** Intended learner level (canonical TARGET_LEVELS). */
+  targetLevel?: TargetLevel;
+  /** What the learner should be able to do after this case. */
+  learningObjectives?: string[];
+  /** Long-form teaching discussion (pathophysiology, pitfalls, management). */
+  discussion?: string;
+  /** Citations / further reading (free-form lines or URLs). */
+  references?: string[];
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -199,6 +226,16 @@ export type CaseStatus = "draft" | "published";
 
 export type Difficulty = "beginner" | "intermediate" | "advanced";
 
+/** Patient sex as a non-PHI teaching label. */
+export type PatientSex = "M" | "F" | "other" | "unknown";
+
+/**
+ * Intended learner level for a case. Training-grade tiers a radiology educator
+ * actually uses: R1–R3 (US residency years), `registrar` (UK/AUS/NZ), `fellow`
+ * (subspecialty), and `CME` (practising-attending continuing education).
+ */
+export type TargetLevel = "R1" | "R2" | "R3" | "registrar" | "fellow" | "CME";
+
 /** Body-system taxonomy used to organise and filter the catalog. */
 export type BodySystem =
   | "Neuro"
@@ -213,6 +250,17 @@ export type BodySystem =
 
 /** Canonical ordered lists — the single source of truth for UI + validation. */
 export const DIFFICULTIES: Difficulty[] = ["beginner", "intermediate", "advanced"];
+
+export const PATIENT_SEXES: PatientSex[] = ["M", "F", "other", "unknown"];
+
+export const TARGET_LEVELS: TargetLevel[] = [
+  "R1",
+  "R2",
+  "R3",
+  "registrar",
+  "fellow",
+  "CME",
+];
 
 export const BODY_SYSTEMS: BodySystem[] = [
   "Neuro",
