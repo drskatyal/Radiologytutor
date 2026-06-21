@@ -12,18 +12,22 @@
 // the same orbState, so the agent feels like one continuous presence.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Badge, EmptyState, Tabs } from "@/components/ui";
+import { GraduationCap, MessageCircle } from "lucide-react";
+import { Badge, Tabs } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { PrefetchManifest } from "@/lib/prefetch";
 import { StudentViewer } from "./StudentViewer";
-import { StepRail } from "./StepRail";
+import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
 import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
 import { warmPrefetch } from "./prefetch";
 import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
+
+/** The two faces of the tutor panel: the lesson spine vs. the Q&A chat. */
+type PanelTab = "lesson" | "ask";
 
 const ORB_TAGLINE: Record<OrbState, string> = {
   idle: "Ready when you are",
@@ -49,7 +53,15 @@ export default function StudentSession({
   imagingResolved: boolean;
 }) {
   const [mode, setMode] = useState<SessionMode>("guided");
+  // Which face of the tutor panel is showing: the lesson cards (the spine) or
+  // the Q&A chat. The cards are the lesson; "Ask" opens the chat without losing
+  // your place — both share the same agent (orb + voice).
+  const [panel, setPanel] = useState<PanelTab>("lesson");
   const s = useStudentSession(caseData, mode);
+
+  // Jump to the Ask tab and focus the conversation. Used by the "Ask the tutor"
+  // affordance under the cards and by the docked orb over the viewer.
+  const openAsk = useCallback(() => setPanel("ask"), []);
 
   // The series currently in the viewport. Driven by the navigator (user click)
   // and by replay (a recorded `series` event calls onSeriesChange below).
@@ -181,14 +193,19 @@ export default function StudentSession({
           {!imagingResolved && <Badge variant="warning">Sample imaging</Badge>}
         </div>
 
-        {/* Docked agent orb — always-present over the image. Tapping it focuses
-            the tutor (mobile-friendly hint that this thing is the assistant). */}
-        <div className="absolute bottom-4 left-4 flex animate-fade-in items-center gap-2.5">
+        {/* Docked agent orb — always-present over the image. Tapping it opens
+            the Ask tab (the orb visibly IS the assistant you talk to). */}
+        <button
+          type="button"
+          onClick={openAsk}
+          aria-label="Ask the AI tutor"
+          className="absolute bottom-4 left-4 flex animate-fade-in items-center gap-2.5 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        >
           <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
           <span className="rounded-full border border-subtle bg-surface/80 px-2.5 py-1 text-xs font-medium text-secondary backdrop-blur-sm tabular-nums">
             {ORB_TAGLINE[s.orbState]}
           </span>
-        </div>
+        </button>
       </section>
 
       {/* Tutor side rail */}
@@ -202,6 +219,7 @@ export default function StudentSession({
           </div>
         </div>
 
+        {/* Teaching mode (how the tutor answers). */}
         <div className="border-b border-subtle px-4 py-3">
           <Tabs
             items={[
@@ -215,41 +233,78 @@ export default function StudentSession({
           />
         </div>
 
-        {hasFindings ? (
-          <StepRail
-            findings={s.orderedFindings}
-            activeIndex={s.activeIndex}
-            busy={s.busy || !s.ready}
-            onPrev={s.prev}
-            onNext={s.next}
-            onJump={s.goTo}
+        {/* Lesson vs. Ask — the cards are the spine; Ask is the Q&A chat. */}
+        <div className="border-b border-subtle px-4 py-2.5">
+          <Tabs
+            variant="underline"
+            items={[
+              {
+                value: "lesson",
+                label: "Lesson",
+                icon: <GraduationCap className="h-4 w-4" aria-hidden="true" />,
+                count: hasFindings ? s.orderedFindings.length : undefined,
+              },
+              {
+                value: "ask",
+                label: "Ask",
+                icon: <MessageCircle className="h-4 w-4" aria-hidden="true" />,
+              },
+            ]}
+            value={panel}
+            onValueChange={(v) => setPanel(v as PanelTab)}
           />
-        ) : (
-          <div className="border-b border-subtle p-4">
-            <EmptyState
-              title="No findings yet"
-              description="This case doesn’t have a guided walk-through. You can still ask the tutor anything about the study below."
-            />
-          </div>
-        )}
+        </div>
 
-        <TutorChat
-          turns={s.turns}
-          phase={s.phase}
-          orbState={s.orbState}
-          micState={s.micState}
-          micSupported={s.micSupported}
-          busy={s.busy}
-          aiAvailable={s.aiAvailable}
-          speakingTurnId={s.speakingTurnId}
-          onSend={s.sendText}
-          onMicStart={s.onMicStart}
-          onMicStop={s.onMicStop}
-          onStopSpeaking={s.onStopSpeaking}
-          onReplayTurn={s.replayTurn}
-          onTypingFocus={onTypingFocus}
-          onTypingBlur={onTypingBlur}
-        />
+        {/* Lesson spine — the finding cards. Kept mounted so a playing card and
+            scroll position survive a hop over to Ask and back. */}
+        <div className={cn("min-h-0 flex-1 flex-col", panel === "lesson" ? "flex" : "hidden")}>
+          <FindingCards
+            findings={s.orderedFindings}
+            series={series}
+            caseModality={caseData.modality}
+            activeIndex={s.activeIndex}
+            replaying={s.replaying}
+            busy={s.busy}
+            ready={s.ready}
+            onSelect={s.goTo}
+          />
+          {hasFindings && (
+            <div className="border-t border-subtle p-4">
+              <button
+                type="button"
+                onClick={openAsk}
+                className={cn(
+                  "flex w-full items-center justify-center gap-2 rounded-lg border border-subtle bg-elevated/60 px-3 py-2.5 text-sm font-medium text-secondary transition-colors",
+                  "hover:border-accent/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                )}
+              >
+                <MessageCircle className="h-4 w-4" aria-hidden="true" />
+                Ask the tutor a question
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Q&A chat — always mounted (preserves transcript + audio); shown on Ask. */}
+        <div className={cn("min-h-0 flex-1 flex-col", panel === "ask" ? "flex" : "hidden")}>
+          <TutorChat
+            turns={s.turns}
+            phase={s.phase}
+            orbState={s.orbState}
+            micState={s.micState}
+            micSupported={s.micSupported}
+            busy={s.busy}
+            aiAvailable={s.aiAvailable}
+            speakingTurnId={s.speakingTurnId}
+            onSend={s.sendText}
+            onMicStart={s.onMicStart}
+            onMicStop={s.onMicStop}
+            onStopSpeaking={s.onStopSpeaking}
+            onReplayTurn={s.replayTurn}
+            onTypingFocus={onTypingFocus}
+            onTypingBlur={onTypingBlur}
+          />
+        </div>
       </aside>
     </div>
   );
