@@ -31,7 +31,12 @@ import {
   type ReactNode,
 } from "react";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
-import { BUNDLED_CASE, type ViewerSource } from "../lib/viewerSource";
+import {
+  BUNDLED_CASE,
+  caseSeriesToSource,
+  type CaseSeries,
+  type ViewerSource,
+} from "../lib/viewerSource";
 import {
   tween,
   lerp,
@@ -131,6 +136,12 @@ export interface CornerstoneControls {
   applyEvent: (e: RecordedEvent) => void;
   /** Current slice/window — used to prime a recording/replay. */
   getStartState: () => { sliceIndex: number; ww?: number; wc?: number };
+  /** SeriesInstanceUIDs the viewer can switch between (multi-series cases). */
+  seriesUIDs: string[];
+  /** The SeriesInstanceUID currently shown (undefined for the bundled sample). */
+  activeSeriesUID?: string;
+  /** Load a different series into the viewport (by UID). Programmatic = replay. */
+  showSeries: (seriesInstanceUID: string) => void;
 }
 
 function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: number } | null {
@@ -220,6 +231,9 @@ async function buildImageIds(source: ViewerSource): Promise<string[]> {
 
 export default function CornerstoneViewer({
   source = BUNDLED_CASE,
+  series,
+  activeSeriesIndex = 0,
+  onSeriesChange,
   controls,
   showToolbar = true,
   modality,
@@ -228,6 +242,16 @@ export default function CornerstoneViewer({
   className,
 }: {
   source?: ViewerSource;
+  /**
+   * Multi-series case rail. When provided, the viewport loads
+   * `series[activeSeriesIndex]` and switches (via setStack, no remount) when the
+   * index changes. Omit for a single-series caller (uses `source`).
+   */
+  series?: CaseSeries[];
+  /** Index into `series` to display. Ignored when `series` is absent. */
+  activeSeriesIndex?: number;
+  /** Fired when the ACTIVE series changes (record stream emits a `series` event). */
+  onSeriesChange?: (seriesInstanceUID: string) => void;
   /** Pass a ref to receive the imperative drive handle (student/record session). */
   controls?: MutableRefObject<CornerstoneControls | null>;
   /** Hide the demo toolbar/status line (driven/student mode). */
@@ -255,6 +279,27 @@ export default function CornerstoneViewer({
   // Latest onEvent — stored in a ref so listeners always call the current one.
   const onEventRef = useRef<typeof onEvent>(onEvent);
   onEventRef.current = onEvent;
+  const onSeriesChangeRef = useRef<typeof onSeriesChange>(onSeriesChange);
+  onSeriesChangeRef.current = onSeriesChange;
+
+  // Multi-series: the live list + the UID currently loaded into the viewport.
+  // We keep these in refs so the (single-run) init effect and the imperative
+  // handle read the latest list without re-running the engine setup.
+  const seriesRef = useRef<CaseSeries[] | undefined>(series);
+  seriesRef.current = series;
+  // The series index actually loaded into the viewport (vs the requested prop).
+  const loadedSeriesIndexRef = useRef<number>(-1);
+  // Stable switch-series fn (set after init); switches the stack by index.
+  const switchSeriesRef = useRef<(index: number, emit?: boolean) => Promise<void>>(
+    async () => {}
+  );
+
+  // The source the engine initializes with: the active series when a rail is
+  // supplied, else the single `source` prop (back-compat).
+  const initialSource: ViewerSource =
+    series && series.length > 0
+      ? caseSeriesToSource(series[Math.max(0, Math.min(series.length - 1, activeSeriesIndex))])
+      : source;
 
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState("WindowLevel");
@@ -290,7 +335,7 @@ export default function CornerstoneViewer({
         await loader.init({ maxWebWorkers: 1 });
 
         setStatus("Loading series…");
-        const imageIds = await buildImageIds(source);
+        const imageIds = await buildImageIds(initialSource);
         if (disposed || !elementRef.current) return;
 
         const renderingEngineId = "flowrad-engine";
@@ -389,50 +434,53 @@ export default function CornerstoneViewer({
         setLeftTool("WindowLevel");
         setLeftToolRef.current = setLeftTool;
 
-        await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
-        viewport.render();
-        viewportRef.current = viewport;
+        // Load a stack into the viewport + (re)run the annotation-tool gate.
+        // Reused for the initial series AND every series switch (no remount).
+        //
+        // The gate decides whether the annotation tools stay enabled. Tools
+        // start ENABLED; we only disable when we can POSITIVELY confirm the
+        // study has no pixel spacing. Plane metadata may not have resolved yet
+        // right after setStack (wadors registers it up-front, but wadouri only
+        // parses on first load), so we evaluate now AND re-check once the first
+        // image renders — sampling a few imageIds, treating any one with real
+        // spacing as proof the study is annotatable. If the active left tool is
+        // an annotation tool we're disabling, fall back to Window/Level so we
+        // never leave a dead tool selected.
+        const loadStack = async (ids: string[]): Promise<void> => {
+          await viewport.setStack(ids, Math.floor(ids.length / 2));
+          viewport.render();
 
-        // Decide whether the annotation tools stay enabled. Tools start ENABLED;
-        // we only disable when we can POSITIVELY confirm the study has no pixel
-        // spacing. Plane metadata may not have resolved yet right after setStack
-        // (wadors registers it up-front, but wadouri only parses on first load),
-        // so we evaluate now AND re-check once the first image actually renders —
-        // and we sample a few imageIds, treating any one with real spacing as
-        // proof the study is annotatable. If the active left tool is an
-        // annotation tool we're disabling, fall back to Window/Level so we never
-        // leave a dead tool selected.
-        const sampleIds = imageIds.slice(
-          0,
-          Math.min(imageIds.length, 4)
-        );
-        const evaluateAnnotatable = () => {
-          // Enabled if metadata is unknown OR any sampled image has real spacing.
-          const annotatable = sampleIds.some((id) =>
-            imageSupportsAnnotation(core.metaData, id)
-          );
-          setAnnotationsEnabled(annotatable);
-          if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
-            setLeftTool("WindowLevel");
-          }
-        };
-        evaluateAnnotatable();
-        // Re-check once the first frame has loaded + its metadata is parsed, so a
-        // study whose plane module wasn't ready at setStack still settles
-        // correctly (one-shot — no need to listen forever).
-        const recheckEl = elementRef.current;
-        const recheck = () => {
-          recheckEl?.removeEventListener(
-            core.Enums.Events.IMAGE_RENDERED,
-            recheck as EventListener
-          );
+          const sampleIds = ids.slice(0, Math.min(ids.length, 4));
+          const evaluateAnnotatable = () => {
+            const annotatable = sampleIds.some((id) =>
+              imageSupportsAnnotation(core.metaData, id)
+            );
+            setAnnotationsEnabled(annotatable);
+            if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
+              setLeftTool("WindowLevel");
+            }
+          };
           evaluateAnnotatable();
+          // Re-check once the first frame has loaded + its metadata is parsed.
+          const recheckEl = elementRef.current;
+          const recheck = () => {
+            recheckEl?.removeEventListener(
+              core.Enums.Events.IMAGE_RENDERED,
+              recheck as EventListener
+            );
+            evaluateAnnotatable();
+          };
+          recheckEl?.addEventListener(
+            core.Enums.Events.IMAGE_RENDERED,
+            recheck as EventListener,
+            { once: true }
+          );
         };
-        recheckEl?.addEventListener(
-          core.Enums.Events.IMAGE_RENDERED,
-          recheck as EventListener,
-          { once: true }
-        );
+
+        await loadStack(imageIds);
+        viewportRef.current = viewport;
+        // Record which series is loaded so switches no-op on the active one.
+        loadedSeriesIndexRef.current = seriesRef.current ? activeSeriesIndex : -1;
 
         // --- Record: emit ordered viewer state changes ----------------------
         // We read CURRENT values off the viewport in the handler (never trust
@@ -481,6 +529,38 @@ export default function CornerstoneViewer({
           el.removeEventListener(camEvt, emitCamera as EventListener);
         };
 
+        // --- Multi-series switching (no remount) ----------------------------
+        // Build the target series' imageIds and swap the stack in place. Both a
+        // user-driven switch and a programmatic one (replay/applyEvent) notify
+        // the parent so the navigator highlight always tracks the live series;
+        // only a USER switch emits a `series` record event (a programmatic one
+        // would echo into the recording). Switches are serialized so a fast
+        // clicker never interleaves stacks.
+        let switchSeq = 0;
+        const switchSeries = async (index: number, emitEvent = true): Promise<void> => {
+          const list = seriesRef.current;
+          if (!list || list.length === 0) return;
+          const clamped = Math.max(0, Math.min(list.length - 1, index));
+          if (clamped === loadedSeriesIndexRef.current) return;
+          const target = list[clamped];
+          const token = ++switchSeq;
+          loadedSeriesIndexRef.current = clamped;
+          // Record the switch in the stream only for a user-driven change.
+          if (emitEvent) emit({ type: "series", seriesInstanceUID: target.seriesInstanceUID });
+          // Keep the navigator highlight in sync for BOTH user + replay switches.
+          onSeriesChangeRef.current?.(target.seriesInstanceUID);
+          cancelTweenRef.current();
+          try {
+            const ids = await buildImageIds(caseSeriesToSource(target));
+            // A newer switch superseded us, or we've been torn down — bail.
+            if (token !== switchSeq || disposed) return;
+            await loadStack(ids);
+          } catch (err) {
+            console.error("CornerstoneViewer switchSeries error", err);
+          }
+        };
+        switchSeriesRef.current = switchSeries;
+
         resetRef.current = () => {
           cancelTweenRef.current();
           viewport.resetCamera();
@@ -527,6 +607,16 @@ export default function CornerstoneViewer({
               vp.setProperties({ invert: e.value });
               setInverted(e.value);
               break;
+            case "series": {
+              // Replay: switch to the recorded series WITHOUT emitting (this is
+              // a programmatic drive). loadStack will render once decoded.
+              const list = seriesRef.current;
+              const idx = list?.findIndex(
+                (s) => s.seriesInstanceUID === e.seriesInstanceUID
+              );
+              if (list && idx != null && idx >= 0) void switchSeries(idx, false);
+              return; // render happens inside loadStack after the new stack loads
+            }
             // cursor/annotation are overlay-only — not viewer state.
           }
           vp.render();
@@ -623,6 +713,19 @@ export default function CornerstoneViewer({
           reset: () => resetRef.current(),
           applyEvent,
           getStartState,
+          // Getters so callers always read the LIVE series list + active series
+          // (both change as the rail loads / the viewer switches series).
+          get seriesUIDs() {
+            return (seriesRef.current ?? []).map((s) => s.seriesInstanceUID);
+          },
+          get activeSeriesUID() {
+            return seriesRef.current?.[loadedSeriesIndexRef.current]?.seriesInstanceUID;
+          },
+          showSeries: (uid: string) => {
+            const list = seriesRef.current;
+            const idx = list?.findIndex((s) => s.seriesInstanceUID === uid);
+            if (list && idx != null && idx >= 0) void switchSeriesRef.current(idx, false);
+          },
         };
         if (controls) controls.current = handle;
         onReady?.(handle);
@@ -640,6 +743,11 @@ export default function CornerstoneViewer({
       cancelTweenRef.current();
       detachListeners();
       viewportRef.current = null;
+      loadedSeriesIndexRef.current = -1;
+      // Allow the effect to FULLY re-initialize on a source change (the engine
+      // is torn down here). Without this reset a new source would destroy the
+      // engine and the re-run would early-return, leaving a blank viewport.
+      started.current = false;
       if (controls) controls.current = null;
       try {
         renderingEngine?.destroy();
@@ -649,6 +757,15 @@ export default function CornerstoneViewer({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
+
+  // React to the navigator selecting a different series (user-driven switch).
+  // Runs after init has wired switchSeriesRef; no-ops on the already-loaded
+  // series. Emits a `series` record event so a recording captures the switch.
+  useEffect(() => {
+    if (!series || series.length === 0 || !ready) return;
+    void switchSeriesRef.current(activeSeriesIndex, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSeriesIndex, ready, series]);
 
   // Close the preset menu on outside click / Escape.
   const presetMenuRef = useRef<HTMLDivElement>(null);
