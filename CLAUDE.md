@@ -155,3 +155,52 @@ slots in later without touching callers.
 - `components/` feature components; `components/ui/` design-system primitives.
 - `lib/` data layer, viewer logic, Orthanc client, Gemini, types.
 - `public/dicom/` bundled sample study. `seed/` seed cases.
+
+---
+
+## 6. Product architecture — the marketplace (see `ARCHITECTURE.md`)
+
+FlowRad Learn is becoming **the marketplace where radiologists teach radiology**: Udemy/Coursera
+reimagined around the **AI-tutored, narrated, interactive DICOM case**. The full design + phased
+roadmap lives in **`ARCHITECTURE.md`** (read it before marketplace work). Headlines:
+
+- **Identity & access (P0, the foundational gap):** **Clerk** for auth + first-class
+  Organizations/RBAC, behind a `lib/auth.ts` seam (no Clerk import outside it; Better Auth is the
+  fallback). Authorization = "does the session user hold a `Membership` in the resource's `orgId`
+  with a sufficient role?" Replace `DEFAULT_ORG_ID` call sites with `activeOrgId()`; **never trust
+  a client-supplied `orgId`**. Roles per-org: `owner | admin | author | student` (+ platform staff).
+- **Data model is additive.** New entities are new Mongo collections registered through the
+  **existing STORE SEAM** in `lib/cases.ts` (one `collection<T>()` + CRUD + an index line in
+  `lib/mongo.ts`), all `orgId`-scoped. Key additions: `Membership`, `AuthorProfile` (verified,
+  tied to a `User` — supersedes attribution-only `Author`), `Course→Module→Lesson`, `Enrollment`,
+  `Progress`, `Assessment→Question→Attempt`, `Certificate`, `Product/Order/Entitlement/Subscription/
+  Payout`, `Review`, `Notification`, `DeidReport`. Existing `Case`/`Finding`/viewer-state model is
+  **unchanged**; new fields are optional for seed back-compat (the `normalizeCase` discipline).
+- **Assessment is the differentiator — it runs ON the viewer we own.** Three question kinds:
+  **click-the-finding** (compare click to the stored normalized `marker` — no new imaging infra),
+  **MCQ**, and **AI-graded structured report** (reuse the Gemini `reporting` mode + `jsonOnly`;
+  always show the rubric, never a bare AI score).
+- **Monetization (P3, ships last):** **Stripe Connect (Express)** + destination charges with an
+  application fee, behind `lib/payments.ts`. Models: free / paid course / learner subscription /
+  institutional seats. **Webhooks are the only source of truth** for entitlements + payouts.
+- **CME is gated.** We cannot grant AMA PRA Category 1 Credit ourselves — it requires an
+  ACCME-accredited provider. Until a provider partner signs off, issue **"Certificate of
+  Completion"** and keep the post-test/eval flow *accreditation-ready*; gate "CME"/credit language
+  behind a verified `accreditationProviderId`.
+- **Trust & compliance gates (publishing):** author **verification** (credentials → platform-admin
+  queue; unverified can't publish public) and **hard de-identification** — header scrub (DICOM
+  PS3.15 / HIPAA Safe Harbor) + pixel OCR for burned-in PHI, in the single `orthancIngestInstance`
+  ingest seam (`lib/deid.ts`). **A case cannot be published unless every referenced study has a
+  passing `DeidReport`.** De-id is infrastructure, pulled forward to P0/P1 — money never ships
+  before it.
+- **New seams to keep clean (mirror the STORE SEAM):** `lib/auth.ts`, `lib/payments.ts`,
+  `lib/deid.ts`, `lib/notify.ts`. New infra: object storage + CDN (R2/S3) for narration audio,
+  certificate PDFs, avatars, and cached DICOM frames (repoint `/api/audio` there).
+- **Phased roadmap:** **P0** identity + author onboarding + verified profiles (+ de-id gate) →
+  **P1** enrollment/progress + Course→Module→Lesson + richer catalog → **P2** assessment + CME-ready
+  certificates → **P3** monetization/payouts → **P4** org dashboards/analytics + notifications.
+- **Brand:** push past "generic premium AI SaaS" toward a domain-authentic radiology aesthetic —
+  editorial display serif for course/author titles, reading-room density on clinical surfaces vs.
+  breathing-room editorial catalog, radiology motifs (reticles, windowing gradients, calipers,
+  tabular numerics), and **trust signals (verification badges, credentials, CME/de-id seals) as
+  first-class designed UI**. Stay within the token system + `components/ui/` (§1).
