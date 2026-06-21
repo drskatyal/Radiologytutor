@@ -551,6 +551,7 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
       <RecordFindingDialog
         open={showRecord}
         onClose={() => setShowRecord(false)}
+        caseId={caseId}
         onCreate={createFinding}
       />
 

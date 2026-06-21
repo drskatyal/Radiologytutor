@@ -13,8 +13,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, EmptyState, Tabs } from "@/components/ui";
+import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
-import type { ViewerSource } from "@/lib/viewerSource";
+import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { PrefetchManifest } from "@/lib/prefetch";
 import { StudentViewer } from "./StudentViewer";
 import { StepRail } from "./StepRail";
@@ -22,6 +23,7 @@ import { TutorChat } from "./TutorChat";
 import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
 import { warmPrefetch } from "./prefetch";
+import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
 
 const ORB_TAGLINE: Record<OrbState, string> = {
   idle: "Ready when you are",
@@ -34,17 +36,32 @@ const ORB_TAGLINE: Record<OrbState, string> = {
 export default function StudentSession({
   caseData,
   source,
+  series,
   manifest,
   imagingResolved,
 }: {
   caseData: CaseData;
   source: ViewerSource;
+  /** The case's series rail (multi-series). Single entry = single-series case. */
+  series: CaseSeries[];
   manifest: PrefetchManifest | null;
   /** True when the case's own study resolved from Orthanc (vs a sample image). */
   imagingResolved: boolean;
 }) {
   const [mode, setMode] = useState<SessionMode>("guided");
   const s = useStudentSession(caseData, mode);
+
+  // The series currently in the viewport. Driven by the navigator (user click)
+  // and by replay (a recorded `series` event calls onSeriesChange below).
+  const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
+  const onSeriesChange = useCallback(
+    (uid: string) => {
+      const idx = series.findIndex((x) => x.seriesInstanceUID === uid);
+      if (idx >= 0) setActiveSeriesIndex(idx);
+    },
+    [series]
+  );
+  const showNavigator = series.length > 1;
 
   // While the student is typing, disarm the push-to-talk hotkey so a space in
   // their question never starts the mic.
@@ -121,11 +138,31 @@ export default function StudentSession({
   const hasFindings = s.orderedFindings.length > 0;
 
   return (
-    <div className="grid h-[calc(100vh-49px)] grid-cols-1 md:grid-cols-[1fr_400px]">
+    <div
+      className={cn(
+        "grid h-[calc(100vh-49px)] grid-cols-1",
+        showNavigator
+          ? "md:grid-cols-[200px_1fr_400px]"
+          : "md:grid-cols-[1fr_400px]"
+      )}
+    >
+      {/* Series rail (PACS navigator) — only when the case has >1 series. */}
+      {showNavigator && (
+        <SeriesNavigator
+          series={series}
+          activeIndex={activeSeriesIndex}
+          onSelect={setActiveSeriesIndex}
+          className="hidden border-r md:flex"
+        />
+      )}
+
       {/* Imaging stage */}
       <section className="relative min-h-0 bg-imaging">
         <StudentViewer
           source={source}
+          series={series}
+          activeSeriesIndex={activeSeriesIndex}
+          onSeriesChange={onSeriesChange}
           modality={caseData.modality}
           controls={s.controls}
           overlay={s.overlay}

@@ -9,7 +9,7 @@
 import dynamic from "next/dynamic";
 import { type MutableRefObject } from "react";
 import { Skeleton, Spinner } from "@/components/ui";
-import type { ViewerSource } from "@/lib/viewerSource";
+import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { Marker } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { ReplayOverlay, type ReplayOverlayHandle } from "@/components/ReplayOverlay";
@@ -22,6 +22,9 @@ const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer")
 
 export function StudentViewer({
   source,
+  series,
+  activeSeriesIndex,
+  onSeriesChange,
   modality,
   controls,
   overlay,
@@ -32,6 +35,11 @@ export function StudentViewer({
   ready,
 }: {
   source: ViewerSource;
+  /** Multi-series rail; when present the viewer switches between these. */
+  series?: CaseSeries[];
+  activeSeriesIndex?: number;
+  /** Fired when the active series changes (user click or replay). */
+  onSeriesChange?: (seriesInstanceUID: string) => void;
   modality?: string;
   controls: MutableRefObject<CornerstoneControls | null>;
   /** Receives the animated replay overlay handle (laser pointer / annotations). */
@@ -47,6 +55,9 @@ export function StudentViewer({
     <div className="relative h-full w-full overflow-hidden bg-imaging">
       <CornerstoneViewer
         source={source}
+        series={series}
+        activeSeriesIndex={activeSeriesIndex}
+        onSeriesChange={onSeriesChange}
         modality={modality}
         controls={controls}
         showToolbar={false}

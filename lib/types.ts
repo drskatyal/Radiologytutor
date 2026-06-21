@@ -86,6 +86,10 @@ export type RecordedEvent =
   | { t: number; type: "camera"; zoom: number; pan: [number, number] }
   | { t: number; type: "invert"; value: boolean }
   | { t: number; type: "cursor"; x: number; y: number } // normalized [0,1]
+  // Which series the viewport showed at this moment (multi-series cases). On
+  // replay the navigator + stack switch to it. Absent in older single-series
+  // recordings — they simply never emit it and stay on their one series.
+  | { t: number; type: "series"; seriesInstanceUID: string }
   | {
       t: number;
       type: "annotation";
@@ -101,6 +105,7 @@ export type ViewerEvent =
   | { type: "camera"; zoom: number; pan: [number, number] }
   | { type: "invert"; value: boolean }
   | { type: "cursor"; x: number; y: number }
+  | { type: "series"; seriesInstanceUID: string }
   | { type: "annotation"; shape: MarkerShape; from: [number, number]; to: [number, number] };
 
 /** One finding's recorded demonstration: ordered events + narration audio. */

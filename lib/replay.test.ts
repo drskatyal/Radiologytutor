@@ -106,6 +106,33 @@ test("routes cursor/annotation to the overlay, not the viewer", () => {
   assert.deepEqual(applied.map((e) => e.type), ["slice"]);
 });
 
+test("routes a series event to the viewer (applyEvent), not the overlay", () => {
+  const clock = new FakeClock();
+  clock.install();
+  const applied: RecordedEvent[] = [];
+  let cursors = 0;
+  const events: RecordedEvent[] = [
+    { t: 5, type: "series", seriesInstanceUID: "1.2.3.series" },
+    { t: 6, type: "slice", index: 2 },
+  ];
+  startReplay(
+    track(events, 10),
+    { applyEvent: (e) => applied.push(e), getStartState: () => ({ sliceIndex: 0 }) },
+    { overlay: { cursor: () => cursors++, annotation: () => {}, clear: () => {} } }
+  );
+  applied.length = 0; // drop priming events
+  clock.advance(10);
+  assert.deepEqual(
+    applied.map((e) => e.type),
+    ["series", "slice"]
+  );
+  assert.equal(
+    (applied[0] as { seriesInstanceUID: string }).seriesInstanceUID,
+    "1.2.3.series"
+  );
+  assert.equal(cursors, 0);
+});
+
 test("locks to audio.currentTime when an audio element is supplied", () => {
   const clock = new FakeClock();
   clock.install();

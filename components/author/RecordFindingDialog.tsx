@@ -15,7 +15,7 @@
 // The recording surface uses the bundled sample image (the viewer source is a
 // swappable seam); the captured track replays identically wherever it's shown.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
   Button,
@@ -26,7 +26,12 @@ import {
   Modal,
   Spinner,
 } from "@/components/ui";
-import { BUNDLED_CASE } from "@/lib/viewerSource";
+import {
+  BUNDLED_CASE,
+  BUNDLED_CASE_SERIES,
+  caseSeriesToSource,
+  type CaseSeries,
+} from "@/lib/viewerSource";
 import type { Finding, RecordedTrack, StructuredFinding } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
@@ -37,6 +42,8 @@ import { LIMITS, structureFindingFromAudio, uploadAudio, validateDraft } from ".
 interface RecordFindingDialogProps {
   open: boolean;
   onClose: () => void;
+  /** The case being authored — used to resolve its series rail for capture. */
+  caseId?: string;
   /** Append the finding; resolves when created (parent toasts/refreshes). */
   onCreate: (finding: Partial<Finding>) => Promise<void>;
 }
@@ -46,7 +53,7 @@ const EMPTY: StructuredFinding = { label: "", description: "", teachingPoints: [
 /** Mic availability, so we can guide the author instead of failing silently. */
 type MicStatus = "unknown" | "granted" | "denied" | "unsupported";
 
-export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDialogProps) {
+export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordFindingDialogProps) {
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
@@ -58,6 +65,49 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [mic, setMic] = useState<MicStatus>("unknown");
+
+  // The case's series rail. Resolved from /api/cases/[caseId]/series on open;
+  // falls back to the bundled single-series sample when imaging isn't resolved
+  // (no Orthanc / no caseId). The author records against the SAME navigator the
+  // student sees, and the captured track replays identically wherever shown.
+  const [series, setSeries] = useState<CaseSeries[]>(BUNDLED_CASE_SERIES);
+  const [seriesLoading, setSeriesLoading] = useState(false);
+  const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
+
+  useEffect(() => {
+    if (!open || !caseId) {
+      setSeries(BUNDLED_CASE_SERIES);
+      setActiveSeriesIndex(0);
+      return;
+    }
+    let alive = true;
+    setSeriesLoading(true);
+    fetch(`/api/cases/${encodeURIComponent(caseId)}/series`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { series?: CaseSeries[]; hasImaging?: boolean } | null) => {
+        if (!alive) return;
+        const resolved = data?.series ?? [];
+        setSeries(resolved.length > 0 ? resolved : BUNDLED_CASE_SERIES);
+        setActiveSeriesIndex(0);
+      })
+      .catch(() => {
+        if (alive) setSeries(BUNDLED_CASE_SERIES);
+      })
+      .finally(() => {
+        if (alive) setSeriesLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, caseId]);
+
+  // The viewer initializes from the FIRST series; later switches flow through
+  // `series`/`activeSeriesIndex` (no remount). Memoize so the source identity is
+  // stable across renders (the viewer re-inits only when the rail itself changes).
+  const initialSource = useMemo(
+    () => (series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE),
+    [series]
+  );
 
   // Probe mic availability when the dialog opens so we can guide up front,
   // never fail silently. The Permissions API isn't everywhere; fall back to
@@ -236,10 +286,16 @@ export function RecordFindingDialog({ open, onClose, onCreate }: RecordFindingDi
           </div>
         )}
 
-        {/* Capture stage */}
+        {/* Capture stage — viewer + the same series rail the student sees. The
+            `source` is the FIRST series only (a stable seam); subsequent series
+            changes flow through `series`/`activeSeriesIndex` (no remount). */}
         <div className="overflow-hidden rounded-xl border border-subtle">
           <RecordStage
-            source={BUNDLED_CASE}
+            source={initialSource}
+            series={series}
+            activeSeriesIndex={activeSeriesIndex}
+            onSeriesChange={setActiveSeriesIndex}
+            seriesLoading={seriesLoading}
             controls={controls}
             overlay={overlay}
             ready={ready}

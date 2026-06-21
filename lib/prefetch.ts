@@ -25,6 +25,7 @@ import {
   type InstanceRef,
 } from "./orthanc";
 import type { Case, CaseStudyRef } from "./types";
+import type { CaseSeries } from "./viewerSource";
 
 // ---------------------------------------------------------------------------
 // Case-list cover
@@ -159,6 +160,93 @@ export async function buildPrefetchManifest(
 
   manifest.series = series;
   return manifest;
+}
+
+// ---------------------------------------------------------------------------
+// Case-open series rail (the PACS series navigator)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the full set of series a case can show, as a `CaseSeries[]` the
+ * SeriesNavigator + viewer consume. We enumerate every study the case
+ * references (via `studyRefs`, falling back to the studies its findings anchor
+ * to) and list each study's series from Orthanc. When a study ref names a
+ * subset of `seriesInstanceUIDs`, we keep only those; otherwise all series of
+ * the study are offered.
+ *
+ * Ordering: the series the findings need first lead the rail (so the case opens
+ * on the right series), then any remaining series in study/seriesNumber order.
+ *
+ * Returns `null` when imaging can't be resolved (Orthanc off, or no study
+ * found) so callers can fall back to the bundled single-series sample.
+ */
+export async function resolveCaseSeries(
+  caseId: string,
+  orgId: string = DEFAULT_ORG_ID,
+  wadoRsRoot = "/api/dicomweb"
+): Promise<CaseSeries[] | null> {
+  const c = await getCaseForOrg(orgId, caseId);
+  if (!c || !orthancConfigured()) return null;
+
+  const { studyUIDs, seriesOrder } = collectRefs(c);
+  if (studyUIDs.length === 0) return null;
+
+  // Subset filter per study ref (empty/absent = use all series of the study).
+  const subsetByStudy = new Map<string, Set<string>>();
+  for (const ref of c.studyRefs ?? []) {
+    const subset = ref.seriesInstanceUIDs ?? [];
+    if (subset.length > 0) subsetByStudy.set(ref.studyInstanceUID, new Set(subset));
+  }
+
+  // List every referenced study's series from Orthanc (best-effort per study).
+  const byUID = new Map<string, CaseSeries>();
+  await Promise.all(
+    studyUIDs.map(async (studyUID) => {
+      try {
+        const orthancStudyId = await orthancFindStudyByUID(studyUID);
+        if (!orthancStudyId) return;
+        const metas = await orthancStudySeriesMeta(orthancStudyId);
+        const subset = subsetByStudy.get(studyUID);
+        for (const m of metas) {
+          if (subset && !subset.has(m.seriesInstanceUID)) continue;
+          if (byUID.has(m.seriesInstanceUID)) continue;
+          byUID.set(m.seriesInstanceUID, {
+            seriesInstanceUID: m.seriesInstanceUID,
+            studyInstanceUID: studyUID,
+            modality: m.modality,
+            description: m.seriesDescription,
+            seriesNumber: m.seriesNumber,
+            instanceCount: m.instanceCount,
+            thumbnailInstanceUID: m.firstInstanceUID,
+            wadoRsRoot,
+          });
+        }
+      } catch {
+        // Skip a study we can't resolve; the rest of the rail still renders.
+      }
+    })
+  );
+
+  if (byUID.size === 0) return null;
+
+  // Order: finding-driven series first, then the rest by study then series#.
+  const ordered: CaseSeries[] = [];
+  const taken = new Set<string>();
+  for (const uid of seriesOrder) {
+    const s = byUID.get(uid);
+    if (s && !taken.has(uid)) {
+      ordered.push(s);
+      taken.add(uid);
+    }
+  }
+  const rest = [...byUID.values()]
+    .filter((s) => !taken.has(s.seriesInstanceUID))
+    .sort(
+      (a, b) =>
+        studyUIDs.indexOf(a.studyInstanceUID) - studyUIDs.indexOf(b.studyInstanceUID) ||
+        (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0)
+    );
+  return [...ordered, ...rest];
 }
 
 // ---------------------------------------------------------------------------

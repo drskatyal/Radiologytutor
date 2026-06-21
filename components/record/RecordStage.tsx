@@ -12,9 +12,10 @@ import dynamic from "next/dynamic";
 import { useRef, type MutableRefObject } from "react";
 import { Badge, Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
-import type { ViewerSource } from "@/lib/viewerSource";
+import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { ReplayOverlay, type ReplayOverlayHandle } from "@/components/ReplayOverlay";
+import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
 import type { ViewerEvent } from "@/lib/types";
 import type { RecordPhase } from "./useRecordReplay";
 
@@ -25,6 +26,10 @@ const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer")
 
 export function RecordStage({
   source,
+  series,
+  activeSeriesIndex,
+  onSeriesChange,
+  seriesLoading,
   modality,
   controls,
   overlay,
@@ -37,6 +42,13 @@ export function RecordStage({
   onCursor,
 }: {
   source: ViewerSource;
+  /** Multi-series rail; when >1 entry a navigator renders beside the viewer. */
+  series?: CaseSeries[];
+  activeSeriesIndex?: number;
+  /** Switch the viewer's series (by index) — also moves the navigator. */
+  onSeriesChange?: (index: number) => void;
+  /** Active-series change FROM the viewer (user/replay) → keep nav in sync. */
+  seriesLoading?: boolean;
   modality?: string;
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
@@ -49,6 +61,7 @@ export function RecordStage({
   onCursor: (x: number, y: number) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
+  const showNavigator = (series?.length ?? 0) > 1 || !!seriesLoading;
 
   const handleMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (phase !== "recording") return;
@@ -62,10 +75,16 @@ export function RecordStage({
     if (x >= 0 && x <= 1 && y >= 0 && y <= 1) onCursor(x, y);
   };
 
-  return (
-    <div ref={stageRef} className="relative w-full" onPointerMove={handleMove}>
+  const stage = (
+    <div ref={stageRef} className="relative w-full min-w-0" onPointerMove={handleMove}>
       <CornerstoneViewer
         source={source}
+        series={series}
+        activeSeriesIndex={activeSeriesIndex}
+        onSeriesChange={(uid) => {
+          const idx = series?.findIndex((x) => x.seriesInstanceUID === uid);
+          if (idx != null && idx >= 0) onSeriesChange?.(idx);
+        }}
         modality={modality}
         controls={controls}
         onReady={onReady}
@@ -115,6 +134,24 @@ export function RecordStage({
           <StageSkeleton label="Warming images…" />
         </div>
       )}
+    </div>
+  );
+
+  if (!showNavigator) return stage;
+
+  // Series rail beside the capture surface — the author sees the SAME navigator
+  // the student does. The rail is a bordered card so it reads as a PACS sidebar.
+  return (
+    <div className="flex min-w-0 gap-3">
+      <div className="hidden w-44 shrink-0 overflow-hidden rounded-xl border border-subtle sm:block">
+        <SeriesNavigator
+          series={series ?? []}
+          activeIndex={activeSeriesIndex ?? 0}
+          onSelect={(i) => onSeriesChange?.(i)}
+          loading={seriesLoading}
+        />
+      </div>
+      {stage}
     </div>
   );
 }

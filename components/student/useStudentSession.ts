@@ -184,6 +184,18 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       stopReplay();
       setMarkerVisible(false);
 
+      // Multi-series: if this finding is anchored to a specific series, switch
+      // the viewport (and the navigator, via onSeriesChange) to it before we
+      // drive the view. A recorded track that captured its own `series` events
+      // will still retrace exactly; this just primes anchored static findings.
+      if (
+        finding.seriesInstanceUID &&
+        controls.current.seriesUIDs.includes(finding.seriesInstanceUID) &&
+        controls.current.activeSeriesUID !== finding.seriesInstanceUID
+      ) {
+        controls.current.showSeries(finding.seriesInstanceUID);
+      }
+
       const track = finding.track;
       if (track && track.events.length > 0) {
         setActiveIndex(index);
