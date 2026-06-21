@@ -3,26 +3,30 @@
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, BookOpen, GraduationCap, ListMusic, Layers } from "lucide-react";
-import { Badge, Card } from "@/components/ui";
+import { Badge, Card, SectionHeading } from "@/components/ui";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import type { Author, Course, Playlist } from "./types";
 
 /** A horizontal, scrollable row of tiles (Netflix/Spotify-style). */
 function Rail({
   title,
+  description,
   icon,
+  /** Hide the rail's own heading when the parent already supplies one. */
+  showHeading = true,
   children,
 }: {
   title: string;
+  description?: string;
   icon: React.ReactNode;
+  showHeading?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 font-display text-base font-semibold tracking-tight text-primary">
-        <span className="text-accent [&_svg]:h-4 [&_svg]:w-4">{icon}</span>
-        {title}
-      </h2>
+      {showHeading && (
+        <SectionHeading icon={icon} title={title} description={description} />
+      )}
       <div className="-mx-1 flex snap-x snap-mandatory gap-4 overflow-x-auto px-1 pb-2 [scrollbar-width:thin]">
         {children}
       </div>
@@ -39,14 +43,21 @@ const tileVariants = {
 export function CoursesRail({
   courses,
   authorById,
+  showHeading = true,
 }: {
   courses: Course[];
   authorById: Record<string, Author>;
+  showHeading?: boolean;
 }) {
   const reduce = useReducedMotion();
   if (courses.length === 0) return null;
   return (
-    <Rail title="Courses" icon={<GraduationCap />}>
+    <Rail
+      title="Courses"
+      description="Multi-case teaching sequences, taught end to end."
+      icon={<GraduationCap />}
+      showHeading={showHeading}
+    >
       {courses.map((course) => {
         const author = course.authorId ? authorById[course.authorId] : undefined;
         return (
@@ -103,7 +114,11 @@ export function PlaylistsRail({ playlists }: { playlists: Playlist[] }) {
   const reduce = useReducedMotion();
   if (playlists.length === 0) return null;
   return (
-    <Rail title="Continue" icon={<ListMusic />}>
+    <Rail
+      title="Continue"
+      description="Curated, ordered case lists to pick up where you left off."
+      icon={<ListMusic />}
+    >
       {playlists.map((pl) => (
         <motion.div
           key={pl.id}

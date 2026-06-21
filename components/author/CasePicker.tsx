@@ -62,12 +62,11 @@ export function CasePicker({
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {cases.map((c, i) => (
+      {cases.map((c) => (
         <button
           key={c.caseId}
           type="button"
           onClick={() => onSelect(c.caseId)}
-          style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
           className={cn(
             "group animate-fade-up text-left focus-visible:outline-none",
             "rounded-xl focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"

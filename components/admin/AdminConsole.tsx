@@ -10,6 +10,7 @@ import {
   Button,
   EmptyState,
   Modal,
+  PageContainer,
   Skeleton,
   Tabs,
   useToast,
@@ -157,7 +158,7 @@ export function AdminConsole() {
   return (
     <>
       <PageHeader
-        title="Admin"
+        title="Manage"
         description="Upload studies and manage your organization's teaching cases and library."
         actions={
           section === "cases" && (
@@ -193,7 +194,7 @@ export function AdminConsole() {
         </div>
       </PageHeader>
 
-      <div className="mx-auto max-w-6xl px-6 py-6">
+      <PageContainer>
         {section === "library" ? (
           <LibraryManager cases={cases} authors={authors} onAuthorsChanged={setAuthors} />
         ) : loading ? (
@@ -236,7 +237,7 @@ export function AdminConsole() {
             onDelete={(c) => setPendingDelete(c)}
           />
         )}
-      </div>
+      </PageContainer>
 
       <UploadCaseWizard
         open={createOpen}

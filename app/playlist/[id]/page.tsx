@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Layers, ListMusic, PlayCircle } from "lucide-react";
 import { DEFAULT_ORG_ID, getPlaylist, getCasesByIds } from "@/lib/cases";
-import { Badge, Button, EmptyState } from "@/components/ui";
+import { Badge, Button, EmptyState, PageContainer } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { CourseCases } from "@/components/catalog/CourseCases";
 
@@ -18,6 +18,19 @@ export default async function PlaylistPage({ params }: { params: { id: string } 
   return (
     <>
       <PageHeader
+        breadcrumbs={
+          <>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1 font-medium transition-colors hover:text-primary"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              Library
+            </Link>
+            <span aria-hidden="true">/</span>
+            <span className="text-secondary">Playlist</span>
+          </>
+        }
         title={
           <span className="inline-flex items-center gap-2.5">
             <ListMusic className="h-5 w-5 text-accent" aria-hidden="true" />
@@ -36,14 +49,6 @@ export default async function PlaylistPage({ params }: { params: { id: string } 
         }
       >
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1 text-xs font-medium text-muted transition-colors hover:text-primary"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            Library
-          </Link>
-          <span className="text-muted">·</span>
           <Badge variant="neutral" className="gap-1.5 tabular-nums">
             <Layers className="h-3 w-3" aria-hidden="true" />
             {cases.length} case{cases.length === 1 ? "" : "s"}
@@ -51,7 +56,7 @@ export default async function PlaylistPage({ params }: { params: { id: string } 
         </div>
       </PageHeader>
 
-      <div className="mx-auto max-w-6xl px-6 py-8">
+      <PageContainer>
         {cases.length === 0 ? (
           <EmptyState
             icon={<ListMusic aria-hidden="true" />}
@@ -66,7 +71,7 @@ export default async function PlaylistPage({ params }: { params: { id: string } 
         ) : (
           <CourseCases cases={cases} />
         )}
-      </div>
+      </PageContainer>
     </>
   );
 }

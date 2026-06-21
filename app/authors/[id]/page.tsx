@@ -7,7 +7,7 @@ import {
   listCatalogCases,
   listCourses,
 } from "@/lib/cases";
-import { Badge, EmptyState } from "@/components/ui";
+import { Badge, EmptyState, PageContainer, SectionHeading } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { CaseCardGrid } from "@/components/catalog/CaseCard";
 import { CoursesRail } from "@/components/catalog/Rails";
@@ -34,6 +34,19 @@ export default async function AuthorPage({ params }: { params: { id: string } })
   return (
     <>
       <PageHeader
+        breadcrumbs={
+          <>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1 font-medium transition-colors hover:text-primary"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              Library
+            </Link>
+            <span aria-hidden="true">/</span>
+            <span className="text-secondary">Author</span>
+          </>
+        }
         title={
           <span className="inline-flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-elevated text-sm font-semibold text-secondary ring-1 ring-inset ring-subtle">
@@ -45,38 +58,54 @@ export default async function AuthorPage({ params }: { params: { id: string } })
         description={author.bio}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1 text-xs font-medium text-muted transition-colors hover:text-primary"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            Library
-          </Link>
           {author.institution && (
-            <>
-              <span className="text-muted">·</span>
-              <Badge variant="neutral" className="gap-1.5">
-                <Building2 className="h-3 w-3" aria-hidden="true" />
-                {author.institution}
-              </Badge>
-            </>
+            <Badge variant="neutral" className="gap-1.5">
+              <Building2 className="h-3 w-3" aria-hidden="true" />
+              {author.institution}
+            </Badge>
           )}
           <Badge variant="neutral" className="gap-1.5 tabular-nums">
             <LayoutGrid className="h-3 w-3" aria-hidden="true" />
             {cases.length} case{cases.length === 1 ? "" : "s"}
           </Badge>
+          {courses.length > 0 && (
+            <Badge variant="neutral" className="gap-1.5 tabular-nums">
+              <GraduationCap className="h-3 w-3" aria-hidden="true" />
+              {courses.length} course{courses.length === 1 ? "" : "s"}
+            </Badge>
+          )}
         </div>
       </PageHeader>
 
-      <div className="mx-auto flex max-w-6xl flex-col gap-10 px-6 py-8">
+      <PageContainer className="flex flex-col gap-10">
         {courses.length > 0 && (
-          <CoursesRail courses={courses} authorById={{ [author.id]: author }} />
+          <section className="flex flex-col gap-4">
+            <SectionHeading
+              icon={<GraduationCap aria-hidden="true" />}
+              title="Courses"
+              description={`Multi-case teaching sequences from ${author.name}.`}
+            />
+            <CoursesRail
+              courses={courses}
+              authorById={{ [author.id]: author }}
+              showHeading={false}
+            />
+          </section>
         )}
 
         <section className="flex flex-col gap-4">
-          <h2 className="font-display text-lg font-semibold tracking-tight text-primary">
-            Cases by {author.name}
-          </h2>
+          <SectionHeading
+            icon={<LayoutGrid aria-hidden="true" />}
+            title="Cases"
+            description={`Published teaching cases from ${author.name}.`}
+            aside={
+              cases.length > 0 ? (
+                <Badge variant="neutral" className="tabular-nums">
+                  {cases.length}
+                </Badge>
+              ) : undefined
+            }
+          />
           {cases.length === 0 ? (
             <EmptyState
               icon={<GraduationCap aria-hidden="true" />}
@@ -87,7 +116,7 @@ export default async function AuthorPage({ params }: { params: { id: string } })
             <CaseCardGrid cases={cases} authorById={{ [author.id]: author }} />
           )}
         </section>
-      </div>
+      </PageContainer>
     </>
   );
 }

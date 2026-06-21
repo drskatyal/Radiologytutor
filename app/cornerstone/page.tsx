@@ -13,7 +13,7 @@ import {
   PUBLIC_DEMO,
   type ViewerSource,
 } from "../../lib/viewerSource";
-import { Spinner, Tabs } from "@/components/ui";
+import { PageContainer, Spinner, Tabs } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { cn } from "@/components/ui/cn";
 
@@ -64,8 +64,9 @@ export default function CornerstoneSpikePage() {
   return (
     <>
       <PageHeader
+        breadcrumbs={<span>Developer · Viewer lab</span>}
         title="Viewer comparison"
-        description="Toggle between the embedded Pacsbin viewer and our self-hosted Cornerstone3D viewer."
+        description="Toggle between the embedded Pacsbin viewer and our self-hosted Cornerstone3D viewer. An internal sandbox for the imaging stack."
         actions={
           <Tabs
             items={[
@@ -78,7 +79,7 @@ export default function CornerstoneSpikePage() {
         }
       />
 
-      <div className="mx-auto max-w-3xl px-6 py-8">
+      <PageContainer width="narrow">
         {mode === "pacsbin" ? (
           <iframe
             src={PACSBIN_DEMO}
@@ -106,7 +107,7 @@ export default function CornerstoneSpikePage() {
             <CornerstoneViewer source={source} />
           </div>
         )}
-      </div>
+      </PageContainer>
     </>
   );
 }

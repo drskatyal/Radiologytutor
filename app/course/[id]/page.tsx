@@ -7,7 +7,7 @@ import {
   getCasesByIds,
   getAuthor,
 } from "@/lib/cases";
-import { Badge, Button, EmptyState } from "@/components/ui";
+import { Badge, Button, EmptyState, PageContainer } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import { CourseCases } from "@/components/catalog/CourseCases";
@@ -28,6 +28,19 @@ export default async function CoursePage({ params }: { params: { id: string } })
   return (
     <>
       <PageHeader
+        breadcrumbs={
+          <>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1 font-medium transition-colors hover:text-primary"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              Library
+            </Link>
+            <span aria-hidden="true">/</span>
+            <span className="text-secondary">Course</span>
+          </>
+        }
         title={
           <span className="inline-flex items-center gap-2.5">
             <GraduationCap className="h-5 w-5 text-accent" aria-hidden="true" />
@@ -46,14 +59,6 @@ export default async function CoursePage({ params }: { params: { id: string } })
         }
       >
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1 text-xs font-medium text-muted transition-colors hover:text-primary"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            Library
-          </Link>
-          <span className="text-muted">·</span>
           {course.difficulty && (
             <Badge variant={difficultyBadgeVariant(course.difficulty)}>
               {difficultyLabel(course.difficulty)}
@@ -75,7 +80,7 @@ export default async function CoursePage({ params }: { params: { id: string } })
         </div>
       </PageHeader>
 
-      <div className="mx-auto max-w-6xl px-6 py-8">
+      <PageContainer>
         {cases.length === 0 ? (
           <EmptyState
             icon={<GraduationCap aria-hidden="true" />}
@@ -90,7 +95,7 @@ export default async function CoursePage({ params }: { params: { id: string } })
         ) : (
           <CourseCases cases={cases} author={author ?? undefined} />
         )}
-      </div>
+      </PageContainer>
     </>
   );
 }

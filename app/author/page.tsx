@@ -19,6 +19,7 @@ import {
   Badge,
   EmptyState,
   Modal,
+  PageContainer,
   Skeleton,
   useToast,
 } from "@/components/ui";
@@ -69,14 +70,14 @@ function AuthorRouter() {
 function RouteFallback() {
   return (
     <div className="animate-fade-in">
-      <PageHeader title="Author" />
-      <div className="mx-auto max-w-6xl px-6 py-6">
+      <PageHeader title="Studio" />
+      <PageContainer>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-28 rounded-xl" />
           ))}
         </div>
-      </div>
+      </PageContainer>
     </div>
   );
 }
@@ -141,11 +142,11 @@ function CaseSelection() {
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="Author"
+        title="Studio"
         description="Pick a case to review and refine its findings — or upload a study to start a new one."
         actions={newCaseButton}
       />
-      <div className="mx-auto max-w-6xl px-6 py-6">
+      <PageContainer>
         <CasePicker
           cases={cases}
           loading={loading}
@@ -153,7 +154,7 @@ function CaseSelection() {
           onSelect={(id) => router.push(`/author?case=${encodeURIComponent(id)}`)}
           onCreate={() => setCreateOpen(true)}
         />
-      </div>
+      </PageContainer>
 
       <UploadCaseWizard
         open={createOpen}
@@ -384,8 +385,8 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
   if (error || !caseData) {
     return (
       <div className="animate-fade-in">
-        <PageHeader title="Author" actions={backButton} />
-        <div className="mx-auto max-w-3xl px-6 py-10">
+        <PageHeader title="Studio" actions={backButton} />
+        <PageContainer width="narrow">
           <EmptyState
             title="Couldn't open this case"
             description={error || "The case may have been removed."}
@@ -400,7 +401,7 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
               </div>
             }
           />
-        </div>
+        </PageContainer>
       </div>
     );
   }
@@ -455,7 +456,7 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
         }
       />
 
-      <div className="mx-auto max-w-4xl px-6 py-6">
+      <PageContainer width="narrow">
         {/* Plain-language guidance — the radiologist always knows the next step. */}
         <div className="mb-5 flex items-start gap-3 rounded-xl border border-subtle bg-surface px-4 py-3 text-sm text-secondary [&_svg]:h-4 [&_svg]:w-4">
           <span className="mt-0.5 shrink-0 text-info">
@@ -541,7 +542,7 @@ function CaseWorkspace({ caseId }: { caseId: string }) {
             onDirtyChange={onDirtyChange}
           />
         )}
-      </div>
+      </PageContainer>
 
       <AddFindingDialog
         open={showAdd}
@@ -597,7 +598,7 @@ function WorkspaceSkeleton({ back }: { back: React.ReactNode }) {
         description={<Skeleton className="mt-1 h-4 w-32" />}
         actions={back}
       />
-      <div className="mx-auto max-w-4xl px-6 py-6">
+      <PageContainer width="narrow">
         <Skeleton className="mb-4 h-5 w-40" />
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -611,7 +612,7 @@ function WorkspaceSkeleton({ back }: { back: React.ReactNode }) {
             </div>
           ))}
         </div>
-      </div>
+      </PageContainer>
     </div>
   );
 }

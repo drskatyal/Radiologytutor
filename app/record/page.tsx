@@ -34,8 +34,9 @@ export default function RecordDemoPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader
+        breadcrumbs={<span>Developer · Record lab</span>}
         title="Record & Replay"
-        description="Hold Alt+X to record a narrated walk-through, release to stop, then replay the exact retrace."
+        description="Hold Alt+X to record a narrated walk-through on the bundled sample, release to stop, then replay the exact retrace. An internal sandbox for the record/replay mechanic."
         actions={
           <div className="flex items-center gap-2">
             {!rr.supported && <Badge variant="warning">Mic unavailable — events still record</Badge>}
@@ -48,7 +49,7 @@ export default function RecordDemoPage() {
         }
       />
 
-      <div className="mx-auto grid max-w-6xl gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="mx-auto grid max-w-6xl gap-6 px-6 py-8 sm:px-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         {/* Stage */}
         <div className="min-w-0">
           <RecordStage

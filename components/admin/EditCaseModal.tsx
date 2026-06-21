@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
+  cn,
   Field,
   Input,
   Modal,
@@ -317,12 +318,12 @@ export function EditCaseModal({
                 {links.map((l) => (
                   <li
                     key={l.study.studyInstanceUID}
-                    className={[
+                    className={cn(
                       "flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors",
                       l.linked
                         ? "border-accent/40 bg-accent/5"
-                        : "border-subtle bg-surface",
-                    ].join(" ")}
+                        : "border-subtle bg-surface"
+                    )}
                   >
                     <input
                       type="checkbox"

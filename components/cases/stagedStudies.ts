@@ -1,5 +1,5 @@
-// Staged-study model shared by the create-case flows (the legacy CreateCaseModal
-// and the new UploadCaseWizard). A "staged study" is one DICOM study assembled
+// Staged-study model used by the create-case flow (UploadCaseWizard). A "staged
+// study" is one DICOM study assembled
 // from one or more upload batches: grouped by StudyInstanceUID and SeriesInstance
 // UID so re-uploading the same study/series accumulates instead of duplicating.
 

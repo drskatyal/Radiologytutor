@@ -15,9 +15,11 @@ import { CircleAlert, Filter, Search, SlidersHorizontal, X } from "lucide-react"
 import {
   Badge,
   Button,
+  cn,
   EmptyState,
   Input,
   Select,
+  SectionHeading,
   Skeleton,
 } from "@/components/ui";
 import { DIFFICULTIES, BODY_SYSTEMS } from "@/lib/types";
@@ -226,19 +228,18 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
       </div>
 
       {/* Result count */}
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="font-display text-lg font-semibold tracking-tight text-primary">
-          {activeCount > 0 || query.q ? "Results" : "All cases"}
-        </h2>
-        <span className="inline-flex items-center gap-2 text-sm tabular-nums text-muted">
-          {loading && <Skeleton className="h-3 w-10" />}
-          {!loading && (
+      <SectionHeading
+        title={activeCount > 0 || query.q ? "Results" : "All cases"}
+        aside={
+          loading ? (
+            <Skeleton className="h-5 w-16 rounded-md" />
+          ) : (
             <Badge variant="neutral" className="tabular-nums">
               {data.cases.length} case{data.cases.length === 1 ? "" : "s"}
             </Badge>
-          )}
-        </span>
-      </div>
+          )
+        }
+      />
 
       {/* Grid / states */}
       <AnimatePresence mode="wait" initial={false}>
@@ -309,7 +310,10 @@ function FilterSelect({
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value || undefined)}
       aria-label={`Filter by ${label.toLowerCase()}`}
-      className={active ? "h-9 w-auto min-w-[8rem] border-accent/50 text-primary" : "h-9 w-auto min-w-[8rem] text-secondary"}
+      className={cn(
+        "h-9 w-auto min-w-[8rem]",
+        active ? "border-accent/50 text-primary" : "text-secondary"
+      )}
     >
       <option value="">{label}: All</option>
       {options.map((o) => (
