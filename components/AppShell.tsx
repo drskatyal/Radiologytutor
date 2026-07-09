@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   Activity,
+  LayoutDashboard,
   LayoutGrid,
   PenLine,
   Radio,
@@ -28,20 +29,26 @@ interface NavGroup {
 }
 
 /**
- * Information architecture — three intentional surfaces plus a clearly-labelled
- * developer area for internal spikes. The grouping is role-aware in spirit:
- * Library (everyone), Teach (authors), Manage (admins).
+ * Information architecture — the spine is Home -> Learn (Library) / Teach
+ * (Studio) -> Manage (Console), plus a clearly-labelled developer area for
+ * internal spikes. One item per intent, so there's exactly one "home" for
+ * teaching (Studio) instead of two competing surfaces.
  */
 const NAV: NavGroup[] = [
   {
-    items: [{ href: "/", label: "Library", icon: LayoutGrid }],
+    items: [{ href: "/", label: "Home", icon: LayoutDashboard }],
+  },
+  {
+    label: "Learn",
+    items: [{ href: "/library", label: "Library", icon: LayoutGrid }],
   },
   {
     label: "Teach",
-    items: [
-      { href: "/author", label: "Studio", icon: PenLine },
-      { href: "/admin", label: "Manage", icon: ShieldCheck },
-    ],
+    items: [{ href: "/studio", label: "Studio", icon: PenLine }],
+  },
+  {
+    label: "Manage",
+    items: [{ href: "/admin", label: "Console", icon: ShieldCheck }],
   },
   {
     label: "Developer",
