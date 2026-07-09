@@ -1,12 +1,17 @@
 "use client";
 
-// The admin console: list + manage all of the org's teaching cases, and create
-// new ones from an uploaded DICOM study. Owns data fetching, status filtering,
-// optimistic publish/unpublish, delete-with-confirm, and the create/edit modals.
+// The Console: cross-org oversight of every teaching case, plus placeholder
+// tiles for platform-admin surfaces on the roadmap (author verification,
+// de-identification, payouts — CLAUDE.md §6). Course/playlist/author
+// management now lives in Studio (the teaching home); this surface is
+// platform scope only.
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Library, LayoutGrid, Plus } from "lucide-react";
+import { BadgeCheck, CircleAlert, LayoutGrid, ScanSearch, Wallet } from "lucide-react";
 import {
+  Badge,
+  Breadcrumbs,
   Button,
   EmptyState,
   Modal,
@@ -18,9 +23,7 @@ import {
 import { PageHeader } from "@/components/AppShell";
 import { useCallbackRef } from "./useCallbackRef";
 import { CaseList } from "./CaseList";
-import { UploadCaseWizard } from "@/components/cases/UploadCaseWizard";
 import { EditCaseModal } from "./EditCaseModal";
-import { LibraryManager } from "./LibraryManager";
 import {
   deleteCase as apiDeleteCase,
   fetchAuthors,
@@ -31,11 +34,9 @@ import {
 import type { AdminCaseRow, Author, Case, CaseStatus, Patient } from "./types";
 
 type Filter = "all" | CaseStatus;
-type Section = "cases" | "library";
 
 export function AdminConsole() {
   const { toast } = useToast();
-  const [section, setSection] = useState<Section>("cases");
   const [cases, setCases] = useState<AdminCaseRow[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
@@ -44,18 +45,13 @@ export function AdminConsole() {
   const [filter, setFilter] = useState<Filter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [createOpen, setCreateOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<AdminCaseRow | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const reload = useCallbackRef(async () => {
     try {
-      const [cs, ps, au] = await Promise.all([
-        fetchCases(),
-        fetchPatients(),
-        fetchAuthors(),
-      ]);
+      const [cs, ps, au] = await Promise.all([fetchCases(), fetchPatients(), fetchAuthors()]);
       setCases(cs);
       setPatients(ps);
       setAuthors(au);
@@ -85,7 +81,6 @@ export function AdminConsole() {
     [cases, filter]
   );
 
-  /** Merge an updated case back into the list, recomputing denormalized fields. */
   function mergeCase(updated: Case) {
     setCases((prev) =>
       prev.map((c) =>
@@ -94,8 +89,7 @@ export function AdminConsole() {
               ...c,
               ...updated,
               patientName:
-                patients.find((p) => p.id === updated.patientId)?.displayName ??
-                c.patientName,
+                patients.find((p) => p.id === updated.patientId)?.displayName ?? c.patientName,
               studyCount: updated.studyRefs?.length ?? 0,
               findingCount: updated.findings.length,
             }
@@ -107,29 +101,17 @@ export function AdminConsole() {
   async function togglePublish(c: AdminCaseRow) {
     const next: CaseStatus = c.status === "published" ? "draft" : "published";
     setBusyId(c.caseId);
-    // Optimistic update with rollback on failure.
-    setCases((prev) =>
-      prev.map((x) => (x.caseId === c.caseId ? { ...x, status: next } : x))
-    );
+    setCases((prev) => prev.map((x) => (x.caseId === c.caseId ? { ...x, status: next } : x)));
     try {
       await apiUpdateCase(c.caseId, { status: next });
       toast({
         title: next === "published" ? "Case published" : "Case unpublished",
-        description:
-          next === "published"
-            ? "Students can now see this case."
-            : "This case is hidden from students.",
+        description: next === "published" ? "Students can now see this case." : "This case is hidden from students.",
         variant: "success",
       });
     } catch (e) {
-      setCases((prev) =>
-        prev.map((x) => (x.caseId === c.caseId ? { ...x, status: c.status } : x))
-      );
-      toast({
-        title: "Could not update status",
-        description: (e as Error).message,
-        variant: "danger",
-      });
+      setCases((prev) => prev.map((x) => (x.caseId === c.caseId ? { ...x, status: c.status } : x)));
+      toast({ title: "Could not update status", description: (e as Error).message, variant: "danger" });
     } finally {
       setBusyId(null);
     }
@@ -145,11 +127,7 @@ export function AdminConsole() {
       toast({ title: "Case deleted", description: `"${target.title}" removed.`, variant: "success" });
       setPendingDelete(null);
     } catch (e) {
-      toast({
-        title: "Could not delete case",
-        description: (e as Error).message,
-        variant: "danger",
-      });
+      toast({ title: "Could not delete case", description: (e as Error).message, variant: "danger" });
     } finally {
       setDeleting(false);
     }
@@ -158,46 +136,32 @@ export function AdminConsole() {
   return (
     <>
       <PageHeader
-        title="Manage"
-        description="Upload studies and manage your organization's teaching cases and library."
+        breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Console" }]} />}
+        title="Console"
+        description="Platform oversight of every teaching case across the organization."
         actions={
-          section === "cases" && (
-            <Button
-              onClick={() => setCreateOpen(true)}
-              leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}
-            >
-              New case
-            </Button>
-          )
+          <Link href="/studio/new">
+            <Button leadingIcon={<LayoutGrid className="h-4 w-4" aria-hidden="true" />}>New case</Button>
+          </Link>
         }
       >
-        <div className="flex flex-wrap items-center gap-3">
+        {!loading && !loadError && cases.length > 0 && (
           <Tabs
-            value={section}
-            onValueChange={(v) => setSection(v as Section)}
+            value={filter}
+            onValueChange={(v) => setFilter(v as Filter)}
             items={[
-              { value: "cases", label: "Cases", icon: <LayoutGrid className="h-4 w-4" /> },
-              { value: "library", label: "Library", icon: <Library className="h-4 w-4" /> },
+              { value: "all", label: "All", count: counts.all },
+              { value: "published", label: "Published", count: counts.published },
+              { value: "draft", label: "Drafts", count: counts.draft },
             ]}
           />
-          {section === "cases" && !loading && !loadError && cases.length > 0 && (
-            <Tabs
-              value={filter}
-              onValueChange={(v) => setFilter(v as Filter)}
-              items={[
-                { value: "all", label: "All", count: counts.all },
-                { value: "published", label: "Published", count: counts.published },
-                { value: "draft", label: "Drafts", count: counts.draft },
-              ]}
-            />
-          )}
-        </div>
+        )}
       </PageHeader>
 
-      <PageContainer>
-        {section === "library" ? (
-          <LibraryManager cases={cases} authors={authors} onAuthorsChanged={setAuthors} />
-        ) : loading ? (
+      <PageContainer className="flex flex-col gap-10">
+        <PlatformTiles />
+
+        {loading ? (
           <LoadingList />
         ) : loadError ? (
           <EmptyState
@@ -220,14 +184,15 @@ export function AdminConsole() {
           <EmptyState
             icon={<LayoutGrid aria-hidden="true" />}
             title="No cases yet"
-            description="Upload a DICOM study to create your first teaching case."
-            action={<Button onClick={() => setCreateOpen(true)}>Create a case</Button>}
+            description="Cases created in Studio will appear here for oversight."
+            action={
+              <Link href="/studio/new">
+                <Button>Create a case</Button>
+              </Link>
+            }
           />
         ) : visible.length === 0 ? (
-          <EmptyState
-            title={`No ${filter} cases`}
-            description="Try a different filter, or create a new case."
-          />
+          <EmptyState title={`No ${filter} cases`} description="Try a different filter." />
         ) : (
           <CaseList
             cases={visible}
@@ -238,19 +203,6 @@ export function AdminConsole() {
           />
         )}
       </PageContainer>
-
-      <UploadCaseWizard
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        patients={patients}
-        authors={authors}
-        onCreated={() => {
-          // The wizard persists the case then routes into the recording studio;
-          // we refresh the list in the background so the new draft is here on
-          // return.
-          reload();
-        }}
-      />
 
       <EditCaseModal
         caseId={editId}
@@ -283,6 +235,50 @@ export function AdminConsole() {
         }
       />
     </>
+  );
+}
+
+/** Designed-but-inert tiles for platform-admin surfaces later on the roadmap
+ * (CLAUDE.md §6) — orientation, not invented behavior. */
+function PlatformTiles() {
+  const tiles = [
+    {
+      icon: <BadgeCheck className="h-5 w-5" aria-hidden="true" />,
+      title: "Author verification",
+      description: "Review credentials before authors can publish publicly.",
+      badge: "Coming in P0",
+    },
+    {
+      icon: <ScanSearch className="h-5 w-5" aria-hidden="true" />,
+      title: "De-identification",
+      description: "PHI review queue for uploaded studies.",
+      badge: "Coming in P1",
+    },
+    {
+      icon: <Wallet className="h-5 w-5" aria-hidden="true" />,
+      title: "Payouts",
+      description: "Marketplace earnings and Stripe Connect payouts.",
+      badge: "Coming in P3",
+    },
+  ];
+  return (
+    <div className="grid gap-4 sm:grid-cols-3">
+      {tiles.map((t) => (
+        <div
+          key={t.title}
+          className="flex flex-col gap-2 rounded-xl border border-dashed border-strong bg-surface/60 p-4 opacity-80"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-elevated text-muted">
+              {t.icon}
+            </span>
+            <Badge variant="neutral">{t.badge}</Badge>
+          </div>
+          <p className="text-sm font-semibold text-primary">{t.title}</p>
+          <p className="text-xs leading-relaxed text-muted">{t.description}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 

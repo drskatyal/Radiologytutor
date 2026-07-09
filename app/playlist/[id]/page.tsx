@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Layers, ListMusic, PlayCircle } from "lucide-react";
+import { Layers, ListMusic, PlayCircle } from "lucide-react";
 import { DEFAULT_ORG_ID, getPlaylist, getCasesByIds } from "@/lib/cases";
-import { Badge, Button, EmptyState, PageContainer } from "@/components/ui";
+import { Badge, Breadcrumbs, Button, EmptyState, PageContainer } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { CourseCases } from "@/components/catalog/CourseCases";
 
@@ -18,19 +18,7 @@ export default async function PlaylistPage({ params }: { params: { id: string } 
   return (
     <>
       <PageHeader
-        breadcrumbs={
-          <>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-1 font-medium transition-colors hover:text-primary"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-              Library
-            </Link>
-            <span aria-hidden="true">/</span>
-            <span className="text-secondary">Playlist</span>
-          </>
-        }
+        breadcrumbs={<Breadcrumbs items={[{ label: "Library", href: "/library" }, { label: "Playlist" }]} />}
         title={
           <span className="inline-flex items-center gap-2.5">
             <ListMusic className="h-5 w-5 text-accent" aria-hidden="true" />
@@ -63,7 +51,7 @@ export default async function PlaylistPage({ params }: { params: { id: string } 
             title="This playlist is empty"
             description="An admin can add and order cases for this playlist from the Admin console."
             action={
-              <Link href="/">
+              <Link href="/library">
                 <Button variant="secondary">Back to library</Button>
               </Link>
             }
