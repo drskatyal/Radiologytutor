@@ -381,6 +381,12 @@ export interface Author {
   bio?: string;
   /** Institution / department affiliation. */
   institution?: string;
+  /** Professional credentials shown next to the name, e.g. "MD, FRCR". */
+  credentials?: string;
+  /** Subspecialty tags (reuses the body-system taxonomy). */
+  subspecialties?: BodySystem[];
+  /** Optional social / professional links. */
+  socials?: { website?: string; twitter?: string; linkedin?: string };
   createdAt: string;
   updatedAt: string;
 }

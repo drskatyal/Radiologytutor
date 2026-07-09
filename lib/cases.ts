@@ -959,6 +959,9 @@ export interface CreateAuthorInput {
   avatarUrl?: string;
   bio?: string;
   institution?: string;
+  credentials?: string;
+  subspecialties?: BodySystem[];
+  socials?: Author["socials"];
 }
 
 export async function createAuthor(orgId: string, input: CreateAuthorInput): Promise<Author> {
@@ -970,6 +973,9 @@ export async function createAuthor(orgId: string, input: CreateAuthorInput): Pro
     avatarUrl: input.avatarUrl,
     bio: input.bio,
     institution: input.institution,
+    credentials: input.credentials,
+    subspecialties: input.subspecialties,
+    socials: input.socials,
     createdAt: now,
     updatedAt: now,
   };
@@ -980,7 +986,12 @@ export async function createAuthor(orgId: string, input: CreateAuthorInput): Pro
 export async function updateAuthor(
   orgId: string,
   authorId: string,
-  patch: Partial<Pick<Author, "name" | "avatarUrl" | "bio" | "institution">>
+  patch: Partial<
+    Pick<
+      Author,
+      "name" | "avatarUrl" | "bio" | "institution" | "credentials" | "subspecialties" | "socials"
+    >
+  >
 ): Promise<Author | null> {
   const current = await getAuthor(orgId, authorId);
   if (!current) return null;
@@ -993,6 +1004,19 @@ export async function deleteAuthor(orgId: string, authorId: string): Promise<boo
   const current = await getAuthor(orgId, authorId);
   if (!current) return false;
   return authorsStore.remove(authorId);
+}
+
+/**
+ * The org's single "primary" author — a placeholder seam for the
+ * authenticated user until Clerk + a first-class `AuthorProfile` land
+ * (CLAUDE.md §6). Lazily creates one the first time it's requested so the
+ * Studio profile editor always has something to edit. Callers don't change
+ * when real auth replaces this with the session user's own profile.
+ */
+export async function getPrimaryAuthor(orgId: string): Promise<Author> {
+  const existing = await listAuthors(orgId);
+  if (existing.length > 0) return existing[0];
+  return createAuthor(orgId, { name: "Your teaching profile" });
 }
 
 // ============================================================================
