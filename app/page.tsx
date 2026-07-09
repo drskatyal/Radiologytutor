@@ -59,19 +59,19 @@ export default async function HomePage() {
           aria-hidden="true"
           className="pointer-events-none absolute -top-40 left-1/2 h-80 w-[60rem] -translate-x-1/2 rounded-full bg-accent/10 blur-3xl"
         />
-        <div className="relative mx-auto max-w-6xl px-6 py-12 sm:px-8 sm:py-14">
+        <div className="relative mx-auto max-w-6xl px-6 py-9 sm:px-8 sm:py-11">
           <div className="inline-flex items-center gap-2 rounded-full border border-subtle bg-elevated/60 px-3 py-1 text-xs font-medium text-secondary shadow-sm backdrop-blur">
             <Sparkles className="h-3.5 w-3.5 text-accent" />
             Your reading-room, on demand
           </div>
-          <h1 className="mt-4 max-w-3xl font-display text-[2rem] font-semibold leading-[1.08] tracking-tightest text-primary sm:text-[2.75rem]">
+          <h1 className="mt-3.5 max-w-2xl font-display text-[1.9rem] font-semibold leading-[1.08] tracking-tightest text-primary sm:text-[2.4rem]">
             Teach and learn radiology,
             <span className="text-accent"> one real study at a time.</span>
           </h1>
-          <p className="mt-3 max-w-xl text-base leading-relaxed text-secondary">
+          <p className="mt-2.5 max-w-xl text-[0.95rem] leading-relaxed text-secondary">
             Browse narrated DICOM cases with an AI tutor — or open your Studio and teach your own.
           </p>
-          <div className="mt-6 flex flex-wrap items-center gap-3">
+          <div className="mt-5 flex flex-wrap items-center gap-3">
             <Link href="/library">
               <Button size="lg" leadingIcon={<LayoutGrid className="h-4 w-4" aria-hidden="true" />}>
                 Browse the library
@@ -89,7 +89,7 @@ export default async function HomePage() {
           </div>
 
           {stats.length > 0 && (
-            <dl className="mt-7 flex flex-wrap items-center gap-x-7 gap-y-3">
+            <dl className="mt-6 flex flex-wrap items-center gap-x-7 gap-y-3">
               {stats.map((s) => (
                 <div key={s.label} className="flex items-baseline gap-1.5">
                   <dt className="sr-only">{s.label}</dt>
@@ -105,7 +105,7 @@ export default async function HomePage() {
       {loadError ? (
         <DashboardError message={loadError} />
       ) : (
-        <PageContainer className="flex flex-col gap-12">
+        <PageContainer className="flex flex-col gap-8">
           <TeachZone cases={myCases} />
           <LearnZone cases={learnCases} authorById={authorById} />
         </PageContainer>

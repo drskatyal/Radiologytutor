@@ -67,15 +67,24 @@ function TeachCard({ c }: { c: Case }) {
   }
 
   return (
-    <Card className="flex h-full flex-col gap-3">
+    <Card className="flex h-full flex-col gap-2.5">
       <div className="flex items-start justify-between gap-2">
         <h3 className="min-w-0 truncate text-sm font-semibold text-primary">{c.title}</h3>
         <Badge variant={published ? "success" : "warning"}>{c.status}</Badge>
       </div>
-      <Badge variant={findingCount > 0 ? "accent" : "neutral"} className="self-start">
-        {findingCount} finding{findingCount === 1 ? "" : "s"}
-      </Badge>
-      <Link href={action.href} className="mt-auto">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {c.modality && (
+          <Badge variant="accent" className="gap-1">
+            <Stethoscope className="h-3 w-3" aria-hidden="true" />
+            {c.modality}
+          </Badge>
+        )}
+        {c.system && <Badge variant="info">{c.system}</Badge>}
+        <Badge variant={findingCount > 0 ? "neutral" : "warning"}>
+          {findingCount} finding{findingCount === 1 ? "" : "s"}
+        </Badge>
+      </div>
+      <Link href={action.href} className="mt-auto pt-1">
         <Button size="sm" variant="secondary" leadingIcon={action.icon} className="w-full">
           {action.label}
         </Button>

@@ -19,7 +19,7 @@ export function Card({
     <div
       className={cn(
         "relative rounded-xl border border-subtle bg-elevated shadow-sm surface-hairline",
-        padded && "p-5",
+        padded && "p-4",
         interactive &&
           "transition-[transform,border-color,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-md",
         className
