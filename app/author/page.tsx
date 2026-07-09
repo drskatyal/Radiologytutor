@@ -14,6 +14,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/AppShell";
+import { GraduationCap, Layers as LayersLucide } from "lucide-react";
 import {
   Button,
   Badge,
@@ -21,6 +22,7 @@ import {
   Modal,
   PageContainer,
   Skeleton,
+  Tabs,
   useToast,
 } from "@/components/ui";
 import type { CaseData, Finding } from "@/lib/types";
@@ -30,11 +32,13 @@ import { AddFindingDialog } from "@/components/author/AddFindingDialog";
 import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
 import { useUnsavedGuard } from "@/components/author/useUnsavedGuard";
 import { UploadCaseWizard } from "@/components/cases/UploadCaseWizard";
+import { LibraryManager } from "@/components/admin/LibraryManager";
 import {
   fetchAuthors,
+  fetchCases as fetchAdminCases,
   fetchPatients,
 } from "@/components/admin/api";
-import type { Author, Patient } from "@/components/admin/types";
+import type { AdminCaseRow, Author, Patient } from "@/components/admin/types";
 import {
   addFinding,
   deleteFinding,
@@ -45,6 +49,7 @@ import {
 } from "@/components/author/lib";
 import {
   BackIcon,
+  DocIcon,
   InfoIcon,
   LayersIcon,
   MicIcon,
@@ -86,9 +91,13 @@ function RouteFallback() {
 // 1. Case selection
 // ===========================================================================
 
+/** The Studio home has two faces: authoring cases vs. curating the library. */
+type StudioTab = "cases" | "library";
+
 function CaseSelection() {
   const router = useRouter();
   const { toast } = useToast();
+  const [tab, setTab] = useState<StudioTab>("cases");
   const [cases, setCases] = useState<CaseData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -97,6 +106,11 @@ function CaseSelection() {
   const [createOpen, setCreateOpen] = useState(false);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
+  // The Courses & playlists tab curates existing cases, so it needs the richer
+  // admin rows (denormalized counts). Loaded lazily the first time it opens so
+  // the common "author a case" path never pays for it.
+  const [adminCases, setAdminCases] = useState<AdminCaseRow[] | null>(null);
+  const [libLoading, setLibLoading] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -129,6 +143,26 @@ function CaseSelection() {
     };
   }, [toast]);
 
+  // Lazy-load the admin case rows the first time the library tab is opened.
+  useEffect(() => {
+    if (tab !== "library" || adminCases !== null || libLoading) return;
+    let alive = true;
+    setLibLoading(true);
+    (async () => {
+      try {
+        const rows = await fetchAdminCases();
+        if (alive) setAdminCases(rows);
+      } catch {
+        if (alive) setAdminCases([]); // degrade: curation still works, empty picker
+      } finally {
+        if (alive) setLibLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [tab, adminCases, libLoading]);
+
   const newCaseButton = (
     <Button
       size="sm"
@@ -143,17 +177,49 @@ function CaseSelection() {
     <div className="animate-fade-in">
       <PageHeader
         title="Studio"
-        description="Pick a case to review and refine its findings — or upload a study to start a new one."
-        actions={newCaseButton}
-      />
-      <PageContainer>
-        <CasePicker
-          cases={cases}
-          loading={loading}
-          error={error}
-          onSelect={(id) => router.push(`/author?case=${encodeURIComponent(id)}`)}
-          onCreate={() => setCreateOpen(true)}
+        description="Author teaching cases from real studies, then curate them into courses and playlists."
+        actions={tab === "cases" ? newCaseButton : undefined}
+      >
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as StudioTab)}
+          items={[
+            {
+              value: "cases",
+              label: "My cases",
+              icon: <LayersLucide className="h-4 w-4" aria-hidden="true" />,
+              count: loading ? undefined : cases.length,
+            },
+            {
+              value: "library",
+              label: "Courses & playlists",
+              icon: <GraduationCap className="h-4 w-4" aria-hidden="true" />,
+            },
+          ]}
         />
+      </PageHeader>
+
+      <PageContainer>
+        {tab === "cases" ? (
+          <>
+            <AuthoringPathway />
+            <CasePicker
+              cases={cases}
+              loading={loading}
+              error={error}
+              onSelect={(id) => router.push(`/author?case=${encodeURIComponent(id)}`)}
+              onCreate={() => setCreateOpen(true)}
+            />
+          </>
+        ) : libLoading || adminCases === null ? (
+          <LibrarySkeleton />
+        ) : (
+          <LibraryManager
+            cases={adminCases}
+            authors={authors}
+            onAuthorsChanged={setAuthors}
+          />
+        )}
       </PageContainer>
 
       <UploadCaseWizard
@@ -170,6 +236,65 @@ function CaseSelection() {
           );
         }}
       />
+    </div>
+  );
+}
+
+/**
+ * The three-step authoring pathway, made visible so the radiologist always
+ * knows the shape of the work before starting: enter case details, record a
+ * narrated read, then publish for students.
+ */
+function AuthoringPathway() {
+  const steps = [
+    {
+      icon: <DocIcon />,
+      title: "Case details",
+      body: "Upload the study and set diagnosis, history, and difficulty — exam-grade.",
+    },
+    {
+      icon: <MicIcon />,
+      title: "Record the read",
+      body: "Walk the images and narrate. We turn your dictation into teaching findings.",
+    },
+    {
+      icon: <PlayIcon />,
+      title: "Refine & publish",
+      body: "Edit findings, reorder the sequence, preview as a student, then publish.",
+    },
+  ];
+  return (
+    <ol className="mb-6 grid gap-3 sm:grid-cols-3">
+      {steps.map((s, i) => (
+        <li
+          key={s.title}
+          className="relative rounded-xl border border-subtle bg-surface p-4"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent [&_svg]:h-4 [&_svg]:w-4">
+              {s.icon}
+            </span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted tabular-nums">
+              Step {i + 1}
+            </span>
+          </div>
+          <h3 className="mt-3 text-sm font-semibold text-primary">{s.title}</h3>
+          <p className="mt-1 text-xs leading-relaxed text-secondary">{s.body}</p>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function LibrarySkeleton() {
+  return (
+    <div className="space-y-4">
+      <Skeleton className="h-9 w-64 rounded-lg" />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Skeleton key={i} className="h-32 rounded-xl" />
+        ))}
+      </div>
     </div>
   );
 }
