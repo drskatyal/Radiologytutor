@@ -20,17 +20,17 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        "relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-strong bg-surface/60 px-6 py-14 text-center shadow-sm",
+        "relative flex flex-col items-center justify-center overflow-hidden rounded-xl border border-dashed border-strong bg-surface/60 px-6 py-9 text-center shadow-sm",
         className
       )}
     >
       {/* Faint accent wash behind the icon for depth. */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute left-1/2 top-8 h-32 w-32 -translate-x-1/2 rounded-full bg-accent/10 blur-3xl"
+        className="pointer-events-none absolute left-1/2 top-6 h-24 w-24 -translate-x-1/2 rounded-full bg-accent/10 blur-3xl"
       />
       {icon && (
-        <div className="relative mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-subtle bg-elevated text-accent shadow-md surface-hairline [&_svg]:h-6 [&_svg]:w-6">
+        <div className="relative mb-3.5 flex h-11 w-11 items-center justify-center rounded-xl border border-subtle bg-elevated text-accent shadow-sm surface-hairline [&_svg]:h-5 [&_svg]:w-5">
           {icon}
         </div>
       )}
@@ -42,7 +42,7 @@ export function EmptyState({
           {description}
         </p>
       )}
-      {action && <div className="relative mt-6">{action}</div>}
+      {action && <div className="relative mt-5">{action}</div>}
     </div>
   );
 }
