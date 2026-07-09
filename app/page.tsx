@@ -1,45 +1,55 @@
-import { Suspense } from "react";
 import Link from "next/link";
-import { Mic, Sparkles, Workflow } from "lucide-react";
+import { LayoutGrid, PenLine, Sparkles } from "lucide-react";
 import {
   DEFAULT_ORG_ID,
-  listCatalogCases,
-  getCatalogFacets,
   listAuthors,
+  listCasesForOrg,
+  listCatalogCases,
   listCourses,
-  listPlaylists,
 } from "@/lib/cases";
-import { Button, PageContainer, Skeleton } from "@/components/ui";
-import { Catalog } from "@/components/catalog/Catalog";
-import type { CatalogResponse } from "@/components/catalog/types";
-import CasesPrefetcher from "@/components/CasesPrefetcher";
+import { Button, PageContainer } from "@/components/ui";
+import { TeachZone } from "@/components/home/TeachZone";
+import { LearnZone } from "@/components/home/LearnZone";
+import { DashboardError } from "@/components/home/DashboardError";
+import type { Author, Case } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The Dashboard — the role-aware home. Orients between Learn (the library)
+ * and Teach (Studio) instead of dumping the full catalog at "/" (that lives
+ * at /library now). Server-rendered; a "Couldn't load your dashboard" state
+ * covers a data-layer failure so the page is never blank.
+ */
 export default async function HomePage() {
-  // The catalog is the library landing. Load the unfiltered, published view
-  // server-side so the page renders instantly; the client takes over filtering.
-  const [cases, facets, authors, courses, playlists] = await Promise.all([
-    listCatalogCases(DEFAULT_ORG_ID, { status: "published" }),
-    getCatalogFacets(DEFAULT_ORG_ID),
-    listAuthors(DEFAULT_ORG_ID),
-    listCourses(DEFAULT_ORG_ID, { status: "published" }),
-    listPlaylists(DEFAULT_ORG_ID),
-  ]);
+  let myCases: Case[] = [];
+  let learnCases: Case[] = [];
+  let courses: Awaited<ReturnType<typeof listCourses>> = [];
+  let authors: Author[] = [];
+  let loadError: string | null = null;
 
-  const initial: CatalogResponse = { cases, facets, authors, courses, playlists };
-  const firstCaseId = cases[0]?.caseId;
+  try {
+    [myCases, learnCases, courses, authors] = await Promise.all([
+      listCasesForOrg(DEFAULT_ORG_ID),
+      listCatalogCases(DEFAULT_ORG_ID, { status: "published" }),
+      listCourses(DEFAULT_ORG_ID, { status: "published" }),
+      listAuthors(DEFAULT_ORG_ID),
+    ]);
+  } catch (e) {
+    loadError = e instanceof Error ? e.message : "Something went wrong.";
+  }
 
-  // Tight, factual orientation stats — give the hero substance instead of a void.
+  const authorById = Object.fromEntries(authors.map((a) => [a.id, a]));
+
   const stats: { value: number; label: string }[] = [
-    { value: cases.length, label: cases.length === 1 ? "case" : "cases" },
+    { value: learnCases.length, label: learnCases.length === 1 ? "case" : "cases" },
     { value: courses.length, label: courses.length === 1 ? "course" : "courses" },
     { value: authors.length, label: authors.length === 1 ? "author" : "authors" },
   ].filter((s) => s.value > 0);
 
   return (
     <>
-      {/* ── Hero band — compact, orienting, not dominating ─────────────────── */}
+      {/* ── Hero band — orients Learn vs Teach as two equal-weight paths ───── */}
       <section className="relative overflow-hidden border-b border-subtle">
         <div
           aria-hidden="true"
@@ -52,35 +62,28 @@ export default async function HomePage() {
         <div className="relative mx-auto max-w-6xl px-6 py-12 sm:px-8 sm:py-14">
           <div className="inline-flex items-center gap-2 rounded-full border border-subtle bg-elevated/60 px-3 py-1 text-xs font-medium text-secondary shadow-sm backdrop-blur">
             <Sparkles className="h-3.5 w-3.5 text-accent" />
-            A teaching library, narrated by an AI tutor
+            Your reading-room, on demand
           </div>
           <h1 className="mt-4 max-w-3xl font-display text-[2rem] font-semibold leading-[1.08] tracking-tightest text-primary sm:text-[2.75rem]">
-            Read every study like the
-            <span className="text-accent"> attending is beside you.</span>
+            Teach and learn radiology,
+            <span className="text-accent"> one real study at a time.</span>
           </h1>
           <p className="mt-3 max-w-xl text-base leading-relaxed text-secondary">
-            Browse a curated library of real DICOM cases by system and difficulty,
-            follow guided multi-step walk-throughs, and ask the tutor anything by
-            voice.
+            Browse narrated DICOM cases with an AI tutor — or open your Studio and teach your own.
           </p>
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            {firstCaseId && (
-              <Link href={`/case/${firstCaseId}`}>
-                <Button
-                  size="lg"
-                  trailingIcon={<Workflow className="h-4 w-4" aria-hidden="true" />}
-                >
-                  Start a case
-                </Button>
-              </Link>
-            )}
-            <Link href="/author">
+            <Link href="/library">
+              <Button size="lg" leadingIcon={<LayoutGrid className="h-4 w-4" aria-hidden="true" />}>
+                Browse the library
+              </Button>
+            </Link>
+            <Link href="/studio">
               <Button
                 size="lg"
                 variant="secondary"
-                leadingIcon={<Mic className="h-4 w-4 text-accent" aria-hidden="true" />}
+                leadingIcon={<PenLine className="h-4 w-4 text-accent" aria-hidden="true" />}
               >
-                Author a case
+                Open Studio
               </Button>
             </Link>
           </div>
@@ -90,9 +93,7 @@ export default async function HomePage() {
               {stats.map((s) => (
                 <div key={s.label} className="flex items-baseline gap-1.5">
                   <dt className="sr-only">{s.label}</dt>
-                  <dd className="font-display text-lg font-semibold tabular-nums text-primary">
-                    {s.value}
-                  </dd>
+                  <dd className="font-display text-lg font-semibold tabular-nums text-primary">{s.value}</dd>
                   <span className="text-sm text-muted">{s.label}</span>
                 </div>
               ))}
@@ -101,14 +102,14 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* ── The library catalog ────────────────────────────────────────────── */}
-      <PageContainer>
-        <Suspense fallback={<Skeleton className="h-64 w-full" />}>
-          <Catalog initial={initial} />
-        </Suspense>
-      </PageContainer>
-
-      <CasesPrefetcher caseIds={cases.map((c) => c.caseId)} />
+      {loadError ? (
+        <DashboardError message={loadError} />
+      ) : (
+        <PageContainer className="flex flex-col gap-12">
+          <TeachZone cases={myCases} />
+          <LearnZone cases={learnCases} authorById={authorById} />
+        </PageContainer>
+      )}
     </>
   );
 }
