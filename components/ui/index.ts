@@ -30,3 +30,7 @@ export { PageContainer, SectionHeading } from "./Page";
 export type { PageContainerProps, SectionHeadingProps } from "./Page";
 export { MicButton } from "./MicButton";
 export type { MicButtonProps, MicState } from "./MicButton";
+export { Breadcrumbs } from "./Breadcrumbs";
+export type { BreadcrumbsProps, BreadcrumbItem } from "./Breadcrumbs";
+export { Stepper } from "./Stepper";
+export type { StepperProps, StepperStep } from "./Stepper";
