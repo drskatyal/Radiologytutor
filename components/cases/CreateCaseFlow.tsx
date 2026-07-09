@@ -1,122 +1,80 @@
 "use client";
 
-// UploadCaseWizard — the V1 author case-creation journey as ONE coherent flow:
-//
-//   1. Details        — the exam-grade teaching form (CaseDetailsForm)
-//   2. Upload DICOM   — drop a study, review the series as thumbnails, attach it
-//   3. Record findings— hand off to the full-page PACS recording surface
-//   4. Review/Publish — (lives on the recording surface) — confirm & publish
-//
-// Steps 1–2 happen inside this modal; on "Create & record" we persist the case
-// (patient + studies + all the teaching details) and route the author straight
-// into /author/record/[caseId] where they capture findings by voice and publish.
-// The 4-step rail is always visible so the journey reads as a single arc.
-//
-// Reachable from /author (and /admin) via the "New case" button.
+// CreateCaseFlow — the ONE create-a-case pathway (steps 1-2 of the 4-step
+// arc: Details -> Upload DICOM -> Record findings -> Publish). A full-page
+// routed flow (not a modal) so the Stepper stays visible the whole journey:
+// on "Create & record findings" we persist the case and hand off to
+// /studio/cases/[caseId]/record, which renders the SAME Stepper advanced to
+// step 3, with Publish as step 4 on that same surface.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, Info, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Info, X } from "lucide-react";
+import { PageHeader } from "@/components/AppShell";
 import {
   Badge,
+  Breadcrumbs,
   Button,
   Field,
   IconButton,
   Input,
-  Modal,
+  PageContainer,
   Select,
+  Skeleton,
+  Stepper,
   useToast,
 } from "@/components/ui";
-import { cn } from "@/components/ui/cn";
 import { DicomDropzone } from "./DicomDropzone";
 import { SeriesPicker } from "./SeriesPicker";
+import { CASE_FLOW_STEPS, type CaseFlowStepId } from "./steps";
 import {
   CaseDetailsForm,
   EMPTY_CASE_DETAILS,
   validateCaseDetails,
   type CaseDetailsValue,
 } from "./CaseDetailsForm";
+import { mergeUpload, totalStagedImages, toStudyPayload, type StagedStudy } from "./stagedStudies";
 import {
-  mergeUpload,
-  totalStagedImages,
-  toStudyPayload,
-  type StagedStudy,
-} from "./stagedStudies";
-import { createCase, fetchOrthancStatus, type CreateCaseInput } from "@/components/admin/api";
-import {
-  STUDY_ROLES,
-  type Author,
-  type Case,
-  type Patient,
-  type StudyRole,
-  type UploadResult,
-} from "@/components/admin/types";
+  createCase,
+  fetchAuthors,
+  fetchOrthancStatus,
+  fetchPatients,
+  type CreateCaseInput,
+} from "@/components/admin/api";
+import { STUDY_ROLES, type Author, type Patient, type StudyRole, type UploadResult } from "@/components/admin/types";
 
-type StepId = "details" | "upload" | "record" | "publish";
-
-const STEPS: { id: StepId; label: string; caption: string }[] = [
-  { id: "details", label: "Details", caption: "Stem, diagnosis, pedagogy" },
-  { id: "upload", label: "Upload DICOM", caption: "Study & series" },
-  { id: "record", label: "Record findings", caption: "Voice walk-through" },
-  { id: "publish", label: "Review & publish", caption: "Confirm & release" },
-];
-
-export function UploadCaseWizard({
-  open,
-  onClose,
-  patients,
-  authors = [],
-  onCreated,
-}: {
-  open: boolean;
-  onClose: () => void;
-  patients: Patient[];
-  authors?: Author[];
-  /** Notified when the case is created (so the list can refresh). */
-  onCreated?: (created: Case) => void;
-}) {
+export function CreateCaseFlow() {
   const { toast } = useToast();
   const router = useRouter();
 
-  const [step, setStep] = useState<StepId>("details");
+  const [step, setStep] = useState<CaseFlowStepId>("details");
   const [details, setDetails] = useState<CaseDetailsValue>(EMPTY_CASE_DETAILS);
   const [titleAttempted, setTitleAttempted] = useState(false);
 
-  // Patient + uploaded studies.
   const [patientMode, setPatientMode] = useState<"new" | "existing">("new");
   const [patientName, setPatientName] = useState("");
   const [patientId, setPatientId] = useState("");
   const [studies, setStudies] = useState<StagedStudy[]>([]);
   const [imagingOk, setImagingOk] = useState<boolean | null>(null);
 
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [authors, setAuthors] = useState<Author[]>([]);
+  const [loadingPickers, setLoadingPickers] = useState(true);
+
   const [saving, setSaving] = useState(false);
 
-  // Probe imaging once the wizard opens.
   useEffect(() => {
-    if (!open) return;
-    let active = true;
-    fetchOrthancStatus().then((ok) => active && setImagingOk(ok));
-    return () => {
-      active = false;
-    };
-  }, [open]);
-
-  function reset() {
-    setStep("details");
-    setDetails(EMPTY_CASE_DETAILS);
-    setTitleAttempted(false);
-    setPatientMode("new");
-    setPatientName("");
-    setPatientId("");
-    setStudies([]);
-    setSaving(false);
-  }
-
-  function close() {
-    if (saving) return;
-    reset();
-    onClose();
-  }
+    fetchOrthancStatus().then(setImagingOk);
+    Promise.all([fetchPatients(), fetchAuthors()])
+      .then(([ps, au]) => {
+        setPatients(ps);
+        setAuthors(au);
+      })
+      .catch(() => {
+        /* non-fatal — the pickers degrade gracefully */
+      })
+      .finally(() => setLoadingPickers(false));
+  }, []);
 
   const titleError = validateCaseDetails(details).title;
 
@@ -128,7 +86,6 @@ export function UploadCaseWizard({
     setStudies((prev) => {
       const { next, firstNewStudy } = mergeUpload(prev, result);
       if (firstNewStudy) {
-        // Auto-fill title + modality from the first study when still untouched.
         if (!details.title.trim()) patchDetails({ title: firstNewStudy.description });
         if (firstNewStudy.modality) patchDetails({ modality: firstNewStudy.modality });
       }
@@ -153,11 +110,12 @@ export function UploadCaseWizard({
     );
   }
 
-  // -- step gating ------------------------------------------------------------
   const detailsValid = !titleError;
-  const patientValid =
-    patientMode === "new" ? !!patientName.trim() : !!patientId;
+  const patientValid = patientMode === "new" ? !!patientName.trim() : !!patientId;
   const totalImages = totalStagedImages(studies);
+
+  const hasDirtyInput =
+    details.title.trim().length > 0 || patientName.trim().length > 0 || studies.length > 0;
 
   function goNext() {
     if (step === "details") {
@@ -168,6 +126,10 @@ export function UploadCaseWizard({
   }
   function goBack() {
     if (step === "upload") setStep("details");
+  }
+  function cancel() {
+    if (hasDirtyInput && !window.confirm("Discard this new case? Nothing has been saved yet.")) return;
+    router.push("/studio");
   }
 
   async function createAndRecord() {
@@ -196,7 +158,6 @@ export function UploadCaseWizard({
         system: details.system || undefined,
         tags: details.tags.length ? details.tags : undefined,
         authorId: details.authorId || undefined,
-        // Exam-grade teaching details.
         clinicalHistory: details.clinicalHistory || undefined,
         patientAge: details.patientAge || undefined,
         patientSex: details.patientSex || undefined,
@@ -210,12 +171,8 @@ export function UploadCaseWizard({
           ? details.learningObjectives.filter(Boolean)
           : undefined,
         discussion: details.discussion || undefined,
-        references: details.references.filter(Boolean).length
-          ? details.references.filter(Boolean)
-          : undefined,
-        ...(patientMode === "existing"
-          ? { patientId }
-          : { patientName: patientName.trim() }),
+        references: details.references.filter(Boolean).length ? details.references.filter(Boolean) : undefined,
+        ...(patientMode === "existing" ? { patientId } : { patientName: patientName.trim() }),
         studies: studies.length ? toStudyPayload(studies) : undefined,
       };
       const created = await createCase(input);
@@ -224,11 +181,7 @@ export function UploadCaseWizard({
         description: `"${created.title}" saved as a draft. Time to record.`,
         variant: "success",
       });
-      onCreated?.(created);
-      reset();
-      onClose();
-      // Hand off to the full-page recording surface (steps 3–4).
-      router.push(`/author/record/${encodeURIComponent(created.caseId)}`);
+      router.push(`/studio/cases/${encodeURIComponent(created.caseId)}/record`);
     } catch (e) {
       toast({
         variant: "danger",
@@ -239,129 +192,106 @@ export function UploadCaseWizard({
     }
   }
 
-  const footer =
+  const guidance =
     step === "details" ? (
       <>
-        <Button variant="ghost" onClick={close} disabled={saving}>
-          Cancel
-        </Button>
-        <Button onClick={goNext} trailingIcon={<ArrowRight className="h-4 w-4" />}>
-          Continue to upload
-        </Button>
+        Compose the case the way you teach it. Only a <span className="font-medium text-primary">title</span> is
+        required now — everything else you can refine later. <span className="font-medium text-primary">Next:</span>{" "}
+        attach the DICOM study.
       </>
     ) : (
       <>
-        <Button
-          variant="ghost"
-          onClick={goBack}
-          disabled={saving}
-          leadingIcon={<ArrowLeft className="h-4 w-4" />}
-        >
-          Back
-        </Button>
-        <Button onClick={createAndRecord} loading={saving} disabled={!patientValid}>
-          Create &amp; record findings
-        </Button>
+        Upload an anonymized study; pick the series learners will read. Imaging is optional now — you can link it
+        later. <span className="font-medium text-primary">Next:</span> the recording studio opens on this case so
+        you can capture each finding by voice.
       </>
     );
 
   return (
-    <Modal
-      open={open}
-      onClose={close}
-      size="xl"
-      title="New teaching case"
-      description="Build the case the way you teach it — stem, diagnosis, pedagogy — then attach the study and record."
-      footer={footer}
-    >
-      <div className="flex max-h-[72vh] flex-col gap-5">
-        <Stepper current={step} />
+    <div className="animate-fade-in">
+      <PageHeader
+        breadcrumbs={<Breadcrumbs items={[{ label: "Studio", href: "/studio" }, { label: "New case" }]} />}
+        title="New teaching case"
+        description="Build the case the way you teach it — stem, diagnosis, pedagogy — then attach the study and record."
+      >
+        <Stepper steps={CASE_FLOW_STEPS} currentId={step} />
+      </PageHeader>
 
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {step === "details" ? (
-            <CaseDetailsForm
-              value={details}
-              onChange={patchDetails}
-              authors={authors}
-              showTitleError={titleAttempted}
-            />
+      <PageContainer width="narrow" className="pb-28">
+        <div className="mb-6 flex items-start gap-3 rounded-xl border border-info/30 bg-info/5 px-4 py-3">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-info" aria-hidden="true" />
+          <p className="text-xs leading-relaxed text-secondary">{guidance}</p>
+        </div>
+
+        {step === "details" ? (
+          loadingPickers ? (
+            <DetailsSkeleton />
           ) : (
-            <UploadStep
-              imagingOk={imagingOk}
-              setImagingOk={setImagingOk}
-              saving={saving}
-              studies={studies}
-              setStudies={setStudies}
-              onUploaded={handleUploaded}
-              updateStudy={updateStudy}
-              toggleSeries={toggleSeries}
-              setPrimary={(key, uid) => updateStudy(key, { primary: uid })}
-              totalImages={totalImages}
-              patientMode={patientMode}
-              setPatientMode={setPatientMode}
-              patientName={patientName}
-              setPatientName={setPatientName}
-              patientId={patientId}
-              setPatientId={setPatientId}
-              patients={patients}
-            />
+            <CaseDetailsForm value={details} onChange={patchDetails} authors={authors} showTitleError={titleAttempted} />
+          )
+        ) : (
+          <UploadStep
+            imagingOk={imagingOk}
+            setImagingOk={setImagingOk}
+            saving={saving}
+            studies={studies}
+            setStudies={setStudies}
+            onUploaded={handleUploaded}
+            updateStudy={updateStudy}
+            toggleSeries={toggleSeries}
+            setPrimary={(key, uid) => updateStudy(key, { primary: uid })}
+            totalImages={totalImages}
+            patientMode={patientMode}
+            setPatientMode={setPatientMode}
+            patientName={patientName}
+            setPatientName={setPatientName}
+            patientId={patientId}
+            setPatientId={setPatientId}
+            patients={patients}
+          />
+        )}
+      </PageContainer>
+
+      {/* Sticky footer actions — always visible so the arc's next step is one click away. */}
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-subtle bg-surface/95 backdrop-blur md:pl-60">
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-6 py-4 sm:px-8">
+          {step === "details" ? (
+            <>
+              <Button variant="ghost" onClick={cancel} disabled={saving}>
+                Cancel
+              </Button>
+              <Button onClick={goNext} trailingIcon={<ArrowRight className="h-4 w-4" />}>
+                Continue to upload
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={goBack} disabled={saving} leadingIcon={<ArrowLeft className="h-4 w-4" />}>
+                Back
+              </Button>
+              <Button onClick={createAndRecord} loading={saving} disabled={!patientValid}>
+                Create &amp; record findings
+              </Button>
+            </>
           )}
         </div>
       </div>
-    </Modal>
+    </div>
+  );
+}
+
+function DetailsSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      <Skeleton className="h-4 w-40" />
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-24 w-full" />
+      <Skeleton className="h-10 w-full" />
+    </div>
   );
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-
-function Stepper({ current }: { current: StepId }) {
-  const currentIdx = STEPS.findIndex((s) => s.id === current);
-  return (
-    <ol className="flex items-center gap-2" aria-label="Case creation steps">
-      {STEPS.map((s, i) => {
-        const done = i < currentIdx;
-        const active = i === currentIdx;
-        return (
-          <li key={s.id} className="flex min-w-0 flex-1 items-center gap-2">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <span
-                aria-current={active ? "step" : undefined}
-                className={cn(
-                  "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold tabular-nums transition-colors",
-                  done && "border-accent/40 bg-accent/15 text-accent",
-                  active && "border-accent bg-accent text-accent-foreground",
-                  !done && !active && "border-strong bg-elevated text-muted"
-                )}
-              >
-                {done ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : i + 1}
-              </span>
-              <div className="hidden min-w-0 flex-col leading-tight sm:flex">
-                <span
-                  className={cn(
-                    "truncate text-xs font-medium",
-                    active || done ? "text-primary" : "text-muted"
-                  )}
-                >
-                  {s.label}
-                </span>
-                <span className="truncate text-[10px] text-muted">{s.caption}</span>
-              </div>
-            </div>
-            {i < STEPS.length - 1 && (
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "h-px flex-1 transition-colors",
-                  i < currentIdx ? "bg-accent/40" : "bg-subtle"
-                )}
-              />
-            )}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
 
 function UploadStep({
   imagingOk,
@@ -401,9 +331,7 @@ function UploadStep({
   patients: Patient[];
 }) {
   const patientError =
-    patientMode === "existing" && patients.length === 0
-      ? "No patients yet — create a new one above."
-      : undefined;
+    patientMode === "existing" && patients.length === 0 ? "No patients yet — create a new one above." : undefined;
 
   return (
     <div className="flex flex-col gap-6">
@@ -469,35 +397,28 @@ function UploadStep({
             <div className="text-xs leading-relaxed text-secondary">
               <p className="font-medium text-primary">Imaging archive not connected</p>
               <p className="mt-0.5 text-muted">
-                You can still create the case and record against the sample study now — link a
-                real study later from the case&apos;s editor.
+                You can still create the case and record against the sample study now — link a real study later from
+                the case&apos;s editor.
               </p>
             </div>
           </div>
         ) : (
-          <DicomDropzone
-            onUploaded={onUploaded}
-            onImagingUnavailable={() => setImagingOk(false)}
-            disabled={saving}
-          />
+          <DicomDropzone onUploaded={onUploaded} onImagingUnavailable={() => setImagingOk(false)} disabled={saving} />
         )}
 
         {studies.length > 0 && (
           <div className="flex flex-col gap-3">
             {totalImages > 0 && (
               <p className="text-xs text-muted">
-                {studies.length} stud{studies.length === 1 ? "y" : "ies"} ·{" "}
-                <span className="tabular-nums">{totalImages}</span> image
-                {totalImages === 1 ? "" : "s"} uploaded
+                {studies.length} stud{studies.length === 1 ? "y" : "ies"} · <span className="tabular-nums">{totalImages}</span>{" "}
+                image{totalImages === 1 ? "" : "s"} uploaded
               </p>
             )}
             {studies.map((s) => (
               <div key={s.key} className="rounded-xl border border-subtle bg-surface p-4">
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-primary">
-                      {s.description}
-                    </div>
+                    <div className="truncate text-sm font-medium text-primary">{s.description}</div>
                     <div className="mt-0.5 flex items-center gap-2 text-xs text-muted">
                       <span>
                         {s.series.length} series · {s.selected.length} selected
@@ -584,14 +505,14 @@ function ModeToggle({
       onClick={onClick}
       disabled={disabled}
       aria-pressed={active}
-      className={cn(
-        "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-        "disabled:cursor-not-allowed disabled:opacity-40",
-        active
+      className={
+        "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors " +
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
+        "disabled:cursor-not-allowed disabled:opacity-40 " +
+        (active
           ? "border-accent/40 bg-accent/10 text-accent"
-          : "border-strong bg-elevated text-secondary hover:text-primary"
-      )}
+          : "border-strong bg-elevated text-secondary hover:text-primary")
+      }
     >
       {children}
     </button>

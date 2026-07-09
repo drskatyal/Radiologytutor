@@ -42,6 +42,7 @@ import {
 import { PageHeader } from "@/components/AppShell";
 import {
   Badge,
+  Breadcrumbs,
   Button,
   Card,
   EmptyState,
@@ -50,6 +51,7 @@ import {
   Input,
   Modal,
   Spinner,
+  Stepper,
   Textarea,
   useToast,
 } from "@/components/ui";
@@ -75,6 +77,7 @@ import {
   LIMITS,
 } from "@/components/author/lib";
 import { updateCase } from "@/components/admin/api";
+import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -354,7 +357,7 @@ export function RecordingStudio({
         title: "Case published",
         description: `"${updated.title}" is live for students.`,
       });
-      router.push(`/case/${encodeURIComponent(caseData.caseId)}`);
+      router.push(`/studio/cases/${encodeURIComponent(caseData.caseId)}`);
     } catch (e) {
       toast({
         variant: "danger",
@@ -366,10 +369,16 @@ export function RecordingStudio({
   }
 
   const published = caseData.status === "published";
+  const stepperStage = published ? "publish" : findings.length > 0 ? "publish" : "record";
 
   return (
     <div className="animate-fade-in">
       <PageHeader
+        breadcrumbs={
+          <Breadcrumbs
+            items={[{ label: "Studio", href: "/studio" }, { label: caseData.title, href: `/studio/cases/${encodeURIComponent(caseData.caseId)}` }, { label: "Record" }]}
+          />
+        }
         title={
           <span className="flex items-center gap-2.5">
             Recording studio
@@ -395,9 +404,9 @@ export function RecordingStudio({
               variant="ghost"
               size="sm"
               leadingIcon={<ArrowLeft className="h-4 w-4" />}
-              onClick={() => router.push(`/author?case=${encodeURIComponent(caseData.caseId)}`)}
+              onClick={() => router.push(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
             >
-              Editor
+              Save as draft &amp; exit
             </Button>
             <Button
               size="sm"
@@ -415,7 +424,9 @@ export function RecordingStudio({
             </Button>
           </div>
         }
-      />
+      >
+        <Stepper steps={CASE_FLOW_STEPS} currentId={stepperStage} />
+      </PageHeader>
 
       <div className="mx-auto grid max-w-[1500px] gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_400px]">
         {/* ── Capture stage ─────────────────────────────────────────────── */}
