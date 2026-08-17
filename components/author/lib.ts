@@ -2,10 +2,26 @@
 // calls the author UI makes. Every write goes through these so the page and
 // cards share one code path (optimistic update + toast happen at the call site).
 
-import type { CaseData, Finding, StructuredFinding } from "@/lib/types";
+import type { CaseData, Finding, Marker, RecordedTrack, StructuredFinding } from "@/lib/types";
 
 /** The structured (text) slice of a finding the author edits. */
 export type FindingDraft = StructuredFinding;
+
+/**
+ * Prefer the author's last recorded cursor as the teaching marker when they
+ * captured a walk-through but didn't click-to-annotate. Returns null if the
+ * track has no cursor samples.
+ */
+export function markerFromTrack(track: RecordedTrack | null | undefined): Marker | null {
+  if (!track?.events?.length) return null;
+  for (let i = track.events.length - 1; i >= 0; i--) {
+    const e = track.events[i];
+    if (e.type === "cursor") {
+      return { x_pct: e.x, y_pct: e.y, shape: "circle" };
+    }
+  }
+  return null;
+}
 
 /** Pull the editable structured fields out of a finding. */
 export function toDraft(f: Finding): FindingDraft {

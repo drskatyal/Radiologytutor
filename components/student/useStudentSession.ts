@@ -66,10 +66,18 @@ export interface ChatTurn {
 }
 
 interface ViewerAction {
-  type: "show_finding" | "next_in_tour" | "prev_in_tour" | "set_window" | "none";
+  type:
+    | "show_finding"
+    | "next_in_tour"
+    | "prev_in_tour"
+    | "set_window"
+    | "point_to"
+    | "none";
   findingId?: string;
   windowWidth?: number;
   windowCenter?: number;
+  x_pct?: number;
+  y_pct?: number;
 }
 
 let turnSeq = 0;
@@ -88,6 +96,8 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
 
   const [ready, setReady] = useState(false);
   const [replaying, setReplaying] = useState(false);
+  /** True while the AI laser is tweening to a marker (no recorded track). */
+  const [pointing, setPointing] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [marker, setMarker] = useState<Marker | null>(null);
   const [markerVisible, setMarkerVisible] = useState(false);
@@ -171,12 +181,30 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     }
     overlay.current?.clear();
     setReplaying(false);
+    setPointing(false);
+  }, []);
+
+  /** Animate the laser to a normalized point, then optionally land a marker. */
+  const pointLaser = useCallback(async (x: number, y: number, landMarker?: Marker) => {
+    if (!overlay.current?.animateTo) return;
+    setPointing(true);
+    setMarkerVisible(false);
+    try {
+      await overlay.current.animateTo(x, y, { durationMs: 900 });
+      if (landMarker) {
+        setMarker(landMarker);
+        setMarkerVisible(true);
+      }
+    } finally {
+      setPointing(false);
+    }
   }, []);
 
   // --- Drive the viewer to a finding ---------------------------------------
   // If the finding has a recorded `track`, replay it EXACTLY (retrace + laser
   // pointer overlay + the teacher's recorded narration audio). Otherwise fall
-  // back to the smooth showState animation to the finding's static view.
+  // back to the smooth showState animation, then tween the AI laser to the
+  // author's click marker.
   const revealFinding = useCallback(
     async (index: number) => {
       const finding = orderedFindings[index];
@@ -243,10 +271,15 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
 
       await controls.current.showState(view, 750);
       setActiveIndex(index);
-      setMarker(finding.marker ?? null);
-      setMarkerVisible(true);
+      const m = finding.marker ?? null;
+      if (m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
+        await pointLaser(m.x_pct, m.y_pct, m);
+      } else {
+        setMarker(m);
+        setMarkerVisible(true);
+      }
     },
-    [orderedFindings, stopReplay]
+    [orderedFindings, stopReplay, pointLaser]
   );
 
   // --- Execute a tutor viewer action ---------------------------------------
@@ -270,9 +303,31 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
             controls.current?.setWindow(action.windowWidth, action.windowCenter);
           }
           break;
+        case "point_to": {
+          let x = action.x_pct;
+          let y = action.y_pct;
+          let land: Marker | undefined;
+          if (action.findingId) {
+            const f = orderedFindings.find((item) => item.id === action.findingId);
+            if (f?.marker) {
+              x = f.marker.x_pct;
+              y = f.marker.y_pct;
+              land = f.marker;
+              const idx = orderedFindings.indexOf(f);
+              if (idx >= 0 && idx !== activeIndexRef.current) {
+                await revealFinding(idx);
+                return;
+              }
+            }
+          }
+          if (x != null && y != null && Number.isFinite(x) && Number.isFinite(y)) {
+            await pointLaser(x, y, land);
+          }
+          break;
+        }
       }
     },
-    [orderedFindings, revealFinding]
+    [orderedFindings, revealFinding, pointLaser]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -491,6 +546,7 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     overlay,
     ready,
     replaying,
+    pointing,
     activeIndex,
     marker,
     markerVisible,

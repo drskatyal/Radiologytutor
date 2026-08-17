@@ -218,12 +218,25 @@ export async function transcribeAudio(
 
 /** A viewer action the teaching plan may return for the frontend to execute. */
 export interface TeachingViewerAction {
-  /** show_finding (jump to a finding) | next_in_tour | prev_in_tour | none. */
-  type: "show_finding" | "next_in_tour" | "prev_in_tour" | "set_window" | "none";
+  /**
+   * show_finding | next_in_tour | prev_in_tour | set_window | point_to | none.
+   * point_to animates the laser pointer to normalized coords (or a finding's
+   * stored marker when findingId is set).
+   */
+  type:
+    | "show_finding"
+    | "next_in_tour"
+    | "prev_in_tour"
+    | "set_window"
+    | "point_to"
+    | "none";
   findingId?: string;
   /** For set_window: target VOI. */
   windowWidth?: number;
   windowCenter?: number;
+  /** For point_to: normalized [0,1] image coords. */
+  x_pct?: number;
+  y_pct?: number;
 }
 
 export interface TeachingTurn {
@@ -259,7 +272,7 @@ const TEACHING_TOOLS: FunctionDeclaration[] = [
   {
     name: "show_finding",
     description:
-      "Drive the viewer to a specific finding (animating camera/window/slice), reveal its marker, and narrate it. Use the finding's id.",
+      "Drive the viewer to a specific finding (animating camera/window/slice), reveal its marker with a laser pointer approach, and narrate it. Use the finding's id.",
     parameters: {
       type: "object",
       properties: { findingId: { type: "string", description: "Finding id, e.g. f1" } },
@@ -289,11 +302,24 @@ const TEACHING_TOOLS: FunctionDeclaration[] = [
       required: ["windowWidth", "windowCenter"],
     },
   },
+  {
+    name: "point_to",
+    description:
+      "Animate a laser pointer to a place on the current image. Prefer a findingId (uses that finding's stored click marker). Or pass x_pct/y_pct in [0,1] when pointing at something without a finding.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Optional finding whose marker to point at" },
+        x_pct: { type: "number", description: "Normalized X in [0,1]" },
+        y_pct: { type: "number", description: "Normalized Y in [0,1]" },
+      },
+    },
+  },
 ];
 
 function teachingSystemPrompt(input: TeachingPlanInput): string {
   const base = `You are a warm, expert radiology tutor guiding a student through the case "${input.caseTitle}" (${input.modality}).
-You drive a self-hosted medical image viewer ONLY through these tools: show_finding, next_in_tour, prev_in_tour, set_window.
+You drive a self-hosted medical image viewer ONLY through these tools: show_finding, next_in_tour, prev_in_tour, set_window, point_to.
 You cannot see the pixels yourself — reason from the finding list below.
 ${input.currentFindingId ? `The student is currently viewing finding id=${input.currentFindingId}.` : ""}
 
@@ -301,7 +327,8 @@ Findings (in tour order):
 ${input.findingsContext}
 
 Rules:
-- When the student should see something, CALL the matching tool AND narrate in the same turn.
+- When the student should SEE something, CALL the matching tool AND narrate in the same turn.
+- Prefer show_finding (it animates the view and points the laser at the author's click). Use point_to to re-emphasize a location without changing findings.
 - Narration: 1-3 spoken sentences, warm exam-room tone, suitable for text-to-speech — no markdown, no bullet symbols, never speak IDs aloud.
 - Match free-text requests ("show me the effusion") to the closest finding and call show_finding.`;
 
@@ -350,6 +377,20 @@ function toAction(call?: { name: string; args: Record<string, unknown> }): Teach
         windowWidth: Number(call.args.windowWidth),
         windowCenter: Number(call.args.windowCenter),
       };
+    case "point_to": {
+      const findingId =
+        call.args.findingId != null ? String(call.args.findingId) : undefined;
+      const x =
+        call.args.x_pct != null ? Number(call.args.x_pct) : undefined;
+      const y =
+        call.args.y_pct != null ? Number(call.args.y_pct) : undefined;
+      return {
+        type: "point_to",
+        findingId,
+        x_pct: Number.isFinite(x) ? x : undefined,
+        y_pct: Number.isFinite(y) ? y : undefined,
+      };
+    }
     default:
       return { type: "none" };
   }

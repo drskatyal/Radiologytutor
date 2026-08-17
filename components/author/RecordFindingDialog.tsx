@@ -37,7 +37,7 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
-import { LIMITS, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
+import { LIMITS, markerFromTrack, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
   open: boolean;
@@ -200,15 +200,15 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
     setSaving(true);
     setError("");
     try {
+      const trackMarker = hasTrack ? markerFromTrack(rr.track as RecordedTrack) : null;
       const base: Partial<Finding> = {
         label: draft.label.trim(),
         description: draft.description.trim(),
         teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
-        // A finding needs a state + marker to be valid. When a track exists it's
-        // the real flow; otherwise a placeholder state + centre marker suffice
-        // (the author can record/refine the viewer flow later).
+        // A finding needs a state + marker to be valid. Prefer last cursor from
+        // the walk-through; otherwise a centre placeholder (author can refine).
         state: " ",
-        marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+        marker: trackMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
       };
 
       if (hasTrack) {
@@ -224,6 +224,12 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         }
         base.track = track;
         base.durationMs = track.durationMs;
+      }
+
+      const active = series[activeSeriesIndex];
+      if (active && active.seriesInstanceUID !== BUNDLED_CASE_SERIES[0]?.seriesInstanceUID) {
+        base.seriesInstanceUID = active.seriesInstanceUID;
+        base.studyInstanceUID = active.studyInstanceUID;
       }
 
       await onCreate(base);

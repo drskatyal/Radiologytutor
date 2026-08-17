@@ -28,6 +28,10 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       track: body.track,
       durationMs: body.durationMs,
       order: body.order ?? 0,
+      // Series/study anchors — drive student series switch + prefetch.
+      studyInstanceUID: body.studyInstanceUID,
+      seriesInstanceUID: body.seriesInstanceUID,
+      sopInstanceUIDs: body.sopInstanceUIDs,
     };
     const updated = await addFinding(params.caseId, finding);
     return NextResponse.json(updated);

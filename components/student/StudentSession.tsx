@@ -182,7 +182,7 @@ export default function StudentSession({
           marker={s.marker}
           // Markers belong to the real study — never paint them on a sample.
           markerVisible={s.markerVisible && imagingResolved}
-          replaying={s.replaying}
+          replaying={s.replaying || s.pointing}
           ready={s.ready}
         />
 
@@ -263,7 +263,7 @@ export default function StudentSession({
             series={series}
             caseModality={caseData.modality}
             activeIndex={s.activeIndex}
-            replaying={s.replaying}
+            replaying={s.replaying || s.pointing}
             busy={s.busy}
             ready={s.ready}
             onSelect={s.goTo}

@@ -332,7 +332,7 @@ export default function CornerstoneViewer({
 
         await core.init();
         await tools.init();
-        await loader.init({ maxWebWorkers: 1 });
+        await loader.init({ maxWebWorkers: 4 });
 
         setStatus("Loading series…");
         const imageIds = await buildImageIds(initialSource);

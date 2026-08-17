@@ -47,7 +47,7 @@ export function StudentViewer({
   onReady: (c: CornerstoneControls) => void;
   marker: Marker | null;
   markerVisible: boolean;
-  /** True while a recorded finding track is retracing. */
+  /** True while a recorded finding track is retracing OR the AI laser is tweening. */
   replaying: boolean;
   ready: boolean;
 }) {
@@ -70,8 +70,7 @@ export function StudentViewer({
         {marker && <FindingMarker marker={marker} visible={markerVisible} />}
       </div>
 
-      {/* Animated replay overlay — laser pointer + annotation draw-in during a
-          recorded track retrace. Non-interactive layer over the viewer. */}
+      {/* Animated replay / AI pointer overlay — laser + annotation draw-in. */}
       <ReplayOverlay
         ref={(h) => {
           overlay.current = h;

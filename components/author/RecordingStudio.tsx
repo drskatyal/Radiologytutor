@@ -1,26 +1,19 @@
 "use client";
 
-// RecordingStudio — the full-page PACS recording surface (V1's core).
+// RecordingStudio — the full-page PACS authoring surface.
 //
-// A reading-room-dense layout: the multi-series Cornerstone viewer + the
-// SeriesNavigator rail on the left, and a per-finding capture column on the
-// right. The author scrolls / windows / pans and HOLDS Alt+X (or presses the
-// Record button) to record a finding. WHILE RECORDING a recording-flow animation
-// frames the ENTIRE viewer — a pulsing accent ring + glow and a REC chip with
-// live elapsed time — so it is unmistakable that capture is live.
+// Primary loop (fast, 3–5 min per case):
+//   navigate the study → CLICK the finding → popover opens → dictate with mic →
+//   Gemini structures {label, description, teachingPoints} into the fields →
+//   save with a real normalized marker + series anchor.
 //
-// On stop we:
-//   1. transcribe + structure the narration (Gemini) → {label, description,
-//      teachingPoints}; graceful no-key fallback to manual entry,
-//   2. persist the narration audio (durable URL),
-//   3. create a Finding with its `track` + `audioUrl`, anchored to the ACTIVE
-//      series (so replay/student playback switch to the right series).
+// Secondary loop (optional demo recording):
+//   Hold Alt+X / Record to capture a narrated walk-through (cursor + viewer
+//   events). Students retrace that track; without a track they still get the
+//   AI laser tween to the click marker.
 //
-// Captured findings show as a list with replay (reuse lib/replay via the shared
-// record/replay hook), re-record, edit and delete. Then the author publishes.
-//
-// This ELEVATES the existing RecordFindingDialog logic into a full surface; the
-// /record demo is untouched.
+// WHILE RECORDING a pulsing frame marks the viewer live. Captured findings
+// list with replay / re-record / edit / delete. Then publish.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -28,6 +21,7 @@ import {
   ArrowLeft,
   Check,
   Circle,
+  Crosshair,
   Mic,
   Pencil,
   Play,
@@ -54,6 +48,7 @@ import {
   Stepper,
   Textarea,
   useToast,
+  type MicState,
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import {
@@ -62,14 +57,24 @@ import {
   caseSeriesToSource,
   type CaseSeries,
 } from "@/lib/viewerSource";
-import type { CaseData, Finding, RecordedTrack, StructuredFinding } from "@/lib/types";
+import type {
+  CaseData,
+  Finding,
+  Marker,
+  MarkerShape,
+  RecordedTrack,
+  StructuredFinding,
+} from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
+import { useRecorder } from "@/components/useRecorder";
+import { AnnotatePopover } from "@/components/author/AnnotatePopover";
 import {
   addFinding,
   deleteFinding,
+  markerFromTrack,
   patchFinding,
   reorderFindings,
   structureFindingFromAudio,
@@ -105,10 +110,21 @@ export function RecordingStudio({
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
   const rr = useRecordReplay({ controls, overlay, ready });
+  const annotateRecorder = useRecorder();
 
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
 
-  // Capture / structuring state for the IN-PROGRESS finding.
+  // Click-to-annotate: pending marker + popover draft (primary authoring path).
+  const [pendingMarker, setPendingMarker] = useState<Marker | null>(null);
+  const [annotateDraft, setAnnotateDraft] = useState<StructuredFinding>(EMPTY_DRAFT);
+  const [annotateMic, setAnnotateMic] = useState<MicState>("idle");
+  const [annotateStructuring, setAnnotateStructuring] = useState(false);
+  const [annotateSaving, setAnnotateSaving] = useState(false);
+  const [annotateNotice, setAnnotateNotice] = useState("");
+  const [annotateTranscript, setAnnotateTranscript] = useState("");
+  const [annotateMode, setAnnotateMode] = useState(true);
+
+  // Capture / structuring state for the OPTIONAL walk-through recording path.
   const [draft, setDraft] = useState<StructuredFinding>(EMPTY_DRAFT);
   const [structuring, setStructuring] = useState(false);
   const [savingFinding, setSavingFinding] = useState(false);
@@ -174,7 +190,127 @@ export function RecordingStudio({
   // The active series UID — anchors the finding so playback opens on it.
   const activeSeries = series[activeSeriesIndex];
 
+  function closeAnnotate() {
+    setPendingMarker(null);
+    setAnnotateDraft(EMPTY_DRAFT);
+    setAnnotateMic("idle");
+    setAnnotateStructuring(false);
+    setAnnotateSaving(false);
+    setAnnotateNotice("");
+    setAnnotateTranscript("");
+  }
+
+  function onAnnotateClick(x: number, y: number) {
+    if (rr.phase !== "idle") return;
+    setPendingMarker({ x_pct: x, y_pct: y, shape: "circle" });
+    setAnnotateDraft(EMPTY_DRAFT);
+    setAnnotateNotice("");
+    setAnnotateTranscript("");
+    setAnnotateMic("idle");
+  }
+
+  async function onAnnotateMicStart() {
+    try {
+      await annotateRecorder.start();
+      setAnnotateMic("recording");
+      setAnnotateNotice("");
+    } catch {
+      toast({
+        variant: "warning",
+        title: "Microphone blocked",
+        description: "Allow mic access to dictate, or type the fields below.",
+      });
+    }
+  }
+
+  async function onAnnotateMicStop() {
+    setAnnotateMic("processing");
+    const rec = await annotateRecorder.stop();
+    if (!rec) {
+      setAnnotateMic("idle");
+      return;
+    }
+    setAnnotateStructuring(true);
+    try {
+      const result = await structureFindingFromAudio(rec.base64, rec.mimeType);
+      if (result) {
+        setAnnotateDraft(result);
+        setAnnotateTranscript(result.description || result.label);
+        setAnnotateNotice("Structured from your dictation — review and save.");
+      } else {
+        setAnnotateNotice(
+          "AI structuring is off (no Gemini key). Type the finding below."
+        );
+      }
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't structure dictation",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setAnnotateStructuring(false);
+      setAnnotateMic("idle");
+    }
+  }
+
+  /** Persist a click-annotated finding (marker is required). */
+  async function saveAnnotatedFinding() {
+    if (!pendingMarker || !annotateDraft.label.trim() || annotateSaving) return;
+    setAnnotateSaving(true);
+    try {
+      const base: Partial<Finding> = {
+        label: annotateDraft.label.trim(),
+        description: annotateDraft.description.trim(),
+        teachingPoints: annotateDraft.teachingPoints
+          .map((p) => p.trim())
+          .filter(Boolean),
+        state: " ",
+        marker: pendingMarker,
+      };
+      if (activeSeries && !usingSample) {
+        base.seriesInstanceUID = activeSeries.seriesInstanceUID;
+        base.studyInstanceUID = activeSeries.studyInstanceUID;
+      }
+      // Optional: attach a walk-through recorded just before annotate.
+      if (hasTrack) {
+        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
+        if (rr.audio) {
+          try {
+            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
+          } catch {
+            /* keep silent retrace */
+          }
+        }
+        base.track = track;
+        base.durationMs = track.durationMs;
+      }
+
+      const updated =
+        editingFindingId != null
+          ? await patchFinding(caseData.caseId, editingFindingId, base)
+          : await addFinding(caseData.caseId, base);
+      setCaseData(updated);
+      toast({
+        variant: "success",
+        title: editingFindingId ? "Finding updated" : "Finding captured",
+      });
+      closeAnnotate();
+      resetCapture();
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't save finding",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setAnnotateSaving(false);
+    }
+  }
+
   async function beginRecording() {
+    closeAnnotate();
+    setAnnotateMode(false);
     setNotice("");
     await rr.startRecording();
     const perms = (navigator as Navigator & { permissions?: Permissions }).permissions;
@@ -212,17 +348,24 @@ export function RecordingStudio({
     }
   }
 
-  /** Persist the captured finding (create new, or patch the one we re-recorded). */
+  /** Persist a walk-through finding. Prefer attaching a click marker if set. */
   async function saveFinding() {
     if (!canSaveDraft || savingFinding) return;
     setSavingFinding(true);
     try {
+      const marker: Marker =
+        pendingMarker ??
+        markerFromTrack(hasTrack ? (rr.track as RecordedTrack) : null) ?? {
+          x_pct: 0.5,
+          y_pct: 0.5,
+          shape: "circle",
+        };
       const base: Partial<Finding> = {
         label: draft.label.trim(),
         description: draft.description.trim(),
         teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
         state: " ",
-        marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+        marker,
       };
 
       if (hasTrack) {
@@ -254,6 +397,7 @@ export function RecordingStudio({
         variant: "success",
         title: editingFindingId ? "Finding re-recorded" : "Finding captured",
       });
+      closeAnnotate();
       resetCapture();
     } catch (e) {
       toast({
@@ -271,6 +415,7 @@ export function RecordingStudio({
     setDraft(EMPTY_DRAFT);
     setEditingFindingId(null);
     setNotice("");
+    setAnnotateMode(true);
   }
 
   /** Replay an already-saved finding's track over the live viewer. */
@@ -381,7 +526,7 @@ export function RecordingStudio({
         }
         title={
           <span className="flex items-center gap-2.5">
-            Recording studio
+            Annotate &amp; teach
             <Badge variant="accent" dot>
               {usingSample ? "Sample study" : "Live study"}
             </Badge>
@@ -394,7 +539,8 @@ export function RecordingStudio({
             <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
             <span className="text-xs text-muted">·</span>
             <span className="text-xs text-muted">
-              {findings.length} finding{findings.length === 1 ? "" : "s"} captured
+              Click → dictate → save · {findings.length} finding
+              {findings.length === 1 ? "" : "s"}
             </span>
           </span>
         }
@@ -458,18 +604,61 @@ export function RecordingStudio({
                 onReady={onReady}
                 onEvent={rr.onViewerEvent}
                 onCursor={rr.onCursor}
+                annotateMode={annotateMode && !pendingMarker}
+                onAnnotateClick={onAnnotateClick}
+                annotateSlot={
+                  pendingMarker ? (
+                    <AnnotatePopover
+                      marker={pendingMarker}
+                      draft={annotateDraft}
+                      onDraftChange={setAnnotateDraft}
+                      micState={annotateMic}
+                      micSupported={annotateRecorder.supported}
+                      structuring={annotateStructuring}
+                      saving={annotateSaving}
+                      notice={annotateNotice}
+                      transcript={annotateTranscript}
+                      onMicStart={onAnnotateMicStart}
+                      onMicStop={onAnnotateMicStop}
+                      onShapeChange={(shape: MarkerShape) =>
+                        setPendingMarker((m) => (m ? { ...m, shape } : m))
+                      }
+                      onSave={saveAnnotatedFinding}
+                      onCancel={closeAnnotate}
+                    />
+                  ) : null
+                }
               />
             </div>
           </div>
 
           {/* Transport controls */}
           <Card padded={false} className="mt-4 p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant={annotateMode && !recording ? "secondary" : "ghost"}
+                leadingIcon={<Crosshair className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  if (recording) return;
+                  closeAnnotate();
+                  setAnnotateMode(true);
+                }}
+                disabled={recording || rr.phase === "replaying"}
+              >
+                Click to annotate
+              </Button>
+              <span className="text-xs text-muted">or</span>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
                 <Button
                   variant="danger"
                   leadingIcon={<Square className="h-4 w-4" />}
-                  onClick={() => rr.stopRecording()}
+                  onClick={() => {
+                    rr.stopRecording();
+                    setAnnotateMode(true);
+                  }}
                 >
                   Stop recording
                 </Button>
@@ -487,7 +676,7 @@ export function RecordingStudio({
                   onClick={beginRecording}
                   disabled={!ready || mic === "unsupported"}
                 >
-                  {hasTrack ? "Re-record" : "Record finding"}
+                  {hasTrack ? "Re-record walk-through" : "Record walk-through"}
                 </Button>
               )}
 
@@ -522,7 +711,8 @@ export function RecordingStudio({
             {/* Hotkey hint */}
             {rr.phase === "idle" && !micBlocked && (
               <p className="mt-3 text-xs text-muted">
-                Navigate the viewer and hold{" "}
+                <span className="font-medium text-secondary">Fast path:</span> click the
+                finding, dictate, save. Optional: hold{" "}
                 <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                   Alt
                 </kbd>
@@ -530,14 +720,14 @@ export function RecordingStudio({
                 <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                   X
                 </kbd>{" "}
-                to record while you narrate. The hotkey is ignored while you type.
+                to record a narrated walk-through students can retrace.
               </p>
             )}
             {micBlocked && (
               <p className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-secondary">
                 {mic === "unsupported"
-                  ? "This browser can't record audio — you can still type each finding below and save it."
-                  : "Microphone access is blocked. Allow it in your browser's address bar to narrate, or type the finding below."}
+                  ? "This browser can't record audio — you can still click to place a marker and type each finding."
+                  : "Microphone access is blocked. Allow it in your browser's address bar to dictate, or type the finding after clicking."}
               </p>
             )}
           </Card>
@@ -545,7 +735,7 @@ export function RecordingStudio({
 
         {/* ── Capture column ────────────────────────────────────────────── */}
         <div className="flex min-w-0 flex-col gap-4">
-          {/* Current-capture editor */}
+          {/* Current-capture editor (walk-through path) */}
           <Card padded={false} className="p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
@@ -557,7 +747,7 @@ export function RecordingStudio({
                 ) : (
                   <>
                     <Mic className="h-4 w-4 text-accent" aria-hidden="true" />
-                    Capture finding
+                    Walk-through capture
                   </>
                 )}
               </h2>
@@ -567,6 +757,13 @@ export function RecordingStudio({
                 </Button>
               )}
             </div>
+
+            <p className="mb-3 text-xs text-muted">
+              Prefer{" "}
+              <span className="font-medium text-secondary">click → dictate</span> on
+              the image. Use this panel when you recorded an Alt+X walk-through and
+              want to attach structured text to it.
+            </p>
 
             {notice && (
               <p className="mb-3 rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
@@ -617,11 +814,11 @@ export function RecordingStudio({
                 disabled={!canSaveDraft}
                 leadingIcon={<Plus className="h-4 w-4" />}
               >
-                {editingFindingId ? "Save re-recording" : "Add to teaching sequence"}
+                {editingFindingId ? "Save re-recording" : "Add walk-through to sequence"}
               </Button>
               {!canSaveDraft && (
                 <p className="text-center text-[11px] text-muted">
-                  Record a walk-through and give the finding a label to save it.
+                  Click the image to annotate, or record a walk-through and add a label.
                 </p>
               )}
             </div>
@@ -641,7 +838,7 @@ export function RecordingStudio({
             {findings.length === 0 ? (
               <EmptyState
                 title="No findings captured yet"
-                description="Hold Alt+X over the viewer to record your first narrated finding."
+                description="Click on the finding in the viewer, dictate with the mic, and save. Aim for the whole case in a few minutes."
               />
             ) : (
               <ul className="flex flex-col gap-2">
@@ -756,12 +953,16 @@ function CapturedFindingRow({
             {finding.label || "Untitled finding"}
           </p>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <Badge variant="neutral">
+              {(finding.marker.x_pct * 100).toFixed(0)}%,{" "}
+              {(finding.marker.y_pct * 100).toFixed(0)}%
+            </Badge>
             {hasTrack ? (
               <Badge variant={voiced ? "success" : "neutral"}>
                 {dur}s {voiced ? "· voice" : "· silent"}
               </Badge>
             ) : (
-              <Badge variant="warning">No recording</Badge>
+              <Badge variant="accent">Marked</Badge>
             )}
             {finding.teachingPoints.length > 0 && (
               <Badge variant="neutral">

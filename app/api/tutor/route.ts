@@ -6,7 +6,7 @@
 // This runs the TEACHING PLAN: given the case + findings context and the
 // student's (already-transcribed) question, Gemini returns the spoken answer
 // plus an optional viewer action (show_finding / next_in_tour / prev_in_tour /
-// set_window) that the FRONTEND executes to drive our self-hosted viewer.
+// set_window / point_to) that the FRONTEND executes to drive our self-hosted viewer.
 //
 // Transcription is a SEPARATE call (/api/transcribe) — we never merge them.
 // `messages` is the prior chat history; `question` is the current turn (when
@@ -23,11 +23,17 @@ function findingsContext(data: CaseData): string {
   return data.findings
     .slice()
     .sort((a, b) => a.order - b.order)
-    .map(
-      (f) =>
+    .map((f) => {
+      const marker =
+        f.marker && Number.isFinite(f.marker.x_pct) && Number.isFinite(f.marker.y_pct)
+          ? ` | marker@(${f.marker.x_pct.toFixed(2)},${f.marker.y_pct.toFixed(2)})`
+          : "";
+      return (
         `- id=${f.id} | order=${f.order} | ${f.label}: ${f.description}` +
-        (f.teachingPoints.length ? ` | teaching: ${f.teachingPoints.join("; ")}` : "")
-    )
+        (f.teachingPoints.length ? ` | teaching: ${f.teachingPoints.join("; ")}` : "") +
+        marker
+      );
+    })
     .join("\n");
 }
 
