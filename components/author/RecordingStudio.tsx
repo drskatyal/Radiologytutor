@@ -71,6 +71,7 @@ import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
 import { AnnotatePopover } from "@/components/author/AnnotatePopover";
+import { ContinuousCapture } from "@/components/author/ContinuousCapture";
 import {
   addFinding,
   deleteFinding,
@@ -259,6 +260,7 @@ export function RecordingStudio({
     if (!pendingMarker || !annotateDraft.label.trim() || annotateSaving) return;
     setAnnotateSaving(true);
     try {
+      const start = controls.current?.getStartState();
       const base: Partial<Finding> = {
         label: annotateDraft.label.trim(),
         description: annotateDraft.description.trim(),
@@ -267,6 +269,21 @@ export function RecordingStudio({
           .filter(Boolean),
         state: " ",
         marker: pendingMarker,
+        sliceIndex: start?.sliceIndex,
+        anchors: [
+          {
+            studyInstanceUID:
+              activeSeries && !usingSample ? activeSeries.studyInstanceUID : undefined,
+            seriesInstanceUID:
+              activeSeries && !usingSample
+                ? activeSeries.seriesInstanceUID
+                : controls.current?.activeSeriesUID,
+            sliceIndex: start?.sliceIndex,
+            marker: pendingMarker,
+            viewportRole: "primary",
+            studyRole: "current",
+          },
+        ],
       };
       if (activeSeries && !usingSample) {
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
@@ -735,6 +752,17 @@ export function RecordingStudio({
 
         {/* ── Capture column ────────────────────────────────────────────── */}
         <div className="flex min-w-0 flex-col gap-4">
+          <ContinuousCapture
+            caseId={caseData.caseId}
+            rr={rr}
+            controls={controls}
+            seriesInstanceUID={
+              !usingSample ? activeSeries?.seriesInstanceUID : undefined
+            }
+            studyInstanceUID={!usingSample ? activeSeries?.studyInstanceUID : undefined}
+            onCaseUpdated={setCaseData}
+          />
+
           {/* Current-capture editor (walk-through path) */}
           <Card padded={false} className="p-4">
             <div className="mb-3 flex items-center justify-between gap-2">

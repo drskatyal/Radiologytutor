@@ -14,24 +14,28 @@ authored evidence.
 
 ## Authoring loop (target ≤ 5 minutes per case)
 
-1. Open the study in the Cornerstone stage.
-2. Scroll / window to the slice.
-3. **Click** the finding → marker + popover.
-4. **Dictate** with the mic → Gemini Flash returns `{ label, description, teachingPoints }`.
-5. Review fields → **Save**. Marker is stored as normalized `[0,1]`.
-6. Optional: Alt+X walk-through for a full cursor + VOI retrace students can replay.
+**Path A — Speak once (preferred for multi-finding cases):**
+1. Start continuous capture (mic).
+2. Scroll / window / click while narrating every finding in one take.
+3. Stop → Gemini returns transcript + segmented JSON findings with time ranges.
+4. Review editable fields (label / description / teaching points) + suggested
+   marker/slice → Save all. Each finding stores anchors (series/slice/marker).
 
-Do not force a side-panel form as the primary path. The image is the workspace;
-the popover is temporary.
+**Path B — Click → dictate (single finding):**
+1. Click the finding → marker + popover.
+2. Dictate → Gemini fills fields.
+3. Save with real `[0,1]` marker + series/slice.
 
-## Student teaching loop
+Optional Alt+X walk-through remains for an exact cursor retrace.
 
-1. Viewer opens on finding 1.
-2. If a recorded track exists → exact event replay + teacher audio + laser trail.
-3. Else → camera tween, then **synthetic laser** approaches the stored marker.
-4. Learner asks by voice (STT → tutor → TTS). Tutor tools: `show_finding`,
-   `next_in_tour`, `prev_in_tour`, `set_window`, `point_to`.
-5. Chat turns always show transcript then answer.
+## Student teaching loop (viva)
+
+1. Full-bleed viewer; tutor rail collapsed by default.
+2. Floating mic + progress dots; Space = push-to-talk.
+3. Examiner AI speaks + drives viewer (`show_finding` / `point_to` / W/L).
+4. Web-grounded questions when guidelines are needed.
+5. Viva/guided: auto-advance to the next finding after TTS ends.
+6. Expand rail for lesson cards / full transcript when wanted.
 
 ## Visual language (reading room)
 

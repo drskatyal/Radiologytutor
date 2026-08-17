@@ -251,7 +251,7 @@ export interface TeachingPlanInput {
   history: TeachingTurn[];
   caseTitle: string;
   modality: string;
-  mode: "guided" | "socratic" | "free" | "reporting";
+  mode: "guided" | "socratic" | "free" | "reporting" | "viva";
   /** Compact, ordered finding context the tutor reasons over. */
   findingsContext: string;
   /** The finding the student is currently looking at (for "what is this?"). */
@@ -354,6 +354,17 @@ Rules:
 If the trainee offers their own report or dictation, critique it constructively: what was strong, what was missing or imprecise, and how to phrase it better — then model the improved version.
 When citing current guidance (e.g. reporting standards, lexicons such as BI-RADS/Lung-RADS, follow-up recommendations), ground it in authoritative web sources.
 You may still drive the viewer with show_finding/next_in_tour to point at what you are describing.`
+    );
+  }
+  if (input.mode === "viva") {
+    return (
+      base +
+      `\n\nMODE: VIVA (oral examiner). You are an attending running a short viva on this case.
+- Ask ONE focused question at a time, then wait for the student's answer on the next turn.
+- After they answer, briefly affirm or correct, CALL show_finding or point_to to the evidence, then either probe deeper OR call next_in_tour when that finding is done.
+- Prefer current guidelines when relevant — use web grounding and cite sources.
+- Keep spoken turns short (1-3 sentences). Never dump the whole case at once.
+- When starting ("Begin the session." / empty), open with a stem question about the first finding and call show_finding for it.`
     );
   }
   return (

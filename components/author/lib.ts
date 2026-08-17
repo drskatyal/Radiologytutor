@@ -2,7 +2,14 @@
 // calls the author UI makes. Every write goes through these so the page and
 // cards share one code path (optimistic update + toast happen at the call site).
 
-import type { CaseData, Finding, Marker, RecordedTrack, StructuredFinding } from "@/lib/types";
+import type {
+  CaseData,
+  Finding,
+  Marker,
+  RecordedTrack,
+  StructuredFinding,
+  StructuredSession,
+} from "@/lib/types";
 
 /** The structured (text) slice of a finding the author edits. */
 export type FindingDraft = StructuredFinding;
@@ -211,6 +218,32 @@ export async function structureFindingFromAudio(
 ): Promise<StructuredFinding | null> {
   try {
     return await structureRequest({ audioBase64: base64, audioMime: mime });
+  } catch (e) {
+    if (e instanceof AiUnavailableError) return null;
+    throw e;
+  }
+}
+
+/** Continuous take → transcript + ordered findings with time ranges. */
+export async function structureSession(input: {
+  audioBase64?: string;
+  audioMime?: string;
+  transcript?: string;
+  durationMs: number;
+  track?: RecordedTrack;
+}): Promise<StructuredSession | null> {
+  try {
+    const res = await fetch("/api/structure-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (looksLikeMissingKey(res.status, data?.error)) throw new AiUnavailableError();
+      throw new Error(data?.error || "Failed to structure session");
+    }
+    return data as StructuredSession;
   } catch (e) {
     if (e instanceof AiUnavailableError) return null;
     throw e;

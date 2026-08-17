@@ -95,6 +95,8 @@ export async function playKeyframes(
 
 /** A normalized, viewer-agnostic view the Cornerstone viewport can apply. */
 export interface CornerstoneViewerState {
+  /** Absolute 0-based stack index. Takes precedence over sliceFraction. */
+  sliceIndex?: number;
   /** Slice to show, as a fraction [0,1] of the stack (resolved to an index by
    *  the viewer, which knows the actual image count). Absent = keep current. */
   sliceFraction?: number;

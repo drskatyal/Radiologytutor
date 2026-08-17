@@ -667,12 +667,18 @@ export default function CornerstoneViewer({
           cancelTweenRef.current();
 
           // Slice change snaps (a new slice must be decoded) before the tween.
-          if (state.sliceFraction != null) {
+          if (state.sliceIndex != null || state.sliceFraction != null) {
             const ids = vp.getImageIds();
-            const idx = Math.max(
-              0,
-              Math.min(ids.length - 1, Math.round(state.sliceFraction * (ids.length - 1)))
-            );
+            const idx =
+              state.sliceIndex != null
+                ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
+                : Math.max(
+                    0,
+                    Math.min(
+                      ids.length - 1,
+                      Math.round((state.sliceFraction as number) * (ids.length - 1))
+                    )
+                  );
             if (idx !== vp.getCurrentImageIdIndex()) {
               await vp.setImageIdIndex(idx);
             }

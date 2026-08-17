@@ -25,7 +25,7 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, Marker } from "@/lib/types";
 
-export type SessionMode = "guided" | "socratic" | "free" | "reporting";
+export type SessionMode = "guided" | "socratic" | "free" | "reporting" | "viva";
 
 /** The agent orb's visible mood (mirrors AgentOrb's OrbState). */
 export type OrbState = "idle" | "listening" | "thinking" | "searching" | "speaking";
@@ -263,11 +263,14 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         return;
       }
 
-      // No track: spread findings across the stack by tour order as a slice
-      // hint, then refine from the finding's recorded camera/VOI when available.
+      // No track: prefer an authored sliceIndex; else spread by tour order.
       const total = Math.max(1, orderedFindings.length);
       const sliceHint = total > 1 ? index / (total - 1) : 0.5;
-      const view = (await findingViewerState(finding, sliceHint)) ?? { sliceFraction: sliceHint };
+      let view =
+        (await findingViewerState(finding, sliceHint)) ?? { sliceFraction: sliceHint };
+      if (finding.sliceIndex != null && Number.isFinite(finding.sliceIndex)) {
+        view = { ...view, sliceIndex: finding.sliceIndex };
+      }
 
       await controls.current.showState(view, 750);
       setActiveIndex(index);
@@ -387,6 +390,18 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
           speak(answer, () => {
             setSpeakingTurnId((cur) => (cur === id ? null : cur));
             setPhase((p) => (p === "speaking" ? "idle" : p));
+            // Viva / guided: after the examiner finishes speaking, advance to
+            // the next finding so teaching feels continuous (unless already
+            // on the last finding). Barge-in clears speakingTurnId first.
+            if (mode === "viva" || mode === "guided") {
+              const cur = activeIndexRef.current;
+              if (cur >= 0 && cur < orderedFindings.length - 1) {
+                window.setTimeout(() => {
+                  if (abortRef.current?.signal.aborted) return;
+                  void revealFinding(cur + 1);
+                }, 900);
+              }
+            }
           });
         } else {
           setPhase("idle");
@@ -400,7 +415,7 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         setPhase("idle");
       }
     },
-    [caseData.caseId, mode, orderedFindings, executeAction, toast]
+    [caseData.caseId, mode, orderedFindings, executeAction, toast, revealFinding]
   );
 
   // --- Typed question: straight to CALL 2 ----------------------------------

@@ -32,6 +32,12 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       studyInstanceUID: body.studyInstanceUID,
       seriesInstanceUID: body.seriesInstanceUID,
       sopInstanceUIDs: body.sopInstanceUIDs,
+      sopInstanceUID: body.sopInstanceUID,
+      sliceIndex: body.sliceIndex,
+      anchors: body.anchors,
+      captureSessionId: body.captureSessionId,
+      tStartMs: body.tStartMs,
+      tEndMs: body.tEndMs,
     };
     const updated = await addFinding(params.caseId, finding);
     return NextResponse.json(updated);

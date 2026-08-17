@@ -57,7 +57,8 @@ export async function POST(req: NextRequest) {
       | "guided"
       | "socratic"
       | "free"
-      | "reporting";
+      | "reporting"
+      | "viva";
     const messages = (body.messages ?? []) as InMessage[];
     const currentFindingId = body.currentFindingId
       ? String(body.currentFindingId)

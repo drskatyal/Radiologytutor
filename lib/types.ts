@@ -57,6 +57,42 @@ export interface Marker {
 }
 
 /**
+ * One concrete landing of a finding on pixels. A single logical Finding can
+ * have several anchors (axial + coronal, or current CT + prior MRI). The
+ * student tutor drives the matching series/slice and points the laser at
+ * `marker`. Side-by-side compare uses `viewportRole`.
+ */
+export interface FindingAnchor {
+  studyInstanceUID?: string;
+  seriesInstanceUID?: string;
+  /** Exact SOP when known (preferred over sliceIndex for prefetch). */
+  sopInstanceUID?: string;
+  /** 0-based stack index within the series (Cornerstone imageId index). */
+  sliceIndex?: number;
+  marker: Marker;
+  /** Which pane in a multi-viewport layout (Phase 2). */
+  viewportRole?: "primary" | "secondary" | "compare";
+  /** Chronology role when the case spans studies. */
+  studyRole?: "current" | "prior" | "baseline" | "followup";
+}
+
+/**
+ * One continuous authoring take: the radiologist speaks once while scrolling /
+ * windowing / clicking. Viewer events + voice share one clock. Gemini later
+ * segments this into multiple Findings (see StructuredSessionFinding).
+ */
+export interface CaptureSession {
+  id: string;
+  durationMs: number;
+  track: RecordedTrack;
+  /** Durable narration URL (same seam as finding.track.audioUrl). */
+  audioUrl?: string;
+  /** Full session transcript (for author review + tutor grounding). */
+  transcript?: string;
+  createdAt: string;
+}
+
+/**
  * One recorded moment in a finding's dynamic flow. `state` is Pacsbin's
  * encoded `state` blob captured at that moment; `t` is ms from the start of
  * the recording. Because setting `state` reloads the cross-origin iframe,
@@ -140,6 +176,19 @@ export interface Finding {
   seriesInstanceUID?: string;
   /** Ordered SOP Instance UIDs this finding's flow walks through (prefetch). */
   sopInstanceUIDs?: string[];
+  /** Exact SOP for the primary landing (when known). */
+  sopInstanceUID?: string;
+  /** 0-based slice index for the primary landing. */
+  sliceIndex?: number;
+  /**
+   * All landings for this finding (multi-series / multi-study). When absent,
+   * the primary marker + seriesInstanceUID fields above are the sole anchor.
+   */
+  anchors?: FindingAnchor[];
+  /** Continuous-capture provenance (session id + time range on the take). */
+  captureSessionId?: string;
+  tStartMs?: number;
+  tEndMs?: number;
 }
 
 export interface CaseData {
@@ -197,6 +246,12 @@ export interface CaseData {
   /** Citations / further reading (free-form lines or URLs). */
   references?: string[];
 
+  /**
+   * Continuous authoring takes for this case (optional). Findings may point
+   * back via `captureSessionId` + `tStartMs`/`tEndMs`.
+   */
+  captureSessions?: CaptureSession[];
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -206,6 +261,26 @@ export interface StructuredFinding {
   label: string;
   description: string;
   teachingPoints: string[];
+}
+
+/**
+ * One finding carved out of a continuous capture session. Includes the time
+ * range on the session clock so we can slice the recorded track / audio later.
+ */
+export interface StructuredSessionFinding extends StructuredFinding {
+  /** ms from session start — inclusive. */
+  tStartMs: number;
+  /** ms from session start — exclusive/end. */
+  tEndMs: number;
+  /** Suggested marker from nearest cursor sample in-range (may be absent). */
+  suggestedMarker?: Marker;
+  suggestedSliceIndex?: number;
+}
+
+/** Full continuous-session structure response. */
+export interface StructuredSession {
+  transcript: string;
+  findings: StructuredSessionFinding[];
 }
 
 // ============================================================================
