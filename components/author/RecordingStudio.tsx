@@ -23,14 +23,12 @@ import {
   Circle,
   Crosshair,
   Mic,
-  Pencil,
   Play,
   Plus,
   RotateCcw,
   Send,
   Sparkles,
   Square,
-  Trash2,
   X,
 } from "lucide-react";
 import { PageHeader } from "@/components/AppShell";
@@ -39,13 +37,13 @@ import {
   Breadcrumbs,
   Button,
   Card,
-  EmptyState,
   Field,
   IconButton,
   Input,
   Modal,
   Spinner,
   Stepper,
+  Tabs,
   Textarea,
   useToast,
   type MicState,
@@ -72,6 +70,7 @@ import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
 import { AnnotatePopover } from "@/components/author/AnnotatePopover";
 import { ContinuousCapture } from "@/components/author/ContinuousCapture";
+import { SequenceBoard } from "@/components/author/SequenceBoard";
 import {
   addFinding,
   deleteFinding,
@@ -84,6 +83,7 @@ import {
 } from "@/components/author/lib";
 import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
+import { casePublishReadiness } from "@/lib/findingQuality";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -124,6 +124,7 @@ export function RecordingStudio({
   const [annotateNotice, setAnnotateNotice] = useState("");
   const [annotateTranscript, setAnnotateTranscript] = useState("");
   const [annotateMode, setAnnotateMode] = useState(true);
+  const [annotateSliceIndex, setAnnotateSliceIndex] = useState<number | undefined>();
 
   // Capture / structuring state for the OPTIONAL walk-through recording path.
   const [draft, setDraft] = useState<StructuredFinding>(EMPTY_DRAFT);
@@ -141,6 +142,8 @@ export function RecordingStudio({
   const [deleting, setDeleting] = useState(false);
 
   const [publishing, setPublishing] = useState(false);
+  const [captureTab, setCaptureTab] = useState<"sequence" | "speak" | "walk">("sequence");
+  const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
 
   const findings = useMemo(
     () => [...caseData.findings].sort((a, b) => a.order - b.order),
@@ -208,6 +211,7 @@ export function RecordingStudio({
     setAnnotateNotice("");
     setAnnotateTranscript("");
     setAnnotateMic("idle");
+    setAnnotateSliceIndex(controls.current?.getStartState().sliceIndex);
   }
 
   async function onAnnotateMicStart() {
@@ -441,6 +445,28 @@ export function RecordingStudio({
     rr.replay(f.track, f.track.audioUrl);
   }
 
+  /** Seat the viewer on a finding's series/slice and point the laser. */
+  async function focusFinding(f: Finding) {
+    setFocusedFindingId(f.id);
+    setCaptureTab("sequence");
+    const c = controls.current;
+    if (!c) return;
+    if (
+      f.seriesInstanceUID &&
+      c.seriesUIDs.includes(f.seriesInstanceUID) &&
+      c.activeSeriesUID !== f.seriesInstanceUID
+    ) {
+      c.showSeries(f.seriesInstanceUID);
+    }
+    if (f.sliceIndex != null && Number.isFinite(f.sliceIndex)) {
+      await c.showState({ sliceIndex: f.sliceIndex }, 400);
+    }
+    const m = f.marker;
+    if (m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
+      overlay.current?.animateTo?.(m.x_pct, m.y_pct, { durationMs: 500 });
+    }
+  }
+
   /** Start re-recording over an existing finding (keeps its text as the draft). */
   function reRecord(f: Finding) {
     rr.stopReplay();
@@ -532,6 +558,7 @@ export function RecordingStudio({
 
   const published = caseData.status === "published";
   const stepperStage = published ? "publish" : findings.length > 0 ? "publish" : "record";
+  const readiness = casePublishReadiness(findings);
 
   return (
     <div className="animate-fade-in">
@@ -556,8 +583,7 @@ export function RecordingStudio({
             <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
             <span className="text-xs text-muted">·</span>
             <span className="text-xs text-muted">
-              Click → dictate → save · {findings.length} finding
-              {findings.length === 1 ? "" : "s"}
+              Click → dictate → save · {readiness.examReady}/{readiness.total} exam-ready
             </span>
           </span>
         }
@@ -576,11 +602,10 @@ export function RecordingStudio({
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={publish}
               loading={publishing}
-              disabled={published || findings.length === 0}
+              disabled={published || !readiness.ready}
               title={
-                findings.length === 0
-                  ? "Capture at least one finding before publishing"
-                  : undefined
+                readiness.blockers[0] ??
+                undefined
               }
             >
               {published ? "Published" : "Review & publish"}
@@ -635,6 +660,8 @@ export function RecordingStudio({
                       saving={annotateSaving}
                       notice={annotateNotice}
                       transcript={annotateTranscript}
+                      sequenceIndex={findings.length}
+                      sliceIndex={annotateSliceIndex}
                       onMicStart={onAnnotateMicStart}
                       onMicStop={onAnnotateMicStop}
                       onShapeChange={(shape: MarkerShape) =>
@@ -752,6 +779,43 @@ export function RecordingStudio({
 
         {/* ── Capture column ────────────────────────────────────────────── */}
         <div className="flex min-w-0 flex-col gap-4">
+          <SequenceBoard
+            findings={findings}
+            activeId={focusedFindingId}
+            busy={rr.phase !== "idle"}
+            onSelect={(f) => void focusFinding(f)}
+            onMove={move}
+            onEdit={(f) => setEditTarget(f)}
+            onDelete={(f) => setDeleteTarget(f)}
+            onReplay={replaySaved}
+            onReRecord={(f) => {
+              reRecord(f);
+              setCaptureTab("walk");
+            }}
+          />
+
+          <Tabs
+            items={[
+              { value: "sequence", label: "Click path", count: findings.length },
+              { value: "speak", label: "Speak once" },
+              { value: "walk", label: "Walk-through" },
+            ]}
+            value={captureTab}
+            onValueChange={(v) => setCaptureTab(v as typeof captureTab)}
+          />
+
+          {captureTab === "sequence" && (
+            <Card padded={false} className="p-4">
+              <h2 className="text-sm font-semibold text-primary">Click to annotate</h2>
+              <p className="mt-1.5 text-xs leading-relaxed text-muted">
+                Click the lesion on the image. Dictate or type. Save lands a real
+                marker and slice — that is the script the examiner follows. Use
+                Speak once when you want to narrate many findings in a single take.
+              </p>
+            </Card>
+          )}
+
+          {captureTab === "speak" && (
           <ContinuousCapture
             caseId={caseData.caseId}
             rr={rr}
@@ -762,8 +826,9 @@ export function RecordingStudio({
             studyInstanceUID={!usingSample ? activeSeries?.studyInstanceUID : undefined}
             onCaseUpdated={setCaseData}
           />
+          )}
 
-          {/* Current-capture editor (walk-through path) */}
+          {captureTab === "walk" && (
           <Card padded={false} className="p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
@@ -851,56 +916,22 @@ export function RecordingStudio({
               )}
             </div>
           </Card>
-
-          {/* Captured findings */}
-          <Card padded={false} className="p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
-                Teaching sequence
-                <span className="rounded-full bg-elevated px-2 py-0.5 text-xs tabular-nums text-muted">
-                  {findings.length}
-                </span>
-              </h2>
-            </div>
-
-            {findings.length === 0 ? (
-              <EmptyState
-                title="No findings captured yet"
-                description="Click on the finding in the viewer, dictate with the mic, and save. Aim for the whole case in a few minutes."
-              />
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {findings.map((f, i) => (
-                  <CapturedFindingRow
-                    key={f.id}
-                    finding={f}
-                    index={i}
-                    total={findings.length}
-                    busy={rr.phase !== "idle"}
-                    onReplay={() => replaySaved(f)}
-                    onReRecord={() => reRecord(f)}
-                    onEdit={() => setEditTarget(f)}
-                    onDelete={() => setDeleteTarget(f)}
-                    onMove={(dir) => move(f.id, dir)}
-                  />
-                ))}
-              </ul>
-            )}
-          </Card>
+          )}
 
           {/* Review & publish summary */}
           <Card padded={false} className="p-4">
             <h2 className="text-sm font-semibold text-primary">Review &amp; publish</h2>
             <p className="mt-1 text-xs text-muted">
-              Cases stay hidden from students until you publish. You can keep editing text and
-              order in the case editor afterwards.
+              {readiness.ready
+                ? `${readiness.examReady} exam-ready finding${readiness.examReady === 1 ? "" : "s"}. Students only see this after you publish.`
+                : readiness.blockers[0]}
             </p>
             <Button
               className="mt-3 w-full"
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={publish}
               loading={publishing}
-              disabled={published || findings.length === 0}
+              disabled={published || !readiness.ready}
             >
               {published ? "Published" : "Publish case"}
             </Button>
@@ -944,116 +975,6 @@ export function RecordingStudio({
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-
-function CapturedFindingRow({
-  finding,
-  index,
-  total,
-  busy,
-  onReplay,
-  onReRecord,
-  onEdit,
-  onDelete,
-  onMove,
-}: {
-  finding: Finding;
-  index: number;
-  total: number;
-  busy: boolean;
-  onReplay: () => void;
-  onReRecord: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onMove: (dir: -1 | 1) => void;
-}) {
-  const hasTrack = !!finding.track && (finding.track.events?.length ?? 0) > 0;
-  const dur = finding.track ? (finding.track.durationMs / 1000).toFixed(1) : null;
-  const voiced = !!finding.track?.audioUrl;
-
-  return (
-    <li className="rounded-xl border border-subtle bg-surface p-3">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/15 text-xs font-semibold tabular-nums text-accent">
-          {index + 1}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-primary">
-            {finding.label || "Untitled finding"}
-          </p>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <Badge variant="neutral">
-              {(finding.marker.x_pct * 100).toFixed(0)}%,{" "}
-              {(finding.marker.y_pct * 100).toFixed(0)}%
-            </Badge>
-            {hasTrack ? (
-              <Badge variant={voiced ? "success" : "neutral"}>
-                {dur}s {voiced ? "· voice" : "· silent"}
-              </Badge>
-            ) : (
-              <Badge variant="accent">Marked</Badge>
-            )}
-            {finding.teachingPoints.length > 0 && (
-              <Badge variant="neutral">
-                {finding.teachingPoints.length} point
-                {finding.teachingPoints.length === 1 ? "" : "s"}
-              </Badge>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-center gap-0.5">
-          <IconButton
-            size="sm"
-            aria-label="Move finding up"
-            disabled={index === 0}
-            onClick={() => onMove(-1)}
-          >
-            <ChevronUp />
-          </IconButton>
-          <IconButton
-            size="sm"
-            aria-label="Move finding down"
-            disabled={index === total - 1}
-            onClick={() => onMove(1)}
-          >
-            <ChevronDown />
-          </IconButton>
-        </div>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1">
-        <Button
-          size="sm"
-          variant="ghost"
-          leadingIcon={<Play className="h-3.5 w-3.5" />}
-          onClick={onReplay}
-          disabled={!hasTrack || busy}
-        >
-          Replay
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          leadingIcon={<RotateCcw className="h-3.5 w-3.5" />}
-          onClick={onReRecord}
-          disabled={busy}
-        >
-          Re-record
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          leadingIcon={<Pencil className="h-3.5 w-3.5" />}
-          onClick={onEdit}
-        >
-          Edit
-        </Button>
-        <span className="flex-1" />
-        <IconButton size="sm" variant="danger" aria-label="Delete finding" onClick={onDelete}>
-          <Trash2 className="h-4 w-4" />
-        </IconButton>
-      </div>
-    </li>
-  );
-}
 
 function TeachingPoints({
   points,
@@ -1190,20 +1111,5 @@ function EditFindingDialog({
         />
       </div>
     </Modal>
-  );
-}
-
-function ChevronUp() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-      <path d="m18 15-6-6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-function ChevronDown() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
-      <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }

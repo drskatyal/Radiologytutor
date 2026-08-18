@@ -15,27 +15,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCase } from "@/lib/cases";
-import type { CaseData } from "@/lib/types";
+import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
 
 export const runtime = "nodejs";
 
-function findingsContext(data: CaseData): string {
-  return data.findings
-    .slice()
-    .sort((a, b) => a.order - b.order)
-    .map((f) => {
-      const marker =
-        f.marker && Number.isFinite(f.marker.x_pct) && Number.isFinite(f.marker.y_pct)
-          ? ` | marker@(${f.marker.x_pct.toFixed(2)},${f.marker.y_pct.toFixed(2)})`
-          : "";
-      return (
-        `- id=${f.id} | order=${f.order} | ${f.label}: ${f.description}` +
-        (f.teachingPoints.length ? ` | teaching: ${f.teachingPoints.join("; ")}` : "") +
-        marker
-      );
-    })
-    .join("\n");
-}
 
 interface InMessage {
   role: "user" | "assistant";
@@ -86,7 +69,7 @@ export async function POST(req: NextRequest) {
       caseTitle: data.title,
       modality: data.modality,
       mode,
-      findingsContext: findingsContext(data),
+      findingsContext: formatFindingsContextFromCase(data),
       currentFindingId,
     });
 

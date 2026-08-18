@@ -24,6 +24,7 @@ import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, Marker } from "@/lib/types";
+import { examFallbackStem } from "@/lib/teachingPrompt";
 
 export type SessionMode = "guided" | "socratic" | "free" | "reporting" | "viva";
 
@@ -115,6 +116,9 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   // false once any AI call returns 503 (GEMINI_API_KEY missing) — lets the UI
   // show a friendly, honest limitation without guessing server config.
   const [aiAvailable, setAiAvailable] = useState(true);
+  /** Findings whose diagnosis/marker the student has been shown. */
+  const [revealedIds, setRevealedIds] = useState<string[]>([]);
+  const examMode = mode === "viva" || mode === "socratic";
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
@@ -128,6 +132,11 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   activeIndexRef.current = activeIndex;
 
   const busy = phase === "transcribing" || phase === "thinking";
+  const startedRef = useRef(false);
+
+  const markRevealed = useCallback((id: string) => {
+    setRevealedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
 
   const micState: MicState =
     phase === "recording" ? "recording" : phase === "transcribing" ? "processing" : "idle";
@@ -206,9 +215,10 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   // back to the smooth showState animation, then tween the AI laser to the
   // author's click marker.
   const revealFinding = useCallback(
-    async (index: number) => {
+    async (index: number, opts?: { spoil?: boolean }) => {
       const finding = orderedFindings[index];
       if (!finding || !controls.current) return;
+      const spoil = opts?.spoil !== false;
       stopReplay();
       setMarkerVisible(false);
 
@@ -225,8 +235,9 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       }
 
       const track = finding.track;
-      if (track && track.events.length > 0) {
+      if (spoil && track && track.events.length > 0) {
         setActiveIndex(index);
+        markRevealed(finding.id);
         // The recorded marker is part of the retrace, so hold the static marker.
         setMarker(null);
 
@@ -263,7 +274,7 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         return;
       }
 
-      // No track: prefer an authored sliceIndex; else spread by tour order.
+      // No track (or exam seating without spoil): prefer an authored sliceIndex.
       const total = Math.max(1, orderedFindings.length);
       const sliceHint = total > 1 ? index / (total - 1) : 0.5;
       let view =
@@ -275,14 +286,15 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       await controls.current.showState(view, 750);
       setActiveIndex(index);
       const m = finding.marker ?? null;
-      if (m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
+      if (spoil && m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
+        markRevealed(finding.id);
         await pointLaser(m.x_pct, m.y_pct, m);
       } else {
         setMarker(m);
-        setMarkerVisible(true);
+        setMarkerVisible(false);
       }
     },
-    [orderedFindings, stopReplay, pointLaser]
+    [orderedFindings, stopReplay, pointLaser, markRevealed]
   );
 
   // --- Execute a tutor viewer action ---------------------------------------
@@ -361,15 +373,34 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         });
         const data = await res.json();
         if (!res.ok) {
-          // 503 means GEMINI_API_KEY isn't set — surface it as a friendly,
-          // persistent limitation rather than a transient error toast.
-          if (res.status === 503) setAiAvailable(false);
+          // 503 means GEMINI_API_KEY isn't set — keep the viva usable with a
+          // local stem instead of a dead error toast.
+          if (res.status === 503) {
+            setAiAvailable(false);
+            setSearching(false);
+            setTurns((prev) => [
+              ...prev,
+              {
+                id: nextId(),
+                role: "assistant",
+                text: examFallbackStem(orderedFindings.length),
+              },
+            ]);
+            setPhase("idle");
+            return;
+          }
           throw new Error(data.error || "Tutor error");
         }
         setAiAvailable(true);
 
         if (data.action && data.action.type !== "none") {
-          await executeAction(data.action as ViewerAction);
+          const action = data.action as ViewerAction;
+          const opening = question === "Begin the session.";
+          // Opening a viva: we already seated the slice. Don't spoil the
+          // marker just because the model called show_finding with the stem.
+          if (!(examMode && opening && action.type === "show_finding")) {
+            await executeAction(action);
+          }
         }
 
         const answer = String(data.answer ?? "").trim();
@@ -390,10 +421,10 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
           speak(answer, () => {
             setSpeakingTurnId((cur) => (cur === id ? null : cur));
             setPhase((p) => (p === "speaking" ? "idle" : p));
-            // Viva / guided: after the examiner finishes speaking, advance to
-            // the next finding so teaching feels continuous (unless already
-            // on the last finding). Barge-in clears speakingTurnId first.
-            if (mode === "viva" || mode === "guided") {
+            // Guided only: advance after TTS so the tour feels continuous.
+            // Viva waits for the student's answer (slideshow auto-advance
+            // killed the oral exam).
+            if (mode === "guided") {
               const cur = activeIndexRef.current;
               if (cur >= 0 && cur < orderedFindings.length - 1) {
                 window.setTimeout(() => {
@@ -415,7 +446,7 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         setPhase("idle");
       }
     },
-    [caseData.caseId, mode, orderedFindings, executeAction, toast, revealFinding]
+    [caseData.caseId, mode, orderedFindings, executeAction, toast, revealFinding, examMode]
   );
 
   // --- Typed question: straight to CALL 2 ----------------------------------
@@ -431,6 +462,12 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     },
     [busy, runTutor, stopReplay]
   );
+
+  const sayDontKnow = useCallback(() => {
+    const cur = activeIndexRef.current;
+    if (cur >= 0) void revealFinding(cur, { spoil: true });
+    sendText("I don't know. Please show me this finding and teach it.");
+  }, [revealFinding, sendText]);
 
   // --- Voice question: CALL 1 (transcribe) then CALL 2 (tutor) -------------
   const onMicStart = useCallback(async () => {
@@ -499,12 +536,31 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       if (busy || !ready) return;
       stopSpeaking();
       stopReplay();
-      revealFinding(index);
+      revealFinding(index, { spoil: true });
     },
     [busy, ready, revealFinding, stopReplay]
   );
   const next = useCallback(() => goTo(Math.min(activeIndexRef.current + 1, orderedFindings.length - 1)), [goTo, orderedFindings.length]);
   const prev = useCallback(() => goTo(Math.max(activeIndexRef.current - 1, 0)), [goTo]);
+
+  const skip = useCallback(() => {
+    if (busy || !ready) return;
+    const cur = activeIndexRef.current;
+    const nextIdx = Math.min(cur + 1, orderedFindings.length - 1);
+    if (nextIdx === cur && cur >= 0) return;
+    stopSpeaking();
+    stopReplay();
+    void revealFinding(nextIdx, { spoil: !examMode });
+  }, [busy, ready, orderedFindings.length, examMode, revealFinding, stopReplay]);
+
+  const revealCurrent = useCallback(() => {
+    if (busy || !ready) return;
+    const cur = activeIndexRef.current;
+    if (cur < 0) return;
+    stopSpeaking();
+    stopReplay();
+    void revealFinding(cur, { spoil: true });
+  }, [busy, ready, revealFinding, stopReplay]);
 
   const onStopSpeaking = useCallback(() => {
     if (phase === "speaking") {
@@ -538,12 +594,29 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     [speakingTurnId, phase, stopReplay]
   );
 
-  // Auto-open the first finding once the viewer is ready (guided start).
+  // Seat the first finding once the viewer is ready. Viva/socratic do not
+  // spoil the marker; viva also opens the examiner with a stem question.
   useEffect(() => {
-    if (ready && activeIndexRef.current === -1 && orderedFindings.length > 0) {
-      revealFinding(0);
+    if (!ready || startedRef.current || orderedFindings.length === 0) return;
+    startedRef.current = true;
+    if (examMode) {
+      void revealFinding(0, { spoil: false }).then(() => {
+        if (mode === "viva") void runTutor("Begin the session.", []);
+      });
+    } else {
+      void revealFinding(0);
     }
-  }, [ready, orderedFindings.length, revealFinding]);
+  }, [ready, orderedFindings.length, examMode, mode, revealFinding, runTutor]);
+
+  // Leaving exam mode uncovers the active finding so guided/report aren't blank.
+  useEffect(() => {
+    if (examMode) return;
+    const f = orderedFindings[activeIndexRef.current];
+    if (f) {
+      markRevealed(f.id);
+      if (f.marker) setMarkerVisible(true);
+    }
+  }, [examMode, orderedFindings, markRevealed]);
 
   // Cleanup: stop audio/replay + abort any in-flight tutor call on unmount.
   useEffect(
@@ -571,6 +644,8 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     micState,
     micSupported: recorder.supported,
     orderedFindings,
+    examMode,
+    revealedIds,
     onViewerReady,
     sendText,
     onMicStart,
@@ -579,6 +654,9 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     next,
     prev,
     goTo,
+    skip,
+    revealCurrent,
+    sayDontKnow,
     // Agent-orb + premium chat surface state.
     orbState,
     micLevel,

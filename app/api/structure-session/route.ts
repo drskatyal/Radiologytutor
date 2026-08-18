@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { generate, parseJsonLoose, userParts } from "@/lib/gemini";
+import { STRUCTURE_SESSION_SYSTEM } from "@/lib/teachingPrompt";
 import {
   markerNearTime,
   segmentMidMs,
@@ -21,26 +22,7 @@ import type {
 
 export const runtime = "nodejs";
 
-const SYSTEM = `You are structuring a radiologist's CONTINUOUS teaching dictation for an interactive DICOM tutor.
-The radiologist spoke while scrolling/windowing a study. Return ONLY JSON — no prose, no markdown — with EXACTLY:
-{
-  "transcript": string,   // full verbatim transcript of the dictation
-  "findings": [
-    {
-      "label": string,           // short finding name (2-5 words)
-      "description": string,     // 1-3 sentences, radiologist's words
-      "teachingPoints": string[],// 0-4 concise teaching points they mentioned
-      "tStartMs": number,        // approx start ms on the session clock
-      "tEndMs": number           // approx end ms on the session clock
-    }
-  ]
-}
-Rules:
-- Split into a NEW finding whenever the speaker clearly moves to a different lesion, sign, or teaching beat.
-- If they only discuss ONE thing, return a single finding spanning most of the session.
-- Use ONLY what they said — do not invent anatomy, measurements, or diagnoses.
-- tStartMs/tEndMs must be within [0, durationMs], non-overlapping, ordered.
-- Output must be valid JSON parseable by JSON.parse.`;
+const SYSTEM = STRUCTURE_SESSION_SYSTEM;
 
 export async function POST(req: NextRequest) {
   try {

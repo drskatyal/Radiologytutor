@@ -141,11 +141,14 @@ function NavRow({
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  // Student case = reading room. Hide product chrome so the DICOM is the
+  // composition. The session HUD carries back-to-library itself.
+  const readingRoom = pathname.startsWith("/case/");
 
   return (
     <ToastProvider>
-      <div className="flex min-h-screen bg-canvas">
-        {/* Sidebar */}
+      <div className={cn("flex min-h-screen bg-canvas", readingRoom && "bg-imaging")}>
+        {!readingRoom && (
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-subtle bg-surface/80 backdrop-blur md:flex">
           <Link
             href="/"
@@ -184,9 +187,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </aside>
+        )}
 
-        {/* Mobile top bar */}
+        {/* Mobile top bar — hidden in the reading room so imaging is full-bleed. */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {!readingRoom && (
           <header className="sticky top-0 z-30 flex items-center gap-4 border-b border-subtle bg-surface/85 px-4 py-3 backdrop-blur md:hidden">
             <Link href="/" className="flex items-center gap-2">
               <BrandMark />
@@ -215,6 +220,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               })}
             </nav>
           </header>
+          )}
 
           <main className="min-w-0 flex-1">{children}</main>
         </div>

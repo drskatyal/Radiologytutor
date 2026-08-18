@@ -30,12 +30,13 @@ Optional Alt+X walk-through remains for an exact cursor retrace.
 
 ## Student teaching loop (viva)
 
-1. Full-bleed viewer; tutor rail collapsed by default.
-2. Floating mic + progress dots; Space = push-to-talk.
-3. Examiner AI speaks + drives viewer (`show_finding` / `point_to` / W/L).
-4. Web-grounded questions when guidelines are needed.
-5. Viva/guided: auto-advance to the next finding after TTS ends.
-6. Expand rail for lesson cards / full transcript when wanted.
+1. Full-bleed viewer (no product sidebar). Tutor rail collapsed by default.
+2. On-image examiner caption so teaching is visible without opening the rail.
+3. Floating mic + progress dots; Space = push-to-talk. `?` = keyboard cheatsheet.
+4. Viva hides the marker and the finding label until the student attempts, taps Reveal, or says they don't know.
+5. Examiner AI speaks + drives viewer (`show_finding` / `point_to` / W/L). Does **not** auto-advance — waits for an answer.
+6. Web-grounded questions when guidelines are needed.
+7. Guided mode still auto-advances after TTS. Expand rail for lesson cards / full transcript.
 
 ## Visual language (reading room)
 

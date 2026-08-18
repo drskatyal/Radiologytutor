@@ -51,6 +51,8 @@ export function FindingCards({
   busy,
   ready,
   onSelect,
+  examMode = false,
+  revealedIds = [],
 }: {
   findings: Finding[];
   /** The case's series rail — used to label each card's anchored series. */
@@ -67,6 +69,9 @@ export function FindingCards({
   ready: boolean;
   /** Ask the parent to reveal a finding (switch series + replay/animate). */
   onSelect: (index: number) => void;
+  /** Oral exam: hide labels until the examiner has shown that finding. */
+  examMode?: boolean;
+  revealedIds?: string[];
 }) {
   // Which card the student has manually expanded; the active card is always
   // expanded implicitly (see `expanded` below).
@@ -104,7 +109,7 @@ export function FindingCards({
           </Badge>
           <span className="inline-flex items-center gap-1.5 text-xs text-muted">
             <Sparkles className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
-            Guided lesson
+            {examMode ? "Oral exam" : "Guided lesson"}
           </span>
         </div>
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
@@ -127,13 +132,14 @@ export function FindingCards({
           const hasAudio = !!finding.track?.audioUrl;
           const playing = active && replaying;
 
+          const spoiler = examMode && !revealedIds.includes(finding.id);
           return (
             <li key={finding.id}>
               <FindingCard
                 index={i}
                 finding={finding}
                 active={active}
-                expanded={expanded}
+                expanded={spoiler ? false : expanded}
                 playing={playing}
                 hasAudio={hasAudio}
                 modality={anchored?.modality || caseModality}
@@ -142,11 +148,16 @@ export function FindingCards({
                   (anchored?.seriesNumber != null ? `Series ${anchored.seriesNumber}` : undefined)
                 }
                 disabled={busy || !ready}
-                onToggle={() =>
-                  setOpenId((cur) => (cur === finding.id ? null : finding.id))
-                }
+                onToggle={() => {
+                  if (spoiler) {
+                    onSelect(i);
+                    return;
+                  }
+                  setOpenId((cur) => (cur === finding.id ? null : finding.id));
+                }}
                 onPlay={() => onSelect(i)}
-                teaser={teaserOf(finding)}
+                teaser={spoiler ? "Answer first — label hidden until revealed." : teaserOf(finding)}
+                spoiler={spoiler}
               />
             </li>
           );
@@ -167,6 +178,7 @@ function FindingCard({
   seriesLabel,
   disabled,
   teaser,
+  spoiler = false,
   onToggle,
   onPlay,
 }: {
@@ -180,6 +192,7 @@ function FindingCard({
   seriesLabel?: string;
   disabled: boolean;
   teaser: string;
+  spoiler?: boolean;
   onToggle: () => void;
   onPlay: () => void;
 }) {
@@ -225,7 +238,7 @@ function FindingCard({
                 active ? "text-primary" : "text-secondary group-hover:text-primary"
               )}
             >
-              {finding.label}
+              {spoiler ? `Finding ${index + 1}` : finding.label}
             </span>
             <ChevronDown
               className={cn(
@@ -261,7 +274,7 @@ function FindingCard({
           hasAudio={hasAudio}
           disabled={disabled}
           onClick={onPlay}
-          label={finding.label}
+          label={spoiler ? `Finding ${index + 1}` : finding.label}
         />
       </div>
 

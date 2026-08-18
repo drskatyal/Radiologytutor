@@ -2,22 +2,24 @@
 
 // Student teaching session — VIVA-first reading room.
 //
-// Default chrome is collapsed: full-bleed DICOM, a floating mic, progress dots,
-// and an examiner AI that speaks while driving the viewer. The side rail is
-// optional (lesson cards / transcript) and starts collapsed so the image stays
-// the composition. Guided/viva auto-advances to the next finding after the
-// tutor finishes speaking (barge-in cancels).
+// Product chrome is gone (AppShell reading-room mode). Full-bleed DICOM, an
+// on-image examiner caption, a floating mic, progress dots. The rail is
+// optional. Viva hides markers until the student attempts or asks to be shown.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   ChevronLeft,
   ChevronRight,
+  Eye,
   GraduationCap,
+  HelpCircle,
+  Keyboard,
   MessageCircle,
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
-import { Badge, IconButton, MicButton, Tabs } from "@/components/ui";
+import { Badge, Button, IconButton, Kbd, MicButton, Tabs } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
@@ -27,6 +29,8 @@ import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
 import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
+import { TutorCaption } from "./TutorCaption";
+import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
 import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
 
@@ -57,6 +61,7 @@ export default function StudentSession({
   const [mode, setMode] = useState<SessionMode>("viva");
   const [panel, setPanel] = useState<PanelTab>("ask");
   const [railOpen, setRailOpen] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
   const s = useStudentSession(caseData, mode);
 
   const openAsk = useCallback(() => {
@@ -131,6 +136,44 @@ export default function StudentSession({
     };
   }, [s.micSupported]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (typingRef.current) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+        e.preventDefault();
+        setKeysOpen((o) => !o);
+        return;
+      }
+      if (e.key === "Escape") {
+        if (keysOpen) {
+          setKeysOpen(false);
+          return;
+        }
+        setRailOpen(false);
+        return;
+      }
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "t") {
+        e.preventDefault();
+        setRailOpen((o) => !o);
+      } else if (k === "r") {
+        e.preventDefault();
+        s.revealCurrent();
+      } else if (k === "n") {
+        e.preventDefault();
+        s.skip();
+      } else if (k === "p") {
+        e.preventDefault();
+        s.prev();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [keysOpen, s]);
+
   const subtitle = useMemo(() => {
     const bits = [caseData.modality];
     if (caseData.specialty) bits.push(caseData.specialty);
@@ -140,9 +183,21 @@ export default function StudentSession({
   const hasFindings = s.orderedFindings.length > 0;
   const activeFinding =
     s.activeIndex >= 0 ? s.orderedFindings[s.activeIndex] : null;
+  const activeRevealed = !!(
+    activeFinding && s.revealedIds.includes(activeFinding.id)
+  );
+  const lastAssistant = [...s.turns].reverse().find((t) => t.role === "assistant" && !t.error);
+  const captionText = lastAssistant?.text ?? "";
+  const stepLabel = hasFindings
+    ? s.examMode && !activeRevealed
+      ? `${Math.max(s.activeIndex, 0) + 1}/${s.orderedFindings.length}`
+      : activeFinding
+        ? `${s.activeIndex + 1}/${s.orderedFindings.length}`
+        : undefined
+    : undefined;
 
   return (
-    <div className="relative h-[calc(100vh-49px)] bg-imaging">
+    <div className="relative h-screen bg-imaging">
       {/* Full-bleed imaging */}
       <div
         className={cn(
@@ -161,7 +216,11 @@ export default function StudentSession({
           overlay={s.overlay}
           onReady={s.onViewerReady}
           marker={s.marker}
-          markerVisible={s.markerVisible && imagingResolved}
+          markerVisible={
+            s.markerVisible &&
+            imagingResolved &&
+            (!s.examMode || activeRevealed)
+          }
           replaying={s.replaying || s.pointing}
           ready={s.ready}
         />
@@ -182,16 +241,34 @@ export default function StudentSession({
       {/* Top HUD */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between gap-3 p-3">
         <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+          <Link
+            href="/library"
+            className="rounded-md border border-strong/50 bg-elevated/85 px-2 py-1 text-[11px] font-medium text-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          >
+            Library
+          </Link>
           <Badge variant="neutral">{caseData.title}</Badge>
           {subtitle && <Badge variant="accent">{subtitle}</Badge>}
           {!imagingResolved && <Badge variant="warning">Sample imaging</Badge>}
-          {activeFinding && (
+          {hasFindings && (
             <Badge variant="accent" dot>
-              {s.activeIndex + 1}/{s.orderedFindings.length} · {activeFinding.label}
+              {s.examMode && !activeRevealed
+                ? `Finding ${Math.max(s.activeIndex, 0) + 1} of ${s.orderedFindings.length}`
+                : activeFinding
+                  ? `${s.activeIndex + 1}/${s.orderedFindings.length} · ${activeFinding.label}`
+                  : `${s.orderedFindings.length} findings`}
             </Badge>
           )}
         </div>
         <div className="pointer-events-auto flex items-center gap-1.5">
+          <IconButton
+            aria-label="Keyboard shortcuts"
+            size="sm"
+            variant="secondary"
+            onClick={() => setKeysOpen(true)}
+          >
+            <Keyboard className="h-4 w-4" />
+          </IconButton>
           <IconButton
             aria-label="Previous finding"
             size="sm"
@@ -210,7 +287,7 @@ export default function StudentSession({
               s.activeIndex >= s.orderedFindings.length - 1 ||
               s.busy
             }
-            onClick={s.next}
+            onClick={s.skip}
           >
             <ChevronRight className="h-4 w-4" />
           </IconButton>
@@ -229,6 +306,13 @@ export default function StudentSession({
         </div>
       </div>
 
+      <TutorCaption
+        text={captionText}
+        stepLabel={stepLabel}
+        revealed={activeRevealed}
+        sources={lastAssistant?.sources}
+      />
+
       {/* Bottom viva dock — the composition: orb + mic + progress */}
       <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center p-4">
         <div className="flex max-w-xl flex-col items-center gap-2">
@@ -238,7 +322,11 @@ export default function StudentSession({
                 <button
                   key={f.id}
                   type="button"
-                  aria-label={`Finding ${i + 1}: ${f.label}`}
+                  aria-label={
+                    s.examMode && !s.revealedIds.includes(f.id)
+                      ? `Finding ${i + 1}`
+                      : `Finding ${i + 1}: ${f.label}`
+                  }
                   aria-current={i === s.activeIndex}
                   disabled={s.busy}
                   onClick={() => s.goTo(i)}
@@ -277,9 +365,33 @@ export default function StudentSession({
                     : "Hold to speak"
               }
             />
+            {s.examMode && hasFindings && (
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
+                  onClick={s.sayDontKnow}
+                  disabled={s.busy}
+                >
+                  Don&apos;t know
+                </Button>
+                {!activeRevealed && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    leadingIcon={<Eye className="h-3.5 w-3.5" />}
+                    onClick={s.revealCurrent}
+                    disabled={s.busy}
+                  >
+                    Reveal
+                  </Button>
+                )}
+              </>
+            )}
           </div>
           <p className="text-[10px] text-muted">
-            Examiner viva · Space to talk · web-grounded questions welcome
+            Examiner viva · <Kbd>Space</Kbd> to talk · <Kbd>?</Kbd> keys
           </p>
         </div>
       </div>
@@ -352,6 +464,8 @@ export default function StudentSession({
             busy={s.busy}
             ready={s.ready}
             onSelect={s.goTo}
+            examMode={s.examMode}
+            revealedIds={s.revealedIds}
           />
         </div>
 
@@ -375,6 +489,8 @@ export default function StudentSession({
           />
         </div>
       </aside>
+
+      <HotkeysOverlay open={keysOpen} onClose={() => setKeysOpen(false)} />
     </div>
   );
 }

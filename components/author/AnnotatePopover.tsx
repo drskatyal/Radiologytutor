@@ -14,6 +14,7 @@ import {
   Field,
   IconButton,
   Input,
+  Kbd,
   MicButton,
   Spinner,
   Textarea,
@@ -39,6 +40,10 @@ export interface AnnotatePopoverProps {
   onCancel: () => void;
   /** Optional transcript preview after STT (before/while structuring). */
   transcript?: string;
+  /** 0-based index this finding will occupy in the sequence. */
+  sequenceIndex?: number;
+  /** Current Cornerstone stack index, shown so authors trust the landing. */
+  sliceIndex?: number;
 }
 
 /**
@@ -60,6 +65,8 @@ export function AnnotatePopover({
   onSave,
   onCancel,
   transcript,
+  sequenceIndex,
+  sliceIndex,
 }: AnnotatePopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [placed, setPlaced] = useState(false);
@@ -75,6 +82,22 @@ export function AnnotatePopover({
   }, []);
 
   const canSave = !!draft.label.trim() && !saving && !structuring;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (draft.label.trim() && !saving && !structuring) onSave();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [draft.label, saving, structuring, onSave, onCancel]);
 
   return (
     <div
@@ -112,9 +135,11 @@ export function AnnotatePopover({
           <div className="flex items-center justify-between gap-2 border-b border-subtle px-3 py-2">
             <div className="flex items-center gap-2 text-xs font-medium text-secondary">
               <MapPin className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
-              <span>
+              <span className="tabular-nums">
+                {sequenceIndex != null ? `Finding ${sequenceIndex + 1} · ` : ""}
                 Mark @ {(marker.x_pct * 100).toFixed(0)}%,{" "}
                 {(marker.y_pct * 100).toFixed(0)}%
+                {sliceIndex != null ? ` · slice ${sliceIndex + 1}` : ""}
               </span>
             </div>
             <IconButton
@@ -184,7 +209,7 @@ export function AnnotatePopover({
                 <Input
                   {...p}
                   autoFocus
-                  placeholder="e.g. ACL tear"
+                  placeholder="e.g. Left caudate head"
                   value={draft.label}
                   maxLength={LIMITS.label}
                   onChange={(e) =>
@@ -244,6 +269,10 @@ export function AnnotatePopover({
                 Cancel
               </Button>
             </div>
+            <p className="text-[10px] text-muted">
+              <Kbd>Esc</Kbd> cancel · <Kbd>⌘</Kbd>
+              <Kbd>Enter</Kbd> save
+            </p>
           </div>
         </div>
       </div>
