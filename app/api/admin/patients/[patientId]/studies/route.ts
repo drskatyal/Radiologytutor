@@ -4,7 +4,7 @@
 //     -> the patient's studies ordered by studyDate (oldest "prior" first).
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { getPatient, listStudiesChronological } from "@/lib/cases";
 
 export const runtime = "nodejs";
@@ -15,7 +15,7 @@ export async function GET(
   { params }: { params: { patientId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const patient = await getPatient(orgId, params.patientId);
     if (!patient) {
       return NextResponse.json({ error: "Patient not found." }, { status: 404 });

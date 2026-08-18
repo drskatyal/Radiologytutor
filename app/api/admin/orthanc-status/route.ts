@@ -9,7 +9,7 @@
 // round-trip (so it stays instant and can't itself error).
 
 import { NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { orthancConfigured } from "@/lib/orthanc";
 
 export const runtime = "nodejs";
@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    await requireAdminOrg();
+    await requireAuthorOrg();
   } catch (err) {
     const denied = jsonAuthError(err);
     if (denied) return denied;

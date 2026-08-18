@@ -5,7 +5,7 @@
 //   DELETE /api/admin/playlists/[playlistId]  -> delete the playlist
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { getPlaylist, updatePlaylist, deletePlaylist } from "@/lib/cases";
 
 export const runtime = "nodejs";
@@ -16,7 +16,7 @@ export async function GET(
   { params }: { params: { playlistId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const playlist = await getPlaylist(orgId, params.playlistId);
     if (!playlist) return NextResponse.json({ error: "Playlist not found." }, { status: 404 });
     return NextResponse.json({ playlist });
@@ -38,7 +38,7 @@ export async function PATCH(
   { params }: { params: { playlistId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as PatchBody;
     const patch: Parameters<typeof updatePlaylist>[2] = {};
     if (typeof body.title === "string") {
@@ -66,7 +66,7 @@ export async function DELETE(
   { params }: { params: { playlistId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const ok = await deletePlaylist(orgId, params.playlistId);
     if (!ok) return NextResponse.json({ error: "Playlist not found." }, { status: 404 });
     return NextResponse.json({ ok: true });

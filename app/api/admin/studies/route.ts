@@ -1,14 +1,27 @@
 // Admin studies API (org-scoped).
 //
-//   POST /api/admin/studies  -> create (or return existing) a Study under a
-//     patient, from an uploaded DICOM study. Deduped by StudyInstanceUID.
+//   GET  /api/admin/studies?patientId=  -> list studies (optional patient filter)
+//   POST /api/admin/studies             -> create (or return existing) a Study
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
-import { getPatient, createStudy, getStudyByUID } from "@/lib/cases";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { getPatient, createStudy, getStudyByUID, listStudies } from "@/lib/cases";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+export async function GET(req: NextRequest) {
+  try {
+    const orgId = await requireAuthorOrg();
+    const patientId = req.nextUrl.searchParams.get("patientId") || undefined;
+    const studies = await listStudies(orgId, patientId);
+    return NextResponse.json({ studies });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
+}
 
 interface CreateStudyBody {
   patientId?: string;
@@ -22,7 +35,7 @@ interface CreateStudyBody {
 
 export async function POST(req: NextRequest) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as CreateStudyBody;
     if (!body.patientId || !body.studyInstanceUID) {
       return NextResponse.json(

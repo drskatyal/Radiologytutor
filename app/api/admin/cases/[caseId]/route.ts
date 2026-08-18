@@ -8,7 +8,7 @@
 // orgId is a seam (DEFAULT_ORG_ID) until real auth lands (§4a).
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import {
   getCaseForOrg,
   getPatient,
@@ -50,7 +50,7 @@ export async function GET(
   { params }: { params: { caseId: string } }
 ) {
   try {
-    const ORG = await requireAdminOrg();
+    const ORG = await requireAuthorOrg();
     const c = await getCaseForOrg(ORG, params.caseId);
   if (!c) return NextResponse.json({ error: "Case not found." }, { status: 404 });
   const patient = c.patientId ? await getPatient(ORG, c.patientId) : null;
@@ -91,7 +91,7 @@ export async function PATCH(
   { params }: { params: { caseId: string } }
 ) {
   try {
-    const ORG = await requireAdminOrg();
+    const ORG = await requireAuthorOrg();
     const body = (await req.json()) as PatchBody;
     const patch: Parameters<typeof updateCaseForOrg>[2] = {};
     if (typeof body.title === "string") {
@@ -134,7 +134,7 @@ export async function DELETE(
   { params }: { params: { caseId: string } }
 ) {
   try {
-    const ORG = await requireAdminOrg();
+    const ORG = await requireAuthorOrg();
     const ok = await deleteCaseForOrg(ORG, params.caseId);
     if (!ok) return NextResponse.json({ error: "Case not found." }, { status: 404 });
     return NextResponse.json({ ok: true });

@@ -4,7 +4,7 @@
 //   POST /api/admin/patients  -> create a patient { displayName }
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { listPatients, createPatient } from "@/lib/cases";
 
 export const runtime = "nodejs";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const patients = await listPatients(orgId);
     return NextResponse.json({ patients });
   } catch (err) {
@@ -24,7 +24,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as { displayName?: string };
     const displayName = (body.displayName ?? "").trim();
     if (!displayName) {

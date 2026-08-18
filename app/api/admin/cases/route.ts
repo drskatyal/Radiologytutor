@@ -9,7 +9,7 @@
 // orgId is a seam: derived from DEFAULT_ORG_ID until real auth lands (§4a).
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import {
   listCasesForOrg,
   listPatients,
@@ -60,7 +60,7 @@ export interface AdminCaseRow extends Case {
 
 export async function GET() {
   try {
-    const ORG = await requireAdminOrg();
+    const ORG = await requireAuthorOrg();
     const [cases, patients] = await Promise.all([
     listCasesForOrg(ORG),
     listPatients(ORG),
@@ -126,7 +126,7 @@ interface CreateCaseBody {
 
 export async function POST(req: NextRequest) {
   try {
-    const ORG = await requireAdminOrg();
+    const ORG = await requireAuthorOrg();
     const body = (await req.json()) as CreateCaseBody;
     const title = (body.title ?? "").trim();
     if (!title) {

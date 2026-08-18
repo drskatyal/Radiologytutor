@@ -5,7 +5,7 @@
 //   DELETE /api/admin/authors/[authorId]  -> delete the author
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg, requireRole } from "@/lib/auth";
 import { getAuthor, updateAuthor, deleteAuthor } from "@/lib/cases";
 import type { AuthorProfile } from "@/lib/types";
 
@@ -17,7 +17,7 @@ export async function GET(
   { params }: { params: { authorId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const author = await getAuthor(orgId, params.authorId);
     if (!author) return NextResponse.json({ error: "Author not found." }, { status: 404 });
     return NextResponse.json({ author });
@@ -33,7 +33,7 @@ export async function PATCH(
   { params }: { params: { authorId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as {
       name?: string;
       bio?: string | null;
@@ -52,6 +52,8 @@ export async function PATCH(
     if (body.institution !== undefined) patch.institution = body.institution?.trim() || undefined;
     if (body.avatarUrl !== undefined) patch.avatarUrl = body.avatarUrl?.trim() || undefined;
     if (body.verification !== undefined) {
+      // Verification is an admin/platform gate — teachers cannot self-verify.
+      await requireRole("admin");
       const allowed: AuthorProfile["verification"][] = [
         "unverified",
         "pending",
@@ -80,7 +82,7 @@ export async function DELETE(
   { params }: { params: { authorId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const ok = await deleteAuthor(orgId, params.authorId);
     if (!ok) return NextResponse.json({ error: "Author not found." }, { status: 404 });
     return NextResponse.json({ ok: true });

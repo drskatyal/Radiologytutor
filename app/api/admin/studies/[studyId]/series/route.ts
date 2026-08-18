@@ -9,7 +9,7 @@
 // orgId is a seam (DEFAULT_ORG_ID) until real auth lands (§4a).
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { getStudy } from "@/lib/cases";
 import {
   orthancConfigured,
@@ -27,7 +27,7 @@ export async function GET(
 ) {
   let orgId: string;
   try {
-    orgId = await requireAdminOrg();
+    orgId = await requireAuthorOrg();
   } catch (err) {
     const denied = jsonAuthError(err);
     if (denied) return denied;

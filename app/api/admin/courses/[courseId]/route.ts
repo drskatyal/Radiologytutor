@@ -5,7 +5,7 @@
 //   DELETE /api/admin/courses/[courseId]  -> delete the course
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { getCourse, updateCourse, deleteCourse } from "@/lib/cases";
 import {
   BODY_SYSTEMS,
@@ -34,7 +34,7 @@ export async function GET(
   { params }: { params: { courseId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const course = await getCourse(orgId, params.courseId);
     if (!course) return NextResponse.json({ error: "Course not found." }, { status: 404 });
     return NextResponse.json({ course });
@@ -60,7 +60,7 @@ export async function PATCH(
   { params }: { params: { courseId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as PatchBody;
     const patch: Parameters<typeof updateCourse>[2] = {};
     if (typeof body.title === "string") {
@@ -92,7 +92,7 @@ export async function DELETE(
   { params }: { params: { courseId: string } }
 ) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const ok = await deleteCourse(orgId, params.courseId);
     if (!ok) return NextResponse.json({ error: "Course not found." }, { status: 404 });
     return NextResponse.json({ ok: true });

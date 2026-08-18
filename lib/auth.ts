@@ -20,6 +20,7 @@ import { NextResponse } from "next/server";
 import {
   DEFAULT_ORG_ID,
   DEMO_STUDENT_USER_ID,
+  DEMO_TEACHER_USER_ID,
   DEMO_USER_ID,
   ensureDemoIdentity,
   getMembershipForUserOrg,
@@ -347,13 +348,18 @@ export async function requirePageRole(
   }
 }
 
-export type DemoRole = "super_admin" | "student";
+export type DemoRole = "super_admin" | "author" | "student";
 
 export async function createDemoSessionResponse(
   role: DemoRole = "super_admin"
 ): Promise<NextResponse> {
   await ensureDemoIdentity();
-  const userId = role === "student" ? DEMO_STUDENT_USER_ID : DEMO_USER_ID;
+  const userId =
+    role === "student"
+      ? DEMO_STUDENT_USER_ID
+      : role === "author"
+        ? DEMO_TEACHER_USER_ID
+        : DEMO_USER_ID;
   const user = await getUser(userId);
   if (!user) {
     return NextResponse.json({ error: "Demo identity is missing." }, { status: 500 });

@@ -4,7 +4,7 @@
 //   POST /api/admin/courses  -> create a course { title, caseIds?, ... }
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { listCourses, createCourse } from "@/lib/cases";
 import {
   BODY_SYSTEMS,
@@ -30,7 +30,7 @@ function asDifficulty(v: unknown): Difficulty | undefined {
 
 export async function GET() {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const courses = await listCourses(orgId);
     return NextResponse.json({ courses });
   } catch (err) {
@@ -52,7 +52,7 @@ interface CourseBody {
 
 export async function POST(req: NextRequest) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as CourseBody;
     const title = (body.title ?? "").trim();
     if (!title) {

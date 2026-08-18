@@ -6,7 +6,7 @@
 // orgId comes from the session (activeOrgId) — never from the client.
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { listAuthors, createAuthor } from "@/lib/cases";
 
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const authors = await listAuthors(orgId);
     return NextResponse.json({ authors });
   } catch (err) {
@@ -26,7 +26,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const orgId = await requireAdminOrg();
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as {
       name?: string;
       bio?: string;

@@ -6,6 +6,8 @@ import { Button } from "@/components/ui";
 import { dashboardPath } from "@/lib/dashboardPath";
 import type { MembershipRole, PlatformRole } from "@/lib/types";
 
+type DemoPick = "super_admin" | "author" | "student";
+
 function safeNext(next?: string): string {
   if (!next || !next.startsWith("/") || next.startsWith("//")) return "";
   return next;
@@ -75,10 +77,10 @@ export function GoogleSignInButton({
 
 export function DemoSignInButton({ next }: { next?: string }) {
   const router = useRouter();
-  const [busyRole, setBusyRole] = useState<"super_admin" | "student" | null>(null);
+  const [busyRole, setBusyRole] = useState<DemoPick | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function signInAs(role: "super_admin" | "student") {
+  async function signInAs(role: DemoPick) {
     if (busyRole) return;
     setBusyRole(role);
     setError(null);
@@ -86,8 +88,8 @@ export function DemoSignInButton({ next }: { next?: string }) {
       const dest = safeNext(next);
       const res = await fetch("/api/auth/demo", {
         method: "POST",
-        headers: role === "student" ? { "Content-Type": "application/json" } : undefined,
-        body: role === "student" ? JSON.stringify({ role: "student" }) : undefined,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -123,6 +125,16 @@ export function DemoSignInButton({ next }: { next?: string }) {
         type="button"
         variant="ghost"
         className="w-full"
+        loading={busyRole === "author"}
+        disabled={busyRole != null && busyRole !== "author"}
+        onClick={() => signInAs("author")}
+      >
+        Teacher demo
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        className="w-full"
         loading={busyRole === "student"}
         disabled={busyRole != null && busyRole !== "student"}
         onClick={() => signInAs("student")}
@@ -142,10 +154,11 @@ export function SignOutButton({ className }: { className?: string }) {
     if (busy) return;
     setBusy(true);
     try {
-      await fetch("/api/auth/sign-out", { method: "POST" });
-      await fetch("/api/auth/demo", { method: "DELETE" });
-      router.push("/");
+      await fetch("/api/auth/sign-out", { method: "POST", credentials: "include" });
+      await fetch("/api/auth/demo", { method: "DELETE", credentials: "include" });
+      router.push("/sign-in");
       router.refresh();
+      window.location.href = "/sign-in";
     } finally {
       setBusy(false);
     }
