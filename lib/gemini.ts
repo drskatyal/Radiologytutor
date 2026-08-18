@@ -5,12 +5,13 @@
 // Never import this into client components — it reads GEMINI_API_KEY.
 //
 // We hit the REST endpoint directly with fetch to avoid SDK version churn.
-// Model is configurable via GEMINI_MODEL (default: a latest Flash model).
+// Model is configurable via GEMINI_MODEL (default: current Flash workhorse).
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+/** Orchestration / STT / tools. Override via GEMINI_MODEL when Google ships next Flash. */
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 export interface GeminiPart {

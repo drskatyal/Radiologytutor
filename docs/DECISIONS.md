@@ -10,9 +10,9 @@
 | Auth | **Better Auth** + **Google OAuth** (password optional). Seam: `lib/auth.ts` only |
 | Frames/audio cache | **Cloudflare R2** (`lib/r2.ts`) |
 | DICOM archive | **Orthanc** DICOMweb |
-| AI | Gemini Flash orchestration (`GEMINI_MODEL`, default `gemini-2.5-flash`) behind `lib/gemini.ts` |
+| AI | Gemini Flash orchestration (`GEMINI_MODEL`, default `gemini-3.7-flash`) behind `lib/gemini.ts` |
 | Live tutor voice | **ElevenLabs** clone when enrolled (`lib/voice.ts` / `lib/elevenlabs.ts`); Gemini TTS fallback |
-| Realtime voice fallback | Gemini Live native audio (`GEMINI_LIVE_MODEL`) when TTS latency is high — see `docs/CONSULTANT_READING.md` |
+| Realtime voice fallback | Gemini Live native audio (`GEMINI_LIVE_MODEL`) via ephemeral token from `POST /api/voice/realtime` when TTS latency exceeds `VOICE_LATENCY_BUDGET_MS` — see `docs/CONSULTANT_READING.md` |
 | Payments | Deferred — `lib/payments.ts` stub; Razorpay/Cashfree later |
 
 ## Roles

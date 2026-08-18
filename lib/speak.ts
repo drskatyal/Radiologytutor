@@ -5,10 +5,29 @@
 // stopSpeaking never change — only /api/tts + lib/voice.ts do.
 // Recorded lesson narration NEVER routes through here (plays Finding.track.audioUrl).
 // See docs/CONSULTANT_READING.md.
+//
+// When /api/tts reports budget exceeded (slow clone/TTS), we stash a hint so
+// the student session can open Gemini Live for the next conversational turn.
 
 let currentAudio: HTMLAudioElement | null = null;
 let pipelineGen = 0;
 let ttsAbort: AbortController | null = null;
+
+/** Soft hint from the last TTS response — prefer Gemini Live next turn. */
+let preferRealtimeNext = false;
+let lastTtsLatencyMs: number | null = null;
+
+export function shouldPreferRealtimeVoice(): boolean {
+  return preferRealtimeNext;
+}
+
+export function lastTutorTtsLatencyMs(): number | null {
+  return lastTtsLatencyMs;
+}
+
+export function clearRealtimeVoiceHint(): void {
+  preferRealtimeNext = false;
+}
 
 export async function speak(
   text: string,
@@ -93,6 +112,16 @@ async function fetchTtsBlob(
       signal,
     });
     if (!res.ok) return null;
+
+    const latencyHdr = res.headers.get("X-FlowRad-Voice-Latency-Ms");
+    if (latencyHdr) {
+      const n = Number(latencyHdr);
+      if (Number.isFinite(n)) lastTtsLatencyMs = n;
+    }
+    if (res.headers.get("X-FlowRad-Voice-Budget-Exceeded") === "1") {
+      preferRealtimeNext = true;
+    }
+
     return await res.blob();
   } catch {
     return null;

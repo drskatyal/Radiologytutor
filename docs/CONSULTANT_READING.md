@@ -36,7 +36,7 @@ short stems when no track exists).
    ┌─────────────────────┐               ┌──────────────────────────┐
    │ Primary TTS         │               │ Latency fallback         │
    │ ElevenLabs          │               │ Gemini Live (native      │
-   │ (teacher voiceId)   │               │ audio WebSocket)         │
+   │ (teacher voiceId)   │               │ audio + ephemeral token) │
    └─────────────────────┘               └──────────────────────────┘
               │                                         │
               └────────────────────┬────────────────────┘
@@ -46,15 +46,16 @@ short stems when no track exists).
 
 | Concern | Choice | Env |
 |---------|--------|-----|
-| Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default `gemini-2.5-flash`) | `GEMINI_API_KEY` |
+| Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.7-flash`**) | `GEMINI_API_KEY` |
 | Live tutor voice (cloned) | **ElevenLabs** Instant/Professional Voice Clone | `ELEVENLABS_API_KEY` |
-| Default TTS if no clone / no ElevenLabs | Gemini TTS (current) | `GEMINI_TTS_*` |
-| High-latency escape hatch | **Gemini Live** native audio (`gemini-live-2.5-flash-native-audio`) | same Gemini key |
+| Default TTS if no clone / no ElevenLabs | Gemini TTS | `GEMINI_TTS_*` |
+| High-latency escape hatch | **Gemini Live** native audio (`GEMINI_LIVE_MODEL`) via ephemeral token from `POST /api/voice/realtime` | same Gemini key |
+| Soft budget before preferring Live | `VOICE_LATENCY_BUDGET_MS` (default 1200) — TTS responses set `X-FlowRad-Voice-Budget-Exceeded` | |
 | Browser last resort | `speechSynthesis` | — |
 
-There is no stable “Gemini 3.6 Flash” id in Google’s public model list as of
-this writing — pin via `GEMINI_MODEL` and bump when Google ships the next Flash.
-Prefer `gemini-2.5-flash` or `gemini-flash-latest` for tool-calling + STT.
+Model ids move fast (3.6 → 3.7 Flash within weeks). Pin via `GEMINI_MODEL`;
+`gemini-3.7-flash` is the current workhorse default. Keep TTS / Live model ids
+separate — they are different surfaces.
 
 ## Teacher voice enrollment
 
@@ -65,29 +66,42 @@ Prefer `gemini-2.5-flash` or `gemini-flash-latest` for tool-calling + STT.
 4. Consent + disclosure: “This tutor speaks in a synthetic voice modeled on
    Dr. X’s teaching samples.” Required before public clone use.
 
+## Gemini Live fallback (how it works)
+
+1. Client calls `/api/tts` for cloned / Gemini speech.
+2. If `X-FlowRad-Voice-Budget-Exceeded: 1`, `lib/speak.ts` sets
+   `shouldPreferRealtimeVoice()` for the next turn.
+3. Client `POST /api/voice/realtime` → server mints a **v1alpha ephemeral
+   token** constrained to our Live model + AUDIO modality.
+4. Browser opens Google’s Live WebSocket with that token — **never** the
+   long-lived `GEMINI_API_KEY`.
+
+Full duplex mic→Live in the student UI is the next wiring step; the mint +
+capability endpoints are live so the UI can detect and switch.
+
 ## What still makes it “as close as a radiologist”
 
 Beyond voice:
 
-1. **Dense capture** — WW/WC, series switches, zoom/pan, Length/HU measurements
-   (already shipping).
+1. **Dense capture** — WW/WC, series switches, zoom/pan, Length/HU measurements.
 2. **Adaptive windowing** — scroll when Δ small, snap bone↔lung.
-3. **Image-plane markers** — next (stable under pan/zoom).
-4. **Interleaved speech + viewer** — already: beat-synced laser / `show_finding`.
-5. **Don’t invent** — tutor only cites authored pearls / meas / voi.
-6. **Realtime path** — when Flash+ElevenLabs RTT is high, fall over to Gemini
-   Live for conversational turns while still emitting the same viewer tools
-   from a parallel text channel (or Live function calling).
+3. **Measurement overlay replay** — student reveal redraws authored calipers
+   from `Finding.measurements` handles (`MeasurementOverlay`).
+4. **Image-plane markers** — next (stable under pan/zoom).
+5. **Interleaved speech + viewer** — beat-synced laser / `show_finding`.
+6. **Don’t invent** — tutor only cites authored pearls / meas / voi.
 
 ## Seams (code)
 
 | Module | Role |
 |--------|------|
-| `lib/voice.ts` | Provider selection; `synthesizeTutorSpeech` |
+| `lib/voice.ts` | Provider selection; `synthesizeTutorSpeech` + latency budget |
 | `lib/elevenlabs.ts` | Clone + TTS (no imports outside voice seam) |
-| `lib/gemini.ts` | Flash generate / STT / Gemini TTS / Live stub hooks |
+| `lib/voiceRealtime.ts` | Live info + ephemeral token mint |
+| `lib/gemini.ts` | Flash generate / STT / Gemini TTS |
 | `lib/speak.ts` | Client playback; never knows the vendor |
 | `/api/tts` | Server TTS; optional `voiceId` / `authorId` |
+| `/api/voice/realtime` | Mint Live ephemeral token (POST) / capability (GET) |
 | `/api/studio/voice` | Teacher enroll / status |
 
 Mirror `lib/auth.ts` / `lib/payments.ts`: **no `elevenlabs` import outside

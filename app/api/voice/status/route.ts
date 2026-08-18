@@ -1,5 +1,4 @@
-// GET  /api/voice/status  — which providers are configured
-// GET  /api/voice/realtime — Gemini Live capability stub (WS proxy TBD)
+// GET  /api/voice/status  — which providers are configured + Live capability
 
 import { NextResponse } from "next/server";
 import { voiceStackStatus } from "@/lib/voice";

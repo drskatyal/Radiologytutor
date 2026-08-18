@@ -12,10 +12,11 @@ import { useRef, type MouseEvent, type MutableRefObject } from "react";
 import { Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
-import type { Marker } from "@/lib/types";
+import type { FindingMeasurement, Marker } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { ReplayOverlay, type ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { FindingMarker } from "./FindingMarker";
+import { MeasurementOverlay } from "./MeasurementOverlay";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
   ssr: false,
@@ -32,6 +33,9 @@ export interface ViewerPane {
   onReady: (c: CornerstoneControls) => void;
   marker: Marker | null;
   markerVisible: boolean;
+  /** Authored calipers to redraw ([0,1] handles). */
+  measurements?: FindingMeasurement[];
+  measurementsVisible?: boolean;
   ready: boolean;
   instanceId: string;
   label?: string;
@@ -48,6 +52,8 @@ export function StudentViewer({
   onReady,
   marker,
   markerVisible,
+  measurements,
+  measurementsVisible,
   replaying,
   ready,
   locateMode = false,
@@ -64,6 +70,8 @@ export function StudentViewer({
   onReady: (c: CornerstoneControls) => void;
   marker: Marker | null;
   markerVisible: boolean;
+  measurements?: FindingMeasurement[];
+  measurementsVisible?: boolean;
   replaying: boolean;
   ready: boolean;
   /** Viva: student clicks the image to locate the finding. */
@@ -92,6 +100,8 @@ export function StudentViewer({
         onReady={onReady}
         marker={marker}
         markerVisible={markerVisible}
+        measurements={measurements}
+        measurementsVisible={measurementsVisible}
         replaying={replaying}
         ready={ready}
         instanceId="primary"
@@ -111,6 +121,8 @@ export function StudentViewer({
           onReady={secondary.onReady}
           marker={secondary.marker}
           markerVisible={secondary.markerVisible}
+          measurements={secondary.measurements}
+          measurementsVisible={secondary.measurementsVisible}
           replaying={false}
           ready={secondary.ready}
           instanceId={secondary.instanceId}
@@ -132,6 +144,8 @@ function ImagingPane({
   onReady,
   marker,
   markerVisible,
+  measurements,
+  measurementsVisible,
   replaying,
   ready,
   instanceId,
@@ -149,6 +163,8 @@ function ImagingPane({
   onReady: (c: CornerstoneControls) => void;
   marker: Marker | null;
   markerVisible: boolean;
+  measurements?: FindingMeasurement[];
+  measurementsVisible?: boolean;
   replaying: boolean;
   ready: boolean;
   instanceId: string;
@@ -185,6 +201,12 @@ function ImagingPane({
 
       <div ref={hitRef} className="pointer-events-none absolute inset-0">
         {marker && <FindingMarker marker={marker} visible={markerVisible} />}
+        {measurements && measurements.length > 0 && (
+          <MeasurementOverlay
+            measurements={measurements}
+            visible={Boolean(measurementsVisible)}
+          />
+        )}
         <ReplayOverlay
           ref={(h) => {
             overlay.current = h;

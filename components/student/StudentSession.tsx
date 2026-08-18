@@ -241,6 +241,12 @@ export default function StudentSession({
             imagingResolved &&
             (!s.examMode || activeRevealed)
           }
+          measurements={s.measurements}
+          measurementsVisible={
+            s.measurementsVisible &&
+            imagingResolved &&
+            (!s.examMode || activeRevealed)
+          }
           replaying={s.replaying || s.pointing}
           ready={s.ready}
           locateMode={s.locateMode && imagingResolved}

@@ -27,7 +27,7 @@ import { findingViewerState } from "@/lib/viewerController";
 import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
-import type { CaseData, Marker } from "@/lib/types";
+import type { CaseData, FindingMeasurement, Marker } from "@/lib/types";
 import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
 import { clickHitsFinding } from "@/lib/clickFinding";
@@ -117,6 +117,8 @@ export function useStudentSession(
   const [activeIndex, setActiveIndex] = useState(-1);
   const [marker, setMarker] = useState<Marker | null>(null);
   const [markerVisible, setMarkerVisible] = useState(false);
+  const [measurements, setMeasurements] = useState<FindingMeasurement[]>([]);
+  const [measurementsVisible, setMeasurementsVisible] = useState(false);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [phase, setPhase] = useState<SessionPhase>("idle");
   // True while a "thinking" turn looks like it's reaching for the web — drives
@@ -302,6 +304,7 @@ export function useStudentSession(
       const spoil = opts?.spoil !== false;
       stopReplay();
       setMarkerVisible(false);
+      setMeasurementsVisible(false);
       setLocateHint("");
       locateMissesRef.current = 0;
 
@@ -323,6 +326,8 @@ export function useStudentSession(
         markRevealed(finding.id);
         // The recorded marker is part of the retrace, so hold the static marker.
         setMarker(null);
+        setMeasurements([]);
+        setMeasurementsVisible(false);
 
         let audioEl: HTMLAudioElement | null = null;
         if (track.audioUrl) {
@@ -351,6 +356,10 @@ export function useStudentSession(
               // Land on the static marker so the finding stays highlighted.
               setMarker(finding.marker ?? null);
               setMarkerVisible(true);
+              // Overlay authored calipers after the track (track may have drawn live tools).
+              const meas = finding.measurements ?? [];
+              setMeasurements(meas);
+              setMeasurementsVisible(meas.length > 0);
             },
           }
         );
@@ -384,12 +393,16 @@ export function useStudentSession(
       await controls.current.showState(view, 750);
       setActiveIndex(index);
       const m = finding.marker ?? null;
+      const meas = finding.measurements ?? [];
+      setMeasurements(meas);
       if (spoil && m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
         markRevealed(finding.id);
         await pointLaser(m.x_pct, m.y_pct, m);
+        setMeasurementsVisible(meas.length > 0);
       } else {
         setMarker(m);
         setMarkerVisible(false);
+        setMeasurementsVisible(spoil && meas.length > 0);
       }
       await seatSecondary(finding, spoil);
     },
@@ -801,6 +814,9 @@ export function useStudentSession(
     if (f) {
       markRevealed(f.id);
       if (f.marker) setMarkerVisible(true);
+      const meas = f.measurements ?? [];
+      setMeasurements(meas);
+      setMeasurementsVisible(meas.length > 0);
     }
   }, [examMode, orderedFindings, markRevealed]);
 
@@ -824,6 +840,8 @@ export function useStudentSession(
     activeIndex,
     marker,
     markerVisible,
+    measurements,
+    measurementsVisible,
     turns,
     phase,
     busy,

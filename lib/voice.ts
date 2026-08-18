@@ -7,8 +7,8 @@
  *   3. Caller falls back to browser speechSynthesis
  *
  * Gemini Live (realtime native audio) is the latency escape hatch — see
- * `preferRealtimeFallback` / docs/CONSULTANT_READING.md. Full WebSocket
- * streaming is stubbed here so the student UI can detect capability.
+ * `preferRealtimeFallback` / docs/CONSULTANT_READING.md. Mint a short-lived
+ * token via `/api/voice/realtime` when TTS exceeds VOICE_LATENCY_BUDGET_MS.
  */
 
 import { geminiConfigured, synthesizeSpeech } from "./gemini";
@@ -23,6 +23,10 @@ export type TutorSpeech = {
   audio: Buffer;
   mimeType: string;
   provider: VoiceProvider;
+  /** Wall time for this synthesis (ms) — client uses vs VOICE_LATENCY_BUDGET_MS. */
+  latencyMs: number;
+  /** True when synthesis exceeded the soft budget (prefer Gemini Live next turn). */
+  exceededBudget: boolean;
 };
 
 export type SynthesizeTutorOpts = {
@@ -47,15 +51,17 @@ export function voiceStackStatus(): {
   geminiTts: boolean;
   realtimeAvailable: boolean;
   primary: VoiceProvider;
+  latencyBudgetMs: number;
 } {
   const elevenLabs = elevenLabsConfigured();
   const geminiTts = geminiConfigured();
   return {
     elevenLabs,
     geminiTts,
-    // Live API uses the same Gemini key; client must still open a WS session.
+    // Live API uses the same Gemini key; client mints via /api/voice/realtime.
     realtimeAvailable: geminiTts,
     primary: elevenLabs ? "elevenlabs" : geminiTts ? "gemini_tts" : "none",
+    latencyBudgetMs: VOICE_LATENCY_BUDGET_MS,
   };
 }
 
@@ -68,23 +74,44 @@ export async function synthesizeTutorSpeech(
   const text = opts.text.trim();
   if (!text) throw new Error("text is required for tutor speech.");
 
+  const started = Date.now();
   const voiceId = opts.voiceId?.trim();
+  let audio: Buffer | null = null;
+  let mimeType = "audio/mpeg";
+  let provider: VoiceProvider = "none";
+
   if (voiceId && elevenLabsConfigured()) {
     try {
       const r = await elevenLabsSynthesize(text, voiceId);
-      return { audio: r.audio, mimeType: r.mimeType, provider: "elevenlabs" };
+      audio = r.audio;
+      mimeType = r.mimeType;
+      provider = "elevenlabs";
     } catch (err) {
       // Fall through to Gemini TTS — authenticity preferred, availability required.
       console.warn("[voice] ElevenLabs failed, falling back to Gemini TTS:", err);
     }
   }
 
-  if (!geminiConfigured()) {
-    throw new Error("No TTS provider configured (set ELEVENLABS_API_KEY or GEMINI_API_KEY).");
+  if (!audio) {
+    if (!geminiConfigured()) {
+      throw new Error(
+        "No TTS provider configured (set ELEVENLABS_API_KEY or GEMINI_API_KEY)."
+      );
+    }
+    const r = await synthesizeSpeech(text);
+    audio = r.audio;
+    mimeType = r.mimeType;
+    provider = "gemini_tts";
   }
 
-  const r = await synthesizeSpeech(text);
-  return { audio: r.audio, mimeType: r.mimeType, provider: "gemini_tts" };
+  const latencyMs = Date.now() - started;
+  return {
+    audio,
+    mimeType,
+    provider,
+    latencyMs,
+    exceededBudget: latencyMs > VOICE_LATENCY_BUDGET_MS,
+  };
 }
 
 /**

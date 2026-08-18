@@ -4,11 +4,17 @@
 //
 // Live tutor answers ONLY — recorded walk-throughs never route through here.
 // Voice selection: explicit voiceId → Author.voice.voiceId → Gemini TTS.
+// Headers: X-FlowRad-Voice-Provider, X-FlowRad-Voice-Latency-Ms,
+//          X-FlowRad-Voice-Budget-Exceeded (prefer Gemini Live next turn).
 
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId } from "@/lib/auth";
 import { getAuthor } from "@/lib/cases";
-import { synthesizeTutorSpeech, voiceStackStatus } from "@/lib/voice";
+import {
+  synthesizeTutorSpeech,
+  voiceStackStatus,
+  VOICE_LATENCY_BUDGET_MS,
+} from "@/lib/voice";
 
 export const runtime = "nodejs";
 
@@ -40,10 +46,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { audio, mimeType, provider } = await synthesizeTutorSpeech({
-      text: body.text,
-      voiceId,
-    });
+    const { audio, mimeType, provider, latencyMs, exceededBudget } =
+      await synthesizeTutorSpeech({
+        text: body.text,
+        voiceId,
+      });
 
     return new NextResponse(audio as unknown as BodyInit, {
       status: 200,
@@ -51,6 +58,13 @@ export async function POST(req: NextRequest) {
         "Content-Type": mimeType,
         "Cache-Control": "no-store",
         "X-FlowRad-Voice-Provider": provider,
+        "X-FlowRad-Voice-Latency-Ms": String(latencyMs),
+        "X-FlowRad-Voice-Budget-Ms": String(VOICE_LATENCY_BUDGET_MS),
+        "X-FlowRad-Voice-Budget-Exceeded": exceededBudget ? "1" : "0",
+        // Hint: open Gemini Live when TTS is too slow for conversational feel.
+        ...(exceededBudget
+          ? { "X-FlowRad-Prefer-Realtime": "/api/voice/realtime" }
+          : {}),
       },
     });
   } catch (err) {

@@ -60,8 +60,9 @@ The viewer already has **Length**, **EllipticalROI**, **RectangleROI**, and
 - Ellipse / rectangle ROI → `meanHu` / max / min / std + `areaMm2`
 - Probe → point HU
 
-The tutor may cite **only** these authored numbers. Redrawing calipers on the
-student viewer from stored handles is a follow-on (handles are already `[0,1]`).
+The tutor may cite **only** these authored numbers. On student reveal (spoil),
+`MeasurementOverlay` redraws calipers from stored `[0,1]` handles with the
+authored mm / HU label — Layer 2 authenticity without re-running tools.
 
 ## What else makes a finding “awesome” (store next)
 
@@ -69,7 +70,7 @@ student viewer from stored handles is a follow-on (handles are already `[0,1]`).
 2. Bidirectional diameters (short + long axis)
 3. Authored zoom/pan snapshot (already partially in Pacsbin state / track)
 4. Optional GSPS/SR export for PACS interop
-5. Redraw measurement overlays on student reveal from `measurements.handles`
+5. ~~Redraw measurement overlays on student reveal from `measurements.handles`~~ (done — `MeasurementOverlay`)
 
 ## Agent / realtime windowing
 
