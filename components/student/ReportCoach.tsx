@@ -1,37 +1,82 @@
 "use client";
 
-// Structured-report coach. Rubric is always visible. The AI score is never
-// shown without the bands and the authored must-mention list.
+// Report coach — Technique / Findings / Impression with rubric always visible.
+// "Model this" asks the attending tutor (viewer + speech) to demonstrate the
+// section; Grade scores the registrar's attempt against authored findings only.
 
 import { useState } from "react";
-import { Badge, Button, EmptyState, Field, Spinner, Textarea, useToast } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Field,
+  Spinner,
+  Tabs,
+  Textarea,
+  useToast,
+} from "@/components/ui";
 import type { Finding } from "@/lib/types";
 import {
   buildReportRubric,
   type ReportGrade,
 } from "@/lib/reportGrade";
 
+type Section = "technique" | "findings" | "impression";
+
+const SECTION_HINT: Record<Section, string> = {
+  technique:
+    "Model a Technique line for this study (modality, sequences, contrast) in report language — one or two sentences. Do not invent findings.",
+  findings:
+    "Walk Findings in tour order. For each authored finding, drive the viewer (show_finding / set_window / point_to) and dictate how a registrar should report it. Short spoken sentences.",
+  impression:
+    "Model a concise Impression from the authored findings only, numbered in speech. Then invite the registrar to try dictating their own.",
+};
+
 export function ReportCoach({
   caseId,
   findings,
+  onAskTutor,
+  compact = false,
 }: {
   caseId: string;
   findings: Finding[];
+  /** Send a coaching prompt to the live tutor (drives viewer + speech). */
+  onAskTutor?: (text: string) => void;
+  compact?: boolean;
 }) {
   const { toast } = useToast();
   const rubric = buildReportRubric(findings);
-  const [report, setReport] = useState("");
+  const [section, setSection] = useState<Section>("findings");
+  const [technique, setTechnique] = useState("");
+  const [findingsText, setFindingsText] = useState("");
+  const [impression, setImpression] = useState("");
   const [busy, setBusy] = useState(false);
   const [grade, setGrade] = useState<ReportGrade | null>(null);
 
+  const reportBody = [
+    technique.trim() && `Technique:\n${technique.trim()}`,
+    findingsText.trim() && `Findings:\n${findingsText.trim()}`,
+    impression.trim() && `Impression:\n${impression.trim()}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
   async function onGrade() {
     if (busy) return;
+    if (!reportBody.trim()) {
+      toast({
+        title: "Nothing to grade",
+        description: "Write or dictate at least one section first.",
+        variant: "warning",
+      });
+      return;
+    }
     setBusy(true);
     try {
       const res = await fetch("/api/grade-report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ caseId, report }),
+        body: JSON.stringify({ caseId, report: reportBody }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -50,6 +95,10 @@ export function ReportCoach({
     }
   }
 
+  function modelSection() {
+    onAskTutor?.(SECTION_HINT[section]);
+  }
+
   if (findings.length === 0) {
     return (
       <EmptyState
@@ -59,49 +108,96 @@ export function ReportCoach({
     );
   }
 
+  const value =
+    section === "technique"
+      ? technique
+      : section === "findings"
+        ? findingsText
+        : impression;
+  const setValue =
+    section === "technique"
+      ? setTechnique
+      : section === "findings"
+        ? setFindingsText
+        : setImpression;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+    <div
+      className={
+        compact
+          ? "flex flex-col gap-3 border-b border-subtle p-3"
+          : "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4"
+      }
+    >
       <div>
-        <h3 className="text-sm font-semibold text-primary">Report against the rubric</h3>
+        <h3 className="text-sm font-semibold text-primary">Practice the report</h3>
         <p className="mt-1 text-xs leading-relaxed text-muted">
-          Dictate or type Technique / Findings / Impression. The grade is only
-          against what was authored — never a bare score.
+          Watch the attending model each section on the viewer, then write your
+          own. Grades only use authored findings — never a bare score.
         </p>
       </div>
 
-      <ul className="flex flex-col gap-1.5">
-        {rubric.map((item, i) => (
-          <li
-            key={item.findingId}
-            className="rounded-lg border border-subtle bg-elevated px-2.5 py-2"
-          >
-            <p className="text-xs font-medium text-primary">
-              <span className="tabular-nums text-muted">{i + 1}.</span> {item.label}
-            </p>
-            {item.mustMention.length > 0 && (
-              <p className="mt-0.5 text-[11px] leading-snug text-secondary">
-                {item.mustMention.join(" · ")}
-              </p>
-            )}
-          </li>
-        ))}
-      </ul>
+      <Tabs
+        items={[
+          { value: "technique", label: "Technique" },
+          { value: "findings", label: "Findings" },
+          { value: "impression", label: "Impression" },
+        ]}
+        value={section}
+        onValueChange={(v) => setSection(v as Section)}
+      />
 
-      <Field label="Your report">
+      <div className="flex flex-wrap gap-2">
+        {onAskTutor && (
+          <Button size="sm" variant="secondary" onClick={modelSection}>
+            Model this section
+          </Button>
+        )}
+        <Button size="sm" onClick={onGrade} disabled={busy} loading={busy}>
+          {busy ? "Grading…" : "Grade report"}
+        </Button>
+      </div>
+
+      <Field label={`Your ${section}`}>
         {(p) => (
           <Textarea
             {...p}
-            value={report}
-            onChange={(e) => setReport(e.target.value)}
-            rows={6}
-            placeholder="Technique: …&#10;Findings: …&#10;Impression: …"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            rows={compact ? 4 : 6}
+            placeholder={
+              section === "technique"
+                ? "Technique: …"
+                : section === "findings"
+                  ? "Findings: …"
+                  : "Impression: …"
+            }
           />
         )}
       </Field>
 
-      <Button onClick={onGrade} disabled={busy} loading={busy}>
-        {busy ? "Grading…" : "Grade report"}
-      </Button>
+      {!compact && (
+        <ul className="flex flex-col gap-1.5">
+          <li className="text-[10px] font-semibold uppercase tracking-wide text-muted">
+            Rubric
+          </li>
+          {rubric.map((item, i) => (
+            <li
+              key={item.findingId}
+              className="rounded-lg border border-subtle bg-elevated px-2.5 py-2"
+            >
+              <p className="text-xs font-medium text-primary">
+                <span className="tabular-nums text-muted">{i + 1}.</span> {item.label}
+              </p>
+              {item.mustMention.length > 0 && (
+                <p className="mt-0.5 text-[11px] leading-snug text-secondary">
+                  {item.mustMention.join(" · ")}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {busy && !grade && (
         <div className="flex items-center gap-2 text-xs text-secondary">

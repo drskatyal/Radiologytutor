@@ -364,7 +364,15 @@ export default function StudentSession({
         text={captionText}
         stepLabel={stepLabel}
         revealed={!s.examMode || activeRevealed}
-        modeLabel={intent === "exam" ? "Examiner" : "Teaching"}
+        modeLabel={
+          intent === "exam"
+            ? "Examiner"
+            : mode === "reporting"
+              ? "Report coach"
+              : s.tourActive
+                ? "Teaching"
+                : "Attending"
+        }
         sources={lastAssistant?.sources}
       />
 
@@ -542,12 +550,9 @@ export default function StudentSession({
             onValueChange={(v) => {
               const next = v as SessionMode;
               setMode(next);
-              if (next === "reporting" || next === "guided") {
-                setPanel("ask");
+              setPanel("ask");
+              if (next === "reporting" || next === "guided" || next === "viva") {
                 setRailOpen(true);
-              }
-              if (next === "guided") {
-                /* tour resumes via intent effect when mode settles */
               }
             }}
           />
@@ -590,28 +595,32 @@ export default function StudentSession({
         </div>
 
         <div className={cn("min-h-0 flex-1 flex-col", panel === "ask" ? "flex" : "hidden")}>
-          {mode === "reporting" ? (
-            <ReportCoach caseId={caseData.caseId} findings={s.orderedFindings} />
-          ) : (
-            <TutorChat
-              turns={s.turns}
-              phase={s.phase}
-              orbState={s.orbState}
-              micState={s.micState}
-              micSupported={s.micSupported}
-              busy={s.busy}
-              aiAvailable={s.aiAvailable}
-              speakingTurnId={s.speakingTurnId}
-              onSend={s.sendText}
-              onMicStart={s.onMicStart}
-              onMicStop={s.onMicStop}
-              onStopSpeaking={s.onStopSpeaking}
-              onReplayTurn={s.replayTurn}
-              onTypingFocus={onTypingFocus}
-              onTypingBlur={onTypingBlur}
-              hideMic
+          {mode === "reporting" && (
+            <ReportCoach
+              caseId={caseData.caseId}
+              findings={s.orderedFindings}
+              compact
+              onAskTutor={s.sendText}
             />
           )}
+          <TutorChat
+            turns={s.turns}
+            phase={s.phase}
+            orbState={s.orbState}
+            micState={s.micState}
+            micSupported={s.micSupported}
+            busy={s.busy}
+            aiAvailable={s.aiAvailable}
+            speakingTurnId={s.speakingTurnId}
+            onSend={s.sendText}
+            onMicStart={s.onMicStart}
+            onMicStop={s.onMicStop}
+            onStopSpeaking={s.onStopSpeaking}
+            onReplayTurn={s.replayTurn}
+            onTypingFocus={onTypingFocus}
+            onTypingBlur={onTypingBlur}
+            hideMic
+          />
         </div>
       </aside>
 

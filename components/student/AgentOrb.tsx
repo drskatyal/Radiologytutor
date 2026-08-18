@@ -25,10 +25,10 @@ export type OrbState =
   | "speaking";
 
 const SIZES = {
-  // Docked over the viewer — compact but unmistakable.
-  sm: { box: "h-14 w-14", core: "h-7 w-7", orbit: 26 },
-  // Expanded into the tutor panel header — the hero.
-  lg: { box: "h-24 w-24", core: "h-12 w-12", orbit: 46 },
+  // Dock — compact, readable, no oversized glow.
+  sm: { box: "h-11 w-11", core: "h-6 w-6", orbit: 20 },
+  // Rail header.
+  lg: { box: "h-16 w-16", core: "h-9 w-9", orbit: 32 },
 } as const;
 
 // Accent-derived halo per state. Listening borrows the danger/record hue so it
@@ -76,10 +76,10 @@ export function AgentOrb({ state, level = 0, size = "lg", className }: AgentOrbP
       {/* Soft radial halo — breathes by default, intensifies per state. */}
       <span
         className={cn(
-          "pointer-events-none absolute inset-[-30%] rounded-full blur-xl transition-opacity duration-500",
+          "pointer-events-none absolute inset-[-20%] rounded-full blur-lg transition-opacity duration-500",
           "bg-[radial-gradient(circle_at_center,var(--tw-gradient-stops))]",
           HALO[state],
-          state === "idle" ? "animate-pulse opacity-70" : "opacity-100"
+          state === "idle" ? "opacity-60" : "opacity-85"
         )}
         aria-hidden="true"
       />

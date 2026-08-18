@@ -802,7 +802,8 @@ export function useStudentSession(
   );
 
   // Seat the first finding once the viewer is ready, then start the experience.
-  // Teach (guided): autonomous attending tour. Viva: examiner stem. Others: seat only.
+  // Teach (guided): autonomous attending tour. Viva: examiner stem.
+  // Reporting: seat + invite to model Findings on the viewer.
   useEffect(() => {
     if (!ready || startedRef.current || orderedFindings.length === 0) return;
     startedRef.current = true;
@@ -812,6 +813,17 @@ export function useStudentSession(
       void revealFinding(0, { spoil: true }).then(() => {
         void runTutor(
           "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a radiology registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
+          []
+        );
+      });
+      return;
+    }
+    if (mode === "reporting") {
+      tourActiveRef.current = false;
+      setTourActive(false);
+      void revealFinding(0, { spoil: true }).then(() => {
+        void runTutor(
+          "You are coaching a structured report. Briefly introduce Technique for this modality, then start Findings: drive to the first finding and model how to dictate it. Two to three short sentences.",
           []
         );
       });
