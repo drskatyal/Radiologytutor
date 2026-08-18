@@ -42,7 +42,9 @@ export function ContinueLearning({ items }: { items: ContinueLearningItem[] }) {
       <ul className="-mx-1 flex snap-x snap-mandatory gap-4 overflow-x-auto px-1 pb-2 [scrollbar-width:thin]">
         {items.map((item) => {
           const caseId = resumeCaseId(item);
-          const href = caseId ? `/case/${caseId}` : `/course/${item.course.id}`;
+          const href = caseId
+            ? `/case/${caseId}?course=${encodeURIComponent(item.course.id)}`
+            : `/course/${item.course.id}`;
           return (
             <li key={item.course.id} className="w-[min(100%,20rem)] shrink-0 snap-start">
               <div className="flex h-full flex-col gap-4 rounded-xl border border-subtle bg-elevated p-4 transition-colors hover:border-strong">

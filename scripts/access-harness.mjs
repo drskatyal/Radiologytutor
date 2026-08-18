@@ -44,7 +44,38 @@ const CASES = [
     expect: { anon: 401, student: 404, author: 404, admin: 404 },
   },
 
-  // Catalog / cases (public published)
+  {
+    name: "GET /api/progress",
+    path: "/api/progress",
+    expect: { anon: 401, student: 200, author: 200, admin: 200 },
+  },
+  {
+    name: "GET /api/wishlist",
+    path: "/api/wishlist",
+    expect: { anon: 401, student: 200, author: 200, admin: 200 },
+  },
+  {
+    name: "POST /api/wishlist course_demo",
+    method: "POST",
+    path: "/api/wishlist",
+    body: { courseId: "course_demo" },
+    expect: { anon: 401, student: 200, author: 200, admin: 200 },
+  },
+  {
+    name: "GET /api/reviews?courseId=course_demo",
+    path: "/api/reviews?courseId=course_demo",
+    expect: { anon: 200, student: 200, author: 200, admin: 200 },
+  },
+  {
+    name: "GET /api/certificates",
+    path: "/api/certificates",
+    expect: { anon: 401, student: 200, author: 200, admin: 200 },
+  },
+  {
+    name: "GET /learning",
+    path: "/learning",
+    expect: { anon: 200, student: 200, author: 200, admin: 200 },
+  },
   { name: "GET /api/catalog", path: "/api/catalog", expect: { anon: 200, student: 200, author: 200, admin: 200 } },
   { name: "GET /api/cases", path: "/api/cases", expect: { anon: 200, student: 200, author: 200, admin: 200 } },
   {

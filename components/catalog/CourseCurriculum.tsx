@@ -119,7 +119,7 @@ export function CourseCurriculum({
                     <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
                     Mark complete
                   </Button>
-                  <Link href={`/case/${c.caseId}`}>
+                  <Link href={`/case/${c.caseId}?course=${encodeURIComponent(courseId)}`}>
                     <Button
                       size="sm"
                       variant="ghost"

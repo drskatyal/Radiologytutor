@@ -14,13 +14,20 @@ import {
   type ViewerSource,
 } from "@/lib/viewerSource";
 import StudentSession from "@/components/student/StudentSession";
+import { RecordCaseOpen } from "@/components/learning/RecordCaseOpen";
 
 export const dynamic = "force-dynamic";
 
 /** WADO-RS root served by our same-origin proxy (creds/CORS handled server-side). */
 const WADO_RS_ROOT = "/api/dicomweb";
 
-export default async function CasePage({ params }: { params: { caseId: string } }) {
+export default async function CasePage({
+  params,
+  searchParams,
+}: {
+  params: { caseId: string };
+  searchParams?: { course?: string };
+}) {
   const orgId = await activeOrgId();
   const caseData = await getCaseForOrg(orgId, params.caseId);
   if (!caseData) notFound();
@@ -47,14 +54,18 @@ export default async function CasePage({ params }: { params: { caseId: string } 
     resolved && resolved.length > 0 ? resolved : BUNDLED_CASE_SERIES;
   const source: ViewerSource = series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE;
   const imagingResolved = !!resolved && resolved.length > 0;
+  const courseId = searchParams?.course?.trim() || null;
 
   return (
-    <StudentSession
-      caseData={caseData}
-      source={source}
-      series={series}
-      manifest={manifest}
-      imagingResolved={imagingResolved}
-    />
+    <>
+      <RecordCaseOpen courseId={courseId} caseId={params.caseId} />
+      <StudentSession
+        caseData={caseData}
+        source={source}
+        series={series}
+        manifest={manifest}
+        imagingResolved={imagingResolved}
+      />
+    </>
   );
 }

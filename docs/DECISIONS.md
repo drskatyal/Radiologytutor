@@ -35,8 +35,10 @@
 ## Marketplace learning loop
 - Catalog is public for published courses/cases
 - `POST /api/enrollments` creates a free active enrollment (payments later)
-- Library shows **My learning** for the signed-in student
+- Library shows **My learning**; `/learning` is the Continue Learning hub
+- **Progress** (case checkmarks), **Wishlist**, **Reviews**, **Certificate of Completion** (not CME)
 - Draft cases 404 for students; authors/admins can still open them
+- Research notes: `docs/MARKETPLACE_RESEARCH.md`
 
 ## Shut down
 - Clerk as production auth
