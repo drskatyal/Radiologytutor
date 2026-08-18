@@ -1461,6 +1461,17 @@ export async function getEnrollment(enrollmentId: string): Promise<Enrollment | 
   return enrollmentsStore.get(enrollmentId);
 }
 
+export async function getEnrollmentForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Enrollment | null> {
+  const all = await enrollmentsStore.all();
+  const matches = all.filter((e) => e.userId === userId && e.courseId === courseId);
+  if (matches.length === 0) return null;
+  const active = matches.find((e) => e.status === "active");
+  return active ?? null;
+}
+
 export interface CreateEnrollmentInput {
   id?: string;
   userId: string;

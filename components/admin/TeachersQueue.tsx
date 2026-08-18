@@ -2,26 +2,102 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { BadgeCheck, Building2, CircleAlert, ShieldQuestion, Users } from "lucide-react";
-import { Badge, Button, EmptyState, Modal, Skeleton } from "@/components/ui";
+import {
+  BadgeCheck,
+  Building2,
+  CircleAlert,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestion,
+  Users,
+} from "lucide-react";
+import { Badge, Button, EmptyState, Modal, Skeleton, useToast } from "@/components/ui";
+import { updateAuthor as apiUpdateAuthor } from "./api";
 import type { Author } from "./types";
 
-/**
- * Teacher verification queue — lists org authors with a placeholder review
- * action. Real credential review lands with AuthorProfile.verification (P0).
- */
+type VerificationStatus = NonNullable<Author["verification"]> | "unverified";
+
+function resolveVerification(author: Author): VerificationStatus {
+  return author.verification ?? "unverified";
+}
+
+function VerificationBadge({ status }: { status: VerificationStatus }) {
+  switch (status) {
+    case "verified":
+      return (
+        <Badge variant="success" className="gap-1">
+          <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+          Verified
+        </Badge>
+      );
+    case "pending":
+      return (
+        <Badge variant="warning" className="gap-1">
+          <ShieldQuestion className="h-3 w-3" aria-hidden="true" />
+          Pending
+        </Badge>
+      );
+    case "rejected":
+      return (
+        <Badge variant="danger" className="gap-1">
+          <ShieldAlert className="h-3 w-3" aria-hidden="true" />
+          Rejected
+        </Badge>
+      );
+    default:
+      return (
+        <Badge variant="warning" className="gap-1">
+          <ShieldQuestion className="h-3 w-3" aria-hidden="true" />
+          Unverified
+        </Badge>
+      );
+  }
+}
+
 export function TeachersQueue({
   authors,
   loading,
   error,
   onRetry,
+  onUpdated,
 }: {
   authors: Author[];
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  onUpdated?: (author: Author) => void;
 }) {
+  const { toast } = useToast();
   const [reviewing, setReviewing] = useState<Author | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submitVerification(
+    author: Author,
+    verification: "verified" | "rejected"
+  ) {
+    setSubmitting(true);
+    try {
+      const updated = await apiUpdateAuthor(author.id, { verification });
+      onUpdated?.(updated);
+      setReviewing(null);
+      toast({
+        title: verification === "verified" ? "Teacher verified" : "Verification rejected",
+        description:
+          verification === "verified"
+            ? `${author.name} can publish to the public marketplace.`
+            : `${author.name} was marked as rejected.`,
+        variant: verification === "verified" ? "success" : "warning",
+      });
+    } catch (e) {
+      toast({
+        title: "Could not update verification",
+        description: (e as Error).message,
+        variant: "danger",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   if (loading) return <TeachersSkeleton />;
 
@@ -60,68 +136,115 @@ export function TeachersQueue({
           <span className="text-right">Actions</span>
         </div>
         <ul className="divide-y divide-subtle">
-          {authors.map((author) => (
-            <li
-              key={author.id}
-              className="flex flex-col gap-3 px-4 py-3.5 transition-colors hover:bg-surface/40 lg:grid lg:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] lg:items-center lg:gap-4"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-primary">{author.name}</p>
-                <p className="mt-0.5 truncate text-xs text-muted">
-                  {author.credentials || "No credentials on file"}
-                </p>
-              </div>
-              <div className="hidden min-w-0 text-sm text-secondary lg:block">
-                {author.institution ? (
-                  <span className="inline-flex items-center gap-1.5 truncate">
-                    <Building2 className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
-                    {author.institution}
-                  </span>
-                ) : (
-                  <span className="text-muted">—</span>
-                )}
-              </div>
-              <div>
-                <Badge variant="warning" className="gap-1">
-                  <ShieldQuestion className="h-3 w-3" aria-hidden="true" />
-                  Unverified
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <Link href={`/authors/${author.id}`}>
-                  <Button size="sm" variant="ghost">
-                    Profile
+          {authors.map((author) => {
+            const verification = resolveVerification(author);
+            return (
+              <li
+                key={author.id}
+                className="flex flex-col gap-3 px-4 py-3.5 transition-colors hover:bg-surface/40 lg:grid lg:grid-cols-[minmax(0,1fr)_10rem_8rem_auto] lg:items-center lg:gap-4"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-primary">{author.name}</p>
+                  <p className="mt-0.5 truncate text-xs text-muted">
+                    {author.credentials || "No credentials on file"}
+                  </p>
+                </div>
+                <div className="hidden min-w-0 text-sm text-secondary lg:block">
+                  {author.institution ? (
+                    <span className="inline-flex items-center gap-1.5 truncate">
+                      <Building2 className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
+                      {author.institution}
+                    </span>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                </div>
+                <div>
+                  <VerificationBadge status={verification} />
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Link href={`/authors/${author.id}`}>
+                    <Button size="sm" variant="ghost">
+                      Profile
+                    </Button>
+                  </Link>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    leadingIcon={<BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />}
+                    onClick={() => setReviewing(author)}
+                  >
+                    Review
                   </Button>
-                </Link>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  leadingIcon={<BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-                  onClick={() => setReviewing(author)}
-                >
-                  Review
-                </Button>
-              </div>
-            </li>
-          ))}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       </div>
 
       <Modal
         open={reviewing != null}
-        onClose={() => setReviewing(null)}
-        title="Verification queue"
+        onClose={() => !submitting && setReviewing(null)}
+        title="Credential review"
         description={
           reviewing
-            ? `Credential review for ${reviewing.name} is not open yet. Unverified teachers cannot publish to the public marketplace once this gate ships.`
+            ? `Review ${reviewing.name}'s credentials before granting marketplace publish access.`
             : undefined
         }
         footer={
-          <Button variant="secondary" onClick={() => setReviewing(null)}>
-            Close
-          </Button>
+          reviewing ? (
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => setReviewing(null)}
+                disabled={submitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => submitVerification(reviewing, "rejected")}
+                loading={submitting}
+              >
+                Reject
+              </Button>
+              <Button
+                onClick={() => submitVerification(reviewing, "verified")}
+                loading={submitting}
+                leadingIcon={<BadgeCheck className="h-4 w-4" aria-hidden="true" />}
+              >
+                Verify
+              </Button>
+            </>
+          ) : (
+            <Button variant="secondary" onClick={() => setReviewing(null)}>
+              Close
+            </Button>
+          )
         }
-      />
+      >
+        {reviewing && (
+          <dl className="grid gap-3 text-sm">
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted">Credentials</dt>
+              <dd className="mt-1 text-primary">
+                {reviewing.credentials || "No credentials on file"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted">Institution</dt>
+              <dd className="mt-1 text-primary">{reviewing.institution || "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted">Status</dt>
+              <dd className="mt-1">
+                <VerificationBadge status={resolveVerification(reviewing)} />
+              </dd>
+            </div>
+          </dl>
+        )}
+      </Modal>
     </>
   );
 }

@@ -29,19 +29,30 @@ app = "flowrad-orthanc"
 primary_region = "iad"
 
 [build]
-  # Pin before production; :latest is fine for the first bring-up.
-  image = "orthancteam/orthanc:latest"
+  # Pin a known Orthanc release — bump intentionally, never float on :latest in prod.
+  image = "orthancteam/orthanc:25.3.3"
 
 [env]
   ORTHANC__NAME = "FlowRad"
   ORTHANC__AUTHENTICATION_ENABLED = "true"
-  # Override in secrets. Default is local-dev only.
+  # Override in secrets. Default is local-dev only — set a strong password before prod.
   ORTHANC__REGISTERED_USERS = "{\"flowrad\":\"flowrad\"}"
   ORTHANC__DICOM_WEB__ENABLE = "true"
+  ORTHANC__DICOM_WEB__PublicRoot = "/dicom-web/"
   VERBOSE_ENABLED = "false"
 
-# No [http_service]: port 8042 is reachable only on the Fly private network.
-# The image listens on 8042 by default.
+# Private TCP on Fly 6PN only (no public HTTP). Health-check the Orthanc port.
+[[services]]
+  internal_port = 8042
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "45s"
 
 [[mounts]]
   source = "orthanc_data"

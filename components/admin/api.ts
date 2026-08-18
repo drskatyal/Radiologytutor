@@ -65,7 +65,7 @@ export async function createAuthor(input: AuthorInput): Promise<Author> {
 
 export async function updateAuthor(
   id: string,
-  patch: Partial<AuthorInput>
+  patch: Partial<AuthorInput> & { verification?: Author["verification"] }
 ): Promise<Author> {
   const res = await fetch(`/api/admin/authors/${encodeURIComponent(id)}`, {
     method: "PATCH",

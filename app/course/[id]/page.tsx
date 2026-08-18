@@ -1,29 +1,32 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { GraduationCap, Layers, PlayCircle } from "lucide-react";
-import {
-  DEFAULT_ORG_ID,
-  getCourse,
-  getCasesByIds,
-  getAuthor,
-} from "@/lib/cases";
+import { getCourse, getCasesByIds, getAuthor, getEnrollmentForUserCourse } from "@/lib/cases";
+import { activeOrgId, getSession } from "@/lib/auth";
 import { Badge, Breadcrumbs, Button, EmptyState, PageContainer } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import { CourseCases } from "@/components/catalog/CourseCases";
+import { CourseEnrollButton } from "@/components/catalog/CourseEnrollButton";
 
 export const dynamic = "force-dynamic";
 
 export default async function CoursePage({ params }: { params: { id: string } }) {
-  const course = await getCourse(DEFAULT_ORG_ID, params.id);
+  const orgId = await activeOrgId();
+  const course = await getCourse(orgId, params.id);
   if (!course) notFound();
 
-  const [cases, author] = await Promise.all([
-    getCasesByIds(DEFAULT_ORG_ID, course.caseIds),
-    course.authorId ? getAuthor(DEFAULT_ORG_ID, course.authorId) : Promise.resolve(null),
+  const session = await getSession();
+  const [cases, author, enrollment] = await Promise.all([
+    getCasesByIds(orgId, course.caseIds),
+    course.authorId ? getAuthor(orgId, course.authorId) : Promise.resolve(null),
+    session
+      ? getEnrollmentForUserCourse(session.user.id, course.id)
+      : Promise.resolve(null),
   ]);
 
   const firstCaseId = cases[0]?.caseId;
+  const isEnrolled = enrollment?.status === "active";
 
   return (
     <>
@@ -37,13 +40,20 @@ export default async function CoursePage({ params }: { params: { id: string } })
         }
         description={course.description}
         actions={
-          firstCaseId && (
-            <Link href={`/case/${firstCaseId}`}>
-              <Button leadingIcon={<PlayCircle className="h-4 w-4" aria-hidden="true" />}>
-                Start course
-              </Button>
-            </Link>
-          )
+          <div className="flex flex-wrap items-center gap-2">
+            <CourseEnrollButton
+              courseId={course.id}
+              initiallyEnrolled={isEnrolled}
+              firstCaseId={firstCaseId}
+            />
+            {firstCaseId && (
+              <Link href={`/case/${firstCaseId}`}>
+                <Button leadingIcon={<PlayCircle className="h-4 w-4" aria-hidden="true" />}>
+                  Start course
+                </Button>
+              </Link>
+            )}
+          </div>
         }
       >
         <div className="flex flex-wrap items-center gap-2">

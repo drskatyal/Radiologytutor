@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
 import { getAuthor, updateAuthor, deleteAuthor } from "@/lib/cases";
+import type { AuthorProfile } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,6 +39,7 @@ export async function PATCH(
       bio?: string | null;
       institution?: string | null;
       avatarUrl?: string | null;
+      verification?: AuthorProfile["verification"];
     };
     const patch: Parameters<typeof updateAuthor>[2] = {};
     if (typeof body.name === "string") {
@@ -49,6 +51,18 @@ export async function PATCH(
     if (body.bio !== undefined) patch.bio = body.bio?.trim() || undefined;
     if (body.institution !== undefined) patch.institution = body.institution?.trim() || undefined;
     if (body.avatarUrl !== undefined) patch.avatarUrl = body.avatarUrl?.trim() || undefined;
+    if (body.verification !== undefined) {
+      const allowed: AuthorProfile["verification"][] = [
+        "unverified",
+        "pending",
+        "verified",
+        "rejected",
+      ];
+      if (!allowed.includes(body.verification)) {
+        return NextResponse.json({ error: "Invalid verification status." }, { status: 400 });
+      }
+      patch.verification = body.verification;
+    }
 
     const updated = await updateAuthor(orgId, params.authorId, patch);
     if (!updated) return NextResponse.json({ error: "Author not found." }, { status: 404 });

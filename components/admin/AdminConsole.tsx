@@ -182,6 +182,11 @@ export function AdminConsole() {
               setLoading(true);
               reload();
             }}
+            onUpdated={(updated) => {
+              setAuthors((prev) =>
+                prev.map((a) => (a.id === updated.id ? { ...a, ...updated } : a))
+              );
+            }}
           />
         ) : loading ? (
           <LoadingList />
