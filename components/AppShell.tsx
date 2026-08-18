@@ -19,6 +19,7 @@ import {
 import { cn } from "./ui/cn";
 import { Button, Skeleton, ToastProvider } from "./ui";
 import { SignOutButton } from "./auth/AuthButtons";
+import type { MembershipRole, PlatformRole } from "@/lib/types";
 
 interface NavItem {
   href: string;
@@ -32,11 +33,32 @@ interface NavGroup {
   items: NavItem[];
 }
 
+type MeUser = {
+  name?: string | null;
+  email?: string;
+  membershipRole?: MembershipRole | null;
+  platformRole?: PlatformRole | null;
+};
+
+function canSeeTeachNav(me: MeUser | null): boolean {
+  if (!me) return false;
+  if (me.platformRole === "super_admin") return true;
+  const role = me.membershipRole;
+  return role === "author" || role === "admin" || role === "owner";
+}
+
+function canSeeAdminNav(me: MeUser | null): boolean {
+  if (!me) return false;
+  if (me.platformRole === "super_admin") return true;
+  const role = me.membershipRole;
+  return role === "admin" || role === "owner";
+}
+
 /**
  * Marketplace IA — Home, Learn (library + courses), Teach (Studio), Manage (Admin).
  * Developer labs only ship in development. Sign-in lives in the sidebar footer.
  */
-function navGroups(showDeveloper: boolean): NavGroup[] {
+function navGroups(showDeveloper: boolean, me: MeUser | null): NavGroup[] {
   const groups: NavGroup[] = [
     {
       items: [{ href: "/", label: "Home", icon: LayoutDashboard }],
@@ -48,15 +70,19 @@ function navGroups(showDeveloper: boolean): NavGroup[] {
         { href: "/library#courses", label: "Courses", icon: GraduationCap },
       ],
     },
-    {
+  ];
+  if (canSeeTeachNav(me)) {
+    groups.push({
       label: "Teach",
       items: [{ href: "/studio", label: "Studio", icon: PenLine }],
-    },
-    {
+    });
+  }
+  if (canSeeAdminNav(me)) {
+    groups.push({
       label: "Manage",
       items: [{ href: "/admin", label: "Admin", icon: ShieldCheck }],
-    },
-  ];
+    });
+  }
   if (showDeveloper) {
     groups.push({
       label: "Developer",
@@ -159,40 +185,12 @@ function NavRow({
   );
 }
 
-function AuthNav() {
-  const [state, setState] = useState<"loading" | "out" | { name: string; email: string }>(
-    "loading"
-  );
-
-  useEffect(() => {
-    let alive = true;
-    fetch("/api/me")
-      .then(async (r) => {
-        if (!r.ok) return null;
-        return r.json() as Promise<{ user?: { name?: string | null; email?: string } | null }>;
-      })
-      .then((data) => {
-        if (!alive) return;
-        const user = data?.user;
-        if (user?.email) {
-          setState({ name: user.name || user.email, email: user.email });
-        } else {
-          setState("out");
-        }
-      })
-      .catch(() => {
-        if (alive) setState("out");
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (state === "loading") {
+function AuthNav({ me, loading }: { me: MeUser | null; loading: boolean }) {
+  if (loading) {
     return <Skeleton className="h-9 w-full rounded-lg" />;
   }
 
-  if (state === "out") {
+  if (!me?.email) {
     return (
       <Link href="/sign-in" className="block">
         <Button
@@ -207,6 +205,8 @@ function AuthNav() {
     );
   }
 
+  const displayName = me.name || me.email;
+
   return (
     <div className="flex flex-col gap-2">
       <Link
@@ -214,10 +214,10 @@ function AuthNav() {
         className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-overlay/60 focus-visible:outline-none"
       >
         <span className="flex h-8 w-8 items-center justify-center rounded-md bg-elevated font-display text-xs font-semibold text-secondary ring-1 ring-inset ring-subtle">
-          {state.name.slice(0, 1).toUpperCase()}
+          {displayName.slice(0, 1).toUpperCase()}
         </span>
         <span className="min-w-0">
-          <span className="block truncate font-medium text-primary">{state.name}</span>
+          <span className="block truncate font-medium text-primary">{displayName}</span>
           <span className="block text-xs text-muted">Your home</span>
         </span>
       </Link>
@@ -228,13 +228,39 @@ function AuthNav() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  const [me, setMe] = useState<MeUser | null>(null);
+  const [meLoading, setMeLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/me")
+      .then(async (r) => {
+        if (!r.ok) return null;
+        return r.json() as Promise<{ user?: MeUser | null }>;
+      })
+      .then((data) => {
+        if (!alive) return;
+        const user = data?.user;
+        setMe(user?.email ? user : null);
+      })
+      .catch(() => {
+        if (alive) setMe(null);
+      })
+      .finally(() => {
+        if (alive) setMeLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Student case = reading room. Hide product chrome so the DICOM is the
   // composition. The session HUD carries back-to-library itself.
   const readingRoom = pathname.startsWith("/case/");
   const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
   const hideChrome = readingRoom || authScreen;
   const showDeveloper = process.env.NODE_ENV === "development";
-  const nav = useMemo(() => navGroups(showDeveloper), [showDeveloper]);
+  const nav = useMemo(() => navGroups(showDeveloper, me), [showDeveloper, me]);
   const mobileNav = useMemo(
     () =>
       nav
@@ -277,7 +303,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
 
           <div className="border-t border-subtle px-3 py-4">
-            <AuthNav />
+            <AuthNav me={me} loading={meLoading} />
           </div>
         </aside>
         )}
