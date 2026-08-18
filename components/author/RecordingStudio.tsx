@@ -85,6 +85,7 @@ import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { withSecondaryAnchor } from "@/lib/findingAnchors";
+import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -226,18 +227,21 @@ export function RecordingStudio({
     const start = controls.current?.getStartState();
     const active = series[activeSeriesIndex];
     try {
-      const updated = await patchFinding(caseData.caseId, findingId, {
-        anchors: withSecondaryAnchor(f, {
+      const landing = withDisplaySnapshot(
+        {
           studyInstanceUID: !usingSample ? active?.studyInstanceUID : undefined,
           seriesInstanceUID:
             !usingSample
               ? active?.seriesInstanceUID
               : controls.current?.activeSeriesUID,
-          sliceIndex: start?.sliceIndex,
           marker: { x_pct: x, y_pct: y, shape: "circle" },
-          viewportRole: "secondary",
-          studyRole: "prior",
-        }),
+          viewportRole: "secondary" as const,
+          studyRole: "prior" as const,
+        },
+        start
+      );
+      const updated = await patchFinding(caseData.caseId, findingId, {
+        anchors: withSecondaryAnchor(f, landing),
       });
       setCaseData(updated);
       setPinningId(null);
@@ -306,30 +310,33 @@ export function RecordingStudio({
     setAnnotateSaving(true);
     try {
       const start = controls.current?.getStartState();
-      const base: Partial<Finding> = {
-        label: annotateDraft.label.trim(),
-        description: annotateDraft.description.trim(),
-        teachingPoints: annotateDraft.teachingPoints
-          .map((p) => p.trim())
-          .filter(Boolean),
-        state: " ",
-        marker: pendingMarker,
-        sliceIndex: start?.sliceIndex,
-        anchors: [
-          {
-            studyInstanceUID:
-              activeSeries && !usingSample ? activeSeries.studyInstanceUID : undefined,
-            seriesInstanceUID:
-              activeSeries && !usingSample
-                ? activeSeries.seriesInstanceUID
-                : controls.current?.activeSeriesUID,
-            sliceIndex: start?.sliceIndex,
-            marker: pendingMarker,
-            viewportRole: "primary",
-            studyRole: "current",
-          },
-        ],
-      };
+      const primaryAnchor = withDisplaySnapshot(
+        {
+          studyInstanceUID:
+            activeSeries && !usingSample ? activeSeries.studyInstanceUID : undefined,
+          seriesInstanceUID:
+            activeSeries && !usingSample
+              ? activeSeries.seriesInstanceUID
+              : controls.current?.activeSeriesUID,
+          marker: pendingMarker,
+          viewportRole: "primary" as const,
+          studyRole: "current" as const,
+        },
+        start
+      );
+      let base: Partial<Finding> = withDisplaySnapshot(
+        {
+          label: annotateDraft.label.trim(),
+          description: annotateDraft.description.trim(),
+          teachingPoints: annotateDraft.teachingPoints
+            .map((p) => p.trim())
+            .filter(Boolean),
+          state: " ",
+          marker: pendingMarker,
+          anchors: [primaryAnchor],
+        },
+        start
+      );
       if (activeSeries && !usingSample) {
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
@@ -346,6 +353,15 @@ export function RecordingStudio({
         }
         base.track = track;
         base.durationMs = track.durationMs;
+        // Prefer track.start VOI when the walk-through captured windowing.
+        if (track.start.ww != null && track.start.wc != null) {
+          base = withDisplaySnapshot(base, {
+            sliceIndex: track.start.sliceIndex,
+            ww: track.start.ww,
+            wc: track.start.wc,
+            sopInstanceUID: start?.sopInstanceUID,
+          });
+        }
       }
 
       const updated =
@@ -415,6 +431,7 @@ export function RecordingStudio({
     if (!canSaveDraft || savingFinding) return;
     setSavingFinding(true);
     try {
+      const start = controls.current?.getStartState();
       const marker: Marker =
         pendingMarker ??
         markerFromTrack(hasTrack ? (rr.track as RecordedTrack) : null) ?? {
@@ -422,13 +439,16 @@ export function RecordingStudio({
           y_pct: 0.5,
           shape: "circle",
         };
-      const base: Partial<Finding> = {
-        label: draft.label.trim(),
-        description: draft.description.trim(),
-        teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
-        state: " ",
-        marker,
-      };
+      let base: Partial<Finding> = withDisplaySnapshot(
+        {
+          label: draft.label.trim(),
+          description: draft.description.trim(),
+          teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          state: " ",
+          marker,
+        },
+        start
+      );
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
@@ -441,6 +461,14 @@ export function RecordingStudio({
         }
         base.track = track;
         base.durationMs = track.durationMs;
+        if (track.start.ww != null && track.start.wc != null) {
+          base = withDisplaySnapshot(base, {
+            sliceIndex: track.start.sliceIndex,
+            ww: track.start.ww,
+            wc: track.start.wc,
+            sopInstanceUID: start?.sopInstanceUID,
+          });
+        }
       }
 
       // Anchor the finding to the active study/series (drives prefetch + the
@@ -449,6 +477,23 @@ export function RecordingStudio({
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
       }
+      base.anchors = [
+        withDisplaySnapshot(
+          {
+            studyInstanceUID: base.studyInstanceUID,
+            seriesInstanceUID: base.seriesInstanceUID,
+            marker,
+            viewportRole: "primary" as const,
+            studyRole: "current" as const,
+          },
+          {
+            sliceIndex: base.sliceIndex ?? start?.sliceIndex ?? 0,
+            ww: base.windowWidth ?? start?.ww,
+            wc: base.windowCenter ?? start?.wc,
+            sopInstanceUID: base.sopInstanceUID ?? start?.sopInstanceUID,
+          }
+        ),
+      ];
 
       const updated =
         editingFindingId != null
@@ -500,7 +545,16 @@ export function RecordingStudio({
       c.showSeries(f.seriesInstanceUID);
     }
     if (f.sliceIndex != null && Number.isFinite(f.sliceIndex)) {
-      await c.showState({ sliceIndex: f.sliceIndex }, 400);
+      await c.showState(
+        {
+          sliceIndex: f.sliceIndex,
+          windowWidth: f.windowWidth,
+          windowCenter: f.windowCenter,
+        },
+        500
+      );
+    } else if (f.windowWidth != null && f.windowCenter != null) {
+      c.setWindow(f.windowWidth, f.windowCenter, 500);
     }
     const m = f.marker;
     if (m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {

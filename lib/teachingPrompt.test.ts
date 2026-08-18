@@ -17,14 +17,17 @@ const findings: Finding[] = [
     marker: { x_pct: 0.42, y_pct: 0.48, shape: "circle" },
     order: 0,
     sliceIndex: 3,
+    windowWidth: 80,
+    windowCenter: 40,
   },
 ];
 
-test("formatFindingsContext includes marker, slice, and pearls — not pixels", () => {
+test("formatFindingsContext includes marker, slice, voi, and pearls — not pixels", () => {
   const ctx = formatFindingsContext(findings);
   assert.match(ctx, /id=f1/);
   assert.match(ctx, /label=Caudate head/);
   assert.match(ctx, /sliceIndex=3/);
+  assert.match(ctx, /voi\(ww=80,wc=40\)/);
   assert.match(ctx, /marker@\(0\.420,0\.480\)/);
   assert.match(ctx, /Compare to the contralateral/);
 });

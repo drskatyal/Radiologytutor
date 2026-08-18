@@ -12,6 +12,7 @@
 
 import { buildViewerUrl, type ChromeOptions } from "./pacsbinUrl";
 import type { Finding, Keyframe, Marker, PacsbinViewport, ViewerState } from "./types";
+import { authoredDisplayState } from "./findingDisplayState";
 
 export type ApplyUrl = (url: string) => void;
 
@@ -152,17 +153,35 @@ export function viewportToCornerstoneState(
  * a default (e.g. spread the finding across the stack by its tour order).
  */
 export async function findingViewerState(
-  finding: Pick<Finding, "state">,
+  finding: Pick<
+    Finding,
+    "state" | "sliceIndex" | "windowWidth" | "windowCenter" | "sopInstanceUID"
+  >,
   sliceFraction?: number
 ): Promise<CornerstoneViewerState | null> {
-  if (!finding.state) return null;
-  try {
-    const { decodeState } = await import("./pacsbinUrl");
-    const decoded = await decodeState(finding.state);
-    return viewportToCornerstoneState(primaryViewport(decoded), sliceFraction);
-  } catch {
-    return null;
+  let fromPacsbin: CornerstoneViewerState | null = null;
+  if (finding.state?.trim()) {
+    try {
+      const { decodeState } = await import("./pacsbinUrl");
+      const decoded = await decodeState(finding.state);
+      fromPacsbin = viewportToCornerstoneState(
+        primaryViewport(decoded),
+        sliceFraction
+      );
+    } catch {
+      fromPacsbin = null;
+    }
   }
+
+  const merged = authoredDisplayState(finding, fromPacsbin, sliceFraction);
+  const hasAnything =
+    merged.sliceIndex != null ||
+    merged.sliceFraction != null ||
+    merged.windowWidth != null ||
+    merged.windowCenter != null ||
+    merged.zoom != null ||
+    merged.pan != null;
+  return hasAnything ? merged : null;
 }
 
 /** Linear interpolation. */

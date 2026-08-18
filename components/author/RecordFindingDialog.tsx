@@ -37,6 +37,7 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
+import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import { LIMITS, markerFromTrack, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
@@ -201,15 +202,19 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
     setError("");
     try {
       const trackMarker = hasTrack ? markerFromTrack(rr.track as RecordedTrack) : null;
-      const base: Partial<Finding> = {
-        label: draft.label.trim(),
-        description: draft.description.trim(),
-        teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
-        // A finding needs a state + marker to be valid. Prefer last cursor from
-        // the walk-through; otherwise a centre placeholder (author can refine).
-        state: " ",
-        marker: trackMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
-      };
+      const start = controls.current?.getStartState();
+      let base: Partial<Finding> = withDisplaySnapshot(
+        {
+          label: draft.label.trim(),
+          description: draft.description.trim(),
+          teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          // A finding needs a state + marker to be valid. Prefer last cursor from
+          // the walk-through; otherwise a centre placeholder (author can refine).
+          state: " ",
+          marker: trackMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+        },
+        start
+      );
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
@@ -224,6 +229,14 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         }
         base.track = track;
         base.durationMs = track.durationMs;
+        if (track.start.ww != null && track.start.wc != null) {
+          base = withDisplaySnapshot(base, {
+            sliceIndex: track.start.sliceIndex,
+            ww: track.start.ww,
+            wc: track.start.wc,
+            sopInstanceUID: start?.sopInstanceUID,
+          });
+        }
       }
 
       const active = series[activeSeriesIndex];

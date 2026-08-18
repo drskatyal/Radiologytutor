@@ -21,6 +21,8 @@
 ## Imaging UX
 - Never download full 2–3 GB CTA up front
 - Parallel multi-series prefetch; finding-first; R2 frame cache in `/api/dicomweb`; interactive ≤30s
+- Finding landings key off DICOM UIDs + authored WW/WC; we do **not** write clicks into DICOM files — see `docs/FINDING_LOCALIZATION.md`
+- Tutor / guided reveal **eases** window/level to the authored VOI (lung nodule stays visible if the student is on bone)
 
 ## De-id
 - `lib/deid.ts` on ingest (`orthancIngestInstance`); reports persisted via `upsertDeidReport`

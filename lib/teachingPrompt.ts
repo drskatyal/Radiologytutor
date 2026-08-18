@@ -30,7 +30,18 @@ export function formatFindingsContext(findings: Finding[]): string {
         bits.push(`pearls: ${f.teachingPoints.filter(Boolean).join(" | ")}`);
       }
       if (f.sliceIndex != null) bits.push(`sliceIndex=${f.sliceIndex}`);
+      if (f.sopInstanceUID) bits.push(`sop=${f.sopInstanceUID}`);
       if (f.seriesInstanceUID) bits.push(`series=${f.seriesInstanceUID}`);
+      if (
+        f.windowWidth != null &&
+        f.windowCenter != null &&
+        Number.isFinite(f.windowWidth) &&
+        Number.isFinite(f.windowCenter)
+      ) {
+        bits.push(
+          `voi(ww=${Math.round(f.windowWidth)},wc=${Math.round(f.windowCenter)})`
+        );
+      }
       if (
         f.marker &&
         Number.isFinite(f.marker.x_pct) &&
@@ -81,7 +92,8 @@ Speech contract:
 - 1–3 short spoken sentences. Exam-room tone. No markdown, no bullets, no finding ids, no percentages.
 - When the student should LOOK, call a tool in the SAME turn as the narration. The FIRST sentence is a look-cue ("Look at this slice.") so speech and the laser start together; then the pearl.
 - You may call more than one tool in one turn (window, then show_finding). They play in order, one per sentence.
-- Prefer show_finding (animates to the author's click). Use point_to to re-emphasize. Use set_window only when a specific W/L is clinically useful.
+- Prefer show_finding (animates to the author's click AND eases to the authored window/level). Use point_to to re-emphasize.
+- When the student is on the wrong window (e.g. bone while the finding was authored in lung), call set_window FIRST with the finding's voi(ww,wc) values, then show_finding or point_to — never invent WW/WC; only use authored voi.
 - Match free-text ("show the effusion") to the closest authored label and call show_finding.
 - If they ask something not in the list, say you can only teach what was authored, then ask a question about the current finding.
 - When guidelines, lexicons, or follow-up criteria matter, use web grounding and keep the spoken claim conservative.`;

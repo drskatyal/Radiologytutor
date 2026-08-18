@@ -70,6 +70,13 @@ export interface FindingAnchor {
   /** 0-based stack index within the series (Cornerstone imageId index). */
   sliceIndex?: number;
   marker: Marker;
+  /**
+   * Display VOI at the moment this landing was authored (DICOM WW/WC semantics).
+   * Required so students in bone window still see a lung-window nodule when the
+   * tutor drives to this finding — we ease to these values, never snap.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
   /** Which pane in a multi-viewport layout (Phase 2). */
   viewportRole?: "primary" | "secondary" | "compare";
   /** Chronology role when the case spans studies. */
@@ -180,6 +187,14 @@ export interface Finding {
   sopInstanceUID?: string;
   /** 0-based slice index for the primary landing. */
   sliceIndex?: number;
+  /**
+   * Window width / center (VOI) at authoring time — same semantics as DICOM
+   * Window Center/Width (0028,1050)/(0028,1051). Applied with an eased tween
+   * when revealing this finding so the lesion remains visible regardless of
+   * the student's current preset.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
   /**
    * All landings for this finding (multi-series / multi-study). When absent,
    * the primary marker + seriesInstanceUID fields above are the sole anchor.

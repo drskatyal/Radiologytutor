@@ -42,6 +42,7 @@ import {
   lerp,
   type CornerstoneViewerState,
 } from "../lib/viewerController";
+import { sopUidFromImageId } from "../lib/findingDisplayState";
 import type { RecordedEvent, ViewerEvent } from "../lib/types";
 import {
   WINDOW_PRESETS,
@@ -104,6 +105,7 @@ interface DrivableViewport {
   resetProperties?: () => void;
   getImageIds: () => string[];
   getCurrentImageIdIndex: () => number;
+  getCurrentImageId?: () => string;
   setImageIdIndex: (i: number) => Promise<void> | void;
   getProperties: () => { voiRange?: { lower: number; upper: number }; invert?: boolean };
   setProperties: (p: { voiRange?: { lower: number; upper: number }; invert?: boolean }) => void;
@@ -134,8 +136,13 @@ export interface CornerstoneControls {
   reset: () => void;
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
-  /** Current slice/window — used to prime a recording/replay. */
-  getStartState: () => { sliceIndex: number; ww?: number; wc?: number };
+  /** Current slice / VOI / SOP — primes recordings and finding landings. */
+  getStartState: () => {
+    sliceIndex: number;
+    ww?: number;
+    wc?: number;
+    sopInstanceUID?: string;
+  };
   /** SeriesInstanceUIDs the viewer can switch between (multi-series cases). */
   seriesUIDs: string[];
   /** The SeriesInstanceUID currently shown (undefined for the bundled sample). */
@@ -642,15 +649,33 @@ export default function CornerstoneViewer({
           vp.render();
         };
 
-        const getStartState = (): { sliceIndex: number; ww?: number; wc?: number } => {
+        const getStartState = (): {
+          sliceIndex: number;
+          ww?: number;
+          wc?: number;
+          sopInstanceUID?: string;
+        } => {
           const vp = viewportRef.current;
           if (!vp) return { sliceIndex: 0 };
           const v = voiToWwWc(vp.getProperties().voiRange);
-          return { sliceIndex: vp.getCurrentImageIdIndex(), ww: v?.ww, wc: v?.wc };
+          const ids = vp.getImageIds();
+          const idx = vp.getCurrentImageIdIndex();
+          const imageId =
+            typeof vp.getCurrentImageId === "function"
+              ? vp.getCurrentImageId()
+              : ids[idx];
+          const sop = sopUidFromImageId(imageId);
+          return {
+            sliceIndex: idx,
+            ww: v?.ww,
+            wc: v?.wc,
+            sopInstanceUID: sop,
+          };
         };
 
         // --- Smooth (interpolated) driving for the guided tour --------------
-        const setWindow = (ww: number, wc: number, durationMs = 500): void => {
+        // Default 650ms — long enough to read as continuous windowing, not a jump.
+        const setWindow = (ww: number, wc: number, durationMs = 650): void => {
           const vp = viewportRef.current;
           if (!vp) return;
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };

@@ -38,6 +38,7 @@ import {
   addFinding,
 } from "@/components/author/lib";
 import { sliceTrack } from "@/lib/captureSession";
+import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import type { useRecordReplay } from "@/components/record/useRecordReplay";
 import type { MutableRefObject } from "react";
 
@@ -171,37 +172,46 @@ export function ContinuousCapture({
         if (!p.label.trim()) continue;
         const marker: Marker =
           p.suggestedMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" };
-        const start = controls.current?.getStartState();
-        const sliceIndex = p.suggestedSliceIndex ?? start?.sliceIndex;
-        const seriesUID =
-          seriesInstanceUID || controls.current?.activeSeriesUID || undefined;
-        const anchor: FindingAnchor = {
-          studyInstanceUID,
-          seriesInstanceUID: seriesUID,
-          sliceIndex,
-          marker,
-          viewportRole: "primary",
-          studyRole: "current",
-        };
+        const live = controls.current?.getStartState();
         const sub = sliceTrack(parentTrack, p.tStartMs, p.tEndMs);
         if (audioUrl) sub.audioUrl = audioUrl;
-        const finding: Partial<Finding> = {
-          label: p.label.trim(),
-          description: p.description.trim(),
-          teachingPoints: p.teachingPoints.map((t) => t.trim()).filter(Boolean),
-          state: " ",
-          marker,
-          sliceIndex,
-          studyInstanceUID,
-          seriesInstanceUID: seriesUID,
-          anchors: [anchor],
-          track: sub,
-          durationMs: sub.durationMs,
-          captureSessionId: sessionId,
-          tStartMs: p.tStartMs,
-          tEndMs: p.tEndMs,
-          order: i + 1,
+        const snap = {
+          sliceIndex: p.suggestedSliceIndex ?? sub.start.sliceIndex ?? live?.sliceIndex ?? 0,
+          ww: sub.start.ww ?? live?.ww,
+          wc: sub.start.wc ?? live?.wc,
+          sopInstanceUID: live?.sopInstanceUID,
         };
+        const seriesUID =
+          seriesInstanceUID || controls.current?.activeSeriesUID || undefined;
+        const anchor: FindingAnchor = withDisplaySnapshot(
+          {
+            studyInstanceUID,
+            seriesInstanceUID: seriesUID,
+            marker,
+            viewportRole: "primary",
+            studyRole: "current",
+          },
+          snap
+        );
+        const finding: Partial<Finding> = withDisplaySnapshot(
+          {
+            label: p.label.trim(),
+            description: p.description.trim(),
+            teachingPoints: p.teachingPoints.map((t) => t.trim()).filter(Boolean),
+            state: " ",
+            marker,
+            studyInstanceUID,
+            seriesInstanceUID: seriesUID,
+            anchors: [anchor],
+            track: sub,
+            durationMs: sub.durationMs,
+            captureSessionId: sessionId,
+            tStartMs: p.tStartMs,
+            tEndMs: p.tEndMs,
+            order: i + 1,
+          },
+          snap
+        );
         updated = await addFinding(caseId, finding);
       }
       if (updated) {

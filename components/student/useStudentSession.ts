@@ -358,13 +358,27 @@ export function useStudentSession(
         return;
       }
 
-      // No track (or exam seating without spoil): prefer an authored sliceIndex.
+      // No track (or exam seating without spoil): prefer authored slice + VOI.
       const total = Math.max(1, orderedFindings.length);
       const sliceHint = total > 1 ? index / (total - 1) : 0.5;
       let view =
         (await findingViewerState(finding, sliceHint)) ?? { sliceFraction: sliceHint };
       if (finding.sliceIndex != null && Number.isFinite(finding.sliceIndex)) {
         view = { ...view, sliceIndex: finding.sliceIndex };
+      }
+      // Authored WW/WC always win — lung nodule must re-window even if Pacsbin
+      // state was empty / student is on bone.
+      if (
+        finding.windowWidth != null &&
+        finding.windowCenter != null &&
+        Number.isFinite(finding.windowWidth) &&
+        Number.isFinite(finding.windowCenter)
+      ) {
+        view = {
+          ...view,
+          windowWidth: finding.windowWidth,
+          windowCenter: finding.windowCenter,
+        };
       }
 
       await controls.current.showState(view, 750);
@@ -400,7 +414,12 @@ export function useStudentSession(
           break;
         case "set_window":
           if (action.windowWidth != null && action.windowCenter != null) {
-            controls.current?.setWindow(action.windowWidth, action.windowCenter);
+            // Eased tween (~650ms default) — never jump bone→lung in one frame.
+            controls.current?.setWindow(
+              action.windowWidth,
+              action.windowCenter,
+              700
+            );
           }
           break;
         case "point_to": {
