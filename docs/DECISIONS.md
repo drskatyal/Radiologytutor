@@ -53,9 +53,7 @@
 - Draft cases 404 for students; authors/admins can still open them
 - Research notes: `docs/MARKETPLACE_RESEARCH.md`
 
-## Shut down
-- Clerk as production auth
-- Railway as forever host (migrate to Fly)
-- DICOM bytes in Mongo / Firestore
-- Stripe-first India monetization
-- Vertex Healthcare DICOM as default archive
+## Deploy / what users see
+- Draft PR work lives on `cursor/marketplace-foundation-a5b0` (and its stack).
+- Production auto-deploy historically tracks `claude/epic-noether-3nvcbf` — **draft PR features are not production until merged through the stack.**
+- Student product intent: **Teach** = AI attending drives viewer while teaching how to report; **Exam** = viva.

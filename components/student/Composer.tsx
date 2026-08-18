@@ -22,6 +22,7 @@ export function Composer({
   onMicStop,
   onTypingFocus,
   onTypingBlur,
+  hideMic = false,
 }: {
   micState: MicState;
   micSupported: boolean;
@@ -34,6 +35,8 @@ export function Composer({
   /** Fired when the text field gains focus (parent stops speech + disarms hotkey). */
   onTypingFocus: () => void;
   onTypingBlur: () => void;
+  /** When true, only the text field is shown (dock owns the mic). */
+  hideMic?: boolean;
 }) {
   const [input, setInput] = useState("");
   const fieldId = useId();
@@ -47,7 +50,7 @@ export function Composer({
 
   const placeholder = recording
     ? "Listening… release to send"
-    : "Ask about this finding — or say “teach me to report this”";
+    : "Ask a question — or say “continue teaching”";
 
   return (
     <div className="space-y-2.5">
@@ -81,27 +84,28 @@ export function Composer({
         </Button>
       </div>
 
-      {micSupported ? (
-        <div className="flex items-center justify-center gap-3 rounded-xl border border-subtle bg-surface/60 py-2.5">
-          <MicButton
-            state={micState}
-            onStart={onMicStart}
-            onStop={onMicStop}
-            disabled={busy && micState !== "recording"}
-            label={
-              micState === "recording"
-                ? "Listening — tap to send"
-                : micState === "processing"
-                  ? "Transcribing…"
-                  : "Tap to talk"
-            }
-          />
-        </div>
-      ) : (
-        <p className="rounded-lg border border-subtle bg-surface/60 px-3 py-2 text-center text-xs text-muted">
-          Voice input isn’t available in this browser — type your question above.
-        </p>
-      )}
+      {!hideMic &&
+        (micSupported ? (
+          <div className="flex items-center justify-center gap-3 rounded-lg border border-subtle bg-surface/60 py-2.5">
+            <MicButton
+              state={micState}
+              onStart={onMicStart}
+              onStop={onMicStop}
+              disabled={busy && micState !== "recording"}
+              label={
+                micState === "recording"
+                  ? "Listening — tap to send"
+                  : micState === "processing"
+                    ? "Transcribing…"
+                    : "Tap to talk"
+              }
+            />
+          </div>
+        ) : (
+          <p className="rounded-lg border border-subtle bg-surface/60 px-3 py-2 text-center text-xs text-muted">
+            Voice input isn’t available in this browser — type your question above.
+          </p>
+        ))}
     </div>
   );
 }

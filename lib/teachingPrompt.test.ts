@@ -112,9 +112,9 @@ test("guided prompt still walks in order", () => {
     mode: "guided",
     findingsContext: "x",
   });
-  assert.match(p, /GUIDED TOUR/);
-  assert.match(p, /next_in_tour/);
-  assert.match(p, /look-cue/);
+  assert.match(p, /MODE: TEACH/);
+  assert.match(p, /next_in_tour|show_finding/);
+  assert.match(p, /report/i);
 });
 
 test("examFallbackStem does not name the finding", () => {

@@ -2,18 +2,12 @@
 
 // The student session state machine. Owns: the ordered finding walk-through,
 // the viewer drive handle, the chat transcript, and the EXACT two-call voice
-// flow from CLAUDE.md §2:
+// flow from CLAUDE.md §2.
 //
-//   press mic → capture audio
-//   → CALL 1  POST /api/transcribe   (Gemini STT)
-//   → render the user's transcript as a chat turn IMMEDIATELY
-//   → CALL 2  POST /api/tutor        (teaching plan: answer + viewer action)
-//   → render the tutor's answer as a chat turn
-//   → speak it via /api/tts
-//
-// The two calls are never merged. Typed questions skip call 1 and go straight
-// to call 2. Tutor answers can drive the viewer (show_finding / next / prev /
-// set_window). The student can ask at any step without losing their place.
+// Product: an AI attending teaches a registrar how to REPORT the scan — armed
+// with authored findings + reading digests — driving the viewer while speaking.
+// Teach mode (guided) runs an autonomous tour; student voice/text pauses it.
+// Viva is the oral-exam path. Capture tracks arm the model; they are not a tape.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRecorder } from "@/components/useRecorder";
@@ -106,9 +100,14 @@ export function useStudentSession(
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // The currently-running finding replay (recorded track), if any.
+  // Author QA replay only — student product does not VCR-play tracks.
   const replayRef = useRef<ReplayController | null>(null);
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
+  /** Autonomous Teach tour: continue after TTS until paused or finished. */
+  const tourActiveRef = useRef(false);
+  const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
+    async () => {}
+  );
 
   const [ready, setReady] = useState(false);
   const [replaying, setReplaying] = useState(false);
@@ -119,6 +118,8 @@ export function useStudentSession(
   const [markerVisible, setMarkerVisible] = useState(false);
   const [measurements, setMeasurements] = useState<FindingMeasurement[]>([]);
   const [measurementsVisible, setMeasurementsVisible] = useState(false);
+  /** Teach-mode autonomous tour is running (false after student interrupt). */
+  const [tourActive, setTourActive] = useState(false);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [phase, setPhase] = useState<SessionPhase>("idle");
   // True while a "thinking" turn looks like it's reaching for the web — drives
@@ -511,14 +512,32 @@ export function useStudentSession(
               onEnd: () => {
                 setSpeakingTurnId((cur) => (cur === id ? null : cur));
                 setPhase((p) => (p === "speaking" ? "idle" : p));
-                if (mode === "guided") {
+                // Autonomous Teach: client advances the finding, then the tutor
+                // narrates it (viewer already seated). Avoids silent skips and
+                // infinite loops if the model forgets next_in_tour.
+                if (mode === "guided" && tourActiveRef.current) {
                   const cur = activeIndexRef.current;
-                  if (cur >= 0 && cur < orderedFindings.length - 1) {
-                    window.setTimeout(() => {
-                      if (abortRef.current?.signal.aborted) return;
-                      void revealFinding(cur + 1);
-                    }, 900);
-                  }
+                  const atEnd = cur >= orderedFindings.length - 1;
+                  window.setTimeout(() => {
+                    if (abortRef.current?.signal.aborted) return;
+                    if (!tourActiveRef.current) return;
+                    if (atEnd) {
+                      tourActiveRef.current = false;
+                      setTourActive(false);
+                      void runTutorRef.current(
+                        "Tour complete. Model a concise Impression for this case from the authored findings only, then invite the registrar to ask questions or practice dictating Findings.",
+                        turnsRef.current
+                      );
+                      return;
+                    }
+                    void revealFinding(cur + 1, { spoil: true }).then(() => {
+                      if (!tourActiveRef.current) return;
+                      void runTutorRef.current(
+                        "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
+                        turnsRef.current
+                      );
+                    });
+                  }, 1100);
                 }
               },
             }
@@ -538,18 +557,53 @@ export function useStudentSession(
     [caseData.caseId, mode, orderedFindings, executeAction, toast, revealFinding, examMode]
   );
 
+  runTutorRef.current = runTutor;
+
+  const pauseTour = useCallback(() => {
+    tourActiveRef.current = false;
+    setTourActive(false);
+  }, []);
+
+  const resumeTour = useCallback(() => {
+    if (mode !== "guided" || busy) return;
+    tourActiveRef.current = true;
+    setTourActive(true);
+    const cur = activeIndexRef.current;
+    if (cur < 0) {
+      void revealFinding(0, { spoil: true }).then(() => {
+        void runTutor(
+          "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
+          turnsRef.current
+        );
+      });
+      return;
+    }
+    if (cur >= orderedFindings.length - 1) {
+      void runTutor(
+        "Resume teaching. Model the Impression and invite practice dictation.",
+        turnsRef.current
+      );
+      return;
+    }
+    void runTutor(
+      "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
+      turnsRef.current
+    );
+  }, [mode, busy, orderedFindings.length, runTutor, revealFinding]);
+
   // --- Typed question: straight to CALL 2 ----------------------------------
   const sendText = useCallback(
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
+      pauseTour();
       stopSpeaking();
       stopReplay();
       const history = turnsRef.current;
       setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed }]);
       runTutor(trimmed, history);
     },
-    [busy, runTutor, stopReplay]
+    [busy, runTutor, stopReplay, pauseTour]
   );
 
   const sayDontKnow = useCallback(() => {
@@ -567,6 +621,7 @@ export function useStudentSession(
   // --- Voice question: CALL 1 (transcribe) then CALL 2 (tutor) -------------
   const onMicStart = useCallback(async () => {
     if (busy) return;
+    pauseTour();
     stopSpeaking();
     stopReplay();
     try {
@@ -575,7 +630,7 @@ export function useStudentSession(
     } catch {
       toast({ title: "Microphone blocked", description: "Allow mic access to ask by voice.", variant: "warning" });
     }
-  }, [busy, recorder, toast, stopReplay]);
+  }, [busy, recorder, toast, stopReplay, pauseTour]);
 
   const onMicStop = useCallback(async () => {
     const rec = await recorder.stop();
@@ -746,11 +801,22 @@ export function useStudentSession(
     [speakingTurnId, phase, stopReplay, caseData.authorId]
   );
 
-  // Seat the first finding once the viewer is ready. Viva/socratic do not
-  // spoil the marker; viva also opens the examiner with a stem question.
+  // Seat the first finding once the viewer is ready, then start the experience.
+  // Teach (guided): autonomous attending tour. Viva: examiner stem. Others: seat only.
   useEffect(() => {
     if (!ready || startedRef.current || orderedFindings.length === 0) return;
     startedRef.current = true;
+    if (mode === "guided") {
+      tourActiveRef.current = true;
+      setTourActive(true);
+      void revealFinding(0, { spoil: true }).then(() => {
+        void runTutor(
+          "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a radiology registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
+          []
+        );
+      });
+      return;
+    }
     if (examMode) {
       void revealFinding(0, { spoil: false }).then(() => {
         if (mode === "viva") void runTutor("Begin the session.", []);
@@ -759,6 +825,14 @@ export function useStudentSession(
       void revealFinding(0);
     }
   }, [ready, orderedFindings.length, examMode, mode, revealFinding, runTutor]);
+
+  // Mode switches: reset tour flag so we don't leak auto-advance into viva.
+  useEffect(() => {
+    if (mode !== "guided") {
+      tourActiveRef.current = false;
+      setTourActive(false);
+    }
+  }, [mode]);
 
   // Leaving exam mode uncovers the active finding so guided/report aren't blank.
   useEffect(() => {
@@ -795,6 +869,9 @@ export function useStudentSession(
     markerVisible,
     measurements,
     measurementsVisible,
+    tourActive,
+    pauseTour,
+    resumeTour,
     turns,
     phase,
     busy,

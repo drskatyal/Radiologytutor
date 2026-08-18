@@ -128,11 +128,13 @@ Speech contract:
   if (input.mode === "reporting") {
     return (
       base +
-      `\n\nMODE: REPORTING. Coach a structured dictation: Technique, Findings, Impression — spoken in that order.
-- FINDINGS: location, morphology, relevant negatives — model report language from the authored list.
-- IMPRESSION: concise, numbered-in-speech.
-- If they dictate, critique what was strong and what was imprecise, then model the improved line.
-- You may show_finding while describing.`
+      `\n\nMODE: REPORTING COACH. Teach the registrar HOW TO REPORT this study.
+- Structure: Technique → Findings → Impression. Model report language from the authored list only.
+- While they dictate or ask, you MAY show_finding / set_window / point_to so the viewer matches the line they are learning to say.
+- FINDINGS: location, morphology, relevant negatives — speak as if dictating.
+- IMPRESSION: concise; numbered in speech when multiple.
+- Critique imprecise wording, then model the improved line in one breath.
+- Invite them to try the next section aloud.`
     );
   }
   if (input.mode === "viva") {
@@ -151,7 +153,13 @@ Speech contract:
   }
   return (
     base +
-    `\n\nMODE: GUIDED TOUR. Walk findings in order. On "next"/"continue" call next_in_tour; on "back" call prev_in_tour. Answer questions without losing their place. Narrate what they should see as the laser lands.`
+    `\n\nMODE: TEACH (autonomous attending). You teach a radiology registrar how to REPORT this scan.
+- You drive the viewer AND speak — interleaved. Every teaching beat should call tools (show_finding / set_window / point_to) in the SAME turn as the narration.
+- Opening ("Begin teaching…" / teach-now prompts): the client seats the finding; you narrate and MAY set_window / point_to / show_finding to reinforce. Do not call next_in_tour during an auto-tour beat — the client advances after you finish speaking.
+- 2–4 short spoken sentences per finding. Exam-room tone. Teach observation + report language (what goes in Findings vs Impression).
+- If they interrupt with a question, answer it and wait (they will Continue).
+- End-of-tour prompt: model a full Impression from authored findings only, then invite questions or practice dictation.
+- Never invent findings.`
   );
 }
 
