@@ -3,11 +3,11 @@
 import { Modal, Kbd } from "@/components/ui";
 
 const ROWS: { keys: string[]; does: string }[] = [
-  { keys: ["Space"], does: "Hold to speak (push-to-talk)" },
+  { keys: ["Space"], does: "Hold to speak (push-to-talk) — pauses Teach tour" },
   { keys: ["?"], does: "Show or hide this cheatsheet" },
   { keys: ["C"], does: "Toggle compare (second series / prior)" },
-  { keys: ["R"], does: "Reveal the current finding" },
-  { keys: ["N"], does: "Skip / next finding" },
+  { keys: ["R"], does: "Reveal the current finding (Exam)" },
+  { keys: ["N"], does: "Next finding" },
   { keys: ["P"], does: "Previous finding" },
   { keys: ["T"], does: "Toggle tutor rail" },
   { keys: ["Esc"], does: "Close rail or this overlay" },

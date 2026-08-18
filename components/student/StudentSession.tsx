@@ -132,15 +132,24 @@ export default function StudentSession({
     recording: s.micState === "recording",
     start: s.onMicStart,
     stop: s.onMicStop,
+    next: s.skip,
+    prev: s.prev,
+    reveal: s.revealCurrent,
+    compare: s.toggleCompare,
+    examMode: s.examMode,
   });
   hotkeyRef.current = {
     busy: s.busy,
     recording: s.micState === "recording",
     start: s.onMicStart,
     stop: s.onMicStop,
+    next: s.skip,
+    prev: s.prev,
+    reveal: s.revealCurrent,
+    compare: s.toggleCompare,
+    examMode: s.examMode,
   };
   useEffect(() => {
-    if (!s.micSupported) return;
     const isTextTarget = (el: EventTarget | null) => {
       const node = el as HTMLElement | null;
       if (!node) return false;
@@ -148,16 +157,41 @@ export default function StudentSession({
       return tag === "INPUT" || tag === "TEXTAREA" || node.isContentEditable;
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !e.repeat && !typingRef.current && !isTextTarget(e.target)) {
+      if (typingRef.current || isTextTarget(e.target)) return;
+      if (e.code === "Space" && !e.repeat && s.micSupported) {
         e.preventDefault();
         if (!heldRef.current && !hotkeyRef.current.busy) {
           heldRef.current = true;
           void hotkeyRef.current.start();
         }
+        return;
       }
-      if (e.key === "?" && !typingRef.current && !isTextTarget(e.target)) {
+      if (e.key === "?" ) {
         e.preventDefault();
         setKeysOpen((o) => !o);
+        return;
+      }
+      if (e.key === "Escape") {
+        setKeysOpen(false);
+        setRailOpen(false);
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (k === "c") {
+        e.preventDefault();
+        hotkeyRef.current.compare();
+      } else if (k === "n") {
+        e.preventDefault();
+        if (!hotkeyRef.current.busy) hotkeyRef.current.next();
+      } else if (k === "p") {
+        e.preventDefault();
+        if (!hotkeyRef.current.busy) hotkeyRef.current.prev();
+      } else if (k === "r" && hotkeyRef.current.examMode) {
+        e.preventDefault();
+        if (!hotkeyRef.current.busy) hotkeyRef.current.reveal();
+      } else if (k === "t") {
+        e.preventDefault();
+        setRailOpen((o) => !o);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -186,7 +220,16 @@ export default function StudentSession({
     }
     return null;
   }, [s.turns]);
-  const captionText = s.locateHint || lastAssistant?.text || "";
+  const waitingForTeach =
+    intent === "teach" &&
+    s.ready &&
+    !s.locateHint &&
+    !lastAssistant?.text &&
+    (s.phase === "thinking" || s.phase === "idle");
+  const captionText =
+    s.locateHint ||
+    lastAssistant?.text ||
+    (waitingForTeach ? "Attending is seating the first finding…" : "");
   const stepLabel =
     hasFindings && s.activeIndex >= 0
       ? `${s.activeIndex + 1} / ${s.orderedFindings.length}`

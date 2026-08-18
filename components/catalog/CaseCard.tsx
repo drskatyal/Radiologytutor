@@ -67,7 +67,7 @@ export function CaseCard({ data, author, index }: CaseCardProps) {
             </span>
           </span>
           <span className="inline-flex items-center gap-1 font-medium text-secondary transition-colors group-hover:text-accent">
-            Start
+            Teach
             <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
           </span>
         </div>

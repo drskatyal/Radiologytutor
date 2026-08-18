@@ -54,6 +54,6 @@
 - Research notes: `docs/MARKETPLACE_RESEARCH.md`
 
 ## Deploy / what users see
-- Draft PR work lives on `cursor/marketplace-foundation-a5b0` (and its stack).
-- Production auto-deploy historically tracks `claude/epic-noether-3nvcbf` — **draft PR features are not production until merged through the stack.**
-- Student product intent: **Teach** = AI attending drives viewer while teaching how to report; **Exam** = viva.
+- **Production deploy branch:** `claude/epic-noether-3nvcbf` (Fly `flowrad-learn`).
+- PR #6 (`cursor/marketplace-foundation-a5b0`) is **retargeted at that branch** and marked ready for review — merge it to ship Teach to production.
+- Student product intent: **Teach** = AI attending drives viewer while teaching how to report; **Exam** = viva; **Report** = sectioned practice with model-on-viewer.
