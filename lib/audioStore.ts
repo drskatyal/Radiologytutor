@@ -48,11 +48,30 @@ export interface StoredAudio {
 
 /** Persist a base64 clip; returns its id + same-origin URL. */
 export async function putAudio(base64: string, mimeType: string): Promise<StoredAudio> {
-  await fs.mkdir(AUDIO_DIR, { recursive: true });
   const id = genId();
   const ext = extFor(mimeType);
   const buf = Buffer.from(base64, "base64");
-  // Store the bytes + a tiny sidecar so we can serve the right Content-Type.
+
+  // Prefer R2 when configured (Fly production); fall back to local disk.
+  try {
+    const { r2Configured, r2PutObject } = await import("./r2");
+    if (r2Configured()) {
+      await r2PutObject(`audio/${id}.${ext}`, buf, mimeType);
+      // Sidecar stays local/JSON-compatible for Content-Type on proxy miss;
+      // public play URL remains same-origin /api/audio/<id>.
+      await fs.mkdir(AUDIO_DIR, { recursive: true });
+      await fs.writeFile(
+        path.join(AUDIO_DIR, `${id}.json`),
+        JSON.stringify({ mimeType, ext, bytes: buf.length, storage: "r2" }),
+        "utf-8"
+      );
+      return { id, url: audioUrl(id), mimeType, bytes: buf.length };
+    }
+  } catch {
+    /* fall through to disk */
+  }
+
+  await fs.mkdir(AUDIO_DIR, { recursive: true });
   await fs.writeFile(path.join(AUDIO_DIR, `${id}.${ext}`), buf);
   await fs.writeFile(
     path.join(AUDIO_DIR, `${id}.json`),
@@ -73,7 +92,16 @@ export async function getAudio(id: string): Promise<AudioBytes | null> {
   try {
     const meta = JSON.parse(
       await fs.readFile(path.join(AUDIO_DIR, `${clean}.json`), "utf-8")
-    ) as { mimeType: string; ext: string };
+    ) as { mimeType: string; ext: string; storage?: string };
+    if (meta.storage === "r2") {
+      try {
+        const { r2GetObject } = await import("./r2");
+        const obj = await r2GetObject(`audio/${clean}.${meta.ext}`);
+        if (obj) return { bytes: obj.bytes, mimeType: meta.mimeType };
+      } catch {
+        /* fall through */
+      }
+    }
     const bytes = await fs.readFile(path.join(AUDIO_DIR, `${clean}.${meta.ext}`));
     return { bytes, mimeType: meta.mimeType };
   } catch {

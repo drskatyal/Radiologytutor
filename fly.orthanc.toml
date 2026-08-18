@@ -1,0 +1,31 @@
+# Orthanc DICOMweb — private Fly app with persistent volume.
+# The Next app reaches this via http://flowrad-orthanc.internal:8042
+# Do NOT attach a public IPv4; imaging goes through /api/dicomweb only.
+
+app = "flowrad-orthanc"
+primary_region = "iad"
+
+[build]
+  image = "orthancteam/orthanc:latest"
+
+[env]
+  ORTHANC__NAME = "FlowRad"
+  ORTHANC__AUTHENTICATION_ENABLED = "true"
+  ORTHANC__REGISTERED_USERS = "{\"flowrad\":\"flowrad\"}"
+  ORTHANC__DICOM_WEB__ENABLE = "true"
+  ORTHANC__STORAGE_DIRECTORY = "/var/lib/orthanc/db"
+
+[http_service]
+  internal_port = 8042
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[mounts]
+  source = "orthanc_data"
+  destination = "/var/lib/orthanc/db"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2048mb"

@@ -292,6 +292,13 @@ export interface StructuredSession {
 // ============================================================================
 
 export type UserRole = "admin" | "author" | "student";
+
+/** Platform-wide role (above any org). Super-admin only. */
+export type PlatformRole = "super_admin";
+
+/** Per-org membership role (ARCHITECTURE § identity). */
+export type MembershipRole = "owner" | "admin" | "author" | "student";
+
 export type CaseStatus = "draft" | "published";
 
 // ----------------------------------------------------------------------------
@@ -362,8 +369,60 @@ export interface User {
   orgId: string;
   email: string;
   name?: string;
+  /** @deprecated Prefer Membership.role + platformRole. Kept for seed back-compat. */
   role: UserRole;
+  /** Platform staff — not scoped to a single org. */
+  platformRole?: PlatformRole;
+  /** Better Auth / Google subject id when linked. */
+  authProviderId?: string;
+  image?: string;
   createdAt: string;
+}
+
+/**
+ * Per-org membership — source of truth for RBAC.
+ * A request is authorized iff the session user holds a Membership in the
+ * resource's orgId with a sufficient role (or is platform super_admin).
+ */
+export interface Membership {
+  id: string;
+  userId: string;
+  orgId: string;
+  role: MembershipRole;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Verified teacher profile tied to a User (marketplace face).
+ * Extends attribution-only Author; same id space when migrated.
+ */
+export interface AuthorProfile {
+  id: string;
+  userId: string;
+  orgId: string;
+  name: string;
+  avatarUrl?: string;
+  bio?: string;
+  institution?: string;
+  credentials?: string;
+  subspecialties?: BodySystem[];
+  socials?: { website?: string; twitter?: string; linkedin?: string };
+  verification: "unverified" | "pending" | "verified" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Student enrollment in a course (marketplace entitlement). */
+export interface Enrollment {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  source: "free" | "purchase" | "seat" | "subscription";
+  status: "active" | "canceled" | "expired";
+  createdAt: string;
+  updatedAt: string;
 }
 
 /**

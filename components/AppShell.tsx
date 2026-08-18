@@ -7,6 +7,7 @@ import {
   Activity,
   LayoutDashboard,
   LayoutGrid,
+  LogIn,
   PenLine,
   Radio,
   ShieldCheck,
@@ -40,7 +41,9 @@ const NAV: NavGroup[] = [
   },
   {
     label: "Learn",
-    items: [{ href: "/library", label: "Library", icon: LayoutGrid }],
+    items: [
+      { href: "/library", label: "Library", icon: LayoutGrid },
+    ],
   },
   {
     label: "Teach",
@@ -49,6 +52,10 @@ const NAV: NavGroup[] = [
   {
     label: "Manage",
     items: [{ href: "/admin", label: "Console", icon: ShieldCheck }],
+  },
+  {
+    label: "Account",
+    items: [{ href: "/sign-in", label: "Sign in", icon: LogIn }],
   },
   {
     label: "Developer",

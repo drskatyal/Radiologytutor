@@ -216,7 +216,15 @@ so `npm test` and offline dev are unaffected.
 
 ## 3. Identity & access (the foundational P0)
 
-### Recommendation: **Clerk now**, with a thin `lib/auth.ts` seam so we can move to Better Auth later.
+### Recommendation: **Better Auth + Google OAuth**, behind `lib/auth.ts`.
+
+Clerk is **not** the production path (vendor outage risk + cost). Identity is
+**Better Auth** (self-hosted sessions on Mongo or memory in dev) with **Google
+OAuth** as the preferred sign-in (credentials stay with Google). Email/password
+remains available. The seam is non-negotiable: **no `better-auth` import outside
+`lib/auth.ts` and `app/api/auth/[...all]`**. Domain RBAC stays in our
+`Membership` rows; `activeOrgId()` replaces `DEFAULT_ORG_ID` at call sites.
+
 
 The 2026 Next.js auth landscape shifted: **Auth.js/NextAuth is effectively in maintenance**
 (its lead left; the project folded toward Better Auth), and it ships **no built-in
