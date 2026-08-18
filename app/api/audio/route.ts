@@ -4,9 +4,9 @@
 // Reply: { id, url, mimeType, bytes }     (200)
 //        { error: string }                 (4xx/5xx)
 //
-// The clip is persisted via the storage seam (lib/audioStore) — base64-on-volume
-// today, R2/S3 later — and the returned same-origin `url` (/api/audio/<id>) is
-// what we save on the finding's track and what the student replay <audio> loads.
+// The clip is persisted via the storage seam (lib/audioStore) — R2 when
+// configured, DATA_DIR otherwise. The returned same-origin `url`
+// (/api/audio/<id>) is what we save on the finding's track.
 
 import { NextRequest, NextResponse } from "next/server";
 import { putAudio } from "@/lib/audioStore";

@@ -1,8 +1,9 @@
 "use client";
 
 // Warm the cache as soon as the case list renders: on idle, hit each case's
-// prefetch manifest in parallel batches so multi-series opens stay ≤30s.
-// Low-priority and cancellable — never competes with the list render.
+// prefetch manifest in parallel batches of 4 (Promise.allSettled) so opening a
+// case is instant and multi-series work stays off the list render. Finding-first
+// warming of actual frames happens in components/student/prefetch.ts (≤30s).
 
 import { useEffect } from "react";
 

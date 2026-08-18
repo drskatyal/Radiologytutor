@@ -1,28 +1,49 @@
-# Orthanc DICOMweb — private Fly app with persistent volume.
-# The Next app reaches this via http://flowrad-orthanc.internal:8042
-# Do NOT attach a public IPv4; imaging goes through /api/dicomweb only.
+# FlowRad Orthanc — DICOMweb pixel archive on Fly.io
+#
+# Deploy:
+#   fly volumes create orthanc_data -a flowrad-orthanc --size 50 -r iad
+#   fly deploy -c fly.orthanc.toml
+#
+# PRIVATE NETWORKING (required)
+# -----------------------------
+# Orthanc holds DICOM bytes and must not be on the public internet.
+# There is no public [http_service] on purpose: Fly will not allocate a
+# public IPv4/IPv6 for HTTP. The Next app reaches this machine over 6PN:
+#
+#   http://flowrad-orthanc.internal:8042
+#
+# Same-org only. Optional Flycast private anycast (still not public):
+#   fly ips allocate-v6 --private -a flowrad-orthanc
+#
+# Do NOT run `fly ips allocate-v4`. Confirm with `fly ips list -a flowrad-orthanc`.
+# Browser clients never talk to Orthanc; they hit the Next app's /api/dicomweb
+# proxy, which injects Basic auth from ORTHANC_USER / ORTHANC_PASSWORD secrets.
+#
+# Auth: override the default user via secrets / env. Match the Next app:
+#   fly secrets set ORTHANC__REGISTERED_USERS='{"flowrad":"<password>"}' -a flowrad-orthanc
+#
+# Volume: DICOM files + Orthanc index live on `orthanc_data`. Losing it means
+# re-uploading studies. Size up before production (CTA volumes add up).
 
 app = "flowrad-orthanc"
 primary_region = "iad"
 
 [build]
+  # Pin before production; :latest is fine for the first bring-up.
   image = "orthancteam/orthanc:latest"
 
 [env]
   ORTHANC__NAME = "FlowRad"
   ORTHANC__AUTHENTICATION_ENABLED = "true"
+  # Override in secrets. Default is local-dev only.
   ORTHANC__REGISTERED_USERS = "{\"flowrad\":\"flowrad\"}"
   ORTHANC__DICOM_WEB__ENABLE = "true"
-  ORTHANC__STORAGE_DIRECTORY = "/var/lib/orthanc/db"
+  VERBOSE_ENABLED = "false"
 
-[http_service]
-  internal_port = 8042
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-  processes = ["app"]
+# No [http_service]: port 8042 is reachable only on the Fly private network.
+# The image listens on 8042 by default.
 
-[mounts]
+[[mounts]]
   source = "orthanc_data"
   destination = "/var/lib/orthanc/db"
 

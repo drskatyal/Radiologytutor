@@ -14,9 +14,9 @@
 //   • files that don't look like DICOM (no "DICM" magic at offset 128) are
 //     skipped, not stored.
 //
-// NOTE: de-identification is NOT yet wired here. Until it is, upload only
-// already-anonymized teaching studies. (Planned: Orthanc anonymize-on-ingest
-// + pydicom `deid` for burned-in pixel PHI + a manual review gate.)
+// De-id: orthancIngestInstance runs lib/deid.ts (header identity gate) and
+// refuses residual PatientName/ID/DOB/etc. Pixel OCR is not claimed. Upload
+// already-anonymized teaching studies; burned-in PHI still needs a later scanner.
 
 import { NextRequest, NextResponse } from "next/server";
 import AdmZip from "adm-zip";
@@ -26,6 +26,7 @@ import {
   orthancSeriesMeta,
   orthancGet,
 } from "@/lib/orthanc";
+import { DeidFailError } from "@/lib/deid";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -225,6 +226,9 @@ async function studyMeta(orthancStudyId: string): Promise<{
 
 /** Turn an Orthanc error into something a radiologist can act on. */
 function friendlyStoreError(e: unknown): string {
+  if (e instanceof DeidFailError || (e instanceof Error && e.message.startsWith("DEID_FAIL"))) {
+    return "this file still has patient identifiers — de-identify the study before upload";
+  }
   const msg = e instanceof Error ? e.message : String(e);
   if (/-> 4\d\d/.test(msg)) return "not a valid DICOM file";
   if (/ECONNREFUSED|fetch failed|ENOTFOUND|timeout/i.test(msg)) {

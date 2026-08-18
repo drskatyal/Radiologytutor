@@ -1,19 +1,42 @@
 # FlowRad Learn — Next.js app on Fly.io
-# Pair with fly.orthanc.toml (private Orthanc + volume).
+#
+# Pair with fly.orthanc.toml (private Orthanc + volume). Deploy:
+#   fly deploy -c fly.toml
+#
+# PRIVATE NETWORKING
+# ------------------
+# This app is public (HTTPS). Orthanc is NOT. Talk to Orthanc over Fly's 6PN:
+#   fly secrets set ORTHANC_URL=http://flowrad-orthanc.internal:8042
+# Apps in the same Fly org resolve `*.internal` over IPv6; the public internet
+# cannot. Never point ORTHANC_URL at a .fly.dev hostname.
+#
+# Secrets (not [env] — never commit these):
+#   ORTHANC_URL, ORTHANC_USER, ORTHANC_PASSWORD
+#   MONGODB_URI, MONGODB_DB
+#   GEMINI_API_KEY
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+#   R2_PUBLIC_BASE_URL (optional CDN)
+#   BETTER_AUTH_SECRET, BETTER_AUTH_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+#
+# Optional JSON/audio fallback volume when MONGODB_URI / R2 are unset:
+#   fly volumes create flowrad_data --size 10 -a flowrad-learn
+#   then uncomment [[mounts]] below and set DATA_DIR=/app/data.
 
 app = "flowrad-learn"
 primary_region = "iad"
 
 [build]
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = "3000"
   NODE_ENV = "production"
+  HOSTNAME = "0.0.0.0"
 
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = false
+  auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 1
   processes = ["app"]
@@ -21,3 +44,7 @@ primary_region = "iad"
 [[vm]]
   size = "shared-cpu-2x"
   memory = "2048mb"
+
+# [[mounts]]
+#   source = "flowrad_data"
+#   destination = "/app/data"

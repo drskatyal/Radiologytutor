@@ -1,7 +1,9 @@
 // Server-only helpers for talking to our Orthanc DICOMweb backend.
-// Orthanc lives on Railway behind Basic auth; the browser never talks to it
-// directly — our API routes (DICOMweb proxy + upload) do, so there's no CORS
-// and the credentials never reach the client.
+// Orthanc lives on Fly.io (private 6PN, see fly.orthanc.toml); the browser
+// never talks to it directly — our API routes (DICOMweb proxy + upload) do,
+// so there's no CORS and the credentials never reach the client.
+
+import { assertDeidPass, inspectDicomBytes } from "./deid";
 
 const ORTHANC_URL = process.env.ORTHANC_URL ?? "";
 const ORTHANC_USER = process.env.ORTHANC_USER ?? "flowrad";
@@ -72,19 +74,21 @@ export async function orthancSeriesUID(orthancSeriesId: string): Promise<string>
 }
 
 // ============================================================================
-// Ingest seam (de-identification deferred — CLAUDE.md §4a)
+// Ingest seam — de-id quality gate (lib/deid.ts)
 //
-// All DICOM ingest funnels through `orthancIngestInstance`. Today it stores the
-// bytes verbatim (we only upload already-anonymized studies). When anonymize-
-// on-ingest lands, de-identify inside THIS function — callers never change.
+// All DICOM ingest funnels through `orthancIngestInstance`. We inspect headers
+// and refuse instances with residual identity tags (PatientName/ID/DOB, …).
+// We do NOT rewrite pixels here and we do NOT claim OCR ran. Callers never
+// change when a byte-level scrubber slots in later — it belongs in this
+// function, before orthancStoreInstance.
 // ============================================================================
 
 /**
- * The single ingest entry point. Currently a pass-through to
- * `orthancStoreInstance`; later this is where anonymize-on-ingest slots in.
+ * The single ingest entry point. Header identity gate, then store.
+ * Throws DeidFailError when residual PHI remains.
  */
 export async function orthancIngestInstance(bytes: ArrayBuffer): Promise<OrthancStoreResult> {
-  // TODO(deferred): de-identify `bytes` here before storing (CLAUDE.md §4a).
+  assertDeidPass(inspectDicomBytes(bytes));
   return orthancStoreInstance(bytes);
 }
 

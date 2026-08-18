@@ -5,7 +5,7 @@
 ## Infra
 | Layer | Choice |
 |--------|--------|
-| App + Orthanc | **Fly.io** (two apps; Orthanc private + volume) |
+| App + Orthanc | **Fly.io** (two apps; Orthanc private + volume). Ops: `docs/FLY_R2.md` |
 | Domain DB | **MongoDB Atlas** (JSON fallback in dev) |
 | Auth | **Better Auth** + **Google OAuth** (password optional). Seam: `lib/auth.ts` only |
 | Frames/audio cache | **Cloudflare R2** (`lib/r2.ts`) |

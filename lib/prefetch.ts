@@ -6,6 +6,16 @@
 // which series + instances a case will display and hand the client a manifest
 // it can use to warm the /api/dicomweb cache with idle/low-priority fetches.
 //
+// Finding-first, parallel, ≤30s interactive:
+//   • seriesOrder is the finding walk-through (not Orthanc series-number order).
+//   • Cover metadata for the LIST is cheap and fetched in parallel batches of
+//     3–4 from CasesPrefetcher (Promise.allSettled) — never serial.
+//   • On OPEN, the client warms finding series 0 immediately, then remaining
+//     series in parallel batches (see components/student/prefetch.ts). Do not
+//     waterfall 2–3 GB CTAs; cap slices and overlap series.
+//   • Frames may later be served from the R2 cache (lib/r2.ts) via the
+//     DICOMweb proxy; the manifest shape stays the same.
+//
 // Two products:
 //   1. listCaseCover(caseId)      — cheap cover metadata for the case LIST.
 //   2. buildPrefetchManifest(caseId) — ordered series + instance refs the
@@ -98,8 +108,9 @@ export interface PrefetchSeries {
 }
 
 /**
- * The prefetch manifest a case hands the client on open. `seriesOrder` is the
- * order findings reference series, so the client warms what's shown first.
+ * The prefetch manifest a case hands the client on open. `series` is already
+ * in finding-first order so the client can warm series[0] immediately, then
+ * remaining series in parallel (target: interactive within 30s).
  */
 export interface PrefetchManifest {
   caseId: string;
@@ -137,7 +148,8 @@ export async function buildPrefetchManifest(
 
   if (!orthancConfigured()) return manifest;
 
-  // Resolve each series' ordered instances. Best-effort per series.
+  // Resolve every series in parallel (finding-first order preserved in the
+  // result array). Best-effort per series — one miss must not stall the rest.
   const series = await Promise.all(
     seriesOrder.map(async (seriesUID): Promise<PrefetchSeries> => {
       const entry: PrefetchSeries = {

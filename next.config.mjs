@@ -14,6 +14,15 @@ const nextConfig = {
     config.module.rules.push({ test: /\.wasm/, type: "asset/resource" });
     return config;
   },
+  // Keep Node-only SDKs out of the webpack graph (R2 / Mongo).
+  experimental: {
+    serverComponentsExternalPackages: [
+      "@aws-sdk/client-s3",
+      "@aws-sdk/s3-request-presigner",
+      "mongodb",
+      "dicom-parser",
+    ],
+  },
 };
 
 export default nextConfig;
