@@ -26,7 +26,7 @@ export function CaseCard({ data, author, index }: CaseCardProps) {
       <Card interactive className="flex h-full flex-col gap-3 overflow-hidden">
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/0 to-transparent transition-colors duration-300 group-hover:via-accent/60"
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-subtle/0 transition-colors duration-300 group-hover:bg-accent/50"
         />
         <div className="flex items-start justify-between gap-3">
           <h3 className="font-display text-base font-semibold tracking-tight text-primary">
