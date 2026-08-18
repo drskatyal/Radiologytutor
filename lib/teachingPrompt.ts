@@ -2,6 +2,7 @@
 // contract: short turns, authored evidence only, no invented coordinates.
 
 import { secondaryAnchor } from "./findingAnchors";
+import { formatMeasurementBrief } from "./findingMeasurements";
 import type { CaseData, Finding } from "./types";
 
 export type TeachingMode = "guided" | "socratic" | "free" | "reporting" | "viva";
@@ -40,6 +41,11 @@ export function formatFindingsContext(findings: Finding[]): string {
       ) {
         bits.push(
           `voi(ww=${Math.round(f.windowWidth)},wc=${Math.round(f.windowCenter)})`
+        );
+      }
+      if (f.measurements?.length) {
+        bits.push(
+          `meas=[${f.measurements.map((m) => formatMeasurementBrief(m)).join("; ")}]`
         );
       }
       if (
@@ -92,8 +98,9 @@ Speech contract:
 - 1–3 short spoken sentences. Exam-room tone. No markdown, no bullets, no finding ids, no percentages.
 - When the student should LOOK, call a tool in the SAME turn as the narration. The FIRST sentence is a look-cue ("Look at this slice.") so speech and the laser start together; then the pearl.
 - You may call more than one tool in one turn (window, then show_finding). They play in order, one per sentence.
-- Prefer show_finding (animates to the author's click AND eases to the authored window/level). Use point_to to re-emphasize.
-- When the student is on the wrong window (e.g. bone while the finding was authored in lung), call set_window FIRST with the finding's voi(ww,wc) values, then show_finding or point_to — never invent WW/WC; only use authored voi.
+- Prefer show_finding (animates to the author's click AND applies authored window/level — scrolls when Δ is small, snaps when bone↔lung). Use point_to to re-emphasize.
+- When the student is on the wrong window, call set_window FIRST with the finding's voi(ww,wc), then show_finding — never invent WW/WC; only use authored voi.
+- When meas=[…] is present (length mm, ROI mean HU), you MAY cite those exact authored numbers; never invent measurements.
 - Match free-text ("show the effusion") to the closest authored label and call show_finding.
 - If they ask something not in the list, say you can only teach what was authored, then ask a question about the current finding.
 - When guidelines, lexicons, or follow-up criteria matter, use web grounding and keep the spoken claim conservative.`;

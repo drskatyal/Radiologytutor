@@ -215,6 +215,8 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         },
         start
       );
+      const measurements = controls.current?.getMeasurements?.() ?? [];
+      if (measurements.length > 0) base.measurements = measurements;
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };

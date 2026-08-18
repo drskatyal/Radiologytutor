@@ -11,6 +11,7 @@ DICOM file in Orthanc:
 | `sliceIndex` | Stack index at click | Fast seek (SOP preferred when present) |
 | `marker.{x_pct,y_pct}` | Overlay click `[0,1]` | Laser / click-the-finding |
 | `windowWidth` / `windowCenter` | Live VOI at click (DICOM WW/WC) | Re-window so the lesion is visible |
+| `measurements[]` | Length / Ellipse / Probe tools | Authored mm + mean HU for the tutor |
 | `track.events` (`voi`, `slice`, …) | Recorded walk-through | Exact retrace of teacher motion |
 
 Pixels stay in Orthanc (DICOMweb). Teaching state lives in Mongo/JSON keyed by
@@ -39,28 +40,41 @@ If the teacher marked a nodule in **lung window** and the resident is on
 **bone**, a bare laser on the same slice is useless — the nodule is invisible.
 
 So at annotate/save we persist `windowWidth` / `windowCenter` from the live
-viewport (same semantics as DICOM `(0028,1051)` / `(0028,1050)`). On
-`show_finding` / tutor drive, Cornerstone **eases** WW/WC with
-`easeInOutCubic` (~500–750 ms) — it does **not** jump presets. Recorded
-walk-throughs already stream dense `voi` events for an exact retrace.
+viewport (same semantics as DICOM `(0028,1051)` / `(0028,1050)`).
 
-The tutor may also call `set_window` with the authored WW/WC; that path uses
-the same eased `setWindow`.
+**Adaptive transitions** (`lib/voiTransition.ts`):
 
-## Marker accuracy roadmap
+| |ΔWW| or |ΔWC| | Behavior |
+|-----------------|----------|
+| ≤ ~150 (mid of 100–200) | Eased scroll, duration scales with delta (radiologist feel) |
+| > ~150 (e.g. bone → lung) | **Direct snap** — no multi-second tween through useless mid-windows |
 
-Today `marker` is **viewport-overlay** `[0,1]` (works when zoom/pan match
-authoring). Next hardening:
+Recorded walk-throughs already stream dense `voi` events for an exact retrace.
 
-1. Store image-plane fractions using Columns/Rows (stable under pan/zoom).
-2. Optionally store patient coordinates via `ImagePositionPatient` +
-   `ImageOrientationPatient` + `PixelSpacing` for multiplanar landings.
-3. Prefer `sopInstanceUID` over `sliceIndex` for prefetch and seating.
+## Measurements (Length + HU)
+
+The viewer already has **Length**, **EllipticalROI**, **RectangleROI**, and
+**Probe**. On finding save we snapshot them into `Finding.measurements`:
+
+- Length → `lengthMm` (+ unit when PixelSpacing exists)
+- Ellipse / rectangle ROI → `meanHu` / max / min / std + `areaMm2`
+- Probe → point HU
+
+The tutor may cite **only** these authored numbers. Redrawing calipers on the
+student viewer from stored handles is a follow-on (handles are already `[0,1]`).
+
+## What else makes a finding “awesome” (store next)
+
+1. Image-plane / patient-space markers (stable under pan/zoom)
+2. Bidirectional diameters (short + long axis)
+3. Authored zoom/pan snapshot (already partially in Pacsbin state / track)
+4. Optional GSPS/SR export for PACS interop
+5. Redraw measurement overlays on student reveal from `measurements.handles`
 
 ## Agent / realtime windowing
 
 | Path | Behavior |
 |------|----------|
-| Guided `showState` | Slice snap (decode) then eased WW/WC + camera |
-| Tutor `set_window` | Eased VOI tween |
+| Guided `showState` | Slice snap, then adaptive VOI + camera |
+| Tutor `set_window` | Adaptive VOI (scroll or snap) |
 | Recorded `track` replay | Snap per dense event (looks continuous) |

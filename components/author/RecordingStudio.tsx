@@ -337,6 +337,8 @@ export function RecordingStudio({
         },
         start
       );
+      const measurements = controls.current?.getMeasurements?.() ?? [];
+      if (measurements.length > 0) base.measurements = measurements;
       if (activeSeries && !usingSample) {
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
@@ -449,6 +451,8 @@ export function RecordingStudio({
         },
         start
       );
+      const measurements = controls.current?.getMeasurements?.() ?? [];
+      if (measurements.length > 0) base.measurements = measurements;
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };

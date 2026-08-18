@@ -57,6 +57,38 @@ export interface Marker {
 }
 
 /**
+ * Authored measurement attached to a finding (Length / Ellipse HU / Probe).
+ * Handles are overlay [0,1]; numeric stats come from Cornerstone cachedStats
+ * at save time (mm when PixelSpacing exists, HU for CT ROI/probe).
+ */
+export type FindingMeasurementKind =
+  | "length"
+  | "ellipse"
+  | "probe"
+  | "bidirectional";
+
+export interface FindingMeasurement {
+  id: string;
+  kind: FindingMeasurementKind;
+  /** Overlay handles in [0,1] (tool-specific point count). */
+  handles: Array<[number, number]>;
+  label?: string;
+  /** Caliper length (Length / Bidirectional long axis), mm when spaced. */
+  lengthMm?: number;
+  majorMm?: number;
+  minorMm?: number;
+  areaMm2?: number;
+  /** ROI / probe Hounsfield (or modality unit). */
+  meanHu?: number;
+  maxHu?: number;
+  minHu?: number;
+  stdHu?: number;
+  unit?: string;
+  sopInstanceUID?: string;
+  sliceIndex?: number;
+}
+
+/**
  * One concrete landing of a finding on pixels. A single logical Finding can
  * have several anchors (axial + coronal, or current CT + prior MRI). The
  * student tutor drives the matching series/slice and points the laser at
@@ -195,6 +227,11 @@ export interface Finding {
    */
   windowWidth?: number;
   windowCenter?: number;
+  /**
+   * Length / ellipse HU / probe measurements the teacher drew on this finding.
+   * Captured from Cornerstone annotation tools at save — not stored in DICOM.
+   */
+  measurements?: FindingMeasurement[];
   /**
    * All landings for this finding (multi-series / multi-study). When absent,
    * the primary marker + seriesInstanceUID fields above are the sole anchor.

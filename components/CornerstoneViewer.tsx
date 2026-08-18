@@ -43,7 +43,12 @@ import {
   type CornerstoneViewerState,
 } from "../lib/viewerController";
 import { sopUidFromImageId } from "../lib/findingDisplayState";
-import type { RecordedEvent, ViewerEvent } from "../lib/types";
+import { voiTransitionMs } from "../lib/voiTransition";
+import {
+  normalizeMeasurements,
+  type RawAnnotationLike,
+} from "../lib/findingMeasurements";
+import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/types";
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
@@ -113,6 +118,9 @@ interface DrivableViewport {
   setZoom: (z: number) => void;
   getPan: () => [number, number];
   setPan: (p: [number, number]) => void;
+  worldToCanvas?: (p: [number, number, number]) => [number, number];
+  canvasToWorld?: (p: [number, number]) => [number, number, number];
+  element?: HTMLDivElement;
 }
 
 /**
@@ -128,7 +136,7 @@ export interface CornerstoneControls {
   imageCount: number;
   /** Animate the viewport to a target view over `durationMs` (default 700). */
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
-  /** Adjust window width/center (VOI), interpolated. */
+  /** Adjust window width/center (VOI). Duration auto-adapts unless overridden. */
   setWindow: (windowWidth: number, windowCenter: number, durationMs?: number) => void;
   /** Set inversion explicitly (record/replay + toolbar). */
   setInvert: (value: boolean) => void;
@@ -143,6 +151,11 @@ export interface CornerstoneControls {
     wc?: number;
     sopInstanceUID?: string;
   };
+  /**
+   * Snapshot of Length / Ellipse / Probe annotations currently on the
+   * viewport — attach to a Finding at save time.
+   */
+  getMeasurements: () => FindingMeasurement[];
   /** SeriesInstanceUIDs the viewer can switch between (multi-series cases). */
   seriesUIDs: string[];
   /** The SeriesInstanceUID currently shown (undefined for the bundled sample). */
@@ -674,13 +687,20 @@ export default function CornerstoneViewer({
         };
 
         // --- Smooth (interpolated) driving for the guided tour --------------
-        // Default 650ms — long enough to read as continuous windowing, not a jump.
-        const setWindow = (ww: number, wc: number, durationMs = 650): void => {
+        // Adaptive: small ΔWW/WC scrolls like a radiologist; large preset jumps snap.
+        const setWindow = (ww: number, wc: number, durationMs?: number): void => {
           const vp = viewportRef.current;
           if (!vp) return;
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
+          const ms =
+            durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
-          cancelTweenRef.current = tween(durationMs, (e) => {
+          if (ms <= 0) {
+            vp.setProperties({ voiRange: wwWcToVoi(ww, wc) });
+            vp.render();
+            return;
+          }
+          cancelTweenRef.current = tween(ms, (e) => {
             vp.setProperties({
               voiRange: wwWcToVoi(lerp(from.ww, ww, e), lerp(from.wc, wc, e)),
             });
@@ -698,7 +718,8 @@ export default function CornerstoneViewer({
             setActivePreset(FULL_DYNAMIC_ID);
             return;
           }
-          setWindow(p.ww, p.wc, 320);
+          // Presets are often far apart — let adaptive logic snap bone↔lung.
+          setWindow(p.ww, p.wc);
           setActivePreset(p.id);
         };
         applyPresetRef.current = applyPreset;
@@ -737,22 +758,96 @@ export default function CornerstoneViewer({
           const fromPan = vp.getPan();
           const toPan = state.pan ?? fromPan;
 
+          const voiMs =
+            fromVoi && toWw != null && toWc != null
+              ? voiTransitionMs(fromVoi.ww, fromVoi.wc, toWw, toWc)
+              : 0;
+          // Camera keeps a calm cinematic duration; VOI may snap independently.
+          const cameraMs = Math.max(0, durationMs);
+          const totalMs = Math.max(voiMs, cameraMs);
+
+          if (voiMs <= 0 && fromVoi && toWw != null && toWc != null) {
+            vp.setProperties({ voiRange: wwWcToVoi(toWw, toWc) });
+            vp.render();
+          }
+
+          if (totalMs <= 0) {
+            if (toZoom != null) vp.setZoom(toZoom);
+            if (toPan) vp.setPan(toPan);
+            vp.render();
+            return;
+          }
+
           return new Promise<void>((resolve) => {
-            cancelTweenRef.current = tween(
-              durationMs,
-              (e) => {
-                if (fromVoi && toWw != null && toWc != null) {
-                  vp.setProperties({
-                    voiRange: wwWcToVoi(lerp(fromVoi.ww, toWw, e), lerp(fromVoi.wc, toWc, e)),
-                  });
-                }
-                vp.setZoom(lerp(fromZoom, toZoom, e));
-                vp.setPan([lerp(fromPan[0], toPan[0], e), lerp(fromPan[1], toPan[1], e)]);
-                vp.render();
-              },
-              resolve
-            );
+            cancelTweenRef.current = tween(totalMs, (e) => {
+              if (voiMs > 0 && fromVoi && toWw != null && toWc != null) {
+                const ve = Math.min(1, (e * totalMs) / voiMs);
+                vp.setProperties({
+                  voiRange: wwWcToVoi(
+                    lerp(fromVoi.ww, toWw, ve),
+                    lerp(fromVoi.wc, toWc, ve)
+                  ),
+                });
+              }
+              if (cameraMs > 0) {
+                const ce = Math.min(1, (e * totalMs) / cameraMs);
+                vp.setZoom(lerp(fromZoom, toZoom, ce));
+                vp.setPan([
+                  lerp(fromPan[0], toPan[0], ce),
+                  lerp(fromPan[1], toPan[1], ce),
+                ]);
+              }
+              vp.render();
+            }, resolve);
           });
+        };
+
+        const getMeasurements = (): FindingMeasurement[] => {
+          const vp = viewportRef.current;
+          const el = elementRef.current;
+          if (!vp || !el || typeof vp.worldToCanvas !== "function") return [];
+          const start = getStartState();
+          const canvas = el.querySelector("canvas");
+          const w = canvas?.clientWidth || el.clientWidth || 1;
+          const h = canvas?.clientHeight || el.clientHeight || 1;
+          const all =
+            (annotation.state.getAllAnnotations?.() as RawAnnotationLike[] | undefined) ??
+            [];
+          // Fallback: gather per-tool if getAllAnnotations is unavailable.
+          const list =
+            all.length > 0
+              ? all
+              : (["Length", "EllipticalROI", "RectangleROI", "Probe"] as const).flatMap(
+                  (toolName) => {
+                    try {
+                      return (annotation.state.getAnnotations(toolName, el) ??
+                        []) as RawAnnotationLike[];
+                    } catch {
+                      return [];
+                    }
+                  }
+                );
+
+          const mapped = list.map((raw) => {
+            const points = raw.data?.handles?.points ?? [];
+            const handlesPct: Array<[number, number]> = [];
+            for (const pt of points) {
+              if (!Array.isArray(pt) || pt.length < 2) continue;
+              const world = pt as [number, number, number];
+              const [cx, cy] = vp.worldToCanvas!(world);
+              handlesPct.push([
+                Math.min(1, Math.max(0, cx / w)),
+                Math.min(1, Math.max(0, cy / h)),
+              ]);
+            }
+            return {
+              raw,
+              handlesPct,
+              sopInstanceUID: start.sopInstanceUID,
+              sliceIndex: start.sliceIndex,
+            };
+          });
+          return normalizeMeasurements(mapped);
         };
 
         const handle: CornerstoneControls = {
@@ -764,6 +859,7 @@ export default function CornerstoneViewer({
           reset: () => resetRef.current(),
           applyEvent,
           getStartState,
+          getMeasurements,
           // Getters so callers always read the LIVE series list + active series
           // (both change as the rail loads / the viewer switches series).
           get seriesUIDs() {

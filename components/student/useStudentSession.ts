@@ -414,12 +414,8 @@ export function useStudentSession(
           break;
         case "set_window":
           if (action.windowWidth != null && action.windowCenter != null) {
-            // Eased tween (~650ms default) — never jump bone→lung in one frame.
-            controls.current?.setWindow(
-              action.windowWidth,
-              action.windowCenter,
-              700
-            );
+            // Adaptive: scrolls when Δ is small, snaps bone↔lung when large.
+            controls.current?.setWindow(action.windowWidth, action.windowCenter);
           }
           break;
         case "point_to": {
