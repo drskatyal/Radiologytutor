@@ -35,9 +35,10 @@ Optional Alt+X walk-through remains for an exact cursor retrace.
 3. Floating mic + progress dots; Space = push-to-talk. `?` = keyboard cheatsheet.
 4. Viva: click the finding on the image (graded against the authored marker) or speak. Marker stays hidden until a hit, Reveal, or "I don't know."
 5. Compare: a second stack opens when the finding has a secondary landing (`C` toggles).
-6. Examiner AI speaks + drives viewer (`show_finding` / `point_to` / W/L). Does **not** auto-advance — waits for an answer.
-7. Web-grounded questions when guidelines are needed.
-8. Guided mode still auto-advances after TTS. Expand rail for lesson cards / full transcript.
+6. Examiner AI speaks + drives the viewer in the same beat (first sentence + laser). Caption grows sentence by sentence. Does **not** auto-advance in viva — waits for an answer.
+7. Report mode: dictate a structured report; grade against the authored rubric (score + bands + missed + model impression).
+8. Web-grounded questions when guidelines are needed.
+9. Guided mode still auto-advances after TTS. Expand rail for lesson cards / full transcript.
 
 ## Visual language (reading room)
 

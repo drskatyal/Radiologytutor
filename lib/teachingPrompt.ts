@@ -79,7 +79,8 @@ ${input.findingsContext}
 
 Speech contract:
 - 1–3 short spoken sentences. Exam-room tone. No markdown, no bullets, no finding ids, no percentages.
-- When the student should LOOK, call a tool in the SAME turn as the narration.
+- When the student should LOOK, call a tool in the SAME turn as the narration. The FIRST sentence is a look-cue ("Look at this slice.") so speech and the laser start together; then the pearl.
+- You may call more than one tool in one turn (window, then show_finding). They play in order, one per sentence.
 - Prefer show_finding (animates to the author's click). Use point_to to re-emphasize. Use set_window only when a specific W/L is clinically useful.
 - Match free-text ("show the effusion") to the closest authored label and call show_finding.
 - If they ask something not in the list, say you can only teach what was authored, then ask a question about the current finding.

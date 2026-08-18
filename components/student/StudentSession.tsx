@@ -35,6 +35,7 @@ import { TutorCaption } from "./TutorCaption";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
 import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
+import { ReportCoach } from "./ReportCoach";
 
 type PanelTab = "lesson" | "ask";
 
@@ -305,6 +306,12 @@ export default function StudentSession({
           )}
           {s.compareOpen && <Badge variant="accent">Compare</Badge>}
           {s.locateMode && <Badge variant="warning">Locate</Badge>}
+          {s.examMode && s.vivaScore.total > 0 && s.vivaScore.located + s.vivaScore.helped > 0 && (
+            <Badge variant="neutral" className="tabular-nums">
+              {s.vivaScore.located} located
+              {s.vivaScore.helped > 0 ? ` · ${s.vivaScore.helped} shown` : ""}
+            </Badge>
+          )}
         </div>
         <div className="pointer-events-auto flex items-center gap-1.5">
           <IconButton
@@ -490,7 +497,14 @@ export default function StudentSession({
               { value: "reporting", label: "Report" },
             ]}
             value={mode}
-            onValueChange={(v) => setMode(v as SessionMode)}
+            onValueChange={(v) => {
+              const next = v as SessionMode;
+              setMode(next);
+              if (next === "reporting") {
+                setPanel("ask");
+                setRailOpen(true);
+              }
+            }}
           />
         </div>
 
@@ -506,7 +520,7 @@ export default function StudentSession({
               },
               {
                 value: "ask",
-                label: "Viva chat",
+                label: mode === "reporting" ? "Report" : "Viva chat",
                 icon: <MessageCircle className="h-4 w-4" aria-hidden="true" />,
               },
             ]}
@@ -531,23 +545,30 @@ export default function StudentSession({
         </div>
 
         <div className={cn("min-h-0 flex-1 flex-col", panel === "ask" ? "flex" : "hidden")}>
-          <TutorChat
-            turns={s.turns}
-            phase={s.phase}
-            orbState={s.orbState}
-            micState={s.micState}
-            micSupported={s.micSupported}
-            busy={s.busy}
-            aiAvailable={s.aiAvailable}
-            speakingTurnId={s.speakingTurnId}
-            onSend={s.sendText}
-            onMicStart={s.onMicStart}
-            onMicStop={s.onMicStop}
-            onStopSpeaking={s.onStopSpeaking}
-            onReplayTurn={s.replayTurn}
-            onTypingFocus={onTypingFocus}
-            onTypingBlur={onTypingBlur}
-          />
+          {mode === "reporting" ? (
+            <ReportCoach
+              caseId={caseData.caseId}
+              findings={s.orderedFindings}
+            />
+          ) : (
+            <TutorChat
+              turns={s.turns}
+              phase={s.phase}
+              orbState={s.orbState}
+              micState={s.micState}
+              micSupported={s.micSupported}
+              busy={s.busy}
+              aiAvailable={s.aiAvailable}
+              speakingTurnId={s.speakingTurnId}
+              onSend={s.sendText}
+              onMicStart={s.onMicStart}
+              onMicStop={s.onMicStop}
+              onStopSpeaking={s.onStopSpeaking}
+              onReplayTurn={s.replayTurn}
+              onTypingFocus={onTypingFocus}
+              onTypingBlur={onTypingBlur}
+            />
+          )}
         </div>
       </aside>
 

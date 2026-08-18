@@ -1,7 +1,7 @@
 // POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
 //
 // Body:  { caseId, mode, messages: {role,text}[], question?, currentFindingId? }
-// Reply: { answer: string, action: TeachingViewerAction }
+// Reply: { answer: string, action: TeachingViewerAction, actions: TeachingViewerAction[] }
 //
 // This runs the TEACHING PLAN: given the case + findings context and the
 // student's (already-transcribed) question, Gemini returns the spoken answer

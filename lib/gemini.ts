@@ -263,8 +263,10 @@ export interface TeachingPlanInput {
 export interface TeachingPlanResult {
   /** The spoken/written answer (TTS-safe: no markdown, no spoken IDs). */
   answer: string;
-  /** Optional viewer action the frontend executes (drive the viewer). */
+  /** First viewer action (back-compat). Prefer `actions` for interleave. */
   action: TeachingViewerAction;
+  /** Ordered tool calls for this turn — one beat can drive several. */
+  actions: TeachingViewerAction[];
   /** Web sources from Google Search grounding (deduped, capped). */
   sources: GroundingSource[];
 }
@@ -376,9 +378,14 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     contents,
   });
 
+  const actions = result.functionCalls
+    .map((call) => toAction(call))
+    .filter((a) => a.type !== "none");
+
   return {
     answer: result.text,
-    action: toAction(result.functionCalls[0]),
+    action: actions[0] ?? { type: "none" },
+    actions,
     sources: result.sources,
   };
 }

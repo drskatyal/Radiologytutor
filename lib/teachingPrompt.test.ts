@@ -79,6 +79,7 @@ test("guided prompt still walks in order", () => {
   });
   assert.match(p, /GUIDED TOUR/);
   assert.match(p, /next_in_tour/);
+  assert.match(p, /look-cue/);
 });
 
 test("examFallbackStem does not name the finding", () => {

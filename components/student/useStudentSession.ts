@@ -18,7 +18,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRecorder } from "@/components/useRecorder";
 import { useToast, type MicState } from "@/components/ui";
-import { speak, stopSpeaking } from "@/lib/speak";
+import { speak, speakBeats, stopSpeaking } from "@/lib/speak";
+import {
+  buildPerformancePlan,
+  normalizeTutorActions,
+} from "@/lib/performancePlan";
 import { findingViewerState } from "@/lib/viewerController";
 import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
@@ -139,6 +143,8 @@ export function useStudentSession(
   const [compareOpen, setCompareOpen] = useState(false);
   const [locateHint, setLocateHint] = useState("");
   const locateMissesRef = useRef(0);
+  const [locatedIds, setLocatedIds] = useState<string[]>([]);
+  const [helpedIds, setHelpedIds] = useState<string[]>([]);
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
@@ -452,14 +458,14 @@ export function useStudentSession(
         }
         setAiAvailable(true);
 
-        if (data.action && data.action.type !== "none") {
-          const action = data.action as ViewerAction;
-          const opening = question === "Begin the session.";
-          // Opening a viva: we already seated the slice. Don't spoil the
-          // marker just because the model called show_finding with the stem.
-          if (!(examMode && opening && action.type === "show_finding")) {
-            await executeAction(action);
-          }
+        const opening = question === "Begin the session.";
+        let actions = normalizeTutorActions(
+          data as { action?: ViewerAction; actions?: ViewerAction[] }
+        );
+        // Opening a viva: we already seated the slice. Don't spoil the
+        // marker just because the model called show_finding with the stem.
+        if (examMode && opening) {
+          actions = actions.filter((a) => a.type !== "show_finding");
         }
 
         const answer = String(data.answer ?? "").trim();
@@ -469,30 +475,52 @@ export function useStudentSession(
               .map((s) => ({ url: s.url, title: s.title || s.url }))
           : [];
         setSearching(false);
-        if (answer) {
+
+        const plan = buildPerformancePlan(answer, actions);
+        const spoken = plan.filter((b) => b.text.trim());
+        const lead = plan.filter((b) => !b.text.trim());
+        for (const beat of lead) {
+          for (const action of beat.actions) void executeAction(action);
+        }
+
+        if (spoken.length > 0) {
           const id = nextId();
           setTurns((prev) => [
             ...prev,
-            { id, role: "assistant", text: answer, sources },
+            { id, role: "assistant", text: "", sources },
           ]);
           setPhase("speaking");
           setSpeakingTurnId(id);
-          speak(answer, () => {
-            setSpeakingTurnId((cur) => (cur === id ? null : cur));
-            setPhase((p) => (p === "speaking" ? "idle" : p));
-            // Guided only: advance after TTS so the tour feels continuous.
-            // Viva waits for the student's answer (slideshow auto-advance
-            // killed the oral exam).
-            if (mode === "guided") {
-              const cur = activeIndexRef.current;
-              if (cur >= 0 && cur < orderedFindings.length - 1) {
-                window.setTimeout(() => {
-                  if (abortRef.current?.signal.aborted) return;
-                  void revealFinding(cur + 1);
-                }, 900);
-              }
+          void speakBeats(
+            spoken.map((b) => b.text),
+            {
+              onStartBeat: (i) => {
+                const soFar = spoken
+                  .slice(0, i + 1)
+                  .map((b) => b.text)
+                  .join(" ");
+                setTurns((prev) =>
+                  prev.map((t) => (t.id === id ? { ...t, text: soFar } : t))
+                );
+                for (const action of spoken[i].actions) {
+                  void executeAction(action);
+                }
+              },
+              onEnd: () => {
+                setSpeakingTurnId((cur) => (cur === id ? null : cur));
+                setPhase((p) => (p === "speaking" ? "idle" : p));
+                if (mode === "guided") {
+                  const cur = activeIndexRef.current;
+                  if (cur >= 0 && cur < orderedFindings.length - 1) {
+                    window.setTimeout(() => {
+                      if (abortRef.current?.signal.aborted) return;
+                      void revealFinding(cur + 1);
+                    }, 900);
+                  }
+                }
+              },
             }
-          });
+          );
         } else {
           setPhase("idle");
         }
@@ -524,9 +552,15 @@ export function useStudentSession(
 
   const sayDontKnow = useCallback(() => {
     const cur = activeIndexRef.current;
+    const finding = cur >= 0 ? orderedFindings[cur] : null;
+    if (finding) {
+      setHelpedIds((prev) =>
+        prev.includes(finding.id) ? prev : [...prev, finding.id]
+      );
+    }
     if (cur >= 0) void revealFinding(cur, { spoil: true });
     sendText("I don't know. Please show me this finding and teach it.");
-  }, [revealFinding, sendText]);
+  }, [revealFinding, sendText, orderedFindings]);
 
   // --- Voice question: CALL 1 (transcribe) then CALL 2 (tutor) -------------
   const onMicStart = useCallback(async () => {
@@ -616,10 +650,16 @@ export function useStudentSession(
     if (busy || !ready) return;
     const cur = activeIndexRef.current;
     if (cur < 0) return;
+    const finding = orderedFindings[cur];
+    if (finding) {
+      setHelpedIds((prev) =>
+        prev.includes(finding.id) ? prev : [...prev, finding.id]
+      );
+    }
     stopSpeaking();
     stopReplay();
     void revealFinding(cur, { spoil: true });
-  }, [busy, ready, revealFinding, stopReplay]);
+  }, [busy, ready, revealFinding, stopReplay, orderedFindings]);
 
   const onLocateClick = useCallback(
     (x: number, y: number) => {
@@ -632,6 +672,9 @@ export function useStudentSession(
       if (hit) {
         locateMissesRef.current = 0;
         setLocateHint("");
+        setLocatedIds((prev) =>
+          prev.includes(finding.id) ? prev : [...prev, finding.id]
+        );
         void revealFinding(cur, { spoil: true });
         sendText("I clicked the finding on the image.");
         return;
@@ -771,6 +814,11 @@ export function useStudentSession(
     compareOpen,
     toggleCompare,
     locateHint,
+    vivaScore: {
+      located: locatedIds.length,
+      helped: helpedIds.length,
+      total: orderedFindings.length,
+    },
     onLocateClick,
     locateMode:
       examMode &&

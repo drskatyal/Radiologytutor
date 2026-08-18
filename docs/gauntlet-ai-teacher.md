@@ -1,6 +1,6 @@
 # Gauntlet — AI radiology teacher (Phase 0 → N)
 
-> Status: **Phase 2 (compare + locate)** on `cursor/compare-and-locate-a5b0`.
+> Status: **Phase 3 (interleave + report grade)** on `cursor/interleave-voice-a5b0`.
 > Product truth: the AI never invents anatomy. It teaches from what a
 > radiologist authored — clicks, series, slices, and dictated evidence —
 > then *performs* that script like an examiner: drives the viewer while speaking.
@@ -29,7 +29,7 @@ autonomously advances through findings while tuning the viewer.
 | Side-by-side viewers | Dual Cornerstone stacks with unique engine ids. A finding with a `viewportRole: secondary` anchor opens compare automatically. Manual `C` toggles a second pane. |
 | Click-the-finding | Viva locate mode: student click vs authored `[0,1]` marker (`lib/clickFinding.ts`). Hit reveals; miss hints. |
 | Student chrome / viva | Collapsed rail + **on-image examiner caption**. Full-bleed reading room (no app sidebar). Progress dots, auto-begin stem, hide-until-reveal, Don't know / Reveal, `?` hotkeys. Guided still auto-advances; viva waits for an answer. |
-| Speak + drive simultaneously | Reveal finding (laser/track) **then** speak. Guided auto-advances after TTS. Viva waits for an answer — no slideshow. |
+| Speak + drive simultaneously | Performance plan: sentence-chunked TTS (`speakBeats`) + viewer tools on the first beat. Laser and first sentence start together. Guided auto-advances after the last beat. Viva waits. |
 | Hallucinations | Structure prompts: *only* radiologist words; tutor tools only jump to authored finding IDs / markers; never invent coordinates. |
 
 ---
@@ -62,9 +62,9 @@ FindingAnchor {
 
 1. **P1:** anchors + structure-session API + continuous author capture UI + student viva shell (collapsed, mic).
 2. **P1.5 (this loop):** reading-room chrome, on-image examiner, hide-until-reveal, organized teaching sequence + publish readiness, tighter viva/structure prompts.
-3. **P2 (this loop):** dual viewport compare + click-the-finding locate; author pins a secondary landing.
-4. **P3:** streaming TTS + tool calls interleaved; true duplex voice agent.
-5. **P4:** richer assessment (MCQ + AI-graded report) on top of click-the-finding.
+3. **P2:** dual viewport compare + click-the-finding locate; author pins a secondary landing.
+4. **P3 (this loop):** sentence-pipelined TTS + interleaved tool calls; progressive caption. Space barges in (duplex-lite).
+5. **P4 (this loop, slice):** AI-graded structured report against the authored rubric (never a bare score). MCQ still later.
 
 ---
 
