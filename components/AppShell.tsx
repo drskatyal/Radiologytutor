@@ -67,6 +67,7 @@ function navGroups(showDeveloper: boolean, me: MeUser | null): NavGroup[] {
       label: "Learn",
       items: [
         { href: "/library", label: "Library", icon: LayoutGrid },
+        { href: "/learning", label: "My learning", icon: GraduationCap },
         { href: "/library#courses", label: "Courses", icon: GraduationCap },
       ],
     },

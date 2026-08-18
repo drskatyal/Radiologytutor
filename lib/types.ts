@@ -428,6 +428,65 @@ export interface Enrollment {
 }
 
 /**
+ * Per-user progress on a course (Coursera/Udemy "continue learning").
+ * Completion is case-based — radiology lessons are interactive DICOM cases.
+ */
+export interface Progress {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  /** Case IDs the learner has marked complete (ordered by completion time). */
+  completedCaseIds: string[];
+  /** Last case opened in this course (resume deep-link). */
+  lastOpenedCaseId?: string;
+  /** 0–100, derived from completed / course.caseIds.length. */
+  percentComplete: number;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Saved-for-later course (Udemy wishlist pattern). */
+export interface WishlistItem {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  createdAt: string;
+}
+
+/** Learner review of a course (trust signal). */
+export interface Review {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  /** Integer 1–5. */
+  rating: number;
+  body?: string;
+  authorName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Certificate of Completion — NOT CME / AMA PRA Category 1 Credit.
+ * Issued when Progress.percentComplete reaches 100 for a course.
+ */
+export interface Certificate {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  courseTitle: string;
+  learnerName: string;
+  issuedAt: string;
+  /** Always false until an ACCME-accredited partner is wired. */
+  cmeEligible: false;
+}
+
+/**
  * Groups multiple Studies for chronology/comparison (prior vs current).
  * `displayName` is a teaching label — NOT PHI; real patient identity stays in
  * the (de-identified) DICOM. De-identification is deferred (CLAUDE.md §4a).

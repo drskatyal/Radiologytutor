@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import {
   getCourse,
   listAuthors,
@@ -7,6 +8,7 @@ import {
   listCourses,
   listPlaylists,
   listEnrollmentsForUser,
+  listProgressForUser,
 } from "@/lib/cases";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { Breadcrumbs, Button, PageContainer, Skeleton } from "@/components/ui";
@@ -14,10 +16,9 @@ import { PageHeader } from "@/components/AppShell";
 import { Catalog } from "@/components/catalog/Catalog";
 import { MyLearning } from "@/components/catalog/MyLearning";
 import type { CatalogResponse } from "@/components/catalog/types";
-import type { Course } from "@/lib/types";
+import type { MyLearningCourse } from "@/components/catalog/MyLearning";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
 import { DashboardError } from "@/components/home/DashboardError";
-import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ export default async function LibraryPage() {
   const orgId = await activeOrgId();
   let initial: CatalogResponse | null = null;
   let loadError: string | null = null;
-  let enrolledCourses: Course[] = [];
+  let enrolledCourses: MyLearningCourse[] = [];
 
   try {
     const session = await getSession();
@@ -44,10 +45,19 @@ export default async function LibraryPage() {
     initial = { cases, facets, authors, courses, playlists };
 
     if (session) {
-      const enrollments = await listEnrollmentsForUser(session.user.id);
+      const [enrollments, progressList] = await Promise.all([
+        listEnrollmentsForUser(session.user.id),
+        listProgressForUser(session.user.id),
+      ]);
       const active = enrollments.filter((e) => e.status === "active" && e.orgId === orgId);
+      const progressByCourse = new Map(progressList.map((p) => [p.courseId, p]));
       const resolved = await Promise.all(active.map((e) => getCourse(orgId, e.courseId)));
-      enrolledCourses = resolved.filter((c): c is Course => Boolean(c));
+      enrolledCourses = resolved
+        .filter((c): c is NonNullable<typeof c> => Boolean(c))
+        .map((course) => ({
+          ...course,
+          percentComplete: progressByCourse.get(course.id)?.percentComplete,
+        }));
     }
   } catch (e) {
     loadError = e instanceof Error ? e.message : "Something went wrong.";
@@ -61,6 +71,11 @@ export default async function LibraryPage() {
         description="Courses, teachers, and narrated DICOM cases — pick a rail or filter the full catalog."
         actions={
           <div className="flex flex-wrap gap-2">
+            <Link href="/learning">
+              <Button size="sm" variant="secondary">
+                My learning
+              </Button>
+            </Link>
             <Link href="/library#courses">
               <Button size="sm" variant="secondary">
                 Courses

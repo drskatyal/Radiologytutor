@@ -1,10 +1,17 @@
+"use client";
+
 import Link from "next/link";
 import { BookOpen, GraduationCap } from "lucide-react";
 import { Badge, Button } from "@/components/ui";
+import { CourseProgressBar } from "@/components/catalog/CourseProgressBar";
 import type { Course } from "@/lib/types";
 
+export interface MyLearningCourse extends Course {
+  percentComplete?: number;
+}
+
 /** Signed-in learner's enrolled courses — one job: resume learning. */
-export function MyLearning({ courses }: { courses: Course[] }) {
+export function MyLearning({ courses }: { courses: MyLearningCourse[] }) {
   if (courses.length === 0) return null;
 
   return (
@@ -19,9 +26,17 @@ export function MyLearning({ courses }: { courses: Course[] }) {
           </h2>
           <p className="mt-1 text-sm text-secondary">Courses you are enrolled in.</p>
         </div>
-        <Badge variant="neutral" className="tabular-nums">
-          {courses.length}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/learning"
+            className="text-xs font-medium text-secondary transition-colors hover:text-accent"
+          >
+            View all
+          </Link>
+          <Badge variant="neutral" className="tabular-nums">
+            {courses.length}
+          </Badge>
+        </div>
       </div>
       <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {courses.map((course) => (
@@ -37,7 +52,12 @@ export function MyLearning({ courses }: { courses: Course[] }) {
                 </span>
               </span>
               {course.description && (
-                <p className="line-clamp-2 text-sm leading-relaxed text-muted">{course.description}</p>
+                <p className="line-clamp-2 text-sm leading-relaxed text-muted">
+                  {course.description}
+                </p>
+              )}
+              {typeof course.percentComplete === "number" && (
+                <CourseProgressBar percent={course.percentComplete} className="mt-1" />
               )}
               <span className="mt-auto">
                 <Button size="sm" variant="secondary" className="pointer-events-none">

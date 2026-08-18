@@ -45,6 +45,10 @@ import type {
   Playlist,
   Membership,
   Enrollment,
+  Progress,
+  WishlistItem,
+  Review,
+  Certificate,
   MembershipRole,
   User,
   UserRole,
@@ -166,6 +170,10 @@ type CollectionName =
   | "users"
   | "memberships"
   | "enrollments"
+  | "progress"
+  | "wishlist"
+  | "reviews"
+  | "certificates"
   | "deidReports";
 
 /**
@@ -399,6 +407,10 @@ const playlistsStore = collection<Playlist>("playlists");
 const usersStore = collection<User>("users");
 const membershipsStore = collection<Membership>("memberships");
 const enrollmentsStore = collection<Enrollment>("enrollments");
+const progressStore = collection<Progress>("progress");
+const wishlistStore = collection<WishlistItem>("wishlist");
+const reviewsStore = collection<Review>("reviews");
+const certificatesStore = collection<Certificate>("certificates");
 const deidReportsStore = collection<StoredDeidReport>("deidReports");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
@@ -1522,6 +1534,216 @@ export async function updateEnrollment(
 
 export async function deleteEnrollment(enrollmentId: string): Promise<boolean> {
   return enrollmentsStore.remove(enrollmentId);
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace learner — Progress · Wishlist · Reviews · Certificates
+// ---------------------------------------------------------------------------
+
+function progressPercent(completedCaseIds: string[], totalCases: number): number {
+  if (totalCases <= 0) return 0;
+  return Math.min(100, Math.round((completedCaseIds.length / totalCases) * 100));
+}
+
+export async function listProgressForUser(userId: string): Promise<Progress[]> {
+  const all = await progressStore.all();
+  return all
+    .filter((p) => p.userId === userId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function getProgressForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Progress | null> {
+  const all = await progressStore.all();
+  return all.find((p) => p.userId === userId && p.courseId === courseId) ?? null;
+}
+
+export interface UpsertProgressInput {
+  userId: string;
+  orgId: string;
+  courseId: string;
+  caseId?: string;
+  markComplete?: boolean;
+  lastOpenedCaseId?: string;
+}
+
+export async function upsertProgress(input: UpsertProgressInput): Promise<Progress> {
+  const course = await getCourse(input.orgId, input.courseId);
+  if (!course) throw new Error("Course not found.");
+
+  const now = nowIso();
+  const existing = await getProgressForUserCourse(input.userId, input.courseId);
+  const completed = new Set(existing?.completedCaseIds ?? []);
+
+  if (input.markComplete && input.caseId) {
+    completed.add(input.caseId);
+  }
+
+  const lastOpened =
+    input.lastOpenedCaseId ?? input.caseId ?? existing?.lastOpenedCaseId;
+  const percent = progressPercent([...completed], course.caseIds.length);
+  const completedAt =
+    percent >= 100 ? existing?.completedAt ?? now : undefined;
+
+  const progress: Progress = {
+    id: existing?.id ?? genId("prg"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    completedCaseIds: [...completed],
+    lastOpenedCaseId: lastOpened,
+    percentComplete: percent,
+    completedAt,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await progressStore.put(progress);
+  return progress;
+}
+
+export async function listWishlistForUser(userId: string): Promise<WishlistItem[]> {
+  const all = await wishlistStore.all();
+  return all
+    .filter((w) => w.userId === userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function isCourseWishlisted(userId: string, courseId: string): Promise<boolean> {
+  const all = await wishlistStore.all();
+  return all.some((w) => w.userId === userId && w.courseId === courseId);
+}
+
+export async function addToWishlist(
+  userId: string,
+  orgId: string,
+  courseId: string
+): Promise<WishlistItem> {
+  const all = await wishlistStore.all();
+  const existing = all.find((w) => w.userId === userId && w.courseId === courseId);
+  if (existing) return existing;
+  const item: WishlistItem = {
+    id: genId("wsh"),
+    userId,
+    orgId,
+    courseId,
+    createdAt: nowIso(),
+  };
+  await wishlistStore.put(item);
+  return item;
+}
+
+export async function removeFromWishlist(userId: string, courseId: string): Promise<boolean> {
+  const all = await wishlistStore.all();
+  const match = all.find((w) => w.userId === userId && w.courseId === courseId);
+  if (!match) return false;
+  return wishlistStore.remove(match.id);
+}
+
+export interface CourseReviewsSummary {
+  reviews: Review[];
+  average: number;
+  count: number;
+}
+
+export async function listReviewsForCourse(
+  orgId: string,
+  courseId: string
+): Promise<CourseReviewsSummary> {
+  const all = await reviewsStore.all();
+  const reviews = all
+    .filter((r) => r.orgId === orgId && r.courseId === courseId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const count = reviews.length;
+  const average =
+    count === 0
+      ? 0
+      : Math.round((reviews.reduce((sum, r) => sum + r.rating, 0) / count) * 10) / 10;
+  return { reviews, average, count };
+}
+
+export interface CreateReviewInput {
+  userId: string;
+  orgId: string;
+  courseId: string;
+  rating: number;
+  body?: string;
+  authorName?: string;
+}
+
+export async function createReview(input: CreateReviewInput): Promise<Review> {
+  const rating = Math.round(input.rating);
+  if (rating < 1 || rating > 5) throw new Error("Rating must be 1–5.");
+
+  const all = await reviewsStore.all();
+  const existing = all.find(
+    (r) => r.userId === input.userId && r.courseId === input.courseId
+  );
+  const now = nowIso();
+  const review: Review = {
+    id: existing?.id ?? genId("rev"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    rating,
+    body: input.body?.trim() || undefined,
+    authorName: input.authorName,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await reviewsStore.put(review);
+  return review;
+}
+
+export async function listCertificatesForUser(userId: string): Promise<Certificate[]> {
+  const all = await certificatesStore.all();
+  return all
+    .filter((c) => c.userId === userId)
+    .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+}
+
+export async function getCertificate(certificateId: string): Promise<Certificate | null> {
+  return certificatesStore.get(certificateId);
+}
+
+export async function getCertificateForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Certificate | null> {
+  const all = await certificatesStore.all();
+  return all.find((c) => c.userId === userId && c.courseId === courseId) ?? null;
+}
+
+export async function issueCertificate(
+  userId: string,
+  orgId: string,
+  courseId: string,
+  learnerName: string
+): Promise<Certificate> {
+  const existing = await getCertificateForUserCourse(userId, courseId);
+  if (existing) return existing;
+
+  const progress = await getProgressForUserCourse(userId, courseId);
+  if (!progress || progress.percentComplete < 100) {
+    throw new Error("Course must be 100% complete to issue a certificate.");
+  }
+
+  const course = await getCourse(orgId, courseId);
+  if (!course) throw new Error("Course not found.");
+
+  const certificate: Certificate = {
+    id: genId("cert"),
+    userId,
+    orgId,
+    courseId,
+    courseTitle: course.title,
+    learnerName,
+    issuedAt: nowIso(),
+    cmeEligible: false,
+  };
+  await certificatesStore.put(certificate);
+  return certificate;
 }
 
 /**
