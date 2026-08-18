@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
-import { getCaseForOrg } from "@/lib/cases";
+import { getAuthor, getCaseForOrg } from "@/lib/cases";
 import {
   buildPrefetchManifest,
   resolveCaseSeries,
@@ -45,9 +45,12 @@ export default async function CasePage({
     if (!canAuthor) notFound();
   }
 
-  const [manifest, resolved] = await Promise.all([
+  const [manifest, resolved, author] = await Promise.all([
     buildPrefetchManifest(params.caseId, orgId),
     resolveCaseSeries(params.caseId, orgId, WADO_RS_ROOT),
+    caseData.authorId
+      ? getAuthor(orgId, caseData.authorId)
+      : Promise.resolve(null),
   ]);
 
   const series: CaseSeries[] =
@@ -55,6 +58,12 @@ export default async function CasePage({
   const source: ViewerSource = series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE;
   const imagingResolved = !!resolved && resolved.length > 0;
   const courseId = searchParams?.course?.trim() || null;
+  const tutorVoice =
+    author?.voice?.status === "ready" && author.voice.voiceId
+      ? { authorName: author.name, cloned: true as const }
+      : author
+        ? { authorName: author.name, cloned: false as const }
+        : null;
 
   return (
     <>
@@ -65,6 +74,7 @@ export default async function CasePage({
         series={series}
         manifest={manifest}
         imagingResolved={imagingResolved}
+        tutorVoice={tutorVoice}
       />
     </>
   );

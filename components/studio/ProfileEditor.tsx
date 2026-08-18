@@ -21,6 +21,7 @@ import {
   useToast,
 } from "@/components/ui";
 import { StudioHeader } from "./StudioHeader";
+import { VoiceEnrollment } from "./VoiceEnrollment";
 import { fetchProfile, updateProfile } from "./profileApi";
 import { BODY_SYSTEMS, type Author, type BodySystem } from "@/lib/types";
 import { cn } from "@/components/ui/cn";
@@ -170,6 +171,8 @@ export function ProfileEditor() {
                   {(p) => <Input {...p} value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" />}
                 </Field>
               </Section>
+
+              <VoiceEnrollment authorName={name || author?.name || "Teacher"} />
 
               <div className="flex items-center justify-between">
                 {author && (

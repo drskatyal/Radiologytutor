@@ -53,12 +53,15 @@ export default function StudentSession({
   series,
   manifest,
   imagingResolved,
+  tutorVoice,
 }: {
   caseData: CaseData;
   source: ViewerSource;
   series: CaseSeries[];
   manifest: PrefetchManifest | null;
   imagingResolved: boolean;
+  /** When the author enrolled an ElevenLabs clone — disclose synthetic live Q&A. */
+  tutorVoice?: { authorName: string; cloned: boolean } | null;
 }) {
   // Viva is the default examiner experience; guided keeps auto-advance.
   const [mode, setMode] = useState<SessionMode>("viva");
@@ -374,6 +377,13 @@ export default function StudentSession({
         revealed={activeRevealed}
         sources={lastAssistant?.sources}
       />
+
+      {tutorVoice?.cloned && (
+        <p className="pointer-events-none absolute inset-x-0 top-12 z-20 px-4 text-center text-[10px] text-muted/80 sm:top-14">
+          Live Q&A may use a synthetic voice modeled on {tutorVoice.authorName}.
+          Recorded walk-throughs are their real narration.
+        </p>
+      )}
 
       {/* Bottom viva dock — the composition: orb + mic + progress */}
       <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center p-4">
