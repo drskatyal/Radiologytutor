@@ -75,6 +75,7 @@ export default async function CasePage({
         manifest={manifest}
         imagingResolved={imagingResolved}
         tutorVoice={tutorVoice}
+        courseId={courseId}
       />
     </>
   );

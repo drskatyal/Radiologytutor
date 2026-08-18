@@ -61,6 +61,7 @@ export default function StudentSession({
   manifest,
   imagingResolved,
   tutorVoice,
+  courseId,
 }: {
   caseData: CaseData;
   source: ViewerSource;
@@ -69,13 +70,15 @@ export default function StudentSession({
   imagingResolved: boolean;
   /** When the author enrolled an ElevenLabs clone — disclose synthetic tutor voice. */
   tutorVoice?: { authorName: string; cloned: boolean } | null;
+  /** When opened from a course curriculum — mark complete at end of Teach tour. */
+  courseId?: string | null;
 }) {
   // Teach is the product: autonomous attending. Exam = viva.
   const [mode, setMode] = useState<SessionMode>("guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
   const [railOpen, setRailOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
-  const s = useStudentSession(caseData, mode, series);
+  const s = useStudentSession(caseData, mode, series, { courseId });
   const intent = intentFromMode(mode);
 
   const openAsk = useCallback(() => {

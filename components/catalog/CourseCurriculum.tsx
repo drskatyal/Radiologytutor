@@ -125,7 +125,7 @@ export function CourseCurriculum({
                       variant="ghost"
                       leadingIcon={<PlayCircle className="h-3.5 w-3.5" aria-hidden="true" />}
                     >
-                      Open case
+                      Start teaching
                     </Button>
                   </Link>
                 </div>

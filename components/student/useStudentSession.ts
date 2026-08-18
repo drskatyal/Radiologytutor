@@ -92,8 +92,10 @@ const nextId = () => `t${Date.now().toString(36)}_${turnSeq++}`;
 export function useStudentSession(
   caseData: CaseData,
   mode: SessionMode,
-  series: CaseSeries[] = []
+  series: CaseSeries[] = [],
+  opts?: { courseId?: string | null }
 ) {
+  const courseId = opts?.courseId?.trim() || null;
   const { toast } = useToast();
   const recorder = useRecorder();
 
@@ -524,6 +526,19 @@ export function useStudentSession(
                     if (atEnd) {
                       tourActiveRef.current = false;
                       setTourActive(false);
+                      if (courseId) {
+                        void fetch("/api/progress", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          credentials: "include",
+                          body: JSON.stringify({
+                            courseId,
+                            caseId: caseData.caseId,
+                            markComplete: true,
+                            lastOpenedCaseId: caseData.caseId,
+                          }),
+                        }).catch(() => undefined);
+                      }
                       void runTutorRef.current(
                         "Tour complete. Model a concise Impression for this case from the authored findings only, then invite the registrar to ask questions or practice dictating Findings.",
                         turnsRef.current
@@ -554,7 +569,7 @@ export function useStudentSession(
         setPhase("idle");
       }
     },
-    [caseData.caseId, mode, orderedFindings, executeAction, toast, revealFinding, examMode]
+    [caseData.caseId, mode, orderedFindings, executeAction, toast, revealFinding, examMode, courseId]
   );
 
   runTutorRef.current = runTutor;
