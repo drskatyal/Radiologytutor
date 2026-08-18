@@ -1,12 +1,12 @@
 "use client";
 
-// ContinuousCapture — "speak once" authoring.
+// ContinuousCapture — harness demonstration UI ("speak once" authoring).
 //
 // The radiologist scrolls/windows/clicks while holding one mic take. We record
 // the full viewer event log + audio on one clock. On stop, Gemini segments the
-// dictation into multiple structured findings (JSON schema) with time ranges;
-// we enrich each with suggested marker/slice from the track. Fields stay
-// editable — AI never silently invents what they didn't say.
+// dictation into structured findings (JSON schema) with time ranges; then
+// mergeCaptureDemonstration aligns each segment to the DICOM track and we
+// persist Findings + CaptureSession — the teaching script the AI teammate follows.
 
 import { useState } from "react";
 import { Check, Layers, Mic, Sparkles, Trash2 } from "lucide-react";
@@ -23,21 +23,16 @@ import {
   type MicState,
 } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
-import type {
-  Finding,
-  FindingAnchor,
-  Marker,
-  RecordedTrack,
-  StructuredSessionFinding,
-} from "@/lib/types";
+import type { Finding, RecordedTrack, StructuredSessionFinding } from "@/lib/types";
 import {
   AiUnavailableError,
   LIMITS,
   structureSession,
   uploadAudio,
   addFinding,
+  saveCaptureSession,
 } from "@/components/author/lib";
-import { sliceTrack } from "@/lib/captureSession";
+import { mergeCaptureDemonstration } from "@/lib/harness/mergeCapture";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import type { useRecordReplay } from "@/components/record/useRecordReplay";
 import type { MutableRefObject } from "react";
@@ -122,7 +117,6 @@ export function ContinuousCapture({
           ? `Segmented into ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"} — review fields, then save all.`
           : "No findings detected in the dictation — try speaking lesion names and signs clearly."
       );
-      // Keep track/audio on rr state for saveAll (already set by stopRecording).
     } catch (e) {
       if (e instanceof AiUnavailableError) {
         setNotice(e.message);
@@ -166,60 +160,47 @@ export function ContinuousCapture({
         }
       }
       const sessionId = `cap_${Date.now().toString(36)}`;
+      const live = controls.current?.getStartState();
+      const seriesUID =
+        seriesInstanceUID || controls.current?.activeSeriesUID || undefined;
+
+      const { session, findings } = mergeCaptureDemonstration({
+        sessionId,
+        parentTrack,
+        segments: proposals,
+        transcript,
+        audioUrl,
+        studyInstanceUID,
+        seriesInstanceUID: seriesUID,
+        sopInstanceUID: live?.sopInstanceUID,
+      });
+
       let updated = null as Awaited<ReturnType<typeof addFinding>> | null;
-      for (let i = 0; i < proposals.length; i++) {
-        const p = proposals[i];
-        if (!p.label.trim()) continue;
-        const marker: Marker =
-          p.suggestedMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" };
-        const live = controls.current?.getStartState();
-        const sub = sliceTrack(parentTrack, p.tStartMs, p.tEndMs);
-        if (audioUrl) sub.audioUrl = audioUrl;
+      for (const draft of findings) {
         const snap = {
-          sliceIndex: p.suggestedSliceIndex ?? sub.start.sliceIndex ?? live?.sliceIndex ?? 0,
-          ww: sub.start.ww ?? live?.ww,
-          wc: sub.start.wc ?? live?.wc,
-          sopInstanceUID: live?.sopInstanceUID,
+          sliceIndex: draft.sliceIndex ?? live?.sliceIndex ?? 0,
+          ww: draft.windowWidth ?? live?.ww,
+          wc: draft.windowCenter ?? live?.wc,
+          sopInstanceUID: draft.sopInstanceUID ?? live?.sopInstanceUID,
         };
-        const seriesUID =
-          seriesInstanceUID || controls.current?.activeSeriesUID || undefined;
-        const anchor: FindingAnchor = withDisplaySnapshot(
+        const finding = withDisplaySnapshot(
           {
-            studyInstanceUID,
-            seriesInstanceUID: seriesUID,
-            marker,
-            viewportRole: "primary",
-            studyRole: "current",
-          },
-          snap
-        );
-        const finding: Partial<Finding> = withDisplaySnapshot(
-          {
-            label: p.label.trim(),
-            description: p.description.trim(),
-            teachingPoints: p.teachingPoints.map((t) => t.trim()).filter(Boolean),
-            state: " ",
-            marker,
-            studyInstanceUID,
-            seriesInstanceUID: seriesUID,
-            anchors: [anchor],
-            track: sub,
-            durationMs: sub.durationMs,
-            captureSessionId: sessionId,
-            tStartMs: p.tStartMs,
-            tEndMs: p.tEndMs,
-            order: i + 1,
-          },
+            ...draft,
+            state: draft.state || " ",
+            marker: draft.marker!,
+          } as Partial<Finding>,
           snap
         );
         updated = await addFinding(caseId, finding);
       }
+
       if (updated) {
+        updated = await saveCaptureSession(caseId, session);
         onCaseUpdated(updated);
         toast({
           variant: "success",
           title: "Findings saved",
-          description: `${proposals.length} finding${proposals.length === 1 ? "" : "s"} from one take.`,
+          description: `${findings.length} finding${findings.length === 1 ? "" : "s"} from one take — demonstration stored.`,
         });
         setProposals([]);
         setTranscript("");
@@ -253,8 +234,8 @@ export function ContinuousCapture({
 
       <p className="mb-3 text-xs leading-relaxed text-muted">
         Scroll the study and narrate every finding in one take. We timestamp the
-        viewer + your voice, then Gemini returns structured JSON findings you can
-        edit before save — the teaching script the AI examiner will follow.
+        viewer + your voice, structure JSON findings, then merge them into the
+        teaching script the AI attending will drive.
       </p>
 
       <div className="rounded-xl border border-subtle bg-surface/80 px-3 py-3">

@@ -58,6 +58,7 @@ import type {
   BodySystem,
   PatientSex,
   TargetLevel,
+  CaptureSession,
 } from "./types";
 import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
@@ -739,6 +740,24 @@ export async function createFinding(
   if (f.order == null) f.order = data.findings.length + 1;
   data.findings.push(f);
   data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Persist a continuous-capture demonstration (parent track + transcript). */
+export async function appendCaptureSession(
+  orgId: string,
+  caseId: string,
+  session: CaptureSession
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const list = data.captureSessions ? [...data.captureSessions] : [];
+  const idx = list.findIndex((s) => s.id === session.id);
+  if (idx >= 0) list[idx] = session;
+  else list.push(session);
+  data.captureSessions = list;
   data.updatedAt = nowIso();
   await casesStore.put(toStored(data));
   return data;

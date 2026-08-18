@@ -3,6 +3,7 @@
 // cards share one code path (optimistic update + toast happen at the call site).
 
 import type {
+  CaptureSession,
   CaseData,
   Finding,
   Marker,
@@ -145,6 +146,19 @@ export async function addFinding(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(finding),
+  });
+  return jsonOrThrow(res);
+}
+
+/** Persist a continuous-capture demonstration (parent track + transcript). */
+export async function saveCaptureSession(
+  caseId: string,
+  session: CaptureSession
+): Promise<CaseData> {
+  const res = await fetch(`/api/cases/${caseId}/capture-sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(session),
   });
   return jsonOrThrow(res);
 }

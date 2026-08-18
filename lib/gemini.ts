@@ -9,10 +9,18 @@
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
+import {
+  HARNESS_VIEWER_TOOLS,
+  harnessActionFromCall,
+  type HarnessViewerAction,
+} from "./harness/tools";
 
 /** Orchestration / STT / tools. Override via GEMINI_MODEL when Google ships next Flash. */
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+/** Viewer action alias — canonical definition lives in lib/harness/tools. */
+export type TeachingViewerAction = HarnessViewerAction;
 
 export interface GeminiPart {
   text?: string;
@@ -219,28 +227,8 @@ export async function transcribeAudio(
   return result.text.trim();
 }
 
-/** A viewer action the teaching plan may return for the frontend to execute. */
-export interface TeachingViewerAction {
-  /**
-   * show_finding | next_in_tour | prev_in_tour | set_window | point_to | none.
-   * point_to animates the laser pointer to normalized coords (or a finding's
-   * stored marker when findingId is set).
-   */
-  type:
-    | "show_finding"
-    | "next_in_tour"
-    | "prev_in_tour"
-    | "set_window"
-    | "point_to"
-    | "none";
-  findingId?: string;
-  /** For set_window: target VOI. */
-  windowWidth?: number;
-  windowCenter?: number;
-  /** For point_to: normalized [0,1] image coords. */
-  x_pct?: number;
-  y_pct?: number;
-}
+/** @deprecated Use TeachingViewerAction (harness). Kept as comment anchor. */
+// Viewer actions: see HarnessViewerAction in lib/harness/tools.ts
 
 export interface TeachingTurn {
   role: "user" | "assistant";
@@ -272,88 +260,14 @@ export interface TeachingPlanResult {
   sources: GroundingSource[];
 }
 
-/** Tools the tutor uses to drive our self-hosted viewer. */
-const TEACHING_TOOLS: FunctionDeclaration[] = [
-  {
-    name: "show_finding",
-    description:
-      "Drive the viewer to a specific finding (animating camera/window/slice), reveal its marker with a laser pointer approach, and narrate it. Use the finding's id.",
-    parameters: {
-      type: "object",
-      properties: { findingId: { type: "string", description: "Finding id, e.g. f1" } },
-      required: ["findingId"],
-    },
-  },
-  {
-    name: "next_in_tour",
-    description: "Advance to the next finding in tour order and narrate it.",
-    parameters: { type: "object", properties: {} },
-  },
-  {
-    name: "prev_in_tour",
-    description: "Go back to the previous finding in tour order.",
-    parameters: { type: "object", properties: {} },
-  },
-  {
-    name: "set_window",
-    description:
-      "Adjust the window width / center (VOI) on the current view to make a feature more conspicuous.",
-    parameters: {
-      type: "object",
-      properties: {
-        windowWidth: { type: "number" },
-        windowCenter: { type: "number" },
-      },
-      required: ["windowWidth", "windowCenter"],
-    },
-  },
-  {
-    name: "point_to",
-    description:
-      "Animate a laser pointer to a place on the current image. Prefer a findingId (uses that finding's stored click marker). Or pass x_pct/y_pct in [0,1] when pointing at something without a finding.",
-    parameters: {
-      type: "object",
-      properties: {
-        findingId: { type: "string", description: "Optional finding whose marker to point at" },
-        x_pct: { type: "number", description: "Normalized X in [0,1]" },
-        y_pct: { type: "number", description: "Normalized Y in [0,1]" },
-      },
-    },
-  },
-];
+/** Tools the tutor uses to drive our self-hosted viewer (harness registry). */
+const TEACHING_TOOLS: FunctionDeclaration[] = HARNESS_VIEWER_TOOLS;
 
-function toAction(call?: { name: string; args: Record<string, unknown> }): TeachingViewerAction {
-  if (!call) return { type: "none" };
-  switch (call.name) {
-    case "show_finding":
-      return { type: "show_finding", findingId: String(call.args.findingId ?? "") };
-    case "next_in_tour":
-      return { type: "next_in_tour" };
-    case "prev_in_tour":
-      return { type: "prev_in_tour" };
-    case "set_window":
-      return {
-        type: "set_window",
-        windowWidth: Number(call.args.windowWidth),
-        windowCenter: Number(call.args.windowCenter),
-      };
-    case "point_to": {
-      const findingId =
-        call.args.findingId != null ? String(call.args.findingId) : undefined;
-      const x =
-        call.args.x_pct != null ? Number(call.args.x_pct) : undefined;
-      const y =
-        call.args.y_pct != null ? Number(call.args.y_pct) : undefined;
-      return {
-        type: "point_to",
-        findingId,
-        x_pct: Number.isFinite(x) ? x : undefined,
-        y_pct: Number.isFinite(y) ? y : undefined,
-      };
-    }
-    default:
-      return { type: "none" };
-  }
+function toAction(call?: {
+  name: string;
+  args: Record<string, unknown>;
+}): TeachingViewerAction {
+  return harnessActionFromCall(call);
 }
 
 /**
