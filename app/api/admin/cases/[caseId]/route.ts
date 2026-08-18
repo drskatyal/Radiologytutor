@@ -8,8 +8,8 @@
 // orgId is a seam (DEFAULT_ORG_ID) until real auth lands (§4a).
 
 import { NextRequest, NextResponse } from "next/server";
+import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
 import {
-  DEFAULT_ORG_ID,
   getCaseForOrg,
   getPatient,
   listStudiesChronological,
@@ -28,8 +28,6 @@ import { pickPresentDetails } from "../caseDetails";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ORG = DEFAULT_ORG_ID;
 
 function asSystem(v: unknown): BodySystem | undefined {
   return typeof v === "string" && (BODY_SYSTEMS as string[]).includes(v)
@@ -51,11 +49,18 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: { caseId: string } }
 ) {
-  const c = await getCaseForOrg(ORG, params.caseId);
+  try {
+    const ORG = await requireAdminOrg();
+    const c = await getCaseForOrg(ORG, params.caseId);
   if (!c) return NextResponse.json({ error: "Case not found." }, { status: 404 });
   const patient = c.patientId ? await getPatient(ORG, c.patientId) : null;
   const studies = c.patientId ? await listStudiesChronological(ORG, c.patientId) : [];
   return NextResponse.json({ case: c, patient, studies });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
 }
 
 interface PatchBody {
@@ -86,6 +91,7 @@ export async function PATCH(
   { params }: { params: { caseId: string } }
 ) {
   try {
+    const ORG = await requireAdminOrg();
     const body = (await req.json()) as PatchBody;
     const patch: Parameters<typeof updateCaseForOrg>[2] = {};
     if (typeof body.title === "string") {
@@ -116,6 +122,8 @@ export async function PATCH(
     }
     return NextResponse.json({ case: updated });
   } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -125,7 +133,14 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: { caseId: string } }
 ) {
-  const ok = await deleteCaseForOrg(ORG, params.caseId);
-  if (!ok) return NextResponse.json({ error: "Case not found." }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  try {
+    const ORG = await requireAdminOrg();
+    const ok = await deleteCaseForOrg(ORG, params.caseId);
+    if (!ok) return NextResponse.json({ error: "Case not found." }, { status: 404 });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
 }

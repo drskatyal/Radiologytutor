@@ -27,6 +27,7 @@ import {
   orthancGet,
 } from "@/lib/orthanc";
 import { DeidFailError } from "@/lib/deid";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -86,6 +87,13 @@ function classify(name: string, bytes: ArrayBuffer): { skip?: string } {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    await requireAuthorOrg();
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
   if (!orthancConfigured()) {
     return NextResponse.json(
       {

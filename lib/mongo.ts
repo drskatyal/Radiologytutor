@@ -129,6 +129,14 @@ export function ensureIndexes(): Promise<void> {
           db.collection("cases").createIndex({ orgId: 1, system: 1 }),
           db.collection("cases").createIndex({ orgId: 1, difficulty: 1 }),
           db.collection("cases").createIndex({ orgId: 1, authorId: 1 }),
+          // Identity: users, memberships, enrollments.
+          db.collection("users").createIndex({ email: 1 }),
+          db.collection("users").createIndex({ authProviderId: 1 }),
+          db.collection("memberships").createIndex({ userId: 1 }),
+          db.collection("memberships").createIndex({ orgId: 1, userId: 1 }, { unique: true }),
+          db.collection("enrollments").createIndex({ userId: 1 }),
+          db.collection("enrollments").createIndex({ orgId: 1, courseId: 1 }),
+          db.collection("enrollments").createIndex({ userId: 1, courseId: 1 }),
         ]);
       } catch {
         // Indexes are an optimization; never block reads/writes if they fail.

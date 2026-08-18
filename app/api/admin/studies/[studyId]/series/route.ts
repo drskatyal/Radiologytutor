@@ -9,7 +9,8 @@
 // orgId is a seam (DEFAULT_ORG_ID) until real auth lands (§4a).
 
 import { NextRequest, NextResponse } from "next/server";
-import { DEFAULT_ORG_ID, getStudy } from "@/lib/cases";
+import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
+import { getStudy } from "@/lib/cases";
 import {
   orthancConfigured,
   orthancFindStudyByUID,
@@ -20,13 +21,19 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ORG = DEFAULT_ORG_ID;
-
 export async function GET(
   _req: NextRequest,
   { params }: { params: { studyId: string } }
 ) {
-  const study = await getStudy(ORG, params.studyId);
+  let orgId: string;
+  try {
+    orgId = await requireAdminOrg();
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
+  const study = await getStudy(orgId, params.studyId);
   if (!study) {
     return NextResponse.json({ error: "Study not found." }, { status: 404 });
   }

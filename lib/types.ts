@@ -389,6 +389,8 @@ export interface Membership {
   userId: string;
   orgId: string;
   role: MembershipRole;
+  status?: "active" | "invited" | "revoked";
+  invitedBy?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -502,8 +504,8 @@ export interface Case extends CaseData {
 // ============================================================================
 
 /**
- * A teacher/contributor credited on cases and courses. Attribution only — auth
- * (the `User` above) is a separate seam; an Author is the public teaching face.
+ * A teacher/contributor credited on cases and courses. Attribution only until
+ * linked: optional `userId` migrates this row toward AuthorProfile (same id).
  */
 export interface Author {
   id: string;
@@ -521,6 +523,10 @@ export interface Author {
   subspecialties?: BodySystem[];
   /** Optional social / professional links. */
   socials?: { website?: string; twitter?: string; linkedin?: string };
+  /** Authenticated user this public face belongs to (AuthorProfile join). */
+  userId?: string;
+  /** Verification gate for public publishing. Absent = unverified attribution. */
+  verification?: AuthorProfile["verification"];
   createdAt: string;
   updatedAt: string;
 }

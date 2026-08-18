@@ -1,19 +1,24 @@
 "use client";
 
-// Sign-in / sign-up — Google when configured; email+password always.
-// Calls Better Auth HTTP API (no better-auth/react required).
-
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Field, Input, useToast } from "@/components/ui";
+import { DemoSignInButton, GoogleSignInButton } from "./AuthButtons";
+
+function safeNext(next?: string): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  return next;
+}
 
 export function AuthForm({
   mode,
   googleEnabled,
+  next,
 }: {
   mode: "sign-in" | "sign-up";
   googleEnabled: boolean;
+  next?: string;
 }) {
   const router = useRouter();
   const { toast } = useToast();
@@ -21,6 +26,7 @@ export function AuthForm({
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const dest = safeNext(next);
 
   async function onEmail(e: FormEvent) {
     e.preventDefault();
@@ -28,23 +34,24 @@ export function AuthForm({
     setBusy(true);
     try {
       const path =
-        mode === "sign-up"
-          ? "/api/auth/sign-up/email"
-          : "/api/auth/sign-in/email";
+        mode === "sign-up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email";
       const body =
         mode === "sign-up"
-          ? { email, password, name: name || email.split("@")[0] }
-          : { email, password };
+          ? { email, password, name: name || email.split("@")[0], callbackURL: dest }
+          : { email, password, callbackURL: dest };
       const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          error?: string;
+        };
         throw new Error(data.message || data.error || "Authentication failed");
       }
-      router.push("/dashboard");
+      router.push(dest);
       router.refresh();
     } catch (err) {
       toast({
@@ -57,10 +64,6 @@ export function AuthForm({
     }
   }
 
-  function onGoogle() {
-    window.location.href = "/api/auth/sign-in/social?provider=google";
-  }
-
   return (
     <div className="mx-auto w-full max-w-sm">
       <h1 className="font-display text-2xl font-semibold tracking-tight text-primary">
@@ -68,22 +71,30 @@ export function AuthForm({
       </h1>
       <p className="mt-1.5 text-sm text-secondary">
         {mode === "sign-up"
-          ? "Teach or learn on FlowRad — Google is the most secure option."
+          ? "Join FlowRad to teach cases or follow a reading-room session."
           : "Welcome back to the reading room."}
       </p>
 
       {googleEnabled && (
-        <Button
-          type="button"
-          variant="secondary"
-          className="mt-6 w-full"
-          onClick={onGoogle}
-        >
-          Continue with Google
-        </Button>
+        <div className="mt-6">
+          <GoogleSignInButton callbackURL={dest} />
+        </div>
       )}
 
-      <form onSubmit={onEmail} className="mt-6 flex flex-col gap-3">
+      {mode === "sign-in" && (
+        <div className={googleEnabled ? "mt-3" : "mt-6"}>
+          <DemoSignInButton next={dest === "/" ? "/studio" : dest} />
+        </div>
+      )}
+
+      <div className="relative my-6">
+        <span aria-hidden="true" className="absolute inset-x-0 top-1/2 h-px bg-overlay" />
+        <span className="relative mx-auto block w-fit bg-elevated px-2 text-[11px] font-medium uppercase tracking-wider text-muted">
+          Email
+        </span>
+      </div>
+
+      <form onSubmit={onEmail} className="flex flex-col gap-3">
         {mode === "sign-up" && (
           <Field label="Name">
             {(p) => (
@@ -117,9 +128,7 @@ export function AuthForm({
               minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              autoComplete={
-                mode === "sign-up" ? "new-password" : "current-password"
-              }
+              autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
             />
           )}
         </Field>
@@ -132,14 +141,20 @@ export function AuthForm({
         {mode === "sign-up" ? (
           <>
             Already have an account?{" "}
-            <Link href="/sign-in" className="text-accent hover:underline">
+            <Link
+              href={next ? `/sign-in?next=${encodeURIComponent(dest)}` : "/sign-in"}
+              className="text-accent hover:underline"
+            >
               Sign in
             </Link>
           </>
         ) : (
           <>
             New here?{" "}
-            <Link href="/sign-up" className="text-accent hover:underline">
+            <Link
+              href={next ? `/sign-up?next=${encodeURIComponent(dest)}` : "/sign-up"}
+              className="text-accent hover:underline"
+            >
               Create an account
             </Link>
           </>

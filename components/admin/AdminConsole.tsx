@@ -1,16 +1,12 @@
 "use client";
 
-// The Console: cross-org oversight of every teaching case, plus placeholder
-// tiles for platform-admin surfaces on the roadmap (author verification,
-// de-identification, payouts — CLAUDE.md §6). Course/playlist/author
-// management now lives in Studio (the teaching home); this surface is
-// platform scope only.
+// Admin console: Cases (org oversight), Teachers (verification placeholder),
+// Platform (super-admin tools on the roadmap). Auth gates land via lib/auth.
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { BadgeCheck, CircleAlert, LayoutGrid, ScanSearch, Wallet } from "lucide-react";
+import { CircleAlert, LayoutGrid, Users } from "lucide-react";
 import {
-  Badge,
   Breadcrumbs,
   Button,
   EmptyState,
@@ -24,6 +20,8 @@ import { PageHeader } from "@/components/AppShell";
 import { useCallbackRef } from "./useCallbackRef";
 import { CaseList } from "./CaseList";
 import { EditCaseModal } from "./EditCaseModal";
+import { TeachersQueue } from "./TeachersQueue";
+import { PlatformPanel } from "./PlatformPanel";
 import {
   deleteCase as apiDeleteCase,
   fetchAuthors,
@@ -34,6 +32,7 @@ import {
 import type { AdminCaseRow, Author, Case, CaseStatus, Patient } from "./types";
 
 type Filter = "all" | CaseStatus;
+type Section = "cases" | "teachers" | "platform";
 
 export function AdminConsole() {
   const { toast } = useToast();
@@ -43,6 +42,7 @@ export function AdminConsole() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [section, setSection] = useState<Section>("cases");
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const [editId, setEditId] = useState<string | null>(null);
@@ -136,32 +136,54 @@ export function AdminConsole() {
   return (
     <>
       <PageHeader
-        breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Console" }]} />}
-        title="Console"
-        description="Platform oversight of every teaching case across the organization."
+        breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Admin" }]} />}
+        title="Admin"
+        description="Platform console — org admins oversee cases; Super-admins run teacher verification and marketplace health."
         actions={
           <Link href="/studio/new">
             <Button leadingIcon={<LayoutGrid className="h-4 w-4" aria-hidden="true" />}>New case</Button>
           </Link>
         }
       >
-        {!loading && !loadError && cases.length > 0 && (
-          <Tabs
-            value={filter}
-            onValueChange={(v) => setFilter(v as Filter)}
-            items={[
-              { value: "all", label: "All", count: counts.all },
-              { value: "published", label: "Published", count: counts.published },
-              { value: "draft", label: "Drafts", count: counts.draft },
-            ]}
-          />
+        <Tabs
+          variant="underline"
+          value={section}
+          onValueChange={(v) => setSection(v as Section)}
+          items={[
+            { value: "cases", label: "Cases", icon: <LayoutGrid className="h-4 w-4" />, count: loading ? undefined : cases.length },
+            { value: "teachers", label: "Teachers", icon: <Users className="h-4 w-4" />, count: loading ? undefined : authors.length },
+            { value: "platform", label: "Platform" },
+          ]}
+        />
+        {section === "cases" && !loading && !loadError && cases.length > 0 && (
+          <div className="mt-4">
+            <Tabs
+              value={filter}
+              onValueChange={(v) => setFilter(v as Filter)}
+              items={[
+                { value: "all", label: "All", count: counts.all },
+                { value: "published", label: "Published", count: counts.published },
+                { value: "draft", label: "Drafts", count: counts.draft },
+              ]}
+            />
+          </div>
         )}
       </PageHeader>
 
       <PageContainer className="flex flex-col gap-10">
-        <PlatformTiles />
-
-        {loading ? (
+        {section === "platform" ? (
+          <PlatformPanel />
+        ) : section === "teachers" ? (
+          <TeachersQueue
+            authors={authors}
+            loading={loading}
+            error={loadError}
+            onRetry={() => {
+              setLoading(true);
+              reload();
+            }}
+          />
+        ) : loading ? (
           <LoadingList />
         ) : loadError ? (
           <EmptyState
@@ -235,50 +257,6 @@ export function AdminConsole() {
         }
       />
     </>
-  );
-}
-
-/** Designed-but-inert tiles for platform-admin surfaces later on the roadmap
- * (CLAUDE.md §6) — orientation, not invented behavior. */
-function PlatformTiles() {
-  const tiles = [
-    {
-      icon: <BadgeCheck className="h-5 w-5" aria-hidden="true" />,
-      title: "Author verification",
-      description: "Review credentials before authors can publish publicly.",
-      badge: "Coming in P0",
-    },
-    {
-      icon: <ScanSearch className="h-5 w-5" aria-hidden="true" />,
-      title: "De-identification",
-      description: "PHI review queue for uploaded studies.",
-      badge: "Coming in P1",
-    },
-    {
-      icon: <Wallet className="h-5 w-5" aria-hidden="true" />,
-      title: "Payouts",
-      description: "Marketplace earnings and Stripe Connect payouts.",
-      badge: "Coming in P3",
-    },
-  ];
-  return (
-    <div className="grid gap-4 sm:grid-cols-3">
-      {tiles.map((t) => (
-        <div
-          key={t.title}
-          className="flex flex-col gap-2 rounded-xl border border-dashed border-strong bg-surface/60 p-4 opacity-80"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-elevated text-muted">
-              {t.icon}
-            </span>
-            <Badge variant="neutral">{t.badge}</Badge>
-          </div>
-          <p className="text-sm font-semibold text-primary">{t.title}</p>
-          <p className="text-xs leading-relaxed text-muted">{t.description}</p>
-        </div>
-      ))}
-    </div>
   );
 }
 

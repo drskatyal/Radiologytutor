@@ -3,14 +3,20 @@
 import { CircleAlert } from "lucide-react";
 import { Button, EmptyState, PageContainer } from "@/components/ui";
 
-/** Shown when the dashboard's server-side data loads fail. A tiny client
+/** Shown when a server-rendered catalog/home load fails. A tiny client
  * island so the retry action can reload the page. */
-export function DashboardError({ message }: { message: string }) {
+export function DashboardError({
+  title = "Couldn't load this page",
+  message,
+}: {
+  title?: string;
+  message: string;
+}) {
   return (
     <PageContainer>
       <EmptyState
         icon={<CircleAlert aria-hidden="true" />}
-        title="Couldn't load your dashboard"
+        title={title}
         description={message}
         action={
           <Button variant="secondary" onClick={() => location.reload()}>

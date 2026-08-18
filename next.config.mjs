@@ -21,6 +21,9 @@ const nextConfig = {
       "@aws-sdk/s3-request-presigner",
       "mongodb",
       "dicom-parser",
+      "better-auth",
+      "@better-auth/mongo-adapter",
+      "@better-auth/memory-adapter",
     ],
   },
 };

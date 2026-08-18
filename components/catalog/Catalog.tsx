@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { CircleAlert, Filter, Search, SlidersHorizontal, X } from "lucide-react";
+import { CircleAlert, Filter, GraduationCap, LayoutGrid, Search, SlidersHorizontal, Users, X } from "lucide-react";
 import {
   Badge,
   Button,
@@ -25,7 +25,7 @@ import {
 import { DIFFICULTIES, BODY_SYSTEMS } from "@/lib/types";
 import { difficultyLabel } from "@/lib/taxonomy";
 import { CaseCardGrid } from "./CaseCard";
-import { CoursesRail, PlaylistsRail } from "./Rails";
+import { CoursesRail, PlaylistsRail, TeachersRail } from "./Rails";
 import {
   fetchCatalog,
   type Author,
@@ -131,6 +131,24 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
   const activeCount = FILTER_KEYS.filter((k) => k !== "sort" && query[k]).length;
   const { facets } = data;
 
+  const caseCountByAuthor = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const c of data.cases) {
+      if (!c.authorId) continue;
+      map[c.authorId] = (map[c.authorId] ?? 0) + 1;
+    }
+    return map;
+  }, [data.cases]);
+
+  const courseCountByAuthor = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const c of data.courses) {
+      if (!c.authorId) continue;
+      map[c.authorId] = (map[c.authorId] ?? 0) + 1;
+    }
+    return map;
+  }, [data.courses]);
+
   // Rails only show in the unfiltered view (a clean library landing).
   const showRails = activeCount === 0 && !query.q;
 
@@ -138,7 +156,43 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
     <div className="flex flex-col gap-8">
       {showRails && (
         <>
-          <CoursesRail courses={data.courses} authorById={authorById} />
+          {data.courses.length === 0 ? (
+            <section id="courses" className="flex scroll-mt-24 flex-col gap-4">
+              <SectionHeading
+                icon={<GraduationCap aria-hidden="true" />}
+                title="Courses"
+                description="Multi-case teaching sequences, taught end to end."
+              />
+              <EmptyState
+                icon={<GraduationCap aria-hidden="true" />}
+                title="No courses yet"
+                description="Published teaching sequences will appear here."
+              />
+            </section>
+          ) : (
+            <CoursesRail id="courses" courses={data.courses} authorById={authorById} />
+          )}
+          {data.authors.length === 0 ? (
+            <section id="teachers" className="flex scroll-mt-24 flex-col gap-4">
+              <SectionHeading
+                icon={<Users aria-hidden="true" />}
+                title="Teachers"
+                description="Radiologists publishing on FlowRad."
+              />
+              <EmptyState
+                icon={<Users aria-hidden="true" />}
+                title="No teachers yet"
+                description="Author profiles will appear here once educators publish."
+              />
+            </section>
+          ) : (
+            <TeachersRail
+              id="teachers"
+              authors={data.authors}
+              caseCountByAuthor={caseCountByAuthor}
+              courseCountByAuthor={courseCountByAuthor}
+            />
+          )}
           <PlaylistsRail playlists={data.playlists} />
         </>
       )}
@@ -228,7 +282,9 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
       </div>
 
       {/* Result count */}
+      <div id="cases" className="scroll-mt-24">
       <SectionHeading
+        icon={<LayoutGrid aria-hidden="true" />}
         title={activeCount > 0 || query.q ? "Results" : "All cases"}
         aside={
           loading ? (
@@ -286,6 +342,7 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
     </div>
   );
 }

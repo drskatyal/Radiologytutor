@@ -7,7 +7,8 @@
 // renders end to end.
 
 import { notFound } from "next/navigation";
-import { getCaseForOrg, DEFAULT_ORG_ID } from "@/lib/cases";
+import { getCaseForOrg } from "@/lib/cases";
+import { activeOrgId } from "@/lib/auth";
 import { resolveCaseSeries } from "@/lib/prefetch";
 import type { CaseSeries } from "@/lib/viewerSource";
 import { RecordingStudio } from "@/components/author/RecordingStudio";
@@ -18,11 +19,12 @@ export const dynamic = "force-dynamic";
 const WADO_RS_ROOT = "/api/dicomweb";
 
 export default async function StudioRecordPage({ params }: { params: { caseId: string } }) {
-  const caseData = await getCaseForOrg(DEFAULT_ORG_ID, params.caseId);
+  const orgId = await activeOrgId();
+  const caseData = await getCaseForOrg(orgId, params.caseId);
   if (!caseData) notFound();
 
   // Empty when imaging can't be resolved — the studio falls back to the sample.
-  const resolved = await resolveCaseSeries(params.caseId, DEFAULT_ORG_ID, WADO_RS_ROOT);
+  const resolved = await resolveCaseSeries(params.caseId, orgId, WADO_RS_ROOT);
   const series: CaseSeries[] = resolved && resolved.length > 0 ? resolved : [];
 
   return <RecordingStudio initialCase={caseData} initialSeries={series} />;

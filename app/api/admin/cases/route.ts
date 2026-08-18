@@ -9,8 +9,8 @@
 // orgId is a seam: derived from DEFAULT_ORG_ID until real auth lands (§4a).
 
 import { NextRequest, NextResponse } from "next/server";
+import { jsonAuthError, requireAdminOrg } from "@/lib/auth";
 import {
-  DEFAULT_ORG_ID,
   listCasesForOrg,
   listPatients,
   createCaseForOrg,
@@ -51,8 +51,6 @@ function cleanTags(v: unknown): string[] | undefined {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ORG = DEFAULT_ORG_ID;
-
 /** A case plus the denormalized bits the admin list renders. */
 export interface AdminCaseRow extends Case {
   patientName?: string;
@@ -61,7 +59,9 @@ export interface AdminCaseRow extends Case {
 }
 
 export async function GET() {
-  const [cases, patients] = await Promise.all([
+  try {
+    const ORG = await requireAdminOrg();
+    const [cases, patients] = await Promise.all([
     listCasesForOrg(ORG),
     listPatients(ORG),
   ]);
@@ -75,6 +75,11 @@ export async function GET() {
   }));
 
   return NextResponse.json({ cases: rows });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
 }
 
 /** A study to create + link as part of creating a case. */
@@ -121,6 +126,7 @@ interface CreateCaseBody {
 
 export async function POST(req: NextRequest) {
   try {
+    const ORG = await requireAdminOrg();
     const body = (await req.json()) as CreateCaseBody;
     const title = (body.title ?? "").trim();
     if (!title) {
@@ -188,6 +194,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ case: created, patient, studies: createdStudies });
   } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

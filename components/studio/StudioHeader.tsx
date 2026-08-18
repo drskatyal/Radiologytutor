@@ -7,13 +7,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { GraduationCap, LayoutGrid, Plus, UserRound } from "lucide-react";
+import { GraduationCap, House, LayoutGrid, Plus, UserRound } from "lucide-react";
 import { PageHeader } from "@/components/AppShell";
 import { Button, Tabs } from "@/components/ui";
 
-export type StudioTab = "cases" | "courses" | "profile";
+export type StudioTab = "overview" | "cases" | "courses" | "profile";
 
 const TABS: { value: StudioTab; label: string; href: string; icon: React.ReactNode }[] = [
+  { value: "overview", label: "Home", href: "/studio", icon: <House className="h-4 w-4" /> },
   { value: "cases", label: "My cases", href: "/studio/cases", icon: <LayoutGrid className="h-4 w-4" /> },
   {
     value: "courses",
@@ -30,7 +31,7 @@ export function StudioHeader({ active }: { active: StudioTab }) {
   return (
     <PageHeader
       title="Studio"
-      description="Create, refine and publish your teaching cases."
+      description="Your teaching home — cases, courses, and publish status."
       actions={
         <Link href="/studio/new">
           <Button leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}>Create a case</Button>
