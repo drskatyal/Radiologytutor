@@ -5,8 +5,7 @@ import { BrandMark } from "@/components/AppShell";
 
 /**
  * Marketplace first viewport — brand, one headline, one supporting line,
- * one CTA group. Atmosphere is a windowing ramp + scan reticle (radiology
- * motifs), not a card stack or stat strip.
+ * one CTA group. Atmosphere is film black + a quiet reticle, not AI glow.
  */
 export function MarketplaceHero({ signedIn }: { signedIn: boolean }) {
   return (
@@ -16,14 +15,16 @@ export function MarketplaceHero({ signedIn }: { signedIn: boolean }) {
         <p className="flex items-center gap-3">
           <BrandMark size="lg" />
           <span className="font-display text-4xl font-semibold tracking-tightest text-primary sm:text-5xl">
-            FlowRad <span className="text-accent">Learn</span>
+            FlowRad{" "}
+            <span className="font-normal text-secondary">Learn</span>
           </span>
         </p>
         <h1 className="mt-8 max-w-xl font-display text-xl font-semibold leading-snug tracking-tight text-primary sm:text-2xl">
           Radiology, taught on the study.
         </h1>
         <p className="mt-3 max-w-lg text-[0.95rem] leading-relaxed text-secondary">
-          Curated teachers, narrated DICOM cases, and an AI tutor — one click from the reading room to the marketplace.
+          Curated teachers, narrated DICOM cases, and an AI tutor — one click
+          from the reading room to the marketplace.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <Link href="/library#courses">
@@ -58,14 +59,13 @@ export function MarketplaceHero({ signedIn }: { signedIn: boolean }) {
   );
 }
 
-/** Full-bleed clinical atmosphere — CT windowing ramp + scan reticle. */
+/** Full-bleed film plane + restrained scan reticle. */
 function HeroAtmosphere() {
   return (
     <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-      <div className="absolute inset-0 bg-gradient-to-b from-imaging via-surface to-canvas" />
-      <div className="absolute inset-0 bg-grid-faint bg-[size:40px_40px] opacity-[0.35] [mask-image:radial-gradient(70rem_40rem_at_70%_40%,black,transparent)]" />
-      <div className="absolute inset-y-0 right-0 w-[55%] bg-gradient-to-b from-transparent via-overlay/50 to-transparent opacity-70" />
-      <div className="absolute -top-32 right-[10%] h-[28rem] w-[28rem] rounded-full bg-accent/10 blur-3xl" />
+      <div className="absolute inset-0 bg-imaging" />
+      <div className="absolute inset-0 bg-gradient-to-r from-imaging via-imaging to-surface/80" />
+      <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-canvas to-transparent" />
       <ScanReticle />
     </div>
   );
@@ -74,14 +74,18 @@ function HeroAtmosphere() {
 function ScanReticle() {
   return (
     <svg
-      className="absolute right-[6%] top-1/2 hidden h-[26rem] w-[26rem] -translate-y-1/2 text-accent/30 md:block"
+      className="absolute right-[6%] top-1/2 hidden h-[26rem] w-[26rem] -translate-y-1/2 text-secondary/25 md:block"
       viewBox="0 0 200 200"
       fill="none"
     >
       <circle cx="100" cy="100" r="88" stroke="currentColor" strokeWidth="0.6" />
       <circle cx="100" cy="100" r="58" stroke="currentColor" strokeWidth="0.5" opacity="0.7" />
       <circle cx="100" cy="100" r="8" stroke="currentColor" strokeWidth="1" />
-      <path d="M100 12 v28 M100 160 v28 M12 100 h28 M160 100 h28" stroke="currentColor" strokeWidth="0.8" />
+      <path
+        d="M100 12 v28 M100 160 v28 M12 100 h28 M160 100 h28"
+        stroke="currentColor"
+        strokeWidth="0.8"
+      />
       <path d="M100 84 v32 M84 100 h32" stroke="currentColor" strokeWidth="1.1" />
     </svg>
   );

@@ -105,7 +105,7 @@ function isActive(pathname: string, href: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
-/** FlowRad brand mark — a clinical "scan reticle" glyph paired with the wordmark. */
+/** FlowRad brand mark — quiet reticle tile, no neon sheen. */
 export function BrandMark({
   className,
   size = "md",
@@ -118,16 +118,12 @@ export function BrandMark({
   return (
     <span
       className={cn(
-        "relative flex items-center justify-center rounded-lg bg-accent-sheen text-accent-foreground shadow-md",
+        "relative flex items-center justify-center rounded-md border border-strong bg-elevated text-accent",
         box,
         className
       )}
     >
-      <Activity className={icon} strokeWidth={2.4} />
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-inset ring-white/20"
-      />
+      <Activity className={icon} strokeWidth={2.2} />
     </span>
   );
 }
@@ -135,7 +131,8 @@ export function BrandMark({
 function Wordmark() {
   return (
     <span className="font-display text-[15px] font-semibold tracking-tight text-primary">
-      FlowRad <span className="text-accent">Learn</span>
+      FlowRad{" "}
+      <span className="font-normal text-secondary">Learn</span>
     </span>
   );
 }
@@ -384,15 +381,10 @@ export function PageHeader({
   return (
     <div
       className={cn(
-        "relative border-b border-subtle bg-surface/40 backdrop-blur-sm",
+        "relative border-b border-subtle bg-surface/50",
         className
       )}
     >
-      {/* Faint accent seam along the bottom edge — subtle, premium framing. */}
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-accent/25 to-transparent"
-      />
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-7 sm:px-8">
         {breadcrumbs && (
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">

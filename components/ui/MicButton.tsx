@@ -82,7 +82,7 @@ export function MicButton({
               ? "animate-mic-pulse bg-danger text-white"
               : isProcessing
                 ? "bg-elevated text-secondary"
-                : "bg-accent text-accent-foreground shadow-md hover:shadow-glow"
+                : "bg-accent text-accent-foreground shadow-sm hover:brightness-[1.05]"
           )}
         >
           {isProcessing ? (

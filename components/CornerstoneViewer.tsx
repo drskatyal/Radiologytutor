@@ -943,7 +943,7 @@ export default function CornerstoneViewer({
     <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/60 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55 surface-hairline">
       {/* Brand mark */}
       <span className="flex select-none items-center gap-1.5 pl-1 pr-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent-sheen text-accent-foreground shadow-sm">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md border border-strong bg-elevated text-accent">
           <Activity className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
         </span>
         <span className="hidden font-display text-[11px] font-semibold tracking-tight text-primary sm:inline">
@@ -1109,7 +1109,7 @@ function ToolButton({
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
         "disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "bg-accent-sheen text-accent-foreground shadow-sm"
+          ? "bg-accent text-accent-foreground shadow-sm"
           : "text-secondary hover:bg-overlay hover:text-primary active:scale-95"
       )}
     >

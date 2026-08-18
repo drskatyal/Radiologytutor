@@ -5,51 +5,44 @@
 /* ──────────────────────────────────────────────────────────────────────────
    FlowRad Learn — design tokens.
 
-   A bespoke dark "reading-room" theme: deep cool slate surfaces with a single
-   decisive signature accent (an electric clinical cyan). Colors are stored as
-   space-separated RGB channels so Tailwind can apply <alpha-value>.
+   Clinical reading-room palette: warm charcoal surfaces (not neon-slate), one
+   restrained film-marker accent, no glow washes. Imaging stays pure black.
 
-   Two token vocabularies are wired to the SAME variables:
-     • our semantic names (canvas/surface/elevated, text-*, border-*, accent…)
-       — used by hundreds of existing class usages across the app.
-     • shadcn/ui's names (background/foreground/primary/ring…) — used by any
-       Radix/shadcn-derived primitive we layer in.
-   Keeping them in lockstep means one palette themes everything.
+   Two token vocabularies share the same variables (FlowRad semantic + shadcn).
    ────────────────────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
 
-  /* — Surfaces — a cool slate ladder with a faint blue undertone, not flat grey. */
-  --canvas: 8 10 14; /* #08090e — app background, near-black slate */
-  --surface: 14 17 23; /* #0e1117 — panels */
-  --elevated: 21 26 34; /* #151a22 — cards / menus / popovers */
-  --overlay: 28 34 44; /* #1c222c — hover fills, raised chips */
+  /* Surfaces — warm charcoal ladder, film-adjacent, not electric blue-black. */
+  --canvas: 14 13 12; /* #0e0d0c */
+  --surface: 22 21 19; /* #161513 */
+  --elevated: 32 30 27; /* #201e1b */
+  --overlay: 42 39 35; /* #2a2723 */
 
-  /* — Text — high-contrast at the top, calm steps down. */
-  --text-primary: 233 238 245; /* #e9eef5 */
-  --text-secondary: 160 170 184; /* #a0aab8 */
-  --text-muted: 108 118 132; /* #6c7684 */
+  /* Text — paper-on-film contrast, calm steps down. */
+  --text-primary: 242 237 230; /* #f2ede6 */
+  --text-secondary: 168 160 148; /* #a8a094 */
+  --text-muted: 110 103 94; /* #6e675e */
 
-  /* — Borders — hairlines tuned to read on slate, not pure grey. */
-  --border-subtle: 32 38 48; /* #202630 */
-  --border-strong: 52 60 73; /* #343c49 */
+  /* Borders — soft warm hairlines. */
+  --border-subtle: 48 44 39; /* #302c27 */
+  --border-strong: 72 66 58; /* #48423a */
 
-  /* — Accent — FlowRad signature cyan. One decisive, slightly electric hue. */
-  --accent: 45 212 218; /* #2dd4da — signature cyan/teal */
-  --accent-foreground: 4 12 14; /* near-black ink for text on accent */
-  --accent-muted: 18 52 56; /* subtle accent fill */
-  --accent-bright: 94 234 240; /* highlight / glow */
+  /* Accent — film annotation amber (PACS-familiar), not neon cyan. */
+  --accent: 212 168 75; /* #d4a84b */
+  --accent-foreground: 20 16 8; /* ink on amber */
+  --accent-muted: 58 46 24; /* quiet amber wash */
+  --accent-bright: 232 196 110; /* highlight without glow */
 
-  /* — Semantic — kept legible on dark, harmonised with the accent. */
-  --success: 52 211 153; /* #34d399 */
-  --warning: 245 184 73; /* #f5b849 */
-  --danger: 244 99 99; /* #f46363 */
-  --info: 96 165 250; /* #60a5fa */
+  /* Semantic — legible on charcoal. */
+  --success: 110 176 122; /* #6eb07a */
+  --warning: 212 168 75; /* align with accent */
+  --danger: 196 92 84; /* #c45c54 */
+  --info: 122 148 176; /* #7a94b0 — cool steel, not electric */
 
-  /* — Radii — slightly larger base for a softer, premium feel. */
-  --radius: 0.625rem;
+  --radius: 0.5rem;
 
-  /* ── shadcn/ui token aliases (same palette, their vocabulary) ───────────── */
+  /* shadcn aliases */
   --background: var(--canvas);
   --foreground: var(--text-primary);
   --card: var(--elevated);
@@ -76,13 +69,13 @@
 
   body {
     @apply bg-canvas text-primary font-sans antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    font-feature-settings: "ss01", "cv11";
     text-rendering: optimizeLegibility;
-    /* A whisper of accent glow at the top of the canvas — depth without noise. */
-    background-image: radial-gradient(
-      120rem 48rem at 50% -28rem,
-      rgb(var(--accent) / 0.06),
-      transparent 60%
+    /* Quiet depth — no accent glow wash. */
+    background-image: linear-gradient(
+      180deg,
+      rgb(var(--surface)) 0%,
+      rgb(var(--canvas)) 28rem
     );
     background-attachment: fixed;
   }
@@ -92,35 +85,28 @@
   h3,
   h4 {
     @apply text-primary font-semibold tracking-tight;
-    font-family: var(--font-display), var(--font-sans), ui-sans-serif, system-ui,
-      sans-serif;
+    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
     text-wrap: balance;
   }
 
-  /* Keyboard focus rings — visible, accent-tinted, never on mouse click. */
   :focus-visible {
-    @apply outline-none ring-2 ring-accent/70 ring-offset-2 ring-offset-canvas;
+    @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-canvas;
   }
 
-  /* Tabular numbers for measurements / counters. */
   .tabular-nums {
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
   }
 
-  /* Display utility — opt into the heading face on any element. */
   .font-display {
-    font-family: var(--font-display), var(--font-sans), ui-sans-serif, system-ui,
-      sans-serif;
+    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
   }
 
-  /* Text selection */
   ::selection {
-    background: rgb(var(--accent) / 0.3);
+    background: rgb(var(--accent) / 0.28);
     color: rgb(var(--text-primary));
   }
 
-  /* Scrollbars — slim, themed, unobtrusive. */
   * {
     scrollbar-width: thin;
     scrollbar-color: rgb(var(--border-strong)) transparent;
@@ -143,7 +129,6 @@
     background-clip: padding-box;
   }
 
-  /* Respect users who ask for less motion — neutralise our animations. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -156,11 +141,6 @@
   }
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Reusable surface treatments. The real API is the components in
-   `components/ui/`; these are shared visual primitives those components (and a
-   few feature surfaces) compose.
-   ────────────────────────────────────────────────────────────────────────── */
 @layer components {
   .marker-pulse {
     @apply animate-marker-pulse;
@@ -169,16 +149,14 @@
     @apply animate-fade-in;
   }
 
-  /* Hairline top highlight — gives cards a lit, beveled edge under light. */
+  /* Subtle top edge — no neon. */
   .surface-hairline {
-    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.035);
   }
 
-  /* Faint accent glow ring — used on focused/active premium surfaces. */
+  /* Active surface ring — hairline accent, no bloom. */
   .accent-glow {
-    box-shadow:
-      0 0 0 1px rgb(var(--accent) / 0.4),
-      0 8px 30px -8px rgb(var(--accent) / 0.35);
+    box-shadow: 0 0 0 1px rgb(var(--accent) / 0.45);
   }
 }
 
