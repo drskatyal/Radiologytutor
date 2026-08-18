@@ -24,7 +24,14 @@ import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, Marker } from "@/lib/types";
+import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
+import { clickHitsFinding } from "@/lib/clickFinding";
+import {
+  secondaryAnchor,
+  seriesIndexFor,
+  wantsCompare,
+} from "@/lib/findingAnchors";
 
 export type SessionMode = "guided" | "socratic" | "free" | "reporting" | "viva";
 
@@ -84,7 +91,11 @@ interface ViewerAction {
 let turnSeq = 0;
 const nextId = () => `t${Date.now().toString(36)}_${turnSeq++}`;
 
-export function useStudentSession(caseData: CaseData, mode: SessionMode) {
+export function useStudentSession(
+  caseData: CaseData,
+  mode: SessionMode,
+  series: CaseSeries[] = []
+) {
   const { toast } = useToast();
   const recorder = useRecorder();
 
@@ -119,6 +130,15 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   /** Findings whose diagnosis/marker the student has been shown. */
   const [revealedIds, setRevealedIds] = useState<string[]>([]);
   const examMode = mode === "viva" || mode === "socratic";
+  const secondaryControls = useRef<CornerstoneControls | null>(null);
+  const secondaryOverlay = useRef<ReplayOverlayHandle | null>(null);
+  const [secondaryReady, setSecondaryReady] = useState(false);
+  const [secondaryMarker, setSecondaryMarker] = useState<Marker | null>(null);
+  const [secondaryMarkerVisible, setSecondaryMarkerVisible] = useState(false);
+  const [secondarySeriesIndex, setSecondarySeriesIndex] = useState(0);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [locateHint, setLocateHint] = useState("");
+  const locateMissesRef = useRef(0);
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
@@ -137,6 +157,41 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
   const markRevealed = useCallback((id: string) => {
     setRevealedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
   }, []);
+
+  const onSecondaryReady = useCallback((c: CornerstoneControls) => {
+    secondaryControls.current = c;
+    setSecondaryReady(true);
+  }, []);
+
+  const seatSecondary = useCallback(
+    async (finding: (typeof orderedFindings)[number], spoil: boolean) => {
+      const sec = secondaryAnchor(finding);
+      if (!sec || !wantsCompare(finding)) {
+        setSecondaryMarker(null);
+        setSecondaryMarkerVisible(false);
+        return;
+      }
+      setCompareOpen(true);
+      const idx = seriesIndexFor(series, sec.seriesInstanceUID);
+      setSecondarySeriesIndex(idx);
+      const c = secondaryControls.current;
+      if (c) {
+        if (
+          sec.seriesInstanceUID &&
+          c.seriesUIDs.includes(sec.seriesInstanceUID) &&
+          c.activeSeriesUID !== sec.seriesInstanceUID
+        ) {
+          c.showSeries(sec.seriesInstanceUID);
+        }
+        if (sec.sliceIndex != null && Number.isFinite(sec.sliceIndex)) {
+          await c.showState({ sliceIndex: sec.sliceIndex }, 500);
+        }
+      }
+      setSecondaryMarker(sec.marker ?? null);
+      setSecondaryMarkerVisible(spoil);
+    },
+    [series]
+  );
 
   const micState: MicState =
     phase === "recording" ? "recording" : phase === "transcribing" ? "processing" : "idle";
@@ -221,6 +276,8 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
       const spoil = opts?.spoil !== false;
       stopReplay();
       setMarkerVisible(false);
+      setLocateHint("");
+      locateMissesRef.current = 0;
 
       // Multi-series: if this finding is anchored to a specific series, switch
       // the viewport (and the navigator, via onSeriesChange) to it before we
@@ -271,6 +328,7 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
             },
           }
         );
+        void seatSecondary(finding, spoil);
         return;
       }
 
@@ -293,8 +351,9 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
         setMarker(m);
         setMarkerVisible(false);
       }
+      await seatSecondary(finding, spoil);
     },
-    [orderedFindings, stopReplay, pointLaser, markRevealed]
+    [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary]
   );
 
   // --- Execute a tutor viewer action ---------------------------------------
@@ -562,6 +621,50 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     void revealFinding(cur, { spoil: true });
   }, [busy, ready, revealFinding, stopReplay]);
 
+  const onLocateClick = useCallback(
+    (x: number, y: number) => {
+      if (busy) return;
+      const cur = activeIndexRef.current;
+      const finding = cur >= 0 ? orderedFindings[cur] : null;
+      if (!finding || !examMode) return;
+      if (revealedIds.includes(finding.id)) return;
+      const hit = clickHitsFinding(finding.marker, x, y);
+      if (hit) {
+        locateMissesRef.current = 0;
+        setLocateHint("");
+        void revealFinding(cur, { spoil: true });
+        sendText("I clicked the finding on the image.");
+        return;
+      }
+      locateMissesRef.current += 1;
+      setLocateHint(
+        locateMissesRef.current >= 2
+          ? "Still not it — say you don't know, or try one more click."
+          : "Not quite — click the lesion, or hold the mic to describe it."
+      );
+    },
+    [busy, examMode, orderedFindings, revealedIds, revealFinding, sendText]
+  );
+
+  const toggleCompare = useCallback(() => {
+    setCompareOpen((o) => {
+      const next = !o;
+      if (!next) {
+        setSecondaryReady(false);
+        setSecondaryMarkerVisible(false);
+        return next;
+      }
+      if (series.length > 1) {
+        const curUid = controls.current?.activeSeriesUID;
+        const other = series.findIndex((s) => s.seriesInstanceUID !== curUid);
+        setSecondarySeriesIndex(other >= 0 ? other : 1);
+      } else {
+        setSecondarySeriesIndex(0);
+      }
+      return next;
+    });
+  }, [series]);
+
   const onStopSpeaking = useCallback(() => {
     if (phase === "speaking") {
       stopSpeaking();
@@ -657,6 +760,23 @@ export function useStudentSession(caseData: CaseData, mode: SessionMode) {
     skip,
     revealCurrent,
     sayDontKnow,
+    secondaryControls,
+    secondaryOverlay,
+    secondaryReady,
+    onSecondaryReady,
+    secondaryMarker,
+    secondaryMarkerVisible,
+    secondarySeriesIndex,
+    setSecondarySeriesIndex,
+    compareOpen,
+    toggleCompare,
+    locateHint,
+    onLocateClick,
+    locateMode:
+      examMode &&
+      activeIndex >= 0 &&
+      !!orderedFindings[activeIndex] &&
+      !revealedIds.includes(orderedFindings[activeIndex].id),
     // Agent-orb + premium chat surface state.
     orbState,
     micLevel,

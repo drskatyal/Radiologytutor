@@ -84,6 +84,7 @@ import {
 import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
+import { withSecondaryAnchor } from "@/lib/findingAnchors";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -144,6 +145,7 @@ export function RecordingStudio({
   const [publishing, setPublishing] = useState(false);
   const [captureTab, setCaptureTab] = useState<"sequence" | "speak" | "walk">("sequence");
   const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
+  const [pinningId, setPinningId] = useState<string | null>(null);
 
   const findings = useMemo(
     () => [...caseData.findings].sort((a, b) => a.order - b.order),
@@ -206,12 +208,51 @@ export function RecordingStudio({
 
   function onAnnotateClick(x: number, y: number) {
     if (rr.phase !== "idle") return;
+    if (pinningId) {
+      void pinCompareLanding(pinningId, x, y);
+      return;
+    }
     setPendingMarker({ x_pct: x, y_pct: y, shape: "circle" });
     setAnnotateDraft(EMPTY_DRAFT);
     setAnnotateNotice("");
     setAnnotateTranscript("");
     setAnnotateMic("idle");
     setAnnotateSliceIndex(controls.current?.getStartState().sliceIndex);
+  }
+
+  async function pinCompareLanding(findingId: string, x: number, y: number) {
+    const f = findings.find((item) => item.id === findingId);
+    if (!f) return;
+    const start = controls.current?.getStartState();
+    const active = series[activeSeriesIndex];
+    try {
+      const updated = await patchFinding(caseData.caseId, findingId, {
+        anchors: withSecondaryAnchor(f, {
+          studyInstanceUID: !usingSample ? active?.studyInstanceUID : undefined,
+          seriesInstanceUID:
+            !usingSample
+              ? active?.seriesInstanceUID
+              : controls.current?.activeSeriesUID,
+          sliceIndex: start?.sliceIndex,
+          marker: { x_pct: x, y_pct: y, shape: "circle" },
+          viewportRole: "secondary",
+          studyRole: "prior",
+        }),
+      });
+      setCaseData(updated);
+      setPinningId(null);
+      toast({
+        variant: "success",
+        title: "Compare landing saved",
+        description: "Students will see this series beside the primary finding.",
+      });
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't save compare landing",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    }
   }
 
   async function onAnnotateMicStart() {
@@ -792,6 +833,22 @@ export function RecordingStudio({
               reRecord(f);
               setCaptureTab("walk");
             }}
+            pinningId={pinningId}
+            onPinCompare={(f) => {
+              setPinningId((cur) => {
+                const next = cur === f.id ? null : f.id;
+                if (next) {
+                  toast({
+                    title: "Pin a compare landing",
+                    description:
+                      "Switch series if needed, then click the same finding on that view.",
+                  });
+                }
+                return next;
+              });
+              setFocusedFindingId(f.id);
+              setCaptureTab("sequence");
+            }}
           />
 
           <Tabs
@@ -808,9 +865,9 @@ export function RecordingStudio({
             <Card padded={false} className="p-4">
               <h2 className="text-sm font-semibold text-primary">Click to annotate</h2>
               <p className="mt-1.5 text-xs leading-relaxed text-muted">
-                Click the lesion on the image. Dictate or type. Save lands a real
-                marker and slice — that is the script the examiner follows. Use
-                Speak once when you want to narrate many findings in a single take.
+                {pinningId
+                  ? "Switch to the compare series, then click the same finding. That landing becomes the second pane for students."
+                  : "Click the lesion on the image. Dictate or type. Save lands a real marker and slice — that is the script the examiner follows. Use Speak once when you want to narrate many findings in a single take. Compare landing pins a second series/slice beside it."}
               </p>
             </Card>
           )}

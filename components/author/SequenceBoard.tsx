@@ -7,6 +7,7 @@
 import {
   ChevronDown,
   ChevronUp,
+  Columns2,
   Pencil,
   Play,
   Crosshair,
@@ -27,6 +28,7 @@ import {
   isExamReadyFinding,
   isTeachableFinding,
 } from "@/lib/findingQuality";
+import { wantsCompare } from "@/lib/findingAnchors";
 
 export function SequenceBoard({
   findings,
@@ -38,6 +40,8 @@ export function SequenceBoard({
   onDelete,
   onReplay,
   onReRecord,
+  onPinCompare,
+  pinningId,
 }: {
   findings: Finding[];
   activeId?: string | null;
@@ -48,6 +52,8 @@ export function SequenceBoard({
   onDelete: (finding: Finding) => void;
   onReplay: (finding: Finding) => void;
   onReRecord?: (finding: Finding) => void;
+  onPinCompare?: (finding: Finding) => void;
+  pinningId?: string | null;
 }) {
   const readiness = casePublishReadiness(findings);
 
@@ -119,8 +125,11 @@ export function SequenceBoard({
                               Slice {f.sliceIndex + 1}
                             </Badge>
                           )}
-                          {gaps.includes("slice") && (
-                            <Badge variant="neutral">No slice</Badge>
+                          {wantsCompare(f) && (
+                            <Badge variant="accent">Compare</Badge>
+                          )}
+                          {pinningId === f.id && (
+                            <Badge variant="warning">Click compare landing</Badge>
                           )}
                         </span>
                       </span>
@@ -170,6 +179,17 @@ export function SequenceBoard({
                         disabled={busy}
                       >
                         Re-record
+                      </Button>
+                    )}
+                    {onPinCompare && (
+                      <Button
+                        size="sm"
+                        variant={pinningId === f.id ? "secondary" : "ghost"}
+                        leadingIcon={<Columns2 className="h-3.5 w-3.5" />}
+                        onClick={() => onPinCompare(f)}
+                        disabled={busy}
+                      >
+                        {pinningId === f.id ? "Click image…" : "Compare landing"}
                       </Button>
                     )}
                     <Button

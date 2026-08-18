@@ -240,6 +240,7 @@ export default function CornerstoneViewer({
   onReady,
   onEvent,
   className,
+  instanceId = "primary",
 }: {
   source?: ViewerSource;
   /**
@@ -264,6 +265,11 @@ export default function CornerstoneViewer({
   onEvent?: (e: ViewerEvent) => void;
   /** Wrapper class (the viewer fills it; imaging surface stays pure black). */
   className?: string;
+  /**
+   * Unique id when more than one Cornerstone stack is on screen (compare
+   * layout). Must be stable for the life of the mount. Default "primary".
+   */
+  instanceId?: string;
 }) {
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
@@ -312,6 +318,7 @@ export default function CornerstoneViewer({
   // bundled sample). This avoids the false-negative that killed the tools on
   // real wadors/uploaded studies before their plane metadata had resolved.
   const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
+  const destroyToolGroupRef = useRef<(id: string) => void>(() => {});
 
   const presets = presetsForModality(modality);
 
@@ -319,7 +326,7 @@ export default function CornerstoneViewer({
     let disposed = false;
     let renderingEngine: { destroy: () => void } | null = null;
     let detachListeners: () => void = () => {};
-    const toolGroupId = "flowrad-tg";
+    const toolGroupId = `flowrad-tg-${instanceId}`;
 
     (async () => {
       if (started.current || !elementRef.current) return;
@@ -338,8 +345,8 @@ export default function CornerstoneViewer({
         const imageIds = await buildImageIds(initialSource);
         if (disposed || !elementRef.current) return;
 
-        const renderingEngineId = "flowrad-engine";
-        const viewportId = "FLOWRAD_STACK";
+        const renderingEngineId = `flowrad-engine-${instanceId}`;
+        const viewportId = `FLOWRAD_STACK_${instanceId}`;
         const engine = new core.RenderingEngine(renderingEngineId);
         renderingEngine = engine;
 
@@ -376,9 +383,22 @@ export default function CornerstoneViewer({
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
-        ].forEach((T) => addTool(T));
+        ].forEach((T) => {
+          try {
+            addTool(T);
+          } catch {
+            // Already registered on a sibling viewport (compare layout).
+          }
+        });
 
         ToolGroupManager.destroyToolGroup(toolGroupId);
+        destroyToolGroupRef.current = (id: string) => {
+          try {
+            ToolGroupManager.destroyToolGroup(id);
+          } catch {
+            /* already gone */
+          }
+        };
         const tg = ToolGroupManager.createToolGroup(toolGroupId);
         if (!tg) throw new Error("could not create tool group");
         [
@@ -760,6 +780,7 @@ export default function CornerstoneViewer({
       } catch {
         /* ignore */
       }
+      destroyToolGroupRef.current(toolGroupId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);

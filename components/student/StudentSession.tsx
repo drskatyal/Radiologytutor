@@ -11,6 +11,7 @@ import Link from "next/link";
 import {
   ChevronLeft,
   ChevronRight,
+  Columns2,
   Eye,
   GraduationCap,
   HelpCircle,
@@ -23,6 +24,7 @@ import { Badge, Button, IconButton, Kbd, MicButton, Tabs } from "@/components/ui
 import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
+import { caseSeriesToSource } from "@/lib/viewerSource";
 import type { PrefetchManifest } from "@/lib/prefetch";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
@@ -62,7 +64,7 @@ export default function StudentSession({
   const [panel, setPanel] = useState<PanelTab>("ask");
   const [railOpen, setRailOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
-  const s = useStudentSession(caseData, mode);
+  const s = useStudentSession(caseData, mode, series);
 
   const openAsk = useCallback(() => {
     setRailOpen(true);
@@ -159,6 +161,9 @@ export default function StudentSession({
       if (k === "t") {
         e.preventDefault();
         setRailOpen((o) => !o);
+      } else if (k === "c") {
+        e.preventDefault();
+        s.toggleCompare();
       } else if (k === "r") {
         e.preventDefault();
         s.revealCurrent();
@@ -187,7 +192,12 @@ export default function StudentSession({
     activeFinding && s.revealedIds.includes(activeFinding.id)
   );
   const lastAssistant = [...s.turns].reverse().find((t) => t.role === "assistant" && !t.error);
-  const captionText = lastAssistant?.text ?? "";
+  const captionText =
+    s.locateHint ||
+    lastAssistant?.text ||
+    (s.locateMode
+      ? "Click the finding on the image — or hold the mic and describe it."
+      : "");
   const stepLabel = hasFindings
     ? s.examMode && !activeRevealed
       ? `${Math.max(s.activeIndex, 0) + 1}/${s.orderedFindings.length}`
@@ -195,6 +205,12 @@ export default function StudentSession({
         ? `${s.activeIndex + 1}/${s.orderedFindings.length}`
         : undefined
     : undefined;
+  const compareSeries =
+    series.length === 0
+      ? undefined
+      : series[
+          Math.max(0, Math.min(series.length - 1, s.secondarySeriesIndex))
+        ];
 
   return (
     <div className="relative h-screen bg-imaging">
@@ -223,6 +239,34 @@ export default function StudentSession({
           }
           replaying={s.replaying || s.pointing}
           ready={s.ready}
+          locateMode={s.locateMode && imagingResolved}
+          onLocateClick={s.onLocateClick}
+          secondary={
+            s.compareOpen
+              ? {
+                  source: compareSeries
+                    ? caseSeriesToSource(compareSeries)
+                    : source,
+                  series: series.length > 0 ? series : undefined,
+                  activeSeriesIndex: s.secondarySeriesIndex,
+                  onSeriesChange: (uid) => {
+                    const idx = series.findIndex((x) => x.seriesInstanceUID === uid);
+                    if (idx >= 0) s.setSecondarySeriesIndex(idx);
+                  },
+                  controls: s.secondaryControls,
+                  overlay: s.secondaryOverlay,
+                  onReady: s.onSecondaryReady,
+                  marker: s.secondaryMarker,
+                  markerVisible:
+                    s.secondaryMarkerVisible &&
+                    imagingResolved &&
+                    (!s.examMode || activeRevealed),
+                  ready: s.secondaryReady,
+                  instanceId: "compare",
+                  label: "Compare",
+                }
+              : null
+          }
         />
       </div>
 
@@ -259,8 +303,19 @@ export default function StudentSession({
                   : `${s.orderedFindings.length} findings`}
             </Badge>
           )}
+          {s.compareOpen && <Badge variant="accent">Compare</Badge>}
+          {s.locateMode && <Badge variant="warning">Locate</Badge>}
         </div>
         <div className="pointer-events-auto flex items-center gap-1.5">
+          <IconButton
+            aria-label={s.compareOpen ? "Close compare view" : "Open compare view"}
+            aria-pressed={s.compareOpen}
+            size="sm"
+            variant={s.compareOpen ? "primary" : "secondary"}
+            onClick={s.toggleCompare}
+          >
+            <Columns2 className="h-4 w-4" />
+          </IconButton>
           <IconButton
             aria-label="Keyboard shortcuts"
             size="sm"
@@ -391,7 +446,13 @@ export default function StudentSession({
             )}
           </div>
           <p className="text-[10px] text-muted">
-            Examiner viva · <Kbd>Space</Kbd> to talk · <Kbd>?</Kbd> keys
+            {s.locateMode
+              ? "Click the image to locate · Space to talk · ? keys"
+              : (
+                <>
+                  Examiner viva · <Kbd>Space</Kbd> to talk · <Kbd>?</Kbd> keys
+                </>
+              )}
           </p>
         </div>
       </div>

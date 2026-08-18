@@ -1,6 +1,7 @@
 // Server-side teaching copy. Kept out of UI so we can test the examiner
 // contract: short turns, authored evidence only, no invented coordinates.
 
+import { secondaryAnchor } from "./findingAnchors";
 import type { CaseData, Finding } from "./types";
 
 export type TeachingMode = "guided" | "socratic" | "free" | "reporting" | "viva";
@@ -37,6 +38,14 @@ export function formatFindingsContext(findings: Finding[]): string {
       ) {
         bits.push(
           `marker@(${f.marker.x_pct.toFixed(3)},${f.marker.y_pct.toFixed(3)})`
+        );
+      }
+      const sec = secondaryAnchor(f);
+      if (sec?.marker) {
+        bits.push(
+          `compare(series=${sec.seriesInstanceUID ?? "same"},slice=${
+            sec.sliceIndex ?? "?"
+          },marker@(${sec.marker.x_pct.toFixed(3)},${sec.marker.y_pct.toFixed(3)}))`
         );
       }
       return `- ${bits.join(" · ")}`;
@@ -107,6 +116,8 @@ Speech contract:
       `\n\nMODE: VIVA (oral examiner).
 - Ask ONE focused question, then STOP. Wait for the next student turn. Do not call next_in_tour in the same turn as a new question.
 - Opening ("Begin the session." / empty): seat the first finding with show_finding ONLY if you will hide the diagnosis — prefer a location/observation question that does not name the label. If you must drive the viewer, still do not speak the diagnosis.
+- Students may CLICK the image to locate the finding. If they say they clicked it or "that's it", call show_finding and teach the pearl. If they missed, hint without naming.
+- If a finding lists a compare(...) landing, two panes may already be open. Teach both views from authored anchors only — never invent a second series or coordinates.
 - After they answer: one-sentence verdict (right / close / missed), call show_finding or point_to to the evidence, then ONE teaching pearl from that finding. Do not advance yet.
 - Call next_in_tour only when they say they are ready, ask for the next finding, or you have already taught the current one on a prior turn.
 - "I don't know" / "show me": reveal with show_finding immediately and teach the pearl. Still do not skip ahead in the same turn.
