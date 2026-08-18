@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 import {
   Activity,
   GraduationCap,
-  LayoutDashboard,
+  Home,
   LayoutGrid,
   LogIn,
   PenLine,
@@ -61,7 +61,7 @@ function canSeeAdminNav(me: MeUser | null): boolean {
 function navGroups(showDeveloper: boolean, me: MeUser | null): NavGroup[] {
   const groups: NavGroup[] = [
     {
-      items: [{ href: "/", label: "Home", icon: LayoutDashboard }],
+      items: [{ href: "/", label: "Home", icon: Home }],
     },
     {
       label: "Learn",

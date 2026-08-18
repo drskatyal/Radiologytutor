@@ -6,7 +6,7 @@
 //
 // Without MONGODB_URI we use the in-memory adapter so `npm run build` and
 // local demo work with no database. A signed demo cookie additionally lets
-// "Continue as demo teacher" work even when the memory adapter is empty.
+// "Continue as demo" work even when the memory adapter is empty.
 
 import { createHmac, timingSafeEqual } from "crypto";
 import { betterAuth } from "better-auth";
@@ -19,6 +19,7 @@ import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
 import {
   DEFAULT_ORG_ID,
+  DEMO_STUDENT_USER_ID,
   DEMO_USER_ID,
   ensureDemoIdentity,
   getMembershipForUserOrg,
@@ -346,9 +347,14 @@ export async function requirePageRole(
   }
 }
 
-export async function createDemoSessionResponse(): Promise<NextResponse> {
+export type DemoRole = "super_admin" | "student";
+
+export async function createDemoSessionResponse(
+  role: DemoRole = "super_admin"
+): Promise<NextResponse> {
   await ensureDemoIdentity();
-  const user = await getUser(DEMO_USER_ID);
+  const userId = role === "student" ? DEMO_STUDENT_USER_ID : DEMO_USER_ID;
+  const user = await getUser(userId);
   if (!user) {
     return NextResponse.json({ error: "Demo identity is missing." }, { status: 500 });
   }

@@ -53,7 +53,14 @@ import type {
   PatientSex,
   TargetLevel,
 } from "./types";
+import { deidAllowsPublish, type DeidReport } from "./deid";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+
+/** Persisted de-id report — keyed by studyInstanceUID. */
+export type StoredDeidReport = DeidReport & {
+  id: string;
+  orgId: string;
+};
 
 // ---------------------------------------------------------------------------
 // Tenancy
@@ -127,6 +134,7 @@ async function seedIfEmpty(): Promise<void> {
       "users",
       "memberships",
       "enrollments",
+      "deidReports",
     ] as const) {
       const dst = path.join(DATA_DIR, sub);
       await fs.mkdir(dst, { recursive: true });
@@ -157,7 +165,8 @@ type CollectionName =
   | "playlists"
   | "users"
   | "memberships"
-  | "enrollments";
+  | "enrollments"
+  | "deidReports";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -300,6 +309,7 @@ async function seedMongoIfEmpty(): Promise<void> {
     "users",
     "memberships",
     "enrollments",
+    "deidReports",
   ] as const) {
     const count = await db.collection(name).estimatedDocumentCount();
     if (count > 0) continue;
@@ -389,6 +399,7 @@ const playlistsStore = collection<Playlist>("playlists");
 const usersStore = collection<User>("users");
 const membershipsStore = collection<Membership>("memberships");
 const enrollmentsStore = collection<Enrollment>("enrollments");
+const deidReportsStore = collection<StoredDeidReport>("deidReports");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
 export const DEMO_USER_ID = "user_demo";
@@ -631,8 +642,56 @@ export async function updateCaseForOrg(
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return null;
   const updated: Case = { ...current, ...patch, caseId, orgId, updatedAt: nowIso() };
+  if (updated.status === "published" && current.status !== "published") {
+    await assertCasePublishable(updated);
+  }
   await casesStore.put(toStored(updated));
   return updated;
+}
+
+/** Throw if any referenced study lacks a passing DeidReport. */
+export async function assertCasePublishable(c: Case): Promise<void> {
+  const refs = c.studyRefs ?? [];
+  if (refs.length === 0) return;
+  const missing: string[] = [];
+  for (const ref of refs) {
+    const uid = ref.studyInstanceUID?.trim();
+    if (!uid) continue;
+    const report = await getDeidReport(uid);
+    if (!deidAllowsPublish(report)) missing.push(uid);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Cannot publish: ${missing.length} study(ies) lack a passing de-id report. ` +
+        `Re-upload through /api/upload (header gate) or resolve de-id first. ` +
+        `UIDs: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`
+    );
+  }
+}
+
+/** Upsert a de-id report keyed by StudyInstanceUID. */
+export async function upsertDeidReport(
+  orgId: string,
+  report: DeidReport & { studyInstanceUID: string }
+): Promise<StoredDeidReport> {
+  const studyInstanceUID = report.studyInstanceUID.trim();
+  const stored: StoredDeidReport = {
+    ...report,
+    id: studyInstanceUID,
+    orgId,
+    studyInstanceUID,
+    inspectedAt: report.inspectedAt || nowIso(),
+  };
+  await deidReportsStore.put(stored);
+  return stored;
+}
+
+export async function getDeidReport(
+  studyInstanceUID: string
+): Promise<StoredDeidReport | null> {
+  const uid = studyInstanceUID.trim();
+  if (!uid) return null;
+  return (await deidReportsStore.get(uid)) ?? null;
 }
 
 /** Delete a case (tenant-checked). Returns true if a case was removed. */
@@ -1282,7 +1341,7 @@ export async function provisionAuthUser(input: {
       await createMembership({
         userId: updated.id,
         orgId: updated.orgId || DEFAULT_ORG_ID,
-        role: updated.platformRole === "super_admin" ? "owner" : "author",
+        role: updated.platformRole === "super_admin" ? "owner" : "student",
       });
     }
     return updated;
@@ -1291,14 +1350,14 @@ export async function provisionAuthUser(input: {
     email,
     name: input.name,
     image: input.image,
-    role: "author",
+    role: "student",
     authProviderId: input.authProviderId,
     orgId: DEFAULT_ORG_ID,
   });
   await createMembership({
     userId: user.id,
     orgId: DEFAULT_ORG_ID,
-    role: "author",
+    role: "student",
   });
   return user;
 }

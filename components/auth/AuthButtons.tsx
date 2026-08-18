@@ -75,16 +75,20 @@ export function GoogleSignInButton({
 
 export function DemoSignInButton({ next }: { next?: string }) {
   const router = useRouter();
-  const [busy, setBusy] = useState(false);
+  const [busyRole, setBusyRole] = useState<"super_admin" | "student" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function onClick() {
-    if (busy) return;
-    setBusy(true);
+  async function signInAs(role: "super_admin" | "student") {
+    if (busyRole) return;
+    setBusyRole(role);
     setError(null);
     try {
       const dest = safeNext(next);
-      const res = await fetch("/api/auth/demo", { method: "POST" });
+      const res = await fetch("/api/auth/demo", {
+        method: "POST",
+        headers: role === "student" ? { "Content-Type": "application/json" } : undefined,
+        body: role === "student" ? JSON.stringify({ role: "student" }) : undefined,
+      });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || "Demo sign-in failed.");
@@ -99,7 +103,7 @@ export function DemoSignInButton({ next }: { next?: string }) {
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Demo sign-in failed.");
-      setBusy(false);
+      setBusyRole(null);
     }
   }
 
@@ -109,10 +113,21 @@ export function DemoSignInButton({ next }: { next?: string }) {
         type="button"
         variant="secondary"
         className="w-full"
-        loading={busy}
-        onClick={onClick}
+        loading={busyRole === "super_admin"}
+        disabled={busyRole != null && busyRole !== "super_admin"}
+        onClick={() => signInAs("super_admin")}
       >
-        Continue as demo teacher
+        Continue as demo
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        className="w-full"
+        loading={busyRole === "student"}
+        disabled={busyRole != null && busyRole !== "student"}
+        onClick={() => signInAs("student")}
+      >
+        Student demo
       </Button>
       {error && <p className="text-xs text-danger">{error}</p>}
     </div>

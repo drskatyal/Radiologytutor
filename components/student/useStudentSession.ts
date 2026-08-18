@@ -169,10 +169,17 @@ export function useStudentSession(
     setSecondaryReady(true);
   }, []);
 
+  /** Finding waiting for the compare pane's first ready callback. */
+  const pendingSecondaryRef = useRef<{
+    finding: (typeof orderedFindings)[number];
+    spoil: boolean;
+  } | null>(null);
+
   const seatSecondary = useCallback(
     async (finding: (typeof orderedFindings)[number], spoil: boolean) => {
       const sec = secondaryAnchor(finding);
       if (!sec || !wantsCompare(finding)) {
+        pendingSecondaryRef.current = null;
         setSecondaryMarker(null);
         setSecondaryMarkerVisible(false);
         return;
@@ -181,23 +188,36 @@ export function useStudentSession(
       const idx = seriesIndexFor(series, sec.seriesInstanceUID);
       setSecondarySeriesIndex(idx);
       const c = secondaryControls.current;
-      if (c) {
-        if (
-          sec.seriesInstanceUID &&
-          c.seriesUIDs.includes(sec.seriesInstanceUID) &&
-          c.activeSeriesUID !== sec.seriesInstanceUID
-        ) {
-          c.showSeries(sec.seriesInstanceUID);
-        }
-        if (sec.sliceIndex != null && Number.isFinite(sec.sliceIndex)) {
-          await c.showState({ sliceIndex: sec.sliceIndex }, 500);
-        }
+      if (!c) {
+        // Pane not mounted yet — reseat when secondaryReady flips true.
+        pendingSecondaryRef.current = { finding, spoil };
+        setSecondaryMarker(sec.marker ?? null);
+        setSecondaryMarkerVisible(spoil);
+        return;
+      }
+      pendingSecondaryRef.current = null;
+      if (
+        sec.seriesInstanceUID &&
+        c.seriesUIDs.includes(sec.seriesInstanceUID) &&
+        c.activeSeriesUID !== sec.seriesInstanceUID
+      ) {
+        c.showSeries(sec.seriesInstanceUID);
+      }
+      if (sec.sliceIndex != null && Number.isFinite(sec.sliceIndex)) {
+        await c.showState({ sliceIndex: sec.sliceIndex }, 500);
       }
       setSecondaryMarker(sec.marker ?? null);
       setSecondaryMarkerVisible(spoil);
     },
     [series]
   );
+
+  useEffect(() => {
+    if (!secondaryReady || !pendingSecondaryRef.current) return;
+    const pending = pendingSecondaryRef.current;
+    pendingSecondaryRef.current = null;
+    void seatSecondary(pending.finding, pending.spoil);
+  }, [secondaryReady, seatSecondary]);
 
   const micState: MicState =
     phase === "recording" ? "recording" : phase === "transcribing" ? "processing" : "idle";

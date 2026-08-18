@@ -40,7 +40,7 @@ export function FeaturedMarketplace({
   const featuredCases = cases.slice(0, FEATURED);
 
   return (
-    <PageContainer className="flex flex-col gap-12">
+    <PageContainer className="flex flex-col gap-14 py-12">
       <section className="flex flex-col gap-4">
         {featuredCourses.length === 0 ? (
           <>
@@ -118,6 +118,21 @@ export function FeaturedMarketplace({
         ) : (
           <CaseCardGrid cases={featuredCases} authorById={authorById} />
         )}
+      </section>
+
+      <section className="flex flex-col items-center gap-4 rounded-xl border border-subtle bg-surface/60 px-6 py-10 text-center">
+        <p className="font-display text-lg font-semibold text-primary">Explore the full library</p>
+        <p className="max-w-md text-sm text-muted">
+          Filter courses, teachers, and cases — or jump straight into a narrated study.
+        </p>
+        <Link href="/library">
+          <Button
+            variant="secondary"
+            leadingIcon={<GraduationCap className="h-4 w-4" aria-hidden="true" />}
+          >
+            Open library
+          </Button>
+        </Link>
       </section>
     </PageContainer>
   );

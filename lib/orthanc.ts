@@ -3,7 +3,7 @@
 // never talks to it directly — our API routes (DICOMweb proxy + upload) do,
 // so there's no CORS and the credentials never reach the client.
 
-import { assertDeidPass, inspectDicomBytes } from "./deid";
+import { assertDeidPass, inspectDicomBytes, type DeidReport } from "./deid";
 
 const ORTHANC_URL = process.env.ORTHANC_URL ?? "";
 const ORTHANC_USER = process.env.ORTHANC_USER ?? "flowrad";
@@ -83,13 +83,20 @@ export async function orthancSeriesUID(orthancSeriesId: string): Promise<string>
 // function, before orthancStoreInstance.
 // ============================================================================
 
+export interface OrthancIngestResult extends OrthancStoreResult {
+  /** Passing header report from this instance — persist against the study UID. */
+  deidReport: DeidReport;
+}
+
 /**
  * The single ingest entry point. Header identity gate, then store.
  * Throws DeidFailError when residual PHI remains.
  */
-export async function orthancIngestInstance(bytes: ArrayBuffer): Promise<OrthancStoreResult> {
-  assertDeidPass(inspectDicomBytes(bytes));
-  return orthancStoreInstance(bytes);
+export async function orthancIngestInstance(bytes: ArrayBuffer): Promise<OrthancIngestResult> {
+  const deidReport = inspectDicomBytes(bytes);
+  assertDeidPass(deidReport);
+  const stored = await orthancStoreInstance(bytes);
+  return { ...stored, deidReport };
 }
 
 // ============================================================================

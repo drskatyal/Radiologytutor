@@ -23,7 +23,7 @@ export function MarketplaceHero({ signedIn }: { signedIn: boolean }) {
           Radiology, taught on the study.
         </h1>
         <p className="mt-3 max-w-lg text-[0.95rem] leading-relaxed text-secondary">
-          Curated teachers, narrated DICOM cases, and an AI tutor in the reading room.
+          Curated teachers, narrated DICOM cases, and an AI tutor — one click from the reading room to the marketplace.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <Link href="/library#courses">

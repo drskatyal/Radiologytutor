@@ -21,7 +21,7 @@ const OTHER_SERIES_SLICES = 16;
 /** Parallel series at a time (matches CasesPrefetcher batch size). */
 const SERIES_BATCH = 3;
 
-let warmed = false;
+const warmed = new Set<string>();
 
 function whenIdle(fn: () => void): void {
   const ric = (globalThis as { requestIdleCallback?: (cb: () => void) => void })
@@ -41,7 +41,7 @@ function warmFrame(url: string): Promise<unknown> {
   return fetch(url, {
     priority: "low",
     cache: "force-cache",
-    headers: { Accept: "multipart/related; type=application/octet-stream" },
+    headers: { Accept: "application/octet-stream" },
   } as RequestInit & { priority: "low" }).catch(() => null);
 }
 
@@ -58,8 +58,8 @@ async function warmSeries(series: PrefetchSeries, maxSlices: number): Promise<vo
  * remaining series in parallel batches. Idempotent per page load.
  */
 export function warmPrefetch(manifest: PrefetchManifest): void {
-  if (warmed || !manifest.hasImaging) return;
-  warmed = true;
+  if (warmed.has(manifest.caseId) || !manifest.hasImaging) return;
+  warmed.add(manifest.caseId);
 
   whenIdle(() => {
     void (async () => {

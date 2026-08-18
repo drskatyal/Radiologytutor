@@ -31,7 +31,7 @@ export function StudioHeader({ active }: { active: StudioTab }) {
   return (
     <PageHeader
       title="Studio"
-      description="Your teaching home — cases, courses, and publish status."
+      description="Your teaching home — cases, courses, profile, and publish status."
       actions={
         <Link href="/studio/new">
           <Button leadingIcon={<Plus className="h-4 w-4" aria-hidden="true" />}>Create a case</Button>

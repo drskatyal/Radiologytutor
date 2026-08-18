@@ -12,6 +12,7 @@ import {
   PenLine,
   Plus,
   Stethoscope,
+  UserRound,
 } from "lucide-react";
 import {
   Badge,
@@ -74,6 +75,36 @@ export function StudioHome() {
           />
         ) : (
           <>
+            <section className="flex flex-col gap-4">
+              <SectionHeading
+                title="How teaching works"
+                description="Upload a case, bundle it into a course, and publish under your verified profile."
+              />
+              <ol className="grid gap-4 sm:grid-cols-3">
+                <TeachStep
+                  step={1}
+                  href="/studio/cases"
+                  icon={<LayoutGrid className="h-4 w-4" aria-hidden="true" />}
+                  title="Cases"
+                  detail="Upload DICOM, mark findings, and record your read."
+                />
+                <TeachStep
+                  step={2}
+                  href="/studio/courses"
+                  icon={<GraduationCap className="h-4 w-4" aria-hidden="true" />}
+                  title="Courses"
+                  detail="Group published cases into a teaching sequence."
+                />
+                <TeachStep
+                  step={3}
+                  href="/studio/profile"
+                  icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
+                  title="Profile"
+                  detail="Your public teaching identity on the marketplace."
+                />
+              </ol>
+            </section>
+
             <section className="flex flex-col gap-4">
               <SectionHeading
                 title="Publish status"
@@ -200,6 +231,39 @@ export function StudioHome() {
   );
 }
 
+function TeachStep({
+  step,
+  href,
+  icon,
+  title,
+  detail,
+}: {
+  step: number;
+  href: string;
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <li>
+      <Link href={href} className="block h-full">
+        <Card interactive className="flex h-full flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-accent/40 bg-accent/10 font-display text-xs font-semibold tabular-nums text-accent">
+              {step}
+            </span>
+            <span className="flex items-center gap-1.5 text-accent">
+              {icon}
+              <span className="font-display text-sm font-semibold text-primary">{title}</span>
+            </span>
+          </div>
+          <p className="text-xs leading-relaxed text-muted">{detail}</p>
+        </Card>
+      </Link>
+    </li>
+  );
+}
+
 function StatusLink({
   href,
   label,
@@ -275,6 +339,14 @@ function CourseSummary({ course }: { course: Course }) {
 function OverviewSkeleton() {
   return (
     <div className="flex flex-col gap-8">
+      <div className="grid gap-4 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Card key={`step-${i}`} className="flex flex-col gap-2">
+            <Skeleton className="h-7 w-32" />
+            <Skeleton className="h-3 w-full" />
+          </Card>
+        ))}
+      </div>
       <div className="grid gap-4 sm:grid-cols-3">
         {Array.from({ length: 3 }).map((_, i) => (
           <Card key={i} className="flex flex-col gap-2">

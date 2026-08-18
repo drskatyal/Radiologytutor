@@ -137,6 +137,8 @@ export function ensureIndexes(): Promise<void> {
           db.collection("enrollments").createIndex({ userId: 1 }),
           db.collection("enrollments").createIndex({ orgId: 1, courseId: 1 }),
           db.collection("enrollments").createIndex({ userId: 1, courseId: 1 }),
+          db.collection("deidReports").createIndex({ orgId: 1 }),
+          db.collection("deidReports").createIndex({ studyInstanceUID: 1 }),
         ]);
       } catch {
         // Indexes are an optimization; never block reads/writes if they fail.

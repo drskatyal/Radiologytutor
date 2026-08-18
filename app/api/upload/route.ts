@@ -28,6 +28,8 @@ import {
 } from "@/lib/orthanc";
 import { DeidFailError } from "@/lib/deid";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { upsertDeidReport } from "@/lib/cases";
+import type { DeidReport } from "@/lib/deid";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -87,8 +89,9 @@ function classify(name: string, bytes: ArrayBuffer): { skip?: string } {
 }
 
 export async function POST(req: NextRequest) {
+  let orgId: string;
   try {
-    await requireAuthorOrg();
+    orgId = await requireAuthorOrg();
   } catch (err) {
     const denied = jsonAuthError(err);
     if (denied) return denied;
@@ -155,7 +158,9 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Store each DICOM instance; group by Orthanc series id.
+  //    Keep the best (passing) de-id report per Orthanc study for persistence.
   const seriesMap = new Map<string, { studyId: string; count: number }>();
+  const deidByStudy = new Map<string, DeidReport>();
   let stored = 0;
   const failed: SkippedOut[] = [];
 
@@ -166,6 +171,9 @@ export async function POST(req: NextRequest) {
       const existing = seriesMap.get(res.ParentSeries);
       if (existing) existing.count++;
       else seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 1 });
+      if (!deidByStudy.has(res.ParentStudy)) {
+        deidByStudy.set(res.ParentStudy, res.deidReport);
+      }
     } catch (e) {
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
     }
@@ -183,6 +191,14 @@ export async function POST(req: NextRequest) {
       if (!study) {
         study = await studyMeta(info.studyId);
         studyCache.set(info.studyId, study);
+        const report = deidByStudy.get(info.studyId);
+        if (report) {
+          await upsertDeidReport(orgId, {
+            ...report,
+            studyInstanceUID: study.studyInstanceUID,
+            studyId: info.studyId,
+          }).catch(() => undefined);
+        }
       }
       const meta = await orthancSeriesMeta(seriesId);
       series.push({

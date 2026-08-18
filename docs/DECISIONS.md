@@ -20,7 +20,21 @@
 
 ## Imaging UX
 - Never download full 2–3 GB CTA up front
-- Parallel multi-series prefetch; finding-first; R2 cache; interactive ≤30s
+- Parallel multi-series prefetch; finding-first; R2 frame cache in `/api/dicomweb`; interactive ≤30s
 
 ## De-id
-- `lib/deid.ts` on ingest; publish blocked until pass (quality gate, not HIPAA project)
+- `lib/deid.ts` on ingest (`orthancIngestInstance`); reports persisted via `upsertDeidReport`
+- `updateCaseForOrg` blocks draft→published unless every `studyRefs` UID has a passing report
+- Pixel OCR is explicitly unscanned — never claimed
+
+## Signup default
+- New Better Auth / Google users get **student** membership on `org_demo`
+- Teachers are promoted by an org admin (Studio requires `author+`)
+- Demo identities: super_admin (`demo@…`), teacher (`teacher@…`), student (`student@…`)
+
+## Shut down
+- Clerk as production auth
+- Railway as forever host (migrate to Fly)
+- DICOM bytes in Mongo / Firestore
+- Stripe-first India monetization
+- Vertex Healthcare DICOM as default archive
