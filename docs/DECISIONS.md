@@ -32,6 +32,12 @@
 - Teachers are promoted by an org admin (Studio requires `author+`)
 - Demo identities: super_admin (`demo@…`), teacher (`teacher@…`), student (`student@…`)
 
+## Marketplace learning loop
+- Catalog is public for published courses/cases
+- `POST /api/enrollments` creates a free active enrollment (payments later)
+- Library shows **My learning** for the signed-in student
+- Draft cases 404 for students; authors/admins can still open them
+
 ## Shut down
 - Clerk as production auth
 - Railway as forever host (migrate to Fly)
