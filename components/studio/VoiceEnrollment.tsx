@@ -1,7 +1,8 @@
 "use client";
 
-// Teacher voice enrollment — Instant Voice Clone for live tutor Q&A only.
-// Recorded walk-throughs always keep the teacher's real mic (Layer 1).
+// Teacher voice enrollment — Instant Voice Clone for the AI tutor’s live voice.
+// Capture tracks arm the model with reading craft; students talk to the tutor,
+// they do not listen to a frozen walk-through tape.
 
 import { useCallback, useEffect, useState } from "react";
 import { AudioLines, CheckCircle2, CircleAlert, Mic } from "lucide-react";

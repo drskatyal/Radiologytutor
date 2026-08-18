@@ -73,6 +73,38 @@ test("formatFindingsContext includes a compare landing when authored", () => {
   assert.match(ctx, /compare\(series=ser-b,slice=1,marker@\(0\.500,0\.550\)\)/);
 });
 
+test("formatFindingsContext includes reading digest when a track was captured", () => {
+  const withTrack: Finding[] = [
+    {
+      ...findings[0],
+      track: {
+        durationMs: 5000,
+        start: { sliceIndex: 3, ww: 80, wc: 40 },
+        events: [
+          { t: 0, type: "slice", index: 3 },
+          { t: 100, type: "slice", index: 5 },
+          { t: 200, type: "voi", ww: 1500, wc: -600 },
+        ],
+      },
+    },
+  ];
+  const ctx = formatFindingsContext(withTrack);
+  assert.match(ctx, /read=5s/);
+  assert.match(ctx, /scroll\(/);
+  assert.match(ctx, /windowed\(/);
+});
+
+test("tutor prompt teaches interactively — not a tape of the recording", () => {
+  const p = teachingSystemPrompt({
+    caseTitle: "BBMRI",
+    modality: "MR",
+    mode: "free",
+    findingsContext: formatFindingsContext(findings),
+  });
+  assert.match(p, /NOT a tape/i);
+  assert.match(p, /Invite discussion/);
+});
+
 test("guided prompt still walks in order", () => {
   const p = teachingSystemPrompt({
     caseTitle: "BBMRI",

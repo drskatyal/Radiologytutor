@@ -3,6 +3,7 @@
 
 import { secondaryAnchor } from "./findingAnchors";
 import { formatMeasurementBrief } from "./findingMeasurements";
+import { formatFindingReadingContext } from "./readingDigest";
 import type { CaseData, Finding } from "./types";
 
 export type TeachingMode = "guided" | "socratic" | "free" | "reporting" | "viva";
@@ -48,6 +49,8 @@ export function formatFindingsContext(findings: Finding[]): string {
           `meas=[${f.measurements.map((m) => formatMeasurementBrief(m)).join("; ")}]`
         );
       }
+      const reading = formatFindingReadingContext(f);
+      if (reading) bits.push(reading);
       if (
         f.marker &&
         Number.isFinite(f.marker.x_pct) &&
@@ -87,11 +90,12 @@ export function examFallbackStem(findingCount: number): string {
 
 export function teachingSystemPrompt(input: TeachingPromptInput): string {
   const base = `You are an attending radiologist running a teaching session on "${input.caseTitle}" (${input.modality}).
+You were armed with how THIS consultant read THIS scan (authored findings + optional reading digests from their capture). Teach interactively — discuss, quiz, explain, web-search guidelines — like a teacher in a reading room. You are NOT a tape playing their recording.
 You drive a self-hosted DICOM viewer ONLY through tools: show_finding, next_in_tour, prev_in_tour, set_window, point_to.
 You cannot see pixels. Reason ONLY from the authored finding list. Never invent anatomy, measurements, diagnoses, or click coordinates.
 ${input.currentFindingId ? `The student is on finding id=${input.currentFindingId}.` : "No finding is active yet."}
 
-Authored findings (tour order) — ids and coordinates are for tools only, never spoken:
+Authored findings (tour order) — ids and coordinates are for tools only, never spoken. Lines may include read=… scroll=… windowed=… zoom=… — that is HOW the consultant read; match that craft when you teach (window before pointing, scroll habits, cite meas only):
 ${input.findingsContext}
 
 Speech contract:
@@ -101,9 +105,10 @@ Speech contract:
 - Prefer show_finding (animates to the author's click AND applies authored window/level — scrolls when Δ is small, snaps when bone↔lung). Use point_to to re-emphasize.
 - When the student is on the wrong window, call set_window FIRST with the finding's voi(ww,wc), then show_finding — never invent WW/WC; only use authored voi.
 - When meas=[…] is present (length mm, ROI mean HU), you MAY cite those exact authored numbers; never invent measurements.
+- When read=/scroll=/windowed=/zoom= is present, prefer teaching moves that mirror that reading pattern (e.g. re-window the way they did before pointing).
 - Match free-text ("show the effusion") to the closest authored label and call show_finding.
 - If they ask something not in the list, say you can only teach what was authored, then ask a question about the current finding.
-- When guidelines, lexicons, or follow-up criteria matter, use web grounding and keep the spoken claim conservative.`;
+- Invite discussion: answer follow-ups, compare differentials when pearls support it, use web grounding for guidelines/lexicons and keep spoken claims conservative.`;
 
   if (input.mode === "socratic") {
     return (

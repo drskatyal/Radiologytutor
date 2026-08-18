@@ -1,108 +1,93 @@
 # Consultant reading authenticity
 
-FlowRad’s product thesis: we are not “an AI that knows radiology.” We are
-**teaching the AI (and the student) how THIS consultant read THIS scan** —
-windowing, scroll path, click, calipers, and the words they used — then
-replaying and extending that craft in the consultant’s voice.
+FlowRad’s product thesis: we are **not** a tape recorder of a radiologist.
+We are **arming an AI tutor with how THIS consultant read THIS scan** —
+windowing, scroll path, zoom, clicks, calipers, and the words they used —
+so a student can **talk with that tutor** like a teacher: discuss findings,
+ask why, web-search guidelines, practice viva, and learn the craft.
 
-## Three layers of authenticity (do not collapse them)
+The recorded walk-through is **training / grounding data for the model**,
+not a student-facing slideshow of the teacher’s mic.
 
-| Layer | What the student gets | Source of truth |
-|-------|----------------------|-----------------|
-| **1. Exact retrace** | Teacher’s real mic + dense viewer events (slice/VOI/cursor) | `Finding.track` + `audioUrl` |
-| **2. Authored landing** | Slice + SOP + WW/WC + marker + measurements | Finding fields (see `FINDING_LOCALIZATION.md`) |
-| **3. Live Q&A** | Tutor answers new questions, drives the viewer, **speaks like the teacher** | Gemini Flash orchestration + voice seam |
+## What the student experiences
 
-Layer 1 is sacred: **never re-TTS recorded walk-throughs.** The consultant’s
-actual take is the gold recording. Cloning is only for Layer 3 (and optional
-short stems when no track exists).
+| Surface | What happens |
+|---------|----------------|
+| Viewer | AI drives slice / WW/WC / laser / caliper overlays via tools |
+| Voice | Tutor speaks (ElevenLabs clone of the teacher when enrolled, else Gemini TTS / Live) |
+| Chat | Discussion, questions, web-grounded answers |
+| Modes | Guided tour, socratic, free explore, reporting, viva |
 
-## Voice stack (locked direction)
+They do **not** watch a locked replay of the teacher’s Alt+X take. Author
+Studio may still replay a track for QA while editing.
+
+## How the recording arms the AI
 
 ```
-                    ┌─────────────────────────────┐
-  Student mic  ──►  │  STT: Gemini Flash          │
-                    └──────────────┬──────────────┘
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │  Tutor plan: Gemini Flash   │
-                    │  (tools: show_finding,      │
-                    │   set_window, point_to, …)  │
-                    └──────────────┬──────────────┘
-                                   ▼
-              ┌────────────────────┴────────────────────┐
-              │                                         │
-              ▼                                         ▼
-   ┌─────────────────────┐               ┌──────────────────────────┐
-   │ Primary TTS         │               │ Latency fallback         │
-   │ ElevenLabs          │               │ Gemini Live (native      │
-   │ (teacher voiceId)   │               │ audio + ephemeral token) │
-   └─────────────────────┘               └──────────────────────────┘
-              │                                         │
-              └────────────────────┬────────────────────┘
-                                   ▼
-                         Student hears + sees viewer move
+  Teacher records (Studio)
+       │
+       ├─ structured text: label, description, teachingPoints
+       ├─ landing: SOP / slice / WW/WC / marker / measurements
+       └─ track: dense scroll / voi / zoom / cursor / series log (+ optional mic)
+                │
+                ▼
+         readingDigest → compact "how they read" line in tutor context
+                │
+                ▼
+  Student ↔ Gemini Flash (tools + web) ↔ voice (clone / Live)
+                │
+                ▼
+         Viewer moves the way a teacher would teach — not a VCR
+```
+
+| Data | Role for the AI |
+|------|-----------------|
+| `label` / `description` / `teachingPoints` | What to say and ask |
+| `windowWidth` / `windowCenter` / slice / SOP | Where to seat the eyes |
+| `measurements[]` | Exact mm / HU the tutor may cite |
+| `track` → `readingDigest` | Scroll habit, window changes, zoom range, pointing |
+| `Author.voice` | Sound like this teacher on live turns |
+
+## Voice stack (live discussion)
+
+```
+  Student mic ──► STT (Gemini Flash) ──► Tutor plan + tools (Gemini Flash)
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+                  ElevenLabs clone                          Gemini Live
+                  (teacher voiceId)                         (latency fallback)
 ```
 
 | Concern | Choice | Env |
 |---------|--------|-----|
 | Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.7-flash`**) | `GEMINI_API_KEY` |
-| Live tutor voice (cloned) | **ElevenLabs** Instant/Professional Voice Clone | `ELEVENLABS_API_KEY` |
-| Default TTS if no clone / no ElevenLabs | Gemini TTS | `GEMINI_TTS_*` |
-| High-latency escape hatch | **Gemini Live** native audio (`GEMINI_LIVE_MODEL`) via ephemeral token from `POST /api/voice/realtime` | same Gemini key |
-| Soft budget before preferring Live | `VOICE_LATENCY_BUDGET_MS` (default 1200) — TTS responses set `X-FlowRad-Voice-Budget-Exceeded` | |
-| Browser last resort | `speechSynthesis` | — |
+| Tutor voice | **ElevenLabs** clone when enrolled | `ELEVENLABS_API_KEY` |
+| TTS fallback | Gemini TTS | `GEMINI_TTS_*` |
+| High-latency discussion | **Gemini Live** ephemeral token (`POST /api/voice/realtime`) | same Gemini key |
+| Soft budget | `VOICE_LATENCY_BUDGET_MS` (default 1200) | |
 
-Model ids move fast (3.6 → 3.7 Flash within weeks). Pin via `GEMINI_MODEL`;
-`gemini-3.7-flash` is the current workhorse default. Keep TTS / Live model ids
-separate — they are different surfaces.
+Cloned / synthesized voice is correct here: the student is talking to an AI
+teacher modeled on the consultant, not listening to a frozen recording.
 
-## Teacher voice enrollment
+## Author verification (Studio only)
 
-1. Teacher records ≥1–2 min of clean narration in Studio (or uploads samples).
-2. `POST /api/studio/voice` → ElevenLabs instant clone → store `voiceId` on
-   `Author` / `AuthorProfile.voice`.
-3. Student case player passes `authorVoiceId` into `/api/tts`.
-4. Consent + disclosure: “This tutor speaks in a synthetic voice modeled on
-   Dr. X’s teaching samples.” Required before public clone use.
+`lib/replay.ts` still exact-replays a track so the teacher can check that
+capture was faithful. That path is **author QA**, not the learner product.
 
-## Gemini Live fallback (how it works)
-
-1. Client calls `/api/tts` for cloned / Gemini speech.
-2. If `X-FlowRad-Voice-Budget-Exceeded: 1`, `lib/speak.ts` sets
-   `shouldPreferRealtimeVoice()` for the next turn.
-3. Client `POST /api/voice/realtime` → server mints a **v1alpha ephemeral
-   token** constrained to our Live model + AUDIO modality.
-4. Browser opens Google’s Live WebSocket with that token — **never** the
-   long-lived `GEMINI_API_KEY`.
-
-Full duplex mic→Live in the student UI is the next wiring step; the mint +
-capability endpoints are live so the UI can detect and switch.
-
-## What still makes it “as close as a radiologist”
-
-Beyond voice:
-
-1. **Dense capture** — WW/WC, series switches, zoom/pan, Length/HU measurements.
-2. **Adaptive windowing** — scroll when Δ small, snap bone↔lung.
-3. **Measurement overlay replay** — student reveal redraws authored calipers
-   from `Finding.measurements` handles (`MeasurementOverlay`).
-4. **Image-plane markers** — next (stable under pan/zoom).
-5. **Interleaved speech + viewer** — beat-synced laser / `show_finding`.
-6. **Don’t invent** — tutor only cites authored pearls / meas / voi.
-
-## Seams (code)
+## Seams
 
 | Module | Role |
 |--------|------|
-| `lib/voice.ts` | Provider selection; `synthesizeTutorSpeech` + latency budget |
-| `lib/elevenlabs.ts` | Clone + TTS (no imports outside voice seam) |
-| `lib/voiceRealtime.ts` | Live info + ephemeral token mint |
-| `lib/gemini.ts` | Flash generate / STT / Gemini TTS |
-| `lib/speak.ts` | Client playback; never knows the vendor |
-| `/api/tts` | Server TTS; optional `voiceId` / `authorId` |
-| `/api/voice/realtime` | Mint Live ephemeral token (POST) / capability (GET) |
-| `/api/studio/voice` | Teacher enroll / status |
+| `lib/readingDigest.ts` | Track → compact tutor context |
+| `lib/teachingPrompt.ts` | Findings + digests → system prompt |
+| `lib/voice.ts` / `elevenlabs.ts` | Live tutor speech |
+| `lib/voiceRealtime.ts` | Live WebSocket token mint |
+| `lib/replay.ts` | Author-side verify only |
 
-Mirror `lib/auth.ts` / `lib/payments.ts`: **no `elevenlabs` import outside
-`lib/elevenlabs.ts` + `lib/voice.ts`.**
+## Still to deepen
+
+1. Optional ASR of the teacher’s mic into teaching pearls (when structured text is thin)
+2. Richer digests (search pattern: lung bases → apices, bone→soft tissue, …)
+3. Student Live duplex mic when TTS budget exceeded
+4. Authored zoom/pan on static landings (today zoom lives mainly in track digests)

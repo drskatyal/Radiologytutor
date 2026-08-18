@@ -24,7 +24,7 @@ import {
   normalizeTutorActions,
 } from "@/lib/performancePlan";
 import { findingViewerState } from "@/lib/viewerController";
-import { startReplay, type ReplayController } from "@/lib/replay";
+import { type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, FindingMeasurement, Marker } from "@/lib/types";
@@ -293,10 +293,10 @@ export function useStudentSession(
   }, []);
 
   // --- Drive the viewer to a finding ---------------------------------------
-  // If the finding has a recorded `track`, replay it EXACTLY (retrace + laser
-  // pointer overlay + the teacher's recorded narration audio). Otherwise fall
-  // back to the smooth showState animation, then tween the AI laser to the
-  // author's click marker.
+  // Student product: land on authored slice/VOI/marker/measurements and let the
+  // AI tutor teach. Recorded tracks arm the model (readingDigest in the tutor
+  // prompt) — we do NOT VCR-replay the teacher's mic + event tape here.
+  // Author Studio still uses lib/replay for capture QA.
   const revealFinding = useCallback(
     async (index: number, opts?: { spoil?: boolean }) => {
       const finding = orderedFindings[index];
@@ -310,8 +310,7 @@ export function useStudentSession(
 
       // Multi-series: if this finding is anchored to a specific series, switch
       // the viewport (and the navigator, via onSeriesChange) to it before we
-      // drive the view. A recorded track that captured its own `series` events
-      // will still retrace exactly; this just primes anchored static findings.
+      // drive the view.
       if (
         finding.seriesInstanceUID &&
         controls.current.seriesUIDs.includes(finding.seriesInstanceUID) &&
@@ -320,54 +319,8 @@ export function useStudentSession(
         controls.current.showSeries(finding.seriesInstanceUID);
       }
 
-      const track = finding.track;
-      if (spoil && track && track.events.length > 0) {
-        setActiveIndex(index);
-        markRevealed(finding.id);
-        // The recorded marker is part of the retrace, so hold the static marker.
-        setMarker(null);
-        setMeasurements([]);
-        setMeasurementsVisible(false);
-
-        let audioEl: HTMLAudioElement | null = null;
-        if (track.audioUrl) {
-          audioEl = new Audio(track.audioUrl);
-          replayAudioRef.current = audioEl;
-          audioEl.play().catch(() => {});
-        }
-
-        setReplaying(true);
-        replayRef.current = startReplay(
-          track,
-          {
-            applyEvent: (e) => controls.current?.applyEvent(e),
-            getStartState: () => controls.current?.getStartState() ?? { sliceIndex: 0 },
-          },
-          {
-            audio: audioEl,
-            overlay: {
-              cursor: (x, y) => overlay.current?.cursor(x, y),
-              annotation: (e) => overlay.current?.annotation(e),
-              clear: () => overlay.current?.clear(),
-            },
-            onEnd: () => {
-              replayAudioRef.current = null;
-              setReplaying(false);
-              // Land on the static marker so the finding stays highlighted.
-              setMarker(finding.marker ?? null);
-              setMarkerVisible(true);
-              // Overlay authored calipers after the track (track may have drawn live tools).
-              const meas = finding.measurements ?? [];
-              setMeasurements(meas);
-              setMeasurementsVisible(meas.length > 0);
-            },
-          }
-        );
-        void seatSecondary(finding, spoil);
-        return;
-      }
-
-      // No track (or exam seating without spoil): prefer authored slice + VOI.
+      // Prefer authored slice + VOI. Track digests inform the tutor; they are
+      // not a student-facing cassette.
       const total = Math.max(1, orderedFindings.length);
       const sliceHint = total > 1 ? index / (total - 1) : 0.5;
       let view =

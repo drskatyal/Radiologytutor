@@ -37,10 +37,12 @@
 - Teachers are promoted by an org admin (Studio requires `author+`)
 - Demo identities: super_admin (`demo@…`), teacher (`teacher@…`), student (`student@…`)
 
-## Consultant authenticity (voice)
-- Layer 1 recorded tracks = teacher's **real** mic — never re-TTS
-- Layer 3 live Q&A may use ElevenLabs **cloned** teacher voice (`Author.voice`)
+## Consultant authenticity (AI tutor armed by capture)
+- Teacher capture (text + landing + optional track) **arms** the AI — students discuss with the tutor, they do not watch a VCR of the take
+- Track digests (`lib/readingDigest.ts`) feed scroll/window/zoom habits into the tutor prompt
+- Live Q&A uses ElevenLabs **cloned** teacher voice (`Author.voice`) when enrolled
 - Consent required before clone enrollment (`POST /api/studio/voice`)
+- Author Studio may still exact-replay a track for capture QA only
 - Full write-up: `docs/CONSULTANT_READING.md`
 
 ## Marketplace learning loop

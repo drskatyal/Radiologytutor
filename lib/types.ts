@@ -145,13 +145,12 @@ export interface Keyframe {
 }
 
 // ============================================================================
-// Record & Replay — the self-hosted (Cornerstone) model.
+// Record capture — the self-hosted (Cornerstone) model.
 //
-// While the teacher holds the record hotkey we capture an ORDERED, timestamped
-// log of every viewer state change (scroll/window/zoom/pan/annotation/cursor)
-// plus their narration audio. Replay re-applies the SAME events in the SAME
-// order, locked to the audio clock — an exact retrace. No segmentation, no
-// automation: record a list, replay a list.
+// While the teacher records we capture an ORDERED, timestamped log of viewer
+// state (scroll/window/zoom/pan/annotation/cursor) plus optional narration.
+// That log ARMS the AI tutor (lib/readingDigest.ts); it is not a student-facing
+// cassette. Author Studio may exact-replay for capture QA only.
 // ============================================================================
 
 /** A single timestamped viewer state change (`t` = ms from record start). */
@@ -183,7 +182,9 @@ export type ViewerEvent =
   | { type: "series"; seriesInstanceUID: string }
   | { type: "annotation"; shape: MarkerShape; from: [number, number]; to: [number, number] };
 
-/** One finding's recorded demonstration: ordered events + narration audio. */
+/** One finding's recorded demonstration: ordered events + optional narration.
+ * Used to arm the tutor (reading digest) and for author QA replay — not as a
+ * student-facing tape of the teacher's mic. */
 export interface RecordedTrack {
   durationMs: number;
   /** The starting viewer state (slice index + W/L) so replay can prime it. */

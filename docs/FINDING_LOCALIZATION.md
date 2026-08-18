@@ -12,7 +12,7 @@ DICOM file in Orthanc:
 | `marker.{x_pct,y_pct}` | Overlay click `[0,1]` | Laser / click-the-finding |
 | `windowWidth` / `windowCenter` | Live VOI at click (DICOM WW/WC) | Re-window so the lesion is visible |
 | `measurements[]` | Length / Ellipse / Probe tools | Authored mm + mean HU for the tutor |
-| `track.events` (`voi`, `slice`, …) | Recorded walk-through | Exact retrace of teacher motion |
+| `track.events` (`voi`, `slice`, `camera`, …) | Teacher capture | **AI reading digest** (how they scrolled/windowed) — not a student tape |
 
 Pixels stay in Orthanc (DICOMweb). Teaching state lives in Mongo/JSON keyed by
 those UIDs so de-id, multi-tenant authorship, and marketplace versioning stay
@@ -49,7 +49,9 @@ viewport (same semantics as DICOM `(0028,1051)` / `(0028,1050)`).
 | ≤ ~150 (mid of 100–200) | Eased scroll, duration scales with delta (radiologist feel) |
 | > ~150 (e.g. bone → lung) | **Direct snap** — no multi-second tween through useless mid-windows |
 
-Recorded walk-throughs already stream dense `voi` events for an exact retrace.
+Recorded walk-throughs stream dense `voi` / `slice` / `camera` events so we
+can digest **how the consultant read**; students get AI-driven windowing, not
+a VCR of those events.
 
 ## Measurements (Length + HU)
 

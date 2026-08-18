@@ -1,9 +1,8 @@
 "use client";
 
-// Tutor answer playback. Prefers ElevenLabs cloned teacher voice (via /api/tts),
-// then Gemini TTS, then browser speechSynthesis. Vendor seam: speak / speakBeats /
-// stopSpeaking never change — only /api/tts + lib/voice.ts do.
-// Recorded lesson narration NEVER routes through here (plays Finding.track.audioUrl).
+// Tutor answer playback (AI teacher voice). Prefers ElevenLabs cloned teacher
+// voice (via /api/tts), then Gemini TTS, then browser speechSynthesis.
+// Capture tracks arm the tutor via readingDigest — they are never played here.
 // See docs/CONSULTANT_READING.md.
 //
 // When /api/tts reports budget exceeded (slow clone/TTS), we stash a hint so
