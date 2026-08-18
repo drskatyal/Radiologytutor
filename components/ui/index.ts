@@ -14,6 +14,8 @@ export { Input, Textarea, Select } from "./Input";
 export type { SelectProps } from "./Input";
 export { Badge } from "./Badge";
 export type { BadgeProps } from "./Badge";
+export { VerifiedBadge } from "./VerifiedBadge";
+export type { VerifiedBadgeProps, VerificationStatus } from "./VerifiedBadge";
 export { Spinner } from "./Spinner";
 export type { SpinnerProps } from "./Spinner";
 export { Skeleton } from "./Skeleton";

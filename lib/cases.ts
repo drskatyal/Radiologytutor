@@ -59,6 +59,7 @@ import type {
 } from "./types";
 import { deidAllowsPublish, type DeidReport } from "./deid";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+import { sortRelatedCourses } from "./relatedCourses";
 
 /** Persisted de-id report — keyed by studyInstanceUID. */
 export type StoredDeidReport = DeidReport & {
@@ -1133,12 +1134,36 @@ export async function getPrimaryAuthor(orgId: string): Promise<Author> {
 // orgId-scoped Course API
 // ============================================================================
 
-export async function listCourses(orgId: string, opts: { status?: CaseStatus } = {}): Promise<Course[]> {
+export interface ListCoursesOpts {
+  status?: CaseStatus;
+  system?: BodySystem;
+  difficulty?: Difficulty;
+  authorId?: string;
+  excludeId?: string;
+}
+
+export async function listCourses(orgId: string, opts: ListCoursesOpts = {}): Promise<Course[]> {
   const all = await coursesStore.all();
   return all
     .filter((c) => c.orgId === orgId)
     .filter((c) => (opts.status ? c.status === opts.status : true))
+    .filter((c) => (opts.system ? c.system === opts.system : true))
+    .filter((c) => (opts.difficulty ? c.difficulty === opts.difficulty : true))
+    .filter((c) => (opts.authorId ? c.authorId === opts.authorId : true))
+    .filter((c) => (opts.excludeId ? c.id !== opts.excludeId : true))
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function listRelatedCourses(
+  orgId: string,
+  course: Course,
+  limit = 6
+): Promise<Course[]> {
+  const candidates = await listCourses(orgId, {
+    status: "published",
+    excludeId: course.id,
+  });
+  return sortRelatedCourses(course, candidates).slice(0, limit);
 }
 
 export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {

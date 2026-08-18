@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, Layers, Stethoscope } from "lucide-react";
-import { Badge, Card } from "@/components/ui";
+import { Badge, Card, VerifiedBadge } from "@/components/ui";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import type { Author, Case } from "./types";
 
@@ -90,6 +90,9 @@ export function AuthorChip({ author }: { author: Author }) {
         {initials}
       </span>
       <span className="truncate">{author.name}</span>
+      {author.verification === "verified" && (
+        <VerifiedBadge status="verified" className="shrink-0" />
+      )}
     </span>
   );
 }

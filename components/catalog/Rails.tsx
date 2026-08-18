@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, BookOpen, Building2, GraduationCap, ListMusic, Layers, Users } from "lucide-react";
-import { Badge, Card, SectionHeading } from "@/components/ui";
+import { Badge, Card, SectionHeading, VerifiedBadge } from "@/components/ui";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import type { Author, Course, Playlist } from "./types";
 
@@ -112,7 +112,14 @@ export function CoursesRail({
                     <Layers className="h-3.5 w-3.5" aria-hidden="true" />
                     {course.caseIds.length} case{course.caseIds.length === 1 ? "" : "s"}
                   </span>
-                  {author && <span className="truncate text-xs">{author.name}</span>}
+                  {author && (
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-xs">{author.name}</span>
+                      {author.verification === "verified" && (
+                        <VerifiedBadge status="verified" className="shrink-0" />
+                      )}
+                    </span>
+                  )}
                 </div>
               </Card>
             </Link>
@@ -171,9 +178,12 @@ export function TeachersRail({
                 <div className="flex items-start gap-3">
                   <TeacherAvatar author={author} />
                   <div className="min-w-0">
-                    <h3 className="font-display text-base font-semibold tracking-tight text-primary">
-                      {author.name}
-                    </h3>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <h3 className="font-display text-base font-semibold tracking-tight text-primary">
+                        {author.name}
+                      </h3>
+                      <VerifiedBadge status={author.verification} />
+                    </div>
                     {author.credentials && (
                       <p className="truncate text-xs text-muted">{author.credentials}</p>
                     )}

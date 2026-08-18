@@ -12,7 +12,7 @@ import {
   getCertificateForUserCourse,
 } from "@/lib/cases";
 import { activeOrgId, getSession } from "@/lib/auth";
-import { Badge, Breadcrumbs, Button, EmptyState, PageContainer, SectionHeading } from "@/components/ui";
+import { Badge, Breadcrumbs, Button, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import { CourseCurriculum } from "@/components/catalog/CourseCurriculum";
@@ -21,6 +21,7 @@ import { CourseProgressBar } from "@/components/catalog/CourseProgressBar";
 import { WishlistButton } from "@/components/catalog/WishlistButton";
 import { CourseReviews } from "@/components/catalog/CourseReviews";
 import { CourseCertificateCTA } from "@/components/catalog/CourseCertificateCTA";
+import { RelatedCourses } from "@/components/catalog/RelatedCourses";
 
 export const dynamic = "force-dynamic";
 
@@ -99,12 +100,17 @@ export default async function CoursePage({ params }: { params: { id: string } })
             </Badge>
           )}
           {author && (
-            <Link
-              href={`/authors/${author.id}`}
-              className="text-xs font-medium text-secondary transition-colors hover:text-accent"
-            >
-              by {author.name}
-            </Link>
+            <span className="inline-flex items-center gap-1.5">
+              <Link
+                href={`/authors/${author.id}`}
+                className="text-xs font-medium text-secondary transition-colors hover:text-accent"
+              >
+                by {author.name}
+              </Link>
+              {author.verification === "verified" && (
+                <VerifiedBadge status="verified" className="shrink-0" />
+              )}
+            </span>
           )}
         </div>
         {isEnrolled && (
@@ -169,6 +175,8 @@ export default async function CoursePage({ params }: { params: { id: string } })
             />
           </div>
         </section>
+
+        <RelatedCourses orgId={orgId} course={course} />
       </PageContainer>
     </>
   );
