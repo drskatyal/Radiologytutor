@@ -463,8 +463,29 @@ export interface AuthorProfile {
   subspecialties?: BodySystem[];
   socials?: { website?: string; twitter?: string; linkedin?: string };
   verification: "unverified" | "pending" | "verified" | "rejected";
+  /**
+   * Cloned teaching voice for live tutor Q&A (Layer 3). Recorded walk-throughs
+   * never use this — they play the teacher's real mic take.
+   */
+  voice?: AuthorVoice;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Teacher voice clone enrollment (ElevenLabs voice_id + status). */
+export type AuthorVoiceStatus = "none" | "pending" | "ready" | "failed";
+
+export interface AuthorVoice {
+  provider: "elevenlabs" | "gemini";
+  /** ElevenLabs voice_id when provider is elevenlabs. */
+  voiceId?: string;
+  status: AuthorVoiceStatus;
+  /** Sample audio URLs used to train the clone (R2 /audio). */
+  sampleAudioUrls?: string[];
+  /** ISO time of last successful clone. */
+  clonedAt?: string;
+  /** Consent that synthetic speech may use their teaching samples. */
+  consentAt?: string;
 }
 
 /** Student enrollment in a course (marketplace entitlement). */
@@ -730,6 +751,8 @@ export interface Author {
   userId?: string;
   /** Verification gate for public publishing. Absent = unverified attribution. */
   verification?: AuthorProfile["verification"];
+  /** Live-tutor voice clone (same shape as AuthorProfile.voice). */
+  voice?: AuthorVoice;
   createdAt: string;
   updatedAt: string;
 }

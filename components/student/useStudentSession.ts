@@ -529,6 +529,7 @@ export function useStudentSession(
           void speakBeats(
             spoken.map((b) => b.text),
             {
+              authorId: caseData.authorId,
               onStartBeat: (i) => {
                 const soFar = spoken
                   .slice(0, i + 1)
@@ -767,12 +768,16 @@ export function useStudentSession(
       stopReplay();
       setPhase("speaking");
       setSpeakingTurnId(turn.id);
-      speak(turn.text, () => {
-        setSpeakingTurnId((cur) => (cur === turn.id ? null : cur));
-        setPhase((p) => (p === "speaking" ? "idle" : p));
-      });
+      speak(
+        turn.text,
+        () => {
+          setSpeakingTurnId((cur) => (cur === turn.id ? null : cur));
+          setPhase((p) => (p === "speaking" ? "idle" : p));
+        },
+        { authorId: caseData.authorId }
+      );
     },
-    [speakingTurnId, phase, stopReplay]
+    [speakingTurnId, phase, stopReplay, caseData.authorId]
   );
 
   // Seat the first finding once the viewer is ready. Viva/socratic do not

@@ -1,30 +1,37 @@
 "use client";
 
-// Tutor answer playback. Prefers Gemini TTS (via our /api/tts route); falls
-// back to the browser speechSynthesis if GEMINI_API_KEY is missing or the
-// request fails. This is a vendor seam — the exported interface (speak /
-// speakBeats / stopSpeaking) never changes, so swapping the TTS backend
-// touches only /api/tts. Supports barge-in: stopSpeaking() cancels the
-// pipeline so the student can interrupt.
-//
-// speakBeats pipelines sentence-sized chunks: prefetch N+1 while N plays so
-// the first sentence starts as soon as its WAV is ready, and the viewer can
-// drive on each beat. Live tutor answers ONLY — recorded lesson narration
-// never routes through here.
+// Tutor answer playback. Prefers ElevenLabs cloned teacher voice (via /api/tts),
+// then Gemini TTS, then browser speechSynthesis. Vendor seam: speak / speakBeats /
+// stopSpeaking never change — only /api/tts + lib/voice.ts do.
+// Recorded lesson narration NEVER routes through here (plays Finding.track.audioUrl).
+// See docs/CONSULTANT_READING.md.
 
 let currentAudio: HTMLAudioElement | null = null;
 let pipelineGen = 0;
 let ttsAbort: AbortController | null = null;
 
-export async function speak(text: string, onEnd?: () => void): Promise<void> {
-  await speakBeats([text], { onEnd });
+export async function speak(
+  text: string,
+  onEnd?: () => void,
+  opts?: SpeakOpts
+): Promise<void> {
+  await speakBeats([text], { onEnd, ...opts });
 }
+
+export type SpeakOpts = {
+  /** ElevenLabs voice id for the case author (cloned tutor). */
+  voiceId?: string | null;
+  /** Resolve voice from Author.voice when voiceId not known client-side. */
+  authorId?: string | null;
+};
 
 export async function speakBeats(
   texts: string[],
   opts?: {
     onStartBeat?: (index: number) => void;
     onEnd?: () => void;
+    voiceId?: string | null;
+    authorId?: string | null;
   }
 ): Promise<void> {
   const chunks = texts.map((t) => t.trim()).filter(Boolean);
@@ -38,7 +45,11 @@ export async function speakBeats(
   ttsAbort = new AbortController();
   const signal = ttsAbort.signal;
 
-  const prefetch = (t: string) => fetchTtsBlob(t, signal);
+  const prefetch = (t: string) =>
+    fetchTtsBlob(t, signal, {
+      voiceId: opts?.voiceId,
+      authorId: opts?.authorId,
+    });
 
   let nextBlob = prefetch(chunks[0]);
 
@@ -67,13 +78,18 @@ export async function speakBeats(
 
 async function fetchTtsBlob(
   text: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  voice?: { voiceId?: string | null; authorId?: string | null }
 ): Promise<Blob | null> {
   try {
     const res = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        text,
+        voiceId: voice?.voiceId || undefined,
+        authorId: voice?.authorId || undefined,
+      }),
       signal,
     });
     if (!res.ok) return null;

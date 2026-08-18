@@ -1,0 +1,16 @@
+// GET  /api/voice/status  — which providers are configured
+// GET  /api/voice/realtime — Gemini Live capability stub (WS proxy TBD)
+
+import { NextResponse } from "next/server";
+import { voiceStackStatus } from "@/lib/voice";
+import { getRealtimeVoiceInfo } from "@/lib/voiceRealtime";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  return NextResponse.json({
+    stack: voiceStackStatus(),
+    realtime: getRealtimeVoiceInfo(),
+  });
+}

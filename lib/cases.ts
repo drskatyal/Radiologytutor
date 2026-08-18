@@ -1110,6 +1110,7 @@ export async function updateAuthor(
       | "socials"
       | "userId"
       | "verification"
+      | "voice"
     >
   >
 ): Promise<Author | null> {

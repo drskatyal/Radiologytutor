@@ -10,7 +10,7 @@
 
 import { teachingSystemPrompt } from "./teachingPrompt";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 export interface GeminiPart {
@@ -391,9 +391,9 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
 }
 
 // ============================================================================
-// Text-to-speech — Gemini TTS (vendor seam; ElevenLabs can return later).
-// Server-only; reads GEMINI_API_KEY. Used ONLY for live tutor answers, never
-// for the teacher's recorded lesson narration.
+// Text-to-speech — Gemini TTS fallback inside the voice seam (lib/voice.ts).
+// Prefer ElevenLabs cloned teacher voice when enrolled. Server-only.
+// Used ONLY for live tutor answers, never for recorded lesson narration.
 // ============================================================================
 
 const TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
