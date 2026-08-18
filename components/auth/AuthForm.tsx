@@ -5,9 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Field, Input, useToast } from "@/components/ui";
 import { DemoSignInButton, GoogleSignInButton } from "./AuthButtons";
+import { dashboardPath } from "@/lib/dashboardPath";
+import type { MembershipRole, PlatformRole } from "@/lib/types";
 
 function safeNext(next?: string): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "";
   return next;
 }
 
@@ -37,8 +39,8 @@ export function AuthForm({
         mode === "sign-up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email";
       const body =
         mode === "sign-up"
-          ? { email, password, name: name || email.split("@")[0], callbackURL: dest }
-          : { email, password, callbackURL: dest };
+          ? { email, password, name: name || email.split("@")[0], callbackURL: dest || "/" }
+          : { email, password, callbackURL: dest || "/" };
       const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -51,7 +53,24 @@ export function AuthForm({
         };
         throw new Error(data.message || data.error || "Authentication failed");
       }
-      router.push(dest);
+      if (dest) {
+        router.push(dest);
+      } else {
+        const me = await fetch("/api/me");
+        const payload = (await me.json().catch(() => ({}))) as {
+          user?: {
+            platformRole?: PlatformRole | null;
+            membershipRole?: MembershipRole | null;
+          };
+        };
+        router.push(
+          dashboardPath({
+            signedIn: true,
+            platformRole: payload.user?.platformRole,
+            membershipRole: payload.user?.membershipRole,
+          }) ?? "/"
+        );
+      }
       router.refresh();
     } catch (err) {
       toast({
@@ -83,7 +102,7 @@ export function AuthForm({
 
       {mode === "sign-in" && (
         <div className={googleEnabled ? "mt-3" : "mt-6"}>
-          <DemoSignInButton next={dest === "/" ? "/studio" : dest} />
+          <DemoSignInButton next={dest} />
         </div>
       )}
 

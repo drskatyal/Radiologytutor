@@ -3,10 +3,25 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui";
+import { dashboardPath } from "@/lib/dashboardPath";
+import type { MembershipRole, PlatformRole } from "@/lib/types";
 
 function safeNext(next?: string): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "";
   return next;
+}
+
+function homeFor(user: {
+  platformRole?: PlatformRole | null;
+  membershipRole?: MembershipRole | null;
+}): string {
+  return (
+    dashboardPath({
+      signedIn: true,
+      platformRole: user.platformRole,
+      membershipRole: user.membershipRole,
+    }) ?? "/"
+  );
 }
 
 export function GoogleSignInButton({
@@ -25,7 +40,7 @@ export function GoogleSignInButton({
       const res = await fetch("/api/auth/sign-in/social", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: "google", callbackURL: safeNext(callbackURL) }),
+        body: JSON.stringify({ provider: "google", callbackURL: safeNext(callbackURL) || "/" }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         url?: string;
@@ -58,7 +73,7 @@ export function GoogleSignInButton({
   );
 }
 
-export function DemoSignInButton({ next = "/studio" }: { next?: string }) {
+export function DemoSignInButton({ next }: { next?: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,12 +83,19 @@ export function DemoSignInButton({ next = "/studio" }: { next?: string }) {
     setBusy(true);
     setError(null);
     try {
+      const dest = safeNext(next);
       const res = await fetch("/api/auth/demo", { method: "POST" });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || "Demo sign-in failed.");
       }
-      router.push(safeNext(next));
+      const data = (await res.json()) as {
+        user?: {
+          platformRole?: PlatformRole | null;
+          membershipRole?: MembershipRole | null;
+        };
+      };
+      router.push(dest || homeFor(data.user ?? {}));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Demo sign-in failed.");

@@ -2,13 +2,15 @@
 // Body: a full Finding (id optional — generated if missing)
 
 import { NextRequest, NextResponse } from "next/server";
-import { addFinding } from "@/lib/cases";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { createFinding } from "@/lib/cases";
 import type { Finding } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest, { params }: { params: { caseId: string } }) {
   try {
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as Partial<Finding>;
     if (!body.state || !body.marker) {
       return NextResponse.json(
@@ -39,9 +41,11 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       tStartMs: body.tStartMs,
       tEndMs: body.tEndMs,
     };
-    const updated = await addFinding(params.caseId, finding);
+    const updated = await createFinding(orgId, params.caseId, finding);
     return NextResponse.json(updated);
   } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

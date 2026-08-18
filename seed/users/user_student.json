@@ -1,0 +1,8 @@
+{
+  "id": "user_student",
+  "orgId": "org_demo",
+  "email": "student@flowrad.local",
+  "name": "Demo Student",
+  "role": "student",
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}
