@@ -1262,6 +1262,14 @@ export async function getUser(userId: string): Promise<User | null> {
   return usersStore.get(userId);
 }
 
+/** Users whose home org is `orgId` (best-effort directory for admin). */
+export async function listUsers(orgId: string): Promise<User[]> {
+  const all = await usersStore.all();
+  return all
+    .filter((u) => u.orgId === orgId)
+    .sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+}
+
 export async function getUserByEmail(email: string): Promise<User | null> {
   const want = normalizeEmail(email);
   const all = await usersStore.all();

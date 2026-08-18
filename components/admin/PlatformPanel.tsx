@@ -61,20 +61,20 @@ export function PlatformPanel() {
 const TILES = [
   {
     icon: <BadgeCheck className="h-5 w-5" aria-hidden="true" />,
-    title: "Author verification",
-    description: "Review credentials before authors can publish publicly.",
-    badge: "Coming in P0",
+            title: "Author verification",
+    description: "Review credentials on the Teachers tab before public publish.",
+    badge: "Live",
   },
   {
     icon: <ScanSearch className="h-5 w-5" aria-hidden="true" />,
     title: "De-identification",
-    description: "PHI review queue for uploaded studies.",
-    badge: "Coming in P1",
+    description: "Header gate on upload; publish blocked without a passing report.",
+    badge: "Live",
   },
   {
     icon: <Wallet className="h-5 w-5" aria-hidden="true" />,
     title: "Payouts",
-    description: "Marketplace earnings via the payments seam.",
+    description: "Marketplace earnings via the payments seam (India PSP later).",
     badge: "Coming in P3",
   },
 ];

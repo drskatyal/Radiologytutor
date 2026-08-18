@@ -22,6 +22,7 @@ import { CaseList } from "./CaseList";
 import { EditCaseModal } from "./EditCaseModal";
 import { TeachersQueue } from "./TeachersQueue";
 import { PlatformPanel } from "./PlatformPanel";
+import { MembersPanel } from "./MembersPanel";
 import {
   deleteCase as apiDeleteCase,
   fetchAuthors,
@@ -32,7 +33,7 @@ import {
 import type { AdminCaseRow, Author, Case, CaseStatus, Patient } from "./types";
 
 type Filter = "all" | CaseStatus;
-type Section = "cases" | "teachers" | "platform";
+type Section = "cases" | "teachers" | "members" | "platform";
 
 export function AdminConsole() {
   const { toast } = useToast();
@@ -152,6 +153,7 @@ export function AdminConsole() {
           items={[
             { value: "cases", label: "Cases", icon: <LayoutGrid className="h-4 w-4" />, count: loading ? undefined : cases.length },
             { value: "teachers", label: "Teachers", icon: <Users className="h-4 w-4" />, count: loading ? undefined : authors.length },
+            { value: "members", label: "Members" },
             { value: "platform", label: "Platform" },
           ]}
         />
@@ -173,6 +175,8 @@ export function AdminConsole() {
       <PageContainer className="flex flex-col gap-10">
         {section === "platform" ? (
           <PlatformPanel />
+        ) : section === "members" ? (
+          <MembersPanel />
         ) : section === "teachers" ? (
           <TeachersQueue
             authors={authors}
