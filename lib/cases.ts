@@ -395,6 +395,8 @@ export const DEMO_USER_ID = "user_demo";
 export const DEMO_TEACHER_USER_ID = "user_teacher";
 export const DEMO_USER_EMAIL = "demo@flowrad.local";
 export const DEMO_TEACHER_EMAIL = "teacher@flowrad.local";
+export const DEMO_STUDENT_USER_ID = "user_student";
+export const DEMO_STUDENT_EMAIL = "student@flowrad.local";
 
 function toStored(c: Case): CaseStored {
   return { ...c, id: c.caseId };
@@ -1494,6 +1496,28 @@ export async function ensureDemoIdentity(): Promise<void> {
     userId: DEMO_TEACHER_USER_ID,
     orgId: DEFAULT_ORG_ID,
     role: "author",
+  });
+
+  const student =
+    (await usersStore.get(DEMO_STUDENT_USER_ID)) ??
+    (await getUserByEmail(DEMO_STUDENT_EMAIL)) ??
+    null;
+  const studentUser: User = {
+    id: DEMO_STUDENT_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_STUDENT_EMAIL,
+    name: student?.name ?? "Demo Student",
+    role: "student",
+    authProviderId: student?.authProviderId,
+    image: student?.image,
+    createdAt: student?.createdAt ?? now,
+  };
+  await usersStore.put(studentUser);
+  await createMembership({
+    id: "mem_demo_student",
+    userId: DEMO_STUDENT_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "student",
   });
 
   const author = await getAuthor(DEFAULT_ORG_ID, "auth_demo");
