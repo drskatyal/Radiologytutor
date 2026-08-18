@@ -145,6 +145,11 @@ export function ensureIndexes(): Promise<void> {
           db.collection("reviews").createIndex({ userId: 1, courseId: 1 }, { unique: true }),
           db.collection("certificates").createIndex({ userId: 1 }),
           db.collection("certificates").createIndex({ userId: 1, courseId: 1 }, { unique: true }),
+          db.collection("assessments").createIndex({ orgId: 1 }),
+          db.collection("assessments").createIndex({ orgId: 1, courseId: 1 }),
+          db.collection("attempts").createIndex({ userId: 1 }),
+          db.collection("attempts").createIndex({ userId: 1, assessmentId: 1 }),
+          db.collection("attempts").createIndex({ userId: 1, courseId: 1 }),
           db.collection("deidReports").createIndex({ orgId: 1 }),
           db.collection("deidReports").createIndex({ studyInstanceUID: 1 }),
         ]);

@@ -42,7 +42,8 @@ export async function POST(req: NextRequest) {
     const denied = jsonAuthError(err);
     if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
-    const status = message.includes("100%") ? 400 : 500;
+    const status =
+      message.includes("100%") || message.includes("assessment") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

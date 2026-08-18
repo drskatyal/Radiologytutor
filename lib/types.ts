@@ -472,7 +472,8 @@ export interface Review {
 
 /**
  * Certificate of Completion — NOT CME / AMA PRA Category 1 Credit.
- * Issued when Progress.percentComplete reaches 100 for a course.
+ * Issued when Progress.percentComplete reaches 100 for a course
+ * (and the course assessment is passed, when one exists).
  */
 export interface Certificate {
   id: string;
@@ -484,6 +485,97 @@ export interface Certificate {
   issuedAt: string;
   /** Always false until an ACCME-accredited partner is wired. */
   cmeEligible: false;
+}
+
+// ============================================================================
+// Assessment (ARCHITECTURE.md §5) — end-of-course quiz on the viewer we own.
+// Questions embed on Assessment for seed/dev simplicity; Attempt persists scores.
+// ============================================================================
+
+export type QuestionKind = "mcq" | "click_finding" | "report";
+
+export interface McqQuestion {
+  id: string;
+  kind: "mcq";
+  prompt: string;
+  options: string[];
+  /** 0-based index into `options`. Never sent to the client until after submit. */
+  correctIndex: number;
+  rationale?: string;
+}
+
+/** Click the finding on a normalized [0,1] imaging surface (reuses Marker). */
+export interface ClickFindingQuestion {
+  id: string;
+  kind: "click_finding";
+  prompt: string;
+  caseId: string;
+  findingId: string;
+  targetMarker: Marker;
+  /** Hit radius in unit-square space; defaults to DEFAULT_HIT_RADIUS (0.08). */
+  toleranceRadiusPct?: number;
+}
+
+/**
+ * AI-graded structured report — typed for forward-compat; not used in the
+ * first course-page quiz ship (see lib/reportGrade.ts for the grading path).
+ */
+export interface ReportQuestion {
+  id: string;
+  kind: "report";
+  prompt: string;
+  caseId: string;
+  rubric: string[];
+  modelAnswer?: string;
+}
+
+export type Question = McqQuestion | ClickFindingQuestion | ReportQuestion;
+
+/** Public question shape — no answers / markers until graded. */
+export type PublicQuestion =
+  | Omit<McqQuestion, "correctIndex" | "rationale">
+  | Omit<ClickFindingQuestion, "targetMarker" | "toleranceRadiusPct">
+  | Omit<ReportQuestion, "rubric" | "modelAnswer">;
+
+export interface Assessment {
+  id: string;
+  orgId: string;
+  courseId: string;
+  title: string;
+  description?: string;
+  /** 0–100; attempt passes when score >= this. */
+  passingScore: number;
+  questions: Question[];
+  /** Always false until an ACCME-accredited partner is wired. */
+  cmeEligible: false;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AttemptResponse {
+  questionId: string;
+  /** MCQ selection (0-based). */
+  selectedIndex?: number;
+  /** Click-finding coords in [0,1]. */
+  x_pct?: number;
+  y_pct?: number;
+  /** Free-text report (future). */
+  text?: string;
+  correct: boolean;
+}
+
+export interface Attempt {
+  id: string;
+  userId: string;
+  orgId: string;
+  assessmentId: string;
+  courseId: string;
+  responses: AttemptResponse[];
+  /** 0–100. */
+  score: number;
+  passed: boolean;
+  startedAt: string;
+  submittedAt: string;
 }
 
 /**

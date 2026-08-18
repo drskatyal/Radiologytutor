@@ -10,6 +10,8 @@ import {
   isCourseWishlisted,
   listReviewsForCourse,
   getCertificateForUserCourse,
+  getPublicAssessmentForCourse,
+  getBestAttemptForUserAssessment,
 } from "@/lib/cases";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { Badge, Breadcrumbs, Button, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
@@ -21,6 +23,7 @@ import { CourseProgressBar } from "@/components/catalog/CourseProgressBar";
 import { WishlistButton } from "@/components/catalog/WishlistButton";
 import { CourseReviews } from "@/components/catalog/CourseReviews";
 import { CourseCertificateCTA } from "@/components/catalog/CourseCertificateCTA";
+import { CourseAssessment } from "@/components/catalog/CourseAssessment";
 import { RelatedCourses } from "@/components/catalog/RelatedCourses";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +34,8 @@ export default async function CoursePage({ params }: { params: { id: string } })
   if (!course) notFound();
 
   const session = await getSession();
-  const [cases, author, enrollment, progress, reviews, wishlisted, certificate] =
+  const assessment = await getPublicAssessmentForCourse(orgId, course.id);
+  const [cases, author, enrollment, progress, reviews, wishlisted, certificate, bestAttempt] =
     await Promise.all([
       getCasesByIds(orgId, course.caseIds),
       course.authorId ? getAuthor(orgId, course.authorId) : Promise.resolve(null),
@@ -46,12 +50,18 @@ export default async function CoursePage({ params }: { params: { id: string } })
       session
         ? getCertificateForUserCourse(session.user.id, course.id)
         : Promise.resolve(null),
+      session && assessment
+        ? getBestAttemptForUserAssessment(session.user.id, assessment.id)
+        : Promise.resolve(null),
     ]);
 
   const firstCaseId = cases[0]?.caseId;
   const isEnrolled = enrollment?.status === "active";
   const completedCaseIds = progress?.completedCaseIds ?? [];
   const percentComplete = progress?.percentComplete ?? 0;
+  const assessmentPassed = Boolean(bestAttempt?.passed);
+  const canClaimCertificate =
+    isEnrolled && percentComplete >= 100 && (!assessment || assessmentPassed);
 
   return (
     <>
@@ -121,12 +131,21 @@ export default async function CoursePage({ params }: { params: { id: string } })
       </PageHeader>
 
       <PageContainer className="flex flex-col gap-10">
-        {isEnrolled && percentComplete >= 100 && (
+        {canClaimCertificate && (
           <CourseCertificateCTA
             courseId={course.id}
             percentComplete={percentComplete}
             existingCertificate={certificate}
+            assessmentPassed={assessmentPassed}
+            hasAssessment={Boolean(assessment)}
           />
+        )}
+
+        {isEnrolled && percentComplete >= 100 && assessment && !assessmentPassed && !certificate && (
+          <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 text-sm text-secondary">
+            Finish the post-test below (pass ≥ {assessment.passingScore}%) to unlock your
+            Certificate of Completion.
+          </div>
         )}
 
         <section aria-labelledby="curriculum-heading">
@@ -159,6 +178,24 @@ export default async function CoursePage({ params }: { params: { id: string } })
             </div>
           )}
         </section>
+
+        {assessment && (
+          <section aria-labelledby="assessment-heading">
+            <SectionHeading
+              id="assessment-heading"
+              title="Post-test"
+              description="MCQ plus click-the-finding — required before your certificate when enrolled."
+            />
+            <div className="mt-4">
+              <CourseAssessment
+                courseId={course.id}
+                assessment={assessment}
+                initialBestAttempt={bestAttempt}
+                isEnrolled={isEnrolled}
+              />
+            </div>
+          </section>
+        )}
 
         <section aria-labelledby="reviews-heading">
           <SectionHeading

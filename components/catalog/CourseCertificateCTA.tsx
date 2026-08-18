@@ -11,10 +11,15 @@ export function CourseCertificateCTA({
   courseId,
   percentComplete,
   existingCertificate,
+  assessmentPassed = true,
+  hasAssessment = false,
 }: {
   courseId: string;
   percentComplete: number;
   existingCertificate?: Certificate | null;
+  /** When the course has a post-test, must be true to claim. */
+  assessmentPassed?: boolean;
+  hasAssessment?: boolean;
 }) {
   const router = useRouter();
   const { toast } = useToast();
@@ -22,6 +27,7 @@ export function CourseCertificateCTA({
   const [loading, setLoading] = useState(false);
 
   if (percentComplete < 100) return null;
+  if (hasAssessment && !assessmentPassed && !certificate) return null;
 
   async function issue() {
     setLoading(true);
@@ -67,7 +73,9 @@ export function CourseCertificateCTA({
                 Certificate of Completion
               </h3>
               <p className="mt-1 text-sm text-secondary">
-                You finished every case in this course. View or print your certificate.
+                You finished every case
+                {hasAssessment ? " and passed the post-test" : ""} in this course. View or print
+                your certificate.
               </p>
               <Badge variant="neutral" className="mt-2">
                 Not CME credit

@@ -72,6 +72,23 @@ const CASES = [
     expect: { anon: 401, student: 200, author: 200, admin: 200 },
   },
   {
+    name: "GET /api/assessments?courseId=course_demo",
+    path: "/api/assessments?courseId=course_demo",
+    expect: { anon: 401, student: 200, author: 200, admin: 200 },
+  },
+  {
+    name: "GET /api/assessments missing courseId",
+    path: "/api/assessments",
+    expect: { anon: 401, student: 400, author: 400, admin: 400 },
+  },
+  {
+    name: "POST /api/attempts missing assessmentId",
+    method: "POST",
+    path: "/api/attempts",
+    body: { answers: [] },
+    expect: { anon: 401, student: 400, author: 400, admin: 400 },
+  },
+  {
     name: "GET /learning",
     path: "/learning",
     expect: { anon: 200, student: 200, author: 200, admin: 200 },
@@ -454,6 +471,60 @@ async function main() {
   } else {
     fail++;
     failures.push(`double enroll statuses ${e1.status}/${e2.status}`);
+  }
+
+  // Student can submit course_demo assessment (MCQ + click-finding)
+  {
+    const assessRes = await fetch(`${BASE}/api/assessments?courseId=course_demo`, {
+      headers: { Cookie: sessions.student.jar },
+    });
+    const assessBody = await assessRes.json().catch(() => ({}));
+    const assessment = assessBody.assessment;
+    if (assessRes.status !== 200 || !assessment?.id) {
+      fail++;
+      failures.push(`student GET assessment: ${assessRes.status} missing body`);
+    } else {
+      // Public payload must not leak correctIndex / targetMarker
+      const leaked = JSON.stringify(assessment).includes("correctIndex") ||
+        JSON.stringify(assessment).includes("targetMarker");
+      if (leaked) {
+        fail++;
+        failures.push("public assessment leaked answer keys");
+      } else {
+        pass++;
+        console.log("  ✓ public assessment hides answer keys");
+      }
+
+      const submit = await fetch(`${BASE}/api/attempts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: sessions.student.jar,
+        },
+        body: JSON.stringify({
+          assessmentId: assessment.id,
+          answers: [
+            { questionId: "q_mcq_search", selectedIndex: 1 },
+            { questionId: "q_mcq_window", selectedIndex: 1 },
+            { questionId: "q_click_f1", x_pct: 0.25, y_pct: 0.5 },
+          ],
+        }),
+      });
+      const attemptBody = await submit.json().catch(() => ({}));
+      if (
+        submit.status === 200 &&
+        attemptBody.attempt?.passed === true &&
+        attemptBody.attempt?.score === 100
+      ) {
+        pass++;
+        console.log("  ✓ student passes demo assessment (100%)");
+      } else {
+        fail++;
+        failures.push(
+          `assessment submit: status ${submit.status} score=${attemptBody.attempt?.score} passed=${attemptBody.attempt?.passed}`
+        );
+      }
+    }
   }
 
   // Student cannot promote members

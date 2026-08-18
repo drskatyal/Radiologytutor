@@ -49,6 +49,8 @@ import type {
   WishlistItem,
   Review,
   Certificate,
+  Assessment,
+  Attempt,
   MembershipRole,
   User,
   UserRole,
@@ -57,6 +59,7 @@ import type {
   PatientSex,
   TargetLevel,
 } from "./types";
+import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 import { sortRelatedCourses } from "./relatedCourses";
@@ -140,6 +143,7 @@ async function seedIfEmpty(): Promise<void> {
       "memberships",
       "enrollments",
       "deidReports",
+      "assessments",
     ] as const) {
       const dst = path.join(DATA_DIR, sub);
       await fs.mkdir(dst, { recursive: true });
@@ -175,7 +179,9 @@ type CollectionName =
   | "wishlist"
   | "reviews"
   | "certificates"
-  | "deidReports";
+  | "deidReports"
+  | "assessments"
+  | "attempts";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -319,6 +325,7 @@ async function seedMongoIfEmpty(): Promise<void> {
     "memberships",
     "enrollments",
     "deidReports",
+    "assessments",
   ] as const) {
     const count = await db.collection(name).estimatedDocumentCount();
     if (count > 0) continue;
@@ -412,6 +419,8 @@ const progressStore = collection<Progress>("progress");
 const wishlistStore = collection<WishlistItem>("wishlist");
 const reviewsStore = collection<Review>("reviews");
 const certificatesStore = collection<Certificate>("certificates");
+const assessmentsStore = collection<Assessment>("assessments");
+const attemptsStore = collection<Attempt>("attempts");
 const deidReportsStore = collection<StoredDeidReport>("deidReports");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
@@ -1754,6 +1763,14 @@ export async function issueCertificate(
     throw new Error("Course must be 100% complete to issue a certificate.");
   }
 
+  const assessment = await getAssessmentForCourse(orgId, courseId);
+  if (assessment) {
+    const best = await getBestAttemptForUserAssessment(userId, assessment.id);
+    if (!best?.passed) {
+      throw new Error("Pass the course assessment before claiming a certificate.");
+    }
+  }
+
   const course = await getCourse(orgId, courseId);
   if (!course) throw new Error("Course not found.");
 
@@ -1769,6 +1786,109 @@ export async function issueCertificate(
   };
   await certificatesStore.put(certificate);
   return certificate;
+}
+
+// ============================================================================
+// Assessments & attempts (end-of-course quiz)
+// ============================================================================
+
+export async function getAssessment(assessmentId: string): Promise<Assessment | null> {
+  return assessmentsStore.get(assessmentId);
+}
+
+export async function getAssessmentForCourse(
+  orgId: string,
+  courseId: string
+): Promise<Assessment | null> {
+  const all = await assessmentsStore.all();
+  return all.find((a) => a.orgId === orgId && a.courseId === courseId) ?? null;
+}
+
+/** Client-safe assessment: questions without answer keys / target markers. */
+export async function getPublicAssessmentForCourse(
+  orgId: string,
+  courseId: string
+): Promise<{
+  id: string;
+  orgId: string;
+  courseId: string;
+  title: string;
+  description?: string;
+  passingScore: number;
+  cmeEligible: false;
+  questions: ReturnType<typeof toPublicQuestions>;
+} | null> {
+  const assessment = await getAssessmentForCourse(orgId, courseId);
+  if (!assessment) return null;
+  return {
+    id: assessment.id,
+    orgId: assessment.orgId,
+    courseId: assessment.courseId,
+    title: assessment.title,
+    description: assessment.description,
+    passingScore: assessment.passingScore,
+    cmeEligible: assessment.cmeEligible,
+    questions: toPublicQuestions(assessment.questions),
+  };
+}
+
+export async function listAttemptsForUser(userId: string): Promise<Attempt[]> {
+  const all = await attemptsStore.all();
+  return all
+    .filter((a) => a.userId === userId)
+    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+export async function getBestAttemptForUserAssessment(
+  userId: string,
+  assessmentId: string
+): Promise<Attempt | null> {
+  const all = await attemptsStore.all();
+  const mine = all.filter((a) => a.userId === userId && a.assessmentId === assessmentId);
+  if (mine.length === 0) return null;
+  return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
+}
+
+export async function getBestAttemptForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Attempt | null> {
+  const all = await attemptsStore.all();
+  const mine = all.filter((a) => a.userId === userId && a.courseId === courseId);
+  if (mine.length === 0) return null;
+  return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
+}
+
+export type SubmitAttemptInput = {
+  userId: string;
+  orgId: string;
+  assessmentId: string;
+  answers: LearnerAnswer[];
+};
+
+export async function submitAttempt(input: SubmitAttemptInput): Promise<Attempt> {
+  const assessment = await getAssessment(input.assessmentId);
+  if (!assessment || assessment.orgId !== input.orgId) {
+    throw new Error("Assessment not found.");
+  }
+
+  const { responses, score } = gradeAttempt(assessment.questions, input.answers);
+  const passed = score >= assessment.passingScore;
+  const now = nowIso();
+  const attempt: Attempt = {
+    id: genId("att"),
+    userId: input.userId,
+    orgId: input.orgId,
+    assessmentId: assessment.id,
+    courseId: assessment.courseId,
+    responses,
+    score,
+    passed,
+    startedAt: now,
+    submittedAt: now,
+  };
+  await attemptsStore.put(attempt);
+  return attempt;
 }
 
 /**
