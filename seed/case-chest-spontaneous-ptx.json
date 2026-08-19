@@ -1,0 +1,83 @@
+{
+  "caseId": "case-chest-spontaneous-ptx",
+  "title": "Primary spontaneous pneumothorax — blebs & management",
+  "modality": "CT",
+  "pacsbinBaseUrl": "https://pacsbin.com/viewer/case/WJUZ1VRmoL",
+  "orgId": "org_demo",
+  "patientId": "pat_chest_ptx",
+  "status": "published",
+  "specialty": "Chest",
+  "difficulty": "intermediate",
+  "system": "Chest",
+  "tags": ["pneumothorax", "bleb", "emergency", "registrar"],
+  "authorId": "auth_demo",
+  "studyRefs": [
+    {
+      "studyInstanceUID": "1.2.840.113619.2.demo.pacsbin.current",
+      "role": "current",
+      "order": 0
+    }
+  ],
+  "clinicalHistory": "20-year-old male, tall and thin, sudden pleuritic chest pain and dyspnoea. No trauma. SpO₂ 94% on room air.",
+  "patientAge": "20",
+  "patientSex": "M",
+  "technique": "Contrast-enhanced CT chest (diagnostic) + prior PA chest radiograph when available.",
+  "primaryDiagnosis": "Primary spontaneous pneumothorax with apical blebs",
+  "differentials": [
+    "Secondary pneumothorax (COPD, cystic lung disease)",
+    "Tension pneumothorax (if haemodynamic compromise)",
+    "Pneumomediastinum"
+  ],
+  "targetLevel": "registrar",
+  "learningObjectives": [
+    "Recognise visceral pleural line and absent peripheral lung markings.",
+    "Identify apical blebs on CT as the usual mechanism in primary spontaneous pneumothorax.",
+    "Describe safe pleural drain insertion (triangle of safety / 2nd ICS MCL) and when to escalate."
+  ],
+  "discussion": "Teaching narrative synthesised from open Radiopaedia case discussions (primary spontaneous pneumothorax, apical blebs). Imaging in this catalog entry uses the public FlowRad/Pacsbin demo CT until a dedicated de-identified study is ingested to Orthanc.",
+  "references": [
+    "Radiopaedia — Primary spontaneous pneumothorax (https://radiopaedia.org/cases/primary-spontaneous-pneumothorax-2)",
+    "Radiopaedia — Spontaneous pneumothorax pulmonary blebs (https://radiopaedia.org/cases/spontaneous-pneumothorax-pulmonary-blebs)",
+    "Radiopaedia — Pneumothorax case discussion & drain MCQ (https://radiopaedia.org/cases/pneumothorax-61)"
+  ],
+  "findings": [
+    {
+      "id": "f_ptx1",
+      "label": "Pneumothorax — visceral pleural line",
+      "description": "A thin white visceral pleural line separates aerated lung from pleural gas. Peripheral lung markings disappear beyond the line.",
+      "teachingPoints": [
+        "On erect imaging, gas rises — scrutinise the apex first.",
+        "Do not mistake skin folds or medial lung for a pleural line."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.72, "y_pct": 0.22, "shape": "circle" },
+      "order": 1
+    },
+    {
+      "id": "f_ptx2",
+      "label": "Apical blebs",
+      "description": "CT through the lung apices shows subpleural blebs — the usual rupture site in primary spontaneous pneumothorax in young males.",
+      "teachingPoints": [
+        "Scroll the apices on lung and bone windows.",
+        "Bilateral blebs increase recurrence risk — document them."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.68, "y_pct": 0.18, "shape": "circle" },
+      "order": 2
+    },
+    {
+      "id": "f_ptx3",
+      "label": "Drain planning",
+      "description": "Small-bore pigtail via the triangle of safety (or 2nd intercostal space mid-clavicular line for tension). Tip directed toward the apex.",
+      "teachingPoints": [
+        "Tension physiology needs immediate decompression — do not wait for CT.",
+        "Re-expansion pulmonary oedema is rare but life-threatening — watch fluid status."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.35, "y_pct": 0.55, "shape": "arrow" },
+      "order": 3
+    }
+  ],
+  "createdAt": "2026-08-19T00:00:00.000Z",
+  "updatedAt": "2026-08-19T00:00:00.000Z"
+}

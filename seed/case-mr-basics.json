@@ -1,0 +1,84 @@
+{
+  "caseId": "case-mr-basics",
+  "title": "MR scroll & search pattern (sample series)",
+  "modality": "MR",
+  "pacsbinBaseUrl": "/cornerstone",
+  "orgId": "org_demo",
+  "patientId": "pat_mr_basics",
+  "status": "published",
+  "specialty": "General",
+  "difficulty": "beginner",
+  "system": "Neuro",
+  "tags": ["search pattern", "scroll", "offline sample"],
+  "authorId": "auth_demo",
+  "studyRefs": [
+    {
+      "studyInstanceUID": "flowrad.bundled.study",
+      "seriesInstanceUIDs": ["flowrad.bundled.series"],
+      "role": "current",
+      "order": 0
+    }
+  ],
+  "clinicalHistory": "Teaching sample — no clinical scenario. Practice a systematic scroll through a short MR stack before opening real cases.",
+  "technique": "Bundled pydicom emri_small sample (10 frames, offline).",
+  "primaryDiagnosis": "Normal sample anatomy for orientation only.",
+  "targetLevel": "registrar",
+  "learningObjectives": [
+    "Scroll the stack smoothly without losing orientation.",
+    "Pause on a slice and describe what you see before advancing.",
+    "Use window/level presets appropriate to MR brain tissue."
+  ],
+  "discussion": "This case uses the bundled offline MR series so every environment can teach scroll discipline without Orthanc. Treat it as a warm-up before DICOM-backed cases.",
+  "references": [
+    "FlowRad bundled sample — pydicom emri_small (public domain teaching data)."
+  ],
+  "findings": [
+    {
+      "id": "f_mr1",
+      "label": "Start — mid stack",
+      "description": "Begin in the middle of the stack. Name the plane and set a default brain window before hunting for pathology.",
+      "teachingPoints": [
+        "Always locate mid-slice before scrolling systematically.",
+        "Say your search pattern out loud — it becomes the script the AI tutor follows."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.5, "y_pct": 0.5, "shape": "circle" },
+      "order": 1,
+      "studyInstanceUID": "flowrad.bundled.study",
+      "seriesInstanceUID": "flowrad.bundled.series",
+      "sliceIndex": 4
+    },
+    {
+      "id": "f_mr2",
+      "label": "Inferior sweep",
+      "description": "Scroll inferiorly through the remaining frames. Note how parenchymal contrast changes slice to slice.",
+      "teachingPoints": [
+        "Scroll in one direction per pass — do not oscillate randomly.",
+        "If something catches your eye, stop and window before continuing."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.55, "y_pct": 0.62, "shape": "circle" },
+      "order": 2,
+      "studyInstanceUID": "flowrad.bundled.study",
+      "seriesInstanceUID": "flowrad.bundled.series",
+      "sliceIndex": 7
+    },
+    {
+      "id": "f_mr3",
+      "label": "Superior sweep",
+      "description": "Return toward the superior slices. Compare symmetry left versus right on each stop.",
+      "teachingPoints": [
+        "Compare paired structures on every slice — asymmetry is often the first clue.",
+        "Finish the pass at the top of the stack before calling the study complete."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.45, "y_pct": 0.38, "shape": "circle" },
+      "order": 3,
+      "studyInstanceUID": "flowrad.bundled.study",
+      "seriesInstanceUID": "flowrad.bundled.series",
+      "sliceIndex": 2
+    }
+  ],
+  "createdAt": "2026-08-19T00:00:00.000Z",
+  "updatedAt": "2026-08-19T00:00:00.000Z"
+}
