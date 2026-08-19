@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
   ChevronRight,
@@ -73,6 +74,7 @@ export default function StudentSession({
   /** When opened from a course curriculum — mark complete at end of Teach tour. */
   courseId?: string | null;
 }) {
+  const router = useRouter();
   // Teach is the product: autonomous attending. Exam = viva.
   const [mode, setMode] = useState<SessionMode>("guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
@@ -328,12 +330,16 @@ export default function StudentSession({
         </div>
       )}
 
-      {/* Top HUD — calm, clinical */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between gap-3 p-3">
+      {/* Top HUD — above viewer chrome so Library is always clickable */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between gap-3 p-3">
         <div className="pointer-events-auto flex min-w-0 flex-wrap items-center gap-2">
           <Link
             href="/library"
-            className="inline-flex items-center rounded-lg border border-subtle bg-elevated/90 px-2.5 py-1.5 text-xs font-medium text-secondary hover:text-primary"
+            onClick={(e) => {
+              e.preventDefault();
+              router.push("/library");
+            }}
+            className="inline-flex items-center rounded-lg border border-subtle bg-elevated px-2.5 py-1.5 text-xs font-medium text-secondary hover:text-primary"
           >
             Library
           </Link>

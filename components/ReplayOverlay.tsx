@@ -132,7 +132,7 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
           return (
             <span
               key={p.id}
-              className="absolute h-3 w-3 rounded-full bg-accent blur-[2px]"
+              className="absolute h-2.5 w-2.5 rounded-full bg-accent/70"
               style={style}
             />
           );
@@ -143,8 +143,8 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
             className="absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: `${dot.x * 100}%`, top: `${dot.y * 100}%` }}
           >
-            <span className="absolute -inset-3 rounded-full bg-accent/30 blur-md" />
-            <span className="relative block h-3.5 w-3.5 rounded-full bg-accent shadow-[0_0_12px_2px_rgb(var(--accent)/0.8)] ring-2 ring-accent/40" />
+            <span className="absolute -inset-2 rounded-full bg-accent/20" />
+            <span className="relative block h-3.5 w-3.5 rounded-full border-2 border-accent-foreground/30 bg-accent ring-1 ring-accent/50" />
           </span>
         )}
       </div>
