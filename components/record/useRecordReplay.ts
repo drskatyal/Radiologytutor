@@ -46,7 +46,10 @@ export interface UseRecordReplay {
   onCursor: (x: number, y: number) => void;
   /** Begin/stop recording (also driven by the Alt+X hotkey). */
   startRecording: () => Promise<void>;
-  stopRecording: () => Promise<RecordedTrack | null>;
+  stopRecording: () => Promise<{
+    track: RecordedTrack;
+    audio: { base64: string; mimeType: string } | null;
+  } | null>;
   /** Replay a track (defaults to the last recorded one). */
   replay: (track?: RecordedTrack, audioUrl?: string) => void;
   stopReplay: () => void;
@@ -104,7 +107,10 @@ export function useRecordReplay(opts: {
     );
   }, [ready, controls, overlay]);
 
-  const stopRecording = useCallback(async (): Promise<RecordedTrack | null> => {
+  const stopRecording = useCallback(async (): Promise<{
+    track: RecordedTrack;
+    audio: { base64: string; mimeType: string } | null;
+  } | null> => {
     const rec = recorderRef.current;
     if (!rec || phaseRef.current !== "recording") return null;
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
@@ -114,7 +120,7 @@ export function useRecordReplay(opts: {
     setTrack(newTrack);
     setAudio(newAudio);
     setPhase("idle");
-    return newTrack;
+    return { track: newTrack, audio: newAudio };
   }, []);
 
   // --- Replay ---------------------------------------------------------------

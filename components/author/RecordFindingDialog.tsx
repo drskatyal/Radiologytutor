@@ -37,7 +37,8 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
-import { LIMITS, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
+import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { LIMITS, markerFromTrack, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
   open: boolean;
@@ -200,16 +201,22 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
     setSaving(true);
     setError("");
     try {
-      const base: Partial<Finding> = {
-        label: draft.label.trim(),
-        description: draft.description.trim(),
-        teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
-        // A finding needs a state + marker to be valid. When a track exists it's
-        // the real flow; otherwise a placeholder state + centre marker suffice
-        // (the author can record/refine the viewer flow later).
-        state: " ",
-        marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
-      };
+      const trackMarker = hasTrack ? markerFromTrack(rr.track as RecordedTrack) : null;
+      const start = controls.current?.getStartState();
+      let base: Partial<Finding> = withDisplaySnapshot(
+        {
+          label: draft.label.trim(),
+          description: draft.description.trim(),
+          teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          // A finding needs a state + marker to be valid. Prefer last cursor from
+          // the walk-through; otherwise a centre placeholder (author can refine).
+          state: " ",
+          marker: trackMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+        },
+        start
+      );
+      const measurements = controls.current?.getMeasurements?.() ?? [];
+      if (measurements.length > 0) base.measurements = measurements;
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
@@ -224,6 +231,20 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         }
         base.track = track;
         base.durationMs = track.durationMs;
+        if (track.start.ww != null && track.start.wc != null) {
+          base = withDisplaySnapshot(base, {
+            sliceIndex: track.start.sliceIndex,
+            ww: track.start.ww,
+            wc: track.start.wc,
+            sopInstanceUID: start?.sopInstanceUID,
+          });
+        }
+      }
+
+      const active = series[activeSeriesIndex];
+      if (active && active.seriesInstanceUID !== BUNDLED_CASE_SERIES[0]?.seriesInstanceUID) {
+        base.seriesInstanceUID = active.seriesInstanceUID;
+        base.studyInstanceUID = active.studyInstanceUID;
       }
 
       await onCreate(base);

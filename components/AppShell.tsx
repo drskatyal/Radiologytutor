@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   Activity,
-  LayoutDashboard,
+  GraduationCap,
+  Home,
   LayoutGrid,
+  LogIn,
   PenLine,
   Radio,
   ShieldCheck,
@@ -14,7 +17,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "./ui/cn";
-import { ToastProvider } from "./ui";
+import { Button, Skeleton, ToastProvider } from "./ui";
+import { SignOutButton } from "./auth/AuthButtons";
+import type { MembershipRole, PlatformRole } from "@/lib/types";
 
 interface NavItem {
   href: string;
@@ -28,59 +33,97 @@ interface NavGroup {
   items: NavItem[];
 }
 
-/**
- * Information architecture — the spine is Home -> Learn (Library) / Teach
- * (Studio) -> Manage (Console), plus a clearly-labelled developer area for
- * internal spikes. One item per intent, so there's exactly one "home" for
- * teaching (Studio) instead of two competing surfaces.
- */
-const NAV: NavGroup[] = [
-  {
-    items: [{ href: "/", label: "Home", icon: LayoutDashboard }],
-  },
-  {
-    label: "Learn",
-    items: [{ href: "/library", label: "Library", icon: LayoutGrid }],
-  },
-  {
-    label: "Teach",
-    items: [{ href: "/studio", label: "Studio", icon: PenLine }],
-  },
-  {
-    label: "Manage",
-    items: [{ href: "/admin", label: "Console", icon: ShieldCheck }],
-  },
-  {
-    label: "Developer",
-    items: [
-      { href: "/record", label: "Record lab", icon: Radio },
-      { href: "/cornerstone", label: "Viewer lab", icon: ScanLine },
-    ],
-  },
-];
+type MeUser = {
+  name?: string | null;
+  email?: string;
+  membershipRole?: MembershipRole | null;
+  platformRole?: PlatformRole | null;
+};
 
-/** Flattened list, used for the compact mobile bar. */
-const FLAT_NAV: NavItem[] = NAV.flatMap((g) => g.items);
-
-function isActive(pathname: string, href: string): boolean {
-  if (href === "/") return pathname === "/";
-  return pathname === href || pathname.startsWith(`${href}/`);
+function canSeeTeachNav(me: MeUser | null): boolean {
+  if (!me) return false;
+  if (me.platformRole === "super_admin") return true;
+  const role = me.membershipRole;
+  return role === "author" || role === "admin" || role === "owner";
 }
 
-/** FlowRad brand mark — a clinical "scan reticle" glyph paired with the wordmark. */
-function BrandMark({ className }: { className?: string }) {
+function canSeeAdminNav(me: MeUser | null): boolean {
+  if (!me) return false;
+  if (me.platformRole === "super_admin") return true;
+  const role = me.membershipRole;
+  return role === "admin" || role === "owner";
+}
+
+/**
+ * Marketplace IA — Home, Learn (library + courses), Teach (Studio), Manage (Admin).
+ * Developer labs only ship in development. Sign-in lives in the sidebar footer.
+ */
+function navGroups(showDeveloper: boolean, me: MeUser | null): NavGroup[] {
+  const groups: NavGroup[] = [
+    {
+      items: [{ href: "/", label: "Home", icon: Home }],
+    },
+    {
+      label: "Learn",
+      items: [
+        { href: "/library", label: "Library", icon: LayoutGrid },
+        { href: "/learning", label: "My learning", icon: GraduationCap },
+        { href: "/library#courses", label: "Courses", icon: GraduationCap },
+      ],
+    },
+  ];
+  if (canSeeTeachNav(me)) {
+    groups.push({
+      label: "Teach",
+      items: [{ href: "/studio", label: "Studio", icon: PenLine }],
+    });
+  }
+  if (canSeeAdminNav(me)) {
+    groups.push({
+      label: "Manage",
+      items: [{ href: "/admin", label: "Admin", icon: ShieldCheck }],
+    });
+  }
+  if (showDeveloper) {
+    groups.push({
+      label: "Developer",
+      items: [
+        { href: "/record", label: "Record lab", icon: Radio },
+        { href: "/cornerstone", label: "Viewer lab", icon: ScanLine },
+      ],
+    });
+  }
+  return groups;
+}
+
+function isActive(pathname: string, href: string): boolean {
+  const path = href.split("#")[0] || "/";
+  if (path === "/") return pathname === "/";
+  // Hash jump-links (e.g. Courses → /library#courses) should not steal the
+  // Library item's active state.
+  if (href.includes("#")) return false;
+  return pathname === path || pathname.startsWith(`${path}/`);
+}
+
+/** FlowRad brand mark — quiet reticle tile, no neon sheen. */
+export function BrandMark({
+  className,
+  size = "md",
+}: {
+  className?: string;
+  size?: "md" | "lg";
+}) {
+  const box = size === "lg" ? "h-12 w-12" : "h-8 w-8";
+  const icon = size === "lg" ? "h-6 w-6" : "h-4 w-4";
   return (
     <span
       className={cn(
-        "relative flex h-8 w-8 items-center justify-center rounded-lg bg-accent-sheen text-accent-foreground shadow-md",
+        "relative flex items-center justify-center rounded-md border border-strong bg-elevated text-accent",
+        box,
         className
       )}
     >
-      <Activity className="h-4 w-4" strokeWidth={2.4} />
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-inset ring-white/20"
-      />
+      <Activity className={icon} strokeWidth={2.2} />
     </span>
   );
 }
@@ -88,7 +131,8 @@ function BrandMark({ className }: { className?: string }) {
 function Wordmark() {
   return (
     <span className="font-display text-[15px] font-semibold tracking-tight text-primary">
-      FlowRad <span className="text-accent">Learn</span>
+      FlowRad{" "}
+      <span className="font-normal text-secondary">Learn</span>
     </span>
   );
 }
@@ -139,13 +183,95 @@ function NavRow({
   );
 }
 
+function AuthNav({ me, loading }: { me: MeUser | null; loading: boolean }) {
+  if (loading) {
+    return <Skeleton className="h-9 w-full rounded-lg" />;
+  }
+
+  if (!me?.email) {
+    return (
+      <Link href="/sign-in" className="block">
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-full"
+          leadingIcon={<LogIn className="h-4 w-4" aria-hidden="true" />}
+        >
+          Sign in
+        </Button>
+      </Link>
+    );
+  }
+
+  const displayName = me.name || me.email;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Link
+        href="/dashboard"
+        className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-overlay/60 focus-visible:outline-none"
+      >
+        <span className="flex h-8 w-8 items-center justify-center rounded-md bg-elevated font-display text-xs font-semibold text-secondary ring-1 ring-inset ring-subtle">
+          {displayName.slice(0, 1).toUpperCase()}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium text-primary">{displayName}</span>
+          <span className="block text-xs text-muted">Your home</span>
+        </span>
+      </Link>
+      <SignOutButton className="h-8 w-full justify-start px-2 text-xs" />
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  const [me, setMe] = useState<MeUser | null>(null);
+  const [meLoading, setMeLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/me")
+      .then(async (r) => {
+        if (!r.ok) return null;
+        return r.json() as Promise<{ user?: MeUser | null }>;
+      })
+      .then((data) => {
+        if (!alive) return;
+        const user = data?.user;
+        setMe(user?.email ? user : null);
+      })
+      .catch(() => {
+        if (alive) setMe(null);
+      })
+      .finally(() => {
+        if (alive) setMeLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Student case = reading room. Hide product chrome so the DICOM is the
+  // composition. The session HUD carries back-to-library itself.
+  const readingRoom = pathname.startsWith("/case/");
+  const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
+  const hideChrome = readingRoom || authScreen;
+  const showDeveloper = process.env.NODE_ENV === "development";
+  const nav = useMemo(() => navGroups(showDeveloper, me), [showDeveloper, me]);
+  const mobileNav = useMemo(
+    () =>
+      nav
+        .filter((g) => g.label !== "Developer")
+        .flatMap((g) => g.items)
+        .filter((i) => !i.href.includes("#")),
+    [nav]
+  );
 
   return (
     <ToastProvider>
-      <div className="flex min-h-screen bg-canvas">
-        {/* Sidebar */}
+      <div className={cn("flex min-h-screen bg-canvas", readingRoom && "bg-imaging")}>
+        {!hideChrome && (
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-subtle bg-surface/80 backdrop-blur md:flex">
           <Link
             href="/"
@@ -156,7 +282,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
 
           <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
-            {NAV.map((group, gi) => (
+            {nav.map((group, gi) => (
               <div key={group.label ?? `group-${gi}`} className="flex flex-col gap-0.5">
                 {group.label && (
                   <p className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
@@ -174,26 +300,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ))}
           </nav>
 
-          <div className="border-t border-subtle px-5 py-4">
-            <div className="flex items-center gap-2 text-xs text-muted">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success/70 opacity-70" />
-                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
-              </span>
-              Radiology teaching platform
-            </div>
+          <div className="border-t border-subtle px-3 py-4">
+            <AuthNav me={me} loading={meLoading} />
           </div>
         </aside>
+        )}
 
-        {/* Mobile top bar */}
+        {/* Mobile top bar — hidden in the reading room so imaging is full-bleed. */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {!hideChrome && (
           <header className="sticky top-0 z-30 flex items-center gap-4 border-b border-subtle bg-surface/85 px-4 py-3 backdrop-blur md:hidden">
             <Link href="/" className="flex items-center gap-2">
               <BrandMark />
               <Wordmark />
             </Link>
-            <nav className="ml-auto flex gap-1">
-              {FLAT_NAV.map((item) => {
+            <nav className="ml-auto flex items-center gap-1">
+              {mobileNav.map((item) => {
                 const active = isActive(pathname, item.href);
                 const Icon = item.icon;
                 return (
@@ -213,8 +335,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </Link>
                 );
               })}
+              <Link
+                href="/sign-in"
+                aria-label="Sign in"
+                className="flex h-9 w-9 items-center justify-center rounded-md text-secondary transition-colors hover:bg-overlay hover:text-primary"
+              >
+                <LogIn className="h-[18px] w-[18px]" strokeWidth={2} />
+              </Link>
             </nav>
           </header>
+          )}
 
           <main className="min-w-0 flex-1">{children}</main>
         </div>
@@ -251,15 +381,10 @@ export function PageHeader({
   return (
     <div
       className={cn(
-        "relative border-b border-subtle bg-surface/40 backdrop-blur-sm",
+        "relative border-b border-subtle bg-surface/50",
         className
       )}
     >
-      {/* Faint accent seam along the bottom edge — subtle, premium framing. */}
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-accent/25 to-transparent"
-      />
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-7 sm:px-8">
         {breadcrumbs && (
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">

@@ -12,6 +12,7 @@
 
 import { buildViewerUrl, type ChromeOptions } from "./pacsbinUrl";
 import type { Finding, Keyframe, Marker, PacsbinViewport, ViewerState } from "./types";
+import { authoredDisplayState } from "./findingDisplayState";
 
 export type ApplyUrl = (url: string) => void;
 
@@ -95,6 +96,8 @@ export async function playKeyframes(
 
 /** A normalized, viewer-agnostic view the Cornerstone viewport can apply. */
 export interface CornerstoneViewerState {
+  /** Absolute 0-based stack index. Takes precedence over sliceFraction. */
+  sliceIndex?: number;
   /** Slice to show, as a fraction [0,1] of the stack (resolved to an index by
    *  the viewer, which knows the actual image count). Absent = keep current. */
   sliceFraction?: number;
@@ -150,17 +153,35 @@ export function viewportToCornerstoneState(
  * a default (e.g. spread the finding across the stack by its tour order).
  */
 export async function findingViewerState(
-  finding: Pick<Finding, "state">,
+  finding: Pick<
+    Finding,
+    "state" | "sliceIndex" | "windowWidth" | "windowCenter" | "sopInstanceUID"
+  >,
   sliceFraction?: number
 ): Promise<CornerstoneViewerState | null> {
-  if (!finding.state) return null;
-  try {
-    const { decodeState } = await import("./pacsbinUrl");
-    const decoded = await decodeState(finding.state);
-    return viewportToCornerstoneState(primaryViewport(decoded), sliceFraction);
-  } catch {
-    return null;
+  let fromPacsbin: CornerstoneViewerState | null = null;
+  if (finding.state?.trim()) {
+    try {
+      const { decodeState } = await import("./pacsbinUrl");
+      const decoded = await decodeState(finding.state);
+      fromPacsbin = viewportToCornerstoneState(
+        primaryViewport(decoded),
+        sliceFraction
+      );
+    } catch {
+      fromPacsbin = null;
+    }
   }
+
+  const merged = authoredDisplayState(finding, fromPacsbin, sliceFraction);
+  const hasAnything =
+    merged.sliceIndex != null ||
+    merged.sliceFraction != null ||
+    merged.windowWidth != null ||
+    merged.windowCenter != null ||
+    merged.zoom != null ||
+    merged.pan != null;
+  return hasAnything ? merged : null;
 }
 
 /** Linear interpolation. */

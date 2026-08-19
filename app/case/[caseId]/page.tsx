@@ -1,17 +1,10 @@
-// Student teaching session — /case/[caseId].
-//
-// Server component: resolves the case (tenant-scoped), builds the prefetch
-// manifest, and picks the DICOM source for our self-hosted Cornerstone viewer.
-// When the case's imaging resolves from Orthanc we render its first finding's
-// series via the same-origin /api/dicomweb (wadors) proxy; otherwise we fall
-// back to the bundled offline sample so the viewer always renders (never blank).
-
 import { notFound } from "next/navigation";
-import { getCaseForOrg, DEFAULT_ORG_ID } from "@/lib/cases";
+import { activeOrgId, getSession } from "@/lib/auth";
+import { canAccessOrgResource } from "@/lib/authRoles";
+import { getAuthor, getCaseForOrg } from "@/lib/cases";
 import {
   buildPrefetchManifest,
   resolveCaseSeries,
-  type PrefetchManifest,
 } from "@/lib/prefetch";
 import {
   BUNDLED_CASE,
@@ -21,39 +14,69 @@ import {
   type ViewerSource,
 } from "@/lib/viewerSource";
 import StudentSession from "@/components/student/StudentSession";
+import { RecordCaseOpen } from "@/components/learning/RecordCaseOpen";
 
 export const dynamic = "force-dynamic";
 
 /** WADO-RS root served by our same-origin proxy (creds/CORS handled server-side). */
 const WADO_RS_ROOT = "/api/dicomweb";
 
-export default async function CasePage({ params }: { params: { caseId: string } }) {
-  const caseData = await getCaseForOrg(DEFAULT_ORG_ID, params.caseId);
+export default async function CasePage({
+  params,
+  searchParams,
+}: {
+  params: { caseId: string };
+  searchParams?: { course?: string };
+}) {
+  const orgId = await activeOrgId();
+  const caseData = await getCaseForOrg(orgId, params.caseId);
   if (!caseData) notFound();
 
-  const manifest = await buildPrefetchManifest(params.caseId, DEFAULT_ORG_ID);
+  // Drafts: authors/admins only. Published cases are open for learning.
+  if (caseData.status !== "published") {
+    const session = await getSession();
+    const canAuthor = session
+      ? canAccessOrgResource({
+          platformRole: session.user.platformRole,
+          membershipRole: session.user.membershipRole,
+          need: "author",
+        })
+      : false;
+    if (!canAuthor) notFound();
+  }
 
-  // Resolve the case's full series rail from Orthanc (via the study). Falls back
-  // to the bundled single-series sample so the session always renders the
-  // navigator + viewer end to end, even with no imaging backend.
-  const resolved = await resolveCaseSeries(params.caseId, DEFAULT_ORG_ID, WADO_RS_ROOT);
+  const [manifest, resolved, author] = await Promise.all([
+    buildPrefetchManifest(params.caseId, orgId),
+    resolveCaseSeries(params.caseId, orgId, WADO_RS_ROOT),
+    caseData.authorId
+      ? getAuthor(orgId, caseData.authorId)
+      : Promise.resolve(null),
+  ]);
+
   const series: CaseSeries[] =
     resolved && resolved.length > 0 ? resolved : BUNDLED_CASE_SERIES;
-  // The first series in the rail is what the case opens on.
   const source: ViewerSource = series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE;
-
-  // True only when the case's OWN study resolved from Orthanc. When false we
-  // show a neutral sample image but suppress finding markers (they belong to
-  // the real study, not the sample) and flag it honestly.
   const imagingResolved = !!resolved && resolved.length > 0;
+  const courseId = searchParams?.course?.trim() || null;
+  const tutorVoice =
+    author?.voice?.status === "ready" && author.voice.voiceId
+      ? { authorName: author.name, cloned: true as const }
+      : author
+        ? { authorName: author.name, cloned: false as const }
+        : null;
 
   return (
-    <StudentSession
-      caseData={caseData}
-      source={source}
-      series={series}
-      manifest={manifest}
-      imagingResolved={imagingResolved}
-    />
+    <>
+      <RecordCaseOpen courseId={courseId} caseId={params.caseId} />
+      <StudentSession
+        caseData={caseData}
+        source={source}
+        series={series}
+        manifest={manifest}
+        imagingResolved={imagingResolved}
+        tutorVoice={tutorVoice}
+        courseId={courseId}
+      />
+    </>
   );
 }

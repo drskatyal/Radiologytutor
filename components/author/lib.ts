@@ -2,10 +2,34 @@
 // calls the author UI makes. Every write goes through these so the page and
 // cards share one code path (optimistic update + toast happen at the call site).
 
-import type { CaseData, Finding, StructuredFinding } from "@/lib/types";
+import type {
+  CaptureSession,
+  CaseData,
+  Finding,
+  Marker,
+  RecordedTrack,
+  StructuredFinding,
+  StructuredSession,
+} from "@/lib/types";
 
 /** The structured (text) slice of a finding the author edits. */
 export type FindingDraft = StructuredFinding;
+
+/**
+ * Prefer the author's last recorded cursor as the teaching marker when they
+ * captured a walk-through but didn't click-to-annotate. Returns null if the
+ * track has no cursor samples.
+ */
+export function markerFromTrack(track: RecordedTrack | null | undefined): Marker | null {
+  if (!track?.events?.length) return null;
+  for (let i = track.events.length - 1; i >= 0; i--) {
+    const e = track.events[i];
+    if (e.type === "cursor") {
+      return { x_pct: e.x, y_pct: e.y, shape: "circle" };
+    }
+  }
+  return null;
+}
 
 /** Pull the editable structured fields out of a finding. */
 export function toDraft(f: Finding): FindingDraft {
@@ -126,6 +150,19 @@ export async function addFinding(
   return jsonOrThrow(res);
 }
 
+/** Persist a continuous-capture demonstration (parent track + transcript). */
+export async function saveCaptureSession(
+  caseId: string,
+  session: CaptureSession
+): Promise<CaseData> {
+  const res = await fetch(`/api/cases/${caseId}/capture-sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(session),
+  });
+  return jsonOrThrow(res);
+}
+
 /** Persist a new teaching order. Returns the updated case. */
 export async function reorderFindings(
   caseId: string,
@@ -195,6 +232,32 @@ export async function structureFindingFromAudio(
 ): Promise<StructuredFinding | null> {
   try {
     return await structureRequest({ audioBase64: base64, audioMime: mime });
+  } catch (e) {
+    if (e instanceof AiUnavailableError) return null;
+    throw e;
+  }
+}
+
+/** Continuous take → transcript + ordered findings with time ranges. */
+export async function structureSession(input: {
+  audioBase64?: string;
+  audioMime?: string;
+  transcript?: string;
+  durationMs: number;
+  track?: RecordedTrack;
+}): Promise<StructuredSession | null> {
+  try {
+    const res = await fetch("/api/structure-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (looksLikeMissingKey(res.status, data?.error)) throw new AiUnavailableError();
+      throw new Error(data?.error || "Failed to structure session");
+    }
+    return data as StructuredSession;
   } catch (e) {
     if (e instanceof AiUnavailableError) return null;
     throw e;

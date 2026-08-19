@@ -8,8 +8,10 @@
 // SeriesNavigator the student sees (the student page resolves this server-side).
 
 import { NextRequest, NextResponse } from "next/server";
+import { activeOrgId, getSession } from "@/lib/auth";
+import { canAccessOrgResource } from "@/lib/authRoles";
+import { getCaseForOrg } from "@/lib/cases";
 import { resolveCaseSeries } from "@/lib/prefetch";
-import { DEFAULT_ORG_ID } from "@/lib/cases";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,8 +19,27 @@ export const dynamic = "force-dynamic";
 const WADO_RS_ROOT = "/api/dicomweb";
 
 export async function GET(_req: NextRequest, { params }: { params: { caseId: string } }) {
-  // orgId is a seam — derived from the (stubbed) session for now.
-  const series = await resolveCaseSeries(params.caseId, DEFAULT_ORG_ID, WADO_RS_ROOT);
+  const orgId = await activeOrgId();
+  const c = await getCaseForOrg(orgId, params.caseId);
+  if (!c) {
+    return NextResponse.json({ error: "Case not found" }, { status: 404 });
+  }
+
+  if (c.status !== "published") {
+    const session = await getSession();
+    const canSeeDraft =
+      session &&
+      canAccessOrgResource({
+        platformRole: session.user.platformRole,
+        membershipRole: session.user.membershipRole,
+        need: "author",
+      });
+    if (!canSeeDraft) {
+      return NextResponse.json({ error: "Case not found" }, { status: 404 });
+    }
+  }
+
+  const series = await resolveCaseSeries(params.caseId, orgId, WADO_RS_ROOT);
   return NextResponse.json({
     series: series ?? [],
     hasImaging: !!series && series.length > 0,

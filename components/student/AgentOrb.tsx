@@ -25,20 +25,20 @@ export type OrbState =
   | "speaking";
 
 const SIZES = {
-  // Docked over the viewer — compact but unmistakable.
-  sm: { box: "h-14 w-14", core: "h-7 w-7", orbit: 26 },
-  // Expanded into the tutor panel header — the hero.
-  lg: { box: "h-24 w-24", core: "h-12 w-12", orbit: 46 },
+  // Dock — compact, readable, no oversized glow.
+  sm: { box: "h-11 w-11", core: "h-6 w-6", orbit: 20 },
+  // Rail header.
+  lg: { box: "h-16 w-16", core: "h-9 w-9", orbit: 32 },
 } as const;
 
 // Accent-derived halo per state. Listening borrows the danger/record hue so it
 // reads as "live mic"; everything else stays on the single clinical accent.
 const HALO: Record<OrbState, string> = {
-  idle: "from-accent/25 via-accent/10 to-transparent",
-  listening: "from-danger/35 via-danger/15 to-transparent",
-  thinking: "from-accent/35 via-info/15 to-transparent",
-  searching: "from-info/35 via-accent/15 to-transparent",
-  speaking: "from-accent/40 via-accent/15 to-transparent",
+  idle: "from-accent/15 via-transparent to-transparent",
+  listening: "from-danger/25 via-transparent to-transparent",
+  thinking: "from-accent/20 via-transparent to-transparent",
+  searching: "from-info/25 via-transparent to-transparent",
+  speaking: "from-accent/25 via-transparent to-transparent",
 };
 
 const STATE_LABEL: Record<OrbState, string> = {
@@ -76,10 +76,10 @@ export function AgentOrb({ state, level = 0, size = "lg", className }: AgentOrbP
       {/* Soft radial halo — breathes by default, intensifies per state. */}
       <span
         className={cn(
-          "pointer-events-none absolute inset-[-30%] rounded-full blur-xl transition-opacity duration-500",
+          "pointer-events-none absolute inset-[-12%] rounded-full blur-md transition-opacity duration-500",
           "bg-[radial-gradient(circle_at_center,var(--tw-gradient-stops))]",
           HALO[state],
-          state === "idle" ? "animate-pulse opacity-70" : "opacity-100"
+          state === "idle" ? "opacity-40" : "opacity-65"
         )}
         aria-hidden="true"
       />
@@ -116,7 +116,7 @@ export function AgentOrb({ state, level = 0, size = "lg", className }: AgentOrbP
           {[0, 1, 2].map((i) => (
             <span
               key={i}
-              className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-info shadow-[0_0_8px_rgb(var(--info))]"
+              className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-info"
               // Three dots evenly spaced on the orbit — angle is a dynamic value.
               style={{ transform: `rotate(${i * 120}deg) translateY(-${sz.orbit}px)` }}
             />
@@ -140,9 +140,9 @@ export function AgentOrb({ state, level = 0, size = "lg", className }: AgentOrbP
         ) : (
           <span
             className={cn(
-              "rounded-full bg-accent shadow-[0_0_12px_rgb(var(--accent))]",
+              "rounded-full bg-accent",
               large ? "h-3 w-3" : "h-2 w-2",
-              (state === "thinking" || state === "searching") && "animate-marker-pulse"
+              (state === "thinking" || state === "searching") && "animate-pulse"
             )}
           />
         )}

@@ -1,17 +1,24 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import {
-  DEFAULT_ORG_ID,
+  getCourse,
+  listAuthors,
   listCatalogCases,
   getCatalogFacets,
-  listAuthors,
   listCourses,
   listPlaylists,
+  listEnrollmentsForUser,
+  listProgressForUser,
 } from "@/lib/cases";
-import { Breadcrumbs, PageContainer, Skeleton } from "@/components/ui";
+import { activeOrgId, getSession } from "@/lib/auth";
+import { Breadcrumbs, Button, PageContainer, Skeleton } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { Catalog } from "@/components/catalog/Catalog";
+import { MyLearning } from "@/components/catalog/MyLearning";
 import type { CatalogResponse } from "@/components/catalog/types";
+import type { MyLearningCourse } from "@/components/catalog/MyLearning";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
+import { DashboardError } from "@/components/home/DashboardError";
 
 export const dynamic = "force-dynamic";
 
@@ -19,32 +26,86 @@ export const metadata = {
   title: "Library · FlowRad Learn",
 };
 
-/** The Learn surface — the full filterable case catalog (moved from `/`). */
+/** The Learn catalog — courses, teachers, and cases, one click apart. */
 export default async function LibraryPage() {
-  const [cases, facets, authors, courses, playlists] = await Promise.all([
-    listCatalogCases(DEFAULT_ORG_ID, { status: "published" }),
-    getCatalogFacets(DEFAULT_ORG_ID),
-    listAuthors(DEFAULT_ORG_ID),
-    listCourses(DEFAULT_ORG_ID, { status: "published" }),
-    listPlaylists(DEFAULT_ORG_ID),
-  ]);
+  const orgId = await activeOrgId();
+  let initial: CatalogResponse | null = null;
+  let loadError: string | null = null;
+  let enrolledCourses: MyLearningCourse[] = [];
 
-  const initial: CatalogResponse = { cases, facets, authors, courses, playlists };
+  try {
+    const session = await getSession();
+    const [cases, facets, authors, courses, playlists] = await Promise.all([
+      listCatalogCases(orgId, { status: "published" }),
+      getCatalogFacets(orgId),
+      listAuthors(orgId),
+      listCourses(orgId, { status: "published" }),
+      listPlaylists(orgId),
+    ]);
+    initial = { cases, facets, authors, courses, playlists };
+
+    if (session) {
+      const [enrollments, progressList] = await Promise.all([
+        listEnrollmentsForUser(session.user.id),
+        listProgressForUser(session.user.id),
+      ]);
+      const active = enrollments.filter((e) => e.status === "active" && e.orgId === orgId);
+      const progressByCourse = new Map(progressList.map((p) => [p.courseId, p]));
+      const resolved = await Promise.all(active.map((e) => getCourse(orgId, e.courseId)));
+      enrolledCourses = resolved
+        .filter((c): c is NonNullable<typeof c> => Boolean(c))
+        .map((course) => ({
+          ...course,
+          percentComplete: progressByCourse.get(course.id)?.percentComplete,
+        }));
+    }
+  } catch (e) {
+    loadError = e instanceof Error ? e.message : "Something went wrong.";
+  }
 
   return (
     <>
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Library" }]} />}
         title="Library"
-        description="Every published teaching case, filterable by system, difficulty and author."
+        description="Courses, teachers, and narrated DICOM cases — pick a rail or filter the full catalog."
+        actions={
+          <div className="flex flex-wrap gap-2">
+            <Link href="/learning">
+              <Button size="sm" variant="secondary">
+                My learning
+              </Button>
+            </Link>
+            <Link href="/library#courses">
+              <Button size="sm" variant="secondary">
+                Courses
+              </Button>
+            </Link>
+            <Link href="/library#teachers">
+              <Button size="sm" variant="secondary">
+                Teachers
+              </Button>
+            </Link>
+            <Link href="/library#cases">
+              <Button size="sm" variant="secondary">
+                Cases
+              </Button>
+            </Link>
+          </div>
+        }
       />
-      <PageContainer>
-        <Suspense fallback={<Skeleton className="h-64 w-full" />}>
-          <Catalog initial={initial} />
-        </Suspense>
-      </PageContainer>
+      {loadError || !initial ? (
+        <DashboardError title="Couldn't load the library" message={loadError ?? "Something went wrong."} />
+      ) : (
+        <PageContainer>
+          <MyLearning courses={enrolledCourses} />
+          <Suspense fallback={<Skeleton className="h-64 w-full" />}>
+            <Catalog initial={initial} />
+          </Suspense>
+        </PageContainer>
+      )}
 
-      <CasesPrefetcher caseIds={cases.map((c) => c.caseId)} />
+      {initial && <CasesPrefetcher caseIds={initial.cases.map((c) => c.caseId)} />}
     </>
   );
 }

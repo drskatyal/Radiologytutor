@@ -7,9 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test lib/*.test.ts"
+    "test": "tsx --test lib/*.test.ts lib/harness/*.test.ts",
+    "test:access": "node scripts/access-harness.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1112.0",
+    "@aws-sdk/s3-request-presigner": "^3.1112.0",
     "@cornerstonejs/core": "^5.0.10",
     "@cornerstonejs/dicom-image-loader": "^5.0.10",
     "@cornerstonejs/tools": "^5.0.10",
@@ -21,6 +24,7 @@
     "@radix-ui/react-toast": "^1.2.17",
     "@radix-ui/react-tooltip": "^1.2.10",
     "adm-zip": "^0.5.17",
+    "better-auth": "^1.7.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dicom-parser": "^1.8.21",

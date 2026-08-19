@@ -1,18 +1,7 @@
 "use client";
 
-// The lesson spine of the student session: each finding rendered as an elegant,
-// expandable CARD. Collapsed, a card is a scannable line — its number, label,
-// a one-line teaser, the series/modality it's anchored to, and a Play control.
-// Expanded, it becomes the tutor's teaching note: a lead description followed by
-// bulleted pearls, calibrated in length (long notes truncate behind "Read more"
-// so a card never becomes a wall of text).
-//
-// This component only reports INTENT — clicking a card or its Play control asks
-// the parent (useStudentSession) to reveal the finding, which switches to the
-// finding's anchored series and either retraces the recorded narration track
-// (with audio) or animates the viewer to its static view. The active finding is
-// highlighted and auto-expanded; the agent orb + voice Q&A live alongside (the
-// "Ask" tab) so the cards stay the spine and questions never lose your place.
+// The lesson spine: findings as cards. Play seats the viewer on that finding
+// so the AI tutor can teach it — capture tracks arm the model; they are not a tape.
 
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -51,6 +40,8 @@ export function FindingCards({
   busy,
   ready,
   onSelect,
+  examMode = false,
+  revealedIds = [],
 }: {
   findings: Finding[];
   /** The case's series rail — used to label each card's anchored series. */
@@ -59,14 +50,17 @@ export function FindingCards({
   caseModality: string;
   /** Index of the finding currently revealed in the viewer, or -1. */
   activeIndex: number;
-  /** True while the active finding's recorded track is retracing (with audio). */
+  /** True while the active finding is being driven (laser / transition). */
   replaying: boolean;
   /** Viewer is mid-transition / a call is in flight — cards report intent only. */
   busy: boolean;
   /** Viewer is ready to be driven. */
   ready: boolean;
-  /** Ask the parent to reveal a finding (switch series + replay/animate). */
+  /** Ask the parent to seat a finding in the viewer. */
   onSelect: (index: number) => void;
+  /** Oral exam: hide labels until the examiner has shown that finding. */
+  examMode?: boolean;
+  revealedIds?: string[];
 }) {
   // Which card the student has manually expanded; the active card is always
   // expanded implicitly (see `expanded` below).
@@ -104,7 +98,7 @@ export function FindingCards({
           </Badge>
           <span className="inline-flex items-center gap-1.5 text-xs text-muted">
             <Sparkles className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
-            Guided lesson
+            {examMode ? "Oral exam" : "Guided lesson"}
           </span>
         </div>
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
@@ -127,13 +121,14 @@ export function FindingCards({
           const hasAudio = !!finding.track?.audioUrl;
           const playing = active && replaying;
 
+          const spoiler = examMode && !revealedIds.includes(finding.id);
           return (
             <li key={finding.id}>
               <FindingCard
                 index={i}
                 finding={finding}
                 active={active}
-                expanded={expanded}
+                expanded={spoiler ? false : expanded}
                 playing={playing}
                 hasAudio={hasAudio}
                 modality={anchored?.modality || caseModality}
@@ -142,11 +137,16 @@ export function FindingCards({
                   (anchored?.seriesNumber != null ? `Series ${anchored.seriesNumber}` : undefined)
                 }
                 disabled={busy || !ready}
-                onToggle={() =>
-                  setOpenId((cur) => (cur === finding.id ? null : finding.id))
-                }
+                onToggle={() => {
+                  if (spoiler) {
+                    onSelect(i);
+                    return;
+                  }
+                  setOpenId((cur) => (cur === finding.id ? null : finding.id));
+                }}
                 onPlay={() => onSelect(i)}
-                teaser={teaserOf(finding)}
+                teaser={spoiler ? "Answer first — label hidden until revealed." : teaserOf(finding)}
+                spoiler={spoiler}
               />
             </li>
           );
@@ -167,6 +167,7 @@ function FindingCard({
   seriesLabel,
   disabled,
   teaser,
+  spoiler = false,
   onToggle,
   onPlay,
 }: {
@@ -180,6 +181,7 @@ function FindingCard({
   seriesLabel?: string;
   disabled: boolean;
   teaser: string;
+  spoiler?: boolean;
   onToggle: () => void;
   onPlay: () => void;
 }) {
@@ -225,7 +227,7 @@ function FindingCard({
                 active ? "text-primary" : "text-secondary group-hover:text-primary"
               )}
             >
-              {finding.label}
+              {spoiler ? `Finding ${index + 1}` : finding.label}
             </span>
             <ChevronDown
               className={cn(
@@ -261,7 +263,7 @@ function FindingCard({
           hasAudio={hasAudio}
           disabled={disabled}
           onClick={onPlay}
-          label={finding.label}
+          label={spoiler ? `Finding ${index + 1}` : finding.label}
         />
       </div>
 
@@ -284,9 +286,7 @@ function FindingCard({
   );
 }
 
-// The Play/Pause affordance. When the finding has recorded narration we frame it
-// as "Play retrace"; otherwise it animates the viewer to the static view. While
-// the active finding's track is retracing it shows a Pause/stop state.
+// Show-in-viewer control — seats the finding so the tutor can teach it.
 function PlayControl({
   playing,
   hasAudio,
@@ -306,14 +306,10 @@ function PlayControl({
       onClick={onClick}
       disabled={disabled}
       aria-label={
-        playing
-          ? `Stop ${label} replay`
-          : hasAudio
-            ? `Play narrated retrace for ${label}`
-            : `Show ${label} in the viewer`
+        playing ? `Stop driving to ${label}` : `Show ${label} in the viewer`
       }
       className={cn(
-        "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition-colors",
+        "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
         "disabled:cursor-not-allowed disabled:opacity-40",
         playing

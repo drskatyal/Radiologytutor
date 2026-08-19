@@ -5,11 +5,15 @@
 // demo and the author capture flow. The viewer is dynamically imported
 // (ssr:false — WebGL/DOM/workers); a skeleton covers it until ready.
 //
+// Two authoring modes share this stage:
+//   1. Annotate — click the finding → popover (parent) for mic dictation.
+//   2. Record walk-through — Alt+X / Record captures cursor + viewer events.
+//
 // Cursor capture: while recording we track normalized pointer position over the
 // imaging surface so replay can retrace the teacher's laser pointer.
 
 import dynamic from "next/dynamic";
-import { useRef, type MutableRefObject } from "react";
+import { useRef, type MutableRefObject, type ReactNode } from "react";
 import { Badge, Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
@@ -40,6 +44,9 @@ export function RecordStage({
   onReady,
   onEvent,
   onCursor,
+  annotateMode = false,
+  onAnnotateClick,
+  annotateSlot,
 }: {
   source: ViewerSource;
   /** Multi-series rail; when >1 entry a navigator renders beside the viewer. */
@@ -59,20 +66,41 @@ export function RecordStage({
   onReady: (c: CornerstoneControls) => void;
   onEvent: (e: ViewerEvent) => void;
   onCursor: (x: number, y: number) => void;
+  /**
+   * When true (and not recording/replaying), a transparent hit layer captures
+   * clicks on the imaging square and reports normalized [0,1] coords.
+   */
+  annotateMode?: boolean;
+  onAnnotateClick?: (x: number, y: number) => void;
+  /** Rendered inside the imaging overlay (e.g. AnnotatePopover). */
+  annotateSlot?: ReactNode;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const showNavigator = (series?.length ?? 0) > 1 || !!seriesLoading;
+  const clickToAnnotate =
+    annotateMode && phase === "idle" && !!onAnnotateClick && ready;
 
-  const handleMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (phase !== "recording") return;
+  const normFromEvent = (e: React.PointerEvent | React.MouseEvent) => {
     const el = stageRef.current;
-    if (!el) return;
+    if (!el) return null;
     const r = el.getBoundingClientRect();
-    // The imaging surface is the top square of the stage (side = width).
     const side = r.width;
     const x = (e.clientX - r.left) / side;
     const y = (e.clientY - r.top) / side;
-    if (x >= 0 && x <= 1 && y >= 0 && y <= 1) onCursor(x, y);
+    if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+    return { x, y };
+  };
+
+  const handleMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (phase !== "recording") return;
+    const p = normFromEvent(e);
+    if (p) onCursor(p.x, p.y);
+  };
+
+  const handleAnnotateClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const p = normFromEvent(e);
+    if (!p) return;
+    onAnnotateClick?.(p.x, p.y);
   };
 
   const stage = (
@@ -97,6 +125,26 @@ export function RecordStage({
           (laser pointer + annotation draw-in) and the REC/REPLAY HUDs. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 aspect-square w-full">
         <ReplayOverlayMount overlay={overlay} active={phase === "replaying"} />
+
+        {/* Click-to-annotate hit layer — above imaging, below popover slot. */}
+        {clickToAnnotate && (
+          <button
+            type="button"
+            aria-label="Click on the finding to annotate"
+            className="pointer-events-auto absolute inset-0 z-20 cursor-crosshair bg-transparent"
+            onClick={handleAnnotateClick}
+          />
+        )}
+
+        {annotateSlot}
+
+        {clickToAnnotate && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex justify-center">
+            <span className="rounded-full border border-accent/40 bg-elevated/90 px-3 py-1.5 text-[11px] font-medium text-secondary shadow-md backdrop-blur">
+              Click the finding to place a marker and dictate
+            </span>
+          </div>
+        )}
 
         {/* REC HUD — top-right so it clears the toolbar. */}
         {phase === "recording" && (

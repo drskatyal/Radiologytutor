@@ -43,12 +43,33 @@ import type {
   Author,
   Course,
   Playlist,
+  Membership,
+  Enrollment,
+  Progress,
+  WishlistItem,
+  Review,
+  Certificate,
+  Assessment,
+  Attempt,
+  MembershipRole,
+  User,
+  UserRole,
   Difficulty,
   BodySystem,
   PatientSex,
   TargetLevel,
+  CaptureSession,
 } from "./types";
+import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
+import { deidAllowsPublish, type DeidReport } from "./deid";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+import { sortRelatedCourses } from "./relatedCourses";
+
+/** Persisted de-id report — keyed by studyInstanceUID. */
+export type StoredDeidReport = DeidReport & {
+  id: string;
+  orgId: string;
+};
 
 // ---------------------------------------------------------------------------
 // Tenancy
@@ -113,7 +134,18 @@ async function seedIfEmpty(): Promise<void> {
     // Each entity subdir seeds INDEPENDENTLY if it is empty — so a store that
     // predates a collection (e.g. an existing volume from before courses
     // existed) still gets that collection's seed data on next boot.
-    for (const sub of ["patients", "studies", "authors", "courses", "playlists"] as const) {
+    for (const sub of [
+      "patients",
+      "studies",
+      "authors",
+      "courses",
+      "playlists",
+      "users",
+      "memberships",
+      "enrollments",
+      "deidReports",
+      "assessments",
+    ] as const) {
       const dst = path.join(DATA_DIR, sub);
       await fs.mkdir(dst, { recursive: true });
       const existing = (await fs.readdir(dst)).filter((f) => f.endsWith(".json"));
@@ -140,7 +172,17 @@ type CollectionName =
   | "studies"
   | "authors"
   | "courses"
-  | "playlists";
+  | "playlists"
+  | "users"
+  | "memberships"
+  | "enrollments"
+  | "progress"
+  | "wishlist"
+  | "reviews"
+  | "certificates"
+  | "deidReports"
+  | "assessments"
+  | "attempts";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -280,6 +322,11 @@ async function seedMongoIfEmpty(): Promise<void> {
     "authors",
     "courses",
     "playlists",
+    "users",
+    "memberships",
+    "enrollments",
+    "deidReports",
+    "assessments",
   ] as const) {
     const count = await db.collection(name).estimatedDocumentCount();
     if (count > 0) continue;
@@ -366,6 +413,24 @@ const casesStore = collection<CaseStored>("cases");
 const authorsStore = collection<Author>("authors");
 const coursesStore = collection<Course>("courses");
 const playlistsStore = collection<Playlist>("playlists");
+const usersStore = collection<User>("users");
+const membershipsStore = collection<Membership>("memberships");
+const enrollmentsStore = collection<Enrollment>("enrollments");
+const progressStore = collection<Progress>("progress");
+const wishlistStore = collection<WishlistItem>("wishlist");
+const reviewsStore = collection<Review>("reviews");
+const certificatesStore = collection<Certificate>("certificates");
+const assessmentsStore = collection<Assessment>("assessments");
+const attemptsStore = collection<Attempt>("attempts");
+const deidReportsStore = collection<StoredDeidReport>("deidReports");
+
+/** Stable demo identities for JSON/dev (also copied from /seed). */
+export const DEMO_USER_ID = "user_demo";
+export const DEMO_TEACHER_USER_ID = "user_teacher";
+export const DEMO_USER_EMAIL = "demo@flowrad.local";
+export const DEMO_TEACHER_EMAIL = "teacher@flowrad.local";
+export const DEMO_STUDENT_USER_ID = "user_student";
+export const DEMO_STUDENT_EMAIL = "student@flowrad.local";
 
 function toStored(c: Case): CaseStored {
   return { ...c, id: c.caseId };
@@ -600,8 +665,56 @@ export async function updateCaseForOrg(
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return null;
   const updated: Case = { ...current, ...patch, caseId, orgId, updatedAt: nowIso() };
+  if (updated.status === "published" && current.status !== "published") {
+    await assertCasePublishable(updated);
+  }
   await casesStore.put(toStored(updated));
   return updated;
+}
+
+/** Throw if any referenced study lacks a passing DeidReport. */
+export async function assertCasePublishable(c: Case): Promise<void> {
+  const refs = c.studyRefs ?? [];
+  if (refs.length === 0) return;
+  const missing: string[] = [];
+  for (const ref of refs) {
+    const uid = ref.studyInstanceUID?.trim();
+    if (!uid) continue;
+    const report = await getDeidReport(uid);
+    if (!deidAllowsPublish(report)) missing.push(uid);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Cannot publish: ${missing.length} study(ies) lack a passing de-id report. ` +
+        `Re-upload through /api/upload (header gate) or resolve de-id first. ` +
+        `UIDs: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`
+    );
+  }
+}
+
+/** Upsert a de-id report keyed by StudyInstanceUID. */
+export async function upsertDeidReport(
+  orgId: string,
+  report: DeidReport & { studyInstanceUID: string }
+): Promise<StoredDeidReport> {
+  const studyInstanceUID = report.studyInstanceUID.trim();
+  const stored: StoredDeidReport = {
+    ...report,
+    id: studyInstanceUID,
+    orgId,
+    studyInstanceUID,
+    inspectedAt: report.inspectedAt || nowIso(),
+  };
+  await deidReportsStore.put(stored);
+  return stored;
+}
+
+export async function getDeidReport(
+  studyInstanceUID: string
+): Promise<StoredDeidReport | null> {
+  const uid = studyInstanceUID.trim();
+  if (!uid) return null;
+  return (await deidReportsStore.get(uid)) ?? null;
 }
 
 /** Delete a case (tenant-checked). Returns true if a case was removed. */
@@ -627,6 +740,24 @@ export async function createFinding(
   if (f.order == null) f.order = data.findings.length + 1;
   data.findings.push(f);
   data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Persist a continuous-capture demonstration (parent track + transcript). */
+export async function appendCaptureSession(
+  orgId: string,
+  caseId: string,
+  session: CaptureSession
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const list = data.captureSessions ? [...data.captureSessions] : [];
+  const idx = list.findIndex((s) => s.id === session.id);
+  if (idx >= 0) list[idx] = session;
+  else list.push(session);
+  data.captureSessions = list;
   data.updatedAt = nowIso();
   await casesStore.put(toStored(data));
   return data;
@@ -989,7 +1120,16 @@ export async function updateAuthor(
   patch: Partial<
     Pick<
       Author,
-      "name" | "avatarUrl" | "bio" | "institution" | "credentials" | "subspecialties" | "socials"
+      | "name"
+      | "avatarUrl"
+      | "bio"
+      | "institution"
+      | "credentials"
+      | "subspecialties"
+      | "socials"
+      | "userId"
+      | "verification"
+      | "voice"
     >
   >
 ): Promise<Author | null> {
@@ -1023,12 +1163,36 @@ export async function getPrimaryAuthor(orgId: string): Promise<Author> {
 // orgId-scoped Course API
 // ============================================================================
 
-export async function listCourses(orgId: string, opts: { status?: CaseStatus } = {}): Promise<Course[]> {
+export interface ListCoursesOpts {
+  status?: CaseStatus;
+  system?: BodySystem;
+  difficulty?: Difficulty;
+  authorId?: string;
+  excludeId?: string;
+}
+
+export async function listCourses(orgId: string, opts: ListCoursesOpts = {}): Promise<Course[]> {
   const all = await coursesStore.all();
   return all
     .filter((c) => c.orgId === orgId)
     .filter((c) => (opts.status ? c.status === opts.status : true))
+    .filter((c) => (opts.system ? c.system === opts.system : true))
+    .filter((c) => (opts.difficulty ? c.difficulty === opts.difficulty : true))
+    .filter((c) => (opts.authorId ? c.authorId === opts.authorId : true))
+    .filter((c) => (opts.excludeId ? c.id !== opts.excludeId : true))
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function listRelatedCourses(
+  orgId: string,
+  course: Course,
+  limit = 6
+): Promise<Course[]> {
+  const candidates = await listCourses(orgId, {
+    status: "published",
+    excludeId: course.id,
+  });
+  return sortRelatedCourses(course, candidates).slice(0, limit);
 }
 
 export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {
@@ -1150,4 +1314,679 @@ export async function deletePlaylist(orgId: string, playlistId: string): Promise
 export async function getCasesByIds(orgId: string, caseIds: string[]): Promise<Case[]> {
   const resolved = await Promise.all(caseIds.map((id) => getCaseForOrg(orgId, id)));
   return resolved.filter((c): c is Case => c != null);
+}
+
+// ============================================================================
+// Identity — User · Membership · Enrollment (P0)
+// ============================================================================
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export async function getUser(userId: string): Promise<User | null> {
+  return usersStore.get(userId);
+}
+
+/** Users whose home org is `orgId` (best-effort directory for admin). */
+export async function listUsers(orgId: string): Promise<User[]> {
+  const all = await usersStore.all();
+  return all
+    .filter((u) => u.orgId === orgId)
+    .sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+}
+
+export async function getUserByEmail(email: string): Promise<User | null> {
+  const want = normalizeEmail(email);
+  const all = await usersStore.all();
+  return all.find((u) => normalizeEmail(u.email) === want) ?? null;
+}
+
+export async function getUserByAuthProviderId(authProviderId: string): Promise<User | null> {
+  const all = await usersStore.all();
+  return all.find((u) => u.authProviderId === authProviderId) ?? null;
+}
+
+export interface CreateUserInput {
+  id?: string;
+  orgId?: string;
+  email: string;
+  name?: string;
+  image?: string;
+  role?: UserRole;
+  platformRole?: User["platformRole"];
+  authProviderId?: string;
+}
+
+export async function createUser(input: CreateUserInput): Promise<User> {
+  const email = normalizeEmail(input.email);
+  const existing = await getUserByEmail(email);
+  if (existing) return existing;
+  const user: User = {
+    id: input.id ? safeId(input.id) : genId("user"),
+    orgId: input.orgId ?? DEFAULT_ORG_ID,
+    email,
+    name: input.name,
+    image: input.image,
+    role: input.role ?? "student",
+    platformRole: input.platformRole,
+    authProviderId: input.authProviderId,
+    createdAt: nowIso(),
+  };
+  await usersStore.put(user);
+  return user;
+}
+
+export async function updateUser(
+  userId: string,
+  patch: Partial<Pick<User, "name" | "image" | "role" | "platformRole" | "authProviderId" | "orgId">>
+): Promise<User | null> {
+  const current = await getUser(userId);
+  if (!current) return null;
+  const updated: User = { ...current, ...patch, id: userId, email: current.email };
+  await usersStore.put(updated);
+  return updated;
+}
+
+/**
+ * After Better Auth creates a user, ensure a domain User + org membership
+ * exist. Looks up by email first so demo identities and re-signups link.
+ */
+export async function provisionAuthUser(input: {
+  authProviderId: string;
+  email: string;
+  name?: string;
+  image?: string;
+}): Promise<User> {
+  await ensureDemoIdentity();
+  const email = normalizeEmail(input.email);
+  const existing =
+    (await getUserByAuthProviderId(input.authProviderId)) ?? (await getUserByEmail(email));
+  if (existing) {
+    const updated: User = {
+      ...existing,
+      authProviderId: input.authProviderId,
+      name: input.name ?? existing.name,
+      image: input.image ?? existing.image,
+    };
+    await usersStore.put(updated);
+    const mems = await listMembershipsForUser(updated.id);
+    if (mems.length === 0) {
+      await createMembership({
+        userId: updated.id,
+        orgId: updated.orgId || DEFAULT_ORG_ID,
+        role: updated.platformRole === "super_admin" ? "owner" : "student",
+      });
+    }
+    return updated;
+  }
+  const user = await createUser({
+    email,
+    name: input.name,
+    image: input.image,
+    role: "student",
+    authProviderId: input.authProviderId,
+    orgId: DEFAULT_ORG_ID,
+  });
+  await createMembership({
+    userId: user.id,
+    orgId: DEFAULT_ORG_ID,
+    role: "student",
+  });
+  return user;
+}
+
+export async function listMemberships(orgId: string): Promise<Membership[]> {
+  const all = await membershipsStore.all();
+  return all
+    .filter((m) => m.orgId === orgId && (m.status ?? "active") !== "revoked")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listMembershipsForUser(userId: string): Promise<Membership[]> {
+  const all = await membershipsStore.all();
+  return all
+    .filter((m) => m.userId === userId && (m.status ?? "active") !== "revoked")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function getMembership(membershipId: string): Promise<Membership | null> {
+  return membershipsStore.get(membershipId);
+}
+
+export async function getMembershipForUserOrg(
+  userId: string,
+  orgId: string
+): Promise<Membership | null> {
+  const all = await membershipsStore.all();
+  return (
+    all.find(
+      (m) => m.userId === userId && m.orgId === orgId && (m.status ?? "active") !== "revoked"
+    ) ?? null
+  );
+}
+
+export interface CreateMembershipInput {
+  id?: string;
+  userId: string;
+  orgId: string;
+  role: MembershipRole;
+  invitedBy?: string;
+}
+
+/** Create or update the single membership for (userId, orgId). */
+export async function createMembership(input: CreateMembershipInput): Promise<Membership> {
+  const existing = await getMembershipForUserOrg(input.userId, input.orgId);
+  const now = nowIso();
+  if (existing) {
+    const updated: Membership = {
+      ...existing,
+      role: input.role,
+      status: "active",
+      invitedBy: input.invitedBy ?? existing.invitedBy,
+      updatedAt: now,
+    };
+    await membershipsStore.put(updated);
+    return updated;
+  }
+  const membership: Membership = {
+    id: input.id ? safeId(input.id) : genId("mem"),
+    userId: input.userId,
+    orgId: input.orgId,
+    role: input.role,
+    status: "active",
+    invitedBy: input.invitedBy,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await membershipsStore.put(membership);
+  return membership;
+}
+
+export async function upsertMembership(
+  input: CreateMembershipInput
+): Promise<Membership> {
+  return createMembership(input);
+}
+
+export async function updateMembership(
+  membershipId: string,
+  patch: Partial<Pick<Membership, "role" | "status" | "invitedBy">>
+): Promise<Membership | null> {
+  const current = await getMembership(membershipId);
+  if (!current) return null;
+  const updated: Membership = { ...current, ...patch, id: membershipId, updatedAt: nowIso() };
+  await membershipsStore.put(updated);
+  return updated;
+}
+
+export async function deleteMembership(membershipId: string): Promise<boolean> {
+  return membershipsStore.remove(membershipId);
+}
+
+export async function listEnrollmentsForUser(userId: string): Promise<Enrollment[]> {
+  const all = await enrollmentsStore.all();
+  return all
+    .filter((e) => e.userId === userId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function getEnrollment(enrollmentId: string): Promise<Enrollment | null> {
+  return enrollmentsStore.get(enrollmentId);
+}
+
+export async function getEnrollmentForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Enrollment | null> {
+  const all = await enrollmentsStore.all();
+  const matches = all.filter((e) => e.userId === userId && e.courseId === courseId);
+  if (matches.length === 0) return null;
+  const active = matches.find((e) => e.status === "active");
+  return active ?? null;
+}
+
+export interface CreateEnrollmentInput {
+  id?: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  source?: Enrollment["source"];
+}
+
+export async function createEnrollment(input: CreateEnrollmentInput): Promise<Enrollment> {
+  const all = await enrollmentsStore.all();
+  const existing = all.find(
+    (e) => e.userId === input.userId && e.courseId === input.courseId && e.status === "active"
+  );
+  if (existing) return existing;
+  const now = nowIso();
+  const enrollment: Enrollment = {
+    id: input.id ? safeId(input.id) : genId("enr"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    source: input.source ?? "free",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  await enrollmentsStore.put(enrollment);
+  return enrollment;
+}
+
+export async function updateEnrollment(
+  enrollmentId: string,
+  patch: Partial<Pick<Enrollment, "status" | "source">>
+): Promise<Enrollment | null> {
+  const current = await getEnrollment(enrollmentId);
+  if (!current) return null;
+  const updated: Enrollment = { ...current, ...patch, id: enrollmentId, updatedAt: nowIso() };
+  await enrollmentsStore.put(updated);
+  return updated;
+}
+
+export async function deleteEnrollment(enrollmentId: string): Promise<boolean> {
+  return enrollmentsStore.remove(enrollmentId);
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace learner — Progress · Wishlist · Reviews · Certificates
+// ---------------------------------------------------------------------------
+
+function progressPercent(completedCaseIds: string[], totalCases: number): number {
+  if (totalCases <= 0) return 0;
+  return Math.min(100, Math.round((completedCaseIds.length / totalCases) * 100));
+}
+
+export async function listProgressForUser(userId: string): Promise<Progress[]> {
+  const all = await progressStore.all();
+  return all
+    .filter((p) => p.userId === userId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function getProgressForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Progress | null> {
+  const all = await progressStore.all();
+  return all.find((p) => p.userId === userId && p.courseId === courseId) ?? null;
+}
+
+export interface UpsertProgressInput {
+  userId: string;
+  orgId: string;
+  courseId: string;
+  caseId?: string;
+  markComplete?: boolean;
+  lastOpenedCaseId?: string;
+}
+
+export async function upsertProgress(input: UpsertProgressInput): Promise<Progress> {
+  const course = await getCourse(input.orgId, input.courseId);
+  if (!course) throw new Error("Course not found.");
+
+  const now = nowIso();
+  const existing = await getProgressForUserCourse(input.userId, input.courseId);
+  const completed = new Set(existing?.completedCaseIds ?? []);
+
+  if (input.markComplete && input.caseId) {
+    completed.add(input.caseId);
+  }
+
+  const lastOpened =
+    input.lastOpenedCaseId ?? input.caseId ?? existing?.lastOpenedCaseId;
+  const percent = progressPercent([...completed], course.caseIds.length);
+  const completedAt =
+    percent >= 100 ? existing?.completedAt ?? now : undefined;
+
+  const progress: Progress = {
+    id: existing?.id ?? genId("prg"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    completedCaseIds: [...completed],
+    lastOpenedCaseId: lastOpened,
+    percentComplete: percent,
+    completedAt,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await progressStore.put(progress);
+  return progress;
+}
+
+export async function listWishlistForUser(userId: string): Promise<WishlistItem[]> {
+  const all = await wishlistStore.all();
+  return all
+    .filter((w) => w.userId === userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function isCourseWishlisted(userId: string, courseId: string): Promise<boolean> {
+  const all = await wishlistStore.all();
+  return all.some((w) => w.userId === userId && w.courseId === courseId);
+}
+
+export async function addToWishlist(
+  userId: string,
+  orgId: string,
+  courseId: string
+): Promise<WishlistItem> {
+  const all = await wishlistStore.all();
+  const existing = all.find((w) => w.userId === userId && w.courseId === courseId);
+  if (existing) return existing;
+  const item: WishlistItem = {
+    id: genId("wsh"),
+    userId,
+    orgId,
+    courseId,
+    createdAt: nowIso(),
+  };
+  await wishlistStore.put(item);
+  return item;
+}
+
+export async function removeFromWishlist(userId: string, courseId: string): Promise<boolean> {
+  const all = await wishlistStore.all();
+  const match = all.find((w) => w.userId === userId && w.courseId === courseId);
+  if (!match) return false;
+  return wishlistStore.remove(match.id);
+}
+
+export interface CourseReviewsSummary {
+  reviews: Review[];
+  average: number;
+  count: number;
+}
+
+export async function listReviewsForCourse(
+  orgId: string,
+  courseId: string
+): Promise<CourseReviewsSummary> {
+  const all = await reviewsStore.all();
+  const reviews = all
+    .filter((r) => r.orgId === orgId && r.courseId === courseId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const count = reviews.length;
+  const average =
+    count === 0
+      ? 0
+      : Math.round((reviews.reduce((sum, r) => sum + r.rating, 0) / count) * 10) / 10;
+  return { reviews, average, count };
+}
+
+export interface CreateReviewInput {
+  userId: string;
+  orgId: string;
+  courseId: string;
+  rating: number;
+  body?: string;
+  authorName?: string;
+}
+
+export async function createReview(input: CreateReviewInput): Promise<Review> {
+  const rating = Math.round(input.rating);
+  if (rating < 1 || rating > 5) throw new Error("Rating must be 1–5.");
+
+  const all = await reviewsStore.all();
+  const existing = all.find(
+    (r) => r.userId === input.userId && r.courseId === input.courseId
+  );
+  const now = nowIso();
+  const review: Review = {
+    id: existing?.id ?? genId("rev"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    rating,
+    body: input.body?.trim() || undefined,
+    authorName: input.authorName,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await reviewsStore.put(review);
+  return review;
+}
+
+export async function listCertificatesForUser(userId: string): Promise<Certificate[]> {
+  const all = await certificatesStore.all();
+  return all
+    .filter((c) => c.userId === userId)
+    .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+}
+
+export async function getCertificate(certificateId: string): Promise<Certificate | null> {
+  return certificatesStore.get(certificateId);
+}
+
+export async function getCertificateForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Certificate | null> {
+  const all = await certificatesStore.all();
+  return all.find((c) => c.userId === userId && c.courseId === courseId) ?? null;
+}
+
+export async function issueCertificate(
+  userId: string,
+  orgId: string,
+  courseId: string,
+  learnerName: string
+): Promise<Certificate> {
+  const existing = await getCertificateForUserCourse(userId, courseId);
+  if (existing) return existing;
+
+  const progress = await getProgressForUserCourse(userId, courseId);
+  if (!progress || progress.percentComplete < 100) {
+    throw new Error("Course must be 100% complete to issue a certificate.");
+  }
+
+  const assessment = await getAssessmentForCourse(orgId, courseId);
+  if (assessment) {
+    const best = await getBestAttemptForUserAssessment(userId, assessment.id);
+    if (!best?.passed) {
+      throw new Error("Pass the course assessment before claiming a certificate.");
+    }
+  }
+
+  const course = await getCourse(orgId, courseId);
+  if (!course) throw new Error("Course not found.");
+
+  const certificate: Certificate = {
+    id: genId("cert"),
+    userId,
+    orgId,
+    courseId,
+    courseTitle: course.title,
+    learnerName,
+    issuedAt: nowIso(),
+    cmeEligible: false,
+  };
+  await certificatesStore.put(certificate);
+  return certificate;
+}
+
+// ============================================================================
+// Assessments & attempts (end-of-course quiz)
+// ============================================================================
+
+export async function getAssessment(assessmentId: string): Promise<Assessment | null> {
+  return assessmentsStore.get(assessmentId);
+}
+
+export async function getAssessmentForCourse(
+  orgId: string,
+  courseId: string
+): Promise<Assessment | null> {
+  const all = await assessmentsStore.all();
+  return all.find((a) => a.orgId === orgId && a.courseId === courseId) ?? null;
+}
+
+/** Client-safe assessment: questions without answer keys / target markers. */
+export async function getPublicAssessmentForCourse(
+  orgId: string,
+  courseId: string
+): Promise<{
+  id: string;
+  orgId: string;
+  courseId: string;
+  title: string;
+  description?: string;
+  passingScore: number;
+  cmeEligible: false;
+  questions: ReturnType<typeof toPublicQuestions>;
+} | null> {
+  const assessment = await getAssessmentForCourse(orgId, courseId);
+  if (!assessment) return null;
+  return {
+    id: assessment.id,
+    orgId: assessment.orgId,
+    courseId: assessment.courseId,
+    title: assessment.title,
+    description: assessment.description,
+    passingScore: assessment.passingScore,
+    cmeEligible: assessment.cmeEligible,
+    questions: toPublicQuestions(assessment.questions),
+  };
+}
+
+export async function listAttemptsForUser(userId: string): Promise<Attempt[]> {
+  const all = await attemptsStore.all();
+  return all
+    .filter((a) => a.userId === userId)
+    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+export async function getBestAttemptForUserAssessment(
+  userId: string,
+  assessmentId: string
+): Promise<Attempt | null> {
+  const all = await attemptsStore.all();
+  const mine = all.filter((a) => a.userId === userId && a.assessmentId === assessmentId);
+  if (mine.length === 0) return null;
+  return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
+}
+
+export async function getBestAttemptForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Attempt | null> {
+  const all = await attemptsStore.all();
+  const mine = all.filter((a) => a.userId === userId && a.courseId === courseId);
+  if (mine.length === 0) return null;
+  return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
+}
+
+export type SubmitAttemptInput = {
+  userId: string;
+  orgId: string;
+  assessmentId: string;
+  answers: LearnerAnswer[];
+};
+
+export async function submitAttempt(input: SubmitAttemptInput): Promise<Attempt> {
+  const assessment = await getAssessment(input.assessmentId);
+  if (!assessment || assessment.orgId !== input.orgId) {
+    throw new Error("Assessment not found.");
+  }
+
+  const { responses, score } = gradeAttempt(assessment.questions, input.answers);
+  const passed = score >= assessment.passingScore;
+  const now = nowIso();
+  const attempt: Attempt = {
+    id: genId("att"),
+    userId: input.userId,
+    orgId: input.orgId,
+    assessmentId: assessment.id,
+    courseId: assessment.courseId,
+    responses,
+    score,
+    passed,
+    startedAt: now,
+    submittedAt: now,
+  };
+  await attemptsStore.put(attempt);
+  return attempt;
+}
+
+/**
+ * Idempotent demo identity: org_demo has a platform super_admin (owner) and a
+ * teacher (author) membership. Safe to call on every boot / demo sign-in.
+ */
+export async function ensureDemoIdentity(): Promise<void> {
+  const now = nowIso();
+
+  const demo =
+    (await usersStore.get(DEMO_USER_ID)) ??
+    (await getUserByEmail(DEMO_USER_EMAIL)) ??
+    null;
+  const demoUser: User = {
+    id: DEMO_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_USER_EMAIL,
+    name: demo?.name ?? "Demo Teacher",
+    role: "admin",
+    platformRole: "super_admin",
+    authProviderId: demo?.authProviderId,
+    image: demo?.image,
+    createdAt: demo?.createdAt ?? now,
+  };
+  await usersStore.put(demoUser);
+  await createMembership({
+    id: "mem_demo_owner",
+    userId: DEMO_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "owner",
+  });
+
+  const teacher =
+    (await usersStore.get(DEMO_TEACHER_USER_ID)) ??
+    (await getUserByEmail(DEMO_TEACHER_EMAIL)) ??
+    null;
+  const teacherUser: User = {
+    id: DEMO_TEACHER_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_TEACHER_EMAIL,
+    name: teacher?.name ?? "Dr. Priya Katyal",
+    role: "author",
+    authProviderId: teacher?.authProviderId,
+    image: teacher?.image,
+    createdAt: teacher?.createdAt ?? now,
+  };
+  await usersStore.put(teacherUser);
+  await createMembership({
+    id: "mem_demo_teacher",
+    userId: DEMO_TEACHER_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "author",
+  });
+
+  const student =
+    (await usersStore.get(DEMO_STUDENT_USER_ID)) ??
+    (await getUserByEmail(DEMO_STUDENT_EMAIL)) ??
+    null;
+  const studentUser: User = {
+    id: DEMO_STUDENT_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_STUDENT_EMAIL,
+    name: student?.name ?? "Demo Student",
+    role: "student",
+    authProviderId: student?.authProviderId,
+    image: student?.image,
+    createdAt: student?.createdAt ?? now,
+  };
+  await usersStore.put(studentUser);
+  await createMembership({
+    id: "mem_demo_student",
+    userId: DEMO_STUDENT_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "student",
+  });
+
+  const author = await getAuthor(DEFAULT_ORG_ID, "auth_demo");
+  if (author && !author.userId) {
+    await updateAuthor(DEFAULT_ORG_ID, author.id, { userId: DEMO_TEACHER_USER_ID });
+  }
 }

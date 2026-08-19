@@ -39,6 +39,7 @@ export function TutorChat({
   onReplayTurn,
   onTypingFocus,
   onTypingBlur,
+  hideMic = false,
 }: {
   turns: ChatTurn[];
   phase: SessionPhase;
@@ -55,6 +56,8 @@ export function TutorChat({
   onReplayTurn: (turn: ChatTurn) => void;
   onTypingFocus: () => void;
   onTypingBlur: () => void;
+  /** Dock already has the mic — hide the duplicate in the rail composer. */
+  hideMic?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -112,6 +115,7 @@ export function TutorChat({
           onMicStop={onMicStop}
           onTypingFocus={onTypingFocus}
           onTypingBlur={onTypingBlur}
+          hideMic={hideMic}
         />
       </div>
     </div>
@@ -122,11 +126,12 @@ export function TutorChat({
 // question — tells a non-technical student exactly what they can do.
 function ConversationHint() {
   return (
-    <div className="animate-fade-up rounded-xl border border-subtle bg-elevated/50 p-4">
-      <p className="text-sm font-medium text-primary">Ask me anything about this study.</p>
+    <div className="animate-fade-up rounded-lg border border-subtle bg-elevated/50 p-4">
+      <p className="text-sm font-medium text-primary">Discuss the case with your attending.</p>
       <p className="mt-1 text-sm text-muted">
-        Tap the mic and talk, or type below. Try “What am I looking at?”, “Why does this
-        matter?”, or “Teach me to report this.”
+        In Teach mode the tutor drives the viewer while explaining how to report.
+        Interrupt anytime — ask “why that window?”, “what goes in Impression?”, or
+        switch to Exam for viva.
       </p>
     </div>
   );

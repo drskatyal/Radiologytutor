@@ -5,11 +5,22 @@
 // Never import this into client components — it reads GEMINI_API_KEY.
 //
 // We hit the REST endpoint directly with fetch to avoid SDK version churn.
-// Model is configurable via GEMINI_MODEL (default: a latest Flash model).
+// Model is configurable via GEMINI_MODEL (default: current Flash workhorse).
 // ============================================================================
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+import { teachingSystemPrompt } from "./teachingPrompt";
+import {
+  HARNESS_VIEWER_TOOLS,
+  harnessActionFromCall,
+  type HarnessViewerAction,
+} from "./harness/tools";
+
+/** Orchestration / STT / tools. Override via GEMINI_MODEL when Google ships next Flash. */
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+/** Viewer action alias — canonical definition lives in lib/harness/tools. */
+export type TeachingViewerAction = HarnessViewerAction;
 
 export interface GeminiPart {
   text?: string;
@@ -216,15 +227,8 @@ export async function transcribeAudio(
   return result.text.trim();
 }
 
-/** A viewer action the teaching plan may return for the frontend to execute. */
-export interface TeachingViewerAction {
-  /** show_finding (jump to a finding) | next_in_tour | prev_in_tour | none. */
-  type: "show_finding" | "next_in_tour" | "prev_in_tour" | "set_window" | "none";
-  findingId?: string;
-  /** For set_window: target VOI. */
-  windowWidth?: number;
-  windowCenter?: number;
-}
+/** @deprecated Use TeachingViewerAction (harness). Kept as comment anchor. */
+// Viewer actions: see HarnessViewerAction in lib/harness/tools.ts
 
 export interface TeachingTurn {
   role: "user" | "assistant";
@@ -238,7 +242,7 @@ export interface TeachingPlanInput {
   history: TeachingTurn[];
   caseTitle: string;
   modality: string;
-  mode: "guided" | "socratic" | "free" | "reporting";
+  mode: "guided" | "socratic" | "free" | "reporting" | "viva";
   /** Compact, ordered finding context the tutor reasons over. */
   findingsContext: string;
   /** The finding the student is currently looking at (for "what is this?"). */
@@ -248,111 +252,22 @@ export interface TeachingPlanInput {
 export interface TeachingPlanResult {
   /** The spoken/written answer (TTS-safe: no markdown, no spoken IDs). */
   answer: string;
-  /** Optional viewer action the frontend executes (drive the viewer). */
+  /** First viewer action (back-compat). Prefer `actions` for interleave. */
   action: TeachingViewerAction;
+  /** Ordered tool calls for this turn — one beat can drive several. */
+  actions: TeachingViewerAction[];
   /** Web sources from Google Search grounding (deduped, capped). */
   sources: GroundingSource[];
 }
 
-/** Tools the tutor uses to drive our self-hosted viewer. */
-const TEACHING_TOOLS: FunctionDeclaration[] = [
-  {
-    name: "show_finding",
-    description:
-      "Drive the viewer to a specific finding (animating camera/window/slice), reveal its marker, and narrate it. Use the finding's id.",
-    parameters: {
-      type: "object",
-      properties: { findingId: { type: "string", description: "Finding id, e.g. f1" } },
-      required: ["findingId"],
-    },
-  },
-  {
-    name: "next_in_tour",
-    description: "Advance to the next finding in tour order and narrate it.",
-    parameters: { type: "object", properties: {} },
-  },
-  {
-    name: "prev_in_tour",
-    description: "Go back to the previous finding in tour order.",
-    parameters: { type: "object", properties: {} },
-  },
-  {
-    name: "set_window",
-    description:
-      "Adjust the window width / center (VOI) on the current view to make a feature more conspicuous.",
-    parameters: {
-      type: "object",
-      properties: {
-        windowWidth: { type: "number" },
-        windowCenter: { type: "number" },
-      },
-      required: ["windowWidth", "windowCenter"],
-    },
-  },
-];
+/** Tools the tutor uses to drive our self-hosted viewer (harness registry). */
+const TEACHING_TOOLS: FunctionDeclaration[] = HARNESS_VIEWER_TOOLS;
 
-function teachingSystemPrompt(input: TeachingPlanInput): string {
-  const base = `You are a warm, expert radiology tutor guiding a student through the case "${input.caseTitle}" (${input.modality}).
-You drive a self-hosted medical image viewer ONLY through these tools: show_finding, next_in_tour, prev_in_tour, set_window.
-You cannot see the pixels yourself — reason from the finding list below.
-${input.currentFindingId ? `The student is currently viewing finding id=${input.currentFindingId}.` : ""}
-
-Findings (in tour order):
-${input.findingsContext}
-
-Rules:
-- When the student should see something, CALL the matching tool AND narrate in the same turn.
-- Narration: 1-3 spoken sentences, warm exam-room tone, suitable for text-to-speech — no markdown, no bullet symbols, never speak IDs aloud.
-- Match free-text requests ("show me the effusion") to the closest finding and call show_finding.`;
-
-  if (input.mode === "socratic") {
-    return (
-      base +
-      `\n\nMODE: SOCRATIC. Do not reveal a finding until the student has attempted it. Prompt and hint first; only call show_finding once they've made an attempt or explicitly ask for the answer.`
-    );
-  }
-  if (input.mode === "free") {
-    return (
-      base +
-      `\n\nMODE: FREE EXPLORE. The student navigates on their own. Answer questions; do not auto-advance.`
-    );
-  }
-  if (input.mode === "reporting") {
-    return (
-      base +
-      `\n\nMODE: REPORTING. You are coaching the trainee to dictate a clear, structured radiology report for this study. Always frame the report under three headings, spoken in order: Technique, Findings, and Impression.
-- TECHNIQUE: state the modality, region, contrast, and any relevant protocol detail.
-- FINDINGS: describe the positive findings (use the finding list) with precise, professional phrasing — location, size, characterization, and relevant negatives. Model the exact language a radiologist would dictate.
-- IMPRESSION: give a concise, numbered-in-speech summary and, where appropriate, a recommendation or differential.
-If the trainee offers their own report or dictation, critique it constructively: what was strong, what was missing or imprecise, and how to phrase it better — then model the improved version.
-When citing current guidance (e.g. reporting standards, lexicons such as BI-RADS/Lung-RADS, follow-up recommendations), ground it in authoritative web sources.
-You may still drive the viewer with show_finding/next_in_tour to point at what you are describing.`
-    );
-  }
-  return (
-    base +
-    `\n\nMODE: GUIDED TOUR. Walk the findings in order. On "next"/"continue" call next_in_tour; on "back" call prev_in_tour. Answer questions along the way without losing the student's place.`
-  );
-}
-
-function toAction(call?: { name: string; args: Record<string, unknown> }): TeachingViewerAction {
-  if (!call) return { type: "none" };
-  switch (call.name) {
-    case "show_finding":
-      return { type: "show_finding", findingId: String(call.args.findingId ?? "") };
-    case "next_in_tour":
-      return { type: "next_in_tour" };
-    case "prev_in_tour":
-      return { type: "prev_in_tour" };
-    case "set_window":
-      return {
-        type: "set_window",
-        windowWidth: Number(call.args.windowWidth),
-        windowCenter: Number(call.args.windowCenter),
-      };
-    default:
-      return { type: "none" };
-  }
+function toAction(call?: {
+  name: string;
+  args: Record<string, unknown>;
+}): TeachingViewerAction {
+  return harnessActionFromCall(call);
 }
 
 /**
@@ -378,17 +293,22 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     contents,
   });
 
+  const actions = result.functionCalls
+    .map((call) => toAction(call))
+    .filter((a) => a.type !== "none");
+
   return {
     answer: result.text,
-    action: toAction(result.functionCalls[0]),
+    action: actions[0] ?? { type: "none" },
+    actions,
     sources: result.sources,
   };
 }
 
 // ============================================================================
-// Text-to-speech — Gemini TTS (vendor seam; ElevenLabs can return later).
-// Server-only; reads GEMINI_API_KEY. Used ONLY for live tutor answers, never
-// for the teacher's recorded lesson narration.
+// Text-to-speech — Gemini TTS fallback inside the voice seam (lib/voice.ts).
+// Prefer ElevenLabs cloned teacher voice when enrolled. Server-only.
+// Used ONLY for live tutor answers, never for recorded lesson narration.
 // ============================================================================
 
 const TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";

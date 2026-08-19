@@ -1,0 +1,9 @@
+{
+  "id": "mem_demo_student",
+  "userId": "user_student",
+  "orgId": "org_demo",
+  "role": "student",
+  "status": "active",
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z"
+}

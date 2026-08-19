@@ -84,7 +84,7 @@ export function Modal({
                   {/* Accent hairline along the top edge for a premium seam. */}
                   <span
                     aria-hidden="true"
-                    className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/50 to-transparent"
+                    className="absolute inset-x-0 top-0 h-px bg-subtle"
                   />
                   <div className="flex items-start justify-between gap-4 border-b border-subtle px-5 py-4">
                     <div className="min-w-0">

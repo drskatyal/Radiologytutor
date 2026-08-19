@@ -4,7 +4,8 @@
 //   POST /api/admin/courses  -> create a course { title, caseIds?, ... }
 
 import { NextRequest, NextResponse } from "next/server";
-import { DEFAULT_ORG_ID, listCourses, createCourse } from "@/lib/cases";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { listCourses, createCourse } from "@/lib/cases";
 import {
   BODY_SYSTEMS,
   DIFFICULTIES,
@@ -15,8 +16,6 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ORG = DEFAULT_ORG_ID;
 
 function asSystem(v: unknown): BodySystem | undefined {
   return typeof v === "string" && (BODY_SYSTEMS as string[]).includes(v)
@@ -30,8 +29,15 @@ function asDifficulty(v: unknown): Difficulty | undefined {
 }
 
 export async function GET() {
-  const courses = await listCourses(ORG);
-  return NextResponse.json({ courses });
+  try {
+    const orgId = await requireAuthorOrg();
+    const courses = await listCourses(orgId);
+    return NextResponse.json({ courses });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
 }
 
 interface CourseBody {
@@ -46,12 +52,13 @@ interface CourseBody {
 
 export async function POST(req: NextRequest) {
   try {
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as CourseBody;
     const title = (body.title ?? "").trim();
     if (!title) {
       return NextResponse.json({ error: "Course title is required." }, { status: 400 });
     }
-    const course = await createCourse(ORG, {
+    const course = await createCourse(orgId, {
       title,
       description: body.description?.trim() || undefined,
       difficulty: asDifficulty(body.difficulty),
@@ -62,6 +69,8 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ course });
   } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

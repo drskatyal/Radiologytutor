@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, Layers, Stethoscope } from "lucide-react";
-import { Badge, Card } from "@/components/ui";
+import { Badge, Card, VerifiedBadge } from "@/components/ui";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
 import type { Author, Case } from "./types";
 
@@ -26,7 +26,7 @@ export function CaseCard({ data, author, index }: CaseCardProps) {
       <Card interactive className="flex h-full flex-col gap-3 overflow-hidden">
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/0 to-transparent transition-colors duration-300 group-hover:via-accent/60"
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-subtle/0 transition-colors duration-300 group-hover:bg-accent/50"
         />
         <div className="flex items-start justify-between gap-3">
           <h3 className="font-display text-base font-semibold tracking-tight text-primary">
@@ -67,7 +67,7 @@ export function CaseCard({ data, author, index }: CaseCardProps) {
             </span>
           </span>
           <span className="inline-flex items-center gap-1 font-medium text-secondary transition-colors group-hover:text-accent">
-            Start
+            Teach
             <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
           </span>
         </div>
@@ -90,6 +90,9 @@ export function AuthorChip({ author }: { author: Author }) {
         {initials}
       </span>
       <span className="truncate">{author.name}</span>
+      {author.verification === "verified" && (
+        <VerifiedBadge status="verified" className="shrink-0" />
+      )}
     </span>
   );
 }

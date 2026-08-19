@@ -57,6 +57,81 @@ export interface Marker {
 }
 
 /**
+ * Authored measurement attached to a finding (Length / Ellipse HU / Probe).
+ * Handles are overlay [0,1]; numeric stats come from Cornerstone cachedStats
+ * at save time (mm when PixelSpacing exists, HU for CT ROI/probe).
+ */
+export type FindingMeasurementKind =
+  | "length"
+  | "ellipse"
+  | "probe"
+  | "bidirectional";
+
+export interface FindingMeasurement {
+  id: string;
+  kind: FindingMeasurementKind;
+  /** Overlay handles in [0,1] (tool-specific point count). */
+  handles: Array<[number, number]>;
+  label?: string;
+  /** Caliper length (Length / Bidirectional long axis), mm when spaced. */
+  lengthMm?: number;
+  majorMm?: number;
+  minorMm?: number;
+  areaMm2?: number;
+  /** ROI / probe Hounsfield (or modality unit). */
+  meanHu?: number;
+  maxHu?: number;
+  minHu?: number;
+  stdHu?: number;
+  unit?: string;
+  sopInstanceUID?: string;
+  sliceIndex?: number;
+}
+
+/**
+ * One concrete landing of a finding on pixels. A single logical Finding can
+ * have several anchors (axial + coronal, or current CT + prior MRI). The
+ * student tutor drives the matching series/slice and points the laser at
+ * `marker`. Side-by-side compare uses `viewportRole`.
+ */
+export interface FindingAnchor {
+  studyInstanceUID?: string;
+  seriesInstanceUID?: string;
+  /** Exact SOP when known (preferred over sliceIndex for prefetch). */
+  sopInstanceUID?: string;
+  /** 0-based stack index within the series (Cornerstone imageId index). */
+  sliceIndex?: number;
+  marker: Marker;
+  /**
+   * Display VOI at the moment this landing was authored (DICOM WW/WC semantics).
+   * Required so students in bone window still see a lung-window nodule when the
+   * tutor drives to this finding — we ease to these values, never snap.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
+  /** Which pane in a multi-viewport layout (Phase 2). */
+  viewportRole?: "primary" | "secondary" | "compare";
+  /** Chronology role when the case spans studies. */
+  studyRole?: "current" | "prior" | "baseline" | "followup";
+}
+
+/**
+ * One continuous authoring take: the radiologist speaks once while scrolling /
+ * windowing / clicking. Viewer events + voice share one clock. Gemini later
+ * segments this into multiple Findings (see StructuredSessionFinding).
+ */
+export interface CaptureSession {
+  id: string;
+  durationMs: number;
+  track: RecordedTrack;
+  /** Durable narration URL (same seam as finding.track.audioUrl). */
+  audioUrl?: string;
+  /** Full session transcript (for author review + tutor grounding). */
+  transcript?: string;
+  createdAt: string;
+}
+
+/**
  * One recorded moment in a finding's dynamic flow. `state` is Pacsbin's
  * encoded `state` blob captured at that moment; `t` is ms from the start of
  * the recording. Because setting `state` reloads the cross-origin iframe,
@@ -70,13 +145,12 @@ export interface Keyframe {
 }
 
 // ============================================================================
-// Record & Replay — the self-hosted (Cornerstone) model.
+// Record capture — the self-hosted (Cornerstone) model.
 //
-// While the teacher holds the record hotkey we capture an ORDERED, timestamped
-// log of every viewer state change (scroll/window/zoom/pan/annotation/cursor)
-// plus their narration audio. Replay re-applies the SAME events in the SAME
-// order, locked to the audio clock — an exact retrace. No segmentation, no
-// automation: record a list, replay a list.
+// While the teacher records we capture an ORDERED, timestamped log of viewer
+// state (scroll/window/zoom/pan/annotation/cursor) plus optional narration.
+// That log ARMS the AI tutor (lib/readingDigest.ts); it is not a student-facing
+// cassette. Author Studio may exact-replay for capture QA only.
 // ============================================================================
 
 /** A single timestamped viewer state change (`t` = ms from record start). */
@@ -108,7 +182,9 @@ export type ViewerEvent =
   | { type: "series"; seriesInstanceUID: string }
   | { type: "annotation"; shape: MarkerShape; from: [number, number]; to: [number, number] };
 
-/** One finding's recorded demonstration: ordered events + narration audio. */
+/** One finding's recorded demonstration: ordered events + optional narration.
+ * Used to arm the tutor (reading digest) and for author QA replay — not as a
+ * student-facing tape of the teacher's mic. */
 export interface RecordedTrack {
   durationMs: number;
   /** The starting viewer state (slice index + W/L) so replay can prime it. */
@@ -140,6 +216,32 @@ export interface Finding {
   seriesInstanceUID?: string;
   /** Ordered SOP Instance UIDs this finding's flow walks through (prefetch). */
   sopInstanceUIDs?: string[];
+  /** Exact SOP for the primary landing (when known). */
+  sopInstanceUID?: string;
+  /** 0-based slice index for the primary landing. */
+  sliceIndex?: number;
+  /**
+   * Window width / center (VOI) at authoring time — same semantics as DICOM
+   * Window Center/Width (0028,1050)/(0028,1051). Applied with an eased tween
+   * when revealing this finding so the lesion remains visible regardless of
+   * the student's current preset.
+   */
+  windowWidth?: number;
+  windowCenter?: number;
+  /**
+   * Length / ellipse HU / probe measurements the teacher drew on this finding.
+   * Captured from Cornerstone annotation tools at save — not stored in DICOM.
+   */
+  measurements?: FindingMeasurement[];
+  /**
+   * All landings for this finding (multi-series / multi-study). When absent,
+   * the primary marker + seriesInstanceUID fields above are the sole anchor.
+   */
+  anchors?: FindingAnchor[];
+  /** Continuous-capture provenance (session id + time range on the take). */
+  captureSessionId?: string;
+  tStartMs?: number;
+  tEndMs?: number;
 }
 
 export interface CaseData {
@@ -197,6 +299,12 @@ export interface CaseData {
   /** Citations / further reading (free-form lines or URLs). */
   references?: string[];
 
+  /**
+   * Continuous authoring takes for this case (optional). Findings may point
+   * back via `captureSessionId` + `tStartMs`/`tEndMs`.
+   */
+  captureSessions?: CaptureSession[];
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -208,6 +316,26 @@ export interface StructuredFinding {
   teachingPoints: string[];
 }
 
+/**
+ * One finding carved out of a continuous capture session. Includes the time
+ * range on the session clock so we can slice the recorded track / audio later.
+ */
+export interface StructuredSessionFinding extends StructuredFinding {
+  /** ms from session start — inclusive. */
+  tStartMs: number;
+  /** ms from session start — exclusive/end. */
+  tEndMs: number;
+  /** Suggested marker from nearest cursor sample in-range (may be absent). */
+  suggestedMarker?: Marker;
+  suggestedSliceIndex?: number;
+}
+
+/** Full continuous-session structure response. */
+export interface StructuredSession {
+  transcript: string;
+  findings: StructuredSessionFinding[];
+}
+
 // ============================================================================
 // SaaS entity hierarchy (CLAUDE.md §4a):  Org → Patient → Study → Case → Finding
 //
@@ -217,6 +345,13 @@ export interface StructuredFinding {
 // ============================================================================
 
 export type UserRole = "admin" | "author" | "student";
+
+/** Platform-wide role (above any org). Super-admin only. */
+export type PlatformRole = "super_admin";
+
+/** Per-org membership role (ARCHITECTURE § identity). */
+export type MembershipRole = "owner" | "admin" | "author" | "student";
+
 export type CaseStatus = "draft" | "published";
 
 // ----------------------------------------------------------------------------
@@ -287,8 +422,234 @@ export interface User {
   orgId: string;
   email: string;
   name?: string;
+  /** @deprecated Prefer Membership.role + platformRole. Kept for seed back-compat. */
   role: UserRole;
+  /** Platform staff — not scoped to a single org. */
+  platformRole?: PlatformRole;
+  /** Better Auth / Google subject id when linked. */
+  authProviderId?: string;
+  image?: string;
   createdAt: string;
+}
+
+/**
+ * Per-org membership — source of truth for RBAC.
+ * A request is authorized iff the session user holds a Membership in the
+ * resource's orgId with a sufficient role (or is platform super_admin).
+ */
+export interface Membership {
+  id: string;
+  userId: string;
+  orgId: string;
+  role: MembershipRole;
+  status?: "active" | "invited" | "revoked";
+  invitedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Verified teacher profile tied to a User (marketplace face).
+ * Extends attribution-only Author; same id space when migrated.
+ */
+export interface AuthorProfile {
+  id: string;
+  userId: string;
+  orgId: string;
+  name: string;
+  avatarUrl?: string;
+  bio?: string;
+  institution?: string;
+  credentials?: string;
+  subspecialties?: BodySystem[];
+  socials?: { website?: string; twitter?: string; linkedin?: string };
+  verification: "unverified" | "pending" | "verified" | "rejected";
+  /**
+   * Cloned teaching voice for live tutor Q&A (Layer 3). Recorded walk-throughs
+   * never use this — they play the teacher's real mic take.
+   */
+  voice?: AuthorVoice;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Teacher voice clone enrollment (ElevenLabs voice_id + status). */
+export type AuthorVoiceStatus = "none" | "pending" | "ready" | "failed";
+
+export interface AuthorVoice {
+  provider: "elevenlabs" | "gemini";
+  /** ElevenLabs voice_id when provider is elevenlabs. */
+  voiceId?: string;
+  status: AuthorVoiceStatus;
+  /** Sample audio URLs used to train the clone (R2 /audio). */
+  sampleAudioUrls?: string[];
+  /** ISO time of last successful clone. */
+  clonedAt?: string;
+  /** Consent that synthetic speech may use their teaching samples. */
+  consentAt?: string;
+}
+
+/** Student enrollment in a course (marketplace entitlement). */
+export interface Enrollment {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  source: "free" | "purchase" | "seat" | "subscription";
+  status: "active" | "canceled" | "expired";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Per-user progress on a course (Coursera/Udemy "continue learning").
+ * Completion is case-based — radiology lessons are interactive DICOM cases.
+ */
+export interface Progress {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  /** Case IDs the learner has marked complete (ordered by completion time). */
+  completedCaseIds: string[];
+  /** Last case opened in this course (resume deep-link). */
+  lastOpenedCaseId?: string;
+  /** 0–100, derived from completed / course.caseIds.length. */
+  percentComplete: number;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Saved-for-later course (Udemy wishlist pattern). */
+export interface WishlistItem {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  createdAt: string;
+}
+
+/** Learner review of a course (trust signal). */
+export interface Review {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  /** Integer 1–5. */
+  rating: number;
+  body?: string;
+  authorName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Certificate of Completion — NOT CME / AMA PRA Category 1 Credit.
+ * Issued when Progress.percentComplete reaches 100 for a course
+ * (and the course assessment is passed, when one exists).
+ */
+export interface Certificate {
+  id: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  courseTitle: string;
+  learnerName: string;
+  issuedAt: string;
+  /** Always false until an ACCME-accredited partner is wired. */
+  cmeEligible: false;
+}
+
+// ============================================================================
+// Assessment (ARCHITECTURE.md §5) — end-of-course quiz on the viewer we own.
+// Questions embed on Assessment for seed/dev simplicity; Attempt persists scores.
+// ============================================================================
+
+export type QuestionKind = "mcq" | "click_finding" | "report";
+
+export interface McqQuestion {
+  id: string;
+  kind: "mcq";
+  prompt: string;
+  options: string[];
+  /** 0-based index into `options`. Never sent to the client until after submit. */
+  correctIndex: number;
+  rationale?: string;
+}
+
+/** Click the finding on a normalized [0,1] imaging surface (reuses Marker). */
+export interface ClickFindingQuestion {
+  id: string;
+  kind: "click_finding";
+  prompt: string;
+  caseId: string;
+  findingId: string;
+  targetMarker: Marker;
+  /** Hit radius in unit-square space; defaults to DEFAULT_HIT_RADIUS (0.08). */
+  toleranceRadiusPct?: number;
+}
+
+/**
+ * AI-graded structured report — typed for forward-compat; not used in the
+ * first course-page quiz ship (see lib/reportGrade.ts for the grading path).
+ */
+export interface ReportQuestion {
+  id: string;
+  kind: "report";
+  prompt: string;
+  caseId: string;
+  rubric: string[];
+  modelAnswer?: string;
+}
+
+export type Question = McqQuestion | ClickFindingQuestion | ReportQuestion;
+
+/** Public question shape — no answers / markers until graded. */
+export type PublicQuestion =
+  | Omit<McqQuestion, "correctIndex" | "rationale">
+  | Omit<ClickFindingQuestion, "targetMarker" | "toleranceRadiusPct">
+  | Omit<ReportQuestion, "rubric" | "modelAnswer">;
+
+export interface Assessment {
+  id: string;
+  orgId: string;
+  courseId: string;
+  title: string;
+  description?: string;
+  /** 0–100; attempt passes when score >= this. */
+  passingScore: number;
+  questions: Question[];
+  /** Always false until an ACCME-accredited partner is wired. */
+  cmeEligible: false;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AttemptResponse {
+  questionId: string;
+  /** MCQ selection (0-based). */
+  selectedIndex?: number;
+  /** Click-finding coords in [0,1]. */
+  x_pct?: number;
+  y_pct?: number;
+  /** Free-text report (future). */
+  text?: string;
+  correct: boolean;
+}
+
+export interface Attempt {
+  id: string;
+  userId: string;
+  orgId: string;
+  assessmentId: string;
+  courseId: string;
+  responses: AttemptResponse[];
+  /** 0–100. */
+  score: number;
+  passed: boolean;
+  startedAt: string;
+  submittedAt: string;
 }
 
 /**
@@ -368,8 +729,8 @@ export interface Case extends CaseData {
 // ============================================================================
 
 /**
- * A teacher/contributor credited on cases and courses. Attribution only — auth
- * (the `User` above) is a separate seam; an Author is the public teaching face.
+ * A teacher/contributor credited on cases and courses. Attribution only until
+ * linked: optional `userId` migrates this row toward AuthorProfile (same id).
  */
 export interface Author {
   id: string;
@@ -387,6 +748,12 @@ export interface Author {
   subspecialties?: BodySystem[];
   /** Optional social / professional links. */
   socials?: { website?: string; twitter?: string; linkedin?: string };
+  /** Authenticated user this public face belongs to (AuthorProfile join). */
+  userId?: string;
+  /** Verification gate for public publishing. Absent = unverified attribution. */
+  verification?: AuthorProfile["verification"];
+  /** Live-tutor voice clone (same shape as AuthorProfile.voice). */
+  voice?: AuthorVoice;
   createdAt: string;
   updatedAt: string;
 }

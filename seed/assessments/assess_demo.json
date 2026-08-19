@@ -1,0 +1,48 @@
+{
+  "id": "assess_demo",
+  "orgId": "org_demo",
+  "courseId": "course_demo",
+  "title": "Foundations post-test",
+  "description": "Check that you can set a search pattern and localize a finding before claiming your certificate.",
+  "passingScore": 70,
+  "cmeEligible": false,
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "questions": [
+    {
+      "id": "q_mcq_search",
+      "kind": "mcq",
+      "prompt": "Before zooming in on a subtle finding, what should you do first?",
+      "options": [
+        "Narrow the window to bone settings immediately",
+        "Set your search pattern across the full series",
+        "Skip to the last slice and work backwards only",
+        "Disable comparison series to reduce distraction"
+      ],
+      "correctIndex": 1,
+      "rationale": "A structured search pattern prevents missed findings before you zoom or window in."
+    },
+    {
+      "id": "q_mcq_window",
+      "kind": "mcq",
+      "prompt": "Why adjust window/level when reviewing a region of interest?",
+      "options": [
+        "It changes the DICOM StudyInstanceUID",
+        "It brings out subtle density differences that a wide window can hide",
+        "It permanently crops the series for other learners",
+        "It replaces the need for a comparison series"
+      ],
+      "correctIndex": 1,
+      "rationale": "Window/level is a display transform — use it to reveal contrast that a default window can obscure."
+    },
+    {
+      "id": "q_click_f1",
+      "kind": "click_finding",
+      "prompt": "Click the authored finding marker on the overview image (left-center of the viewport).",
+      "caseId": "demo-pacsbin",
+      "findingId": "f1",
+      "targetMarker": { "x_pct": 0.25, "y_pct": 0.5, "shape": "circle" },
+      "toleranceRadiusPct": 0.08
+    }
+  ]
+}

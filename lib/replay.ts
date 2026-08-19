@@ -1,19 +1,12 @@
 // ============================================================================
-// lib/replay.ts  (client only)
+// lib/replay.ts  (client only — Author Studio QA)
 //
-// The "replay exactly" half of the record → replay mechanic. Given a
-// RecordedTrack, the viewer's imperative controls, and the clock, a
-// requestAnimationFrame loop fires each recorded event the instant its `t`
-// arrives — calling `controls.applyEvent` for viewer state and emitting
-// cursor/annotation events to an overlay renderer for the laser pointer.
+// Exact re-application of a RecordedTrack for the TEACHER to verify capture.
+// The student product does NOT VCR-replay tracks; digests arm the AI tutor
+// instead (docs/CONSULTANT_READING.md).
 //
 // THE CLOCK: if a narration <audio> element is provided we lock to its
-// `currentTime` (so the retrace can never drift from the teacher's voice). With
-// no audio we fall back to a wall clock (performance.now). Either way, replay
-// is an exact re-application of the recorded list, in order.
-//
-// Because the recorded log is dense (camera/voi throttled ~50ms, cursor ~40ms),
-// re-applying events in order reproduces smooth motion with no tweening.
+// `currentTime`. With no audio we fall back to a wall clock (performance.now).
 // ============================================================================
 
 import type { RecordedEvent, RecordedTrack } from "./types";

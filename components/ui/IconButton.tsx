@@ -14,6 +14,8 @@ const iconButtonVariants = cva(
           "text-secondary hover:bg-overlay hover:text-primary active:bg-overlay/70",
         secondary:
           "border border-strong bg-elevated text-primary hover:border-accent/40 hover:bg-overlay",
+        primary:
+          "bg-accent text-accent-foreground shadow-sm hover:brightness-[1.07]",
         danger: "text-secondary hover:bg-danger/15 hover:text-danger",
       },
       size: {

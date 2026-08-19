@@ -8,22 +8,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { generate, parseJsonLoose, userParts } from "@/lib/gemini";
+import { STRUCTURE_FINDING_SYSTEM } from "@/lib/teachingPrompt";
 import type { StructuredFinding } from "@/lib/types";
 
 export const runtime = "nodejs";
 
-const SYSTEM = `You structure a radiologist's dictated finding into JSON for a teaching tool.
-Return ONLY a JSON object — no prose, no markdown, no code fences — with EXACTLY this shape:
-{
-  "label": string,          // short finding name, e.g. "ACL tear"
-  "description": string,    // one or two sentences describing the finding
-  "teachingPoints": string[] // 0-4 concise teaching points / associated signs
-}
-Rules:
-- Use the radiologist's words; do not invent findings not in the transcript.
-- "label" is a terse title (2-5 words). "description" is full prose.
-- If no teaching points are mentioned, return an empty array.
-- Output must be valid JSON parseable by JSON.parse.`;
+const SYSTEM = STRUCTURE_FINDING_SYSTEM;
 
 export async function POST(req: NextRequest) {
   try {

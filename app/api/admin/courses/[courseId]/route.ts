@@ -5,12 +5,8 @@
 //   DELETE /api/admin/courses/[courseId]  -> delete the course
 
 import { NextRequest, NextResponse } from "next/server";
-import {
-  DEFAULT_ORG_ID,
-  getCourse,
-  updateCourse,
-  deleteCourse,
-} from "@/lib/cases";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { getCourse, updateCourse, deleteCourse } from "@/lib/cases";
 import {
   BODY_SYSTEMS,
   DIFFICULTIES,
@@ -21,8 +17,6 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ORG = DEFAULT_ORG_ID;
 
 function asSystem(v: unknown): BodySystem | undefined {
   return typeof v === "string" && (BODY_SYSTEMS as string[]).includes(v)
@@ -39,9 +33,16 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: { courseId: string } }
 ) {
-  const course = await getCourse(ORG, params.courseId);
-  if (!course) return NextResponse.json({ error: "Course not found." }, { status: 404 });
-  return NextResponse.json({ course });
+  try {
+    const orgId = await requireAuthorOrg();
+    const course = await getCourse(orgId, params.courseId);
+    if (!course) return NextResponse.json({ error: "Course not found." }, { status: 404 });
+    return NextResponse.json({ course });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
 }
 
 interface PatchBody {
@@ -59,6 +60,7 @@ export async function PATCH(
   { params }: { params: { courseId: string } }
 ) {
   try {
+    const orgId = await requireAuthorOrg();
     const body = (await req.json()) as PatchBody;
     const patch: Parameters<typeof updateCourse>[2] = {};
     if (typeof body.title === "string") {
@@ -74,10 +76,12 @@ export async function PATCH(
     if (Array.isArray(body.caseIds)) patch.caseIds = body.caseIds;
     if (body.status === "draft" || body.status === "published") patch.status = body.status;
 
-    const updated = await updateCourse(ORG, params.courseId, patch);
+    const updated = await updateCourse(orgId, params.courseId, patch);
     if (!updated) return NextResponse.json({ error: "Course not found." }, { status: 404 });
     return NextResponse.json({ course: updated });
   } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -87,7 +91,14 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: { courseId: string } }
 ) {
-  const ok = await deleteCourse(ORG, params.courseId);
-  if (!ok) return NextResponse.json({ error: "Course not found." }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  try {
+    const orgId = await requireAuthorOrg();
+    const ok = await deleteCourse(orgId, params.courseId);
+    if (!ok) return NextResponse.json({ error: "Course not found." }, { status: 404 });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
 }

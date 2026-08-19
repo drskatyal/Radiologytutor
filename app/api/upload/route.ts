@@ -14,9 +14,9 @@
 //   • files that don't look like DICOM (no "DICM" magic at offset 128) are
 //     skipped, not stored.
 //
-// NOTE: de-identification is NOT yet wired here. Until it is, upload only
-// already-anonymized teaching studies. (Planned: Orthanc anonymize-on-ingest
-// + pydicom `deid` for burned-in pixel PHI + a manual review gate.)
+// De-id: orthancIngestInstance runs lib/deid.ts (header identity gate) and
+// refuses residual PatientName/ID/DOB/etc. Pixel OCR is not claimed. Upload
+// already-anonymized teaching studies; burned-in PHI still needs a later scanner.
 
 import { NextRequest, NextResponse } from "next/server";
 import AdmZip from "adm-zip";
@@ -26,6 +26,10 @@ import {
   orthancSeriesMeta,
   orthancGet,
 } from "@/lib/orthanc";
+import { DeidFailError } from "@/lib/deid";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { upsertDeidReport } from "@/lib/cases";
+import type { DeidReport } from "@/lib/deid";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -85,6 +89,14 @@ function classify(name: string, bytes: ArrayBuffer): { skip?: string } {
 }
 
 export async function POST(req: NextRequest) {
+  let orgId: string;
+  try {
+    orgId = await requireAuthorOrg();
+  } catch (err) {
+    const denied = jsonAuthError(err);
+    if (denied) return denied;
+    throw err;
+  }
   if (!orthancConfigured()) {
     return NextResponse.json(
       {
@@ -146,7 +158,9 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Store each DICOM instance; group by Orthanc series id.
+  //    Keep the best (passing) de-id report per Orthanc study for persistence.
   const seriesMap = new Map<string, { studyId: string; count: number }>();
+  const deidByStudy = new Map<string, DeidReport>();
   let stored = 0;
   const failed: SkippedOut[] = [];
 
@@ -157,6 +171,9 @@ export async function POST(req: NextRequest) {
       const existing = seriesMap.get(res.ParentSeries);
       if (existing) existing.count++;
       else seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 1 });
+      if (!deidByStudy.has(res.ParentStudy)) {
+        deidByStudy.set(res.ParentStudy, res.deidReport);
+      }
     } catch (e) {
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
     }
@@ -174,6 +191,14 @@ export async function POST(req: NextRequest) {
       if (!study) {
         study = await studyMeta(info.studyId);
         studyCache.set(info.studyId, study);
+        const report = deidByStudy.get(info.studyId);
+        if (report) {
+          await upsertDeidReport(orgId, {
+            ...report,
+            studyInstanceUID: study.studyInstanceUID,
+            studyId: info.studyId,
+          }).catch(() => undefined);
+        }
       }
       const meta = await orthancSeriesMeta(seriesId);
       series.push({
@@ -225,6 +250,9 @@ async function studyMeta(orthancStudyId: string): Promise<{
 
 /** Turn an Orthanc error into something a radiologist can act on. */
 function friendlyStoreError(e: unknown): string {
+  if (e instanceof DeidFailError || (e instanceof Error && e.message.startsWith("DEID_FAIL"))) {
+    return "this file still has patient identifiers — de-identify the study before upload";
+  }
   const msg = e instanceof Error ? e.message : String(e);
   if (/-> 4\d\d/.test(msg)) return "not a valid DICOM file";
   if (/ECONNREFUSED|fetch failed|ENOTFOUND|timeout/i.test(msg)) {

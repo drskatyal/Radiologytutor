@@ -1,0 +1,9 @@
+{
+  "id": "user_demo",
+  "orgId": "org_demo",
+  "email": "demo@flowrad.local",
+  "name": "Demo Teacher",
+  "role": "admin",
+  "platformRole": "super_admin",
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}

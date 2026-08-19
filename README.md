@@ -43,10 +43,13 @@ npm run dev                  # http://localhost:3000
 Set in `.env.local`:
 
 - `GEMINI_API_KEY` — from https://aistudio.google.com/apikey (required). One key
-  powers STT, the web-grounded tutor, and text-to-speech.
-- `GEMINI_MODEL` — Flash model id (default `gemini-flash-latest`)
-- `GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE` — tutor voice (defaults
+  powers STT, the web-grounded tutor, text-to-speech fallback, and Live tokens.
+- `GEMINI_MODEL` — Flash model id (default `gemini-3.7-flash`)
+- `GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE` — tutor voice fallback (defaults
   `gemini-2.5-flash-preview-tts` / `Kore`; falls back to browser TTS if absent)
+- `ELEVENLABS_API_KEY` — cloned teacher voice for live Q&A (Layer 3 only)
+- `GEMINI_LIVE_MODEL` — realtime latency fallback; mint via `POST /api/voice/realtime`
+  (see `docs/CONSULTANT_READING.md`)
 
 ## Routes
 

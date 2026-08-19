@@ -1,12 +1,12 @@
 import { notFound } from "next/navigation";
-import { Building2, GraduationCap, LayoutGrid, ShieldQuestion } from "lucide-react";
+import { Building2, GraduationCap, LayoutGrid } from "lucide-react";
 import {
-  DEFAULT_ORG_ID,
   getAuthor,
   listCatalogCases,
   listCourses,
 } from "@/lib/cases";
-import { Badge, Breadcrumbs, EmptyState, PageContainer, SectionHeading } from "@/components/ui";
+import { activeOrgId } from "@/lib/auth";
+import { Badge, Breadcrumbs, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { CaseCardGrid } from "@/components/catalog/CaseCard";
 import { CoursesRail } from "@/components/catalog/Rails";
@@ -14,12 +14,13 @@ import { CoursesRail } from "@/components/catalog/Rails";
 export const dynamic = "force-dynamic";
 
 export default async function AuthorPage({ params }: { params: { id: string } }) {
-  const author = await getAuthor(DEFAULT_ORG_ID, params.id);
+  const orgId = await activeOrgId();
+  const author = await getAuthor(orgId, params.id);
   if (!author) notFound();
 
   const [cases, allCourses] = await Promise.all([
-    listCatalogCases(DEFAULT_ORG_ID, { authorId: author.id, status: "published" }),
-    listCourses(DEFAULT_ORG_ID, { status: "published" }),
+    listCatalogCases(orgId, { authorId: author.id, status: "published" }),
+    listCourses(orgId, { status: "published" }),
   ]);
   const courses = allCourses.filter((c) => c.authorId === author.id);
 
@@ -54,10 +55,7 @@ export default async function AuthorPage({ params }: { params: { id: string } })
               {author.institution}
             </Badge>
           )}
-          <Badge variant="neutral" className="gap-1.5">
-            <ShieldQuestion className="h-3 w-3" aria-hidden="true" />
-            Unverified
-          </Badge>
+          <VerifiedBadge status={author.verification} />
           <Badge variant="neutral" className="gap-1.5 tabular-nums">
             <LayoutGrid className="h-3 w-3" aria-hidden="true" />
             {cases.length} case{cases.length === 1 ? "" : "s"}

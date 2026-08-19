@@ -1,12 +1,12 @@
 // POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
 //
 // Body:  { caseId, mode, messages: {role,text}[], question?, currentFindingId? }
-// Reply: { answer: string, action: TeachingViewerAction }
+// Reply: { answer: string, action: TeachingViewerAction, actions: TeachingViewerAction[] }
 //
 // This runs the TEACHING PLAN: given the case + findings context and the
 // student's (already-transcribed) question, Gemini returns the spoken answer
 // plus an optional viewer action (show_finding / next_in_tour / prev_in_tour /
-// set_window) that the FRONTEND executes to drive our self-hosted viewer.
+// set_window / point_to) that the FRONTEND executes to drive our self-hosted viewer.
 //
 // Transcription is a SEPARATE call (/api/transcribe) — we never merge them.
 // `messages` is the prior chat history; `question` is the current turn (when
@@ -15,21 +15,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCase } from "@/lib/cases";
-import type { CaseData } from "@/lib/types";
+import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
 
 export const runtime = "nodejs";
 
-function findingsContext(data: CaseData): string {
-  return data.findings
-    .slice()
-    .sort((a, b) => a.order - b.order)
-    .map(
-      (f) =>
-        `- id=${f.id} | order=${f.order} | ${f.label}: ${f.description}` +
-        (f.teachingPoints.length ? ` | teaching: ${f.teachingPoints.join("; ")}` : "")
-    )
-    .join("\n");
-}
 
 interface InMessage {
   role: "user" | "assistant";
@@ -51,7 +40,8 @@ export async function POST(req: NextRequest) {
       | "guided"
       | "socratic"
       | "free"
-      | "reporting";
+      | "reporting"
+      | "viva";
     const messages = (body.messages ?? []) as InMessage[];
     const currentFindingId = body.currentFindingId
       ? String(body.currentFindingId)
@@ -79,7 +69,7 @@ export async function POST(req: NextRequest) {
       caseTitle: data.title,
       modality: data.modality,
       mode,
-      findingsContext: findingsContext(data),
+      findingsContext: formatFindingsContextFromCase(data),
       currentFindingId,
     });
 
