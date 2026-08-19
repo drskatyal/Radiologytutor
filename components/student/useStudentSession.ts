@@ -282,10 +282,12 @@ export function useStudentSession(
   /** Animate the laser to a normalized point, then optionally land a marker. */
   const pointLaser = useCallback(async (x: number, y: number, landMarker?: Marker) => {
     if (!overlay.current?.animateTo) return;
+    const nx = Number.isFinite(x) ? x : 0.5;
+    const ny = Number.isFinite(y) ? y : 0.5;
     setPointing(true);
     setMarkerVisible(false);
     try {
-      await overlay.current.animateTo(x, y, { durationMs: 900 });
+      await overlay.current.animateTo(nx, ny, { durationMs: 900 });
       if (landMarker) {
         setMarker(landMarker);
         setMarkerVisible(true);

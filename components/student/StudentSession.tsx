@@ -7,8 +7,6 @@
 // transcript / finding spine. Capture tracks arm the model; they are not a tape.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
   ChevronRight,
@@ -74,7 +72,6 @@ export default function StudentSession({
   /** When opened from a course curriculum — mark complete at end of Teach tour. */
   courseId?: string | null;
 }) {
-  const router = useRouter();
   // Teach is the product: autonomous attending. Exam = viva.
   const [mode, setMode] = useState<SessionMode>("guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
@@ -333,16 +330,12 @@ export default function StudentSession({
       {/* Top HUD — above viewer chrome so Library is always clickable */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between gap-3 p-3">
         <div className="pointer-events-auto flex min-w-0 flex-wrap items-center gap-2">
-          <Link
+          <a
             href="/library"
-            onClick={(e) => {
-              e.preventDefault();
-              router.push("/library");
-            }}
-            className="inline-flex items-center rounded-lg border border-subtle bg-elevated px-2.5 py-1.5 text-xs font-medium text-secondary hover:text-primary"
+            className="inline-flex items-center rounded-md border border-subtle bg-elevated px-2.5 py-1.5 text-xs font-medium text-secondary hover:text-primary"
           >
             Library
-          </Link>
+          </a>
           <Badge variant="neutral" className="max-w-[14rem] truncate sm:max-w-xs">
             {caseData.title}
           </Badge>
@@ -434,8 +427,8 @@ export default function StudentSession({
         </p>
       )}
 
-      {/* Bottom dock */}
-      <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center p-4">
+      {/* Bottom dock — above caption so Teach/Exam always receive clicks */}
+      <div className="absolute inset-x-0 bottom-0 z-40 flex justify-center p-4">
         <div className="flex max-w-xl flex-col items-center gap-2">
           {hasFindings && (
             <div className="flex items-center gap-1.5" aria-label="Finding progress">
@@ -458,7 +451,7 @@ export default function StudentSession({
             </div>
           )}
 
-          <div className="flex items-center gap-1 rounded-lg border border-subtle bg-elevated/90 p-1">
+          <div className="flex items-center gap-1 rounded-md border border-subtle bg-elevated p-1">
             <button
               type="button"
               onClick={() => setIntent("teach")}
@@ -485,7 +478,7 @@ export default function StudentSession({
             </button>
           </div>
 
-          <div className="flex items-center gap-3 rounded-lg border border-strong/50 bg-elevated/90 px-4 py-2.5 shadow-lg backdrop-blur">
+          <div className="flex items-center gap-3 rounded-md border border-subtle bg-elevated px-4 py-2.5 shadow-md">
             <button
               type="button"
               onClick={openAsk}

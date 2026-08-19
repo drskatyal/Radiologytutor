@@ -25,11 +25,11 @@ export function TutorCaption({
   if (!text.trim()) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-28 z-30 flex justify-center px-4">
+    <div className="pointer-events-none absolute inset-x-0 bottom-40 z-20 flex justify-center px-4 sm:bottom-44">
       <div
         className={cn(
-          "pointer-events-auto w-full max-w-xl rounded-lg border px-3.5 py-2.5 shadow-lg backdrop-blur",
-          "border-strong/50 bg-elevated/90"
+          "w-full max-w-xl rounded-lg border px-3.5 py-2.5 shadow-md",
+          "border-subtle bg-elevated/95"
         )}
         role="status"
         aria-live="polite"
