@@ -1,0 +1,87 @@
+{
+  "caseId": "case-neuro-memprage",
+  "title": "BBMRI MEMPRAGE — basal ganglia anatomy",
+  "modality": "MR",
+  "pacsbinBaseUrl": "/cornerstone",
+  "orgId": "org_demo",
+  "patientId": "pat_neuro_bbmri",
+  "status": "published",
+  "specialty": "Neuroradiology",
+  "difficulty": "beginner",
+  "system": "Neuro",
+  "tags": ["bbmri", "memprage", "anatomy", "registrar"],
+  "authorId": "auth_demo",
+  "studyRefs": [
+    {
+      "studyInstanceUID": "1.3.12.2.1107.5.2.32.35162.30000012020622041507900000157",
+      "seriesInstanceUIDs": [
+        "1.3.12.2.1107.5.2.32.35162.2012021515542222914355135.0.0.0"
+      ],
+      "role": "current",
+      "order": 0
+    }
+  ],
+  "clinicalHistory": "Anonymized BBMRI volunteer MEMPRAGE — no acute presentation. Use this case to rehearse deep gray-matter anatomy on high-resolution T1.",
+  "technique": "MEMPRAGE 1 mm isotropic sagittal (BBMRI-ERIC volunteer dataset).",
+  "primaryDiagnosis": "Normal basal ganglia anatomy (teaching landmarks).",
+  "targetLevel": "registrar",
+  "learningObjectives": [
+    "Identify caudate, putamen, and internal capsule on sagittal MEMPRAGE.",
+    "Relate deep gray-matter morphology to the frontal horn contour.",
+    "Describe a concise search pattern for basal ganglia on T1."
+  ],
+  "discussion": "The BBMRI-ERIC sample is widely used for method development; here it anchors registrar anatomy before pathology cases. Requires the study in Orthanc (same UIDs as the FlowRad recording demo).",
+  "references": [
+    "BBMRI-ERIC — European research biobank imaging resource.",
+    "Radiopaedia: Basal ganglia anatomy (https://radiopaedia.org/articles/basal-ganglia)"
+  ],
+  "findings": [
+    {
+      "id": "f_ng1",
+      "label": "Caudate head",
+      "description": "The caudate head bulges into the frontal horn, forming the lateral wall of the ventricle on sagittal MEMPRAGE.",
+      "teachingPoints": [
+        "Follow the caudate contour from head toward the body.",
+        "Compare left and right symmetry before calling subtle atrophy."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.42, "y_pct": 0.48, "shape": "circle" },
+      "order": 1,
+      "studyInstanceUID": "1.3.12.2.1107.5.2.32.35162.30000012020622041507900000157",
+      "seriesInstanceUID": "1.3.12.2.1107.5.2.32.35162.2012021515542222914355135.0.0.0",
+      "sliceIndex": 3
+    },
+    {
+      "id": "f_ng2",
+      "label": "Putamen",
+      "description": "Lentiform nucleus — putamen lies lateral to the internal capsule with slightly lower signal than globus pallidus externally.",
+      "teachingPoints": [
+        "Trace internal capsule as the thin white-matter stripe between caudate and putamen.",
+        "Name structures aloud while scrolling — it trains report language."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.38, "y_pct": 0.55, "shape": "circle" },
+      "order": 2,
+      "studyInstanceUID": "1.3.12.2.1107.5.2.32.35162.30000012020622041507900000157",
+      "seriesInstanceUID": "1.3.12.2.1107.5.2.32.35162.2012021515542222914355135.0.0.0",
+      "sliceIndex": 5
+    },
+    {
+      "id": "f_ng3",
+      "label": "Frontal horn",
+      "description": "Use the frontal horn as your anchor — caudate head, corpus callosum genu, and septum pellucidum define this compartment.",
+      "teachingPoints": [
+        "Ventricular shape changes quickly on sagittal scroll — pause each slice.",
+        "Link ventricular contour to adjacent parenchymal findings in reports."
+      ],
+      "state": " ",
+      "marker": { "x_pct": 0.52, "y_pct": 0.42, "shape": "arrow" },
+      "order": 3,
+      "studyInstanceUID": "1.3.12.2.1107.5.2.32.35162.30000012020622041507900000157",
+      "seriesInstanceUID": "1.3.12.2.1107.5.2.32.35162.2012021515542222914355135.0.0.0",
+      "sliceIndex": 4
+    }
+  ],
+  "createdAt": "2026-08-19T00:00:00.000Z",
+  "updatedAt": "2026-08-19T00:00:00.000Z"
+}

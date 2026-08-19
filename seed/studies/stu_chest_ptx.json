@@ -1,0 +1,12 @@
+{
+  "id": "stu_chest_ptx",
+  "orgId": "org_demo",
+  "patientId": "pat_chest_ptx",
+  "studyInstanceUID": "1.2.840.113619.2.demo.pacsbin.current",
+  "studyDate": "20240101",
+  "modality": "CT",
+  "description": "Demo CT — Pacsbin teaching shell",
+  "seriesInstanceUIDs": [],
+  "createdAt": "2026-08-19T00:00:00.000Z",
+  "updatedAt": "2026-08-19T00:00:00.000Z"
+}

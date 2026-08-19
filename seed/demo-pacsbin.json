@@ -11,6 +11,20 @@
   "system": "Chest",
   "tags": ["search pattern", "windowing", "comparison"],
   "authorId": "auth_demo",
+  "clinicalHistory": "Teaching demo — dual-series CT with comparison pane. Practice a structured search before calling findings.",
+  "technique": "Portal-venous phase CT chest (demo Pacsbin 2.0 study).",
+  "primaryDiagnosis": "Multi-finding teaching shell — use for windowing and series comparison drills.",
+  "targetLevel": "registrar",
+  "learningObjectives": [
+    "Compare current and prior series side by side before zooming.",
+    "Adjust window/level deliberately for each finding.",
+    "Verbalise findings in report order (overview → detail → impression)."
+  ],
+  "discussion": "Public Pacsbin demo case (WJUZ1VRmoL) used across radiology educator workshops. Findings below mix authored Pacsbin states with registrar teaching points.",
+  "references": [
+    "Pacsbin demo case — https://pacsbin.com/viewer/case/WJUZ1VRmoL",
+    "LearnAbdominal.com — Tips for educators using Pacsbin in lectures (https://www.learnabdominal.com/resources/tips-for-educators)"
+  ],
   "studyRefs": [
     {
       "studyInstanceUID": "1.2.840.113619.2.demo.pacsbin.current",
