@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
-import { Inter, Space_Grotesk } from "next/font/google";
+import { Source_Sans_3, Source_Serif_4 } from "next/font/google";
 import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
-// Inter — our body/UI typeface. Exposed as `--font-sans`. next/font self-hosts
-// the font at build time; if Google can't be reached the `fallback` system
-// stack keeps the build (and the UI) working.
-const inter = Inter({
+// Source Sans 3 — clinical UI face (not Inter). Exposed as `--font-sans`.
+const sans = Source_Sans_3({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-sans",
@@ -15,21 +13,19 @@ const inter = Inter({
     "system-ui",
     "-apple-system",
     "Segoe UI",
-    "Roboto",
     "Helvetica Neue",
     "Arial",
     "sans-serif",
   ],
 });
 
-// Space Grotesk — a modern geometric grotesk used for headings and brand marks.
-// Gives the product a distinct, engineered voice next to Inter's neutral body.
-const display = Space_Grotesk({
+// Source Serif 4 — editorial display for brand + course/author titles.
+const display = Source_Serif_4({
   subsets: ["latin"],
   display: "swap",
   weight: ["500", "600", "700"],
   variable: "--font-display",
-  fallback: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+  fallback: ["ui-serif", "Georgia", "Times New Roman", "serif"],
 });
 
 export const metadata: Metadata = {
@@ -43,7 +39,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${display.variable}`}>
+    <html lang="en" className={`${sans.variable} ${display.variable}`}>
       <body>
         <AppShell>{children}</AppShell>
       </body>

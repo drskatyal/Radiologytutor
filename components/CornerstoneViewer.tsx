@@ -42,7 +42,13 @@ import {
   lerp,
   type CornerstoneViewerState,
 } from "../lib/viewerController";
-import type { RecordedEvent, ViewerEvent } from "../lib/types";
+import { sopUidFromImageId } from "../lib/findingDisplayState";
+import { voiTransitionMs } from "../lib/voiTransition";
+import {
+  normalizeMeasurements,
+  type RawAnnotationLike,
+} from "../lib/findingMeasurements";
+import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/types";
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
@@ -104,6 +110,7 @@ interface DrivableViewport {
   resetProperties?: () => void;
   getImageIds: () => string[];
   getCurrentImageIdIndex: () => number;
+  getCurrentImageId?: () => string;
   setImageIdIndex: (i: number) => Promise<void> | void;
   getProperties: () => { voiRange?: { lower: number; upper: number }; invert?: boolean };
   setProperties: (p: { voiRange?: { lower: number; upper: number }; invert?: boolean }) => void;
@@ -111,6 +118,9 @@ interface DrivableViewport {
   setZoom: (z: number) => void;
   getPan: () => [number, number];
   setPan: (p: [number, number]) => void;
+  worldToCanvas?: (p: [number, number, number]) => [number, number];
+  canvasToWorld?: (p: [number, number]) => [number, number, number];
+  element?: HTMLDivElement;
 }
 
 /**
@@ -126,7 +136,7 @@ export interface CornerstoneControls {
   imageCount: number;
   /** Animate the viewport to a target view over `durationMs` (default 700). */
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
-  /** Adjust window width/center (VOI), interpolated. */
+  /** Adjust window width/center (VOI). Duration auto-adapts unless overridden. */
   setWindow: (windowWidth: number, windowCenter: number, durationMs?: number) => void;
   /** Set inversion explicitly (record/replay + toolbar). */
   setInvert: (value: boolean) => void;
@@ -134,8 +144,18 @@ export interface CornerstoneControls {
   reset: () => void;
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
-  /** Current slice/window — used to prime a recording/replay. */
-  getStartState: () => { sliceIndex: number; ww?: number; wc?: number };
+  /** Current slice / VOI / SOP — primes recordings and finding landings. */
+  getStartState: () => {
+    sliceIndex: number;
+    ww?: number;
+    wc?: number;
+    sopInstanceUID?: string;
+  };
+  /**
+   * Snapshot of Length / Ellipse / Probe annotations currently on the
+   * viewport — attach to a Finding at save time.
+   */
+  getMeasurements: () => FindingMeasurement[];
   /** SeriesInstanceUIDs the viewer can switch between (multi-series cases). */
   seriesUIDs: string[];
   /** The SeriesInstanceUID currently shown (undefined for the bundled sample). */
@@ -240,6 +260,7 @@ export default function CornerstoneViewer({
   onReady,
   onEvent,
   className,
+  instanceId = "primary",
 }: {
   source?: ViewerSource;
   /**
@@ -264,6 +285,11 @@ export default function CornerstoneViewer({
   onEvent?: (e: ViewerEvent) => void;
   /** Wrapper class (the viewer fills it; imaging surface stays pure black). */
   className?: string;
+  /**
+   * Unique id when more than one Cornerstone stack is on screen (compare
+   * layout). Must be stable for the life of the mount. Default "primary".
+   */
+  instanceId?: string;
 }) {
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
@@ -312,6 +338,7 @@ export default function CornerstoneViewer({
   // bundled sample). This avoids the false-negative that killed the tools on
   // real wadors/uploaded studies before their plane metadata had resolved.
   const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
+  const destroyToolGroupRef = useRef<(id: string) => void>(() => {});
 
   const presets = presetsForModality(modality);
 
@@ -319,7 +346,7 @@ export default function CornerstoneViewer({
     let disposed = false;
     let renderingEngine: { destroy: () => void } | null = null;
     let detachListeners: () => void = () => {};
-    const toolGroupId = "flowrad-tg";
+    const toolGroupId = `flowrad-tg-${instanceId}`;
 
     (async () => {
       if (started.current || !elementRef.current) return;
@@ -332,14 +359,14 @@ export default function CornerstoneViewer({
 
         await core.init();
         await tools.init();
-        await loader.init({ maxWebWorkers: 1 });
+        await loader.init({ maxWebWorkers: 4 });
 
         setStatus("Loading series…");
         const imageIds = await buildImageIds(initialSource);
         if (disposed || !elementRef.current) return;
 
-        const renderingEngineId = "flowrad-engine";
-        const viewportId = "FLOWRAD_STACK";
+        const renderingEngineId = `flowrad-engine-${instanceId}`;
+        const viewportId = `FLOWRAD_STACK_${instanceId}`;
         const engine = new core.RenderingEngine(renderingEngineId);
         renderingEngine = engine;
 
@@ -376,9 +403,22 @@ export default function CornerstoneViewer({
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
-        ].forEach((T) => addTool(T));
+        ].forEach((T) => {
+          try {
+            addTool(T);
+          } catch {
+            // Already registered on a sibling viewport (compare layout).
+          }
+        });
 
         ToolGroupManager.destroyToolGroup(toolGroupId);
+        destroyToolGroupRef.current = (id: string) => {
+          try {
+            ToolGroupManager.destroyToolGroup(id);
+          } catch {
+            /* already gone */
+          }
+        };
         const tg = ToolGroupManager.createToolGroup(toolGroupId);
         if (!tg) throw new Error("could not create tool group");
         [
@@ -622,20 +662,45 @@ export default function CornerstoneViewer({
           vp.render();
         };
 
-        const getStartState = (): { sliceIndex: number; ww?: number; wc?: number } => {
+        const getStartState = (): {
+          sliceIndex: number;
+          ww?: number;
+          wc?: number;
+          sopInstanceUID?: string;
+        } => {
           const vp = viewportRef.current;
           if (!vp) return { sliceIndex: 0 };
           const v = voiToWwWc(vp.getProperties().voiRange);
-          return { sliceIndex: vp.getCurrentImageIdIndex(), ww: v?.ww, wc: v?.wc };
+          const ids = vp.getImageIds();
+          const idx = vp.getCurrentImageIdIndex();
+          const imageId =
+            typeof vp.getCurrentImageId === "function"
+              ? vp.getCurrentImageId()
+              : ids[idx];
+          const sop = sopUidFromImageId(imageId);
+          return {
+            sliceIndex: idx,
+            ww: v?.ww,
+            wc: v?.wc,
+            sopInstanceUID: sop,
+          };
         };
 
         // --- Smooth (interpolated) driving for the guided tour --------------
-        const setWindow = (ww: number, wc: number, durationMs = 500): void => {
+        // Adaptive: small ΔWW/WC scrolls like a radiologist; large preset jumps snap.
+        const setWindow = (ww: number, wc: number, durationMs?: number): void => {
           const vp = viewportRef.current;
           if (!vp) return;
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
+          const ms =
+            durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
-          cancelTweenRef.current = tween(durationMs, (e) => {
+          if (ms <= 0) {
+            vp.setProperties({ voiRange: wwWcToVoi(ww, wc) });
+            vp.render();
+            return;
+          }
+          cancelTweenRef.current = tween(ms, (e) => {
             vp.setProperties({
               voiRange: wwWcToVoi(lerp(from.ww, ww, e), lerp(from.wc, wc, e)),
             });
@@ -653,7 +718,8 @@ export default function CornerstoneViewer({
             setActivePreset(FULL_DYNAMIC_ID);
             return;
           }
-          setWindow(p.ww, p.wc, 320);
+          // Presets are often far apart — let adaptive logic snap bone↔lung.
+          setWindow(p.ww, p.wc);
           setActivePreset(p.id);
         };
         applyPresetRef.current = applyPreset;
@@ -667,12 +733,18 @@ export default function CornerstoneViewer({
           cancelTweenRef.current();
 
           // Slice change snaps (a new slice must be decoded) before the tween.
-          if (state.sliceFraction != null) {
+          if (state.sliceIndex != null || state.sliceFraction != null) {
             const ids = vp.getImageIds();
-            const idx = Math.max(
-              0,
-              Math.min(ids.length - 1, Math.round(state.sliceFraction * (ids.length - 1)))
-            );
+            const idx =
+              state.sliceIndex != null
+                ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
+                : Math.max(
+                    0,
+                    Math.min(
+                      ids.length - 1,
+                      Math.round((state.sliceFraction as number) * (ids.length - 1))
+                    )
+                  );
             if (idx !== vp.getCurrentImageIdIndex()) {
               await vp.setImageIdIndex(idx);
             }
@@ -686,22 +758,96 @@ export default function CornerstoneViewer({
           const fromPan = vp.getPan();
           const toPan = state.pan ?? fromPan;
 
+          const voiMs =
+            fromVoi && toWw != null && toWc != null
+              ? voiTransitionMs(fromVoi.ww, fromVoi.wc, toWw, toWc)
+              : 0;
+          // Camera keeps a calm cinematic duration; VOI may snap independently.
+          const cameraMs = Math.max(0, durationMs);
+          const totalMs = Math.max(voiMs, cameraMs);
+
+          if (voiMs <= 0 && fromVoi && toWw != null && toWc != null) {
+            vp.setProperties({ voiRange: wwWcToVoi(toWw, toWc) });
+            vp.render();
+          }
+
+          if (totalMs <= 0) {
+            if (toZoom != null) vp.setZoom(toZoom);
+            if (toPan) vp.setPan(toPan);
+            vp.render();
+            return;
+          }
+
           return new Promise<void>((resolve) => {
-            cancelTweenRef.current = tween(
-              durationMs,
-              (e) => {
-                if (fromVoi && toWw != null && toWc != null) {
-                  vp.setProperties({
-                    voiRange: wwWcToVoi(lerp(fromVoi.ww, toWw, e), lerp(fromVoi.wc, toWc, e)),
-                  });
-                }
-                vp.setZoom(lerp(fromZoom, toZoom, e));
-                vp.setPan([lerp(fromPan[0], toPan[0], e), lerp(fromPan[1], toPan[1], e)]);
-                vp.render();
-              },
-              resolve
-            );
+            cancelTweenRef.current = tween(totalMs, (e) => {
+              if (voiMs > 0 && fromVoi && toWw != null && toWc != null) {
+                const ve = Math.min(1, (e * totalMs) / voiMs);
+                vp.setProperties({
+                  voiRange: wwWcToVoi(
+                    lerp(fromVoi.ww, toWw, ve),
+                    lerp(fromVoi.wc, toWc, ve)
+                  ),
+                });
+              }
+              if (cameraMs > 0) {
+                const ce = Math.min(1, (e * totalMs) / cameraMs);
+                vp.setZoom(lerp(fromZoom, toZoom, ce));
+                vp.setPan([
+                  lerp(fromPan[0], toPan[0], ce),
+                  lerp(fromPan[1], toPan[1], ce),
+                ]);
+              }
+              vp.render();
+            }, resolve);
           });
+        };
+
+        const getMeasurements = (): FindingMeasurement[] => {
+          const vp = viewportRef.current;
+          const el = elementRef.current;
+          if (!vp || !el || typeof vp.worldToCanvas !== "function") return [];
+          const start = getStartState();
+          const canvas = el.querySelector("canvas");
+          const w = canvas?.clientWidth || el.clientWidth || 1;
+          const h = canvas?.clientHeight || el.clientHeight || 1;
+          const all =
+            (annotation.state.getAllAnnotations?.() as RawAnnotationLike[] | undefined) ??
+            [];
+          // Fallback: gather per-tool if getAllAnnotations is unavailable.
+          const list =
+            all.length > 0
+              ? all
+              : (["Length", "EllipticalROI", "RectangleROI", "Probe"] as const).flatMap(
+                  (toolName) => {
+                    try {
+                      return (annotation.state.getAnnotations(toolName, el) ??
+                        []) as RawAnnotationLike[];
+                    } catch {
+                      return [];
+                    }
+                  }
+                );
+
+          const mapped = list.map((raw) => {
+            const points = raw.data?.handles?.points ?? [];
+            const handlesPct: Array<[number, number]> = [];
+            for (const pt of points) {
+              if (!Array.isArray(pt) || pt.length < 2) continue;
+              const world = pt as [number, number, number];
+              const [cx, cy] = vp.worldToCanvas!(world);
+              handlesPct.push([
+                Math.min(1, Math.max(0, cx / w)),
+                Math.min(1, Math.max(0, cy / h)),
+              ]);
+            }
+            return {
+              raw,
+              handlesPct,
+              sopInstanceUID: start.sopInstanceUID,
+              sliceIndex: start.sliceIndex,
+            };
+          });
+          return normalizeMeasurements(mapped);
         };
 
         const handle: CornerstoneControls = {
@@ -713,6 +859,7 @@ export default function CornerstoneViewer({
           reset: () => resetRef.current(),
           applyEvent,
           getStartState,
+          getMeasurements,
           // Getters so callers always read the LIVE series list + active series
           // (both change as the rail loads / the viewer switches series).
           get seriesUIDs() {
@@ -754,6 +901,7 @@ export default function CornerstoneViewer({
       } catch {
         /* ignore */
       }
+      destroyToolGroupRef.current(toolGroupId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
@@ -795,7 +943,7 @@ export default function CornerstoneViewer({
     <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/60 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55 surface-hairline">
       {/* Brand mark */}
       <span className="flex select-none items-center gap-1.5 pl-1 pr-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent-sheen text-accent-foreground shadow-sm">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md border border-strong bg-elevated text-accent">
           <Activity className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
         </span>
         <span className="hidden font-display text-[11px] font-semibold tracking-tight text-primary sm:inline">
@@ -961,7 +1109,7 @@ function ToolButton({
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
         "disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "bg-accent-sheen text-accent-foreground shadow-sm"
+          ? "bg-accent text-accent-foreground shadow-sm"
           : "text-secondary hover:bg-overlay hover:text-primary active:scale-95"
       )}
     >
