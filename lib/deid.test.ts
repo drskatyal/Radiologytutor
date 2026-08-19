@@ -6,6 +6,7 @@ import {
   DeidFailError,
   evaluateDeid,
   inspectDicomTags,
+  isTciaResearchPseudonymId,
   scrubDicomTags,
   type DeidReport,
 } from "./deid.ts";
@@ -90,4 +91,19 @@ test("assertDeidPass throws DeidFailError on residual PatientName", () => {
 test("pixel OCR is never claimed", () => {
   const report = inspectDicomTags({ Modality: "CT" });
   assert.equal(report.pixelOcrScanned, false);
+});
+
+test("TCIA collection pseudonym PatientIDs pass the identity gate", () => {
+  assert.equal(isTciaResearchPseudonymId("LIDC-IDRI-0957"), true);
+  assert.equal(isTciaResearchPseudonymId("PD-1-Lung-00034"), true);
+  assert.equal(isTciaResearchPseudonymId("UPENN-GBM-00544"), true);
+  assert.equal(isTciaResearchPseudonymId("MRN123"), false);
+  const report = inspectDicomTags({ PatientID: "LIDC-IDRI-0957", Modality: "CT" });
+  assert.equal(evaluateDeid(report).pass, true);
+  const named = inspectDicomTags({
+    PatientName: "PD-1-Lung-00034",
+    PatientID: "PD-1-Lung-00034",
+    Modality: "CT",
+  });
+  assert.equal(evaluateDeid(named).pass, true);
 });
