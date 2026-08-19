@@ -2,12 +2,12 @@
   "id": "course_demo",
   "orgId": "org_demo",
   "title": "Foundations of Cross-Sectional Reading",
-  "description": "A starter course walking through a structured search pattern on a real CT study — set your windows, compare series, and call findings with confidence.",
+  "description": "Real de-identified DICOM from TCIA and BBMRI — structured search patterns on chest CT and brain MR with authored teaching findings.",
   "difficulty": "beginner",
   "system": "Chest",
   "authorId": "auth_demo",
-  "caseIds": ["demo-pacsbin", "case-mr-basics", "case-neuro-memprage"],
+  "caseIds": ["case-lidc-nodule-search", "case-neuro-memprage"],
   "status": "published",
   "createdAt": "2024-01-01T00:00:00.000Z",
-  "updatedAt": "2024-01-01T00:00:00.000Z"
+  "updatedAt": "2026-08-19T00:00:00.000Z"
 }

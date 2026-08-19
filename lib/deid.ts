@@ -131,6 +131,20 @@ const DICOM_PARSER_TAGS: { keyword: string; hex: string; blocking: boolean }[] =
 const SENTINEL =
   /^(anonymous|anon|unknown|removed|redacted|deidentified|de-identified|patient|xxxx+|-+|\^|\s)*$/i;
 
+/**
+ * TCIA / NCI public collections use collection-prefixed pseudonym PatientIDs
+ * (e.g. LIDC-IDRI-0957) without PatientName — not clinical MRNs.
+ * Trusted for curated public-import ingest only; real uploads still fail on MRN123.
+ */
+const TCIA_PSEUDONYM_PATIENT_ID =
+  /^(LIDC-IDRI|PD-1-Lung|RIDER|QIN-|TCGA-|PROSTATE-|Anti-PD-1|NSCLC|Soft-Tissue|Colon-|LUNG1|TCIA-|UPENN-GBM)/i;
+
+export function isTciaResearchPseudonymId(value: unknown): boolean {
+  const s = String(value ?? "").trim();
+  if (!s) return false;
+  return TCIA_PSEUDONYM_PATIENT_ID.test(s);
+}
+
 function isPresent(value: unknown): boolean {
   if (value == null) return false;
   const s = String(value).trim();
@@ -171,6 +185,9 @@ export function scrubDicomTags(
 
 function hitFor(tag: string, value: unknown, blocking: boolean): PhiHit | null {
   if (!isPresent(value)) return null;
+  if (blocking && (tag === "PatientID" || tag === "PatientName") && isTciaResearchPseudonymId(value)) {
+    return null;
+  }
   if (blocking && isSentinel(value)) return null;
   if (!blocking) {
     // Institution/station: record but do not fail ingest.
