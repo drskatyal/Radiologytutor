@@ -2,81 +2,72 @@
 
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
-import { ArrowRight, Layers, Stethoscope } from "lucide-react";
-import { Badge, Card, VerifiedBadge } from "@/components/ui";
-import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
+import { ArrowRight, Layers } from "lucide-react";
+import { VerifiedBadge } from "@/components/ui";
+import { FilmPlane } from "@/components/brand/FilmPlane";
+import { difficultyLabel } from "@/lib/taxonomy";
 import type { Author, Case } from "./types";
 
 export interface CaseCardProps {
   data: Case;
-  /** Author, if attribution should show (resolved by the caller). */
   author?: Author;
-  /** Position label, e.g. "1" for an ordered course/playlist row. */
   index?: number;
 }
 
 /**
- * A single teaching-case tile for the catalog and the course/author/playlist
- * pages. Shows the taxonomy (difficulty · system · modality) as badges plus
- * author attribution and finding count. Pure presentation.
+ * Editorial case row — film plane + title. No card chrome.
+ * Used on home featured lists and the library catalog.
  */
 export function CaseCard({ data, author, index }: CaseCardProps) {
+  const meta = [
+    data.modality,
+    data.system,
+    data.difficulty ? difficultyLabel(data.difficulty) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <Link href={`/case/${data.caseId}`} className="group block h-full">
-      <Card interactive className="flex h-full flex-col gap-3 overflow-hidden">
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-subtle/0 transition-colors duration-300 group-hover:bg-accent/50"
-        />
-        <div className="flex items-start justify-between gap-3">
-          <h3 className="font-display text-base font-semibold tracking-tight text-primary">
-            {typeof index === "number" && (
-              <span className="mr-1.5 tabular-nums text-muted">{index}.</span>
-            )}
-            {data.title}
-          </h3>
-          {data.status === "draft" && <Badge variant="warning">Draft</Badge>}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {data.difficulty && (
-            <Badge variant={difficultyBadgeVariant(data.difficulty)}>
-              {difficultyLabel(data.difficulty)}
-            </Badge>
+    <Link
+      href={`/case/${data.caseId}`}
+      className="group grid grid-cols-[5.5rem_1fr_auto] items-center gap-4 border-b border-subtle py-4 transition-colors first:border-t hover:bg-surface/40 sm:grid-cols-[7rem_1fr_auto] sm:gap-5"
+    >
+      <FilmPlane
+        modality={data.modality}
+        className="h-16 w-[5.5rem] sm:h-[4.5rem] sm:w-28"
+      />
+      <div className="min-w-0">
+        <h3 className="font-display text-[0.95rem] font-semibold tracking-tight text-primary sm:text-base">
+          {typeof index === "number" && (
+            <span className="mr-1.5 tabular-nums text-muted">{index}.</span>
           )}
-          {data.system && <Badge variant="info">{data.system}</Badge>}
-          <Badge variant="accent" className="gap-1.5">
-            <Stethoscope className="h-3 w-3" aria-hidden="true" />
-            {data.modality || "—"}
-          </Badge>
-          {data.specialty && <Badge>{data.specialty}</Badge>}
-        </div>
-
-        {data.tags && data.tags.length > 0 && (
-          <p className="line-clamp-1 text-xs text-muted">
-            {data.tags.map((t) => `#${t}`).join("  ")}
-          </p>
-        )}
-
-        <div className="mt-auto flex items-center justify-between gap-2 pt-2 text-sm text-muted">
-          <span className="inline-flex min-w-0 items-center gap-2">
-            {author && <AuthorChip author={author} />}
-            <span className="inline-flex items-center gap-1.5 tabular-nums">
-              <Layers className="h-3.5 w-3.5" aria-hidden="true" />
-              {data.findings.length}
-            </span>
+          {data.title}
+        </h3>
+        <p className="mt-1 truncate text-xs text-muted sm:text-[13px]">
+          {meta}
+          {author ? ` · ${author.name}` : ""}
+        </p>
+        <div className="mt-1.5 flex items-center gap-3 text-xs text-muted">
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Layers className="h-3 w-3" aria-hidden="true" />
+            {data.findings.length} finding{data.findings.length === 1 ? "" : "s"}
           </span>
-          <span className="inline-flex items-center gap-1 font-medium text-secondary transition-colors group-hover:text-accent">
-            Teach
-            <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
-          </span>
+          {author?.verification === "verified" && (
+            <VerifiedBadge status="verified" className="shrink-0" />
+          )}
+          {data.status === "draft" && (
+            <span className="text-warning">Draft</span>
+          )}
         </div>
-      </Card>
+      </div>
+      <span className="hidden items-center gap-1 text-sm font-medium text-secondary transition-colors group-hover:text-accent sm:inline-flex">
+        Open
+        <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+      </span>
     </Link>
   );
 }
 
-/** Tiny inline author avatar + name. */
 export function AuthorChip({ author }: { author: Author }) {
   const initials = author.name
     .split(/\s+/)
@@ -86,7 +77,7 @@ export function AuthorChip({ author }: { author: Author }) {
     .toUpperCase();
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted">
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-elevated text-[9px] font-semibold text-secondary ring-1 ring-inset ring-subtle">
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm bg-elevated text-[9px] font-semibold text-secondary ring-1 ring-inset ring-subtle">
         {initials}
       </span>
       <span className="truncate">{author.name}</span>
@@ -97,7 +88,7 @@ export function AuthorChip({ author }: { author: Author }) {
   );
 }
 
-/** Animated grid wrapper used by the catalog and library pages. */
+/** Editorial list — replaces the old card grid. */
 export function CaseCardGrid({
   cases,
   authorById = {},
@@ -108,23 +99,22 @@ export function CaseCardGrid({
   const reduce = useReducedMotion();
   return (
     <motion.ul
-      className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+      className="flex flex-col"
       initial="hidden"
       animate="show"
       variants={{
         hidden: {},
-        show: { transition: { staggerChildren: reduce ? 0 : 0.04 } },
+        show: { transition: { staggerChildren: reduce ? 0 : 0.035 } },
       }}
     >
       {cases.map((c) => (
         <motion.li
           key={c.caseId}
-          layout={!reduce}
           variants={{
-            hidden: reduce ? { opacity: 0 } : { opacity: 0, y: 12 },
+            hidden: reduce ? { opacity: 0 } : { opacity: 0, y: 8 },
             show: { opacity: 1, y: 0 },
           }}
-          transition={{ type: "spring", duration: 0.5, bounce: 0.2 }}
+          transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
         >
           <CaseCard data={c} author={c.authorId ? authorById[c.authorId] : undefined} />
         </motion.li>

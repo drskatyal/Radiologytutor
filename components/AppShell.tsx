@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import {
-  Activity,
   GraduationCap,
   Home,
   LayoutGrid,
@@ -19,7 +18,10 @@ import {
 import { cn } from "./ui/cn";
 import { Button, Skeleton, ToastProvider } from "./ui";
 import { SignOutButton } from "./auth/AuthButtons";
+import { BrandMark, Wordmark as BrandWordmark } from "@/components/brand/BrandMark";
 import type { MembershipRole, PlatformRole } from "@/lib/types";
+
+export { BrandMark } from "@/components/brand/BrandMark";
 
 interface NavItem {
   href: string;
@@ -105,36 +107,8 @@ function isActive(pathname: string, href: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
-/** FlowRad brand mark — quiet reticle tile, no neon sheen. */
-export function BrandMark({
-  className,
-  size = "md",
-}: {
-  className?: string;
-  size?: "md" | "lg";
-}) {
-  const box = size === "lg" ? "h-12 w-12" : "h-8 w-8";
-  const icon = size === "lg" ? "h-6 w-6" : "h-4 w-4";
-  return (
-    <span
-      className={cn(
-        "relative flex items-center justify-center rounded-md border border-strong bg-elevated text-accent",
-        box,
-        className
-      )}
-    >
-      <Activity className={icon} strokeWidth={2.2} />
-    </span>
-  );
-}
-
 function Wordmark() {
-  return (
-    <span className="font-display text-[15px] font-semibold tracking-tight text-primary">
-      FlowRad{" "}
-      <span className="font-normal text-secondary">Learn</span>
-    </span>
-  );
+  return <BrandWordmark size="sm" />;
 }
 
 function NavRow({
