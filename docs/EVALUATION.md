@@ -8,8 +8,8 @@ student/author/catalog UI.
 
 > **Status update (2026-08-20, after PRs #8 and #9 merged).** The §7 "Now" batch and
 > most of "Next" have since been implemented on this branch — see the *Fixed* markers
-> below. The three items still open are the `Collection` query seam (§4), the
-> click-the-finding viewer mount (§5.1), and the README rewrite (§6).
+> below. Still open: the click-the-finding viewer mount (§5.1) and the README
+> rewrite (§6).
 
 ---
 
@@ -212,6 +212,15 @@ Related, smaller:
 **Fix:** widen the seam by one method — `find(filter, opts)` — implemented as a Mongo query and
 as an in-memory filter for JSON. That single addition makes the existing indexes live and is a
 mechanical change at ~30 call sites, all inside one file.
+
+> **Fixed.** `Collection.find(filter)` added — equality-only, which is what every list here
+> actually needs and maps 1:1 onto a Mongo query document. `MongoCollection.find` issues a
+> real server-side query (rewriting `id` to `_id`); `JsonCollection.find` narrows in memory
+> behind the same API. All 30 scans are converted; the only `all()` left is the JSON store's
+> own implementation and one deliberate legacy fallback in `getUserByEmail`. Three missing
+> indexes were added along the way, including `studies{orgId, studyInstanceUID}` which now
+> serves the per-frame `/api/dicomweb` ownership check. `lib/storeQuery.test.ts` pins the
+> filter semantics both implementations must share.
 
 ---
 

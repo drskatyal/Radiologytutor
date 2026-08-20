@@ -101,11 +101,35 @@ const SEED_DIR = path.join(process.cwd(), "seed");
 // and return it from `collection()`. Nothing else in this file changes.
 // ============================================================================
 
+/**
+ * Equality filter over a record's own fields, e.g. `{ orgId, status: "published" }`.
+ * Deliberately equality-only: it is the shape every list in this file actually
+ * needs, it maps 1:1 onto a Mongo query document, and it is trivially correct to
+ * evaluate in memory for the JSON store. Anything richer (text search, ranges,
+ * "not revoked") is applied in JS *after* narrowing with this.
+ */
+type Filter<T> = Partial<Record<keyof T & string, unknown>>;
+
 interface Collection<T extends { id: string }> {
   all(): Promise<T[]>;
+  /**
+   * Records matching every key in `filter`. This is the method that makes the
+   * indexes in lib/mongo.ts reachable — `all()` + `Array.filter` cannot use an
+   * index, so before this existed every list pulled the whole collection.
+   */
+  find(filter: Filter<T>): Promise<T[]>;
   get(id: string): Promise<T | null>;
   put(record: T): Promise<T>;
   remove(id: string): Promise<boolean>;
+}
+
+/** In-memory evaluation of a `Filter`, shared by the JSON store. */
+function matchesFilter<T extends { id: string }>(record: T, filter: Filter<T>): boolean {
+  for (const [key, want] of Object.entries(filter)) {
+    if (want === undefined) continue;
+    if ((record as Record<string, unknown>)[key] !== want) return false;
+  }
+  return true;
 }
 
 let dataDirReady: Promise<void> | null = null;
@@ -247,6 +271,12 @@ class JsonCollection<T extends { id: string }> implements Collection<T> {
     return records;
   }
 
+  /** JSON has no index; narrow in memory so callers share one API. */
+  async find(filter: Filter<T>): Promise<T[]> {
+    const records = await this.all();
+    return records.filter((r) => matchesFilter(r, filter));
+  }
+
   async get(id: string): Promise<T | null> {
     await this.ready();
     try {
@@ -363,6 +393,21 @@ class MongoCollection<T extends { id: string }> implements Collection<T> {
     return docs.map((d) => this.fromDoc(d as MongoDoc<T>));
   }
 
+  /**
+   * Server-side query — this is where the lib/mongo.ts indexes finally earn
+   * their keep. Our string `id` is the `_id`, so a filter on `id` is rewritten.
+   */
+  async find(filter: Filter<T>): Promise<T[]> {
+    const coll = await this.coll();
+    const query: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(filter)) {
+      if (value === undefined) continue;
+      query[key === "id" ? "_id" : key] = value;
+    }
+    const docs = await coll.find(query as never).toArray();
+    return docs.map((d) => this.fromDoc(d as MongoDoc<T>));
+  }
+
   async get(id: string): Promise<T | null> {
     const coll = await this.coll();
     const doc = await coll.findOne({ _id: id } as never);
@@ -466,7 +511,9 @@ function genId(prefix: string): string {
 // ============================================================================
 
 export async function listCases(): Promise<CaseData[]> {
-  const all = await casesStore.all();
+  // Legacy signature: scoped to the default org rather than reading every
+  // tenant's cases, and served by the orgId index.
+  const all = await casesStore.find({ orgId: DEFAULT_ORG_ID });
   return all
     .map(normalizeCase)
     .sort((a, b) => a.title.localeCompare(b.title)) as CaseData[];
@@ -548,10 +595,10 @@ export async function listCasesForOrg(
   orgId: string,
   opts: ListCasesOptions = {}
 ): Promise<Case[]> {
-  const all = (await casesStore.all()).map(normalizeCase);
+  const all = (
+    await casesStore.find({ orgId, status: opts.status })
+  ).map(normalizeCase);
   return all
-    .filter((c) => c.orgId === orgId)
-    .filter((c) => (opts.status ? c.status === opts.status : true))
     .filter((c) => (opts.patientId ? c.patientId === opts.patientId : true))
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }
@@ -852,10 +899,8 @@ export async function reorderFindingsScoped(
 // ============================================================================
 
 export async function listPatients(orgId: string): Promise<Patient[]> {
-  const all = await patients.all();
-  return all
-    .filter((p) => p.orgId === orgId)
-    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const all = await patients.find({ orgId });
+  return all.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 export async function getPatient(orgId: string, patientId: string): Promise<Patient | null> {
@@ -906,10 +951,7 @@ export async function deletePatient(orgId: string, patientId: string): Promise<b
 // ============================================================================
 
 export async function listStudies(orgId: string, patientId?: string): Promise<Study[]> {
-  const all = await studies.all();
-  return all
-    .filter((s) => s.orgId === orgId)
-    .filter((s) => (patientId ? s.patientId === patientId : true));
+  return studies.find({ orgId, patientId });
 }
 
 export async function getStudy(orgId: string, studyId: string): Promise<Study | null> {
@@ -922,8 +964,9 @@ export async function getStudyByUID(
   orgId: string,
   studyInstanceUID: string
 ): Promise<Study | null> {
-  const all = await studies.all();
-  return all.find((s) => s.orgId === orgId && s.studyInstanceUID === studyInstanceUID) ?? null;
+  // On the /api/dicomweb authorization path — must be an indexed lookup.
+  const all = await studies.find({ orgId, studyInstanceUID });
+  return all[0] ?? null;
 }
 
 export interface CreateStudyInput {
@@ -1037,7 +1080,16 @@ export async function listCatalogCases(
   orgId: string,
   filter: CatalogFilter = {}
 ): Promise<Case[]> {
-  const all = (await casesStore.all()).map(normalizeCase).filter((c) => c.orgId === orgId);
+  // Narrow on the indexed fields server-side; free-text `q` is applied after.
+  const all = (
+    await casesStore.find({
+      orgId,
+      status: filter.status,
+      system: filter.system,
+      difficulty: filter.difficulty,
+      authorId: filter.authorId,
+    })
+  ).map(normalizeCase);
   const q = filter.q?.trim().toLowerCase();
 
   const matched = all.filter((c) => {
@@ -1084,7 +1136,7 @@ export interface CatalogFacets {
 }
 
 export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
-  const all = (await casesStore.all()).map(normalizeCase).filter((c) => c.orgId === orgId);
+  const all = (await casesStore.find({ orgId })).map(normalizeCase);
   const systems = new Set<BodySystem>();
   const difficulties = new Set<Difficulty>();
   const modalities = new Set<string>();
@@ -1108,8 +1160,8 @@ export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
 // ============================================================================
 
 export async function listAuthors(orgId: string): Promise<Author[]> {
-  const all = await authorsStore.all();
-  return all.filter((a) => a.orgId === orgId).sort((a, b) => a.name.localeCompare(b.name));
+  const all = await authorsStore.find({ orgId });
+  return all.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getAuthor(orgId: string, authorId: string): Promise<Author | null> {
@@ -1205,10 +1257,8 @@ export interface ListCoursesOpts {
 }
 
 export async function listCourses(orgId: string, opts: ListCoursesOpts = {}): Promise<Course[]> {
-  const all = await coursesStore.all();
+  const all = await coursesStore.find({ orgId, status: opts.status });
   return all
-    .filter((c) => c.orgId === orgId)
-    .filter((c) => (opts.status ? c.status === opts.status : true))
     .filter((c) => (opts.system ? c.system === opts.system : true))
     .filter((c) => (opts.difficulty ? c.difficulty === opts.difficulty : true))
     .filter((c) => (opts.authorId ? c.authorId === opts.authorId : true))
@@ -1288,10 +1338,8 @@ export async function deleteCourse(orgId: string, courseId: string): Promise<boo
 // ============================================================================
 
 export async function listPlaylists(orgId: string): Promise<Playlist[]> {
-  const all = await playlistsStore.all();
-  return all
-    .filter((p) => p.orgId === orgId)
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+  const all = await playlistsStore.find({ orgId });
+  return all.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }
 
 export async function getPlaylist(orgId: string, playlistId: string): Promise<Playlist | null> {
@@ -1363,21 +1411,24 @@ export async function getUser(userId: string): Promise<User | null> {
 
 /** Users whose home org is `orgId` (best-effort directory for admin). */
 export async function listUsers(orgId: string): Promise<User[]> {
-  const all = await usersStore.all();
-  return all
-    .filter((u) => u.orgId === orgId)
-    .sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+  const all = await usersStore.find({ orgId });
+  return all.sort((a, b) => (a.email || "").localeCompare(b.email || ""));
 }
 
 export async function getUserByEmail(email: string): Promise<User | null> {
   const want = normalizeEmail(email);
+  // Indexed lookup on the login path. Emails are normalized on write, so the
+  // direct query is the hit in practice; the scan below only catches rows
+  // written before normalization existed.
+  const direct = await usersStore.find({ email: want });
+  if (direct[0]) return direct[0];
   const all = await usersStore.all();
   return all.find((u) => normalizeEmail(u.email) === want) ?? null;
 }
 
 export async function getUserByAuthProviderId(authProviderId: string): Promise<User | null> {
-  const all = await usersStore.all();
-  return all.find((u) => u.authProviderId === authProviderId) ?? null;
+  const all = await usersStore.find({ authProviderId });
+  return all[0] ?? null;
 }
 
 export interface CreateUserInput {
@@ -1470,16 +1521,16 @@ export async function provisionAuthUser(input: {
 }
 
 export async function listMemberships(orgId: string): Promise<Membership[]> {
-  const all = await membershipsStore.all();
+  const all = await membershipsStore.find({ orgId });
   return all
-    .filter((m) => m.orgId === orgId && (m.status ?? "active") !== "revoked")
+    .filter((m) => (m.status ?? "active") !== "revoked")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function listMembershipsForUser(userId: string): Promise<Membership[]> {
-  const all = await membershipsStore.all();
+  const all = await membershipsStore.find({ userId });
   return all
-    .filter((m) => m.userId === userId && (m.status ?? "active") !== "revoked")
+    .filter((m) => (m.status ?? "active") !== "revoked")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
@@ -1491,10 +1542,10 @@ export async function getMembershipForUserOrg(
   userId: string,
   orgId: string
 ): Promise<Membership | null> {
-  const all = await membershipsStore.all();
+  const all = await membershipsStore.find({ userId, orgId });
   return (
     all.find(
-      (m) => m.userId === userId && m.orgId === orgId && (m.status ?? "active") !== "revoked"
+      (m) => (m.status ?? "active") !== "revoked"
     ) ?? null
   );
 }
@@ -1558,10 +1609,8 @@ export async function deleteMembership(membershipId: string): Promise<boolean> {
 }
 
 export async function listEnrollmentsForUser(userId: string): Promise<Enrollment[]> {
-  const all = await enrollmentsStore.all();
-  return all
-    .filter((e) => e.userId === userId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const all = await enrollmentsStore.find({ userId });
+  return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function getEnrollment(enrollmentId: string): Promise<Enrollment | null> {
@@ -1572,8 +1621,7 @@ export async function getEnrollmentForUserCourse(
   userId: string,
   courseId: string
 ): Promise<Enrollment | null> {
-  const all = await enrollmentsStore.all();
-  const matches = all.filter((e) => e.userId === userId && e.courseId === courseId);
+  const matches = await enrollmentsStore.find({ userId, courseId });
   if (matches.length === 0) return null;
   const active = matches.find((e) => e.status === "active");
   return active ?? null;
@@ -1588,10 +1636,13 @@ export interface CreateEnrollmentInput {
 }
 
 export async function createEnrollment(input: CreateEnrollmentInput): Promise<Enrollment> {
-  const all = await enrollmentsStore.all();
-  const existing = all.find(
-    (e) => e.userId === input.userId && e.courseId === input.courseId && e.status === "active"
-  );
+  const existing = (
+    await enrollmentsStore.find({
+      userId: input.userId,
+      courseId: input.courseId,
+      status: "active",
+    })
+  )[0];
   if (existing) return existing;
   const now = nowIso();
   const enrollment: Enrollment = {
@@ -1633,18 +1684,16 @@ function progressPercent(completedCaseIds: string[], totalCases: number): number
 }
 
 export async function listProgressForUser(userId: string): Promise<Progress[]> {
-  const all = await progressStore.all();
-  return all
-    .filter((p) => p.userId === userId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const all = await progressStore.find({ userId });
+  return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function getProgressForUserCourse(
   userId: string,
   courseId: string
 ): Promise<Progress | null> {
-  const all = await progressStore.all();
-  return all.find((p) => p.userId === userId && p.courseId === courseId) ?? null;
+  const all = await progressStore.find({ userId, courseId });
+  return all[0] ?? null;
 }
 
 export interface UpsertProgressInput {
@@ -1691,15 +1740,13 @@ export async function upsertProgress(input: UpsertProgressInput): Promise<Progre
 }
 
 export async function listWishlistForUser(userId: string): Promise<WishlistItem[]> {
-  const all = await wishlistStore.all();
-  return all
-    .filter((w) => w.userId === userId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const all = await wishlistStore.find({ userId });
+  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function isCourseWishlisted(userId: string, courseId: string): Promise<boolean> {
-  const all = await wishlistStore.all();
-  return all.some((w) => w.userId === userId && w.courseId === courseId);
+  const all = await wishlistStore.find({ userId, courseId });
+  return all.length > 0;
 }
 
 export async function addToWishlist(
@@ -1707,8 +1754,7 @@ export async function addToWishlist(
   orgId: string,
   courseId: string
 ): Promise<WishlistItem> {
-  const all = await wishlistStore.all();
-  const existing = all.find((w) => w.userId === userId && w.courseId === courseId);
+  const existing = (await wishlistStore.find({ userId, courseId }))[0];
   if (existing) return existing;
   const item: WishlistItem = {
     id: genId("wsh"),
@@ -1722,8 +1768,7 @@ export async function addToWishlist(
 }
 
 export async function removeFromWishlist(userId: string, courseId: string): Promise<boolean> {
-  const all = await wishlistStore.all();
-  const match = all.find((w) => w.userId === userId && w.courseId === courseId);
+  const match = (await wishlistStore.find({ userId, courseId }))[0];
   if (!match) return false;
   return wishlistStore.remove(match.id);
 }
@@ -1738,10 +1783,9 @@ export async function listReviewsForCourse(
   orgId: string,
   courseId: string
 ): Promise<CourseReviewsSummary> {
-  const all = await reviewsStore.all();
-  const reviews = all
-    .filter((r) => r.orgId === orgId && r.courseId === courseId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const reviews = (await reviewsStore.find({ orgId, courseId })).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
   const count = reviews.length;
   const average =
     count === 0
@@ -1763,10 +1807,9 @@ export async function createReview(input: CreateReviewInput): Promise<Review> {
   const rating = Math.round(input.rating);
   if (rating < 1 || rating > 5) throw new Error("Rating must be 1–5.");
 
-  const all = await reviewsStore.all();
-  const existing = all.find(
-    (r) => r.userId === input.userId && r.courseId === input.courseId
-  );
+  const existing = (
+    await reviewsStore.find({ userId: input.userId, courseId: input.courseId })
+  )[0];
   const now = nowIso();
   const review: Review = {
     id: existing?.id ?? genId("rev"),
@@ -1784,10 +1827,8 @@ export async function createReview(input: CreateReviewInput): Promise<Review> {
 }
 
 export async function listCertificatesForUser(userId: string): Promise<Certificate[]> {
-  const all = await certificatesStore.all();
-  return all
-    .filter((c) => c.userId === userId)
-    .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+  const all = await certificatesStore.find({ userId });
+  return all.sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
 }
 
 export async function getCertificate(certificateId: string): Promise<Certificate | null> {
@@ -1798,8 +1839,8 @@ export async function getCertificateForUserCourse(
   userId: string,
   courseId: string
 ): Promise<Certificate | null> {
-  const all = await certificatesStore.all();
-  return all.find((c) => c.userId === userId && c.courseId === courseId) ?? null;
+  const all = await certificatesStore.find({ userId, courseId });
+  return all[0] ?? null;
 }
 
 export async function issueCertificate(
@@ -1853,8 +1894,8 @@ export async function getAssessmentForCourse(
   orgId: string,
   courseId: string
 ): Promise<Assessment | null> {
-  const all = await assessmentsStore.all();
-  return all.find((a) => a.orgId === orgId && a.courseId === courseId) ?? null;
+  const all = await assessmentsStore.find({ orgId, courseId });
+  return all[0] ?? null;
 }
 
 /** Client-safe assessment: questions without answer keys / target markers. */
@@ -1886,18 +1927,15 @@ export async function getPublicAssessmentForCourse(
 }
 
 export async function listAttemptsForUser(userId: string): Promise<Attempt[]> {
-  const all = await attemptsStore.all();
-  return all
-    .filter((a) => a.userId === userId)
-    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  const all = await attemptsStore.find({ userId });
+  return all.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
 }
 
 export async function getBestAttemptForUserAssessment(
   userId: string,
   assessmentId: string
 ): Promise<Attempt | null> {
-  const all = await attemptsStore.all();
-  const mine = all.filter((a) => a.userId === userId && a.assessmentId === assessmentId);
+  const mine = await attemptsStore.find({ userId, assessmentId });
   if (mine.length === 0) return null;
   return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
 }
@@ -1906,8 +1944,7 @@ export async function getBestAttemptForUserCourse(
   userId: string,
   courseId: string
 ): Promise<Attempt | null> {
-  const all = await attemptsStore.all();
-  const mine = all.filter((a) => a.userId === userId && a.courseId === courseId);
+  const mine = await attemptsStore.find({ userId, courseId });
   if (mine.length === 0) return null;
   return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
 }
