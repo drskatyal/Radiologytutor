@@ -70,7 +70,9 @@ export async function mintRealtimeEphemeralToken(): Promise<EphemeralLiveToken> 
   const newSessionExpireTime = new Date(now + 2 * 60 * 1000).toISOString();
 
   // Ephemeral tokens are currently minted on the v1alpha AuthTokens surface.
-  const url = `https://generativelanguage.googleapis.com/v1alpha/auth_tokens?key=${encodeURIComponent(key)}`;
+  // The key travels in the x-goog-api-key header, never the query string —
+  // query strings end up in proxy and CDN logs.
+  const url = "https://generativelanguage.googleapis.com/v1alpha/auth_tokens";
   const body = {
     uses: 1,
     expireTime,
@@ -83,17 +85,33 @@ export async function mintRealtimeEphemeralToken(): Promise<EphemeralLiveToken> 
     },
   };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // Bounded: a hung mint would otherwise hold the request open indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": key,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    throw new Error(
+      aborted ? "Timed out minting Live ephemeral token." : "Failed to reach the Live token service."
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(
-      `Failed to mint Live ephemeral token (${res.status}): ${detail.slice(0, 400)}`
-    );
+    console.error(`[voiceRealtime] mint -> ${res.status}: ${detail.slice(0, 400)}`);
+    throw new Error(`Failed to mint Live ephemeral token (${res.status}).`);
   }
 
   const data = (await res.json()) as {

@@ -13,8 +13,10 @@
 // omitted, the last user message is used as the question).
 
 import { NextRequest, NextResponse } from "next/server";
+import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
+import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
-import { getCase } from "@/lib/cases";
+import { getCaseForOrg } from "@/lib/cases";
 import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
 
 export const runtime = "nodejs";
@@ -34,6 +36,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // The tutor prompt carries the case's full teaching text (diagnosis,
+    // findings, teaching points), so this is a content read: it must be
+    // authenticated, org-scoped, and draft-gated exactly like GET /api/cases/[id].
+    const user = await requireSession();
+    const orgId = await activeOrgId();
+
     const body = await req.json();
     const caseId = String(body.caseId ?? "");
     const mode = (body.mode ?? "guided") as
@@ -47,8 +55,19 @@ export async function POST(req: NextRequest) {
       ? String(body.currentFindingId)
       : undefined;
 
-    const data = await getCase(caseId);
+    const data = await getCaseForOrg(orgId, caseId);
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+
+    if (data.status !== "published") {
+      const canSeeDraft = canAccessOrgResource({
+        platformRole: user.platformRole,
+        membershipRole: user.membershipRole,
+        need: "author",
+      });
+      if (!canSeeDraft) {
+        return NextResponse.json({ error: "Case not found" }, { status: 404 });
+      }
+    }
 
     // The question is the explicit `question`, else the last user message.
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
@@ -75,7 +94,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const authErr = jsonAuthError(err);
+    if (authErr) return authErr;
+    // Upstream provider errors can echo request detail — log server-side, and
+    // hand the client a generic message.
+    console.error("[api/tutor]", err);
+    return NextResponse.json({ error: "The tutor is unavailable right now." }, { status: 502 });
   }
 }

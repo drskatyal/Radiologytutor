@@ -6,6 +6,11 @@
 seam, data layer, API surface, imaging proxy, de-id gate, assessment path, and the
 student/author/catalog UI.
 
+> **Status update (2026-08-20, after PRs #8 and #9 merged).** The §7 "Now" batch and
+> most of "Next" have since been implemented on this branch — see the *Fixed* markers
+> below. The three items still open are the `Collection` query seam (§4), the
+> click-the-finding viewer mount (§5.1), and the README rewrite (§6).
+
 ---
 
 ## 0. Headline
@@ -72,6 +77,10 @@ check. The handler attaches Orthanc's Basic-auth header server-side and forwards
 **Fix:** require a session; scope the path to studies the caller's org actually references;
 drop `POST` from the proxy entirely (uploads have their own gated route).
 
+> **Fixed.** The route now requires a session, resolves the path's StudyInstanceUID and
+> checks it belongs to the caller's org (memoised, so the per-frame cost stays flat), and
+> exports only `GET`/`HEAD` — STOW-RS can no longer be proxied around the de-id gate.
+
 ### 2.2 `POST /api/auth/demo` — anyone can mint a platform super-admin
 `app/api/auth/demo/route.ts:13`. An empty POST body defaults to `role = "super_admin"`, and
 `DEMO_USER_ID` carries `platformRole: "super_admin"` (`lib/cases.ts:1931`) — which
@@ -81,6 +90,10 @@ complete authentication bypass to the highest privilege in the system.
 
 **Fix:** gate on `NODE_ENV !== "production"` **or** an explicit `DEMO_AUTH_ENABLED=1`, and cap
 the demo role at `student` unless the flag says otherwise.
+
+> **Fixed.** `demoAuthEnabled()` is off in production unless `DEMO_AUTH_ENABLED=1`, and
+> `clampDemoRole()` caps production demos at `student` (`author` opt-in). The sign-in UI
+> hides the demo button when the path is disabled.
 
 ### 2.3 Hardcoded fallback signing secret
 `lib/auth.ts:48-50` falls back to the literal `"dev-only-change-me-flowrad-learn-secret!!"`
@@ -92,9 +105,16 @@ fallback undoes it.
 **Fix:** throw at boot in production if the secret is unset. A missing secret should crash the
 app, not silently downgrade it.
 
+> **Fixed.** The literal fallback is gone in production: a serving process with no
+> `BETTER_AUTH_SECRET` throws. The build phase is exempted (`NEXT_PHASE`) so `next build`
+> still works on a machine without the secret.
+
 ### 2.4 `POST /api/voice/realtime` — open token mint
 Mints Gemini Live ephemeral tokens for anyone who asks, with no session and no quota. Direct
 billing exposure and a free proxy to the account's Gemini Live capacity.
+
+> **Fixed.** Requires a session, is rate-limited by `middleware.ts`, and the mint call now
+> has a 15s deadline with the key moved into the `x-goog-api-key` header.
 
 ### 2.5 Unauthenticated, unmetered LLM/TTS endpoints
 `/api/tutor`, `/api/transcribe`, `/api/structure-finding`, `/api/structure-session`,
@@ -102,6 +122,10 @@ billing exposure and a free proxy to the account's Gemini Live capacity.
 There is **no rate limiting anywhere in the repo** — no `middleware.ts`, no limiter, and no
 request body size cap (audio arrives as unbounded base64; `/api/tts` accepts unbounded text
 and will happily synthesise it).
+
+> **Fixed.** Every one of these now requires a session (`requireAuthorOrg` for the two
+> authoring routes), and a new `middleware.ts` applies a per-route fixed-window rate limit
+> plus a per-route body-size cap, emitting `RateLimit-*` / `Retry-After` headers.
 
 ### 2.6 `/api/tutor` is also a cross-tenant and draft-content read
 `app/api/tutor/route.ts:50` calls `getCase(caseId)` — the **legacy unscoped** accessor, not
@@ -112,6 +136,8 @@ description, teaching points, diagnosis — into the prompt, where the model rea
 
 **Fix:** `requireSession()` + `getCaseForOrg(await activeOrgId(), caseId)` + the same
 draft check the sibling route already implements.
+
+> **Fixed.** Exactly that, plus the upstream error body is no longer returned to the client.
 
 ---
 
@@ -131,6 +157,16 @@ draft check the sibling route already implements.
    store, so the published corpus has never passed the gate it documents.
 4. **Cross-org report.** `getDeidReport(uid)` is keyed on UID only, not org-scoped — an org's
    passing report satisfies another org's publish check.
+
+> **Fixed (1–4).** Zero `studyRefs` is now a publish *failure* rather than a free pass;
+> `createCaseForOrg` runs the same gate as the draft→published transition; `getDeidReport`
+> is org-scoped. `lib/publishGate.test.ts` now exercises the enforcement path against a
+> scratch store, not just the pure rule.
+>
+> Also fixed here: the TCIA pseudonym allowance introduced by PR #8 applied to **every**
+> ingest despite its comment claiming otherwise. It is now opt-in
+> (`DeidInspectOptions.allowResearchPseudonyms`), set only by the curated importer, and the
+> pattern is a full match so free text starting with a collection name no longer passes.
 
 Separately: **pixel OCR is the real remaining risk.** Burned-in PHI on secondary captures,
 ultrasound, and scout images is the single most common leak in teaching collections, and header
@@ -167,6 +203,11 @@ Related, smaller:
   `x-goog-api-key` header. Query strings land in proxy logs, CDN logs, and error reports.
 - **Upstream error text is returned to the client.** `/api/tutor` catches and returns
   `err.message`, which is the raw Gemini error body.
+
+> **Fixed (the last three).** All Gemini traffic goes through one `callGemini()` transport:
+> key in the header, a `GEMINI_TIMEOUT_MS` deadline, and bounded retries on 429/5xx only.
+> Upstream bodies are logged server-side and never returned. The `Collection` query seam
+> and the JSON-store write races remain open.
 
 **Fix:** widen the seam by one method — `find(filter, opts)` — implemented as a Mongo query and
 as an in-memory filter for JSON. That single addition makes the existing indexes live and is a
@@ -210,6 +251,11 @@ render only when there is genuinely something to resume.
 
 ### 5.3 Catalog is hardcoded to a single tenant
 
+> **Fixed.** `/api/catalog`, `app/page.tsx` and `app/playlist/[id]/page.tsx` now derive the
+> org from `activeOrgId()` — session-derived, never client-supplied. No `DEFAULT_ORG_ID`
+> call sites remain outside `lib/`.
+
+
 `app/api/catalog/route.ts:25` — `const ORG = DEFAULT_ORG_ID;`. Same in `app/page.tsx:44-46` and
 `app/playlist/[id]/page.tsx:12`. Public browsing is permanently pinned to `org_demo`, so a
 second tenant's published catalog is unreachable through the product's front door. The comments
@@ -226,6 +272,8 @@ CLAUDE.md §6 asks to replace with `activeOrgId()`.
   LCP is measured on an invisible element.
 - **`/api/tts` accepts an arbitrary `voiceId`** from the request body, so any caller can drive
   any voice in the ElevenLabs account, not just the one enrolled for that author.
+  **Fixed** — the voice is resolved server-side from an author record in the caller's org;
+  a client-supplied `voiceId` is ignored, and `lib/speak.ts` no longer sends one.
 - **Seed provenance.** `seed/case-chest-spontaneous-ptx.json` points `pacsbinBaseUrl` at a
   third-party `pacsbin.com` case. For a marketplace that will monetise teaching content, the
   licensing and attribution of web-sourced cases needs to be settled before P3, and it

@@ -16,10 +16,13 @@ function safeNext(next?: string): string {
 export function AuthForm({
   mode,
   googleEnabled,
+  demoEnabled,
   next,
 }: {
   mode: "sign-in" | "sign-up";
   googleEnabled: boolean;
+  /** Keyless demo sign-in — off in production unless DEMO_AUTH_ENABLED is set. */
+  demoEnabled: boolean;
   next?: string;
 }) {
   const router = useRouter();
@@ -100,7 +103,7 @@ export function AuthForm({
         </div>
       )}
 
-      {mode === "sign-in" && (
+      {mode === "sign-in" && demoEnabled && (
         <div className={googleEnabled ? "mt-3" : "mt-6"}>
           <DemoSignInButton next={dest} />
         </div>

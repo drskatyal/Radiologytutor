@@ -31,6 +31,91 @@ export interface GeminiPart {
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
 
+
+// ---------------------------------------------------------------------------
+// Transport
+//
+// One place that actually talks to Google, so timeout/retry/auth behaviour is
+// consistent across every call. Three things worth stating explicitly:
+//
+//   * The key goes in the `x-goog-api-key` HEADER, never the query string.
+//     Query strings are logged by proxies, CDNs and error reporters; an API key
+//     in one is an API key in a log file.
+//   * Every request has a deadline. Without one, a hung upstream pins a
+//     serverless invocation until the platform kills it.
+//   * Retries are limited to transient failures (429 and 5xx) with backoff.
+//     A 400 is our bug and retrying it just spends money twice.
+// ---------------------------------------------------------------------------
+
+/** Wall-clock deadline for a single Gemini call. */
+const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 45_000);
+const MAX_ATTEMPTS = 3;
+
+function isRetryable(status: number): boolean {
+  return status === 429 || status === 408 || status >= 500;
+}
+
+function backoffMs(attempt: number): number {
+  // 400ms, 1200ms — deterministic, no jitter needed at this concurrency.
+  return 400 * Math.pow(3, attempt - 1);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * POST to a Gemini model endpoint with a deadline and bounded retries.
+ * Throws a message that names the status but NOT the upstream body — callers
+ * log the detail server-side and return something generic to the client.
+ */
+async function callGemini(
+  model: string,
+  key: string,
+  body: unknown
+): Promise<Response> {
+  let lastStatus = 0;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": key,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (res.ok) return res;
+
+      lastStatus = res.status;
+      const detail = await res.text().catch(() => "");
+      if (!isRetryable(res.status) || attempt === MAX_ATTEMPTS) {
+        console.error(`[gemini] ${model} -> ${res.status}: ${detail.slice(0, 500)}`);
+        throw new Error(`Gemini API error ${res.status}`);
+      }
+      console.warn(`[gemini] ${model} -> ${res.status}, retrying (${attempt}/${MAX_ATTEMPTS})`);
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === "AbortError";
+      if (!aborted && err instanceof Error && err.message.startsWith("Gemini API error")) {
+        throw err;
+      }
+      if (attempt === MAX_ATTEMPTS) {
+        throw new Error(
+          aborted
+            ? `Gemini request timed out after ${REQUEST_TIMEOUT_MS}ms`
+            : `Gemini request failed: network error`
+        );
+      }
+      console.warn(`[gemini] ${model} attempt ${attempt} failed, retrying`);
+    } finally {
+      clearTimeout(timer);
+    }
+    await sleep(backoffMs(attempt));
+  }
+  throw new Error(`Gemini API error ${lastStatus || 500}`);
+}
+
 /** Build a user content part list from optional text + optional audio. */
 export function userParts(opts: {
   text?: string;
@@ -126,20 +211,7 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
     body.tools = toolEntries;
   }
 
-  const res = await fetch(
-    `${API_BASE}/models/${MODEL}:generateContent?key=${encodeURIComponent(key)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini API error ${res.status}: ${errText}`);
-  }
-
+  const res = await callGemini(MODEL, key, body);
   const data = await res.json();
   const candidate = data?.candidates?.[0];
   const parts: GeminiPart[] = candidate?.content?.parts ?? [];
@@ -341,20 +413,7 @@ export async function synthesizeSpeech(text: string): Promise<SynthesizedSpeech>
     },
   };
 
-  const res = await fetch(
-    `${API_BASE}/models/${TTS_MODEL}:generateContent?key=${encodeURIComponent(key)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini TTS error ${res.status}: ${errText}`);
-  }
-
+  const res = await callGemini(TTS_MODEL, key, body);
   const data = await res.json();
   const parts: GeminiPart[] = data?.candidates?.[0]?.content?.parts ?? [];
   const inline = parts.find((p) => p.inlineData)?.inlineData;

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { AuthForm } from "@/components/auth/AuthForm";
 import { BrandMark, Wordmark } from "@/components/brand/BrandMark";
-import { googleAuthEnabled } from "@/lib/auth";
+import { demoAuthEnabled, googleAuthEnabled } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +24,12 @@ export default function SignInPage({
           <Wordmark size="lg" />
         </Link>
         <div className="border-y border-subtle bg-surface/80 px-1 py-8 backdrop-blur-sm sm:px-2">
-          <AuthForm mode="sign-in" googleEnabled={googleAuthEnabled()} next={next} />
+          <AuthForm
+            mode="sign-in"
+            googleEnabled={googleAuthEnabled()}
+            demoEnabled={demoAuthEnabled()}
+            next={next}
+          />
         </div>
       </div>
     </div>

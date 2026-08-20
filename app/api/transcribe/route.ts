@@ -10,6 +10,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { geminiConfigured, transcribeAudio } from "@/lib/gemini";
+import { jsonAuthError, requireSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    await requireSession();
     const { audio } = await req.json();
     const base64 = audio?.base64;
     if (typeof base64 !== "string" || !base64) {
@@ -31,6 +33,8 @@ export async function POST(req: NextRequest) {
     const transcript = await transcribeAudio(base64, audio?.mime || "audio/webm");
     return NextResponse.json({ transcript });
   } catch (err) {
+    const authErr = jsonAuthError(err);
+    if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

@@ -3,8 +3,10 @@
 // Reply: ReportGrade — rubric is always present, even when Gemini is off.
 
 import { NextRequest, NextResponse } from "next/server";
+import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
+import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, generate, parseJsonLoose } from "@/lib/gemini";
-import { getCase } from "@/lib/cases";
+import { getCaseForOrg } from "@/lib/cases";
 import {
   GRADE_REPORT_SYSTEM,
   buildReportRubric,
@@ -16,11 +18,27 @@ export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
+    // Grading reads the case's rubric-bearing findings and spends Gemini quota:
+    // authenticated, org-scoped, draft-gated like the tutor route.
+    const user = await requireSession();
+    const orgId = await activeOrgId();
+
     const body = await req.json();
     const caseId = String(body.caseId ?? "");
     const report = String(body.report ?? "").trim();
-    const data = await getCase(caseId);
+    const data = await getCaseForOrg(orgId, caseId);
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+
+    if (
+      data.status !== "published" &&
+      !canAccessOrgResource({
+        platformRole: user.platformRole,
+        membershipRole: user.membershipRole,
+        need: "author",
+      })
+    ) {
+      return NextResponse.json({ error: "Case not found" }, { status: 404 });
+    }
 
     const rubric = buildReportRubric(data.findings);
     if (!report) {
@@ -89,7 +107,9 @@ export async function POST(req: NextRequest) {
     const parsed = parseJsonLoose<Partial<ReportGrade>>(result.text);
     return NextResponse.json(normalizeReportGrade(parsed, rubric));
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const authErr = jsonAuthError(err);
+    if (authErr) return authErr;
+    console.error("[api/grade-report]", err);
+    return NextResponse.json({ error: "The grader is unavailable right now." }, { status: 502 });
   }
 }
