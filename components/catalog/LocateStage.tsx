@@ -14,7 +14,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Crosshair, ImageOff, Target } from "lucide-react";
-import { Spinner } from "@/components/ui";
+import { Button, Spinner } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 
@@ -59,6 +59,13 @@ export function LocateStage({
 }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [viewerReady, setViewerReady] = useState(false);
+  /**
+   * Marking is a transient mode, not the default. While it is off the learner
+   * drives the viewer normally (scroll the stack, window/level, zoom) — which
+   * is most of what "find the abnormality" actually means. Turning it on puts
+   * a hit layer over the canvas for exactly one click.
+   */
+  const [marking, setMarking] = useState(false);
   const controls = useRef<CornerstoneControls | null>(null);
   const hitRef = useRef<HTMLButtonElement>(null);
 
@@ -67,6 +74,7 @@ export function LocateStage({
     let cancelled = false;
     setState({ status: "loading" });
     setViewerReady(false);
+    setMarking(false);
     controls.current = null;
 
     const params = new URLSearchParams({ courseId, questionId });
@@ -135,6 +143,9 @@ export function LocateStage({
       const x = (e.clientX - r.left) / r.width;
       const y = (e.clientY - r.top) / r.height;
       onLocate(Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y)));
+      // One click places the mark and hands the viewer back, so the learner can
+      // keep scrolling to check themselves before moving on.
+      setMarking(false);
     },
     [onLocate]
   );
@@ -144,12 +155,29 @@ export function LocateStage({
       ? { x: answer.x_pct, y: answer.y_pct }
       : null;
 
+  const ready = state.status === "ready";
+
   return (
     <div className="space-y-2">
-      <p className="flex items-center gap-1.5 text-xs text-muted">
-        <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
-        Scroll and window as you would in the reading room, then click the finding.
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-xs text-muted">
+          <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
+          {marking
+            ? "Click the abnormality on the image."
+            : "Search the study as you would in the reading room, then mark the finding."}
+        </p>
+        {ready && (
+          <Button
+            type="button"
+            size="sm"
+            variant={marking ? "primary" : "secondary"}
+            onClick={() => setMarking((m) => !m)}
+            leadingIcon={<Target className="h-3.5 w-3.5" aria-hidden="true" />}
+          >
+            {marking ? "Cancel marking" : placed ? "Re-mark finding" : "Mark finding"}
+          </Button>
+        )}
+      </div>
 
       <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-strong bg-imaging">
         {state.status === "loading" && <StageMessage spinner label="Loading study…" />}
@@ -180,16 +208,21 @@ export function LocateStage({
 
             {!viewerReady && <StageMessage spinner label="Preparing series…" />}
 
-            {/* Click layer sits above the canvas and captures the normalized
-                point. Keyboard users get the same target via focus + Enter,
-                which lands centre-frame — imperfect, but never a dead end. */}
-            <button
-              ref={hitRef}
-              type="button"
-              onClick={handleClick}
-              className="absolute inset-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
-              aria-label="Click the image where the finding is located"
-            />
+            {/* The click layer is mounted ONLY while marking. It covers the
+                canvas and therefore swallows every pointer event, so leaving it
+                up permanently would block scroll and window/level — the learner
+                could not search the stack at all, which is most of the skill
+                being assessed. Same reason StudentViewer gates its hit layer
+                behind `locateMode`. */}
+            {marking && (
+              <button
+                ref={hitRef}
+                type="button"
+                onClick={handleClick}
+                className="absolute inset-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
+                aria-label="Click the image where the finding is located"
+              />
+            )}
 
             {placed && (
               <span
