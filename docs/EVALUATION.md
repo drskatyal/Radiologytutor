@@ -8,8 +8,7 @@ student/author/catalog UI.
 
 > **Status update (2026-08-20, after PRs #8 and #9 merged).** The §7 "Now" batch and
 > most of "Next" have since been implemented on this branch — see the *Fixed* markers
-> below. Still open: the click-the-finding viewer mount (§5.1) and the README
-> rewrite (§6).
+> below. Still open: the README rewrite (§6) and pixel-OCR for burned-in PHI.
 
 ---
 
@@ -24,7 +23,7 @@ student/author/catalog UI.
 | Architecture (seams) | **B+** | The seams named in CLAUDE.md exist and are respected; the store seam is under-specified (§4) |
 | Security & tenancy | **D** | Unauthenticated LLM, TTS, token-mint, and PHI-proxy endpoints. Details in §2 |
 | Compliance (de-id gate) | **C** | The module is honest and well-built; the *gate around it* has four bypasses (§3) |
-| Product completeness | **B−** | The flagship differentiator (click-the-finding) is graded against a fake image (§5.1) |
+| Product completeness | **B−** | The flagship differentiator (click-the-finding) is graded against a fake image (§5.1) — *since fixed* |
 | Docs accuracy | **C** | README describes a product architecture the code abandoned two epics ago (§6) |
 
 The codebase reads like a genuinely well-run project — the discipline in `lib/cases.ts`,
@@ -246,6 +245,19 @@ This is the one item in the codebase that meets CLAUDE.md's own "would embarrass
 a radiology department" test. It should either mount `StudentViewer` (all the pieces exist —
 `FindingMarker` already does normalized-coordinate overlay on the real viewer) or be hidden
 behind a feature flag until it does.
+
+> **Fixed.** The gradient is gone. `components/catalog/LocateStage.tsx` mounts the real
+> Cornerstone viewer on the study the finding was authored against, driven to the authored
+> series/slice/window, and captures the click normalized against the same container rect
+> `FindingMarker` positions against — so the learner's point and the author's marker are in
+> one coordinate space.
+>
+> The answer stays server-side: a dedicated `GET /api/assessments/question-view` returns the
+> viewer source, series and viewport state and **no marker** (reusing `GET /api/cases/[caseId]`
+> would have shipped the answer to the browser). The question is resolved from the
+> server-side assessment, so a client cannot point it at a case/finding pair of its choosing.
+> When imaging can't be resolved the stage says so and refuses to present a surface to click
+> rather than grading a guess.
 
 ### 5.2 The marketplace has one of everything
 

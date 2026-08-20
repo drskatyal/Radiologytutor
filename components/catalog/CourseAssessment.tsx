@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useState, type MouseEvent } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Crosshair, Target, XCircle } from "lucide-react";
+import { CheckCircle2, XCircle } from "lucide-react";
 import { Badge, Button, useToast } from "@/components/ui";
+import { LocateStage } from "./LocateStage";
 import type { Attempt } from "@/lib/types";
 import type { LearnerAnswer } from "@/lib/assessmentGrade";
 
@@ -42,7 +43,6 @@ export function CourseAssessment({
   const [bestAttempt, setBestAttempt] = useState(initialBestAttempt ?? null);
   const [submitting, setSubmitting] = useState(false);
   const [lastResult, setLastResult] = useState<Attempt | null>(null);
-  const hitRef = useRef<HTMLButtonElement>(null);
 
   const questions = assessment.questions;
   const current = questions[step];
@@ -55,18 +55,14 @@ export function CourseAssessment({
     }));
   }
 
-  function handleLocate(e: MouseEvent<HTMLButtonElement>) {
-    if (!current || current.kind !== "click_finding") return;
-    const el = hitRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const x_pct = (e.clientX - r.left) / r.width;
-    const y_pct = (e.clientY - r.top) / r.height;
+  // LocateStage hands back a point already normalized against the viewport,
+  // which is the same [0,1] space the author's marker was stored in.
+  const setLocate = useCallback((questionId: string, x_pct: number, y_pct: number) => {
     setAnswers((prev) => ({
       ...prev,
-      [current.id]: { questionId: current.id, x_pct, y_pct },
+      [questionId]: { questionId, x_pct, y_pct },
     }));
-  }
+  }, []);
 
   async function submit() {
     setSubmitting(true);
@@ -264,42 +260,12 @@ export function CourseAssessment({
               )}
 
               {current.kind === "click_finding" && (
-                <div className="space-y-2">
-                  <p className="flex items-center gap-1.5 text-xs text-muted">
-                    <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
-                    Click on the imaging surface where the finding is located.
-                  </p>
-                  <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-strong bg-black">
-                    {/* Atmospheric CT-like plane — marker coords are overlay [0,1]. */}
-                    <div
-                      className="pointer-events-none absolute inset-0 opacity-40"
-                      aria-hidden="true"
-                    >
-                      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_30%_45%,#3a3a3a_0%,#111_55%,#000_100%)]" />
-                      <div className="absolute inset-[12%] rounded-full border border-white/10" />
-                      <div className="absolute inset-[28%] rounded-full border border-white/5" />
-                    </div>
-                    <button
-                      ref={hitRef}
-                      type="button"
-                      onClick={handleLocate}
-                      className="absolute inset-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
-                      aria-label="Click to mark the finding location"
-                    />
-                    {clickAnswer?.x_pct !== undefined && clickAnswer.y_pct !== undefined && (
-                      <span
-                        className="pointer-events-none absolute z-20 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-accent bg-accent/30 text-accent"
-                        style={{
-                          left: `${clickAnswer.x_pct * 100}%`,
-                          top: `${clickAnswer.y_pct * 100}%`,
-                        }}
-                        aria-hidden="true"
-                      >
-                        <Target className="h-3 w-3" />
-                      </span>
-                    )}
-                  </div>
-                </div>
+                <LocateStage
+                  courseId={courseId}
+                  questionId={current.id}
+                  answer={clickAnswer}
+                  onLocate={(x, y) => setLocate(current.id, x, y)}
+                />
               )}
             </>
           )}
