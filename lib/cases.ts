@@ -590,7 +590,13 @@ export interface CreateCaseInput {
   references?: string[];
 }
 
-/** Create a new case under an org. Returns the created entity. */
+/**
+ * Create a new case under an org. Returns the created entity.
+ *
+ * A case created directly as `published` goes through the same de-id gate as a
+ * draft that is later published — otherwise the gate is one optional argument
+ * away from being bypassed.
+ */
 export async function createCaseForOrg(orgId: string, input: CreateCaseInput): Promise<Case> {
   const caseId = input.caseId ? safeId(input.caseId) : genId("case");
   const now = nowIso();
@@ -623,6 +629,9 @@ export async function createCaseForOrg(orgId: string, input: CreateCaseInput): P
     createdAt: now,
     updatedAt: now,
   };
+  if (data.status === "published") {
+    await assertCasePublishable(data);
+  }
   await casesStore.put(toStored(data));
   return data;
 }
@@ -672,15 +681,31 @@ export async function updateCaseForOrg(
   return updated;
 }
 
-/** Throw if any referenced study lacks a passing DeidReport. */
+/**
+ * Throw unless every study this case teaches from has a passing DeidReport
+ * in the case's own org.
+ *
+ * "No declared studies" is a FAILURE, not a pass: a case with no `studyRefs`
+ * is one we cannot verify, and an unverifiable case is exactly what the gate
+ * exists to stop. Seed/back-compat cases that legitimately teach from no study
+ * must be created as drafts.
+ */
 export async function assertCasePublishable(c: Case): Promise<void> {
   const refs = c.studyRefs ?? [];
-  if (refs.length === 0) return;
+  if (refs.length === 0) {
+    throw new Error(
+      "Cannot publish: this case declares no studyRefs, so its imaging cannot be " +
+        "checked for residual PHI. Attach the study it teaches from, then publish."
+    );
+  }
   const missing: string[] = [];
   for (const ref of refs) {
     const uid = ref.studyInstanceUID?.trim();
-    if (!uid) continue;
-    const report = await getDeidReport(uid);
+    if (!uid) {
+      missing.push("(study reference with no StudyInstanceUID)");
+      continue;
+    }
+    const report = await getDeidReport(c.orgId, uid);
     if (!deidAllowsPublish(report)) missing.push(uid);
   }
   if (missing.length > 0) {
@@ -709,12 +734,20 @@ export async function upsertDeidReport(
   return stored;
 }
 
+/**
+ * Fetch a study's de-id report **within an org**. Reports are keyed by study
+ * UID, so without the org check one tenant's passing report would satisfy
+ * another tenant's publish gate.
+ */
 export async function getDeidReport(
+  orgId: string,
   studyInstanceUID: string
 ): Promise<StoredDeidReport | null> {
   const uid = studyInstanceUID.trim();
   if (!uid) return null;
-  return (await deidReportsStore.get(uid)) ?? null;
+  const report = await deidReportsStore.get(uid);
+  if (!report) return null;
+  return report.orgId === orgId ? report : null;
 }
 
 /** Delete a case (tenant-checked). Returns true if a case was removed. */
