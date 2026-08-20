@@ -2,11 +2,11 @@
   "id": "course_chest_registrar",
   "orgId": "org_demo",
   "title": "Chest registrar essentials",
-  "description": "Acute chest presentations for registrars — pneumothorax mechanism, imaging signs, and safe drain planning. Teaching narratives cite open Radiopaedia case discussions.",
+  "description": "Real chest CT from public TCIA collections — lung nodule search and immunotherapy response assessment with Radiopaedia-referenced teaching narratives.",
   "difficulty": "intermediate",
   "system": "Chest",
   "authorId": "auth_demo",
-  "caseIds": ["case-chest-spontaneous-ptx", "demo-pacsbin"],
+  "caseIds": ["case-lidc-nodule-search", "case-lung-immunotherapy"],
   "status": "published",
   "createdAt": "2026-08-19T00:00:00.000Z",
   "updatedAt": "2026-08-19T00:00:00.000Z"
