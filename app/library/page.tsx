@@ -68,30 +68,13 @@ export default async function LibraryPage() {
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Library" }]} />}
         title="Library"
-        description="Courses, teachers, and narrated DICOM cases — pick a rail or filter the full catalog."
+        description="Courses, teachers, and narrated DICOM cases."
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Link href="/learning">
-              <Button size="sm" variant="secondary">
-                My learning
-              </Button>
-            </Link>
-            <Link href="/library#courses">
-              <Button size="sm" variant="secondary">
-                Courses
-              </Button>
-            </Link>
-            <Link href="/library#teachers">
-              <Button size="sm" variant="secondary">
-                Teachers
-              </Button>
-            </Link>
-            <Link href="/library#cases">
-              <Button size="sm" variant="secondary">
-                Cases
-              </Button>
-            </Link>
-          </div>
+          <Link href="/learning">
+            <Button size="sm" variant="secondary">
+              My learning
+            </Button>
+          </Link>
         }
       />
       {loadError || !initial ? (
