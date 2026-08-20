@@ -5,7 +5,7 @@ import { CaseCardGrid } from "@/components/catalog/CaseCard";
 import { CoursesRail, TeachersRail } from "@/components/catalog/Rails";
 import type { Author, Case, Course } from "@/lib/types";
 
-const FEATURED = 6;
+const FEATURED = 4;
 
 function BrowseAll({ href, label }: { href: string; label: string }) {
   return (
@@ -19,7 +19,10 @@ function BrowseAll({ href, label }: { href: string; label: string }) {
   );
 }
 
-/** Below-fold marketplace rails — courses, teachers, cases. Nothing else. */
+/**
+ * Below-fold marketplace — editorial sections, not card dashboards.
+ * One job per section: courses, teachers, cases.
+ */
 export function FeaturedMarketplace({
   courses,
   authors,
@@ -40,13 +43,13 @@ export function FeaturedMarketplace({
   const featuredCases = cases.slice(0, FEATURED);
 
   return (
-    <PageContainer className="flex flex-col gap-14 py-12">
-      <section className="flex flex-col gap-4">
+    <PageContainer className="flex flex-col gap-16 py-14 sm:py-16">
+      <section className="flex flex-col gap-2">
         {featuredCourses.length === 0 ? (
           <>
             <SectionHeading
               icon={<GraduationCap aria-hidden="true" />}
-              title="Featured courses"
+              title="Courses"
               description="Multi-case sequences from the library."
             />
             <EmptyState
@@ -64,19 +67,19 @@ export function FeaturedMarketplace({
           <CoursesRail
             courses={featuredCourses}
             authorById={authorById}
-            title="Featured courses"
-            description="Multi-case sequences, taught end to end."
+            title="Courses"
+            description="Taught end to end on the study."
             aside={<BrowseAll href="/library#courses" label="All courses" />}
           />
         )}
       </section>
 
-      <section className="flex flex-col gap-4">
+      <section className="flex flex-col gap-2">
         {featuredAuthors.length === 0 ? (
           <>
             <SectionHeading
               icon={<Users aria-hidden="true" />}
-              title="Featured teachers"
+              title="Teachers"
               description="Radiologists publishing on FlowRad."
             />
             <EmptyState
@@ -95,17 +98,17 @@ export function FeaturedMarketplace({
             authors={featuredAuthors}
             caseCountByAuthor={caseCountByAuthor}
             courseCountByAuthor={courseCountByAuthor}
-            title="Featured teachers"
-            description="Radiologists publishing on FlowRad."
+            title="Teachers"
+            description="Verified radiologists on FlowRad."
             aside={<BrowseAll href="/library#teachers" label="All teachers" />}
           />
         )}
       </section>
 
-      <section className="flex flex-col gap-4">
+      <section className="flex flex-col gap-2">
         <SectionHeading
           icon={<LayoutGrid aria-hidden="true" />}
-          title="Featured cases"
+          title="Cases"
           description="Narrated DICOM studies with an AI tutor."
           aside={<BrowseAll href="/library#cases" label="All cases" />}
         />
@@ -120,19 +123,26 @@ export function FeaturedMarketplace({
         )}
       </section>
 
-      <section className="flex flex-col items-center gap-4 rounded-xl border border-subtle bg-surface/60 px-6 py-10 text-center">
-        <p className="font-display text-lg font-semibold text-primary">Explore the full library</p>
-        <p className="max-w-md text-sm text-muted">
-          Filter courses, teachers, and cases — or jump straight into a narrated study.
-        </p>
-        <Link href="/library">
-          <Button
-            variant="secondary"
-            leadingIcon={<GraduationCap className="h-4 w-4" aria-hidden="true" />}
-          >
-            Open library
-          </Button>
-        </Link>
+      <section className="border-t border-subtle pt-10">
+        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="max-w-md space-y-2">
+            <p className="font-display text-lg font-semibold text-primary">
+              The full reading room
+            </p>
+            <p className="text-sm leading-relaxed text-muted">
+              Filter by modality, system, and teacher — or open a case and start
+              scrolling.
+            </p>
+          </div>
+          <Link href="/library">
+            <Button
+              variant="secondary"
+              leadingIcon={<GraduationCap className="h-4 w-4" aria-hidden="true" />}
+            >
+              Open library
+            </Button>
+          </Link>
+        </div>
       </section>
     </PageContainer>
   );

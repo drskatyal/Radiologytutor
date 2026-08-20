@@ -30,7 +30,8 @@ const display = Source_Serif_4({
 
 export const metadata: Metadata = {
   title: "FlowRad Learn",
-  description: "Interactive, voice-narrated radiology teaching cases.",
+  description:
+    "Radiology, taught on the study — narrated DICOM cases with an AI tutor.",
 };
 
 export default function RootLayout({
