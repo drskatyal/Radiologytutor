@@ -8,7 +8,9 @@ student/author/catalog UI.
 
 > **Status update (2026-08-20, after PRs #8 and #9 merged).** The §7 "Now" batch and
 > most of "Next" have since been implemented on this branch — see the *Fixed* markers
-> below. Still open: the README rewrite (§6) and pixel-OCR for burned-in PHI.
+> below. Everything in §7's "Now" and "Next" is done, plus the §4 query seam, the §5.1
+> viewer mount and the §6 docs rewrite. What remains is genuinely larger work: pixel-OCR
+> for burned-in PHI, the JSON-store write races, and re-seeding a case corpus (see §6).
 
 ---
 
@@ -24,7 +26,7 @@ student/author/catalog UI.
 | Security & tenancy | **D** | Unauthenticated LLM, TTS, token-mint, and PHI-proxy endpoints. Details in §2 |
 | Compliance (de-id gate) | **C** | The module is honest and well-built; the *gate around it* has four bypasses (§3) |
 | Product completeness | **B−** | The flagship differentiator (click-the-finding) is graded against a fake image (§5.1) — *since fixed* |
-| Docs accuracy | **C** | README describes a product architecture the code abandoned two epics ago (§6) |
+| Docs accuracy | **C** | README describes a product architecture the code abandoned two epics ago (§6) — *since rewritten* |
 
 The codebase reads like a genuinely well-run project — the discipline in `lib/cases.ts`,
 `lib/deid.ts`, and `lib/authRoles.ts` is above the bar for most seed-stage products. The
@@ -315,6 +317,16 @@ CLAUDE.md §4 also names the wrong working branch (`claude/epic-noether-3nvcbf`)
 
 This matters more than it looks: a new contributor reading the README will build against an
 architecture the code abandoned.
+
+> **Fixed.** `README.md` rewritten against the Cornerstone/Orthanc architecture: the real
+> stack, the full route map for all three personas, an API table, the production-required env
+> vars, and the seams as they actually are. The Pacsbin history is kept as one short note
+> rather than as the architecture. `CLAUDE.md` §4 now describes the branch correctly.
+>
+> It also documents a regression PR #8 introduced: `seed/` now ships **no cases**, while the
+> seeded courses still reference case ids that only exist after `npm run import:cases` runs.
+> A fresh install therefore has an empty catalog and courses pointing at nothing until the
+> importer is run against a configured Orthanc.
 
 ---
 

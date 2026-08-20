@@ -1,36 +1,32 @@
-# FlowRad Learn — Demo
+# FlowRad Learn
 
-Interactive radiology teaching tool. A tutor uploads DICOM cases to **Pacsbin**,
-records "findings" (exact viewport state + an on-image point + a dictated
-explanation), and a student later experiences each case as a guided,
-voice-narrated tour: the viewer animates to each finding while an AI tutor
-narrates and answers questions.
+**The marketplace where radiologists teach radiology.** A teacher marks findings on a real
+DICOM study, records a narrated walk-through, and a learner replays it as a guided tour with
+an AI tutor that answers questions by voice — on our own viewer, over our own imaging backend.
 
-> We are **not** building a DICOM viewer. Pacsbin renders the images — we
-> orchestrate it by setting viewport state through URL query params (one-way).
+The full product design and phased roadmap live in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+Engineering and design rules live in [`CLAUDE.md`](./CLAUDE.md). A detailed assessment of the
+current build — what is solid, what is not, and in what order to fix it — is in
+[`docs/EVALUATION.md`](./docs/EVALUATION.md).
 
 ## Stack
 
-- Next.js 14 (App Router, TypeScript) + Tailwind
-- **Gemini Flash (Google AI Studio) does all model calls:** speech-to-text on
-  dictation/voice questions (multimodal audio in), structuring dictated findings
-  into JSON, and the student tutor agent with tool-calling
-- **ElevenLabs** for tutor narration (speech out); falls back to the browser's
-  `speechSynthesis` if no key is set
-- Mic capture via `MediaRecorder` (audio → server → Gemini)
-- Persistence: JSON-on-volume by default; **set `MONGODB_URI` to run on MongoDB**
-  with no code changes (see [Database](#database)).
+- **Next.js 14** (App Router, TypeScript) + Tailwind, with a design system in `components/ui/`.
+- **Cornerstone3D, self-hosted.** We render the pixels ourselves — `components/CornerstoneViewer.tsx`
+  plus the drive logic in `lib/viewerController.ts`. There is no third-party embed.
+- **Orthanc** over DICOMweb for the study bytes, reached only through `lib/orthanc.ts` and the
+  same-origin `/api/dicomweb` proxy, so credentials never reach the browser.
+- **Gemini Flash** for every model call — speech-to-text, structuring dictated findings into
+  JSON, the tool-calling tutor, and TTS fallback. Server-side only (`lib/gemini.ts`).
+- **ElevenLabs** for a cloned teacher voice on live Q&A; falls back to Gemini TTS, then to the
+  browser's `speechSynthesis`.
+- **Better Auth** behind the `lib/auth.ts` seam, with org-scoped RBAC (`owner`/`admin`/`author`/`student`).
+- **Persistence:** JSON-on-volume by default; set `MONGODB_URI` to switch the whole app to
+  MongoDB with no code changes (see [Database](#database)).
 
-## Pacsbin integration (researched)
-
-Pacsbin's embed client API (`new PacsbinClient()`) is minimal — only
-`setTool()`, `toggleAnnotations()`, `noPageScrollWheel()`. **All viewport state
-(series/image/ww/wc/scale/translation/layout) is set via URL query params only**
-(colon-keyed: `s:1`, `i:1`, `ww:1`, …), with **no read-back and no postMessage
-state stream.** So real-time control = rapid URL writes to the iframe, and we
-draw our own marker overlay (Pacsbin's native annotations hidden via `an=false`).
-This confirms the architecture in `lib/pacsbinUrl.ts`.
-Docs: https://docs.pacsbin.com/viewer-url-options
+> **Historical note:** early versions embedded Pacsbin and drove it through URL query params,
+> since we could not read viewport state back out of the iframe. That is gone. `lib/pacsbinUrl.ts`
+> survives only to parse legacy bookmark links; `pacsbinBaseUrl` on a `Case` is a legacy field.
 
 ## Setup
 
@@ -40,94 +36,112 @@ cp .env.example .env.local   # add your keys
 npm run dev                  # http://localhost:3000
 ```
 
-Set in `.env.local`:
+The only key you need to see the app work is `GEMINI_API_KEY`. Everything else degrades
+gracefully: with no `ORTHANC_URL` the imaging surfaces report "not configured", with no
+`ELEVENLABS_API_KEY` the tutor uses Gemini TTS, with no `MONGODB_URI` data persists to disk.
 
-- `GEMINI_API_KEY` — from https://aistudio.google.com/apikey (required). One key
-  powers STT, the web-grounded tutor, text-to-speech fallback, and Live tokens.
-- `GEMINI_MODEL` — Flash model id (default `gemini-3.7-flash`)
-- `GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE` — tutor voice fallback (defaults
-  `gemini-2.5-flash-preview-tts` / `Kore`; falls back to browser TTS if absent)
-- `ELEVENLABS_API_KEY` — cloned teacher voice for live Q&A (Layer 3 only)
-- `GEMINI_LIVE_MODEL` — realtime latency fallback; mint via `POST /api/voice/realtime`
-  (see `docs/CONSULTANT_READING.md`)
+`.env.example` documents every variable. Two matter for a real deployment:
+
+- **`BETTER_AUTH_SECRET` is required in production.** With `NODE_ENV=production` and no value,
+  the app refuses to serve rather than fall back to a signing key that ships in this repo.
+  Generate one with `openssl rand -base64 32`.
+- **`DEMO_AUTH_ENABLED`** controls the keyless "Continue as demo" button. It is on outside
+  production and off in production unless you set it — left open it is a full authentication
+  bypass. Even when deliberately enabled in production it caps out at `student`.
+
+### Getting cases into a fresh install
+
+`seed/` ships the org, users, memberships, authors, courses, playlists and an assessment — but
+**no cases**, because the sample cases were removed along with the Pacsbin placeholders. The
+seeded courses reference cases that the public-collection importer creates:
+
+```bash
+npm run import:cases        # pulls TCIA collections into Orthanc + creates the cases
+```
+
+This needs `ORTHANC_URL` configured. Until it runs, the catalog is empty and the seeded courses
+point at case ids that do not exist yet.
 
 ## Routes
 
-- `/` — list of cases
-- `/author` — attach a Pacsbin case, add findings (paste bookmark → parse
-  viewport, click to place marker, dictate → AI structures the text)
-- `/case/[caseId]` — student playback: clean embed, animated marker, AI tutor
-  chat (guided / Socratic / free-explore modes)
+**Learner**
+- `/` — marketplace home (hero, featured courses, teachers, cases)
+- `/library` — the filterable catalog
+- `/learning` — my learning: enrollments, progress, certificates
+- `/course/[id]` — curriculum, reviews, assessment, certificate CTA
+- `/playlist/[id]` — an ordered case list
+- `/case/[caseId]` — **the product**: the guided session (viewer + finding spine + voice tutor)
+- `/authors/[id]` — a teacher's profile
+- `/certificate/[id]` — a certificate of completion
 
-## API routes (all Gemini calls are server-side)
+**Teacher (Studio)**
+- `/studio` — teaching home
+- `/studio/new` — the 4-step case creation arc (upload → details → series → findings)
+- `/studio/cases`, `/studio/cases/[caseId]` — manage and edit cases and findings
+- `/studio/cases/[caseId]/record` — the PACS recording studio (capture viewer flow + dictation)
+- `/studio/courses`, `/studio/profile`
 
-- `POST /api/structure-finding` — transcript **or audio** → strict JSON `{label, description, teachingPoints[]}`
-- `POST /api/tutor` — chat (text **or audio** turn) + tool-calling (`show_finding`, `set_window`, `compare`, `next_in_tour`)
-- `POST /api/tts` — text → ElevenLabs audio stream (narration)
-- `GET|POST /api/cases`, `/api/cases/[caseId]`, `.../findings`, `.../reorder` — persistence
+**Admin / dev**
+- `/admin` — platform console (members, teacher verification, oversight)
+- `/sign-in`, `/sign-up`
+- `/record`, `/cornerstone` — developer labs for the record and viewer stacks
+
+## API
+
+Everything model- or imaging-related is server-side. Highlights:
+
+| Route | Purpose |
+|---|---|
+| `POST /api/transcribe` | **Call 1** of voice Q&A — Gemini STT only |
+| `POST /api/tutor` | **Call 2** — teaching plan + viewer tool-calls. Never merged with call 1 |
+| `POST /api/tts` | Tutor narration; voice resolved server-side from the author record |
+| `POST /api/structure-finding`, `/api/structure-session` | Dictation → structured finding JSON |
+| `POST /api/grade-report` | AI-graded structured report against a visible rubric |
+| `GET /api/dicomweb/...` | Same-origin WADO-RS/QIDO-RS proxy to Orthanc. **Read-only** |
+| `POST /api/upload` | The single DICOM ingest path — runs the de-id gate |
+| `GET /api/catalog` | The public, filterable catalog |
+| `GET /api/assessments`, `POST /api/attempts` | Quiz delivery (no answer keys) and grading |
+| `GET /api/assessments/question-view` | Imaging for a click-the-finding question — never the marker |
+
+All expensive routes require a session and sit behind `middleware.ts`, which applies per-route
+rate limits and body-size caps.
 
 ## Architecture notes
 
-- **Pacsbin is a swappable dependency.** Everything Pacsbin-specific (URL
-  build/parse) lives in `lib/pacsbinUrl.ts`. Replace it with a Cornerstone3D /
-  LiteVNA adapter without touching the UI or data model.
-- **Viewport capture workaround:** we can't read state out of the iframe. The
-  tutor creates a Pacsbin bookmark link (which encodes viewport state in the
-  URL), pastes it, and we reverse-parse it.
-- **Markers** are stored as percentages of the overlay box, never pixels, so
-  they remap onto the same anatomy once we lock the same viewport at playback.
-- **Series/image are stored as string IDs**, never integers.
-
-## ⚠️ Before tuning the animation — run the Pacsbin caching test
-
-Open a Pacsbin case → DevTools → Network → scroll slices manually:
-
-- **No new network requests** (series cached in-browser): rapid URL updates
-  animate smoothly → use the defaults in `lib/viewerController.ts`.
-- **Every scroll refetches:** the iframe-reload animation will flicker. Raise
-  `sliceStep` (keyframe every Nth slice) or pass `mode: "snap"` per case.
-
-Also confirm whether changing URL params reloads the iframe or updates Pacsbin
-in place (client-side routing). If in-place, animation is effectively free.
-`lib/viewerController.ts` sets `iframe.src` directly and exposes both knobs.
-
-## Seed data
-
-`data/knee-acl-01.json` is a sample knee case. Replace
-`pacsbinBaseUrl` with a real Pacsbin viewer token and fix the series/image IDs
-to match that case before playback will render real images.
+- **The viewer is swappable.** Viewer-state logic lives behind `lib/viewerController.ts` /
+  `lib/viewerSource.ts`. UI never hard-codes a viewer.
+- **The data layer is a seam.** Every read/write goes through `lib/cases.ts`, which exposes a
+  `Collection<T>` interface (`all`/`find`/`get`/`put`/`remove`) with a JSON and a MongoDB
+  implementation chosen at runtime. `find(filter)` is what lets list queries use the indexes
+  in `lib/mongo.ts` instead of scanning.
+- **Ingest is a single seam.** All DICOM enters through `orthancIngestInstance`, which runs the
+  header identity gate in `lib/deid.ts` and refuses instances with residual PHI. The DICOMweb
+  proxy exports no write verb precisely so STOW-RS cannot route around it.
+- **Markers are normalized.** Stored as `[0,1]` fractions of the viewport, never pixels, so
+  they land on the same anatomy once the viewport is reproduced. Series and studies are always
+  DICOM UIDs (strings), never integers.
+- **De-identification gates publishing.** A case cannot be published unless every study it
+  references has a passing `DeidReport` in its own org. Header scrubbing is real; **pixel OCR
+  for burned-in PHI is not implemented and is never claimed** — see `lib/deid.ts`.
 
 ## Database
 
-The data layer (`lib/cases.ts`) sits behind a store seam: a `Collection`
-interface with two implementations chosen at runtime by the `collection()`
-factory.
+With no `MONGODB_URI`, cases and friends persist as JSON under `DATA_DIR` (default `./data`;
+point it at a mounted volume so data survives redeploys). Set `MONGODB_URI` and the entire app
+runs on MongoDB — no caller or API changes. Either store self-seeds from `/seed` when empty.
 
-- **Default — JSON-on-volume.** With no `MONGODB_URI` set, cases/patients/studies
-  persist as JSON files under `DATA_DIR` (default `./data`; point it at a Railway
-  Volume to survive redeploys). This is what the demo and `npm test` use — **no
-  database required.**
-- **MongoDB — set one env var.** Set `MONGODB_URI` and the *entire* app silently
-  switches to MongoDB (`lib/mongo.ts`). No caller or API changes. Unset it to go
-  back to JSON.
+The Mongo connection is a cached singleton that connects lazily on first use, so importing the
+data layer at build time never touches the network. Indexes are created once on first connect.
 
-Either store **self-seeds from `/seed`** the first time it is empty, so a fresh
-DB isn't blank. The Mongo connection is a cached singleton (no connection storm
-on serverless / hot-reload) and connects **lazily on first use** — importing the
-data layer at build time never touches the network. Indexes for fast org-scoped
-lists are created once on first connect: `orgId` and `orgId+status` on cases,
-`orgId` on patients, `orgId` and `orgId+patientId` on studies.
-
-**Turn it on (MongoDB Atlas):**
-
-1. Create a free cluster at https://www.mongodb.com/atlas and a database user.
-2. Allow your app's IP (or `0.0.0.0/0` for Railway) under Network Access.
-3. Copy the connection string (`mongodb+srv://USER:PASS@cluster…`) into
-   `MONGODB_URI` (in `.env.local` locally, or the Railway service variables).
-4. Optionally set `MONGODB_DB` (default `flowrad`). Redeploy/restart — done.
+**MongoDB Atlas:** create a cluster and database user, allow your app's IP under Network Access,
+put the connection string in `MONGODB_URI`, optionally set `MONGODB_DB` (default `flowrad`).
 
 ## Tests
 
 ```bash
-npm test   # unit tests for lib/pacsbinUrl.ts (build + reverse-parse round-trip)
+npm test           # 151 unit tests across lib/ — viewer math, grading, de-id, access, store
+npm run build      # must pass before any commit
+npm run test:access  # role × capability access harness
 ```
+
+Do **not** run with `--turbo` — the Cornerstone webpack/wasm config needs the default builder.
