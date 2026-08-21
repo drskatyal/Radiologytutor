@@ -1,0 +1,2062 @@
+// ============================================================================
+// lib/cases.ts
+//
+// The data layer for FlowRad Learn. Every read/write of a Case, Patient, Study
+// or Finding goes through here. Callers NEVER touch the underlying store, so we
+// can move from JSON-on-volume (today) to MongoDB (later) without changing a
+// single call site.
+//
+//   ┌─────────────────────────────────────────────────────────────────────┐
+//   │  MONGODB-SWAP SEAM (realized)                                          │
+//   │  The only store-specific code lives in the `JsonCollection` /         │
+//   │  `MongoCollection` classes and the `collection<T>()` factory below    │
+//   │  (marked "STORE SEAM"). Both classes implement the SAME `Collection`  │
+//   │  interface (all/get/put/remove). The factory picks one at runtime:    │
+//   │  if `MONGODB_URI` is configured -> MongoCollection, else the default  │
+//   │  JsonCollection (JSON-on-volume). The exported API functions below    │
+//   │  stay byte-for-byte identical regardless of which store is active.    │
+//   └─────────────────────────────────────────────────────────────────────┘
+//
+// Multi-tenancy: everything is scoped by `orgId` (CLAUDE.md §4a). Auth is a
+// seam now (single demo org); the exported functions already take/derive an
+// `orgId` so real auth slots in without a refactor.
+//
+// Store selection is ENV-GATED and LAZY: with no `MONGODB_URI` the app uses the
+// JSON-on-volume store under DATA_DIR (env-overridable) so it can point at a
+// Railway persistent Volume that survives redeploys with no database. Set
+// `MONGODB_URI` and the entire data layer silently runs on MongoDB instead —
+// no caller changes. Either store seeds itself from the committed `/seed` cases
+// the first time it is empty, so demos always have sample data.
+// ============================================================================
+
+import { promises as fs } from "fs";
+import path from "path";
+import type { Collection as MongoNativeCollection } from "mongodb";
+import type {
+  CaseData,
+  Case,
+  CaseStatus,
+  CaseStudyRef,
+  Finding,
+  Patient,
+  Study,
+  Author,
+  Course,
+  Playlist,
+  Membership,
+  Enrollment,
+  Progress,
+  WishlistItem,
+  Review,
+  Certificate,
+  Assessment,
+  Attempt,
+  MembershipRole,
+  User,
+  UserRole,
+  Difficulty,
+  BodySystem,
+  PatientSex,
+  TargetLevel,
+  CaptureSession,
+} from "./types";
+import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
+import { deidAllowsPublish, type DeidReport } from "./deid";
+import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+import { sortRelatedCourses } from "./relatedCourses";
+
+/** Persisted de-id report — keyed by studyInstanceUID. */
+export type StoredDeidReport = DeidReport & {
+  id: string;
+  orgId: string;
+};
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+/** The single demo tenant used until real auth lands. Every entity is scoped
+ *  to an org; callers that don't yet have a session derive this default. */
+export const DEFAULT_ORG_ID = "org_demo";
+
+// ---------------------------------------------------------------------------
+// Paths / config
+// ---------------------------------------------------------------------------
+
+// Mount a Railway Volume here (e.g. /app/data) and the JSON store persists.
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+// Committed sample cases used to seed an empty store.
+const SEED_DIR = path.join(process.cwd(), "seed");
+
+// ============================================================================
+// STORE SEAM — JSON-on-volume implementation.
+//
+// A `Collection<T>` is the minimal persistence surface the data layer needs.
+// Records are plain JSON objects with a string `id`. Each collection is one
+// subdirectory under DATA_DIR with one `<id>.json` file per record. Cases keep
+// living at DATA_DIR/<caseId>.json (back-compat with the original layout) by
+// using "" as their subdirectory.
+//
+// To swap to MongoDB: implement this same interface over a Mongo collection
+// and return it from `collection()`. Nothing else in this file changes.
+// ============================================================================
+
+/**
+ * Equality filter over a record's own fields, e.g. `{ orgId, status: "published" }`.
+ * Deliberately equality-only: it is the shape every list in this file actually
+ * needs, it maps 1:1 onto a Mongo query document, and it is trivially correct to
+ * evaluate in memory for the JSON store. Anything richer (text search, ranges,
+ * "not revoked") is applied in JS *after* narrowing with this.
+ */
+type Filter<T> = Partial<Record<keyof T & string, unknown>>;
+
+interface Collection<T extends { id: string }> {
+  all(): Promise<T[]>;
+  /**
+   * Records matching every key in `filter`. This is the method that makes the
+   * indexes in lib/mongo.ts reachable — `all()` + `Array.filter` cannot use an
+   * index, so before this existed every list pulled the whole collection.
+   */
+  find(filter: Filter<T>): Promise<T[]>;
+  get(id: string): Promise<T | null>;
+  put(record: T): Promise<T>;
+  remove(id: string): Promise<boolean>;
+}
+
+/** In-memory evaluation of a `Filter`, shared by the JSON store. */
+function matchesFilter<T extends { id: string }>(record: T, filter: Filter<T>): boolean {
+  for (const [key, want] of Object.entries(filter)) {
+    if (want === undefined) continue;
+    if ((record as Record<string, unknown>)[key] !== want) return false;
+  }
+  return true;
+}
+
+let dataDirReady: Promise<void> | null = null;
+
+/** Idempotently ensure DATA_DIR exists and is seeded once per process. */
+function ensureDataDir(): Promise<void> {
+  if (!dataDirReady) {
+    dataDirReady = (async () => {
+      await fs.mkdir(DATA_DIR, { recursive: true });
+      await seedIfEmpty();
+    })();
+  }
+  return dataDirReady;
+}
+
+/**
+ * Copy committed seed data into the store the first time it's empty. Mirrors
+ * the store layout: case JSON at the SEED_DIR root, plus `patients/` and
+ * `studies/` subdirectories so a seeded case has its Patient + Study.
+ */
+async function seedIfEmpty(): Promise<void> {
+  try {
+    // Cases live at the DATA_DIR root — seed only if there are none.
+    const rootJson = (await fs.readdir(DATA_DIR)).filter((f) => f.endsWith(".json"));
+    if (rootJson.length === 0) await copyJsonFiles(SEED_DIR, DATA_DIR);
+    // Each entity subdir seeds INDEPENDENTLY if it is empty — so a store that
+    // predates a collection (e.g. an existing volume from before courses
+    // existed) still gets that collection's seed data on next boot.
+    for (const sub of [
+      "patients",
+      "studies",
+      "authors",
+      "courses",
+      "playlists",
+      "users",
+      "memberships",
+      "enrollments",
+      "deidReports",
+      "assessments",
+    ] as const) {
+      const dst = path.join(DATA_DIR, sub);
+      await fs.mkdir(dst, { recursive: true });
+      const existing = (await fs.readdir(dst)).filter((f) => f.endsWith(".json"));
+      if (existing.length === 0) await copyJsonFiles(path.join(SEED_DIR, sub), dst);
+    }
+  } catch {
+    // Best-effort seeding; never block reads/writes.
+  }
+}
+
+/** Copy every top-level *.json from `src` into `dst`. Tolerates a missing src. */
+async function copyJsonFiles(src: string, dst: string): Promise<void> {
+  const files = await fs.readdir(src).catch(() => [] as string[]);
+  for (const f of files) {
+    if (f.endsWith(".json")) {
+      await fs.copyFile(path.join(src, f), path.join(dst, f));
+    }
+  }
+}
+
+type CollectionName =
+  | "cases"
+  | "patients"
+  | "studies"
+  | "authors"
+  | "courses"
+  | "playlists"
+  | "users"
+  | "memberships"
+  | "enrollments"
+  | "progress"
+  | "wishlist"
+  | "reviews"
+  | "certificates"
+  | "deidReports"
+  | "assessments"
+  | "attempts";
+
+/**
+ * Read and parse every committed seed record for one logical collection. Cases
+ * live at the SEED_DIR root (back-compat layout); patients/studies nest in a
+ * subdirectory. Used by the MongoDB store to seed an empty DB the same way the
+ * JSON store copies files. Tolerates a missing directory / malformed file.
+ */
+async function readSeedRecords<T extends { id: string }>(name: CollectionName): Promise<T[]> {
+  const dir = name === "cases" ? SEED_DIR : path.join(SEED_DIR, name);
+  const files = await fs.readdir(dir).catch(() => [] as string[]);
+  const records: T[] = [];
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const raw = await fs.readFile(path.join(dir, f), "utf-8");
+      const parsed = JSON.parse(raw) as Partial<T> & { id?: string; caseId?: string };
+      // Cases are keyed by caseId on disk; mirror it to `id` for the store.
+      const id = parsed.id ?? parsed.caseId;
+      if (id) records.push({ ...(parsed as T), id });
+    } catch {
+      // Skip malformed seed files rather than aborting the whole seed.
+    }
+  }
+  return records;
+}
+
+/** Sanitize an id so it can safely become a filename (no path traversal). */
+function safeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+class JsonCollection<T extends { id: string }> implements Collection<T> {
+  /** "" keeps cases at the DATA_DIR root (original layout); others nest. */
+  constructor(private readonly subdir: string) {}
+
+  private dir(): string {
+    return this.subdir ? path.join(DATA_DIR, this.subdir) : DATA_DIR;
+  }
+
+  private file(id: string): string {
+    return path.join(this.dir(), `${safeId(id)}.json`);
+  }
+
+  private async ready(): Promise<void> {
+    await ensureDataDir();
+    if (this.subdir) await fs.mkdir(this.dir(), { recursive: true });
+  }
+
+  async all(): Promise<T[]> {
+    await this.ready();
+    const entries = await fs.readdir(this.dir()).catch(() => [] as string[]);
+    const records: T[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      try {
+        const raw = await fs.readFile(path.join(this.dir(), entry), "utf-8");
+        records.push(JSON.parse(raw) as T);
+      } catch {
+        // Skip malformed files rather than crashing the list.
+      }
+    }
+    return records;
+  }
+
+  /** JSON has no index; narrow in memory so callers share one API. */
+  async find(filter: Filter<T>): Promise<T[]> {
+    const records = await this.all();
+    return records.filter((r) => matchesFilter(r, filter));
+  }
+
+  async get(id: string): Promise<T | null> {
+    await this.ready();
+    try {
+      const raw = await fs.readFile(this.file(id), "utf-8");
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async put(record: T): Promise<T> {
+    await this.ready();
+    await fs.writeFile(this.file(record.id), JSON.stringify(record, null, 2), "utf-8");
+    return record;
+  }
+
+  async remove(id: string): Promise<boolean> {
+    await this.ready();
+    try {
+      await fs.unlink(this.file(id));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// ============================================================================
+// STORE SEAM — MongoDB implementation (env-gated; active when MONGODB_URI set).
+//
+// Implements the SAME `Collection<T>` interface as JsonCollection over a native
+// Mongo collection. We use our string `id` as the Mongo `_id` so there is no
+// extra mapping table — `_id` and `id` are the same value. Records already carry
+// `orgId`, so tenant scoping (done by the API functions below) is unchanged.
+//
+// Connection is lazy: the MongoClient only connects on the first read/write
+// (never at import/build time). On first use we ensure indexes and seed an empty
+// DB from the committed `/seed` data, mirroring JsonCollection's seedIfEmpty.
+// ============================================================================
+
+/** Records as stored in Mongo: our string `id` doubles as the `_id`. */
+type MongoDoc<T> = Omit<T, "id"> & { _id: string };
+
+// One-process guards so we only ensure indexes / seed once across all three
+// collections (not once per collection).
+let mongoInitReady: Promise<void> | null = null;
+
+/** Ensure indexes exist and the DB is seeded if empty (idempotent, once). */
+function ensureMongoReady(): Promise<void> {
+  if (!mongoInitReady) {
+    mongoInitReady = (async () => {
+      await ensureIndexes();
+      await seedMongoIfEmpty();
+    })().catch((err) => {
+      // Allow a later call to retry (e.g. transient connection failure).
+      mongoInitReady = null;
+      throw err;
+    });
+  }
+  return mongoInitReady;
+}
+
+/** Seed an empty Mongo `cases` collection from committed `/seed` data. */
+async function seedMongoIfEmpty(): Promise<void> {
+  const db = await getDb();
+  // Seed each collection INDEPENDENTLY if it is empty — so a DB that predates a
+  // collection (e.g. courses/playlists added later) still gets its seed data,
+  // while never duplicating an already-populated collection.
+  for (const name of [
+    "cases",
+    "patients",
+    "studies",
+    "authors",
+    "courses",
+    "playlists",
+    "users",
+    "memberships",
+    "enrollments",
+    "deidReports",
+    "assessments",
+  ] as const) {
+    const count = await db.collection(name).estimatedDocumentCount();
+    if (count > 0) continue;
+    const records = await readSeedRecords<{ id: string }>(name);
+    if (records.length === 0) continue;
+    const docs = records.map(({ id, ...rest }) => ({ _id: id, ...rest }));
+    // Idempotent under races: ignore duplicate-key on _id if two invocations
+    // seed concurrently.
+    await db
+      .collection(name)
+      .insertMany(docs as never[], { ordered: false })
+      .catch(() => undefined);
+  }
+}
+
+class MongoCollection<T extends { id: string }> implements Collection<T> {
+  constructor(private readonly name: CollectionName) {}
+
+  private async coll(): Promise<MongoNativeCollection<MongoDoc<T>>> {
+    await ensureMongoReady();
+    const db = await getDb();
+    return db.collection<MongoDoc<T>>(this.name);
+  }
+
+  /** Map a stored Mongo doc back to our domain record (`_id` -> `id`). */
+  private fromDoc(doc: MongoDoc<T>): T {
+    const { _id, ...rest } = doc;
+    return { ...rest, id: _id } as unknown as T;
+  }
+
+  async all(): Promise<T[]> {
+    const coll = await this.coll();
+    const docs = await coll.find({}).toArray();
+    return docs.map((d) => this.fromDoc(d as MongoDoc<T>));
+  }
+
+  /**
+   * Server-side query — this is where the lib/mongo.ts indexes finally earn
+   * their keep. Our string `id` is the `_id`, so a filter on `id` is rewritten.
+   */
+  async find(filter: Filter<T>): Promise<T[]> {
+    const coll = await this.coll();
+    const query: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(filter)) {
+      if (value === undefined) continue;
+      query[key === "id" ? "_id" : key] = value;
+    }
+    const docs = await coll.find(query as never).toArray();
+    return docs.map((d) => this.fromDoc(d as MongoDoc<T>));
+  }
+
+  async get(id: string): Promise<T | null> {
+    const coll = await this.coll();
+    const doc = await coll.findOne({ _id: id } as never);
+    return doc ? this.fromDoc(doc as MongoDoc<T>) : null;
+  }
+
+  async put(record: T): Promise<T> {
+    const coll = await this.coll();
+    const { id, ...rest } = record;
+    // Upsert by _id so create and update share one code path (like writeFile).
+    await coll.replaceOne(
+      { _id: id } as never,
+      { _id: id, ...(rest as Omit<T, "id">) } as never,
+      { upsert: true }
+    );
+    return record;
+  }
+
+  async remove(id: string): Promise<boolean> {
+    const coll = await this.coll();
+    const res = await coll.deleteOne({ _id: id } as never);
+    return res.deletedCount > 0;
+  }
+}
+
+/**
+ * STORE SEAM: the one factory that selects the active store. With `MONGODB_URI`
+ * configured every collection is a `MongoCollection`; otherwise the JSON-on-
+ * volume `JsonCollection` is used (the default/fallback so the demo and tests
+ * run with no database). No caller is aware of which store is returned.
+ */
+function collection<T extends { id: string }>(name: CollectionName): Collection<T> {
+  if (mongoConfigured()) {
+    return new MongoCollection<T>(name);
+  }
+  // Cases live at the DATA_DIR root (subdir "") for back-compat with the
+  // original one-file-per-case layout; other entities nest in a subdirectory.
+  return new JsonCollection<T>(name === "cases" ? "" : name);
+}
+
+/** On disk a case keeps `caseId`; we mirror it to `id` for the collection. */
+type CaseStored = Case & { id: string };
+
+// Internal collections.
+const patients = collection<Patient>("patients");
+const studies = collection<Study>("studies");
+const casesStore = collection<CaseStored>("cases");
+const authorsStore = collection<Author>("authors");
+const coursesStore = collection<Course>("courses");
+const playlistsStore = collection<Playlist>("playlists");
+const usersStore = collection<User>("users");
+const membershipsStore = collection<Membership>("memberships");
+const enrollmentsStore = collection<Enrollment>("enrollments");
+const progressStore = collection<Progress>("progress");
+const wishlistStore = collection<WishlistItem>("wishlist");
+const reviewsStore = collection<Review>("reviews");
+const certificatesStore = collection<Certificate>("certificates");
+const assessmentsStore = collection<Assessment>("assessments");
+const attemptsStore = collection<Attempt>("attempts");
+const deidReportsStore = collection<StoredDeidReport>("deidReports");
+
+/** Stable demo identities for JSON/dev (also copied from /seed). */
+export const DEMO_USER_ID = "user_demo";
+export const DEMO_TEACHER_USER_ID = "user_teacher";
+export const DEMO_USER_EMAIL = "demo@flowrad.local";
+export const DEMO_TEACHER_EMAIL = "teacher@flowrad.local";
+export const DEMO_STUDENT_USER_ID = "user_student";
+export const DEMO_STUDENT_EMAIL = "student@flowrad.local";
+
+function toStored(c: Case): CaseStored {
+  return { ...c, id: c.caseId };
+}
+
+/** Normalize any persisted case (old seed shape or new) into a full `Case`. */
+function normalizeCase(raw: CaseData & Partial<Case>): Case {
+  const now = new Date().toISOString();
+  const findings = (raw.findings ?? []).slice().sort((a, b) => a.order - b.order);
+  return {
+    ...raw,
+    findings,
+    orgId: raw.orgId ?? DEFAULT_ORG_ID,
+    status: raw.status ?? "published",
+    studyRefs: raw.studyRefs,
+    createdAt: raw.createdAt ?? now,
+    updatedAt: raw.updatedAt ?? now,
+  };
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function genId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// ============================================================================
+// Legacy/back-compat API — original signatures, still used by existing routes
+// and UI. These operate on the default org. Persisting through them is lossless
+// because `Case` is a superset of `CaseData`.
+// ============================================================================
+
+export async function listCases(): Promise<CaseData[]> {
+  // Legacy signature: scoped to the default org rather than reading every
+  // tenant's cases, and served by the orgId index.
+  const all = await casesStore.find({ orgId: DEFAULT_ORG_ID });
+  return all
+    .map(normalizeCase)
+    .sort((a, b) => a.title.localeCompare(b.title)) as CaseData[];
+}
+
+export async function getCase(caseId: string): Promise<CaseData | null> {
+  const raw = await casesStore.get(caseId);
+  return raw ? normalizeCase(raw) : null;
+}
+
+export async function saveCase(data: CaseData): Promise<void> {
+  const full = normalizeCase({ ...(data as Case) });
+  full.updatedAt = nowIso();
+  await casesStore.put(toStored(full));
+}
+
+/** Create a new (empty) case, or return the existing one if it already exists. */
+export async function createCase(
+  caseId: string,
+  title: string,
+  modality: string,
+  pacsbinBaseUrl: string
+): Promise<CaseData> {
+  const existing = await getCase(caseId);
+  if (existing) return existing;
+  const now = nowIso();
+  const data: Case = {
+    caseId,
+    title,
+    modality,
+    pacsbinBaseUrl,
+    findings: [],
+    orgId: DEFAULT_ORG_ID,
+    status: "published",
+    createdAt: now,
+    updatedAt: now,
+  };
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+export async function addFinding(caseId: string, finding: Finding): Promise<CaseData> {
+  return createFinding(DEFAULT_ORG_ID, caseId, finding);
+}
+
+export async function updateFinding(
+  caseId: string,
+  findingId: string,
+  patch: Partial<Finding>
+): Promise<CaseData> {
+  return updateFindingScoped(DEFAULT_ORG_ID, caseId, findingId, patch);
+}
+
+export async function deleteFinding(caseId: string, findingId: string): Promise<CaseData> {
+  return deleteFindingScoped(DEFAULT_ORG_ID, caseId, findingId);
+}
+
+/** Reorder findings. `orderedIds` is the new sequence; sets `order` to index+1. */
+export async function reorderFindings(
+  caseId: string,
+  orderedIds: string[]
+): Promise<CaseData> {
+  return reorderFindingsScoped(DEFAULT_ORG_ID, caseId, orderedIds);
+}
+
+// ============================================================================
+// orgId-scoped Case API (CLAUDE.md §4a)
+// ============================================================================
+
+export interface ListCasesOptions {
+  /** Filter by publication status. Omit for all. */
+  status?: CaseStatus;
+  /** Only cases teaching from this patient. */
+  patientId?: string;
+}
+
+/** List an org's cases, newest-updated first, with optional status filter. */
+export async function listCasesForOrg(
+  orgId: string,
+  opts: ListCasesOptions = {}
+): Promise<Case[]> {
+  const all = (
+    await casesStore.find({ orgId, status: opts.status })
+  ).map(normalizeCase);
+  return all
+    .filter((c) => (opts.patientId ? c.patientId === opts.patientId : true))
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+/** Get a single case, enforcing tenant ownership. */
+export async function getCaseForOrg(orgId: string, caseId: string): Promise<Case | null> {
+  const raw = await casesStore.get(caseId);
+  if (!raw) return null;
+  const c = normalizeCase(raw);
+  return c.orgId === orgId ? c : null;
+}
+
+export interface CreateCaseInput {
+  caseId?: string;
+  title: string;
+  modality: string;
+  pacsbinBaseUrl: string;
+  patientId?: string;
+  specialty?: string;
+  status?: CaseStatus;
+  studyRefs?: CaseStudyRef[];
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  tags?: string[];
+  authorId?: string;
+  // Exam-grade teaching details (all optional; additive / back-compat).
+  clinicalHistory?: string;
+  patientAge?: string;
+  patientSex?: PatientSex;
+  technique?: string;
+  primaryDiagnosis?: string;
+  differentials?: string[];
+  targetLevel?: TargetLevel;
+  learningObjectives?: string[];
+  discussion?: string;
+  references?: string[];
+}
+
+/**
+ * Create a new case under an org. Returns the created entity.
+ *
+ * A case created directly as `published` goes through the same de-id gate as a
+ * draft that is later published — otherwise the gate is one optional argument
+ * away from being bypassed.
+ */
+export async function createCaseForOrg(orgId: string, input: CreateCaseInput): Promise<Case> {
+  const caseId = input.caseId ? safeId(input.caseId) : genId("case");
+  const now = nowIso();
+  const data: Case = {
+    caseId,
+    title: input.title,
+    modality: input.modality,
+    pacsbinBaseUrl: input.pacsbinBaseUrl,
+    findings: [],
+    orgId,
+    patientId: input.patientId,
+    specialty: input.specialty,
+    status: input.status ?? "draft",
+    studyRefs: input.studyRefs,
+    difficulty: input.difficulty,
+    system: input.system,
+    tags: input.tags,
+    authorId: input.authorId,
+    // Exam-grade teaching details.
+    clinicalHistory: input.clinicalHistory,
+    patientAge: input.patientAge,
+    patientSex: input.patientSex,
+    technique: input.technique,
+    primaryDiagnosis: input.primaryDiagnosis,
+    differentials: input.differentials,
+    targetLevel: input.targetLevel,
+    learningObjectives: input.learningObjectives,
+    discussion: input.discussion,
+    references: input.references,
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (data.status === "published") {
+    await assertCasePublishable(data);
+  }
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Fields a case update may change. `findings` is managed via the finding API. */
+export type UpdateCaseInput = Partial<
+  Pick<
+    Case,
+    | "title"
+    | "modality"
+    | "pacsbinBaseUrl"
+    | "patientId"
+    | "specialty"
+    | "status"
+    | "studyRefs"
+    | "difficulty"
+    | "system"
+    | "tags"
+    | "authorId"
+    // Exam-grade teaching details.
+    | "clinicalHistory"
+    | "patientAge"
+    | "patientSex"
+    | "technique"
+    | "primaryDiagnosis"
+    | "differentials"
+    | "targetLevel"
+    | "learningObjectives"
+    | "discussion"
+    | "references"
+  >
+>;
+
+/** Patch a case's metadata. Returns the updated entity (or null if not found). */
+export async function updateCaseForOrg(
+  orgId: string,
+  caseId: string,
+  patch: UpdateCaseInput
+): Promise<Case | null> {
+  const current = await getCaseForOrg(orgId, caseId);
+  if (!current) return null;
+  const updated: Case = { ...current, ...patch, caseId, orgId, updatedAt: nowIso() };
+  if (updated.status === "published" && current.status !== "published") {
+    await assertCasePublishable(updated);
+  }
+  await casesStore.put(toStored(updated));
+  return updated;
+}
+
+/**
+ * Throw unless every study this case teaches from has a passing DeidReport
+ * in the case's own org.
+ *
+ * "No declared studies" is a FAILURE, not a pass: a case with no `studyRefs`
+ * is one we cannot verify, and an unverifiable case is exactly what the gate
+ * exists to stop. Seed/back-compat cases that legitimately teach from no study
+ * must be created as drafts.
+ */
+export async function assertCasePublishable(c: Case): Promise<void> {
+  const refs = c.studyRefs ?? [];
+  if (refs.length === 0) {
+    throw new Error(
+      "Cannot publish: this case declares no studyRefs, so its imaging cannot be " +
+        "checked for residual PHI. Attach the study it teaches from, then publish."
+    );
+  }
+  const missing: string[] = [];
+  for (const ref of refs) {
+    const uid = ref.studyInstanceUID?.trim();
+    if (!uid) {
+      missing.push("(study reference with no StudyInstanceUID)");
+      continue;
+    }
+    const report = await getDeidReport(c.orgId, uid);
+    if (!deidAllowsPublish(report)) missing.push(uid);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Cannot publish: ${missing.length} study(ies) lack a passing de-id report. ` +
+        `Re-upload through /api/upload (header gate) or resolve de-id first. ` +
+        `UIDs: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`
+    );
+  }
+}
+
+/** Upsert a de-id report keyed by StudyInstanceUID. */
+export async function upsertDeidReport(
+  orgId: string,
+  report: DeidReport & { studyInstanceUID: string }
+): Promise<StoredDeidReport> {
+  const studyInstanceUID = report.studyInstanceUID.trim();
+  const stored: StoredDeidReport = {
+    ...report,
+    id: studyInstanceUID,
+    orgId,
+    studyInstanceUID,
+    inspectedAt: report.inspectedAt || nowIso(),
+  };
+  await deidReportsStore.put(stored);
+  return stored;
+}
+
+/**
+ * Fetch a study's de-id report **within an org**. Reports are keyed by study
+ * UID, so without the org check one tenant's passing report would satisfy
+ * another tenant's publish gate.
+ */
+export async function getDeidReport(
+  orgId: string,
+  studyInstanceUID: string
+): Promise<StoredDeidReport | null> {
+  const uid = studyInstanceUID.trim();
+  if (!uid) return null;
+  const report = await deidReportsStore.get(uid);
+  if (!report) return null;
+  return report.orgId === orgId ? report : null;
+}
+
+/** Delete a case (tenant-checked). Returns true if a case was removed. */
+export async function deleteCaseForOrg(orgId: string, caseId: string): Promise<boolean> {
+  const current = await getCaseForOrg(orgId, caseId);
+  if (!current) return false;
+  return casesStore.remove(caseId);
+}
+
+// ============================================================================
+// orgId-scoped Finding API
+// ============================================================================
+
+/** Append a finding to a case. Returns the updated case. */
+export async function createFinding(
+  orgId: string,
+  caseId: string,
+  finding: Finding
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const f: Finding = { ...finding };
+  if (f.order == null) f.order = data.findings.length + 1;
+  data.findings.push(f);
+  data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Persist a continuous-capture demonstration (parent track + transcript). */
+export async function appendCaptureSession(
+  orgId: string,
+  caseId: string,
+  session: CaptureSession
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const list = data.captureSessions ? [...data.captureSessions] : [];
+  const idx = list.findIndex((s) => s.id === session.id);
+  if (idx >= 0) list[idx] = session;
+  else list.push(session);
+  data.captureSessions = list;
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Patch one finding's fields. Returns the updated case. */
+export async function updateFindingScoped(
+  orgId: string,
+  caseId: string,
+  findingId: string,
+  patch: Partial<Finding>
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const idx = data.findings.findIndex((f) => f.id === findingId);
+  if (idx === -1) throw new Error(`Finding not found: ${findingId}`);
+  data.findings[idx] = { ...data.findings[idx], ...patch, id: findingId };
+  data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Delete one finding. Returns the updated case. */
+export async function deleteFindingScoped(
+  orgId: string,
+  caseId: string,
+  findingId: string
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  data.findings = data.findings.filter((f) => f.id !== findingId);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/** Reorder findings; `orderedIds` is the new sequence (sets order to index+1). */
+export async function reorderFindingsScoped(
+  orgId: string,
+  caseId: string,
+  orderedIds: string[]
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const rank = new Map(orderedIds.map((id, i) => [id, i + 1]));
+  for (const f of data.findings) {
+    const r = rank.get(f.id);
+    if (r != null) f.order = r;
+  }
+  data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+// ============================================================================
+// orgId-scoped Patient API
+// ============================================================================
+
+export async function listPatients(orgId: string): Promise<Patient[]> {
+  const all = await patients.find({ orgId });
+  return all.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+export async function getPatient(orgId: string, patientId: string): Promise<Patient | null> {
+  const p = await patients.get(patientId);
+  return p && p.orgId === orgId ? p : null;
+}
+
+export interface CreatePatientInput {
+  id?: string;
+  displayName: string;
+  mrnHash?: string;
+}
+
+export async function createPatient(orgId: string, input: CreatePatientInput): Promise<Patient> {
+  const now = nowIso();
+  const patient: Patient = {
+    id: input.id ? safeId(input.id) : genId("pat"),
+    orgId,
+    displayName: input.displayName,
+    mrnHash: input.mrnHash,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await patients.put(patient);
+  return patient;
+}
+
+export async function updatePatient(
+  orgId: string,
+  patientId: string,
+  patch: Partial<Pick<Patient, "displayName" | "mrnHash">>
+): Promise<Patient | null> {
+  const current = await getPatient(orgId, patientId);
+  if (!current) return null;
+  const updated: Patient = { ...current, ...patch, id: patientId, orgId, updatedAt: nowIso() };
+  await patients.put(updated);
+  return updated;
+}
+
+export async function deletePatient(orgId: string, patientId: string): Promise<boolean> {
+  const current = await getPatient(orgId, patientId);
+  if (!current) return false;
+  return patients.remove(patientId);
+}
+
+// ============================================================================
+// orgId-scoped Study API + patient chronology
+// ============================================================================
+
+export async function listStudies(orgId: string, patientId?: string): Promise<Study[]> {
+  return studies.find({ orgId, patientId });
+}
+
+export async function getStudy(orgId: string, studyId: string): Promise<Study | null> {
+  const s = await studies.get(studyId);
+  return s && s.orgId === orgId ? s : null;
+}
+
+/** Find a study by its DICOM StudyInstanceUID within an org. */
+export async function getStudyByUID(
+  orgId: string,
+  studyInstanceUID: string
+): Promise<Study | null> {
+  // On the /api/dicomweb authorization path — must be an indexed lookup.
+  const all = await studies.find({ orgId, studyInstanceUID });
+  return all[0] ?? null;
+}
+
+export interface CreateStudyInput {
+  id?: string;
+  patientId: string;
+  studyInstanceUID: string;
+  studyDate?: string;
+  modality?: string;
+  description?: string;
+  orthancStudyId?: string;
+  seriesInstanceUIDs?: string[];
+}
+
+export async function createStudy(orgId: string, input: CreateStudyInput): Promise<Study> {
+  const now = nowIso();
+  const study: Study = {
+    id: input.id ? safeId(input.id) : genId("stu"),
+    orgId,
+    patientId: input.patientId,
+    studyInstanceUID: input.studyInstanceUID,
+    studyDate: input.studyDate,
+    modality: input.modality,
+    description: input.description,
+    orthancStudyId: input.orthancStudyId,
+    seriesInstanceUIDs: input.seriesInstanceUIDs ?? [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  await studies.put(study);
+  return study;
+}
+
+export async function updateStudy(
+  orgId: string,
+  studyId: string,
+  patch: Partial<
+    Pick<
+      Study,
+      | "studyDate"
+      | "modality"
+      | "description"
+      | "orthancStudyId"
+      | "seriesInstanceUIDs"
+      | "patientId"
+    >
+  >
+): Promise<Study | null> {
+  const current = await getStudy(orgId, studyId);
+  if (!current) return null;
+  const updated: Study = { ...current, ...patch, id: studyId, orgId, updatedAt: nowIso() };
+  await studies.put(updated);
+  return updated;
+}
+
+export async function deleteStudy(orgId: string, studyId: string): Promise<boolean> {
+  const current = await getStudy(orgId, studyId);
+  if (!current) return false;
+  return studies.remove(studyId);
+}
+
+/**
+ * Patient chronology: a patient's studies ordered by studyDate (ascending, so
+ * oldest "prior" first, newest "current" last). Studies without a date sort to
+ * the end. This is what the UI uses to lay out "prior vs current".
+ */
+export async function listStudiesChronological(
+  orgId: string,
+  patientId: string
+): Promise<Study[]> {
+  const list = await listStudies(orgId, patientId);
+  return list.sort((a, b) => {
+    if (a.studyDate && b.studyDate) return a.studyDate.localeCompare(b.studyDate);
+    if (a.studyDate) return -1;
+    if (b.studyDate) return 1;
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+}
+
+// ============================================================================
+// Catalog — the filterable case library (CLAUDE.md §2). A single org-scoped
+// query that the public /api/catalog route and the catalog pages share.
+// ============================================================================
+
+export interface CatalogFilter {
+  system?: BodySystem;
+  difficulty?: Difficulty;
+  modality?: string;
+  specialty?: string;
+  authorId?: string;
+  /** Free-text search over title / tags / specialty. */
+  q?: string;
+  /** Filter by publication status (defaults to all when omitted). */
+  status?: CaseStatus;
+  /** Sort key. Defaults to most-recently-updated. */
+  sort?: "recent" | "title" | "difficulty";
+}
+
+const DIFFICULTY_RANK: Record<Difficulty, number> = {
+  beginner: 0,
+  intermediate: 1,
+  advanced: 2,
+};
+
+/**
+ * List an org's cases matching a set of catalog filters. All filters are AND-ed;
+ * omitted filters don't constrain. Back-compatible: cases without the new
+ * taxonomy fields simply don't match `system`/`difficulty`/`author` filters but
+ * always appear in the unfiltered catalog.
+ */
+export async function listCatalogCases(
+  orgId: string,
+  filter: CatalogFilter = {}
+): Promise<Case[]> {
+  // Narrow on the indexed fields server-side; free-text `q` is applied after.
+  const all = (
+    await casesStore.find({
+      orgId,
+      status: filter.status,
+      system: filter.system,
+      difficulty: filter.difficulty,
+      authorId: filter.authorId,
+    })
+  ).map(normalizeCase);
+  const q = filter.q?.trim().toLowerCase();
+
+  const matched = all.filter((c) => {
+    if (filter.status && c.status !== filter.status) return false;
+    if (filter.system && c.system !== filter.system) return false;
+    if (filter.difficulty && c.difficulty !== filter.difficulty) return false;
+    if (filter.modality && c.modality !== filter.modality) return false;
+    if (filter.specialty && c.specialty !== filter.specialty) return false;
+    if (filter.authorId && c.authorId !== filter.authorId) return false;
+    if (q) {
+      const haystack = [
+        c.title,
+        c.specialty ?? "",
+        c.modality,
+        c.system ?? "",
+        ...(c.tags ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const sort = filter.sort ?? "recent";
+  return matched.sort((a, b) => {
+    if (sort === "title") return a.title.localeCompare(b.title);
+    if (sort === "difficulty") {
+      const ra = a.difficulty ? DIFFICULTY_RANK[a.difficulty] : 99;
+      const rb = b.difficulty ? DIFFICULTY_RANK[b.difficulty] : 99;
+      if (ra !== rb) return ra - rb;
+      return a.title.localeCompare(b.title);
+    }
+    return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+  });
+}
+
+/** Distinct facet values present in an org's cases — to populate filter UIs. */
+export interface CatalogFacets {
+  systems: BodySystem[];
+  difficulties: Difficulty[];
+  modalities: string[];
+  specialties: string[];
+}
+
+export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
+  const all = (await casesStore.find({ orgId })).map(normalizeCase);
+  const systems = new Set<BodySystem>();
+  const difficulties = new Set<Difficulty>();
+  const modalities = new Set<string>();
+  const specialties = new Set<string>();
+  for (const c of all) {
+    if (c.system) systems.add(c.system);
+    if (c.difficulty) difficulties.add(c.difficulty);
+    if (c.modality) modalities.add(c.modality);
+    if (c.specialty) specialties.add(c.specialty);
+  }
+  return {
+    systems: [...systems],
+    difficulties: [...difficulties],
+    modalities: [...modalities].sort(),
+    specialties: [...specialties].sort(),
+  };
+}
+
+// ============================================================================
+// orgId-scoped Author API
+// ============================================================================
+
+export async function listAuthors(orgId: string): Promise<Author[]> {
+  const all = await authorsStore.find({ orgId });
+  return all.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getAuthor(orgId: string, authorId: string): Promise<Author | null> {
+  const a = await authorsStore.get(authorId);
+  return a && a.orgId === orgId ? a : null;
+}
+
+export interface CreateAuthorInput {
+  id?: string;
+  name: string;
+  avatarUrl?: string;
+  bio?: string;
+  institution?: string;
+  credentials?: string;
+  subspecialties?: BodySystem[];
+  socials?: Author["socials"];
+}
+
+export async function createAuthor(orgId: string, input: CreateAuthorInput): Promise<Author> {
+  const now = nowIso();
+  const author: Author = {
+    id: input.id ? safeId(input.id) : genId("auth"),
+    orgId,
+    name: input.name,
+    avatarUrl: input.avatarUrl,
+    bio: input.bio,
+    institution: input.institution,
+    credentials: input.credentials,
+    subspecialties: input.subspecialties,
+    socials: input.socials,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await authorsStore.put(author);
+  return author;
+}
+
+export async function updateAuthor(
+  orgId: string,
+  authorId: string,
+  patch: Partial<
+    Pick<
+      Author,
+      | "name"
+      | "avatarUrl"
+      | "bio"
+      | "institution"
+      | "credentials"
+      | "subspecialties"
+      | "socials"
+      | "userId"
+      | "verification"
+      | "voice"
+    >
+  >
+): Promise<Author | null> {
+  const current = await getAuthor(orgId, authorId);
+  if (!current) return null;
+  const updated: Author = { ...current, ...patch, id: authorId, orgId, updatedAt: nowIso() };
+  await authorsStore.put(updated);
+  return updated;
+}
+
+export async function deleteAuthor(orgId: string, authorId: string): Promise<boolean> {
+  const current = await getAuthor(orgId, authorId);
+  if (!current) return false;
+  return authorsStore.remove(authorId);
+}
+
+/**
+ * The org's single "primary" author — a placeholder seam for the
+ * authenticated user until Clerk + a first-class `AuthorProfile` land
+ * (CLAUDE.md §6). Lazily creates one the first time it's requested so the
+ * Studio profile editor always has something to edit. Callers don't change
+ * when real auth replaces this with the session user's own profile.
+ */
+export async function getPrimaryAuthor(orgId: string): Promise<Author> {
+  const existing = await listAuthors(orgId);
+  if (existing.length > 0) return existing[0];
+  return createAuthor(orgId, { name: "Your teaching profile" });
+}
+
+// ============================================================================
+// orgId-scoped Course API
+// ============================================================================
+
+export interface ListCoursesOpts {
+  status?: CaseStatus;
+  system?: BodySystem;
+  difficulty?: Difficulty;
+  authorId?: string;
+  excludeId?: string;
+}
+
+export async function listCourses(orgId: string, opts: ListCoursesOpts = {}): Promise<Course[]> {
+  const all = await coursesStore.find({ orgId, status: opts.status });
+  return all
+    .filter((c) => (opts.system ? c.system === opts.system : true))
+    .filter((c) => (opts.difficulty ? c.difficulty === opts.difficulty : true))
+    .filter((c) => (opts.authorId ? c.authorId === opts.authorId : true))
+    .filter((c) => (opts.excludeId ? c.id !== opts.excludeId : true))
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function listRelatedCourses(
+  orgId: string,
+  course: Course,
+  limit = 6
+): Promise<Course[]> {
+  const candidates = await listCourses(orgId, {
+    status: "published",
+    excludeId: course.id,
+  });
+  return sortRelatedCourses(course, candidates).slice(0, limit);
+}
+
+export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {
+  const c = await coursesStore.get(courseId);
+  return c && c.orgId === orgId ? c : null;
+}
+
+export interface CreateCourseInput {
+  id?: string;
+  title: string;
+  description?: string;
+  difficulty?: Difficulty;
+  system?: BodySystem;
+  authorId?: string;
+  caseIds?: string[];
+  status?: CaseStatus;
+}
+
+export async function createCourse(orgId: string, input: CreateCourseInput): Promise<Course> {
+  const now = nowIso();
+  const course: Course = {
+    id: input.id ? safeId(input.id) : genId("course"),
+    orgId,
+    title: input.title,
+    description: input.description,
+    difficulty: input.difficulty,
+    system: input.system,
+    authorId: input.authorId,
+    caseIds: input.caseIds ?? [],
+    status: input.status ?? "draft",
+    createdAt: now,
+    updatedAt: now,
+  };
+  await coursesStore.put(course);
+  return course;
+}
+
+export async function updateCourse(
+  orgId: string,
+  courseId: string,
+  patch: Partial<
+    Pick<Course, "title" | "description" | "difficulty" | "system" | "authorId" | "caseIds" | "status">
+  >
+): Promise<Course | null> {
+  const current = await getCourse(orgId, courseId);
+  if (!current) return null;
+  const updated: Course = { ...current, ...patch, id: courseId, orgId, updatedAt: nowIso() };
+  await coursesStore.put(updated);
+  return updated;
+}
+
+export async function deleteCourse(orgId: string, courseId: string): Promise<boolean> {
+  const current = await getCourse(orgId, courseId);
+  if (!current) return false;
+  return coursesStore.remove(courseId);
+}
+
+// ============================================================================
+// orgId-scoped Playlist API
+// ============================================================================
+
+export async function listPlaylists(orgId: string): Promise<Playlist[]> {
+  const all = await playlistsStore.find({ orgId });
+  return all.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function getPlaylist(orgId: string, playlistId: string): Promise<Playlist | null> {
+  const p = await playlistsStore.get(playlistId);
+  return p && p.orgId === orgId ? p : null;
+}
+
+export interface CreatePlaylistInput {
+  id?: string;
+  title: string;
+  description?: string;
+  caseIds?: string[];
+}
+
+export async function createPlaylist(orgId: string, input: CreatePlaylistInput): Promise<Playlist> {
+  const now = nowIso();
+  const playlist: Playlist = {
+    id: input.id ? safeId(input.id) : genId("pl"),
+    orgId,
+    title: input.title,
+    description: input.description,
+    caseIds: input.caseIds ?? [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  await playlistsStore.put(playlist);
+  return playlist;
+}
+
+export async function updatePlaylist(
+  orgId: string,
+  playlistId: string,
+  patch: Partial<Pick<Playlist, "title" | "description" | "caseIds">>
+): Promise<Playlist | null> {
+  const current = await getPlaylist(orgId, playlistId);
+  if (!current) return null;
+  const updated: Playlist = { ...current, ...patch, id: playlistId, orgId, updatedAt: nowIso() };
+  await playlistsStore.put(updated);
+  return updated;
+}
+
+export async function deletePlaylist(orgId: string, playlistId: string): Promise<boolean> {
+  const current = await getPlaylist(orgId, playlistId);
+  if (!current) return false;
+  return playlistsStore.remove(playlistId);
+}
+
+/**
+ * Resolve an ordered list of case IDs into full cases, preserving order and
+ * dropping any that no longer exist (or belong to another org). Shared by the
+ * course/playlist pages so a curated rail never renders dangling references.
+ */
+export async function getCasesByIds(orgId: string, caseIds: string[]): Promise<Case[]> {
+  const resolved = await Promise.all(caseIds.map((id) => getCaseForOrg(orgId, id)));
+  return resolved.filter((c): c is Case => c != null);
+}
+
+// ============================================================================
+// Identity — User · Membership · Enrollment (P0)
+// ============================================================================
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export async function getUser(userId: string): Promise<User | null> {
+  return usersStore.get(userId);
+}
+
+/** Users whose home org is `orgId` (best-effort directory for admin). */
+export async function listUsers(orgId: string): Promise<User[]> {
+  const all = await usersStore.find({ orgId });
+  return all.sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+}
+
+export async function getUserByEmail(email: string): Promise<User | null> {
+  const want = normalizeEmail(email);
+  // Indexed lookup on the login path. Emails are normalized on write, so the
+  // direct query is the hit in practice; the scan below only catches rows
+  // written before normalization existed.
+  const direct = await usersStore.find({ email: want });
+  if (direct[0]) return direct[0];
+  const all = await usersStore.all();
+  return all.find((u) => normalizeEmail(u.email) === want) ?? null;
+}
+
+export async function getUserByAuthProviderId(authProviderId: string): Promise<User | null> {
+  const all = await usersStore.find({ authProviderId });
+  return all[0] ?? null;
+}
+
+export interface CreateUserInput {
+  id?: string;
+  orgId?: string;
+  email: string;
+  name?: string;
+  image?: string;
+  role?: UserRole;
+  platformRole?: User["platformRole"];
+  authProviderId?: string;
+}
+
+export async function createUser(input: CreateUserInput): Promise<User> {
+  const email = normalizeEmail(input.email);
+  const existing = await getUserByEmail(email);
+  if (existing) return existing;
+  const user: User = {
+    id: input.id ? safeId(input.id) : genId("user"),
+    orgId: input.orgId ?? DEFAULT_ORG_ID,
+    email,
+    name: input.name,
+    image: input.image,
+    role: input.role ?? "student",
+    platformRole: input.platformRole,
+    authProviderId: input.authProviderId,
+    createdAt: nowIso(),
+  };
+  await usersStore.put(user);
+  return user;
+}
+
+export async function updateUser(
+  userId: string,
+  patch: Partial<Pick<User, "name" | "image" | "role" | "platformRole" | "authProviderId" | "orgId">>
+): Promise<User | null> {
+  const current = await getUser(userId);
+  if (!current) return null;
+  const updated: User = { ...current, ...patch, id: userId, email: current.email };
+  await usersStore.put(updated);
+  return updated;
+}
+
+/**
+ * After Better Auth creates a user, ensure a domain User + org membership
+ * exist. Looks up by email first so demo identities and re-signups link.
+ */
+export async function provisionAuthUser(input: {
+  authProviderId: string;
+  email: string;
+  name?: string;
+  image?: string;
+}): Promise<User> {
+  await ensureDemoIdentity();
+  const email = normalizeEmail(input.email);
+  const existing =
+    (await getUserByAuthProviderId(input.authProviderId)) ?? (await getUserByEmail(email));
+  if (existing) {
+    const updated: User = {
+      ...existing,
+      authProviderId: input.authProviderId,
+      name: input.name ?? existing.name,
+      image: input.image ?? existing.image,
+    };
+    await usersStore.put(updated);
+    const mems = await listMembershipsForUser(updated.id);
+    if (mems.length === 0) {
+      await createMembership({
+        userId: updated.id,
+        orgId: updated.orgId || DEFAULT_ORG_ID,
+        role: updated.platformRole === "super_admin" ? "owner" : "student",
+      });
+    }
+    return updated;
+  }
+  const user = await createUser({
+    email,
+    name: input.name,
+    image: input.image,
+    role: "student",
+    authProviderId: input.authProviderId,
+    orgId: DEFAULT_ORG_ID,
+  });
+  await createMembership({
+    userId: user.id,
+    orgId: DEFAULT_ORG_ID,
+    role: "student",
+  });
+  return user;
+}
+
+export async function listMemberships(orgId: string): Promise<Membership[]> {
+  const all = await membershipsStore.find({ orgId });
+  return all
+    .filter((m) => (m.status ?? "active") !== "revoked")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listMembershipsForUser(userId: string): Promise<Membership[]> {
+  const all = await membershipsStore.find({ userId });
+  return all
+    .filter((m) => (m.status ?? "active") !== "revoked")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function getMembership(membershipId: string): Promise<Membership | null> {
+  return membershipsStore.get(membershipId);
+}
+
+export async function getMembershipForUserOrg(
+  userId: string,
+  orgId: string
+): Promise<Membership | null> {
+  const all = await membershipsStore.find({ userId, orgId });
+  return (
+    all.find(
+      (m) => (m.status ?? "active") !== "revoked"
+    ) ?? null
+  );
+}
+
+export interface CreateMembershipInput {
+  id?: string;
+  userId: string;
+  orgId: string;
+  role: MembershipRole;
+  invitedBy?: string;
+}
+
+/** Create or update the single membership for (userId, orgId). */
+export async function createMembership(input: CreateMembershipInput): Promise<Membership> {
+  const existing = await getMembershipForUserOrg(input.userId, input.orgId);
+  const now = nowIso();
+  if (existing) {
+    const updated: Membership = {
+      ...existing,
+      role: input.role,
+      status: "active",
+      invitedBy: input.invitedBy ?? existing.invitedBy,
+      updatedAt: now,
+    };
+    await membershipsStore.put(updated);
+    return updated;
+  }
+  const membership: Membership = {
+    id: input.id ? safeId(input.id) : genId("mem"),
+    userId: input.userId,
+    orgId: input.orgId,
+    role: input.role,
+    status: "active",
+    invitedBy: input.invitedBy,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await membershipsStore.put(membership);
+  return membership;
+}
+
+export async function upsertMembership(
+  input: CreateMembershipInput
+): Promise<Membership> {
+  return createMembership(input);
+}
+
+export async function updateMembership(
+  membershipId: string,
+  patch: Partial<Pick<Membership, "role" | "status" | "invitedBy">>
+): Promise<Membership | null> {
+  const current = await getMembership(membershipId);
+  if (!current) return null;
+  const updated: Membership = { ...current, ...patch, id: membershipId, updatedAt: nowIso() };
+  await membershipsStore.put(updated);
+  return updated;
+}
+
+export async function deleteMembership(membershipId: string): Promise<boolean> {
+  return membershipsStore.remove(membershipId);
+}
+
+export async function listEnrollmentsForUser(userId: string): Promise<Enrollment[]> {
+  const all = await enrollmentsStore.find({ userId });
+  return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function getEnrollment(enrollmentId: string): Promise<Enrollment | null> {
+  return enrollmentsStore.get(enrollmentId);
+}
+
+export async function getEnrollmentForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Enrollment | null> {
+  const matches = await enrollmentsStore.find({ userId, courseId });
+  if (matches.length === 0) return null;
+  const active = matches.find((e) => e.status === "active");
+  return active ?? null;
+}
+
+export interface CreateEnrollmentInput {
+  id?: string;
+  userId: string;
+  orgId: string;
+  courseId: string;
+  source?: Enrollment["source"];
+}
+
+export async function createEnrollment(input: CreateEnrollmentInput): Promise<Enrollment> {
+  const existing = (
+    await enrollmentsStore.find({
+      userId: input.userId,
+      courseId: input.courseId,
+      status: "active",
+    })
+  )[0];
+  if (existing) return existing;
+  const now = nowIso();
+  const enrollment: Enrollment = {
+    id: input.id ? safeId(input.id) : genId("enr"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    source: input.source ?? "free",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  await enrollmentsStore.put(enrollment);
+  return enrollment;
+}
+
+export async function updateEnrollment(
+  enrollmentId: string,
+  patch: Partial<Pick<Enrollment, "status" | "source">>
+): Promise<Enrollment | null> {
+  const current = await getEnrollment(enrollmentId);
+  if (!current) return null;
+  const updated: Enrollment = { ...current, ...patch, id: enrollmentId, updatedAt: nowIso() };
+  await enrollmentsStore.put(updated);
+  return updated;
+}
+
+export async function deleteEnrollment(enrollmentId: string): Promise<boolean> {
+  return enrollmentsStore.remove(enrollmentId);
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace learner — Progress · Wishlist · Reviews · Certificates
+// ---------------------------------------------------------------------------
+
+function progressPercent(completedCaseIds: string[], totalCases: number): number {
+  if (totalCases <= 0) return 0;
+  return Math.min(100, Math.round((completedCaseIds.length / totalCases) * 100));
+}
+
+export async function listProgressForUser(userId: string): Promise<Progress[]> {
+  const all = await progressStore.find({ userId });
+  return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function getProgressForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Progress | null> {
+  const all = await progressStore.find({ userId, courseId });
+  return all[0] ?? null;
+}
+
+export interface UpsertProgressInput {
+  userId: string;
+  orgId: string;
+  courseId: string;
+  caseId?: string;
+  markComplete?: boolean;
+  lastOpenedCaseId?: string;
+}
+
+export async function upsertProgress(input: UpsertProgressInput): Promise<Progress> {
+  const course = await getCourse(input.orgId, input.courseId);
+  if (!course) throw new Error("Course not found.");
+
+  const now = nowIso();
+  const existing = await getProgressForUserCourse(input.userId, input.courseId);
+  const completed = new Set(existing?.completedCaseIds ?? []);
+
+  if (input.markComplete && input.caseId) {
+    completed.add(input.caseId);
+  }
+
+  const lastOpened =
+    input.lastOpenedCaseId ?? input.caseId ?? existing?.lastOpenedCaseId;
+  const percent = progressPercent([...completed], course.caseIds.length);
+  const completedAt =
+    percent >= 100 ? existing?.completedAt ?? now : undefined;
+
+  const progress: Progress = {
+    id: existing?.id ?? genId("prg"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    completedCaseIds: [...completed],
+    lastOpenedCaseId: lastOpened,
+    percentComplete: percent,
+    completedAt,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await progressStore.put(progress);
+  return progress;
+}
+
+export async function listWishlistForUser(userId: string): Promise<WishlistItem[]> {
+  const all = await wishlistStore.find({ userId });
+  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function isCourseWishlisted(userId: string, courseId: string): Promise<boolean> {
+  const all = await wishlistStore.find({ userId, courseId });
+  return all.length > 0;
+}
+
+export async function addToWishlist(
+  userId: string,
+  orgId: string,
+  courseId: string
+): Promise<WishlistItem> {
+  const existing = (await wishlistStore.find({ userId, courseId }))[0];
+  if (existing) return existing;
+  const item: WishlistItem = {
+    id: genId("wsh"),
+    userId,
+    orgId,
+    courseId,
+    createdAt: nowIso(),
+  };
+  await wishlistStore.put(item);
+  return item;
+}
+
+export async function removeFromWishlist(userId: string, courseId: string): Promise<boolean> {
+  const match = (await wishlistStore.find({ userId, courseId }))[0];
+  if (!match) return false;
+  return wishlistStore.remove(match.id);
+}
+
+export interface CourseReviewsSummary {
+  reviews: Review[];
+  average: number;
+  count: number;
+}
+
+export async function listReviewsForCourse(
+  orgId: string,
+  courseId: string
+): Promise<CourseReviewsSummary> {
+  const reviews = (await reviewsStore.find({ orgId, courseId })).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
+  const count = reviews.length;
+  const average =
+    count === 0
+      ? 0
+      : Math.round((reviews.reduce((sum, r) => sum + r.rating, 0) / count) * 10) / 10;
+  return { reviews, average, count };
+}
+
+export interface CreateReviewInput {
+  userId: string;
+  orgId: string;
+  courseId: string;
+  rating: number;
+  body?: string;
+  authorName?: string;
+}
+
+export async function createReview(input: CreateReviewInput): Promise<Review> {
+  const rating = Math.round(input.rating);
+  if (rating < 1 || rating > 5) throw new Error("Rating must be 1–5.");
+
+  const existing = (
+    await reviewsStore.find({ userId: input.userId, courseId: input.courseId })
+  )[0];
+  const now = nowIso();
+  const review: Review = {
+    id: existing?.id ?? genId("rev"),
+    userId: input.userId,
+    orgId: input.orgId,
+    courseId: input.courseId,
+    rating,
+    body: input.body?.trim() || undefined,
+    authorName: input.authorName,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await reviewsStore.put(review);
+  return review;
+}
+
+export async function listCertificatesForUser(userId: string): Promise<Certificate[]> {
+  const all = await certificatesStore.find({ userId });
+  return all.sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+}
+
+export async function getCertificate(certificateId: string): Promise<Certificate | null> {
+  return certificatesStore.get(certificateId);
+}
+
+export async function getCertificateForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Certificate | null> {
+  const all = await certificatesStore.find({ userId, courseId });
+  return all[0] ?? null;
+}
+
+export async function issueCertificate(
+  userId: string,
+  orgId: string,
+  courseId: string,
+  learnerName: string
+): Promise<Certificate> {
+  const existing = await getCertificateForUserCourse(userId, courseId);
+  if (existing) return existing;
+
+  const progress = await getProgressForUserCourse(userId, courseId);
+  if (!progress || progress.percentComplete < 100) {
+    throw new Error("Course must be 100% complete to issue a certificate.");
+  }
+
+  const assessment = await getAssessmentForCourse(orgId, courseId);
+  if (assessment) {
+    const best = await getBestAttemptForUserAssessment(userId, assessment.id);
+    if (!best?.passed) {
+      throw new Error("Pass the course assessment before claiming a certificate.");
+    }
+  }
+
+  const course = await getCourse(orgId, courseId);
+  if (!course) throw new Error("Course not found.");
+
+  const certificate: Certificate = {
+    id: genId("cert"),
+    userId,
+    orgId,
+    courseId,
+    courseTitle: course.title,
+    learnerName,
+    issuedAt: nowIso(),
+    cmeEligible: false,
+  };
+  await certificatesStore.put(certificate);
+  return certificate;
+}
+
+// ============================================================================
+// Assessments & attempts (end-of-course quiz)
+// ============================================================================
+
+export async function getAssessment(assessmentId: string): Promise<Assessment | null> {
+  return assessmentsStore.get(assessmentId);
+}
+
+export async function getAssessmentForCourse(
+  orgId: string,
+  courseId: string
+): Promise<Assessment | null> {
+  const all = await assessmentsStore.find({ orgId, courseId });
+  return all[0] ?? null;
+}
+
+/** Client-safe assessment: questions without answer keys / target markers. */
+export async function getPublicAssessmentForCourse(
+  orgId: string,
+  courseId: string
+): Promise<{
+  id: string;
+  orgId: string;
+  courseId: string;
+  title: string;
+  description?: string;
+  passingScore: number;
+  cmeEligible: false;
+  questions: ReturnType<typeof toPublicQuestions>;
+} | null> {
+  const assessment = await getAssessmentForCourse(orgId, courseId);
+  if (!assessment) return null;
+  return {
+    id: assessment.id,
+    orgId: assessment.orgId,
+    courseId: assessment.courseId,
+    title: assessment.title,
+    description: assessment.description,
+    passingScore: assessment.passingScore,
+    cmeEligible: assessment.cmeEligible,
+    questions: toPublicQuestions(assessment.questions),
+  };
+}
+
+export async function listAttemptsForUser(userId: string): Promise<Attempt[]> {
+  const all = await attemptsStore.find({ userId });
+  return all.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+export async function getBestAttemptForUserAssessment(
+  userId: string,
+  assessmentId: string
+): Promise<Attempt | null> {
+  const mine = await attemptsStore.find({ userId, assessmentId });
+  if (mine.length === 0) return null;
+  return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
+}
+
+export async function getBestAttemptForUserCourse(
+  userId: string,
+  courseId: string
+): Promise<Attempt | null> {
+  const mine = await attemptsStore.find({ userId, courseId });
+  if (mine.length === 0) return null;
+  return mine.reduce((best, cur) => (cur.score > best.score ? cur : best));
+}
+
+export type SubmitAttemptInput = {
+  userId: string;
+  orgId: string;
+  assessmentId: string;
+  answers: LearnerAnswer[];
+};
+
+export async function submitAttempt(input: SubmitAttemptInput): Promise<Attempt> {
+  const assessment = await getAssessment(input.assessmentId);
+  if (!assessment || assessment.orgId !== input.orgId) {
+    throw new Error("Assessment not found.");
+  }
+
+  const { responses, score } = gradeAttempt(assessment.questions, input.answers);
+  const passed = score >= assessment.passingScore;
+  const now = nowIso();
+  const attempt: Attempt = {
+    id: genId("att"),
+    userId: input.userId,
+    orgId: input.orgId,
+    assessmentId: assessment.id,
+    courseId: assessment.courseId,
+    responses,
+    score,
+    passed,
+    startedAt: now,
+    submittedAt: now,
+  };
+  await attemptsStore.put(attempt);
+  return attempt;
+}
+
+/**
+ * Idempotent demo identity: org_demo has a platform super_admin (owner) and a
+ * teacher (author) membership. Safe to call on every boot / demo sign-in.
+ */
+export async function ensureDemoIdentity(): Promise<void> {
+  const now = nowIso();
+
+  const demo =
+    (await usersStore.get(DEMO_USER_ID)) ??
+    (await getUserByEmail(DEMO_USER_EMAIL)) ??
+    null;
+  const demoUser: User = {
+    id: DEMO_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_USER_EMAIL,
+    name: demo?.name ?? "Demo Teacher",
+    role: "admin",
+    platformRole: "super_admin",
+    authProviderId: demo?.authProviderId,
+    image: demo?.image,
+    createdAt: demo?.createdAt ?? now,
+  };
+  await usersStore.put(demoUser);
+  await createMembership({
+    id: "mem_demo_owner",
+    userId: DEMO_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "owner",
+  });
+
+  const teacher =
+    (await usersStore.get(DEMO_TEACHER_USER_ID)) ??
+    (await getUserByEmail(DEMO_TEACHER_EMAIL)) ??
+    null;
+  const teacherUser: User = {
+    id: DEMO_TEACHER_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_TEACHER_EMAIL,
+    name: teacher?.name ?? "Dr. Priya Katyal",
+    role: "author",
+    authProviderId: teacher?.authProviderId,
+    image: teacher?.image,
+    createdAt: teacher?.createdAt ?? now,
+  };
+  await usersStore.put(teacherUser);
+  await createMembership({
+    id: "mem_demo_teacher",
+    userId: DEMO_TEACHER_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "author",
+  });
+
+  const student =
+    (await usersStore.get(DEMO_STUDENT_USER_ID)) ??
+    (await getUserByEmail(DEMO_STUDENT_EMAIL)) ??
+    null;
+  const studentUser: User = {
+    id: DEMO_STUDENT_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    email: DEMO_STUDENT_EMAIL,
+    name: student?.name ?? "Demo Student",
+    role: "student",
+    authProviderId: student?.authProviderId,
+    image: student?.image,
+    createdAt: student?.createdAt ?? now,
+  };
+  await usersStore.put(studentUser);
+  await createMembership({
+    id: "mem_demo_student",
+    userId: DEMO_STUDENT_USER_ID,
+    orgId: DEFAULT_ORG_ID,
+    role: "student",
+  });
+
+  const author = await getAuthor(DEFAULT_ORG_ID, "auth_demo");
+  if (author && !author.userId) {
+    await updateAuthor(DEFAULT_ORG_ID, author.id, { userId: DEMO_TEACHER_USER_ID });
+  }
+}

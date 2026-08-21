@@ -1,0 +1,186 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────────────────
+   FlowRad Learn — design tokens.
+
+   Clinical reading-room palette: warm charcoal surfaces (not neon-slate), one
+   restrained film-marker accent, no glow washes. Imaging stays pure black.
+
+   Two token vocabularies share the same variables (FlowRad semantic + shadcn).
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces — warm charcoal ladder, film-adjacent, not electric blue-black. */
+  --canvas: 14 13 12; /* #0e0d0c */
+  --surface: 22 21 19; /* #161513 */
+  --elevated: 32 30 27; /* #201e1b */
+  --overlay: 42 39 35; /* #2a2723 */
+
+  /* Text — paper-on-film contrast, calm steps down. */
+  --text-primary: 242 237 230; /* #f2ede6 */
+  --text-secondary: 168 160 148; /* #a8a094 */
+  --text-muted: 110 103 94; /* #6e675e */
+
+  /* Borders — soft warm hairlines. */
+  --border-subtle: 48 44 39; /* #302c27 */
+  --border-strong: 72 66 58; /* #48423a */
+
+  /* Accent — film annotation amber (PACS-familiar), not neon cyan. */
+  --accent: 212 168 75; /* #d4a84b */
+  --accent-foreground: 20 16 8; /* ink on amber */
+  --accent-muted: 58 46 24; /* quiet amber wash */
+  --accent-bright: 232 196 110; /* highlight without glow */
+
+  /* Semantic — legible on charcoal. */
+  --success: 110 176 122; /* #6eb07a */
+  --warning: 212 168 75; /* align with accent */
+  --danger: 196 92 84; /* #c45c54 */
+  --info: 122 148 176; /* #7a94b0 — cool steel, not electric */
+
+  --radius: 0.5rem;
+
+  /* shadcn aliases */
+  --background: var(--canvas);
+  --foreground: var(--text-primary);
+  --card: var(--elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-foreground);
+  --secondary: var(--overlay);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface);
+  --muted-foreground: var(--text-muted);
+  --destructive: var(--danger);
+  --destructive-foreground: 255 255 255;
+  --border: var(--border-subtle);
+  --input: var(--border-strong);
+  --ring: var(--accent);
+}
+
+@layer base {
+  * {
+    @apply border-subtle;
+  }
+
+  body {
+    @apply bg-canvas text-primary font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+    text-rendering: optimizeLegibility;
+    /* Quiet depth — no accent glow wash. */
+    background-image: linear-gradient(
+      180deg,
+      rgb(var(--surface)) 0%,
+      rgb(var(--canvas)) 28rem
+    );
+    background-attachment: fixed;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-primary font-semibold tracking-tight;
+    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
+    text-wrap: balance;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-canvas;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  .font-display {
+    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.28);
+    color: rgb(var(--text-primary));
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border-strong)) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--border-strong));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--text-muted));
+    background-clip: padding-box;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .marker-pulse {
+    @apply animate-marker-pulse;
+  }
+  .marker-fade-in {
+    @apply animate-fade-in;
+  }
+
+  /* Subtle top edge — no neon. */
+  .surface-hairline {
+    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.035);
+  }
+
+  /* Active surface ring — hairline accent, no bloom. */
+  .accent-glow {
+    box-shadow: 0 0 0 1px rgb(var(--accent) / 0.45);
+  }
+}
+
+@media print {
+  aside,
+  header,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  #certificate-document {
+    border: 2px solid #ccc !important;
+    box-shadow: none !important;
+    color: black !important;
+    background: white !important;
+  }
+
+  #certificate-document * {
+    color: inherit !important;
+  }
+}

@@ -1,0 +1,115 @@
+import { notFound } from "next/navigation";
+import { Building2, GraduationCap, LayoutGrid } from "lucide-react";
+import {
+  getAuthor,
+  listCatalogCases,
+  listCourses,
+} from "@/lib/cases";
+import { activeOrgId } from "@/lib/auth";
+import { Badge, Breadcrumbs, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
+import { PageHeader } from "@/components/AppShell";
+import { CaseCardGrid } from "@/components/catalog/CaseCard";
+import { CoursesRail } from "@/components/catalog/Rails";
+
+export const dynamic = "force-dynamic";
+
+export default async function AuthorPage({ params }: { params: { id: string } }) {
+  const orgId = await activeOrgId();
+  const author = await getAuthor(orgId, params.id);
+  if (!author) notFound();
+
+  const [cases, allCourses] = await Promise.all([
+    listCatalogCases(orgId, { authorId: author.id, status: "published" }),
+    listCourses(orgId, { status: "published" }),
+  ]);
+  const courses = allCourses.filter((c) => c.authorId === author.id);
+
+  const initials = author.name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <>
+      <PageHeader
+        breadcrumbs={<Breadcrumbs items={[{ label: "Library", href: "/library" }, { label: "Author" }]} />}
+        title={
+          <span className="inline-flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-elevated text-sm font-semibold text-secondary ring-1 ring-inset ring-subtle">
+              {initials}
+            </span>
+            {author.name}
+            {author.credentials && (
+              <span className="text-sm font-normal text-muted">{author.credentials}</span>
+            )}
+          </span>
+        }
+        description={author.bio}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          {author.institution && (
+            <Badge variant="neutral" className="gap-1.5">
+              <Building2 className="h-3 w-3" aria-hidden="true" />
+              {author.institution}
+            </Badge>
+          )}
+          <VerifiedBadge status={author.verification} />
+          <Badge variant="neutral" className="gap-1.5 tabular-nums">
+            <LayoutGrid className="h-3 w-3" aria-hidden="true" />
+            {cases.length} case{cases.length === 1 ? "" : "s"}
+          </Badge>
+          {courses.length > 0 && (
+            <Badge variant="neutral" className="gap-1.5 tabular-nums">
+              <GraduationCap className="h-3 w-3" aria-hidden="true" />
+              {courses.length} course{courses.length === 1 ? "" : "s"}
+            </Badge>
+          )}
+          {author.subspecialties?.map((s) => (
+            <Badge key={s} variant="info">
+              {s}
+            </Badge>
+          ))}
+        </div>
+      </PageHeader>
+
+      <PageContainer className="flex flex-col gap-10">
+        {courses.length > 0 && (
+          <section className="flex flex-col gap-4">
+            <SectionHeading
+              icon={<GraduationCap aria-hidden="true" />}
+              title="Courses"
+              description={`Multi-case teaching sequences from ${author.name}.`}
+            />
+            <CoursesRail courses={courses} authorById={{ [author.id]: author }} showHeading={false} />
+          </section>
+        )}
+
+        <section className="flex flex-col gap-4">
+          <SectionHeading
+            icon={<LayoutGrid aria-hidden="true" />}
+            title="Cases"
+            description={`Published teaching cases from ${author.name}.`}
+            aside={
+              cases.length > 0 ? (
+                <Badge variant="neutral" className="tabular-nums">
+                  {cases.length}
+                </Badge>
+              ) : undefined
+            }
+          />
+          {cases.length === 0 ? (
+            <EmptyState
+              icon={<GraduationCap aria-hidden="true" />}
+              title="No published cases yet"
+              description="This author hasn't published any teaching cases."
+            />
+          ) : (
+            <CaseCardGrid cases={cases} authorById={{ [author.id]: author }} />
+          )}
+        </section>
+      </PageContainer>
+    </>
+  );
+}

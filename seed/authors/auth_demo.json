@@ -1,0 +1,10 @@
+{
+  "id": "auth_demo",
+  "orgId": "org_demo",
+  "name": "Dr. Priya Katyal",
+  "bio": "Consultant radiologist and educator. Builds case-based teaching that mirrors the way an attending reads at the workstation.",
+  "institution": "FlowRad Teaching Hospital",
+  "verification": "verified",
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z"
+}

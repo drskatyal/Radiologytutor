@@ -1,0 +1,12 @@
+{
+  "id": "stu_demo",
+  "orgId": "org_demo",
+  "patientId": "pat_demo",
+  "studyInstanceUID": "1.2.840.113619.2.demo.pacsbin.current",
+  "studyDate": "20240101",
+  "modality": "CT",
+  "description": "Demo case — Pacsbin 2.0",
+  "seriesInstanceUIDs": [],
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z"
+}
