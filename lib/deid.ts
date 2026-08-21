@@ -132,17 +132,40 @@ const SENTINEL =
   /^(anonymous|anon|unknown|removed|redacted|deidentified|de-identified|patient|xxxx+|-+|\^|\s)*$/i;
 
 /**
- * TCIA / NCI public collections use collection-prefixed pseudonym PatientIDs
- * (e.g. LIDC-IDRI-0957) without PatientName — not clinical MRNs.
- * Trusted for curated public-import ingest only; real uploads still fail on MRN123.
+ * TCIA / NCI public collections label subjects with collection-prefixed research
+ * pseudonyms (e.g. `LIDC-IDRI-0957`) rather than clinical MRNs. Those are already
+ * de-identified at source, so refusing them would block importing public research
+ * data — but they are NOT safe to accept from an arbitrary uploader.
+ *
+ * This allowance is therefore OPT-IN and off by default: only the curated public
+ * importer passes `allowResearchPseudonyms`, never `/api/upload`. A teacher
+ * uploading a real study still fails the gate on any present PatientID/PatientName.
+ *
+ * The pattern is a FULL match (collection prefix + separator + alphanumeric subject
+ * id), not a prefix test, so free text that merely starts with a collection name
+ * ("NSCLC screening — Jane Doe") does not slip through.
  */
-const TCIA_PSEUDONYM_PATIENT_ID =
-  /^(LIDC-IDRI|PD-1-Lung|RIDER|QIN-|TCGA-|PROSTATE-|Anti-PD-1|NSCLC|Soft-Tissue|Colon-|LUNG1|TCIA-|UPENN-GBM)/i;
+const RESEARCH_PSEUDONYM_ID =
+  /^(LIDC-IDRI|PD-1-Lung|Anti-PD-1|UPENN-GBM|Soft-Tissue|PROSTATE|RIDER|TCGA|NSCLC|LUNG1|QIN|TCIA|Colon)[-_][A-Za-z0-9][A-Za-z0-9-_]{0,31}$/i;
 
+/**
+ * True when `value` is a recognised public-collection research pseudonym.
+ * Only consulted when the caller opts in via `allowResearchPseudonyms`.
+ */
 export function isTciaResearchPseudonymId(value: unknown): boolean {
   const s = String(value ?? "").trim();
   if (!s) return false;
-  return TCIA_PSEUDONYM_PATIENT_ID.test(s);
+  return RESEARCH_PSEUDONYM_ID.test(s);
+}
+
+/** Options for the header inspection pass. Defaults are the strict ones. */
+export interface DeidInspectOptions {
+  /**
+   * Accept TCIA-style research pseudonyms in PatientID/PatientName instead of
+   * failing on them. Curated public-collection imports only — never set this
+   * for an operator-supplied upload.
+   */
+  allowResearchPseudonyms?: boolean;
 }
 
 function isPresent(value: unknown): boolean {
@@ -183,9 +206,19 @@ export function scrubDicomTags(
   return { scrubbed, removed };
 }
 
-function hitFor(tag: string, value: unknown, blocking: boolean): PhiHit | null {
+function hitFor(
+  tag: string,
+  value: unknown,
+  blocking: boolean,
+  opts: DeidInspectOptions = {}
+): PhiHit | null {
   if (!isPresent(value)) return null;
-  if (blocking && (tag === "PatientID" || tag === "PatientName") && isTciaResearchPseudonymId(value)) {
+  if (
+    blocking &&
+    opts.allowResearchPseudonyms &&
+    (tag === "PatientID" || tag === "PatientName") &&
+    isTciaResearchPseudonymId(value)
+  ) {
     return null;
   }
   if (blocking && isSentinel(value)) return null;
@@ -207,7 +240,8 @@ function hitFor(tag: string, value: unknown, blocking: boolean): PhiHit | null {
 /** Build a DeidReport from a dataset-like tag map. Does not set pass/fail. */
 export function inspectDicomTags(
   tags: Record<string, unknown>,
-  studyInstanceUID?: string
+  studyInstanceUID?: string,
+  opts: DeidInspectOptions = {}
 ): DeidReport {
   const findings: PhiHit[] = [];
   const seen = new Set<string>();
@@ -215,7 +249,7 @@ export function inspectDicomTags(
   const consider = (rawKey: string, blocking: boolean) => {
     const keyword = keywordFor(rawKey);
     const value = tags[rawKey] ?? tags[keyword];
-    const hit = hitFor(keyword, value, blocking);
+    const hit = hitFor(keyword, value, blocking, opts);
     if (!hit || seen.has(hit.tag)) return;
     seen.add(hit.tag);
     findings.push(hit);
@@ -283,7 +317,10 @@ export class DeidFailError extends Error {
 }
 
 /** Parse Part-10 bytes and inspect identity tags. Unreadable headers fail. */
-export function inspectDicomBytes(bytes: ArrayBuffer): DeidReport {
+export function inspectDicomBytes(
+  bytes: ArrayBuffer,
+  opts: DeidInspectOptions = {}
+): DeidReport {
   try {
     const byteArray = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const dataSet = parseDicom(byteArray);
@@ -292,7 +329,7 @@ export function inspectDicomBytes(bytes: ArrayBuffer): DeidReport {
       const value = dataSet.string(spec.hex);
       if (value) tags[spec.keyword] = value;
     }
-    return inspectDicomTags(tags);
+    return inspectDicomTags(tags, undefined, opts);
   } catch {
     return {
       headerScrubbed: false,

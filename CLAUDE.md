@@ -108,10 +108,11 @@ updates optimistically with rollback on error and a toast on success/failure.
 
 ## 4. Workflow
 
-- `npm run build` must pass before any commit. `npm test` for lib logic.
+- `npm run build` must pass before any commit. `npm test` for lib logic (151 tests).
 - Do NOT run with `--turbo` (the Cornerstone webpack/wasm config needs the default builder).
 - Commit in coherent units with clear messages. Keep the working tree clean.
-- Branch: `claude/epic-noether-3nvcbf`. Open/maintain a single draft PR.
+- Integration branch: `claude/epic-noether-3nvcbf`. Feature work branches off it and
+  opens a single draft PR back into it.
 - Railway: app service auto-deploys this branch; Orthanc is a separate service; never push a
   broken build (it breaks the live app).
 

@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generate, parseJsonLoose, userParts } from "@/lib/gemini";
 import { STRUCTURE_FINDING_SYSTEM } from "@/lib/teachingPrompt";
 import type { StructuredFinding } from "@/lib/types";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ const SYSTEM = STRUCTURE_FINDING_SYSTEM;
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAuthorOrg();
     const { transcript, audioBase64, audioMime } = await req.json();
     if ((typeof transcript !== "string" || transcript.trim() === "") && !audioBase64) {
       return NextResponse.json(
@@ -54,6 +56,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(finding);
   } catch (err) {
+    const authErr = jsonAuthError(err);
+    if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

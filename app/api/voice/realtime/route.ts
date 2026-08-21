@@ -10,6 +10,7 @@ import {
   getRealtimeVoiceInfo,
   mintRealtimeEphemeralToken,
 } from "@/lib/voiceRealtime";
+import { jsonAuthError, requireSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,13 @@ export async function GET() {
 }
 
 export async function POST() {
+  // Minting a Live token spends the account's realtime quota — never anonymous.
+  try {
+    await requireSession();
+  } catch (err) {
+    return jsonAuthError(err) ?? NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const info = getRealtimeVoiceInfo();
   if (!info.available) {
     return NextResponse.json(

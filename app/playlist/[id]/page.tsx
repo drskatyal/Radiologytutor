@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Layers, ListMusic, PlayCircle } from "lucide-react";
-import { DEFAULT_ORG_ID, getPlaylist, getCasesByIds } from "@/lib/cases";
+import { getPlaylist, getCasesByIds } from "@/lib/cases";
+import { activeOrgId } from "@/lib/auth";
 import { Badge, Breadcrumbs, Button, EmptyState, PageContainer } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { CourseCases } from "@/components/catalog/CourseCases";
@@ -9,10 +10,11 @@ import { CourseCases } from "@/components/catalog/CourseCases";
 export const dynamic = "force-dynamic";
 
 export default async function PlaylistPage({ params }: { params: { id: string } }) {
-  const playlist = await getPlaylist(DEFAULT_ORG_ID, params.id);
+  const orgId = await activeOrgId();
+  const playlist = await getPlaylist(orgId, params.id);
   if (!playlist) notFound();
 
-  const cases = await getCasesByIds(DEFAULT_ORG_ID, playlist.caseIds);
+  const cases = await getCasesByIds(orgId, playlist.caseIds);
   const firstCaseId = cases[0]?.caseId;
 
   return (

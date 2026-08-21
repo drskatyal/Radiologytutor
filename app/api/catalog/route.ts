@@ -5,11 +5,15 @@
 //        UI, the org's authors (for attribution), and the course/playlist rails.
 //
 // The client never imports lib/cases directly (§3) — it talks to this route.
-// orgId is a seam (DEFAULT_ORG_ID) until real auth lands (§4a).
+//
+// The catalog is public (browsing does not require an account), so the org is
+// derived from the session when there is one and falls back to the default
+// tenant for anonymous visitors. It is NEVER taken from the query string:
+// a client-supplied orgId would let anyone enumerate another tenant's catalog.
 
 import { NextRequest, NextResponse } from "next/server";
+import { activeOrgId } from "@/lib/auth";
 import {
-  DEFAULT_ORG_ID,
   listCatalogCases,
   getCatalogFacets,
   listAuthors,
@@ -21,8 +25,6 @@ import { BODY_SYSTEMS, DIFFICULTIES, type BodySystem, type Difficulty } from "@/
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ORG = DEFAULT_ORG_ID;
 
 function asSystem(v: string | null): BodySystem | undefined {
   return v && (BODY_SYSTEMS as string[]).includes(v) ? (v as BodySystem) : undefined;
@@ -37,6 +39,7 @@ function asSort(v: string | null): CatalogFilter["sort"] {
 }
 
 export async function GET(req: NextRequest) {
+  const ORG = await activeOrgId();
   const sp = req.nextUrl.searchParams;
   const filter: CatalogFilter = {
     status: "published",

@@ -105,7 +105,8 @@ async function fetchTtsBlob(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        voiceId: voice?.voiceId || undefined,
+        // voiceId is intentionally not sent — /api/tts resolves the voice from
+        // the author record server-side so a client cannot pick an arbitrary one.
         authorId: voice?.authorId || undefined,
       }),
       signal,

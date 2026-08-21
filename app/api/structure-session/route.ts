@@ -19,6 +19,7 @@ import type {
   StructuredSession,
   StructuredSessionFinding,
 } from "@/lib/types";
+import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -26,6 +27,7 @@ const SYSTEM = STRUCTURE_SESSION_SYSTEM;
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAuthorOrg();
     const body = await req.json();
     const audioBase64 = body.audioBase64 as string | undefined;
     const audioMime = (body.audioMime as string | undefined) || "audio/webm";
@@ -104,6 +106,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(session);
   } catch (err) {
+    const authErr = jsonAuthError(err);
+    if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

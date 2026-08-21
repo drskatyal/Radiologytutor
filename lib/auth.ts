@@ -45,9 +45,46 @@ const APP_URL =
   process.env.NEXT_PUBLIC_APP_URL?.trim() ||
   "http://localhost:3000";
 
-const AUTH_SECRET =
-  process.env.BETTER_AUTH_SECRET?.trim() ||
-  "dev-only-change-me-flowrad-learn-secret!!";
+/**
+ * Session/demo-cookie signing key.
+ *
+ * There is deliberately NO usable production fallback: a hardcoded default that
+ * ships in the repo lets anyone who reads it forge a cookie for any user id, so
+ * a deploy that forgets the env var must fail loudly rather than quietly run
+ * with a public key. Dev and `npm run build` keep a fixed dev-only value.
+ */
+const DEV_AUTH_SECRET = "dev-only-change-me-flowrad-learn-secret!!";
+
+/**
+ * `next build` evaluates route modules to collect page data, with NODE_ENV set
+ * to production but no runtime env available. Throwing there would break the
+ * build on a machine that legitimately has no secret, so the check is skipped
+ * for the build phase only — a serving process still fails loudly.
+ */
+function isBuildPhase(): boolean {
+  return process.env.NEXT_PHASE === "phase-production-build";
+}
+
+function resolveAuthSecret(): string {
+  const configured = process.env.BETTER_AUTH_SECRET?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production" && !isBuildPhase()) {
+    throw new Error(
+      "BETTER_AUTH_SECRET is not set. Refusing to serve with a public signing key — " +
+        "generate one with `openssl rand -base64 32` and set it in the environment."
+    );
+  }
+  return DEV_AUTH_SECRET;
+}
+
+/**
+ * Resolved per use rather than cached at module load, so the failure surfaces
+ * on the first request a misconfigured server handles instead of at import
+ * time (where Next would swallow it into an opaque build/collect error).
+ */
+function authSecret(): string {
+  return resolveAuthSecret();
+}
 
 const googleId = process.env.GOOGLE_CLIENT_ID?.trim();
 const googleSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
@@ -74,7 +111,7 @@ function buildDatabase() {
 
 export const auth = betterAuth({
   database: buildDatabase(),
-  secret: AUTH_SECRET,
+  secret: resolveAuthSecret(),
   baseURL: APP_URL,
   trustedOrigins: [APP_URL, "http://localhost:3000", "http://127.0.0.1:3000"],
   telemetry: { enabled: false },
@@ -182,7 +219,7 @@ function signDemoToken(userId: string): string {
   const payload = Buffer.from(JSON.stringify({ sub: userId, exp }), "utf8").toString(
     "base64url"
   );
-  const mac = createHmac("sha256", AUTH_SECRET).update(payload).digest("base64url");
+  const mac = createHmac("sha256", authSecret()).update(payload).digest("base64url");
   return `${payload}.${mac}`;
 }
 
@@ -191,7 +228,7 @@ function verifyDemoToken(token: string): string | null {
   if (dot <= 0) return null;
   const payload = token.slice(0, dot);
   const mac = token.slice(dot + 1);
-  const expected = createHmac("sha256", AUTH_SECRET).update(payload).digest("base64url");
+  const expected = createHmac("sha256", authSecret()).update(payload).digest("base64url");
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
@@ -350,9 +387,54 @@ export async function requirePageRole(
 
 export type DemoRole = "super_admin" | "author" | "student";
 
+/**
+ * Is the keyless "Continue as demo" path available?
+ *
+ * Off in production unless explicitly switched on. Left ungated it is a full
+ * authentication bypass: an empty POST to /api/auth/demo would hand any
+ * anonymous caller a platform super-admin session.
+ */
+export function demoAuthEnabled(): boolean {
+  const flag = process.env.DEMO_AUTH_ENABLED?.trim().toLowerCase();
+  if (flag === "1" || flag === "true") return true;
+  if (flag === "0" || flag === "false") return false;
+  return process.env.NODE_ENV !== "production";
+}
+
+/**
+ * Highest demo role this deployment will hand out.
+ *
+ * Even where demo sign-in is deliberately enabled in production (a public
+ * sandbox), it tops out at `author` — platform super-admin is never something
+ * an unauthenticated request can mint.
+ */
+export function maxDemoRole(): DemoRole {
+  if (process.env.NODE_ENV !== "production") return "super_admin";
+  return process.env.DEMO_AUTH_MAX_ROLE?.trim() === "author" ? "author" : "student";
+}
+
+const DEMO_ROLE_RANK: Record<DemoRole, number> = {
+  student: 0,
+  author: 1,
+  super_admin: 2,
+};
+
+/** Clamp a requested demo role to what this deployment allows. */
+export function clampDemoRole(requested: DemoRole): DemoRole {
+  const cap = maxDemoRole();
+  return DEMO_ROLE_RANK[requested] > DEMO_ROLE_RANK[cap] ? cap : requested;
+}
+
 export async function createDemoSessionResponse(
-  role: DemoRole = "super_admin"
+  requestedRole: DemoRole = "super_admin"
 ): Promise<NextResponse> {
+  if (!demoAuthEnabled()) {
+    return NextResponse.json(
+      { error: "Demo sign-in is disabled on this deployment." },
+      { status: 404 }
+    );
+  }
+  const role = clampDemoRole(requestedRole);
   await ensureDemoIdentity();
   const userId =
     role === "student"

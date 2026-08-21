@@ -72,7 +72,7 @@ async function ensureDeidReportForStudy(
   studyUID: string,
   seriesUID: string
 ): Promise<void> {
-  const existing = await getDeidReport(studyUID);
+  const existing = await getDeidReport(orgId, studyUID);
   if (existing && deidAllowsPublish(existing)) return;
 
   const seriesId = await orthancFindSeriesByUID(seriesUID);
@@ -86,7 +86,8 @@ async function ensureDeidReportForStudy(
   });
   if (!fileRes.ok) return;
   const bytes = await fileRes.arrayBuffer();
-  const report = inspectDicomBytes(bytes);
+  // Curated public collections only — see DeidInspectOptions in lib/deid.ts.
+  const report = inspectDicomBytes(bytes, { allowResearchPseudonyms: true });
   report.studyInstanceUID = studyUID;
   if (deidAllowsPublish(report)) {
     await upsertDeidReport(orgId, { ...report, studyInstanceUID: studyUID });
@@ -127,7 +128,9 @@ async function ensureStudyInOrthanc(
 
   for (const bytes of buffers) {
     try {
-      const res = await orthancIngestInstance(bytes);
+      const res = await orthancIngestInstance(bytes, {
+        allowResearchPseudonyms: true,
+      });
       ingested++;
       if (res.deidReport?.studyInstanceUID) {
         await upsertDeidReport(DEFAULT_ORG_ID, {

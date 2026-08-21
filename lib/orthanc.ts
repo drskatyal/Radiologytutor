@@ -3,7 +3,12 @@
 // never talks to it directly — our API routes (DICOMweb proxy + upload) do,
 // so there's no CORS and the credentials never reach the client.
 
-import { assertDeidPass, inspectDicomBytes, type DeidReport } from "./deid";
+import {
+  assertDeidPass,
+  inspectDicomBytes,
+  type DeidInspectOptions,
+  type DeidReport,
+} from "./deid";
 
 const ORTHANC_URL = process.env.ORTHANC_URL ?? "";
 const ORTHANC_USER = process.env.ORTHANC_USER ?? "flowrad";
@@ -91,9 +96,16 @@ export interface OrthancIngestResult extends OrthancStoreResult {
 /**
  * The single ingest entry point. Header identity gate, then store.
  * Throws DeidFailError when residual PHI remains.
+ *
+ * `opts` relaxes the gate ONLY for the curated public-collection importer
+ * (TCIA research pseudonyms). Operator uploads must never pass it — the default
+ * is the strict gate.
  */
-export async function orthancIngestInstance(bytes: ArrayBuffer): Promise<OrthancIngestResult> {
-  const deidReport = inspectDicomBytes(bytes);
+export async function orthancIngestInstance(
+  bytes: ArrayBuffer,
+  opts: DeidInspectOptions = {}
+): Promise<OrthancIngestResult> {
+  const deidReport = inspectDicomBytes(bytes, opts);
   assertDeidPass(deidReport);
   const stored = await orthancStoreInstance(bytes);
   return { ...stored, deidReport };

@@ -1,10 +1,9 @@
 import {
-  DEFAULT_ORG_ID,
   listAuthors,
   listCatalogCases,
   listCourses,
 } from "@/lib/cases";
-import { getSession } from "@/lib/auth";
+import { activeOrgId, getSession } from "@/lib/auth";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
 import { MarketplaceHero } from "@/components/home/MarketplaceHero";
 import { FeaturedMarketplace } from "@/components/home/FeaturedMarketplace";
@@ -38,12 +37,15 @@ export default async function HomePage() {
   let loadError: string | null = null;
 
   const session = await getSession();
+  // Anonymous visitors see the default tenant's public catalog; a signed-in
+  // user sees their own org's. Never a client-supplied value.
+  const orgId = await activeOrgId();
 
   try {
     [cases, courses, authors] = await Promise.all([
-      listCatalogCases(DEFAULT_ORG_ID, { status: "published" }),
-      listCourses(DEFAULT_ORG_ID, { status: "published" }),
-      listAuthors(DEFAULT_ORG_ID),
+      listCatalogCases(orgId, { status: "published" }),
+      listCourses(orgId, { status: "published" }),
+      listAuthors(orgId),
     ]);
   } catch (e) {
     loadError = e instanceof Error ? e.message : "Something went wrong.";

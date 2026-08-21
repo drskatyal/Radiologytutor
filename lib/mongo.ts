@@ -120,6 +120,8 @@ export function ensureIndexes(): Promise<void> {
           // Studies: list-by-org, and a patient's studies within an org.
           db.collection("studies").createIndex({ orgId: 1 }),
           db.collection("studies").createIndex({ orgId: 1, patientId: 1 }),
+          // Serves the /api/dicomweb per-frame ownership check.
+          db.collection("studies").createIndex({ orgId: 1, studyInstanceUID: 1 }),
           // Library entities: list-by-org for the catalog rails / management.
           db.collection("authors").createIndex({ orgId: 1 }),
           db.collection("courses").createIndex({ orgId: 1 }),
@@ -131,6 +133,7 @@ export function ensureIndexes(): Promise<void> {
           db.collection("cases").createIndex({ orgId: 1, authorId: 1 }),
           // Identity: users, memberships, enrollments.
           db.collection("users").createIndex({ email: 1 }),
+          db.collection("users").createIndex({ orgId: 1 }),
           db.collection("users").createIndex({ authProviderId: 1 }),
           db.collection("memberships").createIndex({ userId: 1 }),
           db.collection("memberships").createIndex({ orgId: 1, userId: 1 }, { unique: true }),
@@ -142,6 +145,7 @@ export function ensureIndexes(): Promise<void> {
           db.collection("wishlist").createIndex({ userId: 1 }),
           db.collection("wishlist").createIndex({ userId: 1, courseId: 1 }, { unique: true }),
           db.collection("reviews").createIndex({ orgId: 1, courseId: 1 }),
+          db.collection("playlists").createIndex({ orgId: 1, updatedAt: -1 }),
           db.collection("reviews").createIndex({ userId: 1, courseId: 1 }, { unique: true }),
           db.collection("certificates").createIndex({ userId: 1 }),
           db.collection("certificates").createIndex({ userId: 1, courseId: 1 }, { unique: true }),
