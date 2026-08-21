@@ -93,17 +93,41 @@ test("pixel OCR is never claimed", () => {
   assert.equal(report.pixelOcrScanned, false);
 });
 
-test("TCIA collection pseudonym PatientIDs pass the identity gate", () => {
+test("research pseudonyms are recognised by shape, not by prefix alone", () => {
   assert.equal(isTciaResearchPseudonymId("LIDC-IDRI-0957"), true);
   assert.equal(isTciaResearchPseudonymId("PD-1-Lung-00034"), true);
   assert.equal(isTciaResearchPseudonymId("UPENN-GBM-00544"), true);
   assert.equal(isTciaResearchPseudonymId("MRN123"), false);
+  // Free text that merely starts with a collection name must NOT pass.
+  assert.equal(isTciaResearchPseudonymId("NSCLC screening Jane Doe"), false);
+  assert.equal(isTciaResearchPseudonymId("PROSTATE patient SMITH^JOHN"), false);
+  assert.equal(isTciaResearchPseudonymId("Colon 45yo M MRN 88213"), false);
+});
+
+test("the pseudonym allowance is OFF by default — operator uploads still fail", () => {
   const report = inspectDicomTags({ PatientID: "LIDC-IDRI-0957", Modality: "CT" });
+  assert.equal(evaluateDeid(report).pass, false);
+  assert.ok(evaluateDeid(report).blocking.some((h) => h.tag === "PatientID"));
+});
+
+test("curated import may opt in to research pseudonyms", () => {
+  const opts = { allowResearchPseudonyms: true };
+  const report = inspectDicomTags({ PatientID: "LIDC-IDRI-0957", Modality: "CT" }, undefined, opts);
   assert.equal(evaluateDeid(report).pass, true);
-  const named = inspectDicomTags({
-    PatientName: "PD-1-Lung-00034",
-    PatientID: "PD-1-Lung-00034",
-    Modality: "CT",
-  });
+  const named = inspectDicomTags(
+    { PatientName: "PD-1-Lung-00034", PatientID: "PD-1-Lung-00034", Modality: "CT" },
+    undefined,
+    opts
+  );
   assert.equal(evaluateDeid(named).pass, true);
+});
+
+test("opting in never launders a real identifier", () => {
+  const opts = { allowResearchPseudonyms: true };
+  const report = inspectDicomTags(
+    { PatientName: "SMITH^JOHN", PatientID: "MRN88213", Modality: "CT" },
+    undefined,
+    opts
+  );
+  assert.equal(evaluateDeid(report).pass, false);
 });
