@@ -158,6 +158,16 @@
   .accent-glow {
     box-shadow: 0 0 0 1px rgb(var(--accent) / 0.45);
   }
+
+  /* Imaging surface — film black plane with inset hairline. Pair with FilmPlane. */
+  .film-plane {
+    @apply relative overflow-hidden bg-imaging ring-1 ring-inset ring-white/5;
+  }
+
+  /* Marketplace list row — hairline divide + hover lift. */
+  .editorial-divide {
+    @apply border-b border-subtle transition-colors hover:bg-surface/40;
+  }
 }
 
 @media print {
