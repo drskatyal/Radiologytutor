@@ -8,6 +8,7 @@ import {
   Button,
   EmptyState,
   Field,
+  Panel,
   Skeleton,
   Textarea,
   useToast,
@@ -60,7 +61,7 @@ function ReviewRow({ review }: { review: Review }) {
     day: "numeric",
   });
   return (
-    <li className="rounded-xl border border-subtle bg-elevated p-4">
+    <li className="border-b border-subtle py-4 first:border-t">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-sm font-medium text-primary">
           {review.authorName ?? "Learner"}
@@ -178,7 +179,7 @@ export function CourseReviews({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 border-b border-subtle pb-4">
         <div className="flex items-center gap-2">
           <Star className="h-5 w-5 text-warning" fill="currentColor" aria-hidden="true" />
           <span className="font-display text-2xl font-semibold tabular-nums text-primary">
@@ -191,35 +192,34 @@ export function CourseReviews({
       </div>
 
       {isSignedIn && (
-        <form
-          onSubmit={submitReview}
-          className="rounded-xl border border-subtle bg-surface p-4"
+        <Panel
+          title={<span className="font-display text-sm font-semibold">Write a review</span>}
+          padded
         >
-          <h3 className="font-display text-sm font-semibold text-primary">Write a review</h3>
-          <div className="mt-3">
+          <form onSubmit={submitReview}>
             <Field label="Rating">
               {() => <StarRating value={rating} onChange={setRating} />}
             </Field>
-          </div>
-          <div className="mt-3">
-            <Field label="Comments (optional)">
-              {(props) => (
-                <Textarea
-                  {...props}
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  rows={3}
-                  placeholder="What did you learn from this course?"
-                />
-              )}
-            </Field>
-          </div>
-          <div className="mt-4">
-            <Button type="submit" loading={submitting}>
-              Submit review
-            </Button>
-          </div>
-        </form>
+            <div className="mt-3">
+              <Field label="Comments (optional)">
+                {(props) => (
+                  <Textarea
+                    {...props}
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    rows={3}
+                    placeholder="What did you learn from this course?"
+                  />
+                )}
+              </Field>
+            </div>
+            <div className="mt-4">
+              <Button type="submit" loading={submitting}>
+                Submit review
+              </Button>
+            </div>
+          </form>
+        </Panel>
       )}
 
       {summary.reviews.length === 0 ? (
@@ -233,7 +233,7 @@ export function CourseReviews({
           }
         />
       ) : (
-        <ul className="flex flex-col gap-3">
+        <ul className="flex flex-col">
           {summary.reviews.map((review) => (
             <ReviewRow key={review.id} review={review} />
           ))}

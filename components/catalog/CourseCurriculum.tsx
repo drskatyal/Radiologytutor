@@ -4,17 +4,116 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, Circle, PlayCircle } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Circle,
+  Layers,
+  PlayCircle,
+} from "lucide-react";
 import { Badge, Button, useToast } from "@/components/ui";
-import { CaseCard } from "./CaseCard";
+import { FilmPlane } from "@/components/brand/FilmPlane";
+import { difficultyLabel } from "@/lib/taxonomy";
 import type { Author, Case } from "./types";
+
+function CurriculumRow({
+  data,
+  index,
+  done,
+  isNext,
+  courseId,
+  isEnrolled,
+  markingId,
+  onMarkComplete,
+}: {
+  data: Case;
+  index: number;
+  done: boolean;
+  isNext: boolean;
+  courseId: string;
+  isEnrolled: boolean;
+  markingId: string | null;
+  onMarkComplete: (caseId: string) => void;
+}) {
+  const meta = [
+    data.modality,
+    data.system,
+    data.difficulty ? difficultyLabel(data.difficulty) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div className="min-w-0 flex-1">
+      <Link
+        href={`/case/${data.caseId}?course=${encodeURIComponent(courseId)}`}
+        className="group grid grid-cols-[5.5rem_1fr_auto] items-center gap-4 border-b border-subtle py-4 transition-colors hover:bg-surface/40 sm:grid-cols-[7rem_1fr_auto] sm:gap-5"
+      >
+        <FilmPlane
+          modality={data.modality}
+          className="h-16 w-[5.5rem] sm:h-[4.5rem] sm:w-28"
+        />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-display text-[0.95rem] font-semibold tracking-tight text-primary sm:text-base">
+              <span className="mr-1.5 tabular-nums text-muted">{index}.</span>
+              {data.title}
+            </h3>
+            {isNext && !done && (
+              <Badge variant="accent" className="shrink-0">
+                Next
+              </Badge>
+            )}
+            {done && (
+              <Badge variant="success" className="shrink-0 gap-1">
+                <Check className="h-3 w-3" aria-hidden="true" />
+                Complete
+              </Badge>
+            )}
+          </div>
+          <p className="mt-1 truncate text-xs text-muted sm:text-[13px]">{meta}</p>
+          <p className="mt-1.5 inline-flex items-center gap-1 text-xs tabular-nums text-muted">
+            <Layers className="h-3 w-3" aria-hidden="true" />
+            {data.findings.length} finding{data.findings.length === 1 ? "" : "s"}
+          </p>
+        </div>
+        <span className="hidden items-center gap-1 text-sm font-medium text-secondary transition-colors group-hover:text-accent sm:inline-flex">
+          Open
+          <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+        </span>
+      </Link>
+      {isEnrolled && !done && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-subtle py-3 pl-[5.5rem] sm:pl-32">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={markingId === data.caseId}
+            onClick={() => onMarkComplete(data.caseId)}
+          >
+            <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            Mark complete
+          </Button>
+          <Link href={`/case/${data.caseId}?course=${encodeURIComponent(courseId)}`}>
+            <Button
+              size="sm"
+              variant="ghost"
+              leadingIcon={<PlayCircle className="h-3.5 w-3.5" aria-hidden="true" />}
+            >
+              Start teaching
+            </Button>
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function CourseCurriculum({
   courseId,
   cases,
   completedCaseIds,
   isEnrolled,
-  author,
+  author: _author,
 }: {
   courseId: string;
   cases: Case[];
@@ -60,7 +159,7 @@ export function CourseCurriculum({
 
   return (
     <motion.ol
-      className="flex flex-col gap-3"
+      className="flex flex-col border-t border-subtle"
       initial="hidden"
       animate="show"
       variants={{ hidden: {}, show: { transition: { staggerChildren: reduce ? 0 : 0.05 } } }}
@@ -80,7 +179,7 @@ export function CourseCurriculum({
           >
             <div className="flex shrink-0 flex-col items-center pt-5">
               <span
-                className={`flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold tabular-nums shadow-sm ${
+                className={`flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold tabular-nums ${
                   done
                     ? "border-success/40 bg-success/15 text-success"
                     : isNext
@@ -99,38 +198,16 @@ export function CourseCurriculum({
                 <span aria-hidden="true" className="mt-1 w-px flex-1 bg-subtle" />
               )}
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="relative">
-                {isNext && !done && (
-                  <Badge variant="accent" className="absolute -top-2 right-2 z-10">
-                    Next
-                  </Badge>
-                )}
-                <CaseCard data={c} author={author} index={i + 1} />
-              </div>
-              {isEnrolled && !done && (
-                <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={markingId === c.caseId}
-                    onClick={() => markComplete(c.caseId)}
-                  >
-                    <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                    Mark complete
-                  </Button>
-                  <Link href={`/case/${c.caseId}?course=${encodeURIComponent(courseId)}`}>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      leadingIcon={<PlayCircle className="h-3.5 w-3.5" aria-hidden="true" />}
-                    >
-                      Start teaching
-                    </Button>
-                  </Link>
-                </div>
-              )}
-            </div>
+            <CurriculumRow
+              data={c}
+              index={i + 1}
+              done={done}
+              isNext={isNext}
+              courseId={courseId}
+              isEnrolled={isEnrolled}
+              markingId={markingId}
+              onMarkComplete={markComplete}
+            />
           </motion.li>
         );
       })}

@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { BookOpen, GraduationCap } from "lucide-react";
-import { Badge, Button } from "@/components/ui";
+import { ArrowRight, BookOpen } from "lucide-react";
+import { Badge } from "@/components/ui";
 import { CourseProgressBar } from "@/components/catalog/CourseProgressBar";
 import type { Course, Progress } from "@/lib/types";
 
@@ -24,8 +24,8 @@ export function ContinueLearning({ items }: { items: ContinueLearningItem[] }) {
   if (items.length === 0) return null;
 
   return (
-    <section aria-labelledby="continue-learning-heading" className="mb-10">
-      <div className="mb-4 flex items-end justify-between gap-4">
+    <section aria-labelledby="continue-learning-heading">
+      <div className="mb-3 flex items-end justify-between gap-4">
         <div>
           <h2
             id="continue-learning-heading"
@@ -39,39 +39,40 @@ export function ContinueLearning({ items }: { items: ContinueLearningItem[] }) {
           {items.length}
         </Badge>
       </div>
-      <ul className="-mx-1 flex snap-x snap-mandatory gap-4 overflow-x-auto px-1 pb-2 [scrollbar-width:thin]">
+      <ul className="flex flex-col border-t border-subtle">
         {items.map((item) => {
           const caseId = resumeCaseId(item);
           const href = caseId
             ? `/case/${caseId}?course=${encodeURIComponent(item.course.id)}`
             : `/course/${item.course.id}`;
           return (
-            <li key={item.course.id} className="w-[min(100%,20rem)] shrink-0 snap-start">
-              <div className="flex h-full flex-col gap-4 rounded-xl border border-subtle bg-elevated p-4 transition-colors hover:border-strong">
-                <div className="flex items-start gap-2">
-                  <GraduationCap className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
-                  <div className="min-w-0">
-                    <Link
-                      href={`/course/${item.course.id}`}
-                      className="font-display text-sm font-semibold text-primary transition-colors hover:text-accent"
-                    >
-                      {item.course.title}
-                    </Link>
-                    {item.course.description && (
-                      <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">
-                        {item.course.description}
-                      </p>
-                    )}
-                  </div>
+            <li key={item.course.id}>
+              <Link
+                href={href}
+                className="group flex items-center gap-4 border-b border-subtle py-4 transition-colors hover:bg-surface/40"
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-subtle bg-imaging text-accent">
+                  <BookOpen className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-display text-base font-semibold tracking-tight text-primary group-hover:text-accent">
+                    {item.course.title}
+                  </h3>
+                  {item.course.description && (
+                    <p className="mt-1 line-clamp-1 text-sm text-muted">
+                      {item.course.description}
+                    </p>
+                  )}
+                  <CourseProgressBar
+                    percent={item.progress.percentComplete}
+                    className="mt-2 max-w-xs"
+                  />
                 </div>
-                <CourseProgressBar percent={item.progress.percentComplete} />
-                <Link href={href} className="mt-auto">
-                  <Button size="sm" className="w-full">
-                    <BookOpen className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                    Continue
-                  </Button>
-                </Link>
-              </div>
+                <span className="hidden items-center gap-1 text-sm font-medium text-secondary transition-colors group-hover:text-accent sm:inline-flex">
+                  Continue
+                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                </span>
+              </Link>
             </li>
           );
         })}

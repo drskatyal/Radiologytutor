@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { GraduationCap, Layers, PlayCircle, Star } from "lucide-react";
+import { BrandMark } from "@/components/brand/BrandMark";
 import {
   getCourse,
   getCasesByIds,
@@ -14,9 +15,9 @@ import {
   getBestAttemptForUserAssessment,
 } from "@/lib/cases";
 import { activeOrgId, getSession } from "@/lib/auth";
-import { Badge, Breadcrumbs, Button, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
+import { Breadcrumbs, Button, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
-import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
+import { difficultyLabel } from "@/lib/taxonomy";
 import { CourseCurriculum } from "@/components/catalog/CourseCurriculum";
 import { CourseEnrollButton } from "@/components/catalog/CourseEnrollButton";
 import { CourseProgressBar } from "@/components/catalog/CourseProgressBar";
@@ -68,9 +69,11 @@ export default async function CoursePage({ params }: { params: { id: string } })
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Library", href: "/library" }, { label: "Course" }]} />}
         title={
-          <span className="inline-flex items-center gap-2.5">
-            <GraduationCap className="h-5 w-5 text-accent" aria-hidden="true" />
-            {course.title}
+          <span className="inline-flex items-start gap-3">
+            <BrandMark size="lg" className="mt-0.5 shrink-0" />
+            <span className="font-display text-2xl font-semibold tracking-tight text-primary sm:text-3xl">
+              {course.title}
+            </span>
           </span>
         }
         description={course.description}
@@ -92,36 +95,37 @@ export default async function CoursePage({ params }: { params: { id: string } })
           </div>
         }
       >
-        <div className="flex flex-wrap items-center gap-2">
-          {course.difficulty && (
-            <Badge variant={difficultyBadgeVariant(course.difficulty)}>
-              {difficultyLabel(course.difficulty)}
-            </Badge>
-          )}
-          {course.system && <Badge variant="info">{course.system}</Badge>}
-          <Badge variant="neutral" className="gap-1.5 tabular-nums">
-            <Layers className="h-3 w-3" aria-hidden="true" />
-            {cases.length} case{cases.length === 1 ? "" : "s"}
-          </Badge>
-          {reviews.count > 0 && (
-            <Badge variant="neutral" className="gap-1 tabular-nums">
-              <Star className="h-3 w-3 text-warning" fill="currentColor" aria-hidden="true" />
-              {reviews.average.toFixed(1)} ({reviews.count})
-            </Badge>
-          )}
+        <div className="flex flex-col gap-3 border-t border-subtle pt-4">
           {author && (
-            <span className="inline-flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               <Link
                 href={`/authors/${author.id}`}
-                className="text-xs font-medium text-secondary transition-colors hover:text-accent"
+                className="font-medium text-primary transition-colors hover:text-accent"
               >
-                by {author.name}
+                {author.name}
               </Link>
-              {author.verification === "verified" && (
-                <VerifiedBadge status="verified" className="shrink-0" />
+              {author.credentials && (
+                <span className="text-muted">{author.credentials}</span>
               )}
-            </span>
+              <VerifiedBadge status={author.verification} />
+            </div>
           )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+            {course.difficulty && (
+              <span>{difficultyLabel(course.difficulty)}</span>
+            )}
+            {course.system && <span>{course.system}</span>}
+            <span className="inline-flex items-center gap-1 tabular-nums">
+              <Layers className="h-3 w-3" aria-hidden="true" />
+              {cases.length} case{cases.length === 1 ? "" : "s"}
+            </span>
+            {reviews.count > 0 && (
+              <span className="inline-flex items-center gap-1 tabular-nums">
+                <Star className="h-3 w-3 text-warning" fill="currentColor" aria-hidden="true" />
+                {reviews.average.toFixed(1)} · {reviews.count} review{reviews.count === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
         </div>
         {isEnrolled && (
           <div className="mt-4 max-w-md">
@@ -142,7 +146,7 @@ export default async function CoursePage({ params }: { params: { id: string } })
         )}
 
         {isEnrolled && percentComplete >= 100 && assessment && !assessmentPassed && !certificate && (
-          <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 text-sm text-secondary">
+          <div className="border-l-2 border-warning bg-warning/5 px-4 py-3 text-sm text-secondary">
             Finish the post-test below (pass ≥ {assessment.passingScore}%) to unlock your
             Certificate of Completion.
           </div>
