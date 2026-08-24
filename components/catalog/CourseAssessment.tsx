@@ -3,7 +3,7 @@
 import { useRef, useState, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Crosshair, Target, XCircle } from "lucide-react";
-import { Badge, Button, useToast } from "@/components/ui";
+import { Badge, Button, Panel, useToast } from "@/components/ui";
 import type { Attempt } from "@/lib/types";
 import type { LearnerAnswer } from "@/lib/assessmentGrade";
 
@@ -134,41 +134,48 @@ export function CourseAssessment({
 
   const clickAnswer = current?.kind === "click_finding" ? answers[current.id] : undefined;
 
+  const headerActions = (
+    <div className="flex flex-wrap items-center gap-2">
+      <Badge variant="neutral" className="tabular-nums">
+        Pass ≥ {assessment.passingScore}%
+      </Badge>
+      {bestAttempt && (
+        <Badge variant={bestAttempt.passed ? "success" : "warning"} className="tabular-nums">
+          Best {bestAttempt.score}%
+          {bestAttempt.passed ? " · Passed" : ""}
+        </Badge>
+      )}
+    </div>
+  );
+
   return (
-    <div className="rounded-xl border border-subtle bg-surface p-5 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <Panel
+      title={
         <div>
           <h3 className="font-display text-base font-semibold text-primary">
             {assessment.title}
           </h3>
           {assessment.description && (
-            <p className="mt-1 max-w-2xl text-sm text-secondary">{assessment.description}</p>
+            <p className="mt-1 max-w-2xl text-sm font-normal text-secondary">
+              {assessment.description}
+            </p>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="neutral" className="tabular-nums">
-            Pass ≥ {assessment.passingScore}%
-          </Badge>
-          {bestAttempt && (
-            <Badge variant={bestAttempt.passed ? "success" : "warning"} className="tabular-nums">
-              Best {bestAttempt.score}%
-              {bestAttempt.passed ? " · Passed" : ""}
-            </Badge>
-          )}
-        </div>
-      </div>
-
+      }
+      actions={headerActions}
+      padded
+    >
       {!isEnrolled ? (
-        <p className="mt-4 text-sm text-secondary">
+        <p className="text-sm text-secondary">
           Enroll in this course to take the post-test and unlock your certificate.
         </p>
       ) : lastResult ? (
-        <div className="mt-5 space-y-4">
+        <div className="space-y-4">
           <div
-            className={`flex items-start gap-3 rounded-lg border p-4 ${
+            className={`flex items-start gap-3 border-l-2 px-4 py-3 ${
               lastResult.passed
-                ? "border-success/30 bg-success/5"
-                : "border-warning/30 bg-warning/5"
+                ? "border-success bg-success/5"
+                : "border-warning bg-warning/5"
             }`}
           >
             {lastResult.passed ? (
@@ -180,19 +187,19 @@ export function CourseAssessment({
               <p className="font-medium text-primary">
                 {lastResult.passed ? "You passed the post-test" : "Not quite — try again"}
               </p>
-              <p className="mt-1 text-sm text-secondary tabular-nums">
+              <p className="mt-1 text-sm tabular-nums text-secondary">
                 Score {lastResult.score}% · {lastResult.responses.filter((r) => r.correct).length} of{" "}
                 {lastResult.responses.length} correct
               </p>
             </div>
           </div>
-          <ul className="space-y-2">
+          <ul className="flex flex-col border-t border-subtle">
             {questions.map((q, i) => {
               const r = lastResult.responses.find((x) => x.questionId === q.id);
               return (
                 <li
                   key={q.id}
-                  className="flex items-start gap-2 text-sm text-secondary"
+                  className="flex items-start gap-2 border-b border-subtle py-3 text-sm text-secondary"
                 >
                   {r?.correct ? (
                     <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
@@ -200,7 +207,7 @@ export function CourseAssessment({
                     <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" aria-hidden="true" />
                   )}
                   <span>
-                    <span className="text-muted tabular-nums">Q{i + 1}. </span>
+                    <span className="tabular-nums text-muted">Q{i + 1}. </span>
                     {q.prompt}
                   </span>
                 </li>
@@ -221,7 +228,7 @@ export function CourseAssessment({
           )}
         </div>
       ) : (
-        <div className="mt-5 space-y-4">
+        <div className="space-y-4">
           <p className="text-xs font-medium uppercase tracking-wide text-muted tabular-nums">
             Question {step + 1} of {questions.length}
           </p>
@@ -230,7 +237,7 @@ export function CourseAssessment({
               <p className="text-sm font-medium text-primary">{current.prompt}</p>
 
               {current.kind === "mcq" && current.options && (
-                <fieldset className="space-y-2">
+                <fieldset className="flex flex-col border-t border-subtle">
                   <legend className="sr-only">Choose one answer</legend>
                   {current.options.map((opt, idx) => {
                     const selected = answers[current.id]?.selectedIndex === idx;
@@ -239,10 +246,8 @@ export function CourseAssessment({
                         key={idx}
                         type="button"
                         onClick={() => setMcq(current.id, idx)}
-                        className={`flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
-                          selected
-                            ? "border-accent bg-accent/10 text-primary"
-                            : "border-subtle bg-elevated text-secondary hover:border-strong hover:text-primary"
+                        className={`flex w-full items-start gap-3 border-b border-subtle px-1 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 hover:bg-surface/40 ${
+                          selected ? "bg-accent/5 text-primary" : "text-secondary"
                         }`}
                         aria-pressed={selected}
                       >
@@ -269,8 +274,7 @@ export function CourseAssessment({
                     <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
                     Click on the imaging surface where the finding is located.
                   </p>
-                  <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-strong bg-black">
-                    {/* Atmospheric CT-like plane — marker coords are overlay [0,1]. */}
+                  <div className="relative aspect-[4/3] w-full overflow-hidden border border-strong bg-black">
                     <div
                       className="pointer-events-none absolute inset-0 opacity-40"
                       aria-hidden="true"
@@ -304,7 +308,7 @@ export function CourseAssessment({
             </>
           )}
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-subtle pt-4">
             <Button
               variant="ghost"
               disabled={step === 0 || submitting}
@@ -318,6 +322,6 @@ export function CourseAssessment({
           </div>
         </div>
       )}
-    </div>
+    </Panel>
   );
 }

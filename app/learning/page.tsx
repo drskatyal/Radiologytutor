@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  ArrowRight,
   Award,
   Bookmark,
   GraduationCap,
@@ -7,7 +8,6 @@ import {
 } from "lucide-react";
 import {
   getCourse,
-  getCasesByIds,
   listEnrollmentsForUser,
   listProgressForUser,
   listWishlistForUser,
@@ -32,6 +32,40 @@ export const dynamic = "force-dynamic";
 export const metadata = {
   title: "My learning · FlowRad Learn",
 };
+
+function LearningRow({
+  href,
+  icon,
+  title,
+  description,
+  trailing,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  title: string;
+  description?: React.ReactNode;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-4 border-b border-subtle py-4 transition-colors hover:bg-surface/40"
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-subtle bg-imaging text-accent">
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <h3 className="font-display text-base font-semibold tracking-tight text-primary group-hover:text-accent">
+          {title}
+        </h3>
+        {description && <div className="mt-1">{description}</div>}
+      </div>
+      {trailing ?? (
+        <ArrowRight className="h-4 w-4 shrink-0 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
+      )}
+    </Link>
+  );
+}
 
 export default async function LearningPage() {
   const session = await getSession();
@@ -135,24 +169,23 @@ export default async function LearningPage() {
               }
             />
           ) : (
-            <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+            <ul className="mt-4 flex flex-col border-t border-subtle">
               {enrolledCourses.map((course) => {
                 const progress = progressByCourse.get(course.id);
                 return (
                   <li key={course.id}>
-                    <Link
+                    <LearningRow
                       href={`/course/${course.id}`}
-                      className="flex flex-col gap-3 rounded-xl border border-subtle bg-elevated p-4 transition-colors hover:border-strong"
-                    >
-                      <span className="font-display text-sm font-semibold text-primary">
-                        {course.title}
-                      </span>
-                      {progress ? (
-                        <CourseProgressBar percent={progress.percentComplete} />
-                      ) : (
-                        <p className="text-xs text-muted">Not started yet</p>
-                      )}
-                    </Link>
+                      icon={<GraduationCap className="h-4 w-4" aria-hidden="true" />}
+                      title={course.title}
+                      description={
+                        progress ? (
+                          <CourseProgressBar percent={progress.percentComplete} className="max-w-xs" />
+                        ) : (
+                          <p className="text-xs text-muted">Not started yet</p>
+                        )
+                      }
+                    />
                   </li>
                 );
               })}
@@ -185,20 +218,19 @@ export default async function LearningPage() {
               }
             />
           ) : (
-            <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <ul className="mt-4 flex flex-col border-t border-subtle">
               {wishlistCourses.map((course) => (
                 <li key={course.id}>
-                  <Link
+                  <LearningRow
                     href={`/course/${course.id}`}
-                    className="block rounded-xl border border-subtle bg-elevated p-4 transition-colors hover:border-strong"
-                  >
-                    <span className="font-display text-sm font-semibold text-primary">
-                      {course.title}
-                    </span>
-                    {course.description && (
-                      <p className="mt-1 line-clamp-2 text-xs text-muted">{course.description}</p>
-                    )}
-                  </Link>
+                    icon={<Bookmark className="h-4 w-4" aria-hidden="true" />}
+                    title={course.title}
+                    description={
+                      course.description ? (
+                        <p className="line-clamp-2 text-sm text-muted">{course.description}</p>
+                      ) : undefined
+                    }
+                  />
                 </li>
               ))}
             </ul>
@@ -225,26 +257,27 @@ export default async function LearningPage() {
               description="Complete every case in a course to earn a Certificate of Completion."
             />
           ) : (
-            <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+            <ul className="mt-4 flex flex-col border-t border-subtle">
               {certificates.map((cert) => (
                 <li key={cert.id}>
-                  <Link
+                  <LearningRow
                     href={`/certificate/${cert.id}`}
-                    className="flex flex-col gap-2 rounded-xl border border-subtle bg-elevated p-4 transition-colors hover:border-strong"
-                  >
-                    <span className="font-display text-sm font-semibold text-primary">
-                      {cert.courseTitle}
-                    </span>
-                    <span className="text-xs text-muted">
-                      Issued{" "}
-                      {new Date(cert.issuedAt).toLocaleDateString(undefined, {
-                        year: "numeric",
-                        month: "long",
-                        day: "numeric",
-                      })}
-                    </span>
-                    <Badge variant="neutral">Certificate of Completion</Badge>
-                  </Link>
+                    icon={<Award className="h-4 w-4" aria-hidden="true" />}
+                    title={cert.courseTitle}
+                    description={
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-muted">
+                          Issued{" "}
+                          {new Date(cert.issuedAt).toLocaleDateString(undefined, {
+                            year: "numeric",
+                            month: "long",
+                            day: "numeric",
+                          })}
+                        </span>
+                        <Badge variant="neutral">Certificate of Completion</Badge>
+                      </div>
+                    }
+                  />
                 </li>
               ))}
             </ul>
