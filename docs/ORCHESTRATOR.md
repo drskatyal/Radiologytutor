@@ -63,34 +63,37 @@ Agents must not apply marketplace patterns to the reading room or vice versa.
 
 ## Backlog (orchestrator-owned)
 
-### Phase A — Brand foundation *(in progress, branch `cursor/brand-elevation-a5b0`)*
+### Phase A — Brand foundation *(PR #11, branch `cursor/orchestrator-design-a5b0`)*
 
 - [x] Custom `BrandMark` + `Wordmark` (`components/brand/`)
 - [x] `FilmPlane` visual for case rows
 - [x] Home + library: editorial lists (not card grids)
 - [x] `docs/BRAND.md`, hero + auth film atmosphere
-- [ ] Merge brand PR to `claude/epic-noether-3nvcbf`
+- [x] Orchestrator docs (`ORCHESTRATOR.md`, `CURSOR.md`, agent playbooks)
+- [ ] Merge PR #11 to `claude/epic-noether-3nvcbf`
 
-### Phase B — Marketplace completion *(execution agents)*
+### Phase B — Marketplace completion *(execution agent, branch `cursor/marketplace-surfaces-a5b0`)*
 
-- [ ] `/course/[id]` — editorial header, curriculum rows (no nested `CaseCard`)
-- [ ] `/learning` — resume rows, not card grids
-- [ ] `CourseReviews`, `CourseAssessment` — `Panel` / thread rows
-- [ ] Delete orphaned `LearnZone.tsx`, `TeachZone.tsx`
+- [x] `/course/[id]` — editorial header, curriculum rows (no nested `CaseCard`)
+- [x] `/learning` — resume rows, not card grids
+- [x] `CourseReviews`, `CourseAssessment` — `Panel` / thread rows
+- [x] Delete orphaned `LearnZone.tsx`, `TeachZone.tsx`
+- [ ] Migrate inlined rows → `EditorialRow` (after Phase C merge)
 - [ ] Real DICOM cover thumbnails on `FilmPlane` (prefetch API)
 
-### Phase C — Design system primitives *(design agent)*
+### Phase C — Design system primitives *(design agent, branch `cursor/design-primitives-a5b0`)*
 
-- [ ] `components/ui/EditorialRow.tsx` — hairline list row
-- [ ] `components/ui/EditorialBand.tsx` — full-width CTA / callout
-- [ ] `globals.css` — `.film-plane`, `.editorial-divide` utilities
-- [ ] Narrow `Card` docstring: forms/auth/admin only
+- [x] `components/ui/EditorialRow.tsx` — hairline list row
+- [x] `components/ui/EditorialBand.tsx` — full-width CTA / callout
+- [x] `globals.css` — `.film-plane`, `.editorial-divide` utilities
+- [x] Narrow `Card` docstring: forms/auth/admin only
+- [ ] Merge PR, then refactor `CaseCard`, `Rails`, `MyLearning`, `CourseCurriculum`
 
-### Phase D — Doc alignment
+### Phase D — Doc alignment *(complete in PR #11)*
 
-- [ ] `CLAUDE.md` §1 — Source Sans 3 + Source Serif 4, film-marker amber
-- [ ] `ARCHITECTURE.md` §9 — point to `design.md` + implemented mark
-- [ ] `design.md` — unified marketplace + reading room (replace stale cyan/Inter)
+- [x] `CLAUDE.md` §1 — Source Sans 3 + Source Serif 4, film-marker amber
+- [x] `ARCHITECTURE.md` §9 — point to `design.md` + implemented mark
+- [x] `design.md` — unified marketplace + reading room (replace stale cyan/Inter)
 
 ---
 
@@ -141,6 +144,7 @@ Branch: cursor/<task>-a5b0. Commit, push, update PR.
 
 ## Current orchestrator decision
 
-**Next execution priority:** Phase B — course detail + learning pages off cards.  
-**Next design priority:** Phase C — `EditorialRow` / `EditorialBand` primitives.  
-**Base branch for new work:** `cursor/orchestrator-design-a5b0` (includes brand elevation).
+**Merge order:** PR #11 (orchestrator + brand) → design primitives PR → marketplace surfaces PR.  
+**Next execution priority:** Refactor catalog rows to `EditorialRow`; real DICOM thumbnails on `FilmPlane`.  
+**Next design priority:** Author profile + playlist pages (`/authors/*`, `/playlist/*`) editorial pass.  
+**Base branch for new work:** `cursor/design-primitives-a5b0` after primitives PR merges; until then `cursor/orchestrator-design-a5b0`.
