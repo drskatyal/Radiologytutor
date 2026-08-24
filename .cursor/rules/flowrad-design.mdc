@@ -1,0 +1,25 @@
+---
+description: FlowRad design system — marketplace editorial rows, no card grids, film-marker amber
+alwaysApply: true
+---
+
+# FlowRad design (agents)
+
+Read **CURSOR.md** and **design.md** before any UI work.
+
+## Marketplace (`/`, `/library`, `/course/*`, `/authors/*`)
+
+- **No card grids** for browse lists — use editorial hairline rows.
+- **Film plane** thumbnails: `components/brand/FilmPlane.tsx`.
+- **Accent:** film-marker amber (`accent` token). Not cyan, not purple.
+- **Fonts:** Source Sans 3 (UI), Source Serif 4 (display titles).
+- **Card** primitive: forms/auth/admin only — not catalog.
+
+## Reading room (`/case/*`)
+
+- Shell hidden; `bg-imaging`; see `design.md` § Teaching surfaces.
+- No marketing chrome on the viewport.
+
+## Orchestrator
+
+Backlog and agent routing: `docs/ORCHESTRATOR.md`.

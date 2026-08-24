@@ -496,30 +496,20 @@ two-call split, the catalog facet/filter engine, the design system in `component
 
 ## 9. Design & brand direction
 
-Today's theme (a tasteful dark shadcn "reading room" with an electric-cyan accent —
-`tailwind.config.ts`, `AppShell`) is *good*, but reads close to "generic premium AI SaaS."
-To own the category — *"the marketplace where radiologists teach radiology"* — push toward a
-**domain-authentic radiology aesthetic** that a radiology department would recognize as *theirs*:
+**Canonical specs:** `design.md`, `docs/BRAND.md`, `CURSOR.md`.  
+**Implemented mark:** reticle + caliper on film black (`components/brand/BrandMark.tsx`).
 
-- **Editorial, not dashboard.** Course/author pages should feel like a respected journal or an
-  RSNA exhibit — a real **display serif** for course and author titles (paired with Inter for
-  UI), generous measure, confident hierarchy. Escape the uniform 14px-everywhere SaaS look.
-- **Reading-room density where it counts.** The viewer and assessment surfaces stay PACS-dense
-  and pure-black (`bg-imaging` is already enforced); the marketplace surfaces breathe. The
-  *contrast* between dense clinical surfaces and editorial catalog surfaces is the signature.
-- **A memorable, clinical brand system.** Lean into radiology's own visual language —
-  reticles/crosshairs (the `BrandMark` already hints at this), windowing gradients, the
-  grayscale ramp of a CT window, measurement calipers and tabular numerics as *brand* elements,
-  not just UI. One decisive accent stays; add a warm secondary for "human/educator" surfaces
-  (author profiles, reviews) so the platform doesn't read as cold machinery.
-- **Trust signals as first-class UI.** Verification badges, credentials ("MD, FRCR"),
-  institution lockups, CME marks, de-id-verified seals — designed, not bolted on. On a medical
-  marketplace, *credibility is the product*; the design must broadcast it.
-- **Author branding.** Orgs/authors get light branding (logo, accent) on their profile/course
-  pages — a marketplace where the *teacher's* identity is visible, not flattened into our chrome.
+Push toward a **domain-authentic radiology aesthetic** — editorial marketplace (Source Serif titles,
+hairline rows, film-plane thumbnails, film-marker amber accent) contrasted with **PACS-dense**
+reading-room surfaces (`bg-imaging`, hidden chrome on `/case/*`).
 
-Keep everything inside the existing token system and `components/ui/` (CLAUDE.md §1) — this is a
-*direction* (typography, brand motifs, trust UI), not a re-skin that forks the design system.
+- **Editorial, not dashboard** on catalog surfaces — no card grids for browse.
+- **Reading-room density** on viewer/assessment — pure black imaging.
+- **Trust signals as first-class UI** — verification, credentials, de-id/CME seals.
+- **Author branding** on profile/course pages.
+
+Keep primitives in `components/ui/` and `components/brand/` — orchestrator tracks backlog in
+`docs/ORCHESTRATOR.md`.
 
 ---
 
