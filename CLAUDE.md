@@ -34,24 +34,22 @@ When unsure between "minimal" and "polished," choose polished. Bare-minimum is a
 ## 1. Design system
 
 **Look & feel:** clean, calm, clinical. Dark theme (radiology reading-room), high contrast,
-generous spacing, one decisive accent. Think Linear/Vercel polish applied to a PACS.
+one decisive accent. Editorial marketplace + PACS-dense viewer — see **`design.md`** and **`docs/BRAND.md`**.
 
-- **Font:** Inter via `next/font` (loaded in `app/layout.tsx`, exposed as `--font-sans`).
+- **Font:** Source Sans 3 via `next/font` (`--font-sans`); Source Serif 4 for display titles (`font-display`).
   Tabular numbers for measurements/counters.
 - **Color tokens** (Tailwind theme in `tailwind.config.ts`):
-  - Surfaces: `bg-canvas` (app bg, near-black), `bg-surface` (panels), `bg-elevated` (cards/menus).
+  - Surfaces: `bg-canvas`, `bg-surface`, `bg-elevated` (warm charcoal ladder).
   - Text: `text-primary`, `text-secondary`, `text-muted`.
   - Border: `border-subtle`, `border-strong`.
-  - Accent: `accent` (primary action) + `accent-foreground`. Semantic: `success`, `warning`, `danger`, `info`.
-  - Imaging surfaces are pure black (`#000`) regardless of theme.
-- **Radii/shadow/spacing:** use the theme scale (`rounded-lg` default for cards/controls).
-  Soft, subtle shadows only on elevated/floating surfaces.
-- **Core UI primitives** live in `components/ui/` and are the ONLY way to render these:
-  `Button`, `IconButton`, `Card`, `Panel`, `Field`/`Input`/`Textarea`/`Select`, `Badge`,
-  `Spinner`, `Modal`, `Toast`, `MicButton`, `Tabs`, `EmptyState`. Keep them small, typed,
-  composable, and themed via tokens.
-- **App shell:** `components/AppShell` provides the sidebar/topbar nav (Cases · Author · Admin)
-  and page header slot. Pages render inside it; they don't redraw chrome.
+  - Accent: film-marker **amber** `accent` + `accent-foreground`. Semantic: `success`, `warning`, `danger`, `info`.
+  - Imaging surfaces are pure black (`bg-imaging`) regardless of theme.
+- **Marketplace layout:** editorial hairline **rows** + `FilmPlane` thumbnails — **not card grids** on browse surfaces.
+- **Radii/shadow/spacing:** theme scale; soft shadows only on floating modals/menus.
+- **Core UI primitives** live in `components/ui/`; brand visuals in `components/brand/`:
+  `Button`, `IconButton`, `Card` (forms/admin only on marketplace), `Panel`, fields, `Badge`, etc.
+- **App shell:** `components/AppShell` — sidebar nav; hidden on `/case/*` and auth screens.
+- **Agent docs:** `CURSOR.md`, `docs/ORCHESTRATOR.md`.
 
 ---
 
