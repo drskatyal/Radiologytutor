@@ -7,7 +7,13 @@ export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   interactive?: boolean;
 }
 
-/** Elevated content container. Use for list items, tiles, dialogs-in-page. */
+/**
+ * Elevated content container with rounded border and shadow.
+ *
+ * **Do not use on marketplace browse** (home, library, course/author lists) —
+ * use `EditorialRow` instead. Card is for auth forms, admin modals, and
+ * confirm dialogs-in-page only.
+ */
 export function Card({
   padded = true,
   interactive = false,
