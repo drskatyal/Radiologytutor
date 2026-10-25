@@ -428,3 +428,138 @@ test("eight slices away is still on the script, and adaptive can be turned off",
   await off.finished;
   assert.deepEqual(said, ["Follow the stack.", "Look here.", "This is a nodule."]);
 });
+
+test("a narration that ends is awaited before the next beat", async () => {
+  const order: string[] = [];
+  const guide: TeachingGuide = {
+    durationMs: 100,
+    start: { sliceIndex: 0 },
+    beats: [
+      { t: 0, say: "Orient.", actions: [{ type: "scroll", sliceIndex: 2 }] },
+      { t: 10, say: "Pearl.", actions: [] },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    { applyEvent: () => {}, getSliceIndex: () => 2 },
+    {
+      timeScale: 0,
+      narrationHoldMs: () => 500,
+      narrate: async (text) => {
+        order.push(`start:${text}`);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        order.push(`end:${text}`);
+      },
+    }
+  );
+  await ctrl.finished;
+  assert.deepEqual(order, ["start:Orient.", "end:Orient.", "start:Pearl.", "end:Pearl."]);
+});
+
+test("a narration that never returns still plays every later beat", async () => {
+  const said: string[] = [];
+  const applied: string[] = [];
+  let slice = 0;
+  const guide: TeachingGuide = {
+    durationMs: 1600,
+    start: { sliceIndex: 0 },
+    beats: [
+      {
+        t: 0,
+        act: "orient",
+        say: "Follow the stack.",
+        actions: [{ type: "scroll", sliceIndex: 34 }],
+      },
+      {
+        t: 10,
+        act: "search",
+        say: "Lung windows.",
+        actions: [{ type: "window", ww: 1500, wc: -600 }],
+      },
+      {
+        t: 20,
+        act: "lean-in",
+        say: "Lean in.",
+        actions: [{ type: "zoom", zoom: 2.2, pan: [0, 0] }],
+      },
+      {
+        t: 30,
+        act: "commit",
+        say: "Look here.",
+        actions: [{ type: "point", x: 0.52, y: 0.42 }],
+      },
+      { t: 40, act: "pearl", say: "Name the pattern.", actions: [] },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: (event) => {
+        applied.push(event.type);
+        if (event.type === "slice") slice = event.index;
+      },
+      getSliceIndex: () => slice,
+      settle: async () => {},
+      setWindow: async (ww, wc) => {
+        applied.push(`window:${ww}/${wc}`);
+      },
+      showState: async (state) => {
+        if (state.zoom != null) applied.push(`zoom:${state.zoom}`);
+      },
+      overlay: {
+        animateTo: async (x, y) => {
+          applied.push(`point:${x},${y}`);
+        },
+      },
+    },
+    {
+      timeScale: 0,
+      narrationHoldMs: () => 20,
+      narrate: (text) => {
+        said.push(text);
+        return new Promise(() => {});
+      },
+    }
+  );
+  await ctrl.finished;
+  assert.deepEqual(said, [
+    "Follow the stack.",
+    "Lung windows.",
+    "Lean in.",
+    "Look here.",
+    "Name the pattern.",
+  ]);
+  assert.equal(slice, 34);
+  assert.ok(applied.includes("window:1500/-600"));
+  assert.ok(applied.indexOf("zoom:1") < applied.indexOf("zoom:2.2"));
+  assert.ok(applied.includes("point:0.52,0.42"));
+  assert.equal(ctrl.done, true);
+});
+
+test("cancel unblocks a guide waiting on narration", async () => {
+  let started = 0;
+  const guide: TeachingGuide = {
+    durationMs: 5000,
+    start: { sliceIndex: 1 },
+    beats: [
+      { t: 400, say: "Hold.", actions: [{ type: "scroll", sliceIndex: 3 }] },
+      { t: 800, say: "Next.", actions: [] },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    { applyEvent: () => {}, getSliceIndex: () => 1 },
+    {
+      timeScale: 1,
+      narrationHoldMs: () => 60_000,
+      narrate: () => {
+        started += 1;
+        return new Promise(() => {});
+      },
+    }
+  );
+  setTimeout(() => ctrl.cancel(), 30);
+  await ctrl.finished;
+  assert.equal(ctrl.done, true);
+  assert.equal(started, 0);
+});

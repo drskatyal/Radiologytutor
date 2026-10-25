@@ -20,6 +20,17 @@ export function isNamingAct(act: TeachAct | undefined): boolean {
   return act != null && NAMING_ACTS.has(act);
 }
 
+/**
+ * Finding to teach after `index`, or null when this was the last one.
+ * A negative index (viewer not seated yet) starts at the first finding.
+ */
+export function nextGuidedIndex(index: number, count: number): number | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  if (!Number.isFinite(index) || index < 0) return 0;
+  if (index >= count - 1) return null;
+  return index + 1;
+}
+
 export interface MoneySlice {
   sliceIndex: number;
   seriesInstanceUID?: string;

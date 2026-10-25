@@ -4,6 +4,7 @@ import type { TeachingGuide } from "./types.ts";
 import {
   FAR_SLICE_DISTANCE,
   moneySliceFromGuide,
+  nextGuidedIndex,
   reseatBeat,
   reseatLine,
   safePlace,
@@ -27,6 +28,15 @@ const guide: TeachingGuide = {
     { t: 80, act: "pearl", actions: [], say: "Name it." },
   ],
 };
+
+test("guided tour walks every finding and then finishes", () => {
+  assert.equal(nextGuidedIndex(-1, 3), 0);
+  assert.equal(nextGuidedIndex(0, 3), 1);
+  assert.equal(nextGuidedIndex(1, 3), 2);
+  assert.equal(nextGuidedIndex(2, 3), null);
+  assert.equal(nextGuidedIndex(0, 0), null);
+  assert.equal(nextGuidedIndex(5, 3), null);
+});
 
 test("money slice is the last scroll, including its series", () => {
   assert.deepEqual(moneySliceFromGuide(guide), {

@@ -23,6 +23,7 @@ import type {
   TeachViewerAction,
   TeachingGuide,
 } from "./types";
+import { narrationHoldMs } from "./tutorSpeech";
 import {
   isNamingAct,
   moneySliceFromGuide,
@@ -200,9 +201,17 @@ export interface GuidePlayOptions {
   sliceStepMs?: number;
   /**
    * 1 follows the teacher's clock (holds included). 0 runs the gestures
-   * back to back — unit tests. Speech still finishes before the next beat.
+   * back to back — unit tests. Speech is awaited until it ends or the
+   * narration hold expires, whichever comes first.
    */
   timeScale?: number;
+  /**
+   * How long one say-line may block the next beat. Defaults to
+   * narrationHoldMs on the learner clock, and to "wait for narrate" when
+   * timeScale is 0 so unit tests stay synchronous. A returned promise that
+   * never settles still loses to this hold.
+   */
+  narrationHoldMs?: (text: string) => number;
   /**
    * When the learner is far from the money slice at a commit or pearl,
    * scroll them there and say a directional line before that beat.
@@ -217,72 +226,67 @@ export interface GuidePlayOptions {
   withholdTerms?: readonly string[];
 }
 
-function delay(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+/** A hung tween or slice settle must not freeze the rest of the script. */
+const MOTION_CAP_MS = 4_000;
+
+interface GuidePace {
+  stepMs: number;
+  scale: number;
+  cancelled: () => boolean;
+  wait: (ms: number) => Promise<void>;
+  guard: (task: Promise<void> | void) => Promise<void>;
 }
 
 async function driveScroll(
   drivers: GuideDrivers,
   sliceIndex: number,
   seriesInstanceUID: string | undefined,
-  stepMs: number,
-  cancelled: () => boolean
+  pace: GuidePace
 ): Promise<void> {
   if (seriesInstanceUID) {
     drivers.applyEvent({ t: 0, type: "series", seriesInstanceUID });
-    if (drivers.settle) await drivers.settle();
+    if (drivers.settle) await pace.guard(drivers.settle());
   }
-  if (cancelled()) return;
+  if (pace.cancelled()) return;
   const current = drivers.getSliceIndex?.();
   if (current == null || current === sliceIndex) {
     drivers.applyEvent({ t: 0, type: "slice", index: sliceIndex });
-    if (drivers.settle) await drivers.settle();
+    if (drivers.settle) await pace.guard(drivers.settle());
     return;
   }
   let pos = current;
   while (pos !== sliceIndex) {
-    if (cancelled()) return;
+    if (pace.cancelled()) return;
     const remaining = sliceIndex - pos;
     const mag = Math.abs(remaining);
     const hop = mag > 28 ? Math.sign(remaining) * Math.ceil(mag / 28) : Math.sign(remaining);
     pos = mag <= Math.abs(hop) ? sliceIndex : pos + hop;
     drivers.applyEvent({ t: 0, type: "slice", index: pos });
-    if (drivers.settle) await drivers.settle();
-    if (stepMs > 0 && pos !== sliceIndex) await delay(stepMs);
+    if (drivers.settle) await pace.guard(drivers.settle());
+    if (pace.stepMs > 0 && pos !== sliceIndex) await pace.wait(pace.stepMs);
   }
 }
 
 async function driveAction(
   action: TeachViewerAction,
   drivers: GuideDrivers,
-  stepMs: number,
-  cancelled: () => boolean,
-  timeScale: number
+  pace: GuidePace
 ): Promise<void> {
   switch (action.type) {
     case "scroll":
-      await driveScroll(
-        drivers,
-        action.sliceIndex,
-        action.seriesInstanceUID,
-        stepMs,
-        cancelled
-      );
+      await driveScroll(drivers, action.sliceIndex, action.seriesInstanceUID, pace);
       return;
     case "window":
       if (drivers.setWindow) {
-        await drivers.setWindow(action.ww, action.wc);
+        await pace.guard(drivers.setWindow(action.ww, action.wc));
       } else {
         drivers.applyEvent({ t: 0, type: "voi", ww: action.ww, wc: action.wc });
       }
       return;
     case "zoom":
       if (drivers.showState) {
-        const ms = timeScale <= 0 ? 0 : 720;
-        await drivers.showState({ zoom: action.zoom, pan: action.pan }, ms);
+        const ms = pace.scale <= 0 ? 0 : 720;
+        await pace.guard(drivers.showState({ zoom: action.zoom, pan: action.pan }, ms));
       } else {
         drivers.applyEvent({
           t: 0,
@@ -297,8 +301,8 @@ async function driveAction(
       return;
     case "point":
       if (drivers.overlay?.animateTo) {
-        const ms = timeScale <= 0 ? 0 : 700;
-        await drivers.overlay.animateTo(action.x, action.y, { durationMs: ms });
+        const ms = pace.scale <= 0 ? 0 : 700;
+        await pace.guard(drivers.overlay.animateTo(action.x, action.y, { durationMs: ms }));
       } else {
         drivers.overlay?.cursor?.(action.x, action.y, 0);
       }
@@ -307,13 +311,13 @@ async function driveAction(
       return;
     case "annotate": {
       if (action.sliceIndex != null) {
-        await driveScroll(drivers, action.sliceIndex, undefined, stepMs, cancelled);
-        if (cancelled()) return;
+        await driveScroll(drivers, action.sliceIndex, undefined, pace);
+        if (pace.cancelled()) return;
       }
       const { type: _type, ...stroke } = action;
       const event: RecordedEvent = { t: 0, type: "annotation", ...stroke };
       drivers.applyEvent(event);
-      if (drivers.settle) await drivers.settle();
+      if (drivers.settle) await pace.guard(drivers.settle());
       if (drivers.annotationLanded && !drivers.annotationLanded()) {
         drivers.overlay?.annotation?.(event);
       }
@@ -344,10 +348,75 @@ export function playTeachingGuide(
   const scale = opts.timeScale ?? 1;
   const stepMs = scale <= 0 ? 0 : (opts.sliceStepMs ?? 36);
   const origin = performance.now();
+  const stops = new Set<() => void>();
+
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => {
+      if (ms <= 0 || cancelled) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(() => {
+        stops.delete(stop);
+        resolve();
+      }, ms);
+      const stop = () => {
+        clearTimeout(timer);
+        stops.delete(stop);
+        resolve();
+      };
+      stops.add(stop);
+    });
+
+  // Resolves when `task` settles or the cap hits. The cap timer is cleared
+  // so a fast tween does not leave a dangling timeout.
+  const raceCap = (task: Promise<void>, ms: number) =>
+    new Promise<void>((resolve) => {
+      if (ms <= 0 || cancelled) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        stops.delete(stop);
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      const stop = () => finish();
+      stops.add(stop);
+      task.then(finish, finish);
+    });
+
+  const guard = (task: Promise<void> | void): Promise<void> => {
+    const work = Promise.resolve(task).then(
+      () => undefined,
+      () => undefined
+    );
+    if (scale <= 0) return work;
+    return raceCap(work, MOTION_CAP_MS);
+  };
+
+  const pace: GuidePace = {
+    stepMs,
+    scale,
+    cancelled: () => cancelled,
+    wait,
+    guard,
+  };
+
+  const holdFor = (text: string) => {
+    if (opts.narrationHoldMs) return Math.max(0, opts.narrationHoldMs(text));
+    if (scale <= 0) return 0;
+    return narrationHoldMs(text);
+  };
 
   const close = (callEnd: boolean) => {
     if (ended) return;
     ended = true;
+    for (const stop of [...stops]) stop();
     if (callEnd && !cancelled) opts.onEnd?.();
     resolveFinished();
   };
@@ -359,7 +428,7 @@ export function playTeachingGuide(
         type: "slice",
         index: guide.start.sliceIndex,
       });
-      if (drivers.settle) await drivers.settle();
+      if (drivers.settle) await guard(drivers.settle());
       if (
         !cancelled &&
         guide.start.ww != null &&
@@ -367,7 +436,7 @@ export function playTeachingGuide(
         Number.isFinite(guide.start.ww) &&
         Number.isFinite(guide.start.wc)
       ) {
-        if (drivers.setWindow) await drivers.setWindow(guide.start.ww, guide.start.wc);
+        if (drivers.setWindow) await guard(drivers.setWindow(guide.start.ww, guide.start.wc));
         else {
           drivers.applyEvent({
             t: 0,
@@ -378,12 +447,22 @@ export function playTeachingGuide(
         }
       }
 
+      // A later finding inherits the previous lean-in. Snap back to fit so
+      // this script's zoom beat is a visible lean-in, not a no-op at 2.2×.
+      if (
+        !cancelled &&
+        drivers.showState &&
+        guide.beats.some((beat) => beat.actions.some((action) => action.type === "zoom"))
+      ) {
+        await guard(drivers.showState({ zoom: 1, pan: [0, 0] }, 0));
+      }
+
       const performBeat = async (beat: TeachBeat) => {
         if (cancelled) return;
         if (scale > 0) {
-          const wait = origin + beat.t * scale - performance.now();
-          if (wait > 20) {
-            await delay(wait);
+          const due = origin + beat.t * scale - performance.now();
+          if (due > 20) {
+            await wait(due);
             if (cancelled) return;
           }
         }
@@ -393,21 +472,26 @@ export function playTeachingGuide(
             if (action.type === "pause") {
               if (scale > 0 && action.ms > 0) {
                 const target = origin + (beat.t + action.ms) * scale;
-                const wait = target - performance.now();
-                if (wait > 20) await delay(wait);
+                const remain = target - performance.now();
+                if (remain > 20) await wait(remain);
               }
               continue;
             }
-            await driveAction(action, drivers, stepMs, () => cancelled, scale);
+            await driveAction(action, drivers, pace);
           }
         })();
-        const line = beat.say?.trim();
-        // A blank line must not call narrate. A rejected TTS call must not
-        // skip the rest of the script or leave the tour waiting on onEnd.
-        const speech =
+        const line = beat.say?.trim() ?? "";
+        // A blank line must not call narrate. A rejected or hung TTS call
+        // must not skip the rest of the script or leave Speaking latched.
+        const speechWork =
           line && opts.narrate
-            ? opts.narrate(line).catch(() => undefined)
+            ? opts.narrate(line).then(
+                () => undefined,
+                () => undefined
+              )
             : Promise.resolve();
+        const hold = line ? holdFor(line) : 0;
+        const speech = hold > 0 ? raceCap(speechWork, hold) : speechWork;
         await Promise.all([motion, speech]);
       };
 
@@ -447,6 +531,7 @@ export function playTeachingGuide(
     cancel() {
       if (cancelled || ended) return;
       cancelled = true;
+      for (const stop of [...stops]) stop();
     },
     get done() {
       return cancelled || ended;

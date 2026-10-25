@@ -22,7 +22,11 @@ import {
   normalizeTutorActions,
   splitSentences,
 } from "@/lib/performancePlan";
-import { tutorSpeechPlan, type SpokenFindingSource } from "@/lib/tutorSpeech";
+import {
+  NARRATION_HOLD_MAX_MS,
+  tutorSpeechPlan,
+  type SpokenFindingSource,
+} from "@/lib/tutorSpeech";
 import { findingViewerState } from "@/lib/viewerController";
 import { playTeachingGuide, type ReplayController } from "@/lib/replay";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
@@ -38,6 +42,7 @@ import type { CaseData, Finding, FindingMeasurement, Marker, TeachingGuide } fro
 import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
 import { clickHitsFinding } from "@/lib/clickFinding";
+import { nextGuidedIndex } from "@/lib/tourAdapt";
 import {
   secondaryAnchor,
   seriesIndexFor,
@@ -117,6 +122,11 @@ export function useStudentSession(
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
   /** Autonomous Teach tour: continue after TTS until paused or finished. */
   const tourActiveRef = useRef(false);
+  /**
+   * Bumped each time a guided step starts or the tour is paused. A late
+   * speech callback from the previous finding must not start the one after.
+   */
+  const tourGenRef = useRef(0);
   /** play_guide is the only speech on this turn — speak its beats. */
   const narrateGuideRef = useRef(false);
   const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
@@ -295,6 +305,7 @@ export function useStudentSession(
   }, []);
 
   const pauseTour = useCallback(() => {
+    tourGenRef.current += 1;
     tourActiveRef.current = false;
     setTourActive(false);
     replayRef.current?.cancel();
@@ -817,6 +828,8 @@ export function useStudentSession(
 
   const runGuidedFrom = useCallback(
     async (index: number) => {
+      const gen = ++tourGenRef.current;
+      const stale = () => gen !== tourGenRef.current || !tourActiveRef.current;
       if (!tourActiveRef.current) return;
       if (index >= orderedFindings.length) {
         finishTour();
@@ -857,7 +870,7 @@ export function useStudentSession(
         const guidePlay = playFindingGuide(finding, guide, {
           narrate: says.length && turnId
             ? async (text) => {
-                if (!tourActiveRef.current) return;
+                if (stale()) return;
                 setTurns((prev) =>
                   prev.map((t) =>
                     t.id === turnId
@@ -872,7 +885,7 @@ export function useStudentSession(
         const cuePlay =
           fallbackCue && turnId
             ? (async () => {
-                if (!tourActiveRef.current) return;
+                if (stale()) return;
                 setTurns((prev) =>
                   prev.map((t) => (t.id === turnId ? { ...t, text: fallbackCue } : t))
                 );
@@ -880,7 +893,7 @@ export function useStudentSession(
               })()
             : Promise.resolve();
         await Promise.all([guidePlay, cuePlay]);
-        if (!tourActiveRef.current) return;
+        if (stale()) return;
         if (fallbackRest && turnId) {
           setTurns((prev) =>
             prev.map((t) =>
@@ -889,7 +902,7 @@ export function useStudentSession(
           );
           await speak(fallbackRest, undefined, { persona: "attending" });
         }
-        if (!tourActiveRef.current) return;
+        if (stale()) return;
         setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
         setPhase((p) => (p === "speaking" ? "idle" : p));
         if (finding.marker) {
@@ -910,17 +923,18 @@ export function useStudentSession(
           setMeasurementsVisible(true);
         }
         window.setTimeout(() => {
-          if (!tourActiveRef.current) return;
-          if (index >= orderedFindings.length - 1) {
+          if (gen !== tourGenRef.current || !tourActiveRef.current) return;
+          const next = nextGuidedIndex(index, orderedFindings.length);
+          if (next == null) {
             finishTour();
             return;
           }
-          void runGuidedRef.current(index + 1);
+          void runGuidedRef.current(next);
         }, 700);
         return;
       }
       await revealFinding(index, { spoil: true });
-      if (!tourActiveRef.current) return;
+      if (stale()) return;
       void runTutorRef.current(
         "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
         turnsRef.current
@@ -937,6 +951,32 @@ export function useStudentSession(
   );
 
   runGuidedRef.current = runGuidedFrom;
+
+  // A beat that never reports another caption (hung TTS the player did not
+  // cut, or a tween that ignored cancel) must not leave Speaking latched.
+  // New caption text resets the timer, so a guide that is still advancing
+  // is left alone. The last finding unlocks Continue; earlier ones advance.
+  useEffect(() => {
+    if (mode !== "guided" || !tourActive || phase !== "speaking") return;
+    const gen = tourGenRef.current;
+    const index = activeIndexRef.current;
+    const timer = window.setTimeout(() => {
+      if (tourGenRef.current !== gen || !tourActiveRef.current) return;
+      stopSpeaking();
+      stopReplay();
+      setSpeakingTurnId(null);
+      setPhase((current) => (current === "speaking" ? "idle" : current));
+      const next = nextGuidedIndex(index, orderedFindings.length);
+      if (next == null) {
+        tourGenRef.current += 1;
+        tourActiveRef.current = false;
+        setTourActive(false);
+        return;
+      }
+      void runGuidedRef.current(next);
+    }, NARRATION_HOLD_MAX_MS + 2_000);
+    return () => window.clearTimeout(timer);
+  }, [mode, tourActive, phase, turns, orderedFindings.length, stopReplay]);
 
   const resumeTour = useCallback(() => {
     if (mode !== "guided" || busy) return;
@@ -1056,11 +1096,18 @@ export function useStudentSession(
   const goTo = useCallback(
     (index: number) => {
       if (busy || !ready) return;
+      if (index < 0 || index >= orderedFindings.length) return;
       stopSpeaking();
       stopReplay();
+      if (mode === "guided") {
+        tourActiveRef.current = true;
+        setTourActive(true);
+        void runGuidedRef.current(index);
+        return;
+      }
       revealFinding(index, { spoil: true });
     },
-    [busy, ready, revealFinding, stopReplay]
+    [busy, ready, orderedFindings.length, revealFinding, stopReplay, mode]
   );
   const next = useCallback(() => goTo(Math.min(activeIndexRef.current + 1, orderedFindings.length - 1)), [goTo, orderedFindings.length]);
   const prev = useCallback(() => goTo(Math.max(activeIndexRef.current - 1, 0)), [goTo]);
@@ -1070,10 +1117,14 @@ export function useStudentSession(
     const cur = activeIndexRef.current;
     const nextIdx = Math.min(cur + 1, orderedFindings.length - 1);
     if (nextIdx === cur && cur >= 0) return;
+    if (mode === "guided") {
+      goTo(nextIdx);
+      return;
+    }
     stopSpeaking();
     stopReplay();
     void revealFinding(nextIdx, { spoil: !examMode });
-  }, [busy, ready, orderedFindings.length, examMode, revealFinding, stopReplay]);
+  }, [busy, ready, orderedFindings.length, examMode, revealFinding, stopReplay, mode, goTo]);
 
   const revealCurrent = useCallback(() => {
     if (busy || !ready) return;

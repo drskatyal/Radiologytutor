@@ -8,7 +8,7 @@
 // When /api/tts reports budget exceeded (slow clone/TTS), we stash a hint so
 // the student session can open Gemini Live for the next conversational turn.
 
-import { speechAudioCanBlock } from "./tutorSpeech";
+import { narrationHoldMs, speechAudioCanBlock } from "./tutorSpeech";
 
 let currentAudio: HTMLAudioElement | null = null;
 let pipelineGen = 0;
@@ -74,47 +74,76 @@ export async function speakBeats(
     opts?.onEnd?.();
   };
 
-  const prefetch = (t: string) =>
-    fetchTtsBlob(t, signal, {
-      voiceId: opts?.persona === "attending" ? undefined : opts?.voiceId,
-      authorId: opts?.persona === "attending" ? undefined : opts?.authorId,
-      persona: opts?.persona,
-    });
+  const voice = {
+    voiceId: opts?.persona === "attending" ? undefined : opts?.voiceId,
+    authorId: opts?.persona === "attending" ? undefined : opts?.authorId,
+    persona: opts?.persona,
+  };
+  const holds = chunks.map((chunk) => narrationHoldMs(chunk));
+  // One pipeline deadline so a hung fetch cannot outlive the guide's beat cap.
+  const budget = holds.reduce((sum, ms) => sum + ms, 0) + 400;
 
-  let nextBlob = prefetch(chunks[0]);
-
-  try {
+  const work = (async () => {
     for (let i = 0; i < chunks.length; i++) {
       if (gen !== pipelineGen) return;
       opts?.onStartBeat?.(i);
-      const blobP = nextBlob;
-      if (i + 1 < chunks.length) nextBlob = prefetch(chunks[i + 1]);
-
+      const hold = holds[i] ?? narrationHoldMs(chunks[i]);
       let played = false;
       try {
-        const blob = await blobP;
+        const blob = await fetchTtsBlob(chunks[i], signal, voice, Math.min(6_000, hold));
         if (gen !== pipelineGen) return;
         if (blob && speechAudioCanBlock(blob.size, null)) {
-          const result = await playBlob(blob, () => gen !== pipelineGen);
+          const result = await playBlob(blob, () => gen !== pipelineGen, hold);
           played = result === "played";
         }
       } catch {
         played = false;
       }
       if (gen !== pipelineGen) return;
-      if (!played) await fallbackSpeakAsync(chunks[i], () => gen !== pipelineGen);
+      if (!played) await fallbackSpeakAsync(chunks[i], () => gen !== pipelineGen, hold);
     }
-    finish();
-  } catch {
-    finish();
-  }
+  })();
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let timer = 0;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    timer = window.setTimeout(() => {
+      // onEnd while this generation is still current, then retire the audio
+      // so a late blob cannot speak over the next beat.
+      finish();
+      if (pipelineGen === gen) stopSpeaking();
+      settle();
+    }, budget);
+    work.then(
+      () => {
+        finish();
+        settle();
+      },
+      () => {
+        finish();
+        settle();
+      }
+    );
+  });
 }
 
 async function fetchTtsBlob(
   text: string,
   signal: AbortSignal,
-  voice?: { voiceId?: string | null; authorId?: string | null; persona?: "attending" }
+  voice?: { voiceId?: string | null; authorId?: string | null; persona?: "attending" },
+  timeoutMs = 6_000
 ): Promise<Blob | null> {
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), Math.max(250, timeoutMs));
+  const onParentAbort = () => timeout.abort();
+  if (signal.aborted) timeout.abort();
+  else signal.addEventListener("abort", onParentAbort);
   try {
     const res = await fetch("/api/tts", {
       method: "POST",
@@ -126,7 +155,7 @@ async function fetchTtsBlob(
         authorId: voice?.persona === "attending" ? undefined : voice?.authorId || undefined,
         persona: voice?.persona,
       }),
-      signal,
+      signal: timeout.signal,
     });
     if (!res.ok) return null;
 
@@ -142,17 +171,22 @@ async function fetchTtsBlob(
     return await res.blob();
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onParentAbort);
   }
 }
 
 /** How long to wait for audio to start before falling through to speechSynthesis. */
 const AUDIO_START_MS = 8_000;
-/** Cap so a clip that never fires `ended` cannot stall the tour. */
-const AUDIO_MAX_MS = 60_000;
 
-function playBlob(blob: Blob, cancelled: () => boolean): Promise<"played" | "unplayed"> {
+function playBlob(
+  blob: Blob,
+  cancelled: () => boolean,
+  maxMs: number
+): Promise<"played" | "unplayed"> {
   return new Promise((resolve) => {
-    if (cancelled() || !speechAudioCanBlock(blob.size, null)) {
+    if (cancelled() || maxMs <= 0 || !speechAudioCanBlock(blob.size, null)) {
       resolve(cancelled() ? "played" : "unplayed");
       return;
     }
@@ -173,14 +207,19 @@ function playBlob(blob: Blob, cancelled: () => boolean): Promise<"played" | "unp
       if (currentAudio === audio) currentAudio = null;
       resolve(result);
     };
-    timer = window.setTimeout(() => finish(started ? "played" : "unplayed"), AUDIO_START_MS);
+    const cap = Math.max(250, maxMs);
+    timer = window.setTimeout(
+      () => finish(started ? "played" : "unplayed"),
+      Math.min(AUDIO_START_MS, cap)
+    );
     const arm = (ms: number) => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => finish(started ? "played" : "unplayed"), ms);
     };
     audio.onplaying = () => {
       started = true;
-      arm(AUDIO_MAX_MS);
+      const durMs = Number.isFinite(audio.duration) ? audio.duration * 1000 + 500 : cap;
+      arm(Math.min(cap, Math.max(800, durMs)));
     };
     audio.onloadedmetadata = () => {
       const duration = Number.isFinite(audio.duration) ? audio.duration : null;
@@ -194,10 +233,11 @@ function playBlob(blob: Blob, cancelled: () => boolean): Promise<"played" | "unp
 
 function fallbackSpeakAsync(
   text: string,
-  cancelled: () => boolean
+  cancelled: () => boolean,
+  maxMs: number
 ): Promise<void> {
   return new Promise((resolve) => {
-    if (cancelled() || !window.speechSynthesis) {
+    if (cancelled() || maxMs <= 0 || !window.speechSynthesis) {
       resolve();
       return;
     }
@@ -214,7 +254,7 @@ function fallbackSpeakAsync(
       resolve();
     };
     // speechSynthesis sometimes never fires onend; don't hold the tour.
-    timer = window.setTimeout(done, Math.min(AUDIO_MAX_MS, Math.max(4_000, text.length * 90)));
+    timer = window.setTimeout(done, Math.max(250, maxMs));
     utter.onend = done;
     utter.onerror = done;
     window.speechSynthesis.speak(utter);
