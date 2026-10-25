@@ -18,6 +18,7 @@ import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCaseForOrg } from "@/lib/cases";
 import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
+import type { SpokenFindingSource } from "@/lib/tutorSpeech";
 
 export const runtime = "nodejs";
 
@@ -82,6 +83,14 @@ export async function POST(req: NextRequest) {
         ? messages.slice(0, -1)
         : messages;
 
+    const findings: SpokenFindingSource[] = data.findings.map((finding) => ({
+      id: finding.id,
+      label: finding.label,
+      description: finding.description,
+      teachingPoints: finding.teachingPoints,
+      order: finding.order,
+    }));
+
     const result = await runTeachingPlan({
       question,
       history,
@@ -90,6 +99,7 @@ export async function POST(req: NextRequest) {
       mode,
       findingsContext: formatFindingsContextFromCase(data),
       currentFindingId,
+      findings,
     });
 
     return NextResponse.json(result);

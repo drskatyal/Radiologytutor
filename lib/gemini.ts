@@ -9,6 +9,7 @@
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
+import { ensureSpokenAnswer, type SpokenFindingSource } from "./tutorSpeech";
 import {
   HARNESS_VIEWER_TOOLS,
   harnessActionFromCall,
@@ -325,6 +326,11 @@ export interface TeachingPlanInput {
   findingsContext: string;
   /** The finding the student is currently looking at (for "what is this?"). */
   currentFindingId?: string;
+  /**
+   * Authored findings used only when the model returns tools and no speech.
+   * The spoken fallback copies label / description / teaching points from here.
+   */
+  findings?: SpokenFindingSource[];
 }
 
 export interface TeachingPlanResult {
@@ -375,8 +381,19 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     .map((call) => toAction(call))
     .filter((a) => a.type !== "none");
 
-  return {
+  // Tool-only replies leave Discussion blank and stall Teach on speech onEnd.
+  // Fill a drive-first line from the authored finding; never invent anatomy.
+  const answer = ensureSpokenAnswer({
     answer: result.text,
+    mode: input.mode,
+    question: input.question,
+    actions,
+    findings: input.findings ?? [],
+    currentFindingId: input.currentFindingId,
+  });
+
+  return {
+    answer,
     action: actions[0] ?? { type: "none" },
     actions,
     sources: result.sources,

@@ -43,6 +43,13 @@ async function liveTutor(ctx: TutorEvalContext): Promise<TutorTurn> {
     mode: ctx.fixture.mode,
     findingsContext: formatFindingsContextFromCase(ctx.fixture.case),
     currentFindingId: ctx.viewer.activeFindingId ?? undefined,
+    findings: ctx.fixture.case.findings.map((finding) => ({
+      id: finding.id,
+      label: finding.label,
+      description: finding.description,
+      teachingPoints: finding.teachingPoints,
+      order: finding.order,
+    })),
   });
   return { answer: result.answer, actions: result.actions };
 }
