@@ -779,7 +779,7 @@ export function RecordingStudio({
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
-                variant={annotateMode && !recording ? "secondary" : "ghost"}
+                variant={annotateMode && !recording ? "primary" : "secondary"}
                 leadingIcon={<Crosshair className="h-3.5 w-3.5" />}
                 onClick={() => {
                   if (recording) return;
@@ -790,7 +790,7 @@ export function RecordingStudio({
               >
                 Click to annotate
               </Button>
-              <span className="text-xs text-muted">or</span>
+              <span className="text-xs text-secondary">Primary path — place a marker, then dictate</span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
@@ -814,6 +814,7 @@ export function RecordingStudio({
                 </Button>
               ) : (
                 <Button
+                  variant="secondary"
                   leadingIcon={<Circle className="h-3.5 w-3.5 fill-current" />}
                   onClick={beginRecording}
                   disabled={!ready || mic === "unsupported"}

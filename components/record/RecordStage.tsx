@@ -140,34 +140,35 @@ export function RecordStage({
 
         {clickToAnnotate && (
           <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex justify-center">
-            <span className="rounded-full border border-accent/40 bg-elevated/90 px-3 py-1.5 text-[11px] font-medium text-secondary shadow-md backdrop-blur">
+            <span className="rounded-md bg-black/80 px-3 py-2 text-xs font-medium text-white shadow-lg ring-1 ring-white/25">
               Click the finding to place a marker and dictate
             </span>
           </div>
         )}
 
-        {/* REC HUD — top-right so it clears the toolbar. */}
+        {/* REC HUD — top-right. Tools now sit under the image, so this no
+            longer fights the toolbar. Scrim keeps it readable on bone windows. */}
         {phase === "recording" && (
-          <div className="absolute right-3 top-3 z-30 flex animate-fade-up items-center gap-2 rounded-full border border-danger/40 bg-elevated/90 px-3 py-1.5 shadow-lg backdrop-blur">
+          <div className="absolute right-3 top-3 z-30 flex animate-fade-up items-center gap-2 rounded-md bg-black/80 px-3 py-2 text-white shadow-lg ring-1 ring-white/20">
             <span className="relative flex h-2.5 w-2.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger opacity-75" />
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-danger" />
             </span>
-            <span className="text-xs font-semibold uppercase tracking-wide text-danger">Rec</span>
-            <span className="text-xs tabular-nums text-secondary">{formatMs(elapsedMs)}</span>
+            <span className="text-sm font-semibold uppercase tracking-wide text-danger">Rec</span>
+            <span className="text-sm tabular-nums text-white">{formatMs(elapsedMs)}</span>
           </div>
         )}
 
         {/* REPLAY HUD + progress. */}
         {phase === "replaying" && (
-          <div className="absolute inset-x-3 bottom-3 z-30 flex animate-fade-up flex-col gap-1.5">
+          <div className="absolute inset-x-3 bottom-3 z-30 flex animate-fade-up flex-col gap-1.5 rounded-md bg-black/80 px-3 py-2 shadow-lg ring-1 ring-white/20">
             <div className="flex items-center gap-2">
               <Badge variant="accent" dot>
                 Replaying
               </Badge>
-              <span className="text-xs tabular-nums text-secondary">{Math.round(progress * 100)}%</span>
+              <span className="text-xs tabular-nums text-white">{Math.round(progress * 100)}%</span>
             </div>
-            <div className="h-1 w-full overflow-hidden rounded-full bg-elevated/80">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/25">
               <div
                 className="h-full rounded-full bg-accent transition-[width] duration-100 ease-linear"
                 style={{ width: `${Math.round(progress * 100)}%` }}

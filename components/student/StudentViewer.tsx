@@ -194,6 +194,7 @@ function ImagingPane({
         modality={modality}
         controls={controls}
         showToolbar={false}
+        chrome="edge"
         onReady={onReady}
         instanceId={instanceId}
         className="h-full w-full bg-imaging"
