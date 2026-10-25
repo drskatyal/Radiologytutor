@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  authoredGuideLines,
   buildTeachingGuide,
   coerceNarrationSpans,
   formatTeachingGuideLine,
@@ -283,4 +284,18 @@ test("resolveTeachingGuide speaks stored transcript spans, not only the descript
   assert.match(said, /apex/);
   assert.match(said, /costophrenic/i);
   assert.match(said, /Effusion|effusion/);
+});
+
+test("authoredGuideLines keeps spoken beats and drops blanks", () => {
+  assert.deepEqual(
+    authoredGuideLines({
+      beats: [
+        { t: 0, actions: [], say: " Follow the stack. " },
+        { t: 1, actions: [], say: "   " },
+        { t: 2, actions: [], say: "Look here." },
+      ],
+    }),
+    ["Follow the stack.", "Look here."]
+  );
+  assert.deepEqual(authoredGuideLines(null), []);
 });

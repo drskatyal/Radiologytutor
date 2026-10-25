@@ -29,3 +29,15 @@ A recorded finding becomes a live teach script. The student viewer scrolls, wind
 6. Optional: one continuous take (**Speak once**) segments into findings. Each proposal shows a teach-beat count. Saving runs the same merge, so each finding carries its own script.
 
 Findings saved before this change still teach: if they have a `track`, the guide is rebuilt on the student session from that track plus the current description. Strokes appear only when the track contains `annotation` events, so re-record a finding once to capture calipers.
+
+## Demo guides vs teacher-recorded guides
+
+A **teacher-recorded guide** starts as a `RecordedTrack` (the capture clock). `resolveTeachingGuide` rebuilds the script from that track and the current label, description, and teaching points, so a re-record or an edit to the prose replaces what Teach says. Author Replay still plays the dense track. Learners do not hear the microphone file.
+
+A **demo guide** is a `TeachingGuide` stored on the finding when no teacher track exists yet. It is `buildTeachingGuide` run on the finding's sparse anchors: the committed slice, the authored window, a 2.2× lean-in, and the marker. Say lines are that builder's acts (look-cues, then a pearl from the description and teaching points). Teach plays it with `playTeachingGuide` and speaks each line with Gemini TTS in the attending voice (`persona: "attending"`). A blank line does not call TTS. This is not a second speech writer and not a microphone tape.
+
+Those lines are the narration. `tutorSpeechPlan` fills a blank live-tutor answer, and it also speaks a motion guide that has no `say` lines. A demo guide has a line on every beat, so that fallback does not replace the script.
+
+`case-lidc-nodule-search` ships that script. `npm run import:cases` attaches it after slice indices are scaled to the imported stack, and only for findings that do not already have a teacher track. `npm run seed:lidc-teach` does the same for a case already in the store, or writes the catalog case (public 65-slice stack, findings on slices 34, 49, and 64) when the case is missing. Each finding is the five acts `buildTeachingGuide` emits: orient, search, lean-in, commit, pearl.
+
+The first human recording stores a track. From then on the track wins, and the demo script steps aside.

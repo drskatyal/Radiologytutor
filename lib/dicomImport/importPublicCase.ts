@@ -16,6 +16,7 @@ import {
 } from "@/lib/cases";
 import { downloadTciaSeriesDicom } from "@/lib/dicomImport/tcia";
 import { getPublicCaseTemplate } from "@/lib/publicCases/catalog";
+import { planPublicCaseFindings } from "@/lib/demoTeachingGuide";
 import {
   orthancAuthHeader,
   orthancBase,
@@ -51,20 +52,6 @@ export interface ImportPublicCaseOptions {
 
 function genFindingId(caseId: string, order: number): string {
   return `f_${caseId.replace(/-/g, "").slice(0, 10)}_${order}`;
-}
-
-/** Scale finding slice indices to the imported stack height. */
-function scaleFindingSlices(
-  findings: Omit<Finding, "id">[],
-  instanceCount: number
-): Omit<Finding, "id">[] {
-  if (instanceCount <= 1) return findings;
-  const templateMax = Math.max(...findings.map((f) => f.sliceIndex ?? 0), 1);
-  return findings.map((f) => {
-    const t = f.sliceIndex ?? 0;
-    const scaled = Math.round((t / templateMax) * (instanceCount - 1));
-    return { ...f, sliceIndex: Math.max(0, Math.min(instanceCount - 1, scaled)) };
-  });
 }
 
 async function ensureDeidReportForStudy(
@@ -186,7 +173,13 @@ async function upsertCaseRecords(
 
   const existing = await getCaseForOrg(orgId, template.caseId);
   let created = false;
-  const scaledFindings = scaleFindingSlices(template.findings, instanceCount);
+  const planned = planPublicCaseFindings(
+    template.caseId,
+    template.findings,
+    instanceCount,
+    existing?.findings ?? []
+  );
+  const keepIds = new Set(planned.kept.map((finding) => finding.id));
 
   const casePatch = {
     title: template.title,
@@ -218,6 +211,7 @@ async function upsertCaseRecords(
   if (existing) {
     await updateCaseForOrg(orgId, template.caseId, casePatch);
     for (const f of existing.findings) {
+      if (keepIds.has(f.id)) continue;
       await deleteFindingScoped(orgId, template.caseId, f.id);
     }
   } else {
@@ -230,7 +224,7 @@ async function upsertCaseRecords(
     });
   }
 
-  for (const f of scaledFindings) {
+  for (const f of planned.create) {
     const finding: Finding = {
       ...f,
       id: genFindingId(template.caseId, f.order ?? 1),
