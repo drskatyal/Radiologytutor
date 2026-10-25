@@ -38,6 +38,7 @@ export function toDraft(f: Finding): FindingDraft {
     label: f.label,
     description: f.description,
     teachingPoints: [...f.teachingPoints],
+    landmark: f.landmark ?? "",
   };
 }
 
@@ -45,6 +46,7 @@ export function toDraft(f: Finding): FindingDraft {
 export function draftsDiffer(a: FindingDraft, b: FindingDraft): boolean {
   if (a.label !== b.label) return true;
   if (a.description !== b.description) return true;
+  if ((a.landmark ?? "") !== (b.landmark ?? "")) return true;
   if (a.teachingPoints.length !== b.teachingPoints.length) return true;
   return a.teachingPoints.some((p, i) => p !== b.teachingPoints[i]);
 }
@@ -55,6 +57,7 @@ export function normalizeDraft(d: FindingDraft): FindingDraft {
     label: d.label.trim(),
     description: d.description.trim(),
     teachingPoints: d.teachingPoints.map((p) => p.trim()).filter(Boolean),
+    landmark: (d.landmark ?? "").trim(),
   };
 }
 
@@ -64,12 +67,14 @@ export const LIMITS = {
   description: 600,
   teachingPoint: 200,
   teachingPoints: 8,
+  landmark: 80,
 } as const;
 
 export interface DraftErrors {
   label?: string;
   description?: string;
   teachingPoints?: string;
+  landmark?: string;
 }
 
 /** Validation: a finding must at least have a label; everything stays in range. */
@@ -80,6 +85,8 @@ export function validateDraft(d: FindingDraft): DraftErrors {
     errors.label = `Keep the label under ${LIMITS.label} characters.`;
   if (d.description.trim().length > LIMITS.description)
     errors.description = `Keep the description under ${LIMITS.description} characters.`;
+  if ((d.landmark ?? "").trim().length > LIMITS.landmark)
+    errors.landmark = `Keep the landmark under ${LIMITS.landmark} characters.`;
   const points = d.teachingPoints.map((p) => p.trim()).filter(Boolean);
   if (points.length > LIMITS.teachingPoints)
     errors.teachingPoints = `Use at most ${LIMITS.teachingPoints} teaching points.`;

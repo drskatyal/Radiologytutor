@@ -272,3 +272,159 @@ test("blank say lines do not call narrate, and a TTS rejection still finishes", 
   assert.equal(ended, 1);
   assert.equal(ctrl.done, true);
 });
+
+function noduleGuide(): TeachingGuide {
+  return {
+    durationMs: 2000,
+    start: { sliceIndex: 0 },
+    beats: [
+      {
+        t: 0,
+        act: "orient",
+        say: "Follow the stack.",
+        actions: [{ type: "scroll", sliceIndex: 27, seriesInstanceUID: "1.2.3" }],
+      },
+      {
+        t: 10,
+        act: "commit",
+        say: "Look here.",
+        actions: [{ type: "point", x: 0.4, y: 0.5 }],
+      },
+      {
+        t: 20,
+        act: "pearl",
+        say: "This is a nodule.",
+        actions: [],
+      },
+    ],
+  };
+}
+
+test("playTeachingGuide stays linear when the learner follows the scroll", async () => {
+  let slice = 0;
+  const said: string[] = [];
+  const ctrl = playTeachingGuide(
+    noduleGuide(),
+    {
+      applyEvent: (e) => {
+        if (e.type === "slice") slice = e.index;
+      },
+      getSliceIndex: () => slice,
+      settle: async () => {},
+    },
+    {
+      timeScale: 0,
+      narrate: async (text) => {
+        said.push(text);
+      },
+      landmark: "carina",
+      withholdTerms: ["nodule"],
+    }
+  );
+  await ctrl.finished;
+  assert.deepEqual(said, ["Follow the stack.", "Look here.", "This is a nodule."]);
+  assert.equal(slice, 27);
+});
+
+test("playTeachingGuide re-seats a learner who is far from the money slice", async () => {
+  let here = 0;
+  const said: string[] = [];
+  const scrolled: number[] = [];
+  const ctrl = playTeachingGuide(
+    noduleGuide(),
+    {
+      applyEvent: (e) => {
+        if (e.type === "slice") scrolled.push(e.index);
+        if (e.type === "series") scrolled.push(-1);
+      },
+      // Stuck off-slice until the hint is spoken, then they follow it.
+      getSliceIndex: () => here,
+      settle: async () => {},
+    },
+    {
+      timeScale: 0,
+      landmark: "carina",
+      withholdTerms: ["nodule"],
+      narrate: async (text) => {
+        said.push(text);
+        if (text.includes("too high") || text.includes("too low")) here = 27;
+      },
+    }
+  );
+  await ctrl.finished;
+  const hint = said.find((line) => /too high|too low/.test(line));
+  assert.ok(hint);
+  assert.match(hint!, /too high/);
+  assert.match(hint!, /carina/);
+  assert.doesNotMatch(hint!, /nodule/i);
+  assert.deepEqual(said, [
+    "Follow the stack.",
+    hint!,
+    "Look here.",
+    "This is a nodule.",
+  ]);
+  assert.ok(scrolled.includes(-1));
+  assert.equal(scrolled.at(-1), 27);
+});
+
+test("a landmark that contains the finding label is not spoken on the re-seat", async () => {
+  let here = 0;
+  const said: string[] = [];
+  const ctrl = playTeachingGuide(
+    noduleGuide(),
+    {
+      applyEvent: () => {},
+      getSliceIndex: () => here,
+    },
+    {
+      timeScale: 0,
+      landmark: "spiculated nodule",
+      withholdTerms: ["nodule"],
+      narrate: async (text) => {
+        said.push(text);
+        if (/too high|too low/.test(text)) here = 27;
+      },
+    }
+  );
+  await ctrl.finished;
+  const hint = said.find((line) => /too high|too low/.test(line)) ?? "";
+  assert.match(hint, /level we're teaching/);
+  assert.doesNotMatch(hint, /nodule/i);
+});
+
+test("eight slices away is still on the script, and adaptive can be turned off", async () => {
+  const said: string[] = [];
+  const close = playTeachingGuide(
+    noduleGuide(),
+    {
+      applyEvent: () => {},
+      getSliceIndex: () => 19,
+    },
+    {
+      timeScale: 0,
+      narrate: async (text) => {
+        said.push(text);
+      },
+    }
+  );
+  await close.finished;
+  assert.deepEqual(said, ["Follow the stack.", "Look here.", "This is a nodule."]);
+
+  said.length = 0;
+  const off = playTeachingGuide(
+    noduleGuide(),
+    {
+      applyEvent: () => {},
+      getSliceIndex: () => 0,
+    },
+    {
+      timeScale: 0,
+      adaptive: false,
+      narrate: async (text) => {
+        said.push(text);
+      },
+    }
+  );
+  await off.finished;
+  assert.deepEqual(said, ["Follow the stack.", "Look here.", "This is a nodule."]);
+});

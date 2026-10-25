@@ -26,6 +26,7 @@ import {
   validateDraft,
   type FindingDraft,
 } from "./lib";
+import { LandmarkField } from "./LandmarkField";
 import { RestructureDialog } from "./RestructureDialog";
 import {
   ChevronDownIcon,
@@ -137,12 +138,14 @@ export function FindingCard({
 
   function applyProposal(next: StructuredFinding) {
     // Drop into edit mode pre-filled with the AI proposal; the author reviews
-    // and presses Save to persist (one consistent save path).
-    setDraft({
+    // and presses Save to persist (one consistent save path). Keep the level
+    // they already typed — restructuring does not invent a landmark.
+    setDraft((d) => ({
       label: next.label,
       description: next.description,
       teachingPoints: [...next.teachingPoints],
-    });
+      landmark: d.landmark,
+    }));
     setEditing(true);
     requestAnimationFrame(() => labelRef.current?.focus());
   }
@@ -307,6 +310,12 @@ export function FindingCard({
                 />
               )}
             </Field>
+
+            <LandmarkField
+              value={draft.landmark ?? ""}
+              error={errors.landmark}
+              onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+            />
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -491,6 +500,11 @@ function ViewerSummary({ finding }: { finding: Finding }) {
       {dur && (
         <Badge variant="neutral" title="Flow duration">
           {dur}s flow
+        </Badge>
+      )}
+      {finding.landmark?.trim() && (
+        <Badge variant="neutral" title="Said if the learner is off this slice">
+          Level · {finding.landmark.trim()}
         </Badge>
       )}
       {!finding.state && (

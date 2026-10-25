@@ -391,7 +391,7 @@ export function useStudentSession(
   // --- Play a cleaned teach script (learner clock, not the mic tape) ------
   const playFindingGuide = useCallback(
     async (
-      _finding: Finding,
+      finding: Finding,
       guide: TeachingGuide,
       opts?: { narrate?: (text: string) => Promise<void> }
     ) => {
@@ -417,7 +417,13 @@ export function useStudentSession(
             clear: () => overlay.current?.clear(),
           },
         },
-        { narrate: opts?.narrate }
+        {
+          narrate: opts?.narrate,
+          // Hint only. The script's own say lines already go through narrate.
+          // Do not fill this with tutorSpeech — guided mode would name the finding.
+          landmark: finding.landmark,
+          withholdTerms: finding.label ? [finding.label] : undefined,
+        }
       );
       replayRef.current = ctrl;
       await ctrl.finished;

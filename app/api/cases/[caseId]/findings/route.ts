@@ -36,6 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       sopInstanceUIDs: body.sopInstanceUIDs,
       sopInstanceUID: body.sopInstanceUID,
       sliceIndex: body.sliceIndex,
+      landmark: body.landmark?.trim() || undefined,
       windowWidth: body.windowWidth,
       windowCenter: body.windowCenter,
       measurements: body.measurements,
