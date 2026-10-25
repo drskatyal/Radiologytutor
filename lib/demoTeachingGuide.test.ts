@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { playTeachingGuide } from "./replay.ts";
-import { resolveTeachingGuide } from "./teachingGuide.ts";
+import { authoredGuideLines, resolveTeachingGuide } from "./teachingGuide.ts";
 import { getPublicCaseTemplate } from "./publicCases/catalog.ts";
 import type { Finding, TeachViewerAction } from "./types.ts";
 import {
@@ -83,6 +83,9 @@ test("every LIDC finding gets a five-beat demo guide and a teacher track wins", 
       ["orient", "search", "lean-in", "commit", "pearl"]
     );
     assert.ok(guide.beats[4].say?.includes(template.findings[guides.indexOf(guide)].description.slice(0, 24)));
+    // Non-empty lines select speak() in Teach. An empty list would fall
+    // through to tutorSpeechPlan and drop this script.
+    assert.equal(authoredGuideLines(guide).length, guide.beats.length);
   }
 
   const nodule = noduleDraft();

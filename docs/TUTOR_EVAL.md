@@ -146,8 +146,12 @@ Failure modes the scorecard names, and a test fails each one:
 ## Live model
 
 `--live` calls `runTeachingPlan` (the same function as `POST /api/tutor`)
-with the fixture’s findings context and each beat’s prompt. Mock mode does
-not import the Gemini client.
+with the fixture’s findings context, each beat’s prompt, and the structured
+findings (label, description, teaching points, order) the spoken fallback
+uses when a tool turn comes back empty. Mock mode does not import the Gemini
+client. The LIDC scenario below is scored without `--live`: a blank
+`play_guide` is judged on the demo guide’s say lines, which is what Teach
+speaks when those lines exist.
 
 The guided prompt prefers `play_guide` and still mentions `set_window` before
 `show_finding`. This harness scores the viewport those calls leave behind.

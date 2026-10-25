@@ -7,8 +7,10 @@
 // Product: an AI attending teaches a registrar how to REPORT the scan — armed
 // with authored findings + reading digests — driving the viewer while speaking.
 // Teach mode (guided) plays a cleaned teaching guide when the finding has one
-// (scroll, window, zoom, laser, strokes) and speaks those beats. Otherwise it
-// asks the model to teach. Student voice/text pauses the tour.
+// (scroll, window, zoom, laser, strokes). Authored say lines go through
+// speak(); a motion guide with none uses tutorSpeechPlan. Otherwise it asks
+// the model to teach. An empty tutor answer advances the tour. Student
+// voice/text pauses the tour.
 // Viva is the oral-exam path. The dense track is not played as a mic tape.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +27,7 @@ import { findingViewerState } from "@/lib/viewerController";
 import { playTeachingGuide, type ReplayController } from "@/lib/replay";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
 import {
+  authoredGuideLines,
   guideHasMotion,
   measurementsFromGuide,
   resolveTeachingGuide,
@@ -819,11 +822,11 @@ export function useStudentSession(
       if (guide && guideHasMotion(guide) && controls.current) {
         setActiveIndex(index);
         markRevealed(finding.id);
-        const says = guide.beats
-          .map((b) => b.say?.trim())
-          .filter((s): s is string => Boolean(s));
+        const says = authoredGuideLines(guide);
         // A guide with motion but no authored lines used to play silently.
         // Speak a look-cue with the drive, then the name once the guide lands.
+        // Demo scripts (LIDC) always have a line per beat, so this fallback
+        // does not replace them. speak() caps a clip that never ends.
         const fallbackSentences = says.length
           ? []
           : splitSentences(
