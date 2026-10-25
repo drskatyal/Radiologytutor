@@ -197,11 +197,14 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
   if (opts.systemInstruction) {
     body.systemInstruction = { parts: [{ text: opts.systemInstruction }] };
   }
-  // Tools: our viewer function declarations and/or Gemini's built-in Google
-  // Search grounding. Current Gemini Flash supports both in one request; each
-  // tool is its own entry in the `tools` array.
+  // Tools: viewer function declarations and/or Google Search. Each tool is
+  // its own entry. Gemini 3 returns 400 when both are set unless tool context
+  // circulation is on. The error names the proto field
+  // tool_config.include_server_side_tool_invocations; this REST body uses the
+  // camelCase JSON name, same as generationConfig and functionDeclarations.
   const toolEntries: Record<string, unknown>[] = [];
-  if (opts.tools && opts.tools.length > 0) {
+  const hasFunctionDeclarations = Boolean(opts.tools && opts.tools.length > 0);
+  if (hasFunctionDeclarations) {
     toolEntries.push({ functionDeclarations: opts.tools });
   }
   if (opts.googleSearch) {
@@ -209,6 +212,9 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
   }
   if (toolEntries.length > 0) {
     body.tools = toolEntries;
+  }
+  if (hasFunctionDeclarations && opts.googleSearch) {
+    body.toolConfig = { includeServerSideToolInvocations: true };
   }
 
   const res = await callGemini(MODEL, key, body);
