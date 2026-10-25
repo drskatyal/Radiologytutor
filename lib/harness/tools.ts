@@ -46,8 +46,12 @@ export type HarnessViewerAction =
   | { type: "play_guide"; findingId: string }
   | { type: "none" };
 
+/** Appended to every viewer tool so a tool call cannot replace the spoken answer. */
+export const SPOKEN_ANSWER_TOOL_CLAUSE =
+  "Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.";
+
 /** Gemini / OpenAPI-style function declarations for the tutor. */
-export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = [
+const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
   {
     name: "show_finding",
     description:
@@ -175,6 +179,15 @@ export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = [
     },
   },
 ];
+
+export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = HARNESS_VIEWER_TOOL_BASE.map(
+  (tool) => ({
+    ...tool,
+    description: tool.description.includes(SPOKEN_ANSWER_TOOL_CLAUSE)
+      ? tool.description
+      : `${tool.description.trim()} ${SPOKEN_ANSWER_TOOL_CLAUSE}`,
+  })
+);
 
 /** Map a model function call into a typed viewer action. */
 export function harnessActionFromCall(call?: {
