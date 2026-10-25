@@ -237,3 +237,38 @@ test("playTeachingGuide scrolls, tweens window and zoom, and draws a missed stro
   assert.ok(applied.includes("annotation"));
   assert.ok(applied.includes("overlay-ann"));
 });
+
+test("blank say lines do not call narrate, and a TTS rejection still finishes", async () => {
+  const said: string[] = [];
+  let ended = 0;
+  const guide: TeachingGuide = {
+    durationMs: 1000,
+    start: { sliceIndex: 1 },
+    beats: [
+      { t: 0, say: "   ", actions: [{ type: "scroll", sliceIndex: 2 }] },
+      { t: 10, say: "Follow the stack.", actions: [] },
+      { t: 20, say: "Name the pleural line.", actions: [] },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: () => {},
+      getSliceIndex: () => 2,
+    },
+    {
+      timeScale: 0,
+      narrate: async (text) => {
+        said.push(text);
+        if (text.startsWith("Follow")) throw new Error("tts down");
+      },
+      onEnd: () => {
+        ended += 1;
+      },
+    }
+  );
+  await ctrl.finished;
+  assert.deepEqual(said, ["Follow the stack.", "Name the pleural line."]);
+  assert.equal(ended, 1);
+  assert.equal(ctrl.done, true);
+});

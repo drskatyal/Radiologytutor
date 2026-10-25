@@ -55,9 +55,10 @@ latency.
 
 If a beat omits `teachingGuide`, `teachingGuideFromTrack` builds the same
 sequence from the track, including `zoom_to`. `buildTeachingGuide` in
-`lib/teachingGuide.ts` is the live Teach-mode script (`play_guide`). This
-eval scores the visible viewport, so the reference emits `scroll_to`,
-`set_window`, `zoom_to`, and `point_to` rather than one opaque call.
+`lib/teachingGuide.ts` is the live Teach-mode script. `play_guide` expands
+to that script's scroll, window, zoom, and point. The reference tutor still
+emits `scroll_to`, `set_window`, `zoom_to`, and `point_to` with its own
+narration. A blank `play_guide` is scored on the script's say lines.
 
 ## What “drive the viewer” means
 
@@ -73,7 +74,7 @@ The scorer applies the same tools the student client applies
 | `zoom_to` / `set_zoom` | Magnification. `set_zoom` is the same effect. |
 | `point_to` with a finding you are not on | Full reveal, then the laser. |
 | `point_to` with raw `x_pct` / `y_pct` | Laser immediately, no window change. |
-| `play_guide` | Teach-mode playback on the client. The scorer does not treat that one call as the sequence; the reference spells the steps out. |
+| `play_guide` | The product script (`lib/teachingGuide.ts`): one scroll to the money slice, the authored window, zoom only when the teacher leaned in, then the laser. The scorer expands that call into those effects. When the model text is blank, the guide's say lines are the narration. |
 
 `zoom_to` is in `HARNESS_VIEWER_TOOLS`. On a beat whose guide zooms, skipping
 it fails `order` and `human_sequence`. Placing it after the laser fails
@@ -104,6 +105,7 @@ Headline score is 0 or 100. A decent sentence does not earn partial credit.
 | `landing_pointer` | Pointer misses the marker. Hit radius is `DEFAULT_HIT_RADIUS` (0.08). |
 | `hallucinated_window` | Any window effect in the turn is not the authored VOI, even if a later tool corrects it. |
 | `narration_present` | Nothing was said. |
+| `spoken_beat` | Nothing was said. A tool with no line is not a tour. Text with no tools still fails `text_only` — speech alone is not a pass. |
 | `look_cue` | The first sentence does not start with look / see / watch / follow. |
 | `narration_on_screen` | Speech never uses this beat’s distinctive terms. |
 | `narration_ahead` | Speech names a **later** finding’s distinctive terms. |
@@ -149,5 +151,7 @@ not import the Gemini client.
 
 The guided prompt prefers `play_guide` and still mentions `set_window` before
 `show_finding`. This harness scores the viewport those calls leave behind.
-A live model that only talks fails `text_only`. A live model that zooms
-after the laser fails `human_sequence`.
+A live model that only talks fails `text_only`. A live model that moves the
+viewer and says nothing fails `spoken_beat`. A live model that zooms after
+the laser fails `human_sequence`. A blank `play_guide` is the organized
+script: drive first, then the pearl names the finding.

@@ -98,7 +98,7 @@ Defined once in `lib/harness/tools.ts`, consumed by Gemini tutor calls:
 | `next_in_tour` / `prev_in_tour` | Advance tour order |
 | `set_window` | Adaptive WW/WC |
 | `point_to` | Laser to finding marker or `[0,1]` |
-| `play_guide` | Perform the consultant walk-through on the teacher's clock (scroll, window, zoom, hold, point, measure) while TTS speaks that beat |
+| `play_guide` | Perform the attending script (orient → search → lean-in → commit → pearl). Gemini TTS speaks each say line. The dense log is not replayed. |
 | `scroll_to` / `zoom_to` / `set_invert` / `draw_annotation` | One authored step. `zoom_to` is the nodule lean-in (alias `set_zoom` maps to the same action) |
 
 Speech and tools are interleaved (`lib/performancePlan.ts`) so the registrar

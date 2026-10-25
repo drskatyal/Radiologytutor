@@ -7,6 +7,7 @@ import type {
   CaseData,
   Finding,
   Marker,
+  NarrationSpan,
   RecordedTrack,
   StructuredFinding,
   StructuredSession,
@@ -262,6 +263,83 @@ export async function structureSession(input: {
     if (e instanceof AiUnavailableError) return null;
     throw e;
   }
+}
+
+export interface AlignedNarration {
+  transcript: string;
+  spans: NarrationSpan[];
+  alignment: "estimated" | "proportional";
+}
+
+/**
+ * Transcribe a record take onto the track clock. Returns null when Gemini
+ * is off or the call fails — the save still keeps the track and authored text.
+ */
+export async function transcribeNarrationAudio(
+  base64: string,
+  mime: string,
+  durationMs: number
+): Promise<AlignedNarration | null> {
+  try {
+    const res = await fetch("/api/transcribe-narration", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audio: { base64, mime },
+        durationMs,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (looksLikeMissingKey(res.status, data?.error)) return null;
+      throw new Error(data?.error || "Failed to transcribe narration");
+    }
+    const spans = Array.isArray(data?.spans) ? (data.spans as NarrationSpan[]) : [];
+    return {
+      transcript: typeof data?.transcript === "string" ? data.transcript.trim() : "",
+      spans,
+      alignment: data?.alignment === "estimated" ? "estimated" : "proportional",
+    };
+  } catch (e) {
+    if (e instanceof AiUnavailableError) return null;
+    throw e;
+  }
+}
+
+/**
+ * Upload the mic (when present) and align a transcript to the track.
+ * Failures stay non-fatal: the caller still saves the dense log.
+ */
+export async function attachTakeAudio(
+  track: RecordedTrack,
+  audio: { base64: string; mimeType: string } | null | undefined
+): Promise<{ track: RecordedTrack; transcript: string }> {
+  if (!audio) return { track, transcript: "" };
+  let audioUrl = track.audioUrl;
+  try {
+    audioUrl = await uploadAudio(audio.base64, audio.mimeType);
+  } catch {
+    // The retrace still saves if the audio upload fails.
+  }
+  let narration = track.narration;
+  let transcript = "";
+  try {
+    const aligned = await transcribeNarrationAudio(audio.base64, audio.mimeType, track.durationMs);
+    if (aligned) {
+      transcript = aligned.transcript;
+      if (aligned.spans.length) narration = aligned.spans;
+    }
+  } catch {
+    // Authored description still arms the script.
+  }
+  return {
+    track: {
+      ...track,
+      ...(audioUrl ? { audioUrl } : {}),
+      ...(narration?.length ? { narration } : {}),
+    },
+    transcript,
+  };
 }
 
 /** Upload narration audio; returns the durable same-origin URL to store. */

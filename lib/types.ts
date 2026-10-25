@@ -217,6 +217,13 @@ export type TeachViewerAction =
   | { type: "pause"; ms: number }
   | ({ type: "annotate" } & RecordedAnnotation);
 
+/**
+ * Pedagogical role of a teach beat. The student hears these in order:
+ * orient → search → lean-in → commit → pearl. Absent on guides saved
+ * before this field existed.
+ */
+export type TeachAct = "orient" | "search" | "lean-in" | "commit" | "pearl";
+
 /** One beat of a teach script: viewer moves plus an optional spoken line. */
 export interface TeachBeat {
   /** ms on the finding's track clock. */
@@ -224,6 +231,20 @@ export interface TeachBeat {
   actions: TeachViewerAction[];
   /** Spoken line that plays with these actions. */
   say?: string;
+  /** Which attending act this beat is. Pearl names the finding; earlier acts do not. */
+  act?: TeachAct;
+}
+
+/**
+ * A slice of the teacher's speech on the track clock.
+ * `estimated` times come from the transcription model listening to the take.
+ * `proportional` times split the verbatim transcript by word count — a
+ * constant-speech-rate assumption, not a forced aligner. Pauses are not detected.
+ */
+export interface NarrationSpan {
+  tStartMs: number;
+  tEndMs: number;
+  text: string;
 }
 
 /**
@@ -248,8 +269,13 @@ export interface RecordedTrack {
   /** The starting viewer state (slice index + W/L) so replay can prime it. */
   start: { sliceIndex: number; ww?: number; wc?: number };
   events: RecordedEvent[];
-  /** URL/key of the teacher's narration audio (their real voice). */
+  /** URL/key of the teacher's narration audio (their real voice). Learners do not play this. */
   audioUrl?: string;
+  /**
+   * Transcript slices on this track's clock. The teach script reads them when
+   * it rebuilds; the dense events are not themselves the spoken lines.
+   */
+  narration?: NarrationSpan[];
 }
 
 export interface Finding {

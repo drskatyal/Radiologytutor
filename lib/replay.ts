@@ -382,9 +382,12 @@ export function playTeachingGuide(
             await driveAction(action, drivers, stepMs, () => cancelled, scale);
           }
         })();
+        const line = beat.say?.trim();
+        // A blank line must not call narrate. A rejected TTS call must not
+        // skip the rest of the script or leave the tour waiting on onEnd.
         const speech =
-          beat.say?.trim() && opts.narrate
-            ? opts.narrate(beat.say.trim())
+          line && opts.narrate
+            ? opts.narrate(line).catch(() => undefined)
             : Promise.resolve();
         await Promise.all([motion, speech]);
       }

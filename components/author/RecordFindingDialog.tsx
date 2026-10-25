@@ -38,8 +38,8 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
-import { withRecordedTeaching } from "@/lib/teachingGuide";
-import { LIMITS, markerFromTrack, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
+import { settledDisplay, withRecordedTeaching } from "@/lib/teachingGuide";
+import { LIMITS, attachTakeAudio, markerFromTrack, structureFindingFromAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
   open: boolean;
@@ -219,25 +219,33 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
       const measurements = controls.current?.getMeasurements?.() ?? [];
 
       if (hasTrack) {
-        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-        // Persist the narration audio (if any) and attach its durable URL.
-        if (rr.audio) {
-          try {
-            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-          } catch {
-            // Non-fatal: keep the silent retrace if the upload fails — the
-            // recording is never lost, just narrated silently.
-          }
-        }
-        base = withRecordedTeaching(base, track, draft, measurements);
-        if (track.start.ww != null && track.start.wc != null) {
-          base = withDisplaySnapshot(base, {
-            sliceIndex: track.start.sliceIndex,
-            ww: track.start.ww,
-            wc: track.start.wc,
-            sopInstanceUID: start?.sopInstanceUID,
-          });
-        }
+        const prepared = await attachTakeAudio(rr.track as RecordedTrack, rr.audio);
+        const description =
+          base.description?.trim() || prepared.transcript || "";
+        base = {
+          ...base,
+          description,
+        };
+        base = withRecordedTeaching(
+          base,
+          prepared.track,
+          {
+            label: base.label,
+            description,
+            teachingPoints: base.teachingPoints,
+            spans: prepared.track.narration,
+          },
+          measurements
+        );
+        const money = settledDisplay(prepared.track);
+        if (money.sliceIndex !== start?.sliceIndex) base.sopInstanceUID = undefined;
+        base = withDisplaySnapshot(base, {
+          sliceIndex: money.sliceIndex,
+          ww: money.ww,
+          wc: money.wc,
+          sopInstanceUID:
+            money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+        });
       } else if (measurements.length > 0) {
         base.measurements = measurements;
       }
