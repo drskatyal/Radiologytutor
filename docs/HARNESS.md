@@ -98,6 +98,8 @@ Defined once in `lib/harness/tools.ts`, consumed by Gemini tutor calls:
 | `next_in_tour` / `prev_in_tour` | Advance tour order |
 | `set_window` | Adaptive WW/WC |
 | `point_to` | Laser to finding marker or `[0,1]` |
+| `play_guide` | Perform the consultant walk-through on the teacher's clock (scroll, window, zoom, hold, point, measure) while TTS speaks that beat |
+| `scroll_to` / `zoom_to` / `set_invert` / `draw_annotation` | One authored step. `zoom_to` is the nodule lean-in (alias `set_zoom` maps to the same action) |
 
 Speech and tools are interleaved (`lib/performancePlan.ts`) so the registrar
 hears and sees the report unfold together.
@@ -121,7 +123,9 @@ ElevenLabs clone, Gemini Live — the harness contract stays:
 | `docs/HARNESS.md` | This document |
 | `lib/harness/` | Merge + tool registry (the harness core) |
 | `lib/captureSession.ts` | Time ↔ track queries (`sliceNearTime`, …) |
-| `lib/readingDigest.ts` | Track → compact tutor context |
+| `lib/readingDigest.ts` | Track → compact stats line |
+| `lib/teachingGuide.ts` | Track + narration → ordered teach script |
+| `lib/replay.ts` | Author QA replay and learner `playTeachingGuide` |
 | `lib/recorder.ts` / `useRecordReplay` | Shared authoring clock |
 | `components/author/ContinuousCapture.tsx` | Speak-once demonstration UI |
 | `components/student/*` | Registrar teammate UI (Teach / Exam / Report) |

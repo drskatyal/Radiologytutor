@@ -6,7 +6,8 @@
 //
 //   1. narration AUDIO  — MediaRecorder (their real voice)
 //   2. an ordered, timestamped LOG of every viewer state change (slice/window/
-//      zoom/pan/invert) PLUS a throttled cursor path (for the laser pointer)
+//      zoom/pan/invert/series) PLUS annotation strokes (Length/ROI/Arrow/…)
+//      PLUS a throttled cursor path (for the laser pointer)
 //
 // Both are stamped with `t = performance.now() - t0` so replay can re-apply the
 // exact same events, in the same order, locked to `audio.currentTime`. No

@@ -49,6 +49,9 @@ interface DrawnAnnotation {
   shape: MarkerShape;
   from: [number, number];
   to: [number, number];
+  tool?: string;
+  handles?: Array<[number, number]>;
+  label?: string;
 }
 
 const TRAIL_LENGTH = 8;
@@ -78,7 +81,15 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
       annotation(e) {
         setAnnotations((prev) => [
           ...prev,
-          { id: seq.current++, shape: e.shape, from: e.from, to: e.to },
+          {
+            id: seq.current++,
+            shape: e.shape,
+            from: e.from,
+            to: e.to,
+            tool: e.tool,
+            handles: e.handles,
+            label: e.label,
+          },
         ]);
       },
       clear() {
@@ -105,7 +116,7 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
       },
     }));
 
-    if (!active) return null;
+    if (!active && annotations.length === 0) return null;
 
     return (
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
@@ -121,7 +132,8 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
           </svg>
         )}
 
-        {trail.map((p, i) => {
+        {active &&
+          trail.map((p, i) => {
           const strength = (i + 1) / trail.length;
           const style: CSSProperties = {
             left: `${p.x * 100}%`,
@@ -138,7 +150,7 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
           );
         })}
 
-        {dot && (
+        {active && dot && (
           <span
             className="absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: `${dot.x * 100}%`, top: `${dot.y * 100}%` }}
@@ -161,6 +173,9 @@ function AnnotationStroke({ annotation }: { annotation: DrawnAnnotation }) {
     requestAnimationFrame(() => requestAnimationFrame(() => setDrawn(true)));
   }
 
+  const handles = annotation.handles?.length
+    ? annotation.handles
+    : [fromRef.current, annotation.to];
   const [fx, fy] = fromRef.current.map((v) => v * 100) as [number, number];
   const [tx, ty] = annotation.to.map((v) => v * 100) as [number, number];
 
@@ -169,6 +184,69 @@ function AnnotationStroke({ annotation }: { annotation: DrawnAnnotation }) {
     strokeDashoffset: drawn ? 0 : 1,
     transition: "stroke-dashoffset 600ms cubic-bezier(0.16, 1, 0.3, 1)",
   };
+
+  if (annotation.tool === "EllipticalROI" || annotation.tool === "RectangleROI") {
+    let minX = 100;
+    let minY = 100;
+    let maxX = 0;
+    let maxY = 0;
+    for (const [x, y] of handles) {
+      minX = Math.min(minX, x * 100);
+      minY = Math.min(minY, y * 100);
+      maxX = Math.max(maxX, x * 100);
+      maxY = Math.max(maxY, y * 100);
+    }
+    const rx = Math.max(1, (maxX - minX) / 2);
+    const ry = Math.max(1, (maxY - minY) / 2);
+    if (annotation.tool === "RectangleROI") {
+      return (
+        <rect
+          x={minX}
+          y={minY}
+          width={Math.max(1, maxX - minX)}
+          height={Math.max(1, maxY - minY)}
+          pathLength={1}
+          fill="none"
+          className="stroke-accent"
+          strokeWidth={0.8}
+          vectorEffect="non-scaling-stroke"
+          style={dashStyle}
+        />
+      );
+    }
+    return (
+      <ellipse
+        cx={(minX + maxX) / 2}
+        cy={(minY + maxY) / 2}
+        rx={rx}
+        ry={ry}
+        pathLength={1}
+        fill="none"
+        className="stroke-accent"
+        strokeWidth={0.8}
+        vectorEffect="non-scaling-stroke"
+        style={dashStyle}
+      />
+    );
+  }
+
+  if (annotation.tool === "Length" || annotation.tool === "Angle" || annotation.tool === "Bidirectional") {
+    const pts = handles.map(([x, y]) => [x * 100, y * 100] as [number, number]);
+    return (
+      <g
+        className="stroke-accent"
+        strokeWidth={0.8}
+        strokeLinecap="round"
+        fill="none"
+        vectorEffect="non-scaling-stroke"
+        style={dashStyle}
+      >
+        {pts.slice(0, -1).map((a, i) => (
+          <line key={i} x1={a[0]} y1={a[1]} x2={pts[i + 1][0]} y2={pts[i + 1][1]} pathLength={1} />
+        ))}
+      </g>
+    );
+  }
 
   if (annotation.shape === "circle") {
     const cx = (fx + tx) / 2;

@@ -38,6 +38,7 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { withRecordedTeaching } from "@/lib/teachingGuide";
 import { LIMITS, markerFromTrack, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
@@ -216,7 +217,6 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
-      if (measurements.length > 0) base.measurements = measurements;
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
@@ -229,8 +229,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
             // recording is never lost, just narrated silently.
           }
         }
-        base.track = track;
-        base.durationMs = track.durationMs;
+        base = withRecordedTeaching(base, track, draft, measurements);
         if (track.start.ww != null && track.start.wc != null) {
           base = withDisplaySnapshot(base, {
             sliceIndex: track.start.sliceIndex,
@@ -239,6 +238,8 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
             sopInstanceUID: start?.sopInstanceUID,
           });
         }
+      } else if (measurements.length > 0) {
+        base.measurements = measurements;
       }
 
       const active = series[activeSeriesIndex];

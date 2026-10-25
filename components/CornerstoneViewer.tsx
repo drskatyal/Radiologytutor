@@ -17,9 +17,11 @@
 // runs whichever tool is picked in the toolbar (window/level by default).
 //
 // RECORD/REPLAY: pass `onEvent` to receive an ordered stream of viewer state
-// changes (slice / voi / camera / invert) read straight off the viewport — we
-// never trust event-detail shapes. Camera/VOI are throttled (~50ms) but order
-// is preserved. `applyEvent` re-applies one recorded event (the replay path).
+// changes (slice / voi / camera / invert / annotation) read straight off the
+// viewport — we never trust event-detail shapes. Camera/VOI are throttled
+// (~50ms) but order is preserved. Length / ROI / Arrow / Probe / Angle
+// strokes emit an `annotation` event when the tool completes.
+// `applyEvent` re-applies one recorded event (the replay + teach-guide path).
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
@@ -46,8 +48,13 @@ import { sopUidFromImageId } from "../lib/findingDisplayState";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
   normalizeMeasurements,
+  statsFromAnnotation,
   type RawAnnotationLike,
 } from "../lib/findingMeasurements";
+import {
+  annotationViewerEvent,
+  sameAnnotationStroke,
+} from "../lib/annotationCapture";
 import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/types";
 import {
   WINDOW_PRESETS,
@@ -120,6 +127,8 @@ interface DrivableViewport {
   setPan: (p: [number, number]) => void;
   worldToCanvas?: (p: [number, number, number]) => [number, number];
   canvasToWorld?: (p: [number, number]) => [number, number, number];
+  getFrameOfReferenceUID?: () => string;
+  getCamera?: () => { viewPlaneNormal?: number[]; viewUp?: number[] };
   element?: HTMLDivElement;
 }
 
@@ -136,8 +145,15 @@ export interface CornerstoneControls {
   imageCount: number;
   /** Animate the viewport to a target view over `durationMs` (default 700). */
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
-  /** Adjust window width/center (VOI). Duration auto-adapts unless overridden. */
-  setWindow: (windowWidth: number, windowCenter: number, durationMs?: number) => void;
+  /**
+   * Adjust window width/center (VOI). Duration auto-adapts unless overridden.
+   * Resolves when the tween (or snap) finishes so a teach script can chain moves.
+   */
+  setWindow: (
+    windowWidth: number,
+    windowCenter: number,
+    durationMs?: number
+  ) => Promise<void>;
   /** Set inversion explicitly (record/replay + toolbar). */
   setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
@@ -162,6 +178,12 @@ export interface CornerstoneControls {
   activeSeriesUID?: string;
   /** Load a different series into the viewport (by UID). Programmatic = replay. */
   showSeries: (seriesInstanceUID: string) => void;
+  /** Remove tool annotations (between findings). Does not emit record events. */
+  clearAnnotations: () => void;
+  /** Resolves when a programmatic slice or series switch has settled. */
+  settle: () => Promise<void>;
+  /** True when the last annotation applyEvent landed on the viewport. */
+  readonly annotationApplied: boolean;
 }
 
 function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: number } | null {
@@ -526,7 +548,29 @@ export default function CornerstoneViewer({
         // We read CURRENT values off the viewport in the handler (never trust
         // the event-detail shape across Cornerstone versions). Camera/VOI are
         // throttled ~50ms; order is preserved (latest value wins per window).
-        const emit = (e: ViewerEvent) => onEventRef.current?.(e);
+        // Programmatic applyEvent / setWindow bumps suppressDepth so a replay
+        // or teach script does not echo back into a recording.
+        let suppressDepth = 0;
+        const beginSuppress = () => {
+          suppressDepth += 1;
+        };
+        const endSuppress = () => {
+          suppressDepth = Math.max(0, suppressDepth - 1);
+        };
+        const suppressed = () => suppressDepth > 0;
+        const emit = (e: ViewerEvent) => {
+          if (suppressed()) return;
+          onEventRef.current?.(e);
+        };
+        let pending: Promise<void> = Promise.resolve();
+        const chain = (fn: () => Promise<void> | void) => {
+          pending = pending.then(() => fn()).then(
+            () => undefined,
+            () => undefined
+          );
+        };
+        let annotationApplied = false;
+        let settleWindow: (() => void) | null = null;
 
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
@@ -560,13 +604,107 @@ export default function CornerstoneViewer({
         const stackEvt = csEvents.STACK_NEW_IMAGE;
         const voiEvt = csEvents.VOI_MODIFIED;
         const camEvt = csEvents.CAMERA_MODIFIED;
+        // Length / ROI / Arrow / Probe / Angle → one annotation event per stroke.
+        // COMPLETED and the trailing MODIFIED are debounced and de-duplicated.
+        const annTimers = new Map<string, number>();
+        let lastStroke: Extract<ViewerEvent, { type: "annotation" }> | null = null;
+        const normalizedHandles = (raw: RawAnnotationLike): Array<[number, number]> => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || typeof vp.worldToCanvas !== "function") return [];
+          const points = raw.data?.handles?.points ?? [];
+          const canvas = host.querySelector("canvas");
+          const w = canvas?.clientWidth || host.clientWidth || 1;
+          const h = canvas?.clientHeight || host.clientHeight || 1;
+          const out: Array<[number, number]> = [];
+          for (const pt of points) {
+            if (!Array.isArray(pt) || pt.length < 2) continue;
+            try {
+              const [cx, cy] = vp.worldToCanvas(pt as [number, number, number]);
+              if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+              out.push([
+                Math.min(1, Math.max(0, cx / w)),
+                Math.min(1, Math.max(0, cy / h)),
+              ]);
+            } catch {
+              /* point not on this camera */
+            }
+          }
+          return out;
+        };
+        const emitAnnotationFrom = (raw: RawAnnotationLike | undefined) => {
+          if (!raw || suppressed()) return;
+          const tool = raw.metadata?.toolName;
+          if (tool && !ANNOTATION_TOOL_NAMES.has(tool)) return;
+          const handles = normalizedHandles(raw);
+          const stats = statsFromAnnotation(raw);
+          const event = annotationViewerEvent({
+            tool,
+            handles,
+            sliceIndex: viewportRef.current?.getCurrentImageIdIndex(),
+            annotationUID: raw.annotationUID,
+            label: stats.label,
+            lengthMm: stats.lengthMm,
+            meanHu: stats.meanHu,
+            maxHu: stats.maxHu,
+            minHu: stats.minHu,
+            stdHu: stats.stdHu,
+            areaMm2: stats.areaMm2,
+            unit: stats.unit,
+          });
+          if (!event) return;
+          if (lastStroke && sameAnnotationStroke(lastStroke, event)) return;
+          lastStroke = event;
+          emit(event);
+        };
+        const onAnnotationEvent = (evt: Event) => {
+          if (suppressed()) return;
+          const detail = (evt as CustomEvent).detail as
+            | { annotation?: RawAnnotationLike }
+            | RawAnnotationLike
+            | undefined;
+          const raw =
+            detail &&
+            typeof detail === "object" &&
+            "annotation" in detail &&
+            detail.annotation
+              ? detail.annotation
+              : (detail as RawAnnotationLike | undefined);
+          const uid = raw?.annotationUID || raw?.metadata?.toolName || "ann";
+          const prev = annTimers.get(uid);
+          if (prev) window.clearTimeout(prev);
+          annTimers.set(
+            uid,
+            window.setTimeout(() => {
+              annTimers.delete(uid);
+              emitAnnotationFrom(raw);
+            }, 80)
+          );
+        };
+        const toolEventNames = toolsEnums.Events as {
+          ANNOTATION_COMPLETED?: string;
+          ANNOTATION_MODIFIED?: string;
+        };
+        const annCompleted =
+          toolEventNames?.ANNOTATION_COMPLETED ||
+          "CORNERSTONE_TOOLS_ANNOTATION_COMPLETED";
+        const annModified =
+          toolEventNames?.ANNOTATION_MODIFIED ||
+          "CORNERSTONE_TOOLS_ANNOTATION_MODIFIED";
+
         el.addEventListener(stackEvt, emitSlice as EventListener);
         el.addEventListener(voiEvt, emitVoi as EventListener);
         el.addEventListener(camEvt, emitCamera as EventListener);
+        el.addEventListener(annCompleted, onAnnotationEvent as EventListener);
+        el.addEventListener(annModified, onAnnotationEvent as EventListener);
         detachListeners = () => {
           el.removeEventListener(stackEvt, emitSlice as EventListener);
           el.removeEventListener(voiEvt, emitVoi as EventListener);
           el.removeEventListener(camEvt, emitCamera as EventListener);
+          el.removeEventListener(annCompleted, onAnnotationEvent as EventListener);
+          el.removeEventListener(annModified, onAnnotationEvent as EventListener);
+          annTimers.forEach((id) => window.clearTimeout(id));
+          annTimers.clear();
         };
 
         // --- Multi-series switching (no remount) ----------------------------
@@ -609,9 +747,113 @@ export default function CornerstoneViewer({
           setInverted(viewport.getProperties().invert ?? false);
           setActivePreset(null);
         };
-        clearRef.current = () => {
-          annotation.state.removeAllAnnotations();
-          viewport.render();
+        const clearAnnotations = () => {
+          beginSuppress();
+          try {
+            annotation.state.removeAllAnnotations();
+            viewportRef.current?.render();
+          } catch {
+            /* tool state already gone */
+          }
+          window.setTimeout(() => endSuppress(), 50);
+        };
+        clearRef.current = clearAnnotations;
+
+        // Place a recorded stroke back onto the viewport (teach guide / applyEvent).
+        // Returns false when world mapping isn't available — the caller draws
+        // the overlay stroke instead.
+        const placeNative = (
+          e: Extract<RecordedEvent, { type: "annotation" }>
+        ): boolean => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || typeof vp.canvasToWorld !== "function") return false;
+          const handles = (e.handles?.length ? e.handles : [e.from, e.to]).filter(
+            (p) =>
+              Array.isArray(p) &&
+              p.length >= 2 &&
+              Number.isFinite(p[0]) &&
+              Number.isFinite(p[1])
+          );
+          if (!handles.length) return false;
+          const canvas = host.querySelector("canvas");
+          const w = canvas?.clientWidth || host.clientWidth || 1;
+          const h = canvas?.clientHeight || host.clientHeight || 1;
+          let worlds: [number, number, number][];
+          try {
+            worlds = handles.map(([x, y]) => vp.canvasToWorld!([x * w, y * h]));
+          } catch {
+            return false;
+          }
+          if (worlds.some((p) => !p || p.some((n) => !Number.isFinite(n)))) return false;
+          const toolName = e.tool || (e.shape === "arrow" ? "ArrowAnnotate" : "Length");
+          const imageId =
+            typeof vp.getCurrentImageId === "function" ? vp.getCurrentImageId() : undefined;
+          const camera = vp.getCamera?.();
+          const ann = {
+            annotationUID: `guide-${e.annotationUID || "stroke"}-${Date.now().toString(36)}`,
+            highlighted: false,
+            invalidated: true,
+            isLocked: true,
+            isVisible: true,
+            metadata: {
+              toolName,
+              referencedImageId: imageId,
+              FrameOfReferenceUID: vp.getFrameOfReferenceUID?.(),
+              viewPlaneNormal: camera?.viewPlaneNormal,
+              viewUp: camera?.viewUp,
+            },
+            data: {
+              handles: {
+                points: worlds,
+                activeHandleIndex: null,
+                textBox: {
+                  hasMoved: false,
+                  worldPosition: worlds[worlds.length - 1],
+                  worldBoundingBox: {
+                    topLeft: worlds[0],
+                    topRight: worlds[0],
+                    bottomLeft: worlds[0],
+                    bottomRight: worlds[0],
+                  },
+                },
+              },
+              label: e.label || "",
+              cachedStats: imageId
+                ? {
+                    [`imageId:${imageId}`]: {
+                      length: e.lengthMm,
+                      mean: e.meanHu,
+                      max: e.maxHu,
+                      min: e.minHu,
+                      stdDev: e.stdHu,
+                      area: e.areaMm2,
+                      unit: e.unit,
+                      modalityUnit: e.unit,
+                    },
+                  }
+                : {},
+            },
+          };
+          try {
+            annotation.state.addAnnotation(
+              ann as unknown as Parameters<typeof annotation.state.addAnnotation>[0],
+              host
+            );
+            const trigger = (
+              tools as {
+                utilities?: {
+                  triggerAnnotationRenderForViewportIds?: (ids: string[]) => void;
+                };
+              }
+            ).utilities?.triggerAnnotationRenderForViewportIds;
+            trigger?.([viewportId]);
+            vp.render();
+            return true;
+          } catch (err) {
+            console.warn("CornerstoneViewer applyEvent annotation", err);
+            return false;
+          }
         };
         invertRef.current = (value?: boolean) => {
           const cur = viewport.getProperties().invert ?? false;
@@ -624,42 +866,57 @@ export default function CornerstoneViewer({
           if (value === undefined) emit({ type: "invert", value: next });
         };
 
-        // --- Replay: re-apply ONE recorded event verbatim (snaps, no tween) -
+        // --- Replay / teach guide: re-apply ONE recorded event --------------
+        // Slice and series are chained so a fast script doesn't race the decoder.
+        // Annotation strokes are placed back on the viewport (native tool).
         const applyEvent = (e: RecordedEvent) => {
           const vp = viewportRef.current;
           if (!vp) return;
           cancelTweenRef.current();
-          switch (e.type) {
-            case "slice": {
-              const ids = vp.getImageIds();
-              const idx = Math.max(0, Math.min(ids.length - 1, e.index));
-              if (idx !== vp.getCurrentImageIdIndex()) void vp.setImageIdIndex(idx);
-              break;
+          beginSuppress();
+          chain(async () => {
+            const live = viewportRef.current;
+            if (!live) return;
+            switch (e.type) {
+              case "slice": {
+                const ids = live.getImageIds();
+                const idx = Math.max(0, Math.min(ids.length - 1, e.index));
+                if (idx !== live.getCurrentImageIdIndex()) {
+                  await live.setImageIdIndex(idx);
+                }
+                live.render();
+                break;
+              }
+              case "voi":
+                live.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
+                live.render();
+                break;
+              case "camera":
+                live.setZoom(e.zoom);
+                live.setPan(e.pan);
+                live.render();
+                break;
+              case "invert":
+                live.setProperties({ invert: e.value });
+                live.render();
+                setInverted(e.value);
+                break;
+              case "series": {
+                const list = seriesRef.current;
+                const idx = list?.findIndex(
+                  (s) => s.seriesInstanceUID === e.seriesInstanceUID
+                );
+                if (list && idx != null && idx >= 0) await switchSeries(idx, false);
+                break;
+              }
+              case "annotation":
+                annotationApplied = placeNative(e);
+                break;
+              default:
+                break;
             }
-            case "voi":
-              vp.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
-              break;
-            case "camera":
-              vp.setZoom(e.zoom);
-              vp.setPan(e.pan);
-              break;
-            case "invert":
-              vp.setProperties({ invert: e.value });
-              setInverted(e.value);
-              break;
-            case "series": {
-              // Replay: switch to the recorded series WITHOUT emitting (this is
-              // a programmatic drive). loadStack will render once decoded.
-              const list = seriesRef.current;
-              const idx = list?.findIndex(
-                (s) => s.seriesInstanceUID === e.seriesInstanceUID
-              );
-              if (list && idx != null && idx >= 0) void switchSeries(idx, false);
-              return; // render happens inside loadStack after the new stack loads
-            }
-            // cursor/annotation are overlay-only — not viewer state.
-          }
-          vp.render();
+          });
+          void pending.then(() => endSuppress());
         };
 
         const getStartState = (): {
@@ -688,23 +945,52 @@ export default function CornerstoneViewer({
 
         // --- Smooth (interpolated) driving for the guided tour --------------
         // Adaptive: small ΔWW/WC scrolls like a radiologist; large preset jumps snap.
-        const setWindow = (ww: number, wc: number, durationMs?: number): void => {
+        const setWindow = (
+          ww: number,
+          wc: number,
+          durationMs?: number
+        ): Promise<void> => {
           const vp = viewportRef.current;
-          if (!vp) return;
+          if (!vp) return Promise.resolve();
+          settleWindow?.();
+          settleWindow = null;
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
-          const ms =
-            durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
+          const ms = durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
+          beginSuppress();
           if (ms <= 0) {
             vp.setProperties({ voiRange: wwWcToVoi(ww, wc) });
             vp.render();
-            return;
+            endSuppress();
+            return Promise.resolve();
           }
-          cancelTweenRef.current = tween(ms, (e) => {
-            vp.setProperties({
-              voiRange: wwWcToVoi(lerp(from.ww, ww, e), lerp(from.wc, wc, e)),
-            });
-            vp.render();
+          return new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+              if (settled) return;
+              settled = true;
+              if (settleWindow === done) settleWindow = null;
+              endSuppress();
+              resolve();
+            };
+            settleWindow = done;
+            const cancelRaf = tween(
+              ms,
+              (eased) => {
+                vp.setProperties({
+                  voiRange: wwWcToVoi(
+                    lerp(from.ww, ww, eased),
+                    lerp(from.wc, wc, eased)
+                  ),
+                });
+                vp.render();
+              },
+              done
+            );
+            cancelTweenRef.current = () => {
+              cancelRaf();
+              done();
+            };
           });
         };
 
@@ -817,7 +1103,7 @@ export default function CornerstoneViewer({
           const list =
             all.length > 0
               ? all
-              : (["Length", "EllipticalROI", "RectangleROI", "Probe"] as const).flatMap(
+              : (["Length", "EllipticalROI", "RectangleROI", "Probe", "ArrowAnnotate", "Angle"] as const).flatMap(
                   (toolName) => {
                     try {
                       return (annotation.state.getAnnotations(toolName, el) ??
@@ -871,7 +1157,16 @@ export default function CornerstoneViewer({
           showSeries: (uid: string) => {
             const list = seriesRef.current;
             const idx = list?.findIndex((s) => s.seriesInstanceUID === uid);
-            if (list && idx != null && idx >= 0) void switchSeriesRef.current(idx, false);
+            if (list && idx != null && idx >= 0) {
+              beginSuppress();
+              chain(() => switchSeries(idx, false));
+              void pending.then(() => endSuppress());
+            }
+          },
+          clearAnnotations,
+          settle: () => pending,
+          get annotationApplied() {
+            return annotationApplied;
           },
         };
         if (controls) controls.current = handle;

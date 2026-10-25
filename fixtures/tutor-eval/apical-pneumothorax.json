@@ -1,0 +1,166 @@
+{
+  "id": "apical-pneumothorax",
+  "phi": "none",
+  "notes": "Synthetic teaching case for CI. No patient, no pixels, no TCIA download. Catalog entries in lib/publicCases/catalog.ts are mid-stack guesses without a recorded track or an expected teach script, so they cannot score order. Slice indices, markers, and the track are authored, deterministic, and not measurements of a real scan. The student opens on soft-tissue windows at slice 0 — the finding is invisible until the tutor drives. The consultant track already starts on lung windows; teachingGuide is the student-facing script (window first), not a raw dump of the track.",
+  "mode": "guided",
+  "initialViewer": {
+    "sliceIndex": 0,
+    "windowWidth": 400,
+    "windowCenter": 40,
+    "zoom": 1,
+    "seriesInstanceUID": "1.2.826.0.1.3680043.10.543.1.1.1"
+  },
+  "case": {
+    "caseId": "case-eval-apical-pneumothorax",
+    "title": "Synthetic chest CT — right apical pneumothorax, then a left lower lobe nodule",
+    "modality": "CT",
+    "pacsbinBaseUrl": "https://eval.flowrad.local/viewer/synthetic-apical-pneumothorax",
+    "orgId": "org_eval",
+    "status": "published",
+    "specialty": "Chest",
+    "difficulty": "intermediate",
+    "system": "Chest",
+    "tags": ["eval", "synthetic", "pneumothorax", "nodule"],
+    "patientAge": "54",
+    "patientSex": "F",
+    "clinicalHistory": "Synthetic stem. Sudden pleuritic pain. Not a real patient.",
+    "technique": "Synthetic axial chest CT, 40 slices. Lung windows are WW 1500 / WC -600.",
+    "primaryDiagnosis": "Right apical pneumothorax and an 8 mm solid left lower lobe nodule",
+    "differentials": ["Skin fold", "Vessel on end", "Granuloma"],
+    "targetLevel": "registrar",
+    "learningObjectives": [
+      "Put lung windows up before calling a pleural line.",
+      "Scroll to the slice the finding lives on and point at it.",
+      "Keep the nodule out of the pneumothorax sentence."
+    ],
+    "discussion": "Fixture for the tutor eval. A paragraph that never changes slice, window, or pointer is a failure even when the words are right.",
+    "references": [],
+    "findings": [
+      {
+        "id": "f_ptx",
+        "label": "Right apical pneumothorax",
+        "description": "Visceral pleural line at the right apex with no lung markings beyond it. Only visible on lung windows.",
+        "teachingPoints": [
+          "Soft-tissue windows hide the pleural line.",
+          "Do not call a skin fold until you have scrolled the line and seen it stay continuous.",
+          "Report: small right apical pneumothorax."
+        ],
+        "state": "eval:synthetic",
+        "marker": { "x_pct": 0.28, "y_pct": 0.22, "shape": "arrow" },
+        "order": 0,
+        "sliceIndex": 8,
+        "windowWidth": 1500,
+        "windowCenter": -600,
+        "studyInstanceUID": "1.2.826.0.1.3680043.10.543.1.1",
+        "seriesInstanceUID": "1.2.826.0.1.3680043.10.543.1.1.1",
+        "sopInstanceUID": "1.2.826.0.1.3680043.10.543.1.1.1.8",
+        "keyframes": [
+          { "t": 0, "state": "eval:synthetic:slice=4" },
+          { "t": 900, "state": "eval:synthetic:slice=8" },
+          { "t": 1600, "state": "eval:synthetic:voi=1500/-600" },
+          {
+            "t": 2400,
+            "state": "eval:synthetic:point",
+            "marker": { "x_pct": 0.28, "y_pct": 0.22, "shape": "arrow" }
+          }
+        ],
+        "track": {
+          "durationMs": 4200,
+          "start": { "sliceIndex": 4, "ww": 1500, "wc": -600 },
+          "events": [
+            { "t": 0, "type": "slice", "index": 4 },
+            { "t": 450, "type": "slice", "index": 6 },
+            { "t": 900, "type": "slice", "index": 8 },
+            { "t": 1600, "type": "voi", "ww": 1500, "wc": -600 },
+            { "t": 2400, "type": "cursor", "x": 0.28, "y": 0.22 },
+            {
+              "t": 3200,
+              "type": "annotation",
+              "shape": "arrow",
+              "from": [0.28, 0.22],
+              "to": [0.36, 0.3]
+            }
+          ]
+        }
+      },
+      {
+        "id": "f_nodule",
+        "label": "Left lower lobe nodule",
+        "description": "8 mm solid nodule in the left lower lobe, separate from the pneumothorax. Lung windows, deeper in the stack.",
+        "teachingPoints": [
+          "Scroll inferiorly — it is not on the apical slice.",
+          "Zoom before you measure. Short axis 8 mm, authored, do not invent a size.",
+          "Impression: separate the nodule from the pneumothorax."
+        ],
+        "state": "eval:synthetic",
+        "marker": { "x_pct": 0.7, "y_pct": 0.62, "shape": "circle" },
+        "order": 1,
+        "sliceIndex": 27,
+        "windowWidth": 1500,
+        "windowCenter": -600,
+        "studyInstanceUID": "1.2.826.0.1.3680043.10.543.1.1",
+        "seriesInstanceUID": "1.2.826.0.1.3680043.10.543.1.1.1",
+        "sopInstanceUID": "1.2.826.0.1.3680043.10.543.1.1.1.27",
+        "measurements": [
+          {
+            "id": "m_nodule_short",
+            "kind": "length",
+            "handles": [[0.66, 0.6], [0.74, 0.64]],
+            "lengthMm": 8,
+            "label": "short axis",
+            "sliceIndex": 27
+          }
+        ],
+        "keyframes": [
+          { "t": 0, "state": "eval:synthetic:slice=22" },
+          { "t": 700, "state": "eval:synthetic:slice=27" },
+          { "t": 1400, "state": "eval:synthetic:zoom=2.2" },
+          {
+            "t": 2100,
+            "state": "eval:synthetic:point",
+            "marker": { "x_pct": 0.7, "y_pct": 0.62, "shape": "circle" }
+          }
+        ],
+        "track": {
+          "durationMs": 3600,
+          "start": { "sliceIndex": 22, "ww": 1500, "wc": -600 },
+          "events": [
+            { "t": 0, "type": "slice", "index": 22 },
+            { "t": 700, "type": "slice", "index": 27 },
+            { "t": 1400, "type": "camera", "zoom": 2.2, "pan": [0.04, -0.02] },
+            { "t": 2100, "type": "cursor", "x": 0.7, "y": 0.62 }
+          ]
+        }
+      }
+    ]
+  },
+  "beats": [
+    {
+      "id": "beat-ptx",
+      "findingId": "f_ptx",
+      "prompt": "Show me the first finding. I am on soft-tissue windows at the top of the stack — drive the viewer and teach what is on the slice.",
+      "distinctiveTerms": ["pneumothorax", "pleural"],
+      "drivingNarration": "Look at this slice. Lung windows show a visceral pleural line at the right apex, with no lung markings beyond it. That is a small right apical pneumothorax. Report it as such, and do not call it a skin fold until the line stays continuous as you scroll.",
+      "chatbotNarration": "Look at this slice. Lung windows would show a visceral pleural line at the right apex, with no lung markings beyond it. That is a small right apical pneumothorax. Report it as such, and do not call it a skin fold until the line stays continuous as you scroll.",
+      "teachingGuide": [
+        { "t": 0, "action": "set_window", "windowWidth": 1500, "windowCenter": -600 },
+        { "t": 1600, "action": "show_finding", "findingId": "f_ptx" },
+        { "t": 2400, "action": "point_to", "findingId": "f_ptx" }
+      ]
+    },
+    {
+      "id": "beat-nodule",
+      "findingId": "f_nodule",
+      "prompt": "Show me the next finding. Scroll to it, point at it, and teach the report line.",
+      "distinctiveTerms": ["nodule"],
+      "drivingNarration": "Look here. Deeper in the stack, still on lung windows, there is an 8 mm solid nodule in the left lower lobe. Findings: 8 mm solid left lower lobe nodule. Keep it separate from the pneumothorax in the impression.",
+      "chatbotNarration": "The pneumothorax is the case. I already covered the pleural line. Fleischner is a guideline you can read later if you want more detail on incidental lesions.",
+      "teachingGuide": [
+        { "t": 0, "action": "scroll_to", "sliceIndex": 27, "findingId": "f_nodule" },
+        { "t": 800, "action": "show_finding", "findingId": "f_nodule" },
+        { "t": 1400, "action": "zoom_to", "zoom": 2.2, "findingId": "f_nodule" },
+        { "t": 2100, "action": "point_to", "findingId": "f_nodule" }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startReplay } from "./replay.ts";
-import type { RecordedEvent, RecordedTrack } from "./types.ts";
+import { playTeachingGuide, startReplay } from "./replay.ts";
+import type { RecordedEvent, RecordedTrack, TeachingGuide } from "./types.ts";
 
 // --- A controllable fake clock + rAF so replay is deterministic in node. ----
 class FakeClock {
@@ -167,4 +167,73 @@ test("calls onEnd once the clock passes the duration", () => {
   assert.equal(ended, 0);
   clock.advance(25); // past duration AND all events fired
   assert.equal(ended, 1);
+});
+
+test("playTeachingGuide scrolls, tweens window and zoom, and draws a missed stroke", async () => {
+  const applied: string[] = [];
+  let slice = 0;
+  const said: string[] = [];
+  const guide: TeachingGuide = {
+    durationMs: 2000,
+    start: { sliceIndex: 4, ww: 1500, wc: -600 },
+    beats: [
+      {
+        t: 100,
+        say: "Look here.",
+        actions: [
+          { type: "scroll", sliceIndex: 6 },
+          { type: "window", ww: 400, wc: 40 },
+          { type: "zoom", zoom: 1.6, pan: [0, 0] },
+          {
+            type: "annotate",
+            shape: "arrow",
+            from: [0.2, 0.2],
+            to: [0.4, 0.4],
+            tool: "Length",
+            handles: [
+              [0.2, 0.2],
+              [0.4, 0.4],
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: (e) => {
+        applied.push(e.type);
+        if (e.type === "slice") slice = e.index;
+      },
+      getSliceIndex: () => slice,
+      settle: async () => {},
+      setWindow: async () => {
+        applied.push("tween-voi");
+      },
+      showState: async () => {
+        applied.push("tween-zoom");
+      },
+      annotationLanded: () => false,
+      overlay: {
+        annotation: () => applied.push("overlay-ann"),
+        cursor: () => {},
+        clear: () => {},
+      },
+    },
+    {
+      narrate: async (text) => {
+        said.push(text);
+      },
+      sliceStepMs: 0,
+      timeScale: 0,
+    }
+  );
+  await ctrl.finished;
+  assert.deepEqual(said, ["Look here."]);
+  assert.equal(slice, 6);
+  assert.ok(applied.includes("tween-voi"));
+  assert.ok(applied.includes("tween-zoom"));
+  assert.ok(applied.includes("annotation"));
+  assert.ok(applied.includes("overlay-ann"));
 });
