@@ -30,7 +30,7 @@ export function FindingMarker({
         aria-hidden="true"
       >
         <ArrowDown
-          className="h-9 w-7 text-accent drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+          className="h-9 w-7 text-accent drop-shadow-[0_0_1px_#000] drop-shadow-[0_1px_2px_#000]"
           strokeWidth={2.5}
           aria-hidden="true"
         />
@@ -39,13 +39,18 @@ export function FindingMarker({
   }
 
   return (
-    <div
-      className={cn(
-        "pointer-events-none absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent transition-opacity duration-500 ease-out",
-        visible ? "animate-marker-pulse opacity-100" : "opacity-0"
-      )}
-      style={position}
-      aria-hidden="true"
-    />
+      <div
+        className={cn(
+          "pointer-events-none absolute h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_#000,0_0_0_4px_rgb(var(--accent))] transition-opacity duration-500 ease-out",
+          visible ? "opacity-100" : "opacity-0"
+        )}
+        style={position}
+        aria-hidden="true"
+      >
+        {visible && (
+          <span className="absolute inset-0 animate-marker-pulse rounded-full" />
+        )}
+        <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1px_#000]" />
+      </div>
   );
 }

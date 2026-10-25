@@ -6,8 +6,10 @@
 //
 // Product: an AI attending teaches a registrar how to REPORT the scan — armed
 // with authored findings + reading digests — driving the viewer while speaking.
-// Teach mode (guided) runs an autonomous tour; student voice/text pauses it.
-// Viva is the oral-exam path. Capture tracks arm the model; they are not a tape.
+// Teach mode (guided) plays a cleaned teaching guide when the finding has one
+// (scroll, window, zoom, laser, strokes) and speaks those beats. Otherwise it
+// asks the model to teach. Student voice/text pauses the tour.
+// Viva is the oral-exam path. The dense track is not played as a mic tape.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRecorder } from "@/components/useRecorder";
@@ -18,10 +20,16 @@ import {
   normalizeTutorActions,
 } from "@/lib/performancePlan";
 import { findingViewerState } from "@/lib/viewerController";
-import { type ReplayController } from "@/lib/replay";
+import { playTeachingGuide, type ReplayController } from "@/lib/replay";
+import type { HarnessViewerAction } from "@/lib/harness/tools";
+import {
+  guideHasMotion,
+  measurementsFromGuide,
+  resolveTeachingGuide,
+} from "@/lib/teachingGuide";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
-import type { CaseData, FindingMeasurement, Marker } from "@/lib/types";
+import type { CaseData, Finding, FindingMeasurement, Marker, TeachingGuide } from "@/lib/types";
 import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
 import { clickHitsFinding } from "@/lib/clickFinding";
@@ -71,20 +79,7 @@ export interface ChatTurn {
   sources?: ChatSource[];
 }
 
-interface ViewerAction {
-  type:
-    | "show_finding"
-    | "next_in_tour"
-    | "prev_in_tour"
-    | "set_window"
-    | "point_to"
-    | "none";
-  findingId?: string;
-  windowWidth?: number;
-  windowCenter?: number;
-  x_pct?: number;
-  y_pct?: number;
-}
+type ViewerAction = HarnessViewerAction;
 
 let turnSeq = 0;
 const nextId = () => `t${Date.now().toString(36)}_${turnSeq++}`;
@@ -110,6 +105,7 @@ export function useStudentSession(
   const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
     async () => {}
   );
+  const runGuidedRef = useRef<(index: number) => Promise<void>>(async () => {});
 
   const [ready, setReady] = useState(false);
   const [replaying, setReplaying] = useState(false);
@@ -275,8 +271,15 @@ export function useStudentSession(
       replayAudioRef.current = null;
     }
     overlay.current?.clear();
+    controls.current?.clearAnnotations?.();
     setReplaying(false);
     setPointing(false);
+  }, []);
+
+  const pauseTour = useCallback(() => {
+    tourActiveRef.current = false;
+    setTourActive(false);
+    replayRef.current?.cancel();
   }, []);
 
   /** Animate the laser to a normalized point, then optionally land a marker. */
@@ -367,6 +370,47 @@ export function useStudentSession(
     [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary]
   );
 
+  // --- Play a cleaned teach script (learner clock, not the mic tape) ------
+  const playFindingGuide = useCallback(
+    async (
+      _finding: Finding,
+      guide: TeachingGuide,
+      opts?: { narrate?: (text: string) => Promise<void> }
+    ) => {
+      if (!controls.current) return;
+      stopReplay();
+      setMarkerVisible(false);
+      setMeasurementsVisible(false);
+      setReplaying(true);
+      const ctrl = playTeachingGuide(
+        guide,
+        {
+          applyEvent: (e) => controls.current?.applyEvent(e),
+          getSliceIndex: () => controls.current?.getStartState().sliceIndex ?? 0,
+          settle: () => controls.current?.settle() ?? Promise.resolve(),
+          setWindow: (ww, wc) => controls.current?.setWindow(ww, wc),
+          showState: (state, ms) => controls.current?.showState(state, ms),
+          annotationLanded: () => controls.current?.annotationApplied === true,
+          overlay: {
+            cursor: (x, y) => overlay.current?.cursor(x, y),
+            annotation: (e) => overlay.current?.annotation(e),
+            animateTo: (x, y, o) =>
+              overlay.current?.animateTo(x, y, o) ?? Promise.resolve(),
+            clear: () => overlay.current?.clear(),
+          },
+        },
+        { narrate: opts?.narrate }
+      );
+      replayRef.current = ctrl;
+      await ctrl.finished;
+      if (replayRef.current === ctrl) {
+        replayRef.current = null;
+        setReplaying(false);
+      }
+    },
+    [stopReplay]
+  );
+
   // --- Execute a tutor viewer action ---------------------------------------
   const executeAction = useCallback(
     async (action: ViewerAction) => {
@@ -411,9 +455,106 @@ export function useStudentSession(
           }
           break;
         }
+        case "scroll_to": {
+          if (
+            action.seriesInstanceUID &&
+            controls.current?.seriesUIDs.includes(action.seriesInstanceUID)
+          ) {
+            controls.current.showSeries(action.seriesInstanceUID);
+            await controls.current.settle();
+          }
+          await controls.current?.showState({ sliceIndex: action.sliceIndex }, 520);
+          break;
+        }
+        case "zoom_to":
+        case "set_zoom": {
+          const pan =
+            action.panX != null && action.panY != null
+              ? ([action.panX, action.panY] as [number, number])
+              : undefined;
+          await controls.current?.showState({ zoom: action.zoom, pan }, 520);
+          break;
+        }
+        case "set_invert":
+          controls.current?.applyEvent({ t: 0, type: "invert", value: action.value });
+          break;
+        case "draw_annotation": {
+          const target = action.findingId
+            ? orderedFindings.find((item) => item.id === action.findingId)
+            : orderedFindings[activeIndexRef.current];
+          const guide = target ? resolveTeachingGuide(target) : null;
+          const strokes =
+            guide?.beats.flatMap((b) => b.actions.filter((a) => a.type === "annotate")) ??
+            [];
+          if (strokes.length > 0) {
+            for (const stroke of strokes) {
+              const { type: _type, ...rest } = stroke;
+              controls.current?.applyEvent({ t: 0, type: "annotation", ...rest });
+            }
+            await controls.current?.settle();
+            if (controls.current && !controls.current.annotationApplied && target) {
+              const meas = measurementsFromGuide(resolveTeachingGuide(target)!);
+              if (meas.length) {
+                setMeasurements(meas);
+                setMeasurementsVisible(true);
+              }
+            }
+            break;
+          }
+          if (
+            action.x_pct != null &&
+            action.y_pct != null &&
+            Number.isFinite(action.x_pct) &&
+            Number.isFinite(action.y_pct)
+          ) {
+            const x2 = action.x2_pct ?? action.x_pct;
+            const y2 = action.y2_pct ?? action.y_pct;
+            const event = {
+              t: 0,
+              type: "annotation" as const,
+              shape: action.tool === "Length" || action.tool === "ArrowAnnotate" ? ("arrow" as const) : ("circle" as const),
+              from: [action.x_pct, action.y_pct] as [number, number],
+              to: [x2, y2] as [number, number],
+              tool: action.tool,
+              handles: [
+                [action.x_pct, action.y_pct],
+                [x2, y2],
+              ] as Array<[number, number]>,
+            };
+            controls.current?.applyEvent(event);
+            await controls.current?.settle();
+            if (controls.current && !controls.current.annotationApplied) {
+              overlay.current?.annotation(event);
+            }
+          }
+          break;
+        }
+        case "play_guide": {
+          const target =
+            orderedFindings.find((item) => item.id === action.findingId) ??
+            orderedFindings[activeIndexRef.current];
+          if (!target) break;
+          const idx = orderedFindings.indexOf(target);
+          if (idx >= 0) setActiveIndex(idx);
+          markRevealed(target.id);
+          const guide = resolveTeachingGuide(target);
+          if (guide && guideHasMotion(guide)) {
+            // The model's own TTS is already speaking this turn — visuals only.
+            await playFindingGuide(target, guide);
+          } else if (idx >= 0) {
+            await revealFinding(idx);
+          }
+          if (target.marker) {
+            setMarker(target.marker);
+            setMarkerVisible(true);
+          }
+          break;
+        }
+        default:
+          break;
       }
     },
-    [orderedFindings, revealFinding, pointLaser]
+    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -547,13 +688,7 @@ export function useStudentSession(
                       );
                       return;
                     }
-                    void revealFinding(cur + 1, { spoil: true }).then(() => {
-                      if (!tourActiveRef.current) return;
-                      void runTutorRef.current(
-                        "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
-                        turnsRef.current
-                      );
-                    });
+                    void runGuidedRef.current(cur + 1);
                   }, 1100);
                 }
               },
@@ -576,10 +711,113 @@ export function useStudentSession(
 
   runTutorRef.current = runTutor;
 
-  const pauseTour = useCallback(() => {
+  const finishTour = useCallback(() => {
     tourActiveRef.current = false;
     setTourActive(false);
-  }, []);
+    if (courseId) {
+      void fetch("/api/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          courseId,
+          caseId: caseData.caseId,
+          markComplete: true,
+          lastOpenedCaseId: caseData.caseId,
+        }),
+      }).catch(() => undefined);
+    }
+    void runTutorRef.current(
+      "Tour complete. Model a concise Impression for this case from the authored findings only, then invite the registrar to ask questions or practice dictating Findings.",
+      turnsRef.current
+    );
+  }, [courseId, caseData.caseId]);
+
+  const runGuidedFrom = useCallback(
+    async (index: number) => {
+      if (!tourActiveRef.current) return;
+      if (index >= orderedFindings.length) {
+        finishTour();
+        return;
+      }
+      const finding = orderedFindings[index];
+      if (!finding) return;
+      const guide = resolveTeachingGuide(finding);
+      if (guide && guideHasMotion(guide) && controls.current) {
+        setActiveIndex(index);
+        markRevealed(finding.id);
+        const says = guide.beats
+          .map((b) => b.say?.trim())
+          .filter((s): s is string => Boolean(s));
+        const turnId = says.length ? nextId() : null;
+        if (turnId) {
+          setTurns((prev) => [...prev, { id: turnId, role: "assistant", text: "" }]);
+          setPhase("speaking");
+          setSpeakingTurnId(turnId);
+        }
+        await playFindingGuide(finding, guide, {
+          narrate: turnId
+            ? async (text) => {
+                if (!tourActiveRef.current) return;
+                setTurns((prev) =>
+                  prev.map((t) =>
+                    t.id === turnId
+                      ? { ...t, text: t.text ? `${t.text} ${text}` : text }
+                      : t
+                  )
+                );
+                await speak(text, undefined, { authorId: caseData.authorId });
+              }
+            : undefined,
+        });
+        if (!tourActiveRef.current) return;
+        setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
+        setPhase((p) => (p === "speaking" ? "idle" : p));
+        if (finding.marker) {
+          setMarker(finding.marker);
+          setMarkerVisible(true);
+        }
+        const saved = finding.measurements ?? [];
+        const drawn = measurementsFromGuide(guide);
+        const meas = saved.length ? saved : drawn;
+        // Native tool strokes stay on the viewport when they landed. The
+        // overlay / measurement layer covers a miss, without doubling a hit.
+        if (meas.length && controls.current?.annotationApplied !== true) {
+          overlay.current?.clear();
+          setMeasurements(meas);
+          setMeasurementsVisible(true);
+        } else if (!drawn.length && saved.length) {
+          setMeasurements(saved);
+          setMeasurementsVisible(true);
+        }
+        window.setTimeout(() => {
+          if (!tourActiveRef.current) return;
+          if (index >= orderedFindings.length - 1) {
+            finishTour();
+            return;
+          }
+          void runGuidedRef.current(index + 1);
+        }, 700);
+        return;
+      }
+      await revealFinding(index, { spoil: true });
+      if (!tourActiveRef.current) return;
+      void runTutorRef.current(
+        "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
+        turnsRef.current
+      );
+    },
+    [
+      orderedFindings,
+      playFindingGuide,
+      markRevealed,
+      revealFinding,
+      finishTour,
+      caseData.authorId,
+    ]
+  );
+
+  runGuidedRef.current = runGuidedFrom;
 
   const resumeTour = useCallback(() => {
     if (mode !== "guided" || busy) return;
@@ -587,26 +825,24 @@ export function useStudentSession(
     setTourActive(true);
     const cur = activeIndexRef.current;
     if (cur < 0) {
-      void revealFinding(0, { spoil: true }).then(() => {
-        void runTutor(
-          "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
-          turnsRef.current
-        );
-      });
+      void runGuidedRef.current(0);
       return;
     }
     if (cur >= orderedFindings.length - 1) {
+      const finding = orderedFindings[cur];
+      const guide = finding ? resolveTeachingGuide(finding) : null;
+      if (guide && guideHasMotion(guide)) {
+        void runGuidedRef.current(cur);
+        return;
+      }
       void runTutor(
         "Resume teaching. Model the Impression and invite practice dictation.",
         turnsRef.current
       );
       return;
     }
-    void runTutor(
-      "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
-      turnsRef.current
-    );
-  }, [mode, busy, orderedFindings.length, runTutor, revealFinding]);
+    void runGuidedRef.current(cur);
+  }, [mode, busy, orderedFindings, runTutor]);
 
   // --- Typed question: straight to CALL 2 ----------------------------------
   const sendText = useCallback(
@@ -827,12 +1063,7 @@ export function useStudentSession(
     if (mode === "guided") {
       tourActiveRef.current = true;
       setTourActive(true);
-      void revealFinding(0, { spoil: true }).then(() => {
-        void runTutor(
-          "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a radiology registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
-          []
-        );
-      });
+      void runGuidedRef.current(0);
       return;
     }
     if (mode === "reporting") {

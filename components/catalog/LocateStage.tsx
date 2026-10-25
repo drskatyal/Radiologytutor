@@ -160,11 +160,11 @@ export function LocateStage({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-1.5 text-xs text-muted">
+        <p className="flex items-center gap-1.5 text-xs text-secondary">
           <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
           {marking
             ? "Click the abnormality on the image."
-            : "Search the study as you would in the reading room, then mark the finding."}
+            : "Wheel scrolls, right-drag zooms, left-drag windows. Then mark the finding."}
         </p>
         {ready && (
           <Button

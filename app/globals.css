@@ -22,7 +22,9 @@
   /* Text — paper-on-film contrast, calm steps down. */
   --text-primary: 242 237 230; /* #f2ede6 */
   --text-secondary: 168 160 148; /* #a8a094 */
-  --text-muted: 110 103 94; /* #6e675e */
+  /* Was #6e675e (~3.5:1 on canvas). #8f877c clears WCAG AA for body text
+     on canvas and elevated without collapsing into --text-secondary. */
+  --text-muted: 143 135 124; /* #8f877c */
 
   /* Borders — soft warm hairlines. */
   --border-subtle: 48 44 39; /* #302c27 */

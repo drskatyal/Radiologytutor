@@ -248,19 +248,141 @@ export default function StudentSession({
         ? "Click the image to locate · Space to talk"
         : "Exam mode · Space to talk · Ask or answer"
       : s.tourActive
-        ? "Teaching — viewer follows the tutor · Space to interrupt"
+        ? "Teaching — the viewer follows the tutor · Space to interrupt"
         : "Tour paused · Continue teaching or ask a question";
 
   return (
-    <div className="relative h-screen bg-imaging">
-      <div
-        className={cn(
-          "absolute inset-0 transition-[right] duration-300",
-          railOpen ? "md:right-[380px]" : "right-0",
-          showNavigator ? "md:left-[56px]" : "left-0"
+    <div className="flex h-screen min-h-0 flex-col bg-canvas">
+      <header className="z-30 flex shrink-0 flex-col border-b border-subtle bg-surface">
+        <div className="flex min-h-12 items-center justify-between gap-2 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <a
+              href="/library"
+              className="inline-flex h-9 shrink-0 items-center rounded-lg px-2.5 text-sm font-medium text-secondary hover:bg-overlay hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            >
+              Library
+            </a>
+            <h1 className="truncate font-display text-base font-semibold text-primary">
+              {caseData.title}
+            </h1>
+            <Badge variant="neutral" className="hidden sm:inline-flex">
+              {caseData.modality}
+            </Badge>
+            {stepLabel && (
+              <Badge variant="accent" className="shrink-0 tabular-nums">
+                Finding {stepLabel}
+              </Badge>
+            )}
+            {intent === "exam" && s.vivaScore.total > 0 && (
+              <Badge variant="neutral" className="hidden shrink-0 tabular-nums md:inline-flex">
+                Located {s.vivaScore.located}/{s.vivaScore.total}
+              </Badge>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <IconButton
+              aria-label={s.compareOpen ? "Close compare" : "Open compare"}
+              size="md"
+              variant={s.compareOpen ? "primary" : "secondary"}
+              onClick={s.toggleCompare}
+            >
+              <Columns2 className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Keyboard shortcuts"
+              size="md"
+              variant="secondary"
+              onClick={() => setKeysOpen(true)}
+            >
+              <Keyboard className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Previous finding"
+              size="md"
+              variant="secondary"
+              disabled={!hasFindings || s.activeIndex <= 0 || s.busy}
+              onClick={s.prev}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Next finding"
+              size="md"
+              variant="secondary"
+              disabled={
+                !hasFindings ||
+                s.activeIndex >= s.orderedFindings.length - 1 ||
+                s.busy
+              }
+              onClick={s.skip}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label={railOpen ? "Collapse tutor rail" : "Open tutor rail"}
+              size="md"
+              variant="secondary"
+              onClick={() => setRailOpen((o) => !o)}
+            >
+              {railOpen ? (
+                <PanelRightClose className="h-4 w-4" />
+              ) : (
+                <PanelRightOpen className="h-4 w-4" />
+              )}
+            </IconButton>
+          </div>
+        </div>
+        {showNavigator && (
+          <div className="flex gap-1.5 overflow-x-auto border-t border-subtle px-3 py-2 md:hidden">
+            {series.map((item, i) => {
+              const title =
+                item.description?.trim() ||
+                (item.seriesNumber != null ? `Series ${item.seriesNumber}` : `Series ${i + 1}`);
+              const active = i === activeSeriesIndex;
+              return (
+                <button
+                  key={item.seriesInstanceUID}
+                  type="button"
+                  aria-current={active ? "true" : undefined}
+                  onClick={() => onSeriesChange(item.seriesInstanceUID)}
+                  className={cn(
+                    "h-9 shrink-0 rounded-lg border px-3 text-xs font-medium",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                    active
+                      ? "border-accent/50 bg-accent/15 text-accent"
+                      : "border-subtle bg-elevated text-secondary"
+                  )}
+                >
+                  {title}
+                </button>
+              );
+            })}
+          </div>
         )}
-      >
-        <StudentViewer
+      </header>
+
+      <div className="relative flex min-h-0 flex-1">
+        {showNavigator && (
+          <div className="hidden min-h-0 w-44 shrink-0 flex-col border-r border-subtle md:flex">
+            <SeriesNavigator
+              series={series}
+              activeIndex={activeSeriesIndex}
+              onSelect={(i) => {
+                const uid = series[i]?.seriesInstanceUID;
+                if (uid) onSeriesChange(uid);
+              }}
+              className="h-full min-h-0 w-full"
+            />
+          </div>
+        )}
+        <div
+          className={cn(
+            "relative min-h-0 min-w-0 flex-1 bg-imaging",
+            railOpen && "md:mr-[380px]"
+          )}
+        >
+          <div className="absolute inset-0">
+            <StudentViewer
           source={source}
           series={series}
           activeSeriesIndex={activeSeriesIndex}
@@ -311,252 +433,9 @@ export default function StudentSession({
                 }
               : null
           }
-        />
-      </div>
-
-      {showNavigator && (
-        <div className="absolute bottom-0 left-0 top-0 z-20 hidden w-14 border-r border-subtle/60 bg-canvas/80 backdrop-blur md:block">
-          <SeriesNavigator
-            series={series}
-            activeIndex={activeSeriesIndex}
-            onSelect={(i) => {
-              const uid = series[i]?.seriesInstanceUID;
-              if (uid) onSeriesChange(uid);
-            }}
-          />
-        </div>
-      )}
-
-      {/* Top HUD — above viewer chrome so Library is always clickable */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between gap-3 p-3">
-        <div className="pointer-events-auto flex min-w-0 flex-wrap items-center gap-2">
-          <a
-            href="/library"
-            className="inline-flex items-center rounded-md border border-subtle bg-elevated px-2.5 py-1.5 text-xs font-medium text-secondary hover:text-primary"
-          >
-            Library
-          </a>
-          <Badge variant="neutral" className="max-w-[14rem] truncate sm:max-w-xs">
-            {caseData.title}
-          </Badge>
-          <Badge variant="neutral">{caseData.modality}</Badge>
-          {stepLabel && (
-            <Badge variant="accent" className="tabular-nums">
-              Finding {stepLabel}
-            </Badge>
-          )}
-          {intent === "exam" && s.vivaScore.total > 0 && (
-            <Badge variant="neutral" className="tabular-nums">
-              Located {s.vivaScore.located}/{s.vivaScore.total}
-            </Badge>
-          )}
-        </div>
-        <div className="pointer-events-auto flex items-center gap-1">
-          <IconButton
-            aria-label={s.compareOpen ? "Close compare" : "Open compare"}
-            size="sm"
-            variant={s.compareOpen ? "primary" : "secondary"}
-            onClick={s.toggleCompare}
-          >
-            <Columns2 className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label="Keyboard shortcuts"
-            size="sm"
-            variant="secondary"
-            onClick={() => setKeysOpen(true)}
-          >
-            <Keyboard className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label="Previous finding"
-            size="sm"
-            variant="secondary"
-            disabled={!hasFindings || s.activeIndex <= 0 || s.busy}
-            onClick={s.prev}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label="Next finding"
-            size="sm"
-            variant="secondary"
-            disabled={
-              !hasFindings ||
-              s.activeIndex >= s.orderedFindings.length - 1 ||
-              s.busy
-            }
-            onClick={s.skip}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label={railOpen ? "Collapse tutor rail" : "Open tutor rail"}
-            size="sm"
-            variant="secondary"
-            onClick={() => setRailOpen((o) => !o)}
-          >
-            {railOpen ? (
-              <PanelRightClose className="h-4 w-4" />
-            ) : (
-              <PanelRightOpen className="h-4 w-4" />
-            )}
-          </IconButton>
-        </div>
-      </div>
-
-      <TutorCaption
-        text={captionText}
-        stepLabel={stepLabel}
-        revealed={!s.examMode || activeRevealed}
-        modeLabel={
-          intent === "exam"
-            ? "Examiner"
-            : mode === "reporting"
-              ? "Report coach"
-              : s.tourActive
-                ? "Teaching"
-                : "Attending"
-        }
-        sources={lastAssistant?.sources}
-      />
-
-      {tutorVoice?.cloned && (
-        <p className="pointer-events-none absolute inset-x-0 top-12 z-20 px-4 text-center text-[10px] text-muted/80 sm:top-14">
-          Tutor voice is a synthetic clone modeled on {tutorVoice.authorName}.
-        </p>
-      )}
-
-      {/* Bottom dock — above caption so Teach/Exam always receive clicks */}
-      <div className="absolute inset-x-0 bottom-0 z-40 flex justify-center p-4">
-        <div className="flex max-w-xl flex-col items-center gap-2">
-          {hasFindings && (
-            <div className="flex items-center gap-1.5" aria-label="Finding progress">
-              {s.orderedFindings.map((f, i) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  aria-label={`Finding ${i + 1}`}
-                  aria-current={i === s.activeIndex}
-                  disabled={s.busy}
-                  onClick={() => s.goTo(i)}
-                  className={cn(
-                    "h-1.5 rounded-full transition-all",
-                    i === s.activeIndex
-                      ? "w-6 bg-accent"
-                      : "w-1.5 bg-strong/70 hover:bg-accent/60"
-                  )}
-                />
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center gap-1 rounded-md border border-subtle bg-elevated p-1">
-            <button
-              type="button"
-              onClick={() => setIntent("teach")}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                intent === "teach"
-                  ? "bg-accent text-accent-foreground"
-                  : "text-secondary hover:text-primary"
-              )}
-            >
-              Teach
-            </button>
-            <button
-              type="button"
-              onClick={() => setIntent("exam")}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                intent === "exam"
-                  ? "bg-accent text-accent-foreground"
-                  : "text-secondary hover:text-primary"
-              )}
-            >
-              Exam
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3 rounded-md border border-subtle bg-elevated px-4 py-2.5 shadow-md">
-            <button
-              type="button"
-              onClick={openAsk}
-              aria-label="Open tutor transcript"
-              className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-            >
-              <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
-              <span className="hidden text-xs font-medium text-secondary sm:inline">
-                {ORB_TAGLINE[s.orbState]}
-              </span>
-            </button>
-            <MicButton
-              state={s.micState}
-              onStart={s.onMicStart}
-              onStop={s.onMicStop}
-              disabled={!s.micSupported || (s.busy && s.micState === "idle")}
-              label={
-                s.micState === "recording"
-                  ? "Release to send"
-                  : s.micState === "processing"
-                    ? "…"
-                    : "Hold to speak"
-              }
             />
-            {intent === "teach" && !s.tourActive && s.ready && (
-              <Button
-                size="sm"
-                variant="secondary"
-                leadingIcon={<Play className="h-3.5 w-3.5" />}
-                onClick={s.resumeTour}
-                disabled={s.busy}
-              >
-                Continue
-              </Button>
-            )}
-            {intent === "teach" && s.tourActive && s.phase === "speaking" && (
-              <Button
-                size="sm"
-                variant="ghost"
-                leadingIcon={<Pause className="h-3.5 w-3.5" />}
-                onClick={() => {
-                  s.pauseTour();
-                  s.onStopSpeaking();
-                }}
-              >
-                Pause
-              </Button>
-            )}
-            {s.examMode && hasFindings && (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
-                  onClick={s.sayDontKnow}
-                  disabled={s.busy}
-                >
-                  Don&apos;t know
-                </Button>
-                {!activeRevealed && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    leadingIcon={<Eye className="h-3.5 w-3.5" />}
-                    onClick={s.revealCurrent}
-                    disabled={s.busy}
-                  >
-                    Reveal
-                  </Button>
-                )}
-              </>
-            )}
           </div>
-          <p className="text-[10px] text-muted">
-            {dockHint} · <Kbd>?</Kbd> keys
-          </p>
         </div>
-      </div>
 
       <aside
         className={cn(
@@ -668,6 +547,171 @@ export default function StudentSession({
           />
         </div>
       </aside>
+      </div>
+
+      <footer className="z-30 shrink-0 border-t border-subtle bg-surface px-4 py-3">
+        <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2.5">
+          <TutorCaption
+            text={captionText}
+            revealed={!s.examMode || activeRevealed}
+            modeLabel={
+              intent === "exam"
+                ? "Examiner"
+                : mode === "reporting"
+                  ? "Report coach"
+                  : s.tourActive
+                    ? "Teaching"
+                    : "Attending"
+            }
+            sources={lastAssistant?.sources}
+            className="self-stretch"
+          />
+
+          {hasFindings && (
+            <div
+              className="flex max-w-full items-center gap-0.5 overflow-x-auto"
+              role="group"
+              aria-label="Finding progress"
+            >
+              {s.orderedFindings.map((f, i) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  aria-label={`Finding ${i + 1}: ${f.label || "untitled"}`}
+                  aria-current={i === s.activeIndex ? "true" : undefined}
+                  disabled={s.busy}
+                  onClick={() => s.goTo(i)}
+                  className="flex h-8 min-w-8 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 rounded-full",
+                      i === s.activeIndex ? "w-5 bg-accent" : "w-1.5 bg-strong"
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <div className="flex items-center rounded-lg border border-subtle bg-elevated p-1">
+              <button
+                type="button"
+                aria-pressed={intent === "teach"}
+                onClick={() => setIntent("teach")}
+                className={cn(
+                  "h-9 rounded-md px-3 text-sm font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                  intent === "teach"
+                    ? "bg-accent text-accent-foreground"
+                    : "text-secondary hover:text-primary"
+                )}
+              >
+                Teach
+              </button>
+              <button
+                type="button"
+                aria-pressed={intent === "exam"}
+                onClick={() => setIntent("exam")}
+                className={cn(
+                  "h-9 rounded-md px-3 text-sm font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                  intent === "exam"
+                    ? "bg-accent text-accent-foreground"
+                    : "text-secondary hover:text-primary"
+                )}
+              >
+                Exam
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={openAsk}
+                aria-label="Open tutor transcript"
+                className="flex h-11 items-center gap-2 rounded-lg px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              >
+                <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
+                <span className="hidden text-sm font-medium text-secondary sm:inline">
+                  {ORB_TAGLINE[s.orbState]}
+                </span>
+              </button>
+              <MicButton
+                state={s.micState}
+                onStart={s.onMicStart}
+                onStop={s.onMicStop}
+                disabled={!s.micSupported || (s.busy && s.micState === "idle")}
+                label={
+                  s.micState === "recording"
+                    ? "Release to send"
+                    : s.micState === "processing"
+                      ? "…"
+                      : "Hold to speak"
+                }
+              />
+              {intent === "teach" && !s.tourActive && s.ready && (
+                <Button
+                  size="sm"
+                  leadingIcon={<Play className="h-3.5 w-3.5" />}
+                  onClick={s.resumeTour}
+                  disabled={s.busy}
+                >
+                  Continue
+                </Button>
+              )}
+              {intent === "teach" && s.tourActive && s.phase === "speaking" && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  leadingIcon={<Pause className="h-3.5 w-3.5" />}
+                  onClick={() => {
+                    s.pauseTour();
+                    s.onStopSpeaking();
+                  }}
+                >
+                  Pause
+                </Button>
+              )}
+              {s.examMode && hasFindings && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
+                    onClick={s.sayDontKnow}
+                    disabled={s.busy}
+                  >
+                    Don&apos;t know
+                  </Button>
+                  {!activeRevealed && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      leadingIcon={<Eye className="h-3.5 w-3.5" />}
+                      onClick={s.revealCurrent}
+                      disabled={s.busy}
+                    >
+                      Reveal
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <p className="text-center text-xs text-secondary">
+            {dockHint} · Left drag uses the tool on the image · <Kbd>?</Kbd>
+          </p>
+          {tutorVoice?.cloned && (
+            <p className="text-center text-xs text-secondary">
+              Tutor voice is a synthetic clone modeled on {tutorVoice.authorName}.
+            </p>
+          )}
+        </div>
+      </footer>
+
 
       <HotkeysOverlay open={keysOpen} onClose={() => setKeysOpen(false)} />
     </div>

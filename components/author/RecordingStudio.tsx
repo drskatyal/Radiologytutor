@@ -86,6 +86,7 @@ import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { withSecondaryAnchor } from "@/lib/findingAnchors";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { withRecordedTeaching } from "@/lib/teachingGuide";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -338,7 +339,7 @@ export function RecordingStudio({
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
-      if (measurements.length > 0) base.measurements = measurements;
+      if (!hasTrack && measurements.length > 0) base.measurements = measurements;
       if (activeSeries && !usingSample) {
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
@@ -353,8 +354,7 @@ export function RecordingStudio({
             /* keep silent retrace */
           }
         }
-        base.track = track;
-        base.durationMs = track.durationMs;
+        base = withRecordedTeaching(base, track, annotateDraft, measurements);
         // Prefer track.start VOI when the walk-through captured windowing.
         if (track.start.ww != null && track.start.wc != null) {
           base = withDisplaySnapshot(base, {
@@ -452,7 +452,7 @@ export function RecordingStudio({
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
-      if (measurements.length > 0) base.measurements = measurements;
+      if (!hasTrack && measurements.length > 0) base.measurements = measurements;
 
       if (hasTrack) {
         const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
@@ -463,8 +463,7 @@ export function RecordingStudio({
             // Non-fatal: keep the silent retrace if upload fails.
           }
         }
-        base.track = track;
-        base.durationMs = track.durationMs;
+        base = withRecordedTeaching(base, track, draft, measurements);
         if (track.start.ww != null && track.start.wc != null) {
           base = withDisplaySnapshot(base, {
             sliceIndex: track.start.sliceIndex,
@@ -780,7 +779,7 @@ export function RecordingStudio({
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
-                variant={annotateMode && !recording ? "secondary" : "ghost"}
+                variant={annotateMode && !recording ? "primary" : "secondary"}
                 leadingIcon={<Crosshair className="h-3.5 w-3.5" />}
                 onClick={() => {
                   if (recording) return;
@@ -791,7 +790,7 @@ export function RecordingStudio({
               >
                 Click to annotate
               </Button>
-              <span className="text-xs text-muted">or</span>
+              <span className="text-xs text-secondary">Primary path — place a marker, then dictate</span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
@@ -815,6 +814,7 @@ export function RecordingStudio({
                 </Button>
               ) : (
                 <Button
+                  variant="secondary"
                   leadingIcon={<Circle className="h-3.5 w-3.5 fill-current" />}
                   onClick={beginRecording}
                   disabled={!ready || mic === "unsupported"}

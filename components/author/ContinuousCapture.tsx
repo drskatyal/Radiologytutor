@@ -290,6 +290,12 @@ export function ContinuousCapture({
                   {(p.tStartMs / 1000).toFixed(1)}s – {(p.tEndMs / 1000).toFixed(1)}s
                 </Badge>
                 <div className="flex items-center gap-1">
+                  {p.teachingGuide && p.teachingGuide.beats.length > 0 && (
+                    <Badge variant="neutral">
+                      {p.teachingGuide.beats.length} teach{" "}
+                      {p.teachingGuide.beats.length === 1 ? "beat" : "beats"}
+                    </Badge>
+                  )}
                   {p.suggestedMarker && (
                     <Badge variant="neutral">
                       mark {(p.suggestedMarker.x_pct * 100).toFixed(0)}%,

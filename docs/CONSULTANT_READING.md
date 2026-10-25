@@ -13,13 +13,12 @@ not a student-facing slideshow of the teacher’s mic.
 
 | Surface | What happens |
 |---------|----------------|
-| Viewer | AI drives slice / WW/WC / laser / caliper overlays via tools |
+| Viewer | AI drives slice / WW/WC / zoom / laser / calipers via tools, or plays the cleaned `teachingGuide` |
 | Voice | Tutor speaks (ElevenLabs clone of the teacher when enrolled, else Gemini TTS / Live) |
 | Chat | Discussion, questions, web-grounded answers |
 | Modes | Guided tour, socratic, free explore, reporting, viva |
 
-They do **not** watch a locked replay of the teacher’s Alt+X take. Author
-Studio may still replay a track for QA while editing.
+Teach mode follows the **cleaned guide** (scroll → window → zoom → point → draw) while TTS speaks the authored beats. That is not a locked replay of the teacher’s microphone. Author Studio may still exact-replay the dense track for capture QA. See `docs/TEACHING_GUIDE.md`.
 
 ## How the recording arms the AI
 
@@ -45,7 +44,8 @@ Studio may still replay a track for QA while editing.
 | `label` / `description` / `teachingPoints` | What to say and ask |
 | `windowWidth` / `windowCenter` / slice / SOP | Where to seat the eyes |
 | `measurements[]` | Exact mm / HU the tutor may cite |
-| `track` → `readingDigest` | Scroll habit, window changes, zoom range, pointing |
+| `track` → `readingDigest` | Compact stats (how long, slice range, zoom range) |
+| `track` → `teachingGuide` | Ordered script the learner session performs |
 | `Author.voice` | Sound like this teacher on live turns |
 
 ## Voice stack (live discussion)
@@ -72,8 +72,7 @@ teacher modeled on the consultant, not listening to a frozen recording.
 
 ## Author verification (Studio only)
 
-`lib/replay.ts` still exact-replays a track so the teacher can check that
-capture was faithful. That path is **author QA**, not the learner product.
+`startReplay` in `lib/replay.ts` still exact-replays a dense track so the teacher can check that capture was faithful. Learners use `playTeachingGuide` in the same module: the cleaned script, driven through `applyEvent` and VOI/camera tweens, spoken with TTS.
 
 ## Seams
 
@@ -83,7 +82,8 @@ capture was faithful. That path is **author QA**, not the learner product.
 | `lib/teachingPrompt.ts` | Findings + digests → system prompt |
 | `lib/voice.ts` / `elevenlabs.ts` | Live tutor speech |
 | `lib/voiceRealtime.ts` | Live WebSocket token mint |
-| `lib/replay.ts` | Author-side verify only |
+| `lib/teachingGuide.ts` | Track + narration → ordered teach script |
+| `lib/replay.ts` | `startReplay` (author QA) and `playTeachingGuide` (learner) |
 
 ## Still to deepen
 

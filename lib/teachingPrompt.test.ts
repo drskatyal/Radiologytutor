@@ -92,6 +92,8 @@ test("formatFindingsContext includes reading digest when a track was captured", 
   assert.match(ctx, /read=5s/);
   assert.match(ctx, /scroll\(/);
   assert.match(ctx, /windowed\(/);
+  assert.match(ctx, /guide=\[/);
+  assert.match(ctx, /scroll→5/);
 });
 
 test("tutor prompt teaches interactively — not a tape of the recording", () => {

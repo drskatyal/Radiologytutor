@@ -38,7 +38,7 @@ export function MeasurementOverlay({
         return (
           <span
             key={`${m.id}-label`}
-            className="absolute -translate-x-1/2 -translate-y-full rounded-sm border border-accent/40 bg-elevated/90 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-accent shadow-sm"
+            className="absolute -translate-x-1/2 -translate-y-full rounded-sm bg-black/80 px-1.5 py-0.5 font-mono text-xs tabular-nums text-white shadow-md ring-1 ring-white/25"
             style={{
               left: `${anchor[0] * 100}%`,
               top: `${anchor[1] * 100}%`,
@@ -56,9 +56,9 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
   const pts = m.handles;
   if (pts.length === 0) return null;
 
-  if (m.kind === "length" || m.kind === "bidirectional") {
+  if (m.kind === "length" || m.kind === "bidirectional" || m.kind === "arrow") {
     if (pts.length < 2) return null;
-    const [a, b] = pts;
+    const [a, b] = [pts[0], pts[pts.length - 1]];
     return (
       <g>
         <line
@@ -72,6 +72,25 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
         />
         <HandleDot x={a[0]} y={a[1]} />
         <HandleDot x={b[0]} y={b[1]} />
+      </g>
+    );
+  }
+
+  if (m.kind === "angle" && pts.length >= 2) {
+    return (
+      <g className="stroke-accent" strokeWidth={1.5} vectorEffect="non-scaling-stroke">
+        {pts.slice(0, -1).map((a, i) => {
+          const b = pts[i + 1];
+          return (
+            <line
+              key={`${a[0]}-${a[1]}-${i}`}
+              x1={`${a[0] * 100}%`}
+              y1={`${a[1] * 100}%`}
+              x2={`${b[0] * 100}%`}
+              y2={`${b[1] * 100}%`}
+            />
+          );
+        })}
       </g>
     );
   }
@@ -155,9 +174,9 @@ function ellipseBox(
 function labelAnchor(m: FindingMeasurement): [number, number] | null {
   const pts = m.handles;
   if (!pts.length) return null;
-  if (m.kind === "length" || m.kind === "bidirectional") {
+  if (m.kind === "length" || m.kind === "bidirectional" || m.kind === "arrow" || m.kind === "angle") {
     const a = pts[0];
-    const b = pts[Math.min(1, pts.length - 1)];
+    const b = pts[pts.length - 1];
     return [(a[0] + b[0]) / 2, Math.min(a[1], b[1]) - 0.02];
   }
   if (m.kind === "ellipse") {

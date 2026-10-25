@@ -13,7 +13,9 @@ import {
   markerNearTime,
   segmentMidMs,
   sliceNearTime,
+  sliceTrack,
 } from "@/lib/captureSession";
+import { guideForFindingTrack } from "@/lib/teachingGuide";
 import type {
   RecordedTrack,
   StructuredSession,
@@ -80,19 +82,25 @@ export async function POST(req: NextRequest) {
         tEnd = Math.max(tStart + 1, Math.min(durationMs, tEnd));
       }
       const mid = segmentMidMs(tStart, tEnd);
+      const description = typeof f.description === "string" ? f.description : "";
+      const teachingPoints = Array.isArray(f.teachingPoints)
+        ? f.teachingPoints.filter((p): p is string => typeof p === "string")
+        : [];
+      const sub = track ? sliceTrack(track, tStart, tEnd) : undefined;
       return {
         label:
           typeof f.label === "string" && f.label.trim()
             ? f.label.trim()
             : `Finding ${i + 1}`,
-        description: typeof f.description === "string" ? f.description : "",
-        teachingPoints: Array.isArray(f.teachingPoints)
-          ? f.teachingPoints.filter((p): p is string => typeof p === "string")
-          : [],
+        description,
+        teachingPoints,
         tStartMs: tStart,
         tEndMs: tEnd,
         suggestedMarker: markerNearTime(track, mid) ?? undefined,
         suggestedSliceIndex: sliceNearTime(track, mid) ?? undefined,
+        teachingGuide: sub
+          ? guideForFindingTrack(sub, { description, teachingPoints })
+          : undefined,
       };
     });
 
