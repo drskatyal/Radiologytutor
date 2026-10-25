@@ -14,6 +14,7 @@ import {
   mayNameFinding,
   NARRATION_HOLD_MAX_MS,
   NARRATION_HOLD_MIN_MS,
+  TTS_START_BUDGET_MS,
   narrationHoldMs,
   speechAudioCanBlock,
   tutorSpeechPlan,
@@ -233,6 +234,9 @@ test("narration hold is zero for silence and capped for a long pearl", () => {
   assert.equal(narrationHoldMs("a".repeat(70)), 6_500);
   assert.equal(narrationHoldMs("a".repeat(400)), NARRATION_HOLD_MAX_MS);
   assert.ok(NARRATION_HOLD_MAX_MS <= 12_000);
+  assert.ok(TTS_START_BUDGET_MS >= 1_000);
+  assert.ok(TTS_START_BUDGET_MS <= 3_000);
+  assert.ok(TTS_START_BUDGET_MS < NARRATION_HOLD_MAX_MS);
 });
 
 test("empty-answer fallback keeps the consultant drive inside the eval speech bar", async () => {

@@ -267,6 +267,13 @@ export const NARRATION_HOLD_MIN_MS = 2_000;
 export const NARRATION_HOLD_MAX_MS = 12_000;
 
 /**
+ * How long Teach waits for the first audio sample. A slow fetch or a clip
+ * that never starts must not sit in silence for the whole narration hold.
+ * Once audio is playing, the hold above still lets a real pearl finish.
+ */
+export const TTS_START_BUDGET_MS = 2_500;
+
+/**
  * How long Teach may wait on one spoken line before the next beat runs.
  * Blank text waits nothing. Otherwise ~14 characters/second plus a short
  * lead-in, clamped so TTS failure cannot soft-lock the tour.

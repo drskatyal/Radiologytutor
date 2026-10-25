@@ -44,6 +44,10 @@ test("LIDC nodule demo guide is orient, search, lean-in, commit, then pearl", ()
     ["orient", "search", "lean-in", "commit", "pearl"]
   );
   assert.ok(guide.beats.every((beat, index) => index === 0 || beat.t > guide.beats[index - 1].t));
+  for (let i = 1; i < guide.beats.length; i++) {
+    const gap = guide.beats[i].t - guide.beats[i - 1].t;
+    assert.ok(gap <= 3_000, `baked gap ${gap}ms between ${guide.beats[i - 1].act} and ${guide.beats[i].act}`);
+  }
 
   const scroll = action(guide, "orient", "scroll");
   assert.equal(scroll.sliceIndex, 49);

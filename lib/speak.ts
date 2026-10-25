@@ -8,7 +8,7 @@
 // When /api/tts reports budget exceeded (slow clone/TTS), we stash a hint so
 // the student session can open Gemini Live for the next conversational turn.
 
-import { narrationHoldMs, speechAudioCanBlock } from "./tutorSpeech";
+import { narrationHoldMs, speechAudioCanBlock, TTS_START_BUDGET_MS } from "./tutorSpeech";
 
 let currentAudio: HTMLAudioElement | null = null;
 let pipelineGen = 0;
@@ -90,7 +90,12 @@ export async function speakBeats(
       const hold = holds[i] ?? narrationHoldMs(chunks[i]);
       let played = false;
       try {
-        const blob = await fetchTtsBlob(chunks[i], signal, voice, Math.min(6_000, hold));
+        const blob = await fetchTtsBlob(
+          chunks[i],
+          signal,
+          voice,
+          Math.min(hold, Math.max(TTS_START_BUDGET_MS, 4_000))
+        );
         if (gen !== pipelineGen) return;
         if (blob && speechAudioCanBlock(blob.size, null)) {
           const result = await playBlob(blob, () => gen !== pipelineGen, hold);
@@ -100,7 +105,13 @@ export async function speakBeats(
         played = false;
       }
       if (gen !== pipelineGen) return;
-      if (!played) await fallbackSpeakAsync(chunks[i], () => gen !== pipelineGen, hold);
+      if (!played) {
+        await fallbackSpeakAsync(
+          chunks[i],
+          () => gen !== pipelineGen,
+          Math.min(hold, 6_000)
+        );
+      }
     }
   })();
 
@@ -137,7 +148,7 @@ async function fetchTtsBlob(
   text: string,
   signal: AbortSignal,
   voice?: { voiceId?: string | null; authorId?: string | null; persona?: "attending" },
-  timeoutMs = 6_000
+  timeoutMs = TTS_START_BUDGET_MS
 ): Promise<Blob | null> {
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), Math.max(250, timeoutMs));
@@ -178,7 +189,7 @@ async function fetchTtsBlob(
 }
 
 /** How long to wait for audio to start before falling through to speechSynthesis. */
-const AUDIO_START_MS = 8_000;
+const AUDIO_START_MS = TTS_START_BUDGET_MS;
 
 function playBlob(
   blob: Blob,
