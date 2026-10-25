@@ -1,9 +1,13 @@
 /**
- * Clean a teacher's dense RecordedTrack into an ordered teach script:
- * scroll → window → zoom → point → draw, with narration beats.
+ * Clean a teacher's dense RecordedTrack into an attending script:
+ * orient → search → lean-in → commit → pearl.
  *
- * The dense log stays on the finding for author QA replay and the stats
- * digest. Learners follow this script (lib/replay.ts playTeachingGuide).
+ * Sparse anchors are the truth (the committed slice, window, zoom, point,
+ * and the final stroke). The dense log only times those acts. Intermediate
+ * scrolls, window fumbles, and zoom-in-then-out are not replayed.
+ *
+ * Learners follow this script (lib/replay.ts playTeachingGuide) and hear
+ * each act via TTS. They do not hear the microphone tape.
  */
 
 import { splitSentences } from "./performancePlan";
@@ -14,261 +18,419 @@ import {
 import type {
   Finding,
   FindingMeasurement,
+  NarrationSpan,
   RecordedEvent,
   RecordedTrack,
+  TeachAct,
   TeachBeat,
   TeachViewerAction,
   TeachingGuide,
 } from "./types";
 
-/** A slice of structured narration aligned to the track clock. */
-export interface NarrationSpan {
-  tStartMs: number;
-  tEndMs: number;
-  text: string;
-}
+export type { NarrationSpan };
 
-const SLICE_GAP_MS = 350;
-const VOI_GAP_MS = 280;
-const CAMERA_GAP_MS = 280;
-const CURSOR_GAP_MS = 420;
-const MERGE_BEAT_MS = 90;
 const WW_EPS = 20;
 const WC_EPS = 10;
-const ZOOM_EPS = 0.06;
+const ZOOM_EPS = 0.12;
 const PAN_EPS = 4;
-const POINT_EPS = 0.02;
+const POINT_EPS = 0.06;
 
-type Pend =
-  | { kind: "slice"; t0: number; t: number; index: number; series?: string }
-  | { kind: "voi"; t0: number; t: number; ww: number; wc: number }
-  | { kind: "camera"; t0: number; t: number; zoom: number; pan: [number, number] }
-  | { kind: "cursor"; t0: number; t: number; x: number; y: number };
-
-function pushBeat(beats: TeachBeat[], t: number, action: TeachViewerAction) {
-  beats.push({ t, actions: [action] });
+/** Authored landing. Omitted fields fall back to the track's settled end state. */
+export interface SparseAnchors {
+  sliceIndex?: number;
+  ww?: number;
+  wc?: number;
+  zoom?: number;
+  pan?: [number, number];
+  point?: { x: number; y: number };
+  label?: string;
+  description?: string;
+  teachingPoints?: string[];
 }
 
-function annotationAction(
-  e: Extract<RecordedEvent, { type: "annotation" }>
-): TeachViewerAction {
-  const { t: _t, type: _type, ...stroke } = e;
-  return { type: "annotate", ...stroke };
+const CONTENT_STOP = new Set([
+  "right",
+  "left",
+  "this",
+  "that",
+  "with",
+  "from",
+  "have",
+  "been",
+  "only",
+  "into",
+  "your",
+  "they",
+  "them",
+  "then",
+  "than",
+  "when",
+  "what",
+  "here",
+  "look",
+  "slice",
+  "window",
+  "windows",
+  "lung",
+  "soft",
+  "tissue",
+  "about",
+  "there",
+  "their",
+  "which",
+  "where",
+  "would",
+  "could",
+  "should",
+  "stack",
+  "follow",
+  "small",
+  "large",
+  "upper",
+  "lower",
+  "solid",
+  "apical",
+]);
+
+function wordWeight(text: string): number {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  return Math.max(1, words.length);
+}
+
+function sentence(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  return /[.!?]$/.test(t) ? t : `${t}.`;
+}
+
+function contentWords(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z]{5,}/g) ?? []).filter((w) => !CONTENT_STOP.has(w));
+}
+
+/** True when the sentence uses a word that also lives in the finding text. */
+function overlapsFinding(line: string, corpus: string): boolean {
+  const words = contentWords(line);
+  if (!words.length) return false;
+  const hay = corpus.toLowerCase();
+  return words.some((w) => hay.includes(w));
+}
+
+function mostlyCovered(line: string, corpus: string): boolean {
+  const words = contentWords(line);
+  if (!words.length) {
+    const needle = line.toLowerCase().replace(/\s+/g, " ").trim();
+    return needle.length > 0 && corpus.toLowerCase().includes(needle.slice(0, 48));
+  }
+  const hay = corpus.toLowerCase();
+  const hit = words.filter((w) => hay.includes(w)).length;
+  return hit / words.length >= 0.6;
 }
 
 /**
- * Collapse a dense record into gesture-sized beats. Cursor samples become one
- * point at the end of a dwell. Slice / VOI / zoom runs become the landing value.
+ * Split a verbatim transcript across the take by word count.
+ * Assumes a roughly constant speaking rate. This is not forced alignment:
+ * pauses, false starts, and "um"s are not detected. Prefer model-estimated
+ * segment times when `coerceNarrationSpans` accepts them.
  */
-export function buildTeachingGuide(
-  track: RecordedTrack,
-  opts?: { narration?: NarrationSpan[] }
-): TeachingGuide {
-  const beats: TeachBeat[] = [];
-  let pend: Pend | null = null;
-  let pendingSeries: string | undefined;
-  let knownSlice = track.start.sliceIndex;
-  let lastVoi =
-    track.start.ww != null &&
-    track.start.wc != null &&
-    Number.isFinite(track.start.ww) &&
-    Number.isFinite(track.start.wc)
-      ? { ww: track.start.ww, wc: track.start.wc }
-      : undefined;
-  let lastCam: { zoom: number; pan: [number, number] } | undefined;
-  let lastPt: { x: number; y: number } | undefined;
-
-  const flush = (p: Pend | null) => {
-    if (!p) return;
-    if (p.kind === "slice") {
-      if (p.index === knownSlice && !p.series) return;
-      knownSlice = p.index;
-      const action: TeachViewerAction = {
-        type: "scroll",
-        sliceIndex: p.index,
-        ...(p.series ? { seriesInstanceUID: p.series } : {}),
-      };
-      pushBeat(beats, p.t0, action);
-      return;
-    }
-    if (p.kind === "voi") {
-      if (
-        lastVoi &&
-        Math.abs(lastVoi.ww - p.ww) < WW_EPS &&
-        Math.abs(lastVoi.wc - p.wc) < WC_EPS
-      ) {
-        return;
-      }
-      lastVoi = { ww: p.ww, wc: p.wc };
-      pushBeat(beats, p.t0, { type: "window", ww: p.ww, wc: p.wc });
-      return;
-    }
-    if (p.kind === "camera") {
-      const panMag = Math.hypot(p.pan[0], p.pan[1]);
-      const changed = lastCam
-        ? Math.abs(lastCam.zoom - p.zoom) >= ZOOM_EPS ||
-          Math.hypot(lastCam.pan[0] - p.pan[0], lastCam.pan[1] - p.pan[1]) >= PAN_EPS
-        : Math.abs(p.zoom - 1) >= ZOOM_EPS || panMag >= PAN_EPS;
-      if (!changed) return;
-      lastCam = { zoom: p.zoom, pan: p.pan };
-      pushBeat(beats, p.t0, { type: "zoom", zoom: p.zoom, pan: p.pan });
-      return;
-    }
-    if (
-      lastPt &&
-      Math.hypot(lastPt.x - p.x, lastPt.y - p.y) < POINT_EPS
-    ) {
-      return;
-    }
-    lastPt = { x: p.x, y: p.y };
-    pushBeat(beats, p.t, { type: "point", x: p.x, y: p.y });
-  };
-
-  for (const e of track.events) {
-    if (e.type === "series") {
-      flush(pend);
-      pend = null;
-      pendingSeries = e.seriesInstanceUID;
-      continue;
-    }
-    if (e.type === "annotation") {
-      flush(pend);
-      pend = null;
-      pushBeat(beats, e.t, annotationAction(e));
-      continue;
-    }
-    if (e.type === "invert") {
-      flush(pend);
-      pend = null;
-      pushBeat(beats, e.t, { type: "invert", value: e.value });
-      continue;
-    }
-    if (e.type === "slice") {
-      if (pend?.kind === "slice" && e.t - pend.t <= SLICE_GAP_MS) {
-        pend.t = e.t;
-        pend.index = e.index;
-        pend.series = pend.series ?? pendingSeries;
-        pendingSeries = undefined;
-      } else {
-        flush(pend);
-        pend = {
-          kind: "slice",
-          t0: e.t,
-          t: e.t,
-          index: e.index,
-          series: pendingSeries,
-        };
-        pendingSeries = undefined;
-      }
-      continue;
-    }
-    if (e.type === "voi") {
-      if (pend?.kind === "voi" && e.t - pend.t <= VOI_GAP_MS) {
-        pend.t = e.t;
-        pend.ww = e.ww;
-        pend.wc = e.wc;
-      } else {
-        flush(pend);
-        pend = { kind: "voi", t0: e.t, t: e.t, ww: e.ww, wc: e.wc };
-      }
-      continue;
-    }
-    if (e.type === "camera") {
-      if (pend?.kind === "camera" && e.t - pend.t <= CAMERA_GAP_MS) {
-        pend.t = e.t;
-        pend.zoom = e.zoom;
-        pend.pan = e.pan;
-      } else {
-        flush(pend);
-        pend = { kind: "camera", t0: e.t, t: e.t, zoom: e.zoom, pan: e.pan };
-      }
-      continue;
-    }
-    if (e.type === "cursor") {
-      if (pend?.kind === "cursor" && e.t - pend.t <= CURSOR_GAP_MS) {
-        pend.t = e.t;
-        pend.x = e.x;
-        pend.y = e.y;
-      } else {
-        flush(pend);
-        pend = { kind: "cursor", t0: e.t, t: e.t, x: e.x, y: e.y };
-      }
-    }
-  }
-  flush(pend);
-  if (pendingSeries) {
-    pushBeat(beats, track.durationMs, {
-      type: "scroll",
-      sliceIndex: knownSlice,
-      seriesInstanceUID: pendingSeries,
-    });
-  }
-
-  const deduped = dedupeAnnotations(beats);
-  const merged = mergeCloseBeats(deduped);
-  const held = insertHolds(merged);
-  const withSay = assignNarration(cueBeats(held), opts?.narration ?? [], track.durationMs);
-
-  return {
-    durationMs: track.durationMs,
-    start: {
-      sliceIndex: track.start.sliceIndex,
-      ww: track.start.ww,
-      wc: track.start.wc,
-    },
-    beats: withSay,
-  };
-}
-
-function dedupeAnnotations(beats: TeachBeat[]): TeachBeat[] {
-  const lastAt = new Map<string, { bi: number; ai: number }>();
-  beats.forEach((b, bi) => {
-    b.actions.forEach((a, ai) => {
-      if (a.type === "annotate" && a.annotationUID) {
-        lastAt.set(a.annotationUID, { bi, ai });
-      }
-    });
+export function spansFromTranscript(text: string, durationMs: number): NarrationSpan[] {
+  const sentences = splitSentences(text);
+  const duration = Math.max(0, durationMs);
+  if (!sentences.length || duration <= 0) return [];
+  const weights = sentences.map(wordWeight);
+  const total = weights.reduce((sum, w) => sum + w, 0) || sentences.length;
+  let cursor = 0;
+  return sentences.map((line, i) => {
+    const share = (weights[i] || 1) / total;
+    const tStartMs = Math.round(cursor);
+    cursor += share * duration;
+    const tEndMs = i === sentences.length - 1 ? duration : Math.max(tStartMs + 1, Math.round(cursor));
+    return { tStartMs, tEndMs: Math.max(tStartMs + 1, tEndMs), text: line };
   });
-  return beats
-    .map((b, bi) => ({
-      ...b,
-      actions: b.actions.filter((a, ai) => {
-        if (a.type !== "annotate" || !a.annotationUID) return true;
-        const last = lastAt.get(a.annotationUID);
-        return last?.bi === bi && last.ai === ai;
-      }),
-    }))
-    .filter((b) => b.actions.length > 0);
 }
 
-function mergeCloseBeats(beats: TeachBeat[]): TeachBeat[] {
-  const out: TeachBeat[] = [];
-  for (const b of beats) {
-    const last = out[out.length - 1];
-    if (last && b.t - last.t <= MERGE_BEAT_MS && b.actions.length > 0) {
-      last.actions.push(...b.actions);
-    } else {
-      out.push({ t: b.t, actions: [...b.actions] });
+/** Clamp, drop empties, and order spans on the track clock. */
+export function normalizeNarrationSpans(
+  raw: Array<Partial<NarrationSpan>> | undefined,
+  durationMs: number
+): NarrationSpan[] {
+  const duration = Math.max(1, durationMs);
+  const spans: NarrationSpan[] = [];
+  for (const item of raw ?? []) {
+    const text = typeof item.text === "string" ? item.text.replace(/\s+/g, " ").trim() : "";
+    if (!text) continue;
+    let tStartMs = Number(item.tStartMs);
+    let tEndMs = Number(item.tEndMs);
+    if (!Number.isFinite(tStartMs)) tStartMs = 0;
+    if (!Number.isFinite(tEndMs)) tEndMs = tStartMs + 1;
+    tStartMs = Math.max(0, Math.min(duration, tStartMs));
+    tEndMs = Math.max(tStartMs + 1, Math.min(duration, tEndMs));
+    spans.push({ tStartMs, tEndMs, text });
+  }
+  spans.sort((a, b) => a.tStartMs - b.tStartMs || a.tEndMs - b.tEndMs);
+  return spans;
+}
+
+function estimatedSpansUsable(
+  raw: Array<Partial<NarrationSpan>> | undefined,
+  durationMs: number,
+  sentenceCount: number
+): boolean {
+  if (!raw?.length || durationMs <= 0) return false;
+  const rows = raw.filter((item) => typeof item.text === "string" && item.text.trim());
+  if (!rows.length) return false;
+  // One span covering the whole take is the naive blob, not alignment.
+  if (rows.length === 1 && sentenceCount > 1) {
+    const start = Number(rows[0].tStartMs);
+    const end = Number(rows[0].tEndMs);
+    if (Number.isFinite(start) && Number.isFinite(end) && end - start >= durationMs * 0.85) {
+      return false;
     }
   }
-  return out;
+  let prev = -1;
+  for (const item of rows) {
+    const start = Number(item.tStartMs);
+    const end = Number(item.tEndMs);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
+    if (start < -50 || end > durationMs + 250) return false;
+    if (start + 30 < prev) return false;
+    prev = start;
+  }
+  return true;
 }
 
-/** A consultant does not jump from gesture to gesture. A long quiet gap is a hold. */
-const HOLD_GAP_MS = 900;
+export type NarrationAlignment = "estimated" | "proportional";
 
-function insertHolds(beats: TeachBeat[]): TeachBeat[] {
-  const out: TeachBeat[] = [];
-  for (let i = 0; i < beats.length; i++) {
-    const beat = beats[i];
-    out.push(beat);
-    const next = beats[i + 1];
-    if (!next) continue;
-    const gap = next.t - beat.t;
-    if (gap < HOLD_GAP_MS) continue;
-    const ms = Math.min(2400, gap - 320);
-    if (ms < 450) continue;
-    out.push({ t: beat.t + 280, actions: [{ type: "pause", ms }] });
+/**
+ * Keep model segment times when they are ordered and inside the take.
+ * Otherwise split the verbatim transcript by word count and say so.
+ */
+export function coerceNarrationSpans(
+  segments: Array<Partial<NarrationSpan>> | undefined,
+  transcript: string,
+  durationMs: number
+): { spans: NarrationSpan[]; alignment: NarrationAlignment } {
+  const duration = Math.max(0, durationMs);
+  const sentences = splitSentences(transcript);
+  if (estimatedSpansUsable(segments, duration, sentences.length)) {
+    return {
+      spans: normalizeNarrationSpans(segments, Math.max(1, duration)),
+      alignment: "estimated",
+    };
+  }
+  const blob = (segments ?? [])
+    .map((item) => (typeof item.text === "string" ? item.text.trim() : ""))
+    .filter(Boolean)
+    .join(" ");
+  const text = transcript.trim() || blob;
+  return {
+    spans: spansFromTranscript(text, Math.max(duration, 1)),
+    alignment: "proportional",
+  };
+}
+
+interface Money {
+  sliceIndex: number;
+  ww?: number;
+  wc?: number;
+  zoom?: { zoom: number; pan: [number, number] };
+  point?: { x: number; y: number };
+  series?: string;
+  annotation?: Extract<RecordedEvent, { type: "annotation" }>;
+  invert?: boolean;
+}
+
+function lastOf<T extends RecordedEvent["type"]>(
+  track: RecordedTrack,
+  type: T
+): Extract<RecordedEvent, { type: T }> | undefined {
+  for (let i = track.events.length - 1; i >= 0; i--) {
+    const event = track.events[i];
+    if (event.type === type) return event as Extract<RecordedEvent, { type: T }>;
+  }
+  return undefined;
+}
+
+function voiClose(
+  ww: number,
+  wc: number,
+  targetWw: number,
+  targetWc: number
+): boolean {
+  return Math.abs(ww - targetWw) < WW_EPS && Math.abs(wc - targetWc) < WC_EPS;
+}
+
+/** Committed landing from the end of the log. Fumbles in the middle are ignored. */
+export function settledDisplay(track: RecordedTrack): {
+  sliceIndex: number;
+  ww?: number;
+  wc?: number;
+} {
+  const money = moneyFromTrack(track);
+  return { sliceIndex: money.sliceIndex, ww: money.ww, wc: money.wc };
+}
+
+function moneyFromTrack(track: RecordedTrack): Money {
+  const lastSlice = lastOf(track, "slice");
+  const lastAnn = lastOf(track, "annotation");
+  const lastVoi = lastOf(track, "voi");
+  const lastCam = lastOf(track, "camera");
+  const lastCursor = lastOf(track, "cursor");
+  const lastSeries = lastOf(track, "series");
+  const lastInvert = lastOf(track, "invert");
+  const sliceIndex =
+    lastAnn?.sliceIndex != null && Number.isFinite(lastAnn.sliceIndex)
+      ? lastAnn.sliceIndex
+      : (lastSlice?.index ?? track.start.sliceIndex);
+  let zoom: Money["zoom"];
+  if (lastCam) {
+    const panMag = Math.hypot(lastCam.pan[0], lastCam.pan[1]);
+    if (Math.abs(lastCam.zoom - 1) >= ZOOM_EPS || panMag >= PAN_EPS) {
+      zoom = { zoom: lastCam.zoom, pan: lastCam.pan };
+    }
+  }
+  return {
+    sliceIndex,
+    ww: lastVoi?.ww ?? track.start.ww,
+    wc: lastVoi?.wc ?? track.start.wc,
+    zoom,
+    point: lastCursor ? { x: lastCursor.x, y: lastCursor.y } : undefined,
+    series: lastSeries?.seriesInstanceUID,
+    annotation: lastAnn,
+    invert: lastInvert?.value === true ? true : undefined,
+  };
+}
+
+/**
+ * Finding fields win when they are a real landing. A slice/window that merely
+ * copies the track's opening frame is the prime, not the commit — the log's
+ * settled end is the money shot.
+ */
+function resolveMoney(track: RecordedTrack, anchors?: SparseAnchors): Money {
+  const settled = moneyFromTrack(track);
+  const slice =
+    anchors?.sliceIndex != null && Number.isFinite(anchors.sliceIndex)
+      ? anchors.sliceIndex === track.start.sliceIndex &&
+        settled.sliceIndex !== track.start.sliceIndex
+        ? settled.sliceIndex
+        : anchors.sliceIndex
+      : settled.sliceIndex;
+  let ww = settled.ww;
+  let wc = settled.wc;
+  if (
+    anchors?.ww != null &&
+    anchors.wc != null &&
+    Number.isFinite(anchors.ww) &&
+    Number.isFinite(anchors.wc)
+  ) {
+    const copiesStart =
+      track.start.ww != null &&
+      track.start.wc != null &&
+      voiClose(anchors.ww, anchors.wc, track.start.ww, track.start.wc);
+    const copiesSettled =
+      settled.ww != null &&
+      settled.wc != null &&
+      voiClose(anchors.ww, anchors.wc, settled.ww, settled.wc);
+    if (copiesStart && settled.ww != null && settled.wc != null && !copiesSettled) {
+      ww = settled.ww;
+      wc = settled.wc;
+    } else {
+      ww = anchors.ww;
+      wc = anchors.wc;
+    }
+  }
+  const point = anchors?.point ?? settled.point;
+  let zoom = settled.zoom;
+  if (anchors?.zoom != null && Number.isFinite(anchors.zoom)) {
+    const pan = anchors.pan ?? zoom?.pan ?? [0, 0];
+    const panMag = Math.hypot(pan[0], pan[1]);
+    zoom =
+      Math.abs(anchors.zoom - 1) >= ZOOM_EPS || panMag >= PAN_EPS
+        ? { zoom: anchors.zoom, pan }
+        : undefined;
+  }
+  return {
+    ...settled,
+    sliceIndex: slice,
+    ww,
+    wc,
+    zoom,
+    point,
+  };
+}
+
+function finalRunStart(
+  samples: Array<{ t: number; hit: boolean }>
+): number | null {
+  let run: number | null = null;
+  let seen = false;
+  for (const sample of samples) {
+    if (sample.hit) {
+      if (!seen) run = sample.t;
+      seen = true;
+    } else if (seen) {
+      run = null;
+      seen = false;
+    }
+  }
+  return run;
+}
+
+function sliceTime(track: RecordedTrack, sliceIndex: number): number {
+  const t = finalRunStart(
+    track.events
+      .filter((e): e is Extract<RecordedEvent, { type: "slice" }> => e.type === "slice")
+      .map((e) => ({ t: e.t, hit: e.index === sliceIndex }))
+  );
+  return t ?? 0;
+}
+
+function windowTime(track: RecordedTrack, ww: number, wc: number): number | null {
+  return finalRunStart(
+    track.events
+      .filter((e): e is Extract<RecordedEvent, { type: "voi" }> => e.type === "voi")
+      .map((e) => ({ t: e.t, hit: voiClose(e.ww, e.wc, ww, wc) }))
+  );
+}
+
+function zoomTime(track: RecordedTrack, zoom: number, pan: [number, number]): number | null {
+  return finalRunStart(
+    track.events
+      .filter((e): e is Extract<RecordedEvent, { type: "camera" }> => e.type === "camera")
+      .map((e) => ({
+        t: e.t,
+        hit:
+          Math.abs(e.zoom - zoom) < ZOOM_EPS &&
+          Math.hypot(e.pan[0] - pan[0], e.pan[1] - pan[1]) < PAN_EPS,
+      }))
+  );
+}
+
+function pointTime(track: RecordedTrack, point: { x: number; y: number }): number | null {
+  let best: { t: number; d: number } | null = null;
+  for (const event of track.events) {
+    if (event.type !== "cursor") continue;
+    const d = Math.hypot(event.x - point.x, event.y - point.y);
+    if (d > POINT_EPS) continue;
+    if (!best || d < best.d || (d === best.d && event.t > best.t)) {
+      best = { t: event.t, d };
+    }
+  }
+  return best?.t ?? lastOf(track, "cursor")?.t ?? null;
+}
+
+function placeTimes(preferred: number[], duration: number): number[] {
+  const n = preferred.length;
+  if (n === 0) return [];
+  const span = Math.max(0, duration);
+  const gap = Math.min(420, Math.max(1, Math.floor(span / n)));
+  const out: number[] = [];
+  let prev = -gap;
+  for (let i = 0; i < n; i++) {
+    const room = Math.max(0, span - (n - 1 - i) * gap);
+    const want = Number.isFinite(preferred[i]) ? preferred[i] : 0;
+    const at = Math.min(room, Math.max(prev + gap, want));
+    out.push(Math.max(0, at));
+    prev = out[i];
   }
   return out;
 }
@@ -277,10 +439,10 @@ function spokenWindow(ww: number, wc: number): string {
   const w = Math.round(ww);
   const c = Math.round(wc);
   if (ww >= 1000 && wc <= -400) {
-    return `Lung windows, ${w} over ${c}. Air and vessels read here; soft tissue will hide a nodule.`;
+    return `Lung windows, ${w} over ${c}. Air and vessels read here; soft tissue hides them.`;
   }
   if (ww >= 1400 && wc >= 200) {
-    return `Bone windows, ${w} over ${c}. Look at the cortex, not the lung.`;
+    return `Bone windows, ${w} over ${c}. Look at the cortex, not the soft tissue.`;
   }
   if (ww <= 250 && wc >= 20 && wc <= 90) {
     return `Brain windows, ${w} over ${c}. Grey-white contrast lives here.`;
@@ -291,117 +453,171 @@ function spokenWindow(ww: number, wc: number): string {
   return `Window ${w} over ${c}. Notice what this setting shows that the last one hid.`;
 }
 
-/** Where to go, which window, what to notice, where to look, what to measure. */
-function gestureCue(actions: TeachViewerAction[]): string {
-  const lines: string[] = [];
-  for (const a of actions) {
-    switch (a.type) {
-      case "scroll":
-        lines.push(
-          a.seriesInstanceUID
-            ? `Follow me onto the comparison series, slice ${a.sliceIndex}.`
-            : `Follow the stack to slice ${a.sliceIndex}.`
-        );
-        break;
-      case "window":
-        lines.push(spokenWindow(a.ww, a.wc));
-        break;
-      case "zoom":
-        if (a.zoom >= 1.2) {
-          lines.push(
-            `Zoom in, about ${a.zoom.toFixed(1)} times. Stay on this slice and look at the edge.`
-          );
-        } else if (a.zoom <= 0.85) {
-          lines.push(`Zoom back out so you can see where you are.`);
-        } else {
-          lines.push(`Set the magnification.`);
-        }
-        break;
-      case "point":
-        lines.push(`Look here.`);
-        break;
-      case "annotate": {
-        const mm =
-          a.lengthMm != null && Number.isFinite(a.lengthMm)
-            ? ` It measures ${Math.round(a.lengthMm)} millimetres.`
-            : "";
-        const lead =
-          a.tool === "Length" || a.tool === "Bidirectional"
-            ? "Put a caliper on it."
-            : a.tool === "EllipticalROI" || a.tool === "RectangleROI"
-              ? "Draw a region and read the density."
-              : a.tool === "Angle"
-                ? "Measure the angle."
-                : "Mark it.";
-        lines.push(`${lead}${mm}`);
-        break;
-      }
-      case "invert":
-        lines.push(a.value ? `Invert the grayscale.` : `Restore the grayscale.`);
-        break;
-      case "pause":
-        lines.push(`Hold. Look before we move.`);
-        break;
-      default:
-        break;
-    }
+function findingCorpus(anchors?: SparseAnchors): string {
+  return [anchors?.label, anchors?.description, ...(anchors?.teachingPoints ?? [])]
+    .filter((s): s is string => Boolean(s?.trim()))
+    .join(" ");
+}
+
+interface DraftAct {
+  act: TeachAct;
+  preferredT: number;
+  actions: TeachViewerAction[];
+  stem: string;
+}
+
+function annotationAction(
+  e: Extract<RecordedEvent, { type: "annotation" }>
+): TeachViewerAction {
+  const { t: _t, type: _type, ...stroke } = e;
+  return { type: "annotate", ...stroke };
+}
+
+function measureLine(action: TeachViewerAction | undefined): string {
+  if (!action || action.type !== "annotate") return "";
+  if (action.lengthMm != null && Number.isFinite(action.lengthMm)) {
+    return `It measures ${Math.round(action.lengthMm)} millimetres.`;
   }
-  return lines.join(" ");
+  return "";
 }
 
-function cueBeats(beats: TeachBeat[]): TeachBeat[] {
-  return beats.map((b) => {
-    const cue = gestureCue(b.actions);
-    const copy = { ...b, actions: [...b.actions] };
-    if (!cue) return copy;
-    return { ...copy, say: b.say ? `${cue} ${b.say}` : cue };
+/**
+ * Collapse a dense record into five attending acts at most.
+ * Values come from the committed anchors. Times come from the final run
+ * that landed on each anchor, then forced into orient → pearl order so a
+ * point-before-window fumble is not what the registrar sees.
+ */
+export function buildTeachingGuide(
+  track: RecordedTrack,
+  opts?: { narration?: NarrationSpan[]; anchors?: SparseAnchors }
+): TeachingGuide {
+  const money = resolveMoney(track, opts?.anchors);
+  const duration = Math.max(0, track.durationMs);
+  const drafts: DraftAct[] = [];
+
+  const scroll: TeachViewerAction = {
+    type: "scroll",
+    sliceIndex: money.sliceIndex,
+    ...(money.series ? { seriesInstanceUID: money.series } : {}),
+  };
+  drafts.push({
+    act: "orient",
+    preferredT: sliceTime(track, money.sliceIndex),
+    actions: [scroll],
+    stem: "Follow the stack.",
   });
-}
 
-function joinSay(prev: string | undefined, next: string): string {
-  if (!prev) return next;
-  return `${prev} ${next}`;
-}
-
-function assignNarration(
-  beats: TeachBeat[],
-  spans: NarrationSpan[],
-  durationMs: number
-): TeachBeat[] {
-  const next = beats.map((b) => ({ ...b, actions: [...b.actions] }));
-  for (const span of spans) {
-    const sentences = splitSentences(span.text);
-    if (!sentences.length) continue;
-    const t0 = Math.max(0, span.tStartMs);
-    const t1 = Math.max(t0, span.tEndMs);
-    let targets = next
-      .map((b, i) => ({ b, i }))
-      .filter(({ b }) => b.t >= t0 - 1 && b.t <= t1 + 1)
-      .map(({ i }) => i);
-    if (!targets.length) targets = next.map((_, i) => i);
-    if (!targets.length) {
-      sentences.forEach((s, i) => {
-        const t = Math.min(durationMs, t0 + i);
-        next.push({ t, actions: [], say: s });
-      });
-      next.sort((a, b) => a.t - b.t);
-      continue;
-    }
-    if (sentences.length === 1) {
-      const prefer =
-        targets.find((i) =>
-          next[i].actions.some((a) => a.type === "point" || a.type === "annotate")
-        ) ?? targets[0];
-      next[prefer].say = joinSay(next[prefer].say, sentences[0]);
-      continue;
-    }
-    sentences.forEach((s, sIdx) => {
-      const slot =
-        targets[Math.min(targets.length - 1, Math.floor((sIdx * targets.length) / sentences.length))];
-      next[slot].say = joinSay(next[slot].say, s);
+  if (money.ww != null && money.wc != null && Number.isFinite(money.ww) && Number.isFinite(money.wc)) {
+    const actions: TeachViewerAction[] = [{ type: "window", ww: money.ww, wc: money.wc }];
+    if (money.invert) actions.push({ type: "invert", value: true });
+    drafts.push({
+      act: "search",
+      preferredT: windowTime(track, money.ww, money.wc) ?? 0,
+      actions,
+      stem: spokenWindow(money.ww, money.wc),
     });
   }
-  return next;
+
+  if (money.zoom) {
+    drafts.push({
+      act: "lean-in",
+      preferredT: zoomTime(track, money.zoom.zoom, money.zoom.pan) ?? 0,
+      actions: [{ type: "zoom", zoom: money.zoom.zoom, pan: money.zoom.pan }],
+      stem: `Lean in, about ${money.zoom.zoom.toFixed(1)} times. Stay on this slice and look at the edge.`,
+    });
+  }
+
+  const commitActions: TeachViewerAction[] = [];
+  if (money.point) commitActions.push({ type: "point", x: money.point.x, y: money.point.y });
+  if (money.annotation) commitActions.push(annotationAction(money.annotation));
+  if (commitActions.length) {
+    const pointed = money.point ? pointTime(track, money.point) : null;
+    drafts.push({
+      act: "commit",
+      preferredT: pointed ?? money.annotation?.t ?? 0,
+      actions: commitActions,
+      stem: sentence(
+        ["Look here.", measureLine(commitActions.find((a) => a.type === "annotate"))]
+          .filter(Boolean)
+          .join(" ")
+      ),
+    });
+  }
+
+  const times = placeTimes(
+    drafts.map((d) => d.preferredT),
+    Math.max(duration, 1)
+  );
+  const beats: TeachBeat[] = drafts.map((draft, i) => ({
+    t: times[i] ?? 0,
+    act: draft.act,
+    actions: draft.actions,
+    say: sentence(draft.stem),
+  }));
+
+  const corpus = findingCorpus(opts?.anchors);
+  const spans = normalizeNarrationSpans(opts?.narration ?? track.narration, Math.max(duration, 1));
+  const used = new Set<number>();
+  beats.forEach((beat, i) => {
+    if (beat.act === "pearl") return;
+    const end = beats[i + 1]?.t ?? Math.max(duration, beat.t + 1);
+    const hit = spans.findIndex((span, idx) => {
+      if (used.has(idx)) return false;
+      const mid = (span.tStartMs + span.tEndMs) / 2;
+      if (mid < beat.t || mid >= end) return false;
+      return !overlapsFinding(span.text, corpus);
+    });
+    if (hit < 0) return;
+    used.add(hit);
+    beat.say = `${beat.say} ${sentence(spans[hit].text)}`.trim();
+  });
+
+  const held = spans.filter((_, idx) => !used.has(idx)).map((span) => span.text);
+  const pearlT = (beats[beats.length - 1]?.t ?? 0) + 1;
+  beats.push({
+    t: Math.min(Math.max(duration, pearlT), Math.max(pearlT, times[times.length - 1] ?? 0) + 1),
+    act: "pearl",
+    actions: [],
+    say: pearlSay(opts?.anchors, held),
+  });
+  // Keep pearl strictly after the last drive so the name is not spoken on the way in.
+  const lastDrive = beats[beats.length - 2];
+  const pearl = beats[beats.length - 1];
+  if (lastDrive && pearl.t <= lastDrive.t) pearl.t = lastDrive.t + 1;
+
+  return {
+    durationMs: duration,
+    start: {
+      sliceIndex: track.start.sliceIndex,
+      ww: track.start.ww,
+      wc: track.start.wc,
+    },
+    beats,
+  };
+}
+
+function pearlSay(anchors: SparseAnchors | undefined, held: string[]): string {
+  const parts: string[] = [];
+  const desc = anchors?.description?.trim();
+  if (desc) parts.push(sentence(desc));
+  for (const point of anchors?.teachingPoints ?? []) {
+    const line = point.trim();
+    if (!line) continue;
+    if (desc && mostlyCovered(line, desc)) continue;
+    parts.push(sentence(line));
+  }
+  let corpus = parts.join(" ");
+  for (const line of held) {
+    if (!overlapsFinding(line, findingCorpus(anchors)) && parts.length > 0) continue;
+    if (mostlyCovered(line, corpus)) continue;
+    const next = sentence(line);
+    parts.push(next);
+    corpus = `${corpus} ${next}`;
+  }
+  if (parts.length) return parts.join(" ");
+  const label = anchors?.label?.trim();
+  if (label) return sentence(`This is ${label}`);
+  return "Say what you see on this slice, and what goes in the report.";
 }
 
 export function narrationText(input: {
@@ -414,30 +630,67 @@ export function narrationText(input: {
     .join(". ");
 }
 
-/** Guide for one finding track, using its structured text as the spoken beats. */
+/** Guide for one finding track. Anchors are the landing; narration is the clock. */
 export function guideForFindingTrack(
   track: RecordedTrack,
-  narration: { description?: string; teachingPoints?: string[] }
+  narration: {
+    description?: string;
+    teachingPoints?: string[];
+    label?: string;
+    spans?: NarrationSpan[];
+    sliceIndex?: number;
+    ww?: number;
+    wc?: number;
+    point?: { x: number; y: number };
+  }
 ): TeachingGuide {
-  const text = narrationText(narration);
   return buildTeachingGuide(track, {
-    narration: text
-      ? [{ tStartMs: 0, tEndMs: Math.max(1, track.durationMs), text }]
-      : [],
+    narration: narration.spans ?? track.narration,
+    anchors: {
+      label: narration.label,
+      description: narration.description,
+      teachingPoints: narration.teachingPoints,
+      sliceIndex: narration.sliceIndex,
+      ww: narration.ww,
+      wc: narration.wc,
+      point: narration.point,
+    },
   });
 }
 
 /**
- * Prefer a fresh guide from the track + current prose (author edits apply).
- * Fall back to a persisted guide when the dense track was not stored.
+ * Rebuild from the track when we have one, so author edits and stored
+ * transcript spans apply. A persisted guide is the fallback for a finding
+ * whose dense track was not kept.
  */
 export function resolveTeachingGuide(
-  finding: Pick<Finding, "track" | "teachingGuide" | "description" | "teachingPoints">
+  finding: Pick<
+    Finding,
+    | "track"
+    | "teachingGuide"
+    | "description"
+    | "teachingPoints"
+    | "label"
+    | "sliceIndex"
+    | "windowWidth"
+    | "windowCenter"
+    | "marker"
+  >
 ): TeachingGuide | null {
   if (finding.track && (finding.track.events?.length || finding.track.durationMs > 0)) {
     return guideForFindingTrack(finding.track, {
+      label: finding.label,
       description: finding.description,
       teachingPoints: finding.teachingPoints,
+      sliceIndex: finding.sliceIndex,
+      ww: finding.windowWidth,
+      wc: finding.windowCenter,
+      point:
+        finding.marker &&
+        Number.isFinite(finding.marker.x_pct) &&
+        Number.isFinite(finding.marker.y_pct)
+          ? { x: finding.marker.x_pct, y: finding.marker.y_pct }
+          : undefined,
     });
   }
   if (finding.teachingGuide?.beats?.length) return finding.teachingGuide;
@@ -454,6 +707,7 @@ export function formatTeachingGuideLine(guide: TeachingGuide | null | undefined)
   if (!guide?.beats?.length) return "";
   const bits: string[] = [];
   for (const beat of guide.beats) {
+    if (beat.act) bits.push(beat.act);
     for (const a of beat.actions) {
       bits.push(formatGuideAction(a));
       if (bits.length >= 14) break;
@@ -466,8 +720,12 @@ export function formatTeachingGuideLine(guide: TeachingGuide | null | undefined)
     if (bits.length >= 14) break;
   }
   if (!bits.length) return "";
-  const more = countActions(guide) > bits.filter((b) => !b.startsWith("say:")).length;
+  const more = countActions(guide) > bits.filter((b) => !b.startsWith("say:") && !isAct(b)).length;
   return `guide=[${bits.join(" → ")}${more ? " → …" : ""}]`;
+}
+
+function isAct(bit: string): boolean {
+  return bit === "orient" || bit === "search" || bit === "lean-in" || bit === "commit" || bit === "pearl";
 }
 
 function countActions(guide: TeachingGuide): number {
@@ -517,18 +775,38 @@ export function measurementsFromGuide(guide: TeachingGuide): FindingMeasurement[
 /**
  * Attach the track, its teach script, and any strokes the recording captured
  * onto a finding draft. Live viewport measurements win when both exist.
+ * Transcript spans stay on the track so a later session can rebuild the script.
  */
 export function withRecordedTeaching<T extends Partial<Finding>>(
   base: T,
   track: RecordedTrack,
-  narration: { description?: string; teachingPoints?: string[] },
+  narration: {
+    description?: string;
+    teachingPoints?: string[];
+    label?: string;
+    spans?: NarrationSpan[];
+  },
   liveMeasurements?: FindingMeasurement[]
 ): T {
-  const teachingGuide = guideForFindingTrack(track, narration);
+  const spans = normalizeNarrationSpans(
+    narration.spans ?? track.narration,
+    Math.max(1, track.durationMs)
+  );
+  const stored: RecordedTrack = spans.length ? { ...track, narration: spans } : { ...track };
+  const teachingGuide = guideForFindingTrack(stored, {
+    label: narration.label ?? base.label,
+    description: narration.description,
+    teachingPoints: narration.teachingPoints,
+    spans: stored.narration,
+    point:
+      base.marker && Number.isFinite(base.marker.x_pct) && Number.isFinite(base.marker.y_pct)
+        ? { x: base.marker.x_pct, y: base.marker.y_pct }
+        : undefined,
+  });
   const measurements = mergeMeasurements(liveMeasurements, measurementsFromTrack(track));
   return {
     ...base,
-    track,
+    track: stored,
     durationMs: track.durationMs,
     teachingGuide,
     ...(measurements.length ? { measurements } : {}),

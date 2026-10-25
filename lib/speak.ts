@@ -43,6 +43,8 @@ export type SpeakOpts = {
   voiceId?: string | null;
   /** Resolve voice from Author.voice when voiceId not known client-side. */
   authorId?: string | null;
+  /** Teach-guide beats: Gemini attending voice, not the cloned mic. */
+  persona?: "attending";
 };
 
 export async function speakBeats(
@@ -52,6 +54,7 @@ export async function speakBeats(
     onEnd?: () => void;
     voiceId?: string | null;
     authorId?: string | null;
+    persona?: "attending";
   }
 ): Promise<void> {
   const chunks = texts.map((t) => t.trim()).filter(Boolean);
@@ -73,8 +76,9 @@ export async function speakBeats(
 
   const prefetch = (t: string) =>
     fetchTtsBlob(t, signal, {
-      voiceId: opts?.voiceId,
-      authorId: opts?.authorId,
+      voiceId: opts?.persona === "attending" ? undefined : opts?.voiceId,
+      authorId: opts?.persona === "attending" ? undefined : opts?.authorId,
+      persona: opts?.persona,
     });
 
   let nextBlob = prefetch(chunks[0]);
@@ -109,7 +113,7 @@ export async function speakBeats(
 async function fetchTtsBlob(
   text: string,
   signal: AbortSignal,
-  voice?: { voiceId?: string | null; authorId?: string | null }
+  voice?: { voiceId?: string | null; authorId?: string | null; persona?: "attending" }
 ): Promise<Blob | null> {
   try {
     const res = await fetch("/api/tts", {
@@ -119,7 +123,8 @@ async function fetchTtsBlob(
         text,
         // voiceId is intentionally not sent — /api/tts resolves the voice from
         // the author record server-side so a client cannot pick an arbitrary one.
-        authorId: voice?.authorId || undefined,
+        authorId: voice?.persona === "attending" ? undefined : voice?.authorId || undefined,
+        persona: voice?.persona,
       }),
       signal,
     });

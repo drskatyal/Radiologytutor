@@ -354,6 +354,36 @@ test("teachingGuideFromTrack is scroll, window, zoom, then point", () => {
   );
 });
 
+test("a silent tool is not a tour, and a blank play_guide is", async () => {
+  const silent: TutorAgent = (ctx) => ({
+    answer: "",
+    actions: [{ type: "show_finding", findingId: ctx.finding.id }],
+  });
+  const organized: TutorAgent = (ctx) => ({
+    answer: "",
+    actions: [{ type: "play_guide", findingId: ctx.finding.id }],
+  });
+  const silentScore = await scoreTutorSession(fixture, silent, "silent show_finding");
+  const organizedScore = await scoreTutorSession(fixture, organized, "organized play_guide");
+  const textOnly = await scoreTutorSession(fixture, textOnlyTutor, "text-only fake");
+
+  assert.equal(check(silentScore, "beat-ptx", "spoken_beat").pass, false);
+  assert.equal(check(silentScore, "beat-ptx", "narration_present").pass, false);
+  assert.equal(silentScore.hardPass, false);
+
+  assert.equal(check(textOnly, "beat-ptx", "text_only").pass, false);
+  assert.equal(check(textOnly, "beat-ptx", "spoken_beat").pass, true);
+  assert.equal(textOnly.hardPass, false);
+
+  assert.equal(organizedScore.hardPass, true, formatScorecard(organizedScore));
+  assert.equal(organizedScore.worldClass, true);
+  assert.equal(check(organizedScore, "beat-ptx", "spoken_beat").pass, true);
+  assert.equal(check(organizedScore, "beat-ptx", "speech_on_viewport").pass, true);
+  assert.equal(check(organizedScore, "beat-ptx", "narration_ahead").pass, true);
+  assert.equal(check(organizedScore, "beat-nodule", "human_sequence").pass, true);
+  assert.ok(organizedScore.hardPassed > silentScore.hardPassed);
+});
+
 test("loader rejects identifiers and a viewer that is already on the finding", () => {
   assert.throws(() => parseTutorFixture({ ...fixture, notes: "PatientName: example" }), /patient/i);
   const seated = structuredClone(fixture);

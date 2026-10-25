@@ -114,6 +114,8 @@ export function useStudentSession(
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
   /** Autonomous Teach tour: continue after TTS until paused or finished. */
   const tourActiveRef = useRef(false);
+  /** play_guide is the only speech on this turn — speak its beats. */
+  const narrateGuideRef = useRef(false);
   const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
     async () => {}
   );
@@ -552,8 +554,31 @@ export function useStudentSession(
           markRevealed(target.id);
           const guide = resolveTeachingGuide(target);
           if (guide && guideHasMotion(guide)) {
-            // The model's own TTS is already speaking this turn — visuals only.
-            await playFindingGuide(target, guide);
+            // A live answer is already in speakBeats. Speaking the guide on
+            // top would cancel that clip. Narrate only when this call is the
+            // speech (a tool-only turn with nothing else to say).
+            if (narrateGuideRef.current) {
+              const turnId = nextId();
+              setTurns((prev) => [...prev, { id: turnId, role: "assistant", text: "" }]);
+              setPhase("speaking");
+              setSpeakingTurnId(turnId);
+              await playFindingGuide(target, guide, {
+                narrate: async (text) => {
+                  setTurns((prev) =>
+                    prev.map((turn) =>
+                      turn.id === turnId
+                        ? { ...turn, text: turn.text ? `${turn.text} ${text}` : text }
+                        : turn
+                    )
+                  );
+                  await speak(text, undefined, { persona: "attending" });
+                },
+              });
+              setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
+              setPhase((phase) => (phase === "speaking" ? "idle" : phase));
+            } else {
+              await playFindingGuide(target, guide);
+            }
           } else if (idx >= 0) {
             await revealFinding(idx);
           }
@@ -726,7 +751,12 @@ export function useStudentSession(
           viewerAlreadySeated: tourActive,
         });
         if (!speech.speak) {
-          for (const action of actions) void executeAction(action);
+          narrateGuideRef.current = true;
+          try {
+            for (const action of actions) await executeAction(action);
+          } finally {
+            narrateGuideRef.current = false;
+          }
           setPhase("idle");
           if (speech.advanceWithoutSpeech) queueGuidedAdvance();
           return;
@@ -826,7 +856,7 @@ export function useStudentSession(
                       : t
                   )
                 );
-                await speak(text, undefined, { authorId: caseData.authorId });
+                await speak(text, undefined, { persona: "attending" });
               }
             : undefined,
         });
@@ -837,7 +867,7 @@ export function useStudentSession(
                 setTurns((prev) =>
                   prev.map((t) => (t.id === turnId ? { ...t, text: fallbackCue } : t))
                 );
-                await speak(fallbackCue, undefined, { authorId: caseData.authorId });
+                await speak(fallbackCue, undefined, { persona: "attending" });
               })()
             : Promise.resolve();
         await Promise.all([guidePlay, cuePlay]);
@@ -848,7 +878,7 @@ export function useStudentSession(
               t.id === turnId ? { ...t, text: `${fallbackCue} ${fallbackRest}` } : t
             )
           );
-          await speak(fallbackRest, undefined, { authorId: caseData.authorId });
+          await speak(fallbackRest, undefined, { persona: "attending" });
         }
         if (!tourActiveRef.current) return;
         setSpeakingTurnId((cur) => (cur === turnId ? null : cur));

@@ -78,7 +78,7 @@ import {
   patchFinding,
   reorderFindings,
   structureFindingFromAudio,
-  uploadAudio,
+  attachTakeAudio,
   LIMITS,
 } from "@/components/author/lib";
 import { updateCase } from "@/components/admin/api";
@@ -86,7 +86,7 @@ import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { withSecondaryAnchor } from "@/lib/findingAnchors";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
-import { withRecordedTeaching } from "@/lib/teachingGuide";
+import { settledDisplay, withRecordedTeaching } from "@/lib/teachingGuide";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -346,24 +346,29 @@ export function RecordingStudio({
       }
       // Optional: attach a walk-through recorded just before annotate.
       if (hasTrack) {
-        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-        if (rr.audio) {
-          try {
-            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-          } catch {
-            /* keep silent retrace */
-          }
-        }
-        base = withRecordedTeaching(base, track, annotateDraft, measurements);
-        // Prefer track.start VOI when the walk-through captured windowing.
-        if (track.start.ww != null && track.start.wc != null) {
-          base = withDisplaySnapshot(base, {
-            sliceIndex: track.start.sliceIndex,
-            ww: track.start.ww,
-            wc: track.start.wc,
-            sopInstanceUID: start?.sopInstanceUID,
-          });
-        }
+        const prepared = await attachTakeAudio(rr.track as RecordedTrack, rr.audio);
+        const description = base.description?.trim() || prepared.transcript || "";
+        base = { ...base, description };
+        base = withRecordedTeaching(
+          base,
+          prepared.track,
+          {
+            label: base.label,
+            description,
+            teachingPoints: base.teachingPoints,
+            spans: prepared.track.narration,
+          },
+          measurements
+        );
+        const money = settledDisplay(prepared.track);
+        if (money.sliceIndex !== start?.sliceIndex) base.sopInstanceUID = undefined;
+        base = withDisplaySnapshot(base, {
+          sliceIndex: money.sliceIndex,
+          ww: money.ww,
+          wc: money.wc,
+          sopInstanceUID:
+            money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+        });
       }
 
       const updated =
@@ -455,23 +460,29 @@ export function RecordingStudio({
       if (!hasTrack && measurements.length > 0) base.measurements = measurements;
 
       if (hasTrack) {
-        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-        if (rr.audio) {
-          try {
-            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-          } catch {
-            // Non-fatal: keep the silent retrace if upload fails.
-          }
-        }
-        base = withRecordedTeaching(base, track, draft, measurements);
-        if (track.start.ww != null && track.start.wc != null) {
-          base = withDisplaySnapshot(base, {
-            sliceIndex: track.start.sliceIndex,
-            ww: track.start.ww,
-            wc: track.start.wc,
-            sopInstanceUID: start?.sopInstanceUID,
-          });
-        }
+        const prepared = await attachTakeAudio(rr.track as RecordedTrack, rr.audio);
+        const description = base.description?.trim() || prepared.transcript || "";
+        base = { ...base, description };
+        base = withRecordedTeaching(
+          base,
+          prepared.track,
+          {
+            label: base.label,
+            description,
+            teachingPoints: base.teachingPoints,
+            spans: prepared.track.narration,
+          },
+          measurements
+        );
+        const money = settledDisplay(prepared.track);
+        if (money.sliceIndex !== start?.sliceIndex) base.sopInstanceUID = undefined;
+        base = withDisplaySnapshot(base, {
+          sliceIndex: money.sliceIndex,
+          ww: money.ww,
+          wc: money.wc,
+          sopInstanceUID:
+            money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+        });
       }
 
       // Anchor the finding to the active study/series (drives prefetch + the

@@ -4,6 +4,7 @@ import {
   voiceStackStatus,
   geminiLiveModelId,
   VOICE_LATENCY_BUDGET_MS,
+  voiceRouteFor,
 } from "./voice.ts";
 import { getRealtimeVoiceInfo } from "./voiceRealtime.ts";
 
@@ -25,6 +26,30 @@ test("geminiLiveModelId is a non-empty Live model string", () => {
 test("VOICE_LATENCY_BUDGET_MS is a positive soft budget", () => {
   assert.ok(VOICE_LATENCY_BUDGET_MS >= 500);
   assert.ok(VOICE_LATENCY_BUDGET_MS <= 10_000);
+});
+
+test("teach-guide beats use Gemini even when a clone is enrolled", () => {
+  assert.equal(
+    voiceRouteFor({
+      persona: "attending",
+      voiceId: "clone",
+      elevenLabs: true,
+      gemini: true,
+    }),
+    "gemini_tts"
+  );
+  assert.equal(
+    voiceRouteFor({
+      voiceId: "clone",
+      elevenLabs: true,
+      gemini: true,
+    }),
+    "elevenlabs"
+  );
+  assert.equal(
+    voiceRouteFor({ persona: "attending", elevenLabs: true, gemini: false }),
+    "none"
+  );
 });
 
 test("getRealtimeVoiceInfo exposes mint path + ws URL", () => {

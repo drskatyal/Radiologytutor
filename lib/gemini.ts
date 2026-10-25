@@ -306,6 +306,50 @@ export async function transcribeAudio(
   return result.text.trim();
 }
 
+export interface NarrationTranscript {
+  transcript: string;
+  segments: Array<{ tStartMs?: number; tEndMs?: number; text?: string }>;
+}
+
+/**
+ * Transcribe a teaching take into verbatim text plus sentence segments.
+ * Segment times are the model's estimate of when it heard each phrase.
+ * Callers must run them through coerceNarrationSpans — a missing or single
+ * full-take span is not alignment.
+ */
+export async function transcribeNarrationTake(
+  audioBase64: string,
+  audioMime: string,
+  durationMs: number
+): Promise<NarrationTranscript> {
+  const duration = Math.max(0, Math.round(durationMs));
+  const result = await generate({
+    systemInstruction:
+      "You transcribe a radiologist teaching at a workstation. Return ONLY JSON with exactly " +
+      '{ "transcript": string, "segments": [ { "tStartMs": number, "tEndMs": number, "text": string } ] }. ' +
+      "transcript is the full verbatim speech. segments are sentence-sized slices of that transcript, in order. " +
+      `tStartMs and tEndMs are milliseconds from the start of this audio, within 0..${duration || "the audio length"}. ` +
+      "Estimate each phrase from when you hear it. Do not invent words, findings, or measurements. " +
+      "If the audio is silent, transcript is an empty string and segments is an empty array.",
+    temperature: 0,
+    jsonOnly: true,
+    contents: [
+      {
+        role: "user",
+        parts: userParts({
+          text: `durationMs=${duration}. Transcribe and segment.`,
+          audioBase64,
+          audioMime,
+        }),
+      },
+    ],
+  });
+  const parsed = parseJsonLoose<Partial<NarrationTranscript>>(result.text);
+  const transcript = typeof parsed.transcript === "string" ? parsed.transcript.trim() : "";
+  const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
+  return { transcript, segments };
+}
+
 /** @deprecated Use TeachingViewerAction (harness). Kept as comment anchor. */
 // Viewer actions: see HarnessViewerAction in lib/harness/tools.ts
 
@@ -419,15 +463,22 @@ export interface SynthesizedSpeech {
 }
 
 /**
- * Synthesize speech for the given text with Gemini TTS. Returns WAV bytes (we
- * wrap the raw PCM the API returns in a 44-byte WAV header so the browser can
- * play it directly). Throws if the key is missing or the API errors.
+ * Director note for teach-guide beats. Gemini TTS treats a short leading
+ * instruction as style, then reads the line. We do not play the teacher's mic.
  */
-export async function synthesizeSpeech(text: string): Promise<SynthesizedSpeech> {
+export const ATTENDING_TTS_DIRECTION =
+  "Say the following in a calm attending radiologist voice, measured pace, verbatim, with no preamble:";
+
+export async function synthesizeSpeech(
+  text: string,
+  opts?: { persona?: "attending" }
+): Promise<SynthesizedSpeech> {
   const key = requireKey();
+  const spoken =
+    opts?.persona === "attending" ? `${ATTENDING_TTS_DIRECTION}\n${text}` : text;
 
   const body = {
-    contents: [{ role: "user", parts: [{ text }] }],
+    contents: [{ role: "user", parts: [{ text: spoken }] }],
     generationConfig: {
       responseModalities: ["AUDIO"],
       speechConfig: {

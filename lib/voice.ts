@@ -29,10 +29,33 @@ export type TutorSpeech = {
   exceededBudget: boolean;
 };
 
+export type TutorPersona = "attending" | "discussion";
+
+/**
+ * Teach-guide beats use Gemini TTS in an attending voice.
+ * Live Q&A still prefers an enrolled ElevenLabs clone.
+ */
+export function voiceRouteFor(opts: {
+  persona?: TutorPersona;
+  voiceId?: string | null;
+  elevenLabs: boolean;
+  gemini: boolean;
+}): "elevenlabs" | "gemini_tts" | "none" {
+  if (opts.persona === "attending") return opts.gemini ? "gemini_tts" : "none";
+  if (opts.voiceId?.trim() && opts.elevenLabs) return "elevenlabs";
+  if (opts.gemini) return "gemini_tts";
+  return "none";
+}
+
 export type SynthesizeTutorOpts = {
   text: string;
   /** ElevenLabs voice id from Author.voice.voiceId */
   voiceId?: string | null;
+  /**
+   * `attending` is the teach-guide clock: Gemini TTS, never the microphone
+   * and never the clone. Omit for live discussion.
+   */
+  persona?: TutorPersona;
   /**
    * When true and ELEVENLABS is slow/unavailable, callers should open the
    * Gemini Live path instead of waiting on this promise. We still try TTS
@@ -66,7 +89,9 @@ export function voiceStackStatus(): {
 }
 
 /**
- * Synthesize a live tutor turn. Recorded lesson narration must NEVER call this.
+ * Synthesize speech for a live tutor turn or a teach-guide beat.
+ * The teacher's microphone recording is never passed here.
+ * `persona: "attending"` forces Gemini TTS for the guide clock.
  */
 export async function synthesizeTutorSpeech(
   opts: SynthesizeTutorOpts
@@ -75,12 +100,24 @@ export async function synthesizeTutorSpeech(
   if (!text) throw new Error("text is required for tutor speech.");
 
   const started = Date.now();
-  const voiceId = opts.voiceId?.trim();
+  const voiceId = opts.persona === "attending" ? undefined : opts.voiceId?.trim();
+  const route = voiceRouteFor({
+    persona: opts.persona,
+    voiceId,
+    elevenLabs: elevenLabsConfigured(),
+    gemini: geminiConfigured(),
+  });
   let audio: Buffer | null = null;
   let mimeType = "audio/mpeg";
   let provider: VoiceProvider = "none";
 
-  if (voiceId && elevenLabsConfigured()) {
+  if (route === "none") {
+    throw new Error(
+      "No TTS provider configured (set ELEVENLABS_API_KEY or GEMINI_API_KEY)."
+    );
+  }
+
+  if (route === "elevenlabs" && voiceId) {
     try {
       const r = await elevenLabsSynthesize(text, voiceId);
       audio = r.audio;
@@ -98,7 +135,9 @@ export async function synthesizeTutorSpeech(
         "No TTS provider configured (set ELEVENLABS_API_KEY or GEMINI_API_KEY)."
       );
     }
-    const r = await synthesizeSpeech(text);
+    const r = await synthesizeSpeech(text, {
+      persona: opts.persona === "attending" ? "attending" : undefined,
+    });
     audio = r.audio;
     mimeType = r.mimeType;
     provider = "gemini_tts";
