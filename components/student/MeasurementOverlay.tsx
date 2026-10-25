@@ -38,7 +38,7 @@ export function MeasurementOverlay({
         return (
           <span
             key={`${m.id}-label`}
-            className="absolute -translate-x-1/2 -translate-y-full rounded-sm border border-accent/40 bg-elevated/90 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-accent shadow-sm"
+            className="absolute -translate-x-1/2 -translate-y-full rounded-sm bg-black/80 px-1.5 py-0.5 font-mono text-xs tabular-nums text-white shadow-md ring-1 ring-white/25"
             style={{
               left: `${anchor[0] * 100}%`,
               top: `${anchor[1] * 100}%`,
