@@ -8,6 +8,8 @@
 // When /api/tts reports budget exceeded (slow clone/TTS), we stash a hint so
 // the student session can open Gemini Live for the next conversational turn.
 
+import { speechAudioCanBlock } from "./tutorSpeech";
+
 let currentAudio: HTMLAudioElement | null = null;
 let pipelineGen = 0;
 let ttsAbort: AbortController | null = null;
@@ -62,6 +64,12 @@ export async function speakBeats(
   const gen = pipelineGen;
   ttsAbort = new AbortController();
   const signal = ttsAbort.signal;
+  let ended = false;
+  const finish = () => {
+    if (ended || gen !== pipelineGen) return;
+    ended = true;
+    opts?.onEnd?.();
+  };
 
   const prefetch = (t: string) =>
     fetchTtsBlob(t, signal, {
@@ -71,27 +79,31 @@ export async function speakBeats(
 
   let nextBlob = prefetch(chunks[0]);
 
-  for (let i = 0; i < chunks.length; i++) {
-    if (gen !== pipelineGen) return;
-    opts?.onStartBeat?.(i);
-    const blobP = nextBlob;
-    if (i + 1 < chunks.length) nextBlob = prefetch(chunks[i + 1]);
-
-    try {
-      const blob = await blobP;
+  try {
+    for (let i = 0; i < chunks.length; i++) {
       if (gen !== pipelineGen) return;
-      if (blob) {
-        await playBlob(blob, () => gen !== pipelineGen);
-      } else {
-        await fallbackSpeakAsync(chunks[i], () => gen !== pipelineGen);
+      opts?.onStartBeat?.(i);
+      const blobP = nextBlob;
+      if (i + 1 < chunks.length) nextBlob = prefetch(chunks[i + 1]);
+
+      let played = false;
+      try {
+        const blob = await blobP;
+        if (gen !== pipelineGen) return;
+        if (blob && speechAudioCanBlock(blob.size, null)) {
+          const result = await playBlob(blob, () => gen !== pipelineGen);
+          played = result === "played";
+        }
+      } catch {
+        played = false;
       }
-    } catch {
       if (gen !== pipelineGen) return;
-      await fallbackSpeakAsync(chunks[i], () => gen !== pipelineGen);
+      if (!played) await fallbackSpeakAsync(chunks[i], () => gen !== pipelineGen);
     }
+    finish();
+  } catch {
+    finish();
   }
-
-  if (gen === pipelineGen) opts?.onEnd?.();
 }
 
 async function fetchTtsBlob(
@@ -128,23 +140,50 @@ async function fetchTtsBlob(
   }
 }
 
-function playBlob(blob: Blob, cancelled: () => boolean): Promise<void> {
+/** How long to wait for audio to start before falling through to speechSynthesis. */
+const AUDIO_START_MS = 8_000;
+/** Cap so a clip that never fires `ended` cannot stall the tour. */
+const AUDIO_MAX_MS = 60_000;
+
+function playBlob(blob: Blob, cancelled: () => boolean): Promise<"played" | "unplayed"> {
   return new Promise((resolve) => {
-    if (cancelled()) {
-      resolve();
+    if (cancelled() || !speechAudioCanBlock(blob.size, null)) {
+      resolve(cancelled() ? "played" : "unplayed");
       return;
     }
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
-    const done = () => {
+    let settled = false;
+    let started = false;
+    let timer = 0;
+    const finish = (result: "played" | "unplayed") => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      audio.pause();
       URL.revokeObjectURL(url);
+      audio.onended = null;
+      audio.onerror = null;
       if (currentAudio === audio) currentAudio = null;
-      resolve();
+      resolve(result);
     };
-    audio.onended = done;
-    audio.onerror = done;
-    audio.play().catch(done);
+    timer = window.setTimeout(() => finish(started ? "played" : "unplayed"), AUDIO_START_MS);
+    const arm = (ms: number) => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => finish(started ? "played" : "unplayed"), ms);
+    };
+    audio.onplaying = () => {
+      started = true;
+      arm(AUDIO_MAX_MS);
+    };
+    audio.onloadedmetadata = () => {
+      const duration = Number.isFinite(audio.duration) ? audio.duration : null;
+      if (!speechAudioCanBlock(blob.size, duration)) finish("unplayed");
+    };
+    audio.onended = () => finish("played");
+    audio.onerror = () => finish("unplayed");
+    audio.play().catch(() => finish("unplayed"));
   });
 }
 
@@ -161,8 +200,18 @@ function fallbackSpeakAsync(
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1.0;
     utter.lang = "en-US";
-    utter.onend = () => resolve();
-    utter.onerror = () => resolve();
+    let settled = false;
+    let timer = 0;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    // speechSynthesis sometimes never fires onend; don't hold the tour.
+    timer = window.setTimeout(done, Math.min(AUDIO_MAX_MS, Math.max(4_000, text.length * 90)));
+    utter.onend = done;
+    utter.onerror = done;
     window.speechSynthesis.speak(utter);
   });
 }
