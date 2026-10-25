@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { Marker, MarkerShape, StructuredFinding } from "@/lib/types";
+import { LandmarkField } from "@/components/author/LandmarkField";
 import { LIMITS } from "@/components/author/lib";
 
 export interface AnnotatePopoverProps {
@@ -218,6 +219,11 @@ export function AnnotatePopover({
                 />
               )}
             </Field>
+
+            <LandmarkField
+              value={draft.landmark ?? ""}
+              onChange={(landmark) => onDraftChange({ ...draft, landmark })}
+            />
 
             <Field label="Description">
               {(p) => (

@@ -19,9 +19,16 @@
 import type {
   RecordedEvent,
   RecordedTrack,
+  TeachBeat,
   TeachViewerAction,
   TeachingGuide,
 } from "./types";
+import {
+  isNamingAct,
+  moneySliceFromGuide,
+  reseatBeat,
+  studentIsFar,
+} from "./tourAdapt";
 
 /** What an applier (the CornerstoneControls handle) must provide. */
 export interface ReplayTarget {
@@ -196,6 +203,18 @@ export interface GuidePlayOptions {
    * back to back — unit tests. Speech still finishes before the next beat.
    */
   timeScale?: number;
+  /**
+   * When the learner is far from the money slice at a commit or pearl,
+   * scroll them there and say a directional line before that beat.
+   * Default on. Following the script (already on the slice) inserts nothing.
+   */
+  adaptive?: boolean;
+  /** Distance in slices that counts as far. Default 8. */
+  farSlices?: number;
+  /** Anatomical level the hint may name, e.g. "carina". */
+  landmark?: string;
+  /** Terms the hint must not say — the finding label. */
+  withholdTerms?: readonly string[];
 }
 
 function delay(ms: number): Promise<void> {
@@ -359,13 +378,13 @@ export function playTeachingGuide(
         }
       }
 
-      for (const beat of guide.beats) {
-        if (cancelled) break;
+      const performBeat = async (beat: TeachBeat) => {
+        if (cancelled) return;
         if (scale > 0) {
           const wait = origin + beat.t * scale - performance.now();
           if (wait > 20) {
             await delay(wait);
-            if (cancelled) break;
+            if (cancelled) return;
           }
         }
         const motion = (async () => {
@@ -390,6 +409,34 @@ export function playTeachingGuide(
             ? opts.narrate(line).catch(() => undefined)
             : Promise.resolve();
         await Promise.all([motion, speech]);
+      };
+
+      const money = moneySliceFromGuide(guide);
+      for (const beat of guide.beats) {
+        if (cancelled) break;
+        // Orient is the scroll onto the money slice. A hint before it would
+        // double the linear path. Commit points and pearl names — those wait
+        // until the learner is actually on the slice.
+        if (opts.adaptive !== false && isNamingAct(beat.act) && money) {
+          const here = drivers.getSliceIndex?.();
+          if (
+            here != null &&
+            studentIsFar(here, money.sliceIndex, opts.farSlices)
+          ) {
+            await performBeat(
+              reseatBeat({
+                currentSlice: here,
+                targetSlice: money.sliceIndex,
+                t: beat.t,
+                landmark: opts.landmark,
+                withhold: opts.withholdTerms,
+                seriesInstanceUID: money.seriesInstanceUID,
+              })
+            );
+            if (cancelled) break;
+          }
+        }
+        await performBeat(beat);
       }
     } finally {
       close(true);

@@ -69,6 +69,7 @@ import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
 import { AnnotatePopover } from "@/components/author/AnnotatePopover";
+import { LandmarkField } from "@/components/author/LandmarkField";
 import { ContinuousCapture } from "@/components/author/ContinuousCapture";
 import { SequenceBoard } from "@/components/author/SequenceBoard";
 import {
@@ -285,7 +286,7 @@ export function RecordingStudio({
     try {
       const result = await structureFindingFromAudio(rec.base64, rec.mimeType);
       if (result) {
-        setAnnotateDraft(result);
+        setAnnotateDraft((d) => ({ ...result, landmark: d.landmark }));
         setAnnotateTranscript(result.description || result.label);
         setAnnotateNotice("Structured from your dictation — review and save.");
       } else {
@@ -332,6 +333,7 @@ export function RecordingStudio({
           teachingPoints: annotateDraft.teachingPoints
             .map((p) => p.trim())
             .filter(Boolean),
+          landmark: annotateDraft.landmark?.trim() || undefined,
           state: " ",
           marker: pendingMarker,
           anchors: [primaryAnchor],
@@ -417,7 +419,7 @@ export function RecordingStudio({
     try {
       const result = await structureFindingFromAudio(rr.audio.base64, rr.audio.mimeType);
       if (result) {
-        setDraft(result);
+        setDraft((d) => ({ ...result, landmark: d.landmark }));
         setNotice("Structured from your narration — review and save.");
       } else {
         setNotice("AI structuring is off (no Gemini key). Type the finding in below.");
@@ -451,6 +453,7 @@ export function RecordingStudio({
           label: draft.label.trim(),
           description: draft.description.trim(),
           teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          landmark: draft.landmark?.trim() || undefined,
           state: " ",
           marker,
         },
@@ -585,6 +588,7 @@ export function RecordingStudio({
       label: f.label,
       description: f.description,
       teachingPoints: [...f.teachingPoints],
+      landmark: f.landmark ?? "",
     });
     setNotice("Re-recording — hold Alt+X to capture a new walk-through, then save.");
   }
@@ -1002,6 +1006,10 @@ export function RecordingStudio({
                   />
                 )}
               </Field>
+              <LandmarkField
+                value={draft.landmark ?? ""}
+                onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+              />
               <Field label="Description">
                 {(p) => (
                   <Textarea
@@ -1174,6 +1182,7 @@ function EditFindingDialog({
         label: finding.label,
         description: finding.description,
         teachingPoints: [...finding.teachingPoints],
+        landmark: finding.landmark ?? "",
       });
     }
   }, [finding]);
@@ -1186,6 +1195,7 @@ function EditFindingDialog({
         label: draft.label.trim(),
         description: draft.description.trim(),
         teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+        landmark: draft.landmark?.trim() || "",
       });
     } finally {
       setSaving(false);
@@ -1220,6 +1230,10 @@ function EditFindingDialog({
             />
           )}
         </Field>
+        <LandmarkField
+          value={draft.landmark ?? ""}
+          onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+        />
         <Field label="Description">
           {(p) => (
             <Textarea

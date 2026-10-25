@@ -39,6 +39,7 @@ import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import { settledDisplay, withRecordedTeaching } from "@/lib/teachingGuide";
+import { LandmarkField } from "./LandmarkField";
 import { LIMITS, attachTakeAudio, markerFromTrack, structureFindingFromAudio, validateDraft } from "./lib";
 
 interface RecordFindingDialogProps {
@@ -176,7 +177,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
     try {
       const result = await structureFindingFromAudio(rr.audio.base64, rr.audio.mimeType);
       if (result) {
-        setDraft(result);
+        setDraft((d) => ({ ...result, landmark: d.landmark }));
         setNotice("Structured from your narration — review below.");
       } else {
         setNotice("AI structuring is off (no Gemini key). Fill the fields in by hand.");
@@ -209,6 +210,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
           label: draft.label.trim(),
           description: draft.description.trim(),
           teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          landmark: draft.landmark?.trim() || undefined,
           // A finding needs a state + marker to be valid. Prefer last cursor from
           // the walk-through; otherwise a centre placeholder (author can refine).
           state: " ",
@@ -429,6 +431,10 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
               />
             )}
           </Field>
+          <LandmarkField
+            value={draft.landmark ?? ""}
+            onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+          />
           <Field label="Description">
             {(p) => (
               <Textarea
