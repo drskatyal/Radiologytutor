@@ -127,6 +127,16 @@ rate limits and body-size caps.
   references has a passing `DeidReport` in its own org. Header scrubbing is real; **pixel OCR
   for burned-in PHI is not implemented and is never claimed** — see `lib/deid.ts`.
 
+## Production imaging
+
+Study bytes in production go to a **Cloud Healthcare API DICOM store** next to the Next.js app on **Cloud Run**. The browser still only calls `/api/dicomweb`. Local and Fly Orthanc stay on `ORTHANC_URL` — do not set `DICOMWEB_BACKEND=healthcare` on a machine that uses localhost Orthanc.
+
+```bash
+docker compose -f docker-compose.orthanc.yml up -d   # local Orthanc on :8042
+```
+
+Deploy scripts, the latency notes, and the Fly migration checklist: [`docs/GCP_CLOUD_RUN.md`](./docs/GCP_CLOUD_RUN.md).
+
 ## Database
 
 With no `MONGODB_URI`, cases and friends persist as JSON under `DATA_DIR` (default `./data`;

@@ -20,11 +20,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import AdmZip from "adm-zip";
+import { looksLikeDicomUid } from "@/lib/healthcareDicom";
 import {
+  imagingStudySummary,
   orthancConfigured,
   orthancIngestInstance,
   orthancSeriesMeta,
-  orthancGet,
 } from "@/lib/orthanc";
 import { DeidFailError } from "@/lib/deid";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
@@ -189,7 +190,7 @@ export async function POST(req: NextRequest) {
     try {
       let study = studyCache.get(info.studyId);
       if (!study) {
-        study = await studyMeta(info.studyId);
+        study = await imagingStudySummary(info.studyId);
         studyCache.set(info.studyId, study);
         const report = deidByStudy.get(info.studyId);
         if (report) {
@@ -210,50 +211,48 @@ export async function POST(req: NextRequest) {
         studyDate: study.studyDate,
         orthancStudyId: info.studyId,
         firstInstanceUID: meta.firstInstanceUID,
-        // Trust our own per-batch tally over Orthanc's count (which would be
+        // Trust our own per-batch tally over the archive's count (which would be
         // global across multiple batches of the same series).
         instances: info.count,
       });
     } catch (e) {
-      failed.push({
-        name: `series ${seriesId.slice(0, 8)}`,
-        reason: friendlyStoreError(e),
-      });
+      // Healthcare ids are the DICOM UIDs we already parsed at STOW time.
+      // If QIDO lags the store, still return the series so the case can be created.
+      if (looksLikeDicomUid(seriesId) && looksLikeDicomUid(info.studyId)) {
+        const report = deidByStudy.get(info.studyId);
+        if (report) {
+          await upsertDeidReport(orgId, {
+            ...report,
+            studyInstanceUID: report.studyInstanceUID || info.studyId,
+            studyId: info.studyId,
+          }).catch(() => undefined);
+        }
+        series.push({
+          studyInstanceUID: info.studyId,
+          seriesInstanceUID: seriesId,
+          studyDescription: "Study",
+          orthancStudyId: info.studyId,
+          instances: info.count,
+        });
+      } else {
+        failed.push({
+          name: `series ${seriesId.slice(0, 8)}`,
+          reason: friendlyStoreError(e),
+        });
+      }
     }
   }
 
   return NextResponse.json({ stored, series, failed, skipped });
 }
 
-/** Resolve a study's UID + description + date from its Orthanc id. */
-async function studyMeta(orthancStudyId: string): Promise<{
-  studyInstanceUID: string;
-  studyDescription: string;
-  studyDate?: string;
-}> {
-  const study = await orthancGet<{
-    MainDicomTags: {
-      StudyInstanceUID: string;
-      StudyDescription?: string;
-      StudyDate?: string;
-    };
-    PatientMainDicomTags?: { PatientName?: string };
-  }>(`/studies/${orthancStudyId}`);
-  const tags = study.MainDicomTags;
-  return {
-    studyInstanceUID: tags.StudyInstanceUID,
-    studyDescription:
-      tags.StudyDescription || study.PatientMainDicomTags?.PatientName || "Study",
-    studyDate: tags.StudyDate || undefined,
-  };
-}
-
-/** Turn an Orthanc error into something a radiologist can act on. */
+/** Turn an archive error into something a radiologist can act on. */
 function friendlyStoreError(e: unknown): string {
   if (e instanceof DeidFailError || (e instanceof Error && e.message.startsWith("DEID_FAIL"))) {
     return "this file still has patient identifiers — de-identify the study before upload";
   }
   const msg = e instanceof Error ? e.message : String(e);
+  if (/-> 401\b|-> 403\b/.test(msg)) return "imaging archive rejected the server credential";
   if (/-> 4\d\d/.test(msg)) return "not a valid DICOM file";
   if (/ECONNREFUSED|fetch failed|ENOTFOUND|timeout/i.test(msg)) {
     return "imaging archive unreachable";

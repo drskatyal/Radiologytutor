@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Fly.io / Docker: minimal Node server image.
+  // Fly.io / Cloud Run: minimal Node server image. Cloud Run injects PORT.
   output: "standalone",
   // Cornerstone3D self-hosted viewer support (see components/CornerstoneViewer.tsx).
   // The @cornerstonejs/dicom-image-loader bundles its web workers + WASM codecs

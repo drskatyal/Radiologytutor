@@ -1,6 +1,8 @@
 # Fly.io + Cloudflare R2
 
-Locked infra for FlowRad Learn. Product decisions: `docs/DECISIONS.md`.
+Current Fly deployment. **Production target for DICOM latency is Google Cloud Run + a Cloud Healthcare API DICOM store** — see `docs/GCP_CLOUD_RUN.md`. Keep this path until that checklist is signed off. Local Orthanc (`ORTHANC_URL`, `docker-compose.orthanc.yml`) is unchanged.
+
+Product decisions: `docs/DECISIONS.md`.
 
 ## Two Fly apps
 
