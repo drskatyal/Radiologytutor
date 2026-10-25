@@ -2,15 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { TutorAgent, TutorTurn } from "./tutorEval.ts";
+import { buildLidcTutorFixture } from "../lidcTutorFixture.ts";
 import {
   formatContract,
+  formatLidcContract,
   formatScorecard,
+  guideReplayTutor,
   harnessContractHeld,
   humanTeachActions,
+  initialViewer,
+  lidcGuideContractHeld,
   loadTutorFixture,
   parseTutorFixture,
   resolveTeachingGuide,
   scoreTutorSession,
+  silentToolsTutor,
   teachingGuideFromTrack,
   textOnlyTutor,
   viewerDrivingTutor,
@@ -394,4 +400,80 @@ test("loader rejects identifiers and a viewer that is already on the finding", (
     windowCenter: -600,
   };
   assert.throws(() => parseTutorFixture(seated), /already shows/);
+});
+
+test("LIDC guide replay is taught and world-class; text-only and silent tools fail", async () => {
+  const lidc = buildLidcTutorFixture();
+  parseTutorFixture(lidc);
+  const noduleBeat = lidc.beats.find((beat) => beat.id === "beat-nodule");
+  assert.ok(noduleBeat);
+  const nodule = lidc.case.findings.find((finding) => finding.id === noduleBeat.findingId);
+  assert.ok(nodule);
+  assert.deepEqual(
+    resolveTeachingGuide(noduleBeat, nodule).map((step) => step.action),
+    ["scroll_to", "set_window", "zoom_to", "point_to"]
+  );
+
+  const turn = guideReplayTutor({
+    fixture: lidc,
+    beat: noduleBeat,
+    finding: nodule,
+    viewer: initialViewer(lidc),
+    history: [],
+  });
+  assert.equal(turn.answer, "");
+  assert.deepEqual(turn.actions, [{ type: "play_guide", findingId: nodule.id }]);
+  const said = (nodule.teachingGuide?.beats ?? []).map((beat) => beat.say ?? "").join(" ");
+  assert.match(said, /^Follow the stack\./);
+  assert.match(said, /round opacities/);
+  assert.doesNotMatch(said, /f_lidc_/);
+  const silentTurn = silentToolsTutor({
+    fixture: lidc,
+    beat: noduleBeat,
+    finding: nodule,
+    viewer: initialViewer(lidc),
+    history: [],
+  });
+  assert.equal(silentTurn.answer, "");
+  assert.deepEqual(
+    silentTurn.actions.map((action) => action.type),
+    ["scroll_to", "set_window", "zoom_to", "point_to"]
+  );
+
+  const textOnly = await scoreTutorSession(lidc, textOnlyTutor, "text-only fake");
+  const silent = await scoreTutorSession(lidc, silentToolsTutor, "silent tools");
+  const driver = await scoreTutorSession(lidc, guideReplayTutor, "teaching-guide replay");
+  assert.equal(textOnly.hardPass, false);
+  assert.equal(textOnly.hardScore, 0);
+  assert.equal(textOnly.worldClass, false);
+  assert.equal(textOnly.fidelityTaught, false);
+  assert.equal(silent.hardPass, false);
+  assert.equal(silent.hardScore, 0);
+  assert.equal(silent.fidelityTaught, false);
+  assert.equal(silent.worldClass, false);
+  assert.equal(driver.hardPass, true);
+  assert.equal(driver.hardScore, 100);
+  assert.equal(driver.fidelityTaught, true);
+  assert.equal(driver.worldClass, true);
+  assert.deepEqual(driver.holes, []);
+  assert.ok(driver.hardScore > textOnly.hardScore);
+  assert.ok(driver.hardScore > silent.hardScore);
+  const zoom = driver.beats.find((beat) => beat.beatId === "beat-nodule")?.fidelity.phases.find(
+    (phase) => phase.phase === "zoom"
+  );
+  assert.equal(zoom?.status, "met");
+  assert.ok(driver.beats.every((beat) => beat.fidelity.taught));
+  assert.equal(lidcGuideContractHeld(textOnly, silent, driver), true);
+  const card = formatScorecard(driver);
+  assert.match(card, /VERDICT\s+PASS/);
+  assert.match(card, /world\s+YES/);
+  assert.match(card, /TAUGHT/);
+  const contract = formatLidcContract(textOnly, silent, driver);
+  assert.match(contract, /text-only\s+FAIL/);
+  assert.match(contract, /silent tools\s+FAIL/);
+  assert.match(contract, /fidelity TAUGHT/);
+  assert.match(contract, /world YES/);
+  assert.match(contract, /CONTRACT\s+HELD/);
+  assert.match(formatScorecard(textOnly), /VERDICT\s+FAIL/);
+  assert.match(formatScorecard(silent), /VERDICT\s+FAIL/);
 });

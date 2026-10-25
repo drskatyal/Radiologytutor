@@ -155,3 +155,14 @@ A live model that only talks fails `text_only`. A live model that moves the
 viewer and says nothing fails `spoken_beat`. A live model that zooms after
 the laser fails `human_sequence`. A blank `play_guide` is the organized
 script: drive first, then the pearl names the finding.
+
+## LIDC demo guide
+
+The default `npm run eval:tutor` also scores the LIDC nodule-search demo
+guide (`buildLidcTutorFixture`). The reference is a blank `play_guide`. The
+scorer expands that call with `buildTeachingGuide` and speaks the guide's
+own say lines — the same attending script Teach plays. That turn is fidelity
+**TAUGHT** and world **YES**, and `spoken_beat` passes. A text-only narration
+fails `text_only`. A silent tool drive (motion, no `play_guide`, nothing
+said) fails `spoken_beat` and is not taught. `--fixture` scores only the
+file you pass and skips this scenario.

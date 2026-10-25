@@ -353,9 +353,51 @@ export function teachingGuideFromTrack(finding: Finding): TeachingGuideStep[] {
   return steps;
 }
 
+/** Harness steps for the product script Teach actually plays. */
+export function stepsFromTeachingGuide(finding: Finding): TeachingGuideStep[] {
+  const guide = resolveFindingGuide(finding);
+  const steps: TeachingGuideStep[] = [];
+  for (const beat of guide?.beats ?? []) {
+    for (const action of beat.actions) {
+      const step = guideActionToStep(action, beat.t, finding.id);
+      if (step) steps.push(step);
+    }
+  }
+  return steps;
+}
+
+function guideActionToStep(
+  action: TeachViewerAction,
+  t: number,
+  findingId: string
+): TeachingGuideStep | null {
+  switch (action.type) {
+    case "scroll":
+      return { t, action: "scroll_to", sliceIndex: action.sliceIndex, findingId };
+    case "window":
+      return {
+        t,
+        action: "set_window",
+        windowWidth: action.ww,
+        windowCenter: action.wc,
+        findingId,
+      };
+    case "zoom":
+      return { t, action: "zoom_to", zoom: action.zoom, findingId };
+    case "point":
+      return { t, action: "point_to", findingId, x_pct: action.x, y_pct: action.y };
+    default:
+      return null;
+  }
+}
+
 export function resolveTeachingGuide(beat: TutorEvalBeat, finding: Finding): TeachingGuideStep[] {
-  const guide = beat.teachingGuide?.length ? beat.teachingGuide : teachingGuideFromTrack(finding);
-  return guide.slice().sort((a, b) => a.t - b.t);
+  if (beat.teachingGuide?.length) {
+    return beat.teachingGuide.slice().sort((a, b) => a.t - b.t);
+  }
+  const authored = stepsFromTeachingGuide(finding);
+  if (authored.length) return authored;
+  return teachingGuideFromTrack(finding);
 }
 
 /** True when today's tool registry can produce this guide step's effect. */
@@ -421,6 +463,24 @@ export function viewerDrivingTutor(ctx: TutorEvalContext): TutorTurn {
 /** Fluent radiologist-sounding answer. No tools. This must fail. */
 export function textOnlyTutor(ctx: TutorEvalContext): TutorTurn {
   return { answer: ctx.beat.chatbotNarration, actions: [] };
+}
+
+/**
+ * Blank `play_guide`. The scorer speaks the product script's say lines
+ * (`narrationForTurn`) and expands the acts. This is the Teach path.
+ */
+export function guideReplayTutor(ctx: TutorEvalContext): TutorTurn {
+  if (!resolveFindingGuide(ctx.finding)) return viewerDrivingTutor(ctx);
+  return { answer: "", actions: [{ type: "play_guide", findingId: ctx.finding.id }] };
+}
+
+/**
+ * The same scroll, window, zoom, and point, with nothing spoken and no
+ * `play_guide`. A silent tool is not a tour (`spoken_beat` fails).
+ */
+export function silentToolsTutor(ctx: TutorEvalContext): TutorTurn {
+  const guide = resolveTeachingGuide(ctx.beat, ctx.finding);
+  return { answer: "", actions: humanTeachActions(ctx.finding, guide) };
 }
 
 export async function scoreTutorSession(
@@ -1537,6 +1597,42 @@ function fidelityVerdict(score: SessionScore): string {
     return "NO. Tools moved the scan, and this is still not a world-class teacher. A blocked zoom means the registrar never saw the teacher's magnification.";
   }
   return "NO. Lectured next to the wrong image, or the sequence was not how a consultant teaches this case.";
+}
+
+/**
+ * LIDC demo-guide contract: the organized replay is taught and world-class,
+ * and both a text-only lecture and a silent tool drive fail.
+ */
+export function lidcGuideContractHeld(
+  textOnly: SessionScore,
+  silent: SessionScore,
+  driver: SessionScore
+): boolean {
+  return (
+    textOnly.hardPass === false &&
+    silent.hardPass === false &&
+    silent.fidelityTaught === false &&
+    driver.hardPass === true &&
+    driver.fidelityTaught === true &&
+    driver.worldClass === true &&
+    driver.hardScore > textOnly.hardScore &&
+    driver.hardScore > silent.hardScore
+  );
+}
+
+export function formatLidcContract(
+  textOnly: SessionScore,
+  silent: SessionScore,
+  driver: SessionScore
+): string {
+  const held = lidcGuideContractHeld(textOnly, silent, driver);
+  return [
+    "LIDC TEACHING GUIDE",
+    `  text-only           ${textOnly.hardPass ? "PASS (this is a bug in the rubric)" : "FAIL (required)"}    score ${textOnly.hardScore}/100`,
+    `  silent tools        ${silent.hardPass ? "PASS (this is a bug in the rubric)" : "FAIL (required)"}    score ${silent.hardScore}/100    fidelity ${silent.fidelityTaught ? "TAUGHT" : "NOT TAUGHT"}`,
+    `  teaching-guide      ${driver.hardPass ? "PASS (required)" : "FAIL (this is a bug in the rubric)"}    score ${driver.hardScore}/100    fidelity ${driver.fidelityTaught ? "TAUGHT" : "NOT TAUGHT"}    world ${driver.worldClass ? "YES" : "NO"}`,
+    `  CONTRACT            ${held ? "HELD" : "BROKEN"}`,
+  ].join("\n");
 }
 
 export function formatContract(textOnly: SessionScore, driver: SessionScore): string {
