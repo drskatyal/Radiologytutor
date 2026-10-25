@@ -702,6 +702,20 @@ export function guideHasMotion(guide: TeachingGuide | null | undefined): boolean
   return guide.beats.some((b) => b.actions.length > 0 || Boolean(b.say?.trim()));
 }
 
+/**
+ * Beat lines Teach should speak. A non-empty list is the narration;
+ * an empty list is the silent-guide case, which falls through to
+ * `tutorSpeechPlan` instead of playing with a blank Discussion.
+ */
+export function authoredGuideLines(
+  guide: Pick<TeachingGuide, "beats"> | null | undefined
+): string[] {
+  if (!guide) return [];
+  return guide.beats
+    .map((beat) => beat.say?.trim() ?? "")
+    .filter((line) => line.length > 0);
+}
+
 /** Compact tutor line — the ordered script, not the stats digest. */
 export function formatTeachingGuideLine(guide: TeachingGuide | null | undefined): string {
   if (!guide?.beats?.length) return "";
