@@ -55,11 +55,16 @@ function summarize(score: SessionScore): Record<string, unknown> {
     hardPassed: score.hardPassed,
     hardTotal: score.hardTotal,
     worldClass: score.worldClass,
+    fidelityTaught: score.fidelityTaught,
+    fidelityMet: score.fidelityMet,
+    fidelityRequired: score.fidelityRequired,
     holes: score.holes,
     beats: score.beats.map((beat) => ({
       beatId: beat.beatId,
       tools: beat.tools,
       drive: beat.drive,
+      taught: beat.fidelity.taught,
+      phases: beat.fidelity.phases.map((phase) => ({ phase: phase.phase, status: phase.status })),
       failed: beat.checks.filter((check) => !check.pass).map((check) => check.id),
     })),
   };
