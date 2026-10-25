@@ -311,6 +311,12 @@ export interface Finding {
   /** 0-based slice index for the primary landing. */
   sliceIndex?: number;
   /**
+   * Anatomical level to say if the learner is off this finding's slice
+   * (e.g. "carina"). Not the diagnosis — the tour withholds `label` until
+   * the pearl. Optional; older findings omit it.
+   */
+  landmark?: string;
+  /**
    * Window width / center (VOI) at authoring time — same semantics as DICOM
    * Window Center/Width (0028,1050)/(0028,1051). Applied with an eased tween
    * when revealing this finding so the lesion remains visible regardless of
@@ -404,6 +410,11 @@ export interface StructuredFinding {
   label: string;
   description: string;
   teachingPoints: string[];
+  /**
+   * Anatomical level the tour may name before the diagnosis (no article),
+   * e.g. "carina". Optional. The learner hint withholds the finding label.
+   */
+  landmark?: string;
 }
 
 /**
