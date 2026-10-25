@@ -1,17 +1,20 @@
 /**
- * Tutor eval — did the model drive the DICOM viewer, or did it chat?
+ * Tutor eval — would a registrar feel taught at the workstation?
  *
- * The student client applies harness tools (show_finding, set_window,
- * point_to, tour). This module replays those tools onto a simulated viewer
- * and scores the turn against a teaching fixture. Speech quality cannot
- * pass the bar by itself.
+ * The anti-chatbot bar is unchanged: a turn with no viewer tools scores 0.
+ * Human-teacher fidelity is stricter. The fixture's teachingGuide is the
+ * consultant's sequence:
  *
- * `teachingGuide` is an ordered action list (t + tool). Steps the registry
- * can already perform are hard gates. `scroll_to` is satisfied by
- * show_finding / tour. `zoom_to` is a hard gate once that name is in
- * `HARNESS_VIEWER_TOOLS` — the nodule step zooms, and a turn that never
- * zooms fails. A capture pipeline can omit `teachingGuide` and we derive
- * one from the finding track via `teachingGuideFromTrack`.
+ *   scroll → correct window → zoom (when the teacher zoomed) → point → say it
+ *
+ * `show_finding` is one tool, but the simulator records that gesture as
+ * scroll, then window, then laser — the order the registrar sees. Saying the
+ * finding before that viewport is up fails. A scroll path that walks away
+ * from the slice, or onto the other finding, fails.
+ *
+ * `zoom_to` (and its alias `set_zoom`) is in the live registry. A guide that
+ * zooms is a hard step: skip it, or place it outside window → zoom → point,
+ * and the turn fails. The reference emits that sequence itself.
  *
  * Pass / fail criteria: docs/TUTOR_EVAL.md.
  */
@@ -22,13 +25,21 @@ import { fileURLToPath } from "node:url";
 
 import { clickHitsFinding } from "../clickFinding";
 import { buildPerformancePlan, splitSentences } from "../performancePlan";
-import type { CaseData, Finding, RecordedTrack } from "../types";
+import type { CaseData, Finding } from "../types";
 import { HARNESS_VIEWER_TOOLS, type HarnessViewerAction } from "./tools";
 
 /** WW/WC tolerance. 400/40 vs 1500/-600 fails; a 10-unit nudge passes. */
 export const VOI_TOLERANCE = 20;
+/** Zoom factor tolerance. 2.2 vs 2.15 passes; 2.2 vs 1 does not. */
+export const ZOOM_TOLERANCE = 0.05;
 
-/** Tools the simulator applies. The registry is the source of those names. */
+/** Actions the registry does not have yet. The simulator already applies them. */
+/** scroll_to / zoom_to / set_zoom are live harness tools. */
+export type FutureViewerAction = Extract<
+  HarnessViewerAction,
+  { type: "scroll_to" | "zoom_to" | "set_zoom" }
+>;
+
 export type EvalAction = HarnessViewerAction;
 
 export type TeachingGuideAction =
@@ -134,6 +145,22 @@ export type HardCheck = {
   detail: string;
 };
 
+export type FidelityPhaseName = "scroll" | "window" | "zoom" | "point" | "speech";
+export type FidelityPhaseStatus = "met" | "missed" | "blocked" | "n/a";
+
+export type FidelityPhase = {
+  phase: FidelityPhaseName;
+  status: FidelityPhaseStatus;
+  detail: string;
+};
+
+/** What a consultant would do on this beat, and whether this turn did it. */
+export type BeatFidelity = {
+  consultant: string;
+  taught: boolean;
+  phases: FidelityPhase[];
+};
+
 export type BeatReport = {
   beatId: string;
   findingId: string;
@@ -142,6 +169,7 @@ export type BeatReport = {
   drive: string;
   checks: HardCheck[];
   holes: string[];
+  fidelity: BeatFidelity;
 };
 
 export type SessionScore = {
@@ -158,7 +186,15 @@ export type SessionScore = {
    */
   hardScore: number;
   holes: string[];
-  /** Hard pass and no craft holes. Zoom missing means this is false. */
+  /**
+   * Every beat was taught: scroll, window, zoom when required, point, then
+   * the right words, with no blocked phase. A missing zoom on a guide that
+   * zooms keeps this false, because zoom_to is a live tool.
+   */
+  fidelityTaught: boolean;
+  fidelityMet: number;
+  fidelityRequired: number;
+  /** Hard pass, fidelity taught, and no craft holes. */
   worldClass: boolean;
 };
 
@@ -266,59 +302,47 @@ export function voiMatches(
 }
 
 /**
- * Build a teachingGuide from a recorded track when a beat does not carry one.
- * Camera zooms become `zoom_to` — a hole until that tool exists.
+ * Pedagogical sequence from a recorded track: one scroll to the landing
+ * slice, then the window, then zoom if the teacher zoomed, then the point.
+ * Intermediate scroll ticks are not required steps. `t` increases in that
+ * human order so a beat with no authored guide still scores scroll → window
+ * → zoom → point.
  */
 export function teachingGuideFromTrack(finding: Finding): TeachingGuideStep[] {
-  const track: RecordedTrack | undefined = finding.track;
-  if (!track) {
-    return [{ t: 0, action: "show_finding", findingId: finding.id }];
-  }
-  const steps: TeachingGuideStep[] = [];
-  for (const event of track.events) {
-    switch (event.type) {
-      case "slice":
-        steps.push({
-          t: event.t,
-          action: "scroll_to",
-          sliceIndex: event.index,
-          findingId: finding.id,
-        });
-        break;
-      case "voi":
-        steps.push({
-          t: event.t,
-          action: "set_window",
-          windowWidth: event.ww,
-          windowCenter: event.wc,
-          findingId: finding.id,
-        });
-        break;
-      case "cursor":
-        steps.push({
-          t: event.t,
-          action: "point_to",
-          findingId: finding.id,
-          x_pct: event.x,
-          y_pct: event.y,
-        });
-        break;
-      case "camera":
-        steps.push({
-          t: event.t,
-          action: "zoom_to",
-          zoom: event.zoom,
-          findingId: finding.id,
-        });
-        break;
-      default:
-        break;
+  let ww = finding.windowWidth ?? finding.track?.start.ww;
+  let wc = finding.windowCenter ?? finding.track?.start.wc;
+  let zoom: number | undefined;
+  let x = finding.marker.x_pct;
+  let y = finding.marker.y_pct;
+  for (const event of finding.track?.events ?? []) {
+    if (event.type === "voi") {
+      ww = event.ww;
+      wc = event.wc;
+    } else if (event.type === "camera") {
+      zoom = event.zoom;
+    } else if (event.type === "cursor") {
+      x = event.x;
+      y = event.y;
     }
   }
-  if (!steps.some((step) => step.action === "show_finding")) {
-    const t = steps.length > 0 ? steps[steps.length - 1].t : 0;
-    steps.push({ t, action: "show_finding", findingId: finding.id });
+  const slice = finding.sliceIndex ?? finding.track?.start.sliceIndex ?? 0;
+  let t = 0;
+  const steps: TeachingGuideStep[] = [
+    { t: t++, action: "scroll_to", sliceIndex: slice, findingId: finding.id },
+  ];
+  if (ww != null && wc != null) {
+    steps.push({
+      t: t++,
+      action: "set_window",
+      windowWidth: ww,
+      windowCenter: wc,
+      findingId: finding.id,
+    });
   }
+  if (zoom != null) {
+    steps.push({ t: t++, action: "zoom_to", zoom, findingId: finding.id });
+  }
+  steps.push({ t: t++, action: "point_to", findingId: finding.id, x_pct: x, y_pct: y });
   return steps;
 }
 
@@ -357,49 +381,34 @@ export function initialViewer(fixture: TutorEvalFixture): SimViewer {
 }
 
 /**
- * Reference tutor that emits every gating tool on the guide, in order.
- * Zoom is included: the nodule beat is not a pass if the viewer never leans in.
- * A point that the guide places after zoom is emitted again so the laser
- * lands on the magnified image, not only inside the earlier show_finding.
+ * Scroll, then the authored window, then zoom when the guide zoomed, then
+ * the laser. `point_to` with the finding id seats the finding if it is not
+ * already active, so the laser is the last visible effect — after the zoom.
+ */
+export function humanTeachActions(finding: Finding, guide: TeachingGuideStep[]): EvalAction[] {
+  const zoom = guide.find((step) => step.action === "zoom_to");
+  const slice = finding.sliceIndex ?? zoom?.sliceIndex ?? 0;
+  const actions: EvalAction[] = [{ type: "scroll_to", sliceIndex: slice }];
+  if (finding.windowWidth != null && finding.windowCenter != null) {
+    actions.push({
+      type: "set_window",
+      windowWidth: finding.windowWidth,
+      windowCenter: finding.windowCenter,
+    });
+  }
+  if (zoom?.zoom != null) actions.push({ type: "zoom_to", zoom: zoom.zoom });
+  actions.push({ type: "point_to", findingId: finding.id });
+  return actions;
+}
+
+/**
+ * Reference tutor. Emits the consultant sequence with the live tools,
+ * including `zoom_to` when the guide zooms. `show_finding` alone is not
+ * this path: it never leans in.
  */
 export function viewerDrivingTutor(ctx: TutorEvalContext): TutorTurn {
   const guide = resolveTeachingGuide(ctx.beat, ctx.finding);
-  const actions: EvalAction[] = [];
-  let showed = false;
-  for (const step of guide) {
-    if (!guideStepIsGating(step)) continue;
-    if (step.action === "set_window" && step.windowWidth != null && step.windowCenter != null) {
-      actions.push({
-        type: "set_window",
-        windowWidth: step.windowWidth,
-        windowCenter: step.windowCenter,
-      });
-    } else if (step.action === "show_finding" && step.findingId) {
-      actions.push({ type: "show_finding", findingId: step.findingId });
-      showed = true;
-    } else if (step.action === "next_in_tour") {
-      actions.push({ type: "next_in_tour" });
-      showed = true;
-    } else if (step.action === "prev_in_tour") {
-      actions.push({ type: "prev_in_tour" });
-      showed = true;
-    } else if (step.action === "point_to") {
-      actions.push({
-        type: "point_to",
-        findingId: step.findingId ?? ctx.finding.id,
-        x_pct: step.x_pct,
-        y_pct: step.y_pct,
-      });
-    } else if (step.action === "scroll_to" && !showed && registryHas("scroll_to")) {
-      actions.push({
-        type: "scroll_to",
-        sliceIndex: step.sliceIndex ?? ctx.finding.sliceIndex ?? 0,
-      });
-    } else if (step.action === "zoom_to" && step.zoom != null && registryHas("zoom_to")) {
-      actions.push({ type: "zoom_to", zoom: step.zoom });
-    }
-  }
-  return { answer: ctx.beat.drivingNarration, actions };
+  return { answer: ctx.beat.drivingNarration, actions: humanTeachActions(ctx.finding, guide) };
 }
 
 /** Fluent radiologist-sounding answer. No tools. This must fail. */
@@ -423,7 +432,7 @@ export async function scoreTutorSession(
     const applied = applyActions(snapshot, turn.actions ?? [], fixture.case.findings);
     viewer = applied.viewer;
     const guide = resolveTeachingGuide(beat, finding);
-    const checks = scoreBeat({
+    const judged = scoreBeat({
       fixture,
       beat,
       finding,
@@ -442,8 +451,9 @@ export async function scoreTutorSession(
       label: finding.label,
       tools: (turn.actions ?? []).map((action) => action.type).filter((type) => type !== "none"),
       drive: formatDrive(applied.effects),
-      checks,
+      checks: judged.checks,
       holes,
+      fidelity: judged.fidelity,
     });
     history.push({ role: "user", text: beat.prompt });
     history.push({ role: "assistant", text: turn.answer ?? "" });
@@ -454,6 +464,9 @@ export async function scoreTutorSession(
   const hardTotal = hard.length;
   const hardPass = hardTotal > 0 && hard.every((check) => check.pass);
   const holes = beats.flatMap((beat) => beat.holes.map((hole) => `${beat.beatId}: ${hole}`));
+  const phases = beats.flatMap((beat) => beat.fidelity.phases.filter((phase) => phase.status !== "n/a"));
+  const fidelityMet = phases.filter((phase) => phase.status === "met").length;
+  const fidelityTaught = beats.length > 0 && beats.every((beat) => beat.fidelity.taught);
   return {
     fixtureId: fixture.id,
     tutorName,
@@ -463,7 +476,10 @@ export async function scoreTutorSession(
     hardTotal,
     hardScore: hardPass ? 100 : 0,
     holes,
-    worldClass: hardPass && holes.length === 0,
+    fidelityTaught,
+    fidelityMet,
+    fidelityRequired: phases.length,
+    worldClass: hardPass && fidelityTaught && holes.length === 0,
   };
 }
 
@@ -484,7 +500,7 @@ function scoreBeat(input: {
   effects: ViewerEffect[];
   seated: string[];
   guide: TeachingGuideStep[];
-}): HardCheck[] {
+}): { checks: HardCheck[]; fidelity: BeatFidelity } {
   const { fixture, beat, finding, before, after, answer, actions, effects, seated, guide } = input;
   const live = actions.filter((action) => action.type !== "none");
   const text = answer.replace(/\s+/g, " ").trim();
@@ -610,6 +626,11 @@ function scoreBeat(input: {
 
   checks.push(pointerBeforeWindow(before, finding, effects));
   checks.push(orderCheck(guide, finding, effects));
+  checks.push(humanSequence(before, finding, effects, guide));
+  checks.push(noRandomJump(before, finding, effects, fixture.case.findings));
+  checks.push(
+    speechOnViewport(before, beat.distinctiveTerms, finding, answer, actions, fixture.case.findings, guide)
+  );
 
   checks.push(
     after.sliceIndex === finding.sliceIndex
@@ -650,7 +671,328 @@ function scoreBeat(input: {
         )
   );
 
-  return checks;
+  return { checks, fidelity: beatFidelity(input, checks) };
+}
+
+const ALREADY_SCROLL: Rank = { seq: -1, sub: 0 };
+const ALREADY_WINDOW: Rank = { seq: -1, sub: 1 };
+const ALREADY_POINT: Rank = { seq: -1, sub: 2 };
+
+function scrollRank(before: SimViewer, finding: Finding, effects: ViewerEffect[]): Rank | null {
+  const landed = earliest(
+    effects.filter((effect) => effect.type === "scroll" && effect.sliceIndex === finding.sliceIndex)
+  );
+  if (landed) return landed;
+  if (before.sliceIndex === finding.sliceIndex) return ALREADY_SCROLL;
+  return null;
+}
+
+function windowRank(before: SimViewer, finding: Finding, effects: ViewerEffect[]): Rank | null {
+  const ww = finding.windowWidth;
+  const wc = finding.windowCenter;
+  if (ww == null || wc == null) return null;
+  const landed = earliest(
+    effects.filter(
+      (effect) => effect.type === "window" && voiMatches(effect.windowWidth, effect.windowCenter, ww, wc)
+    )
+  );
+  if (landed) return landed;
+  if (voiMatches(before.windowWidth, before.windowCenter, ww, wc)) return ALREADY_WINDOW;
+  return null;
+}
+
+function pointRank(before: SimViewer, finding: Finding, effects: ViewerEffect[]): Rank | null {
+  const landed = earliest(effects.filter((effect) => effect.type === "point" && pointHits(effect, finding)));
+  if (landed) return landed;
+  if (
+    before.pointer &&
+    clickHitsFinding(finding.marker, before.pointer.x, before.pointer.y)
+  ) {
+    return ALREADY_POINT;
+  }
+  return null;
+}
+
+function guideZoom(guide: TeachingGuideStep[]): TeachingGuideStep | undefined {
+  return guide.find((step) => step.action === "zoom_to" && step.zoom != null);
+}
+
+function zoomRank(guide: TeachingGuideStep[], effects: ViewerEffect[]): Rank | null {
+  const step = guideZoom(guide);
+  if (!step?.zoom) return null;
+  const target = step.zoom;
+  return earliest(
+    effects.filter(
+      (effect) =>
+        effect.type === "zoom" && effect.zoom != null && Math.abs(effect.zoom - target) <= ZOOM_TOLERANCE
+    )
+  );
+}
+
+function humanSequence(
+  before: SimViewer,
+  finding: Finding,
+  effects: ViewerEffect[],
+  guide: TeachingGuideStep[]
+): HardCheck {
+  const scroll = scrollRank(before, finding, effects);
+  const window = windowRank(before, finding, effects);
+  const point = pointRank(before, finding, effects);
+  if (!scroll || !window || !point || !rankLess(scroll, window) || !rankLess(window, point)) {
+    return fail(
+      "human_sequence",
+      "A teacher scrolls to the slice, then sets the window, then points. This turn did not do those three in that order."
+    );
+  }
+  const zoom = guideZoom(guide);
+  if (zoom?.zoom != null) {
+    const placed = zoomRank(guide, effects);
+    const inOrder = placed != null && rankLess(window, placed) && rankLess(placed, point);
+    if (!inOrder && placed == null && !registryHas("zoom_to")) {
+      return pass(
+        "human_sequence",
+        `scroll → window → point. Zoom ${zoom.zoom}× is on the guide and blocked until zoom_to is registered. That is a hole, not a pass on craft.`
+      );
+    }
+    if (!inOrder) {
+      return fail(
+        "human_sequence",
+        `Zoom ${zoom.zoom}× has to land after the window and before the laser. Out-of-order zoom fails now. A missing zoom fails too, the moment zoom_to joins the registry.`
+      );
+    }
+    return pass("human_sequence", `scroll → window → zoom ${zoom.zoom}× → point.`);
+  }
+  return pass("human_sequence", "scroll → window → point, each strictly after the one before.");
+}
+
+function noRandomJump(
+  before: SimViewer,
+  finding: Finding,
+  effects: ViewerEffect[],
+  findings: Finding[]
+): HardCheck {
+  const target = finding.sliceIndex;
+  if (target == null) return pass("no_random_jump", "Finding has no slice to approach.");
+  const otherSlices = new Set(
+    findings
+      .filter((item) => item.id !== finding.id && item.sliceIndex != null && item.sliceIndex !== target)
+      .map((item) => item.sliceIndex as number)
+  );
+  let prev = before.sliceIndex;
+  const path: number[] = [];
+  for (const effect of effects) {
+    if (effect.type !== "scroll" || effect.sliceIndex == null) continue;
+    const slice = effect.sliceIndex;
+    path.push(slice);
+    const walked = [before.sliceIndex, ...path].filter((index) => index != null).join(" → ");
+    if (otherSlices.has(slice)) {
+      return fail(
+        "no_random_jump",
+        `Scrolled onto another finding's slice ${slice} while teaching ${finding.label}. Path ${walked}.`
+      );
+    }
+    if (prev == null) {
+      prev = slice;
+      continue;
+    }
+    const dist = Math.abs(slice - target);
+    const prevDist = Math.abs(prev - target);
+    const sideways = slice !== target && slice !== prev && dist === prevDist;
+    if (dist > prevDist || sideways) {
+      return fail(
+        "no_random_jump",
+        `Slice ${prev} → ${slice} does not approach slice ${target}. Path ${walked}.`
+      );
+    }
+    prev = slice;
+  }
+  if (path.length === 0 && before.sliceIndex !== target) {
+    return fail(
+      "no_random_jump",
+      `Never scrolled. Stayed on slice ${before.sliceIndex}; ${finding.label} is slice ${target}.`
+    );
+  }
+  const walked = [before.sliceIndex, ...path].filter((index) => index != null).join(" → ");
+  return pass(
+    "no_random_jump",
+    path.length === 0 ? `Already on slice ${target}.` : `Path ${walked} approaches slice ${target}.`
+  );
+}
+
+function speechOnViewport(
+  before: SimViewer,
+  terms: string[],
+  finding: Finding,
+  answer: string,
+  actions: EvalAction[],
+  findings: Finding[],
+  guide: TeachingGuideStep[]
+): HardCheck {
+  const live = actions.filter((action) => action.type !== "none");
+  const text = answer.replace(/\s+/g, " ").trim();
+  const plan = buildPerformancePlan(text, live);
+  let viewer = cloneViewer(before);
+  const off: { text: string; view: SimViewer }[] = [];
+  let named = false;
+  for (const sentenceBeat of plan) {
+    const sentence = sentenceBeat.text.trim();
+    if (sentence && terms.some((term) => mentions(sentence, term))) {
+      named = true;
+      if (!viewportReady(viewer, finding, guide)) {
+        off.push({ text: sentence, view: cloneViewer(viewer) });
+      }
+    }
+    if (sentenceBeat.actions.length > 0) {
+      viewer = applyActions(viewer, sentenceBeat.actions as EvalAction[], findings).viewer;
+    }
+  }
+  if (!named) {
+    return fail(
+      "speech_on_viewport",
+      "The finding was never named on a sentence the registrar could attach to the image."
+    );
+  }
+  if (off.length > 0) {
+    const view = off[0].view;
+    return fail(
+      "speech_on_viewport",
+      `Said "${clip(off[0].text)}" before the finding was on screen (slice ${view.sliceIndex ?? "none"}, WW/WC ${view.windowWidth ?? "none"}/${view.windowCenter ?? "none"}, ${view.pointer ? "pointer up" : "no pointer"}). Say it after the laser.`
+    );
+  }
+  return pass(
+    "speech_on_viewport",
+    "The finding was named only once slice, window, and laser were already up."
+  );
+}
+
+function viewportReady(viewer: SimViewer, finding: Finding, guide: TeachingGuideStep[]): boolean {
+  if (viewer.sliceIndex !== finding.sliceIndex) return false;
+  if (
+    finding.windowWidth == null ||
+    finding.windowCenter == null ||
+    !voiMatches(viewer.windowWidth, viewer.windowCenter, finding.windowWidth, finding.windowCenter)
+  ) {
+    return false;
+  }
+  if (!viewer.pointer || !clickHitsFinding(finding.marker, viewer.pointer.x, viewer.pointer.y)) {
+    return false;
+  }
+  const zoom = guideZoom(guide);
+  if (zoom?.zoom != null && registryHas("zoom_to")) {
+    if (viewer.zoom == null || Math.abs(viewer.zoom - zoom.zoom) > ZOOM_TOLERANCE) return false;
+  }
+  return true;
+}
+
+function clip(text: string): string {
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+function beatFidelity(
+  input: {
+    beat: TutorEvalBeat;
+    finding: Finding;
+    before: SimViewer;
+    effects: ViewerEffect[];
+    guide: TeachingGuideStep[];
+  },
+  checks: HardCheck[]
+): BeatFidelity {
+  const { beat, finding, before, effects, guide } = input;
+  const scroll = scrollRank(before, finding, effects);
+  const window = windowRank(before, finding, effects);
+  const point = pointRank(before, finding, effects);
+  const zoomStep = guideZoom(guide);
+  const zoom = zoomRank(guide, effects);
+  const speechOk = checks.find((check) => check.id === "speech_on_viewport")?.pass === true;
+
+  const phases: FidelityPhase[] = [];
+
+  phases.push(
+    !scroll
+      ? missedPhase("scroll", `Never reached slice ${finding.sliceIndex}.`)
+      : metPhase("scroll", `Slice ${finding.sliceIndex}.`)
+  );
+
+  if (!window) {
+    phases.push(missedPhase("window", "Window never matched the authored VOI."));
+  } else if (!scroll || !rankLess(scroll, window)) {
+    phases.push(missedPhase("window", "Window did not come after the scroll."));
+  } else {
+    phases.push(metPhase("window", "After the scroll."));
+  }
+
+  if (!zoomStep) {
+    phases.push(naPhase("zoom", "The teacher did not zoom on this finding."));
+  } else if (
+    zoom &&
+    window &&
+    point &&
+    rankLess(window, zoom) &&
+    rankLess(zoom, point)
+  ) {
+    phases.push(metPhase("zoom", `${zoomStep.zoom}× between the window and the laser.`));
+  } else if (zoom) {
+    phases.push(missedPhase("zoom", "Zoom was not between the window and the laser."));
+  } else if (!registryHas("zoom_to")) {
+    phases.push(
+      blockedPhase(
+        "zoom",
+        `Guide asks for ${zoomStep.zoom}×. zoom_to is not in HARNESS_VIEWER_TOOLS. When that name is registered, a missing or misplaced zoom fails human_sequence.`
+      )
+    );
+  } else {
+    phases.push(missedPhase("zoom", "zoom_to is registered and this turn did not zoom."));
+  }
+
+  if (!point) {
+    phases.push(missedPhase("point", "The laser never hit the marker."));
+  } else if (!window || !rankLess(window, point)) {
+    phases.push(missedPhase("point", "The laser did not come after the window."));
+  } else {
+    phases.push(metPhase("point", "After the window."));
+  }
+
+  phases.push(
+    speechOk
+      ? metPhase("speech", "Named this finding only after slice, window, and laser were up.")
+      : missedPhase("speech", "Talked about the finding while that viewport was not on screen.")
+  );
+
+  return {
+    consultant: consultantScript(finding, guide, beat),
+    taught: phases.every((phase) => phase.status === "met" || phase.status === "n/a"),
+    phases,
+  };
+}
+
+function consultantScript(finding: Finding, guide: TeachingGuideStep[], beat: TutorEvalBeat): string {
+  const slice = guide.find((step) => step.action === "scroll_to")?.sliceIndex ?? finding.sliceIndex;
+  const win = guide.find((step) => step.action === "set_window");
+  const ww = win?.windowWidth ?? finding.windowWidth;
+  const wc = win?.windowCenter ?? finding.windowCenter;
+  const zoom = guideZoom(guide);
+  const bits = [`scroll to slice ${slice}`, `window ${ww}/${wc}`];
+  if (zoom?.zoom != null) bits.push(`zoom ${zoom.zoom}×`);
+  bits.push("point at the marker");
+  bits.push(`then say ${beat.distinctiveTerms.join(" / ")}`);
+  return bits.join(" → ");
+}
+
+function metPhase(phase: FidelityPhaseName, detail: string): FidelityPhase {
+  return { phase, status: "met", detail };
+}
+
+function missedPhase(phase: FidelityPhaseName, detail: string): FidelityPhase {
+  return { phase, status: "missed", detail };
+}
+
+function blockedPhase(phase: FidelityPhaseName, detail: string): FidelityPhase {
+  return { phase, status: "blocked", detail };
+}
+
+function naPhase(phase: FidelityPhaseName, detail: string): FidelityPhase {
+  return { phase, status: "n/a", detail };
 }
 
 function pointerBeforeWindow(before: SimViewer, finding: Finding, effects: ViewerEffect[]): HardCheck {
@@ -678,7 +1020,7 @@ function pointerBeforeWindow(before: SimViewer, finding: Finding, effects: Viewe
   if (!correctWindow || (firstPoint && rankLess(firstPoint, correctWindow))) {
     return fail(
       "pointer_before_window",
-      "The laser moved while the window was still wrong. Window first, then point — a pleural line on soft-tissue windows is not teaching."
+      "The laser moved while the window was still wrong. Set the window before the laser — a pleural line on soft-tissue windows is not teaching."
     );
   }
   return pass("pointer_before_window", "The laser landed with or after the authored window, not before it.");
@@ -715,7 +1057,7 @@ function orderCheck(guide: TeachingGuideStep[], finding: Finding, effects: Viewe
   }
   return pass(
     "order",
-    `Effect order respects ${gating.map((step) => step.action).join(" → ")}. Ties (slice and window in one show_finding) are allowed; a pointer before the window is not.`
+    `Effect order respects ${gating.map((step) => step.action).join(" → ")}. Equal ranks may tie. A show_finding is scroll, then window, then laser.`
   );
 }
 
@@ -745,18 +1087,14 @@ function satisfierRank(
       const target = step.zoom;
       return earliest(
         effects.filter((effect) => {
-          if (effect.type !== "zoom" || effect.zoom == null || !Number.isFinite(effect.zoom)) {
-            return false;
-          }
+          if (effect.type !== "zoom" || effect.zoom == null || !Number.isFinite(effect.zoom)) return false;
           if (target == null || !Number.isFinite(target)) return true;
-          return Math.abs(effect.zoom - target) <= 0.15;
+          return Math.abs(effect.zoom - target) <= ZOOM_TOLERANCE;
         })
       );
     }
     case "point_to":
-      // The laser the registrar should end on. show_finding drops an earlier
-      // point; a guide that says "zoom, then point" is satisfied by the later one.
-      return latest(effects.filter((effect) => effect.type === "point" && pointHits(effect, finding)));
+      return earliest(effects.filter((effect) => effect.type === "point" && pointHits(effect, finding)));
     case "show_finding":
     case "next_in_tour":
     case "prev_in_tour": {
@@ -804,14 +1142,6 @@ function earliest(effects: ViewerEffect[]): Rank | null {
   if (effects.length === 0) return null;
   return effects.reduce<Rank>(
     (best, effect) => (rankLess(effect, best) ? { seq: effect.seq, sub: effect.sub } : best),
-    { seq: effects[0].seq, sub: effects[0].sub }
-  );
-}
-
-function latest(effects: ViewerEffect[]): Rank | null {
-  if (effects.length === 0) return null;
-  return effects.reduce<Rank>(
-    (best, effect) => (rankLess(best, effect) ? { seq: effect.seq, sub: effect.sub } : best),
     { seq: effects[0].seq, sub: effects[0].sub }
   );
 }
@@ -893,14 +1223,14 @@ export function applyActions(
       });
       return;
     }
-    if (action.type === "zoom_to") {
+    if (action.type === "zoom_to" || action.type === "set_zoom") {
       if (!Number.isFinite(action.zoom)) return;
       viewer.zoom = action.zoom;
       effects.push({
         type: "zoom",
         seq,
         sub: 0,
-        source: "zoom_to",
+        source: action.type,
         zoom: action.zoom,
         findingId: viewer.activeFindingId ?? undefined,
       });
@@ -951,7 +1281,7 @@ function reveal(
     effects.push({
       type: "window",
       seq,
-      sub: 0,
+      sub: 1,
       source,
       findingId: finding.id,
       windowWidth: finding.windowWidth,
@@ -959,7 +1289,7 @@ function reveal(
     });
   }
   if (markerOk(finding.marker?.x_pct, finding.marker?.y_pct)) {
-    putPoint(viewer, effects, seq, 1, source, finding.marker.x_pct, finding.marker.y_pct, finding.id);
+    putPoint(viewer, effects, seq, 2, source, finding.marker.x_pct, finding.marker.y_pct, finding.id);
   }
   viewer.activeFindingId = finding.id;
   seated.push(finding.id);
@@ -1050,7 +1380,53 @@ export function formatScorecard(score: SessionScore): string {
     lines.push("HOLES");
     for (const hole of score.holes) lines.push(`  - ${hole}`);
   }
+  lines.push("");
+  lines.push(formatFidelity(score));
   return lines.join("\n");
+}
+
+function formatFidelity(score: SessionScore): string {
+  const lines = [
+    "HUMAN-TEACHER FIDELITY",
+    "  question   Would a registrar feel taught at the workstation?",
+    `  answer     ${fidelityVerdict(score)}`,
+    `  phases     ${score.fidelityMet}/${score.fidelityRequired} met`,
+    "",
+  ];
+  for (const beat of score.beats) {
+    lines.push(
+      `  ${beat.fidelity.taught ? "TAUGHT    " : "NOT TAUGHT"}  ${beat.beatId}  ${beat.label}`
+    );
+    lines.push(`             consultant  ${beat.fidelity.consultant}`);
+    for (const phase of beat.fidelity.phases) {
+      const tag =
+        phase.status === "met"
+          ? "MET"
+          : phase.status === "missed"
+            ? "MISSED"
+            : phase.status === "blocked"
+              ? "BLOCKED"
+              : "n/a";
+      lines.push(`             ${phase.phase.padEnd(8)} ${tag.padEnd(7)} ${phase.detail}`);
+    }
+    lines.push("");
+  }
+  lines.push("  failure modes a consultant does not commit");
+  lines.push("    frozen image     names the finding while slice and window never change. Text-only scores 0.");
+  lines.push("    random scroll    the path walks away from the target slice, or onto the other finding.");
+  lines.push("    early lecture    says the finding before slice, window, and laser are already up.");
+  lines.push("    zoom             zooms after the laser, or skips zoom once zoom_to is a real tool.");
+  return lines.join("\n");
+}
+
+function fidelityVerdict(score: SessionScore): string {
+  if (score.fidelityTaught) {
+    return "YES. Scroll, window, zoom when the teacher zoomed, point, then the words — on the image in front of them.";
+  }
+  if (score.hardPass) {
+    return "NO. Tools moved the scan, and this is still not a world-class teacher. A blocked zoom means the registrar never saw the teacher's magnification.";
+  }
+  return "NO. Lectured next to the wrong image, or the sequence was not how a consultant teaches this case.";
 }
 
 export function formatContract(textOnly: SessionScore, driver: SessionScore): string {
@@ -1058,7 +1434,7 @@ export function formatContract(textOnly: SessionScore, driver: SessionScore): st
   return [
     "HARNESS CONTRACT",
     `  text-only fake      ${textOnly.hardPass ? "PASS (this is a bug in the rubric)" : "FAIL (required)"}    score ${textOnly.hardScore}/100`,
-    `  viewer-driving      ${driver.hardPass ? "PASS (required)" : "FAIL (this is a bug in the rubric)"}    score ${driver.hardScore}/100    world ${driver.worldClass ? "YES" : "NO"}`,
+    `  viewer-driving      ${driver.hardPass ? "PASS (required)" : "FAIL (this is a bug in the rubric)"}    score ${driver.hardScore}/100    fidelity ${driver.fidelityTaught ? "TAUGHT" : "NOT TAUGHT"}`,
     `  CONTRACT            ${held ? "HELD" : "BROKEN"}`,
   ].join("\n");
 }

@@ -1,15 +1,18 @@
-# Tutor eval — did it drive the viewer?
+# Tutor eval — did it teach at the workstation?
 
-A radiology teacher moves the scan and talks about what is now on the screen.
-A chatbot writes a correct paragraph while the image sits still. This eval
-exists to fail the second one.
+A radiology teacher moves the scan, leans in when the finding is small, and
+talks about what is now on the screen. A chatbot writes a correct paragraph
+while the image sits still. This eval fails the second one, and it also fails
+a drive that jumps around or names the finding before the viewport matches.
 
 ```
 npm run eval:tutor
 ```
 
 Exit 0 only when a text-only fake **fails** and a viewer-driving reference
-**passes**. That is the CI contract. It does not call Gemini and needs no API key.
+**passes**. The reference is the consultant sequence, including `zoom_to`,
+so it is also fidelity **TAUGHT** and world-class on this fixture. The
+command does not call Gemini and needs no API key.
 
 ```
 npm run eval:tutor -- --live          # also score Gemini; needs GEMINI_API_KEY
@@ -32,18 +35,29 @@ anchors and no teacher track, so it cannot score order. This fixture can.
 The learner opens on **slice 0, soft-tissue WW/WC 400/40**. The findings are
 invisible there.
 
-| Finding | Slice | Window | Marker | Teacher track |
+| Finding | Slice | Window | Marker | Teacher |
 |---|---|---|---|---|
-| Right apical pneumothorax | 8 | 1500 / -600 | (0.28, 0.22) | scroll to the apex, lung window, point |
-| Left lower lobe nodule | 27 | 1500 / -600 | (0.70, 0.62) | scroll down, **zoom 2.2×**, point |
+| Right apical pneumothorax | 8 | 1500 / -600 | (0.28, 0.22) | scroll, lung window, point. No zoom. |
+| Left lower lobe nodule | 27 | 1500 / -600 | (0.70, 0.62) | scroll, lung window, **zoom 2.2×**, point |
 
-`teachingGuide` on each beat is the student-facing script (window first,
-because the learner is on the wrong window). The finding `track` is how the
-consultant already read it (they started on lung windows). Those are not the
-same clock, on purpose.
+`teachingGuide` on each beat is what a consultant would do for a registrar
+who opened on the wrong slice and the wrong window:
 
-If a beat omits `teachingGuide`, `teachingGuideFromTrack` builds one from the
-track, including `zoom_to`. That is the hook for a future capture pipeline.
+1. Scroll to the finding.
+2. Set lung windows (1500 / -600).
+3. Zoom, only when the teacher zoomed (the nodule, 2.2×).
+4. Point at the marker.
+5. Then name the finding.
+
+The recorded `track` is the consultant's own clock (they were already on lung
+windows). The guide collapses that to one landing scroll. `t` is order, not
+latency.
+
+If a beat omits `teachingGuide`, `teachingGuideFromTrack` builds the same
+sequence from the track, including `zoom_to`. `buildTeachingGuide` in
+`lib/teachingGuide.ts` is the live Teach-mode script (`play_guide`). This
+eval scores the visible viewport, so the reference emits `scroll_to`,
+`set_window`, `zoom_to`, and `point_to` rather than one opaque call.
 
 ## What “drive the viewer” means
 
@@ -52,59 +66,80 @@ The scorer applies the same tools the student client applies
 
 | Tool | Effect |
 |---|---|
-| `show_finding` | Scroll to the authored slice, apply authored WW/WC, then the laser. One action. Slice and window share a rank; the laser is after them. |
-| `next_in_tour` / `prev_in_tour` | Same reveal, on the next or previous finding in `order`. From no active finding, next seats the first. |
+| `show_finding` | Scroll, authored WW/WC, then the laser. One tool. No zoom. |
+| `next_in_tour` / `prev_in_tour` | Same reveal, on the next or previous finding. |
 | `set_window` | WW/WC only. Values must match the authored VOI (±20). |
-| `point_to` with a finding you are not on | Full reveal (the client does this), not a laser on the wrong slice. |
+| `scroll_to` | Slice only. |
+| `zoom_to` / `set_zoom` | Magnification. `set_zoom` is the same effect. |
+| `point_to` with a finding you are not on | Full reveal, then the laser. |
 | `point_to` with raw `x_pct` / `y_pct` | Laser immediately, no window change. |
-| `scroll_to` | Scroll to that slice. Also satisfied by `show_finding` or the tour. |
-| `zoom_to` | Set magnification. Hard step on any guide beat that zooms (the nodule is 2.2×). |
+| `play_guide` | Teach-mode playback on the client. The scorer does not treat that one call as the sequence; the reference spells the steps out. |
 
-`scroll_to` in a guide is a hard step, satisfied by `show_finding` or the tour.
-`zoom_to` is registered, so a nodule beat that never zooms fails `order`.
-`show_finding` alone is not enough for that beat.
+`zoom_to` is in `HARNESS_VIEWER_TOOLS`. On a beat whose guide zooms, skipping
+it fails `order` and `human_sequence`. Placing it after the laser fails
+`human_sequence`. There is no BLOCKED zoom hole on this fixture once the
+reference emits the zoom.
 
-Wall-clock latency is not scored. `t` on the guide is order only. Speech and
-the first tool are paired with `buildPerformancePlan`: the first sentence
-must carry a viewer action.
+Wall-clock latency is not scored. Speech and tools are paired with
+`buildPerformancePlan`: action 0 rides sentence 0, and each later action
+rides the next sentence. The finding's name has to sit on a sentence that
+starts after the laser (and the zoom, when the guide zooms) is already up.
 
 ## Hard checks (any miss → verdict FAIL, score 0)
 
 Headline score is 0 or 100. A decent sentence does not earn partial credit.
-The per-check lines still say which sentences happened to be fine.
 
 | Check | Fail |
 |---|---|
 | `text_only` | No live tool. This is the chatbot. |
 | `look_with_drive` | The first spoken sentence does not carry a tool. |
 | `seated_finding` | Never seated this finding, or seated a different one. |
-| `order` | A later guide step landed strictly before an earlier one, or a gating step never happened. Slice and window in the same `show_finding` may tie. |
+| `order` | A later gating guide step landed strictly before an earlier one, or a gating step never happened. `zoom_to` is gating. |
+| `human_sequence` | Scroll, then window, then point did not happen in that strict order. If the guide zooms, the zoom must sit strictly between the window and the laser. |
+| `no_random_jump` | A scroll walks away from the target slice, moves sideways, or lands on another finding's slice. A direct jump onto the target passes. |
+| `speech_on_viewport` | A sentence that names this finding starts before slice, window, laser, and (when required) zoom are already up. |
 | `pointer_before_window` | The laser moved while the window was still the wrong preset. |
 | `landing_slice` | Final slice is not the finding’s slice. |
 | `landing_window` | Final WW/WC is not the authored VOI (±20). |
-| `landing_pointer` | Pointer misses the marker. Hit radius is `DEFAULT_HIT_RADIUS` (0.08), the same radius as click-the-finding. |
+| `landing_pointer` | Pointer misses the marker. Hit radius is `DEFAULT_HIT_RADIUS` (0.08). |
 | `hallucinated_window` | Any window effect in the turn is not the authored VOI, even if a later tool corrects it. |
 | `narration_present` | Nothing was said. |
 | `look_cue` | The first sentence does not start with look / see / watch / follow. |
 | `narration_on_screen` | Speech never uses this beat’s distinctive terms. |
-| `narration_ahead` | Speech names a **later** finding’s distinctive terms. Earlier findings may be mentioned. |
-| `narration_hygiene` | Speech contains a finding id, a `0.xx` coordinate, or a field name (`sliceIndex`, `windowWidth`, …). |
+| `narration_ahead` | Speech names a **later** finding’s distinctive terms. |
+| `narration_hygiene` | Speech contains a finding id, a `0.xx` coordinate, or a field name. |
 
-A reference narration that describes the pneumothorax accurately and says
-“look at this slice”, with **no tools**, fails. That is the product.
+A paragraph that describes the pneumothorax and says “look at this slice”,
+with **no tools**, fails. Score 0.
 
-## What a pass is not
+## Human-teacher fidelity
 
-`VERDICT PASS` means the turn drove this fixture: right slice, right window,
-pointer on the marker, tools in an order a teacher would accept, speech about
-the finding on the screen.
+The hard score asks whether the turn is a chatbot. Fidelity asks whether a
+registrar was taught at the workstation.
 
-`world YES` means that, and every guide step fired, including zoom.
+| Beat | Consultant |
+|---|---|
+| Pneumothorax | Scroll off slice 0 onto slice 8 → lung window 1500/-600 → point at the apex → then say pleural line / pneumothorax. No zoom. |
+| Nodule | Scroll to slice 27 → same lung window → zoom 2.2× → point at the marker → then say nodule. |
 
-The reference driver emits `zoom_to` 2.2× on the nodule, then points again
-so the laser lands on the magnified image. That scorecard is `world YES`.
-A turn that only calls `show_finding` still fails the nodule. Do not read a
-pneumothorax-only pass as “the tutor can teach the whole case.”
+The scorecard prints this under **HUMAN-TEACHER FIDELITY**. Each phase is
+`MET`, `MISSED`, `BLOCKED`, or `n/a`. A beat is taught only when every phase
+is met or n/a. Zoom is `n/a` when the teacher did not zoom. Zoom is `BLOCKED`
+only when the guide asks for it and `zoom_to` is missing from the registry.
+That is not the state of this branch: the tool is registered, so a missing
+zoom is `MISSED` and a hard fail.
+
+`world YES` means the hard bar passed, every beat was taught, and the hole
+list is empty. The reference driver does that.
+
+Failure modes the scorecard names, and a test fails each one:
+
+- **Frozen image.** No tool. Text-only. Score 0.
+- **Random scroll.** Slice 0 → 3 → 39, then a repair onto slice 8. `no_random_jump` fails.
+- **Early lecture.** The sentence that says “pneumothorax” is the same sentence that carries the drive. `speech_on_viewport` fails.
+- **Window before scroll.** `set_window` then the seat. `human_sequence` fails.
+- **Zoom after the laser.** `show_finding` and then `zoom_to`. `human_sequence` fails. `show_finding` alone on the nodule fails the same way: the laser is up and the magnification never happened.
+- **`set_zoom`.** Same effect as `zoom_to`. The alias can be world-class when it sits in the consultant slot.
 
 ## Live model
 
@@ -112,8 +147,7 @@ pneumothorax-only pass as “the tutor can teach the whole case.”
 with the fixture’s findings context and each beat’s prompt. Mock mode does
 not import the Gemini client.
 
-The guided system prompt tells the model the client already seats the opening
-slice and not to `next_in_tour` during an auto-tour. This harness does **not**
-pre-seat. A live model that obeys that sentence and only talks fails
-`text_only` on purpose. The prompts in the fixture ask it to drive anyway
-(“I am on soft-tissue windows… drive the viewer”).
+The guided prompt prefers `play_guide` and still mentions `set_window` before
+`show_finding`. This harness scores the viewport those calls leave behind.
+A live model that only talks fails `text_only`. A live model that zooms
+after the laser fails `human_sequence`.
