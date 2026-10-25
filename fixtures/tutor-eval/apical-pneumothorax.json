@@ -1,7 +1,7 @@
 {
   "id": "apical-pneumothorax",
   "phi": "none",
-  "notes": "Synthetic teaching case for CI. No patient, no pixels, no TCIA download. Catalog entries in lib/publicCases/catalog.ts are mid-stack guesses without a recorded track or an expected teach script, so they cannot score order. Slice indices, markers, and the track are authored, deterministic, and not measurements of a real scan. The student opens on soft-tissue windows at slice 0 — the finding is invisible until the tutor drives. The consultant track already starts on lung windows; teachingGuide is the student-facing script (window first), not a raw dump of the track.",
+  "notes": "Synthetic teaching case for CI. No patient, no pixels, no TCIA download. Catalog entries in lib/publicCases/catalog.ts are mid-stack guesses without a recorded track, so they cannot score a teacher's sequence. The learner opens on slice 0 at soft-tissue 400/40. teachingGuide is the human sequence: scroll to the slice, then the correct window, then zoom when the teacher zoomed, then point, then name the finding. The recorded track is the consultant's clock (they were already on lung windows); the guide is what the registrar must be shown.",
   "mode": "guided",
   "initialViewer": {
     "sliceIndex": 0,
@@ -140,11 +140,11 @@
       "findingId": "f_ptx",
       "prompt": "Show me the first finding. I am on soft-tissue windows at the top of the stack — drive the viewer and teach what is on the slice.",
       "distinctiveTerms": ["pneumothorax", "pleural"],
-      "drivingNarration": "Look at this slice. Lung windows show a visceral pleural line at the right apex, with no lung markings beyond it. That is a small right apical pneumothorax. Report it as such, and do not call it a skin fold until the line stays continuous as you scroll.",
+      "drivingNarration": "Look at this slice. Lung windows. The marker is on the apex. That is a small right apical pneumothorax along the visceral pleural line. Report it as such, and do not call it a skin fold until the line stays continuous as you scroll.",
       "chatbotNarration": "Look at this slice. Lung windows would show a visceral pleural line at the right apex, with no lung markings beyond it. That is a small right apical pneumothorax. Report it as such, and do not call it a skin fold until the line stays continuous as you scroll.",
       "teachingGuide": [
-        { "t": 0, "action": "set_window", "windowWidth": 1500, "windowCenter": -600 },
-        { "t": 1600, "action": "show_finding", "findingId": "f_ptx" },
+        { "t": 900, "action": "scroll_to", "sliceIndex": 8, "findingId": "f_ptx" },
+        { "t": 1600, "action": "set_window", "windowWidth": 1500, "windowCenter": -600 },
         { "t": 2400, "action": "point_to", "findingId": "f_ptx" }
       ]
     },
@@ -153,11 +153,11 @@
       "findingId": "f_nodule",
       "prompt": "Show me the next finding. Scroll to it, point at it, and teach the report line.",
       "distinctiveTerms": ["nodule"],
-      "drivingNarration": "Look here. Deeper in the stack, still on lung windows, there is an 8 mm solid nodule in the left lower lobe. Findings: 8 mm solid left lower lobe nodule. Keep it separate from the pneumothorax in the impression.",
+      "drivingNarration": "Look here. Lung windows. Closer on this slice. The marker is on the lesion. That is an 8 mm solid nodule in the left lower lobe. Findings: 8 mm solid left lower lobe nodule. Keep it separate from the pneumothorax in the impression.",
       "chatbotNarration": "The pneumothorax is the case. I already covered the pleural line. Fleischner is a guideline you can read later if you want more detail on incidental lesions.",
       "teachingGuide": [
-        { "t": 0, "action": "scroll_to", "sliceIndex": 27, "findingId": "f_nodule" },
-        { "t": 800, "action": "show_finding", "findingId": "f_nodule" },
+        { "t": 700, "action": "scroll_to", "sliceIndex": 27, "findingId": "f_nodule" },
+        { "t": 1000, "action": "set_window", "windowWidth": 1500, "windowCenter": -600 },
         { "t": 1400, "action": "zoom_to", "zoom": 2.2, "findingId": "f_nodule" },
         { "t": 2100, "action": "point_to", "findingId": "f_nodule" }
       ]
