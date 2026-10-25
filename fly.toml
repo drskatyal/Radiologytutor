@@ -1,5 +1,9 @@
 # FlowRad Learn — Next.js app on Fly.io
 #
+# Cloud Run + Cloud Healthcare API DICOM store is the production target for
+# study-open latency. This file stays until the checklist in
+# docs/GCP_CLOUD_RUN.md is done. Local Orthanc is unchanged.
+#
 # Pair with fly.orthanc.toml (private Orthanc + volume). Deploy:
 #   fly deploy -c fly.toml
 #

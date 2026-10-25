@@ -12,8 +12,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { getStudy } from "@/lib/cases";
 import {
+  imagingStudyKey,
   orthancConfigured,
-  orthancFindStudyByUID,
   orthancStudySeriesMeta,
   type SeriesMeta,
 } from "@/lib/orthanc";
@@ -50,8 +50,10 @@ export async function GET(
   }
 
   try {
-    const orthancStudyId =
-      study.orthancStudyId ?? (await orthancFindStudyByUID(study.studyInstanceUID));
+    const orthancStudyId = await imagingStudyKey(
+      study.orthancStudyId,
+      study.studyInstanceUID
+    );
     if (!orthancStudyId) {
       return NextResponse.json({ study, series: fallback, hasImaging: false });
     }

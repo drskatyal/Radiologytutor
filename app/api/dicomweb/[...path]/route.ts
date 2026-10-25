@@ -14,15 +14,20 @@
 //
 // Caching:
 //   1. Browser Cache-Control on frames (immutable) + short TTL on metadata.
-//      Marked `private` — these are per-tenant bytes, never shared-cacheable.
-//   2. Optional Cloudflare R2 object cache for frame bytes when R2_* is set —
-//      cold Fly machines skip Orthanc on repeat opens (≤30s interactive path).
+//      Marked `private` — these are per-tenant bytes, never shared-cacheable,
+//      and never a public CDN.
+//   2. Optional object cache (R2, or GCS via R2_ENDPOINT) for frame bytes.
+//      A miss must not stall first-slice: we only wait FRAME_CACHE_WAIT_MS
+//      (default 25) before going to the archive. Repeat opens still hit.
 
 import { NextRequest } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { getStudyByUID } from "@/lib/cases";
-import { orthancBase, orthancAuthHeader, orthancConfigured } from "@/lib/orthanc";
-import { getObject, putObject, r2Configured } from "@/lib/r2";
+import { dicomWebRoot, imagingAuthHeader, orthancConfigured, upstreamAccept } from "@/lib/orthanc";
+import { getObject, putObject, r2Configured, type GetObjectResult } from "@/lib/r2";
+
+/** How long a frame-cache read may block the archive fetch. 0 skips the read. */
+const FRAME_CACHE_WAIT_MS = Number(process.env.FRAME_CACHE_WAIT_MS ?? 25);
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -83,7 +88,10 @@ function studyUidFromPath(segments: string[]): string | null {
 
 async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   if (!orthancConfigured()) {
-    return new Response("Orthanc backend not configured (set ORTHANC_URL).", { status: 503 });
+    return new Response(
+      "Imaging archive is not configured (set ORTHANC_URL, or DICOMWEB_BACKEND=healthcare).",
+      { status: 503 }
+    );
   }
 
   // Imaging is never anonymous.
@@ -107,23 +115,24 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
 
   const path = segments.join("/");
   const search = req.nextUrl.search || "";
-  const target = `${orthancBase()}/dicom-web/${path}${search}`;
+  const target = `${dicomWebRoot()}/${path}${search}`;
   const r2Key = !search ? frameCacheKey(path) : null;
 
-  if (r2Key && r2Configured()) {
-    const hit = await getObject(r2Key).catch(() => null);
+  if (r2Key && r2Configured() && FRAME_CACHE_WAIT_MS > 0) {
+    const hit = await readFrameCache(r2Key);
     if (hit) {
       const outHeaders = new Headers();
       outHeaders.set("content-type", hit.contentType || "application/octet-stream");
-      outHeaders.set("x-flowrad-cache", "r2");
+      outHeaders.set("x-flowrad-cache", "hit");
+      outHeaders.set("Vary", "Accept");
       const cc = cacheControlForPath(path);
       if (cc) outHeaders.set("Cache-Control", cc);
       return new Response(new Uint8Array(hit.bytes), { status: 200, headers: outHeaders });
     }
   }
 
-  const headers: Record<string, string> = { Authorization: orthancAuthHeader() };
-  const accept = req.headers.get("accept");
+  const headers: Record<string, string> = { Authorization: await imagingAuthHeader() };
+  const accept = upstreamAccept(path, req.headers.get("accept"));
   if (accept) headers["Accept"] = accept;
 
   const resp = await fetch(target, { method: req.method, headers, cache: "no-store" });
@@ -132,6 +141,7 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   if (ct) outHeaders.set("content-type", ct);
   const cc = cacheControlForPath(path);
   if (cc) outHeaders.set("Cache-Control", cc);
+  outHeaders.set("Vary", "Accept");
 
   // Buffer frame bodies so we can fill R2; stream everything else.
   if (r2Key && r2Configured() && req.method === "GET" && resp.ok) {
@@ -142,6 +152,17 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   }
 
   return new Response(resp.body, { status: resp.status, headers: outHeaders });
+}
+
+/**
+ * Frame-cache read with a short budget. A slow bucket must not sit in front
+ * of the first slice; the archive request starts as soon as the budget ends.
+ */
+function readFrameCache(key: string): Promise<GetObjectResult | null> {
+  return Promise.race([
+    getObject(key).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), FRAME_CACHE_WAIT_MS)),
+  ]);
 }
 
 // Read-only by design: no POST/PUT export. Ingest goes through /api/upload so

@@ -17,12 +17,10 @@ import {
 import { downloadTciaSeriesDicom } from "@/lib/dicomImport/tcia";
 import { getPublicCaseTemplate } from "@/lib/publicCases/catalog";
 import {
-  orthancAuthHeader,
-  orthancBase,
+  fetchSeriesSampleDicom,
   orthancConfigured,
   orthancFindSeriesByUID,
   orthancFindStudyByUID,
-  orthancGet,
   orthancIngestInstance,
   orthancSeriesInstances,
 } from "@/lib/orthanc";
@@ -75,17 +73,8 @@ async function ensureDeidReportForStudy(
   const existing = await getDeidReport(orgId, studyUID);
   if (existing && deidAllowsPublish(existing)) return;
 
-  const seriesId = await orthancFindSeriesByUID(seriesUID);
-  if (!seriesId) return;
-  const series = await orthancGet<{ Instances: string[] }>(`/series/${seriesId}`);
-  const instId = series.Instances[0];
-  if (!instId) return;
-
-  const fileRes = await fetch(`${orthancBase()}/instances/${instId}/file`, {
-    headers: { Authorization: orthancAuthHeader() },
-  });
-  if (!fileRes.ok) return;
-  const bytes = await fileRes.arrayBuffer();
+  const bytes = await fetchSeriesSampleDicom(studyUID, seriesUID);
+  if (!bytes) return;
   // Curated public collections only — see DeidInspectOptions in lib/deid.ts.
   const report = inspectDicomBytes(bytes, { allowResearchPseudonyms: true });
   report.studyInstanceUID = studyUID;

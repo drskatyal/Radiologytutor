@@ -38,10 +38,14 @@ function frameUrl(series: PrefetchSeries, sopInstanceUID: string): string {
 }
 
 function warmFrame(url: string): Promise<unknown> {
+  // Same Accept Cornerstone sends, so Healthcare skips transcoding and the
+  // browser can reuse the response when the viewer asks for the frame.
   return fetch(url, {
     priority: "low",
     cache: "force-cache",
-    headers: { Accept: "application/octet-stream" },
+    headers: {
+      Accept: "multipart/related; type=application/octet-stream; transfer-syntax=*",
+    },
   } as RequestInit & { priority: "low" }).catch(() => null);
 }
 

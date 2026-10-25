@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored if you keep it out of the repo) and replace placeholders.
+project_id    = "your-gcp-project"
+region        = "us-east4"
+frame_bucket  = "" # e.g. "flowrad-frames-your-gcp-project"
+deploy_app    = false
+app_image     = ""
+public_url    = ""

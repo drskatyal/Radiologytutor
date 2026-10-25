@@ -1,36 +1,67 @@
 // ============================================================================
 // lib/r2.ts  (server only)
 //
-// Cloudflare R2 seam — S3-compatible object storage for narration audio and
-// cached DICOM frames. Env (all required for writes):
-//   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+// S3-compatible object storage for narration audio and cached DICOM frames.
+// Default target is Cloudflare R2. Set R2_ENDPOINT to point the same client
+// at another S3 API — on Cloud Run that is GCS HMAC
+// (`https://storage.googleapis.com`) so the frame cache stays in-region.
+//
+// Env for writes:
+//   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+//   R2_ACCOUNT_ID   — required for the default R2 endpoint
+//   R2_ENDPOINT     — optional full endpoint; when set, R2_ACCOUNT_ID is unused
 // Optional:
 //   R2_PUBLIC_BASE_URL  — public CDN / r2.dev origin for getObjectUrl()
 //
 // When unset, r2Configured() is false and put/get/sign no-op so `npm run build`
 // and local JSON-on-volume still work. Callers (lib/audioStore) fall back to
 // DATA_DIR. Never import this from a client component.
+// Frame bytes stay private: leave R2_PUBLIC_BASE_URL unset for the DICOM cache.
 // ============================================================================
 
-export function r2Configured(): boolean {
-  return Boolean(
-    process.env.R2_ACCOUNT_ID?.trim() &&
-      process.env.R2_ACCESS_KEY_ID?.trim() &&
-      process.env.R2_SECRET_ACCESS_KEY?.trim() &&
-      process.env.R2_BUCKET?.trim()
-  );
+export interface ObjectStoreEnv {
+  accountId?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  bucket?: string;
+  endpoint?: string;
 }
 
-function accountId(): string {
-  return process.env.R2_ACCOUNT_ID!.trim();
+/** Resolved bucket + endpoint, or null when the store is not configured. */
+export function resolveObjectStore(
+  env: ObjectStoreEnv
+): { endpoint: string; bucket: string } | null {
+  const access = env.accessKeyId?.trim();
+  const secret = env.secretAccessKey?.trim();
+  const bucketName = env.bucket?.trim();
+  if (!access || !secret || !bucketName) return null;
+  const override = env.endpoint?.trim().replace(/\/+$/, "");
+  if (override) return { endpoint: override, bucket: bucketName };
+  const account = env.accountId?.trim();
+  if (!account) return null;
+  return { endpoint: `https://${account}.r2.cloudflarestorage.com`, bucket: bucketName };
+}
+
+function objectStoreEnv(): ObjectStoreEnv {
+  return {
+    accountId: process.env.R2_ACCOUNT_ID,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    bucket: process.env.R2_BUCKET,
+    endpoint: process.env.R2_ENDPOINT,
+  };
+}
+
+export function r2Configured(): boolean {
+  return resolveObjectStore(objectStoreEnv()) != null;
 }
 
 function bucket(): string {
-  return process.env.R2_BUCKET!.trim();
+  return resolveObjectStore(objectStoreEnv())!.bucket;
 }
 
 function endpoint(): string {
-  return `https://${accountId()}.r2.cloudflarestorage.com`;
+  return resolveObjectStore(objectStoreEnv())!.endpoint;
 }
 
 function publicBase(): string | null {

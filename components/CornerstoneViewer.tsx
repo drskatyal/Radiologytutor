@@ -359,7 +359,22 @@ export default function CornerstoneViewer({
 
         await core.init();
         await tools.init();
-        await loader.init({ maxWebWorkers: 4 });
+        const workers = Math.min(4, navigator.hardwareConcurrency || 4);
+        await loader.init({ maxWebWorkers: workers });
+        // Default interaction pool is 6. Google's DICOM viewer guidance, same
+        // region, moves ~0.5 MB frames from ~30 FPS at 6-wide to ~60 FPS near 20.
+        // 16 leaves headroom for metadata. Compute stays at the library default.
+        const retrieval = (
+          core as {
+            imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> };
+          }
+        ).imageRetrievalPoolManager;
+        const pool = retrieval?.maxNumRequests;
+        if (pool) {
+          pool.interaction = 16;
+          pool.thumbnail = 8;
+          pool.prefetch = 8;
+        }
 
         setStatus("Loading series…");
         const imageIds = await buildImageIds(initialSource);
