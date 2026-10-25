@@ -229,19 +229,80 @@ export interface GuidePlayOptions {
 /** A hung tween or slice settle must not freeze the rest of the script. */
 const MOTION_CAP_MS = 4_000;
 
+/**
+ * Search / orient cine length. Intermediate frames use a short settle so a
+ * cold DICOM decode cannot turn the walk into half a minute of dead air.
+ * The last frame waits longer so lean-in zooms the money slice, not the one before it.
+ */
+export const SCROLL_WALK_MS = 1_600;
+export const SCROLL_WALK_MAX_STEPS = 14;
+const WALK_STEP_SETTLE_MS = 40;
+const WALK_LAND_SETTLE_MS = 900;
+
+/** Attending pause between beats. Longer teacher-clock gaps are pulled in to this. */
+export const ATTENDING_HOLD_MIN_MS = 1_000;
+export const ATTENDING_HOLD_MAX_MS = 3_000;
+
+/**
+ * How long to wait before a beat. A short scripted gap stays short. A long one
+ * becomes at most {@link ATTENDING_HOLD_MAX_MS}, and time already spent finishing
+ * the previous beat counts toward that hold.
+ */
+export function attendingGapMs(scriptedGapMs: number, elapsedMs: number): number {
+  if (!Number.isFinite(scriptedGapMs) || scriptedGapMs <= 20) return 0;
+  const wanted = Math.min(ATTENDING_HOLD_MAX_MS, Math.max(0, scriptedGapMs));
+  const spent = Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0;
+  const remain = wanted - spent;
+  return remain > 20 ? remain : 0;
+}
+
+/**
+ * Slice indices to show while walking `from` → `to`. The last index is `to`.
+ * Large deltas are sampled so the cine stays inside {@link SCROLL_WALK_MS};
+ * a one-slice move is a single landing, not a fake intermediate.
+ */
+export function planSliceWalk(
+  from: number,
+  to: number,
+  maxSteps: number = SCROLL_WALK_MAX_STEPS
+): number[] {
+  if (!Number.isFinite(to)) return [];
+  const end = Math.round(to);
+  if (!Number.isFinite(from)) return [end];
+  const start = Math.round(from);
+  if (start === end) return [end];
+  const delta = end - start;
+  const steps = Math.max(1, Math.min(Math.abs(delta), Math.max(1, maxSteps)));
+  const out: number[] = [];
+  let prev = start;
+  for (let i = 1; i <= steps; i++) {
+    const index = i === steps ? end : start + Math.trunc((delta * i) / steps);
+    if (index === prev) continue;
+    if (Math.abs(index - end) > Math.abs(prev - end)) continue;
+    out.push(index);
+    prev = index;
+  }
+  if (out.length === 0 || out[out.length - 1] !== end) out.push(end);
+  return out;
+}
+
+type ScrollMode = "walk" | "land";
+
 interface GuidePace {
   stepMs: number;
   scale: number;
   cancelled: () => boolean;
   wait: (ms: number) => Promise<void>;
   guard: (task: Promise<void> | void) => Promise<void>;
+  cap: (task: Promise<void> | void, ms: number) => Promise<void>;
 }
 
 async function driveScroll(
   drivers: GuideDrivers,
   sliceIndex: number,
   seriesInstanceUID: string | undefined,
-  pace: GuidePace
+  pace: GuidePace,
+  mode: ScrollMode
 ): Promise<void> {
   if (seriesInstanceUID) {
     drivers.applyEvent({ t: 0, type: "series", seriesInstanceUID });
@@ -249,32 +310,45 @@ async function driveScroll(
   }
   if (pace.cancelled()) return;
   const current = drivers.getSliceIndex?.();
-  if (current == null || current === sliceIndex) {
+  if (mode === "land" || current == null || current === sliceIndex) {
     drivers.applyEvent({ t: 0, type: "slice", index: sliceIndex });
     if (drivers.settle) await pace.guard(drivers.settle());
     return;
   }
-  let pos = current;
-  while (pos !== sliceIndex) {
+  const plan = planSliceWalk(current, sliceIndex);
+  const gaps = Math.max(1, plan.length - 1);
+  const stepWait = pace.scale <= 0 || pace.stepMs <= 0 ? 0 : Math.round(SCROLL_WALK_MS / gaps);
+  const started = performance.now();
+  for (let i = 0; i < plan.length; i++) {
     if (pace.cancelled()) return;
-    const remaining = sliceIndex - pos;
-    const mag = Math.abs(remaining);
-    const hop = mag > 28 ? Math.sign(remaining) * Math.ceil(mag / 28) : Math.sign(remaining);
-    pos = mag <= Math.abs(hop) ? sliceIndex : pos + hop;
-    drivers.applyEvent({ t: 0, type: "slice", index: pos });
-    if (drivers.settle) await pace.guard(drivers.settle());
-    if (pace.stepMs > 0 && pos !== sliceIndex) await pace.wait(pace.stepMs);
+    const overdue =
+      stepWait > 0 && performance.now() - started > SCROLL_WALK_MS + WALK_LAND_SETTLE_MS;
+    const last = i === plan.length - 1 || overdue;
+    const index = last ? sliceIndex : plan[i];
+    drivers.applyEvent({ t: 0, type: "slice", index });
+    if (drivers.settle) {
+      await pace.cap(drivers.settle(), last ? WALK_LAND_SETTLE_MS : WALK_STEP_SETTLE_MS);
+    }
+    if (last) return;
+    if (stepWait > 0) await pace.wait(stepWait);
   }
 }
 
 async function driveAction(
   action: TeachViewerAction,
   drivers: GuideDrivers,
-  pace: GuidePace
+  pace: GuidePace,
+  scrollMode: ScrollMode
 ): Promise<void> {
   switch (action.type) {
     case "scroll":
-      await driveScroll(drivers, action.sliceIndex, action.seriesInstanceUID, pace);
+      await driveScroll(
+        drivers,
+        action.sliceIndex,
+        action.seriesInstanceUID,
+        pace,
+        scrollMode
+      );
       return;
     case "window":
       if (drivers.setWindow) {
@@ -311,7 +385,7 @@ async function driveAction(
       return;
     case "annotate": {
       if (action.sliceIndex != null) {
-        await driveScroll(drivers, action.sliceIndex, undefined, pace);
+        await driveScroll(drivers, action.sliceIndex, undefined, pace, "land");
         if (pace.cancelled()) return;
       }
       const { type: _type, ...stroke } = action;
@@ -329,10 +403,12 @@ async function driveAction(
 }
 
 /**
- * Perform a cleaned teach script on the teacher's clock. Primes the recorded
- * start slice and window, waits until each beat's timestamp, then runs that
- * beat's viewer actions while the line for that beat is spoken. Scroll steps
- * through intermediate slices; window and zoom ease; a pause holds the image.
+ * Perform a cleaned teach script. Primes the recorded slice and window, then
+ * runs each beat's viewer actions while that beat's line is spoken. Orient
+ * and search step-scroll toward the money slice; lean-in, commit, and pearl
+ * land on the exact index. A long scripted gap is an attending hold (at most
+ * a few seconds). A pause holds the image. Hung speech loses to the narration
+ * hold so Speaking cannot latch forever.
  */
 export function playTeachingGuide(
   guide: TeachingGuide,
@@ -390,13 +466,22 @@ export function playTeachingGuide(
       task.then(finish, finish);
     });
 
-  const guard = (task: Promise<void> | void): Promise<void> => {
-    const work = Promise.resolve(task).then(
+  const settleWork = (task: Promise<void> | void): Promise<void> =>
+    Promise.resolve(task).then(
       () => undefined,
       () => undefined
     );
+
+  const guard = (task: Promise<void> | void): Promise<void> => {
+    const work = settleWork(task);
     if (scale <= 0) return work;
     return raceCap(work, MOTION_CAP_MS);
+  };
+
+  const cap = (task: Promise<void> | void, ms: number): Promise<void> => {
+    const work = settleWork(task);
+    if (ms <= 0) return work;
+    return raceCap(work, ms);
   };
 
   const pace: GuidePace = {
@@ -405,6 +490,7 @@ export function playTeachingGuide(
     cancelled: () => cancelled,
     wait,
     guard,
+    cap,
   };
 
   const holdFor = (text: string) => {
@@ -423,12 +509,23 @@ export function playTeachingGuide(
 
   void (async () => {
     try {
-      drivers.applyEvent({
-        t: 0,
-        type: "slice",
-        index: guide.start.sliceIndex,
-      });
-      if (drivers.settle) await guard(drivers.settle());
+      // A scripted scroll is walked later (search, or orient when there is no
+      // search beat). Snapping to the approach slice here is the teleport.
+      const walksIn = guide.beats.some(
+        (beat) =>
+          beat.act !== "lean-in" &&
+          beat.act !== "commit" &&
+          beat.act !== "pearl" &&
+          beat.actions.some((action) => action.type === "scroll")
+      );
+      if (!walksIn) {
+        drivers.applyEvent({
+          t: 0,
+          type: "slice",
+          index: guide.start.sliceIndex,
+        });
+        if (drivers.settle) await guard(drivers.settle());
+      }
       if (
         !cancelled &&
         guide.start.ww != null &&
@@ -457,27 +554,54 @@ export function playTeachingGuide(
         await guard(drivers.showState({ zoom: 1, pan: [0, 0] }, 0));
       }
 
+      const guideHasSearch = guide.beats.some((beat) => beat.act === "search");
+      let pendingWalk: Extract<TeachViewerAction, { type: "scroll" }> | null = null;
+      let prevT = 0;
+      let prevEnded = origin;
+
       const performBeat = async (beat: TeachBeat) => {
         if (cancelled) return;
         if (scale > 0) {
-          const due = origin + beat.t * scale - performance.now();
-          if (due > 20) {
-            await wait(due);
+          const gap = attendingGapMs(beat.t - prevT, performance.now() - prevEnded);
+          if (gap > 20) {
+            await wait(gap);
             if (cancelled) return;
           }
         }
         const motion = (async () => {
+          if (beat.act === "search" && pendingWalk) {
+            const pending = pendingWalk;
+            pendingWalk = null;
+            await driveScroll(
+              drivers,
+              pending.sliceIndex,
+              pending.seriesInstanceUID,
+              pace,
+              "walk"
+            );
+            if (cancelled) return;
+          }
           for (const action of beat.actions) {
             if (cancelled) return;
             if (action.type === "pause") {
               if (scale > 0 && action.ms > 0) {
-                const target = origin + (beat.t + action.ms) * scale;
-                const remain = target - performance.now();
-                if (remain > 20) await wait(remain);
+                const ms = Math.min(action.ms, ATTENDING_HOLD_MAX_MS);
+                if (ms > 20) await wait(ms);
               }
               continue;
             }
-            await driveAction(action, drivers, pace);
+            // The money-slice scroll is authored on orient. Play it with the
+            // search line so the stack walks while we set the search window,
+            // instead of teleporting before that sentence.
+            if (action.type === "scroll" && beat.act === "orient" && guideHasSearch) {
+              pendingWalk = action;
+              continue;
+            }
+            const scrollMode: ScrollMode =
+              beat.act === "lean-in" || beat.act === "commit" || beat.act === "pearl"
+                ? "land"
+                : "walk";
+            await driveAction(action, drivers, pace, scrollMode);
           }
         })();
         const line = beat.say?.trim() ?? "";
@@ -493,6 +617,8 @@ export function playTeachingGuide(
         const hold = line ? holdFor(line) : 0;
         const speech = hold > 0 ? raceCap(speechWork, hold) : speechWork;
         await Promise.all([motion, speech]);
+        prevT = beat.t;
+        prevEnded = performance.now();
       };
 
       const money = moneySliceFromGuide(guide);

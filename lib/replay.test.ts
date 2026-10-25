@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { playTeachingGuide, startReplay } from "./replay.ts";
+import {
+  ATTENDING_HOLD_MAX_MS,
+  attendingGapMs,
+  planSliceWalk,
+  playTeachingGuide,
+  SCROLL_WALK_MAX_STEPS,
+  startReplay,
+} from "./replay.ts";
 import type { RecordedEvent, RecordedTrack, TeachingGuide } from "./types.ts";
 
 // --- A controllable fake clock + rAF so replay is deterministic in node. ----
@@ -562,4 +569,186 @@ test("cancel unblocks a guide waiting on narration", async () => {
   await ctrl.finished;
   assert.equal(ctrl.done, true);
   assert.equal(started, 0);
+});
+
+test("planSliceWalk steps toward the target and lands on it", () => {
+  const down = planSliceWalk(0, 49);
+  assert.ok(down.length >= 3);
+  assert.ok(down.length <= SCROLL_WALK_MAX_STEPS);
+  assert.equal(down[0] > 0 && down[0] < 49, true);
+  assert.equal(down[down.length - 1], 49);
+  for (let i = 1; i < down.length; i++) assert.ok(down[i] > down[i - 1]);
+
+  const up = planSliceWalk(40, 12);
+  assert.equal(up[up.length - 1], 12);
+  for (let i = 1; i < up.length; i++) assert.ok(up[i] < up[i - 1]);
+
+  assert.deepEqual(planSliceWalk(8, 8), [8]);
+  assert.deepEqual(planSliceWalk(5, 6), [6]);
+});
+
+test("a long scripted gap becomes an attending hold, not dead air", () => {
+  assert.equal(attendingGapMs(25_000, 0), ATTENDING_HOLD_MAX_MS);
+  assert.ok(ATTENDING_HOLD_MAX_MS >= 1_000);
+  assert.ok(ATTENDING_HOLD_MAX_MS <= 3_000);
+  assert.equal(attendingGapMs(25_000, 5_000), 0);
+  assert.equal(attendingGapMs(400, 0), 400);
+  assert.equal(attendingGapMs(400, 2_000), 0);
+  assert.equal(attendingGapMs(0, 0), 0);
+});
+
+test("search walks intermediate slices; commit does not scroll again", async () => {
+  const log: string[] = [];
+  let slice = 0;
+  const guide: TeachingGuide = {
+    durationMs: 1600,
+    start: { sliceIndex: 0 },
+    beats: [
+      {
+        t: 0,
+        act: "orient",
+        say: "Follow the stack.",
+        actions: [{ type: "scroll", sliceIndex: 40, seriesInstanceUID: "1.2.3" }],
+      },
+      {
+        t: 400,
+        act: "search",
+        say: "Lung windows. Walk the lungs.",
+        actions: [{ type: "window", ww: 1500, wc: -600 }],
+      },
+      {
+        t: 800,
+        act: "lean-in",
+        say: "Stay on this slice and look at the edge.",
+        actions: [{ type: "zoom", zoom: 2.2, pan: [0, 0] }],
+      },
+      {
+        t: 1200,
+        act: "commit",
+        say: "Look here.",
+        actions: [{ type: "point", x: 0.4, y: 0.5 }],
+      },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: (event) => {
+        if (event.type === "slice") {
+          slice = event.index;
+          log.push(`slice:${event.index}`);
+        } else if (event.type === "series") {
+          log.push("series");
+        }
+      },
+      getSliceIndex: () => slice,
+      settle: async () => {},
+      setWindow: async (ww, wc) => {
+        log.push(`window:${ww}/${wc}`);
+      },
+      showState: async (state) => {
+        if (state.zoom != null) log.push(`zoom:${state.zoom}`);
+      },
+      overlay: {
+        animateTo: async () => {
+          log.push("point");
+        },
+      },
+    },
+    {
+      timeScale: 0,
+      narrate: async (text) => {
+        log.push(`say:${text}`);
+      },
+    }
+  );
+  await ctrl.finished;
+  const lung = log.indexOf("say:Lung windows. Walk the lungs.");
+  const money = log.indexOf("slice:40");
+  const windowAt = log.indexOf("window:1500/-600");
+  const pointAt = log.indexOf("point");
+  assert.ok(lung >= 0 && money > lung, log.join(" | "));
+  assert.ok(windowAt > money, log.join(" | "));
+  assert.ok(pointAt > windowAt, log.join(" | "));
+  const walked = log.filter((line) => line.startsWith("slice:")).map((line) => Number(line.slice(6)));
+  const mid = walked.filter((index) => index > 0 && index < 40);
+  assert.ok(mid.length >= 1, walked.join(","));
+  assert.equal(walked[walked.length - 1], 40);
+  assert.equal(
+    log.slice(windowAt).some((line) => line.startsWith("slice:")),
+    false,
+    log.join(" | ")
+  );
+});
+
+test("commit annotation lands on its slice without stepping the stack", async () => {
+  const slices: number[] = [];
+  let slice = 3;
+  const guide: TeachingGuide = {
+    durationMs: 200,
+    start: { sliceIndex: 3 },
+    beats: [
+      {
+        t: 0,
+        act: "commit",
+        say: "Look here.",
+        actions: [
+          {
+            type: "annotate",
+            sliceIndex: 18,
+            shape: "arrow",
+            from: [0.2, 0.3],
+            to: [0.4, 0.5],
+            tool: "Length",
+            handles: [
+              [0.2, 0.3],
+              [0.4, 0.5],
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: (event) => {
+        if (event.type === "slice") {
+          slice = event.index;
+          slices.push(event.index);
+        }
+      },
+      getSliceIndex: () => slice,
+      settle: async () => {},
+      annotationLanded: () => true,
+    },
+    { timeScale: 0, narrate: async () => {} }
+  );
+  await ctrl.finished;
+  assert.deepEqual(slices, [3, 18]);
+});
+
+test("playTeachingGuide does not sit out a 25s scripted gap", async () => {
+  const guide: TeachingGuide = {
+    durationMs: 30_000,
+    start: { sliceIndex: 1 },
+    beats: [
+      { t: 0, say: "Stay on this slice and look at the edge.", actions: [] },
+      { t: 25_000, say: "Look here.", actions: [] },
+    ],
+  };
+  const started = Date.now();
+  const ctrl = playTeachingGuide(
+    guide,
+    { applyEvent: () => {}, getSliceIndex: () => 1 },
+    {
+      timeScale: 1,
+      narrationHoldMs: () => 0,
+      narrate: async () => {},
+    }
+  );
+  await ctrl.finished;
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 4_500, `elapsed ${elapsed}`);
+  assert.ok(elapsed >= ATTENDING_HOLD_MAX_MS - 200, `elapsed ${elapsed}`);
 });
