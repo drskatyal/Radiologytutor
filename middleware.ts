@@ -26,6 +26,7 @@ export const config = {
   matcher: [
     "/api/tutor",
     "/api/transcribe",
+    "/api/transcribe-narration",
     "/api/tts",
     "/api/grade-report",
     "/api/structure-finding",
@@ -53,6 +54,7 @@ const BUDGETS: Record<string, Budget> = {
   "/api/tutor": { limit: 20, windowMs: MINUTE, maxBodyBytes: 256 * 1024 },
   // Mic capture — base64 audio, so allow real size but bound it.
   "/api/transcribe": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
+  "/api/transcribe-narration": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
   "/api/tts": { limit: 40, windowMs: MINUTE, maxBodyBytes: 32 * 1024 },
   "/api/grade-report": { limit: 10, windowMs: MINUTE, maxBodyBytes: 128 * 1024 },
   // Authoring: dictation in, structured JSON out.

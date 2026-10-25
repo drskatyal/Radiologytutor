@@ -16,6 +16,12 @@
  * zooms is a hard step: skip it, or place it outside window → zoom → point,
  * and the turn fails. The reference emits that sequence itself.
  *
+ * `play_guide` is the product script (`lib/teachingGuide.ts`): one scroll to
+ * the money slice, the authored window, zoom only when the teacher leaned in,
+ * then the laser. The scorer expands that call into those effects. Say lines
+ * on the guide are the narration when the model text is blank. A tool with
+ * nothing to say fails `spoken_beat`. Text with no tools still fails `text_only`.
+ *
  * Pass / fail criteria: docs/TUTOR_EVAL.md.
  */
 
@@ -25,7 +31,8 @@ import { fileURLToPath } from "node:url";
 
 import { clickHitsFinding } from "../clickFinding";
 import { buildPerformancePlan, splitSentences } from "../performancePlan";
-import type { CaseData, Finding } from "../types";
+import { resolveTeachingGuide as resolveFindingGuide } from "../teachingGuide";
+import type { CaseData, Finding, TeachViewerAction } from "../types";
 import { HARNESS_VIEWER_TOOLS, type HarnessViewerAction } from "./tools";
 
 /** WW/WC tolerance. 400/40 vs 1500/-600 fails; a 10-unit nudge passes. */
@@ -429,7 +436,8 @@ export async function scoreTutorSession(
     const finding = findingById(fixture, beat.findingId);
     const snapshot = cloneViewer(viewer);
     const turn = await tutor({ fixture, beat, finding, viewer: snapshot, history });
-    const applied = applyActions(snapshot, turn.actions ?? [], fixture.case.findings);
+    const actions = turn.actions ?? [];
+    const applied = applyActions(snapshot, actions, fixture.case.findings);
     viewer = applied.viewer;
     const guide = resolveTeachingGuide(beat, finding);
     const judged = scoreBeat({
@@ -438,8 +446,8 @@ export async function scoreTutorSession(
       finding,
       before: snapshot,
       after: viewer,
-      answer: turn.answer ?? "",
-      actions: turn.actions ?? [],
+      answer: narrationForTurn(turn.answer ?? "", actions, finding),
+      actions,
       effects: applied.effects,
       seated: applied.seated,
       guide,
@@ -523,6 +531,12 @@ function scoreBeat(input: {
     text
       ? pass("narration_present", "There is something to say.")
       : fail("narration_present", "The viewer moved, or nothing happened, and the tutor said nothing.")
+  );
+
+  checks.push(
+    text
+      ? pass("spoken_beat", "A beat was spoken.")
+      : fail("spoken_beat", "No spoken beat. A tool with nothing to say is not a tour.")
   );
 
   if (!text) {
@@ -1234,10 +1248,106 @@ export function applyActions(
         zoom: action.zoom,
         findingId: viewer.activeFindingId ?? undefined,
       });
+      return;
+    }
+    if (action.type === "play_guide") {
+      const finding =
+        ordered.find((item) => item.id === action.findingId) ??
+        ordered.find((item) => item.id === viewer.activeFindingId);
+      if (finding) playProductGuide(viewer, finding, seq, effects, seated);
     }
   });
 
   return { viewer, effects, seated };
+}
+
+/**
+ * Blank model text plus `play_guide` is still a spoken tour: the product
+ * script's say lines are what the registrar hears. Any other blank answer
+ * stays blank so a silent tool fails `spoken_beat`.
+ */
+function narrationForTurn(answer: string, actions: EvalAction[], finding: Finding): string {
+  const text = answer.replace(/\s+/g, " ").trim();
+  if (text) return text;
+  const plays = actions.some(
+    (action) => action.type === "play_guide" && action.findingId === finding.id
+  );
+  if (!plays) return "";
+  const guide = resolveFindingGuide(finding);
+  if (!guide) return "";
+  return guide.beats
+    .map((beat) => beat.say?.trim())
+    .filter((line): line is string => Boolean(line))
+    .join(" ");
+}
+
+/** Money anchors only: one scroll, one window, one lean-in, one point. */
+function playProductGuide(
+  viewer: SimViewer,
+  finding: Finding,
+  seq: number,
+  effects: ViewerEffect[],
+  seated: string[]
+): void {
+  const product = resolveFindingGuide(finding);
+  if (!product) {
+    reveal(viewer, finding, seq, "play_guide", effects, seated);
+    return;
+  }
+  let sub = 0;
+  const push = (effect: Omit<ViewerEffect, "seq" | "sub" | "source">) => {
+    effects.push({ ...effect, seq, sub, source: "play_guide" });
+    sub += 1;
+  };
+  for (const beat of product.beats) {
+    for (const act of beat.actions) {
+      emitGuideAction(viewer, finding, act, push);
+    }
+  }
+  viewer.activeFindingId = finding.id;
+  if (!seated.includes(finding.id)) seated.push(finding.id);
+}
+
+function emitGuideAction(
+  viewer: SimViewer,
+  finding: Finding,
+  act: TeachViewerAction,
+  push: (effect: Omit<ViewerEffect, "seq" | "sub" | "source">) => void
+): void {
+  if (act.type === "scroll") {
+    const series = act.seriesInstanceUID || finding.seriesInstanceUID;
+    if (series && series !== viewer.seriesInstanceUID) {
+      viewer.seriesInstanceUID = series;
+      push({ type: "series", findingId: finding.id, seriesInstanceUID: series });
+    }
+    if (!Number.isFinite(act.sliceIndex)) return;
+    viewer.sliceIndex = act.sliceIndex;
+    push({ type: "scroll", findingId: finding.id, sliceIndex: act.sliceIndex });
+    return;
+  }
+  if (act.type === "window") {
+    if (!Number.isFinite(act.ww) || !Number.isFinite(act.wc)) return;
+    viewer.windowWidth = act.ww;
+    viewer.windowCenter = act.wc;
+    push({
+      type: "window",
+      findingId: finding.id,
+      windowWidth: act.ww,
+      windowCenter: act.wc,
+    });
+    return;
+  }
+  if (act.type === "zoom") {
+    if (!Number.isFinite(act.zoom)) return;
+    viewer.zoom = act.zoom;
+    push({ type: "zoom", findingId: finding.id, zoom: act.zoom });
+    return;
+  }
+  if (act.type === "point") {
+    if (!markerOk(act.x, act.y)) return;
+    viewer.pointer = { x: act.x, y: act.y };
+    push({ type: "point", findingId: finding.id, x_pct: act.x, y_pct: act.y });
+  }
 }
 
 function reveal(
