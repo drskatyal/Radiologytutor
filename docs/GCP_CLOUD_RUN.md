@@ -1,5 +1,7 @@
 # Cloud Run + Healthcare DICOM store
 
+**Deferred.** Human-teacher fidelity comes first; DICOM latency is secondary. Do not deploy this path until Teach-mode fidelity is proven on a real case. PR #15 stays draft. Fly and local Orthanc remain the live imaging path.
+
 Production imaging for FlowRad Learn. The Next.js app runs on **Cloud Run**. Study bytes live in a **Cloud Healthcare API DICOM store** in the same region. The browser still talks only to `/api/dicomweb`. Local Orthanc and the Fly apps stay until the checklist at the bottom is done.
 
 This is the fastest way to open a study **on Cloud Run**. A warm Orthanc process with a local SSD can beat a regional API for one reader. Cloud Run has no local disk, so that shape is not available here. Putting Orthanc on Cloud Run makes it worse: the app would call a second Cloud Run service, which would call Cloud SQL and then GCS. The Healthcare store is that storage without the extra process.
