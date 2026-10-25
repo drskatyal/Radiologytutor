@@ -65,7 +65,9 @@ export type FindingMeasurementKind =
   | "length"
   | "ellipse"
   | "probe"
-  | "bidirectional";
+  | "bidirectional"
+  | "arrow"
+  | "angle";
 
 export interface FindingMeasurement {
   id: string;
@@ -149,9 +151,38 @@ export interface Keyframe {
 //
 // While the teacher records we capture an ORDERED, timestamped log of viewer
 // state (scroll/window/zoom/pan/annotation/cursor) plus optional narration.
-// That log ARMS the AI tutor (lib/readingDigest.ts); it is not a student-facing
-// cassette. Author Studio may exact-replay for capture QA only.
+// The dense log arms the tutor (reading digest) and author QA replay.
+// Learners follow a cleaned TeachingGuide built from this log — not the mic tape.
 // ============================================================================
+
+/**
+ * A measurement or markup stroke in normalized overlay space.
+ * `from`/`to` stay required so older arrow/circle replays keep working.
+ * `tool` + `handles` carry Length / ROI / Arrow / Probe / Angle when the
+ * stroke came from a Cornerstone tool.
+ */
+export interface RecordedAnnotation {
+  shape: MarkerShape;
+  /** Normalized [0,1]. First handle (or the only point for a probe). */
+  from: [number, number];
+  /** Normalized [0,1]. Last handle. */
+  to: [number, number];
+  /** Cornerstone tool name: Length, EllipticalROI, RectangleROI, Probe, ArrowAnnotate, Angle. */
+  tool?: string;
+  /** Every handle in normalized [0,1], in tool order. */
+  handles?: Array<[number, number]>;
+  /** Stack index the stroke was drawn on. */
+  sliceIndex?: number;
+  annotationUID?: string;
+  label?: string;
+  lengthMm?: number;
+  meanHu?: number;
+  maxHu?: number;
+  minHu?: number;
+  stdHu?: number;
+  areaMm2?: number;
+  unit?: string;
+}
 
 /** A single timestamped viewer state change (`t` = ms from record start). */
 export type RecordedEvent =
@@ -164,13 +195,7 @@ export type RecordedEvent =
   // replay the navigator + stack switch to it. Absent in older single-series
   // recordings — they simply never emit it and stay on their one series.
   | { t: number; type: "series"; seriesInstanceUID: string }
-  | {
-      t: number;
-      type: "annotation";
-      shape: MarkerShape;
-      from: [number, number]; // normalized [0,1]
-      to: [number, number];
-    };
+  | ({ t: number; type: "annotation" } & RecordedAnnotation);
 
 /** Event shape before the recorder stamps it with a timestamp. */
 export type ViewerEvent =
@@ -180,11 +205,44 @@ export type ViewerEvent =
   | { type: "invert"; value: boolean }
   | { type: "cursor"; x: number; y: number }
   | { type: "series"; seriesInstanceUID: string }
-  | { type: "annotation"; shape: MarkerShape; from: [number, number]; to: [number, number] };
+  | ({ type: "annotation" } & RecordedAnnotation);
+
+/** One viewer move inside a cleaned teach script. */
+export type TeachViewerAction =
+  | { type: "scroll"; sliceIndex: number; seriesInstanceUID?: string }
+  | { type: "window"; ww: number; wc: number }
+  | { type: "zoom"; zoom: number; pan: [number, number] }
+  | { type: "invert"; value: boolean }
+  | { type: "point"; x: number; y: number }
+  | { type: "pause"; ms: number }
+  | ({ type: "annotate" } & RecordedAnnotation);
+
+/** One beat of a teach script: viewer moves plus an optional spoken line. */
+export interface TeachBeat {
+  /** ms on the finding's track clock. */
+  t: number;
+  actions: TeachViewerAction[];
+  /** Spoken line that plays with these actions. */
+  say?: string;
+}
+
+/**
+ * Ordered teach script a consultant would walk: where to scroll, which
+ * window, when to zoom, where to hold, what to point at, what to measure,
+ * and the line to say with that move. Built from a RecordedTrack plus the
+ * structured narration. The student session performs it on the teacher's
+ * clock — not the dense event tape and not the microphone audio.
+ */
+export interface TeachingGuide {
+  durationMs: number;
+  /** Viewport to prime before the first beat. */
+  start: { sliceIndex: number; ww?: number; wc?: number };
+  beats: TeachBeat[];
+}
 
 /** One finding's recorded demonstration: ordered events + optional narration.
- * Used to arm the tutor (reading digest) and for author QA replay — not as a
- * student-facing tape of the teacher's mic. */
+ * The dense log arms the tutor and author QA replay. Learners follow
+ * `TeachingGuide`, not this tape and not the teacher's microphone. */
 export interface RecordedTrack {
   durationMs: number;
   /** The starting viewer state (slice index + W/L) so replay can prime it. */
@@ -206,6 +264,12 @@ export interface Finding {
   keyframes?: Keyframe[];
   /** Self-hosted record/replay: ordered state-change log + narration audio. */
   track?: RecordedTrack;
+  /**
+   * Cleaned teach script derived from `track` (scroll → window → zoom → point
+   * → draw, with narration beats). The student session plays this live.
+   * Optional so older findings still load; rebuilt from `track` when absent.
+   */
+  teachingGuide?: TeachingGuide;
   durationMs?: number;
   /** Default guided-tour sequence (search-pattern order). */
   order: number;
@@ -328,6 +392,11 @@ export interface StructuredSessionFinding extends StructuredFinding {
   /** Suggested marker from nearest cursor sample in-range (may be absent). */
   suggestedMarker?: Marker;
   suggestedSliceIndex?: number;
+  /**
+   * Cleaned teach script for this segment's slice of the track. Preview only —
+   * mergeCapture rebuilds it onto the Finding at save time.
+   */
+  teachingGuide?: TeachingGuide;
 }
 
 /** Full continuous-session structure response. */

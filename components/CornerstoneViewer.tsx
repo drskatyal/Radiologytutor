@@ -8,18 +8,27 @@
 //   • exact record → replay (DENSE event re-application, via applyEvent).
 //
 // Two modes, one component:
-//   • Demo (default): the full PACS toolbar + status line. Used by /cornerstone,
-//     /record and the author capture surface.
-//   • Driven: pass `controls` (a ref) + `showToolbar={false}` and the caller
-//     drives the viewport via the imperative handle below.
+//   • Docked chrome (default): tools sit in a bar UNDER the image, grouped the
+//     way OHIF's primary toolbar is (navigate / measure / display). Used by
+//     /cornerstone, /record and the author capture surface. The bar is outside
+//     the square so it never covers anatomy and never sits under the annotate
+//     hit-layer.
+//   • Edge chrome: student session. The image fills the pane and the same
+//     grouped bar sits along its bottom edge — still off the pixels — so a
+//     compare layout can give every pane matching chrome.
+//   • Off: pass `showToolbar={false}` (or `chrome="off"`). The caller still
+//     drives the viewport via the imperative handle. A corner readout (slice,
+//     window/level) stays — that is viewport state, not a tool.
 //
 // Mouse: wheel = scroll, right-drag = zoom, middle-drag = pan. The LEFT button
 // runs whichever tool is picked in the toolbar (window/level by default).
 //
 // RECORD/REPLAY: pass `onEvent` to receive an ordered stream of viewer state
-// changes (slice / voi / camera / invert) read straight off the viewport — we
-// never trust event-detail shapes. Camera/VOI are throttled (~50ms) but order
-// is preserved. `applyEvent` re-applies one recorded event (the replay path).
+// changes (slice / voi / camera / invert / annotation) read straight off the
+// viewport — we never trust event-detail shapes. Camera/VOI are throttled
+// (~50ms) but order is preserved. Length / ROI / Arrow / Probe / Angle
+// strokes emit an `annotation` event when the tool completes.
+// `applyEvent` re-applies one recorded event (the replay + teach-guide path).
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
@@ -46,8 +55,13 @@ import { sopUidFromImageId } from "../lib/findingDisplayState";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
   normalizeMeasurements,
+  statsFromAnnotation,
   type RawAnnotationLike,
 } from "../lib/findingMeasurements";
+import {
+  annotationViewerEvent,
+  sameAnnotationStroke,
+} from "../lib/annotationCapture";
 import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/types";
 import {
   WINDOW_PRESETS,
@@ -57,10 +71,9 @@ import {
 } from "../lib/windowPresets";
 import { cn } from "@/components/ui/cn";
 import {
-  Activity,
+  Blend,
   ChevronDown,
   Circle,
-  Contrast,
   Crosshair,
   Eraser,
   Move,
@@ -70,6 +83,7 @@ import {
   Square,
   Layers as LayersIconL,
   RotateCcw,
+  SunMoon,
   Triangle,
   ZoomIn,
   type LucideIcon,
@@ -85,18 +99,44 @@ import {
 // spacing at all (e.g. the tiny synthetic multiframe MR we bundle as an offline
 // sample). Real DICOMweb / uploaded studies keep the tools live — at worst a
 // measurement falls back to pixels, which is far better than a dead control.
-const PRIMARY_TOOLS: { name: string; label: string; annotation?: boolean }[] = [
-  { name: "WindowLevel", label: "Window / Level" },
-  { name: "Pan", label: "Pan" },
-  { name: "Zoom", label: "Zoom" },
-  { name: "StackScroll", label: "Scroll" },
-  { name: "Length", label: "Length", annotation: true },
-  { name: "Angle", label: "Angle", annotation: true },
-  { name: "EllipticalROI", label: "Ellipse ROI", annotation: true },
-  { name: "RectangleROI", label: "Rectangle ROI", annotation: true },
-  { name: "Probe", label: "Probe", annotation: true },
-  { name: "ArrowAnnotate", label: "Arrow", annotation: true },
+type ViewerTool = {
+  name: string;
+  label: string;
+  /** Short visible caption. The accessible name stays `label`. */
+  short: string;
+  annotation?: boolean;
+};
+
+// Primary tools stay on the bar. Measurement tools other than Length live in
+// an overflow, matching OHIF's MeasurementTools split + MoreTools — ten equal
+// icons is how a toolbar becomes wallpaper.
+const NAV_TOOLS: ViewerTool[] = [
+  { name: "WindowLevel", label: "Window / Level", short: "W/L" },
+  { name: "Pan", label: "Pan", short: "Pan" },
+  { name: "Zoom", label: "Zoom", short: "Zoom" },
+  { name: "StackScroll", label: "Scroll", short: "Scroll" },
 ];
+
+const MEASURE_TOOLS: ViewerTool[] = [
+  { name: "Length", label: "Length", short: "Length", annotation: true },
+  { name: "Angle", label: "Angle", short: "Angle", annotation: true },
+  { name: "EllipticalROI", label: "Ellipse ROI", short: "Ellipse", annotation: true },
+  { name: "RectangleROI", label: "Rectangle ROI", short: "Rect", annotation: true },
+  { name: "Probe", label: "Probe", short: "Probe", annotation: true },
+  { name: "ArrowAnnotate", label: "Arrow", short: "Arrow", annotation: true },
+];
+
+const PRIMARY_TOOLS: ViewerTool[] = [...NAV_TOOLS, ...MEASURE_TOOLS];
+
+/** `dock` — square image, bar underneath (record / demo).
+ *  `edge` — image fills the pane, bar along its bottom edge (student).
+ *  `off` — no tools. A corner readout still shows slice and window/level. */
+export type ViewerChrome = "dock" | "edge" | "off";
+
+function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrome {
+  if (chrome) return chrome;
+  return showToolbar ? "dock" : "off";
+}
 
 const ANNOTATION_TOOL_NAMES = new Set(
   PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
@@ -120,6 +160,8 @@ interface DrivableViewport {
   setPan: (p: [number, number]) => void;
   worldToCanvas?: (p: [number, number, number]) => [number, number];
   canvasToWorld?: (p: [number, number]) => [number, number, number];
+  getFrameOfReferenceUID?: () => string;
+  getCamera?: () => { viewPlaneNormal?: number[]; viewUp?: number[] };
   element?: HTMLDivElement;
 }
 
@@ -136,8 +178,15 @@ export interface CornerstoneControls {
   imageCount: number;
   /** Animate the viewport to a target view over `durationMs` (default 700). */
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
-  /** Adjust window width/center (VOI). Duration auto-adapts unless overridden. */
-  setWindow: (windowWidth: number, windowCenter: number, durationMs?: number) => void;
+  /**
+   * Adjust window width/center (VOI). Duration auto-adapts unless overridden.
+   * Resolves when the tween (or snap) finishes so a teach script can chain moves.
+   */
+  setWindow: (
+    windowWidth: number,
+    windowCenter: number,
+    durationMs?: number
+  ) => Promise<void>;
   /** Set inversion explicitly (record/replay + toolbar). */
   setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
@@ -162,6 +211,12 @@ export interface CornerstoneControls {
   activeSeriesUID?: string;
   /** Load a different series into the viewport (by UID). Programmatic = replay. */
   showSeries: (seriesInstanceUID: string) => void;
+  /** Remove tool annotations (between findings). Does not emit record events. */
+  clearAnnotations: () => void;
+  /** Resolves when a programmatic slice or series switch has settled. */
+  settle: () => Promise<void>;
+  /** True when the last annotation applyEvent landed on the viewport. */
+  readonly annotationApplied: boolean;
 }
 
 function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: number } | null {
@@ -256,6 +311,7 @@ export default function CornerstoneViewer({
   onSeriesChange,
   controls,
   showToolbar = true,
+  chrome: chromeProp,
   modality,
   onReady,
   onEvent,
@@ -275,8 +331,15 @@ export default function CornerstoneViewer({
   onSeriesChange?: (seriesInstanceUID: string) => void;
   /** Pass a ref to receive the imperative drive handle (student/record session). */
   controls?: MutableRefObject<CornerstoneControls | null>;
-  /** Hide the demo toolbar/status line (driven/student mode). */
+  /** Hide the demo toolbar/status line (driven/student mode). Ignored when
+   *  `chrome` is set. */
   showToolbar?: boolean;
+  /**
+   * Where tool chrome sits. `dock` — bar under a square image. `edge` — bar
+   * along the bottom of a pane that fills its parent (student). `off` — no
+   * tools. Defaults from `showToolbar`.
+   */
+  chrome?: ViewerChrome;
   /** Modality (e.g. "CT") — picks the relevant Window/Level presets. */
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
@@ -291,6 +354,9 @@ export default function CornerstoneViewer({
    */
   instanceId?: string;
 }) {
+  const chrome = resolveChrome(showToolbar, chromeProp);
+  const docked = chrome === "dock";
+  const edge = chrome === "edge";
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   // Stable handles the toolbar uses after init.
@@ -333,6 +399,14 @@ export default function CornerstoneViewer({
   const [inverted, setInverted] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [presetOpen, setPresetOpen] = useState(false);
+  const [measureOpen, setMeasureOpen] = useState(false);
+  const [readout, setReadout] = useState<{
+    slice: number;
+    count: number;
+    ww?: number;
+    wc?: number;
+  } | null>(null);
+  const readoutTimerRef = useRef(0);
   // Whether the annotation tools are enabled. Default ENABLED — we only flip to
   // disabled once we POSITIVELY confirm a study has no pixel spacing (e.g. the
   // bundled sample). This avoids the false-negative that killed the tools on
@@ -486,6 +560,43 @@ export default function CornerstoneViewer({
         // spacing as proof the study is annotatable. If the active left tool is
         // an annotation tool we're disabling, fall back to Window/Level so we
         // never leave a dead tool selected.
+        // Corner readout (slice, W/L). Throttled so a window drag doesn't
+        // re-render the chrome on every pointer move — the canvas itself is
+        // untouched by this state.
+        let lastReadoutAt = 0;
+        const publishReadout = () => {
+          const vp = viewportRef.current;
+          if (!vp) return;
+          const v = voiToWwWc(vp.getProperties().voiRange);
+          const count = vp.getImageIds().length;
+          const slice = vp.getCurrentImageIdIndex() + 1;
+          const ww = v ? Math.round(v.ww) : undefined;
+          const wc = v ? Math.round(v.wc) : undefined;
+          setReadout((prev) =>
+            prev &&
+            prev.slice === slice &&
+            prev.count === count &&
+            prev.ww === ww &&
+            prev.wc === wc
+              ? prev
+              : { slice, count, ww, wc }
+          );
+        };
+        const scheduleReadout = () => {
+          const now = performance.now();
+          const elapsed = now - lastReadoutAt;
+          if (elapsed >= 80) {
+            lastReadoutAt = now;
+            publishReadout();
+            return;
+          }
+          window.clearTimeout(readoutTimerRef.current);
+          readoutTimerRef.current = window.setTimeout(() => {
+            lastReadoutAt = performance.now();
+            publishReadout();
+          }, 80 - elapsed);
+        };
+
         const loadStack = async (ids: string[]): Promise<void> => {
           await viewport.setStack(ids, Math.floor(ids.length / 2));
           viewport.render();
@@ -519,6 +630,7 @@ export default function CornerstoneViewer({
 
         await loadStack(imageIds);
         viewportRef.current = viewport;
+        publishReadout();
         // Record which series is loaded so switches no-op on the active one.
         loadedSeriesIndexRef.current = seriesRef.current ? activeSeriesIndex : -1;
 
@@ -526,7 +638,29 @@ export default function CornerstoneViewer({
         // We read CURRENT values off the viewport in the handler (never trust
         // the event-detail shape across Cornerstone versions). Camera/VOI are
         // throttled ~50ms; order is preserved (latest value wins per window).
-        const emit = (e: ViewerEvent) => onEventRef.current?.(e);
+        // Programmatic applyEvent / setWindow bumps suppressDepth so a replay
+        // or teach script does not echo back into a recording.
+        let suppressDepth = 0;
+        const beginSuppress = () => {
+          suppressDepth += 1;
+        };
+        const endSuppress = () => {
+          suppressDepth = Math.max(0, suppressDepth - 1);
+        };
+        const suppressed = () => suppressDepth > 0;
+        const emit = (e: ViewerEvent) => {
+          if (suppressed()) return;
+          onEventRef.current?.(e);
+        };
+        let pending: Promise<void> = Promise.resolve();
+        const chain = (fn: () => Promise<void> | void) => {
+          pending = pending.then(() => fn()).then(
+            () => undefined,
+            () => undefined
+          );
+        };
+        let annotationApplied = false;
+        let settleWindow: (() => void) | null = null;
 
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
@@ -536,10 +670,12 @@ export default function CornerstoneViewer({
           const vp = viewportRef.current;
           if (!vp) return;
           emit({ type: "slice", index: vp.getCurrentImageIdIndex() });
+          scheduleReadout();
         };
         const emitVoi = () => {
           const vp = viewportRef.current;
           if (!vp) return;
+          scheduleReadout();
           const now = performance.now();
           if (now - lastVoiEmit < THROTTLE) return;
           lastVoiEmit = now;
@@ -560,13 +696,107 @@ export default function CornerstoneViewer({
         const stackEvt = csEvents.STACK_NEW_IMAGE;
         const voiEvt = csEvents.VOI_MODIFIED;
         const camEvt = csEvents.CAMERA_MODIFIED;
+        // Length / ROI / Arrow / Probe / Angle → one annotation event per stroke.
+        // COMPLETED and the trailing MODIFIED are debounced and de-duplicated.
+        const annTimers = new Map<string, number>();
+        let lastStroke: Extract<ViewerEvent, { type: "annotation" }> | null = null;
+        const normalizedHandles = (raw: RawAnnotationLike): Array<[number, number]> => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || typeof vp.worldToCanvas !== "function") return [];
+          const points = raw.data?.handles?.points ?? [];
+          const canvas = host.querySelector("canvas");
+          const w = canvas?.clientWidth || host.clientWidth || 1;
+          const h = canvas?.clientHeight || host.clientHeight || 1;
+          const out: Array<[number, number]> = [];
+          for (const pt of points) {
+            if (!Array.isArray(pt) || pt.length < 2) continue;
+            try {
+              const [cx, cy] = vp.worldToCanvas(pt as [number, number, number]);
+              if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+              out.push([
+                Math.min(1, Math.max(0, cx / w)),
+                Math.min(1, Math.max(0, cy / h)),
+              ]);
+            } catch {
+              /* point not on this camera */
+            }
+          }
+          return out;
+        };
+        const emitAnnotationFrom = (raw: RawAnnotationLike | undefined) => {
+          if (!raw || suppressed()) return;
+          const tool = raw.metadata?.toolName;
+          if (tool && !ANNOTATION_TOOL_NAMES.has(tool)) return;
+          const handles = normalizedHandles(raw);
+          const stats = statsFromAnnotation(raw);
+          const event = annotationViewerEvent({
+            tool,
+            handles,
+            sliceIndex: viewportRef.current?.getCurrentImageIdIndex(),
+            annotationUID: raw.annotationUID,
+            label: stats.label,
+            lengthMm: stats.lengthMm,
+            meanHu: stats.meanHu,
+            maxHu: stats.maxHu,
+            minHu: stats.minHu,
+            stdHu: stats.stdHu,
+            areaMm2: stats.areaMm2,
+            unit: stats.unit,
+          });
+          if (!event) return;
+          if (lastStroke && sameAnnotationStroke(lastStroke, event)) return;
+          lastStroke = event;
+          emit(event);
+        };
+        const onAnnotationEvent = (evt: Event) => {
+          if (suppressed()) return;
+          const detail = (evt as CustomEvent).detail as
+            | { annotation?: RawAnnotationLike }
+            | RawAnnotationLike
+            | undefined;
+          const raw =
+            detail &&
+            typeof detail === "object" &&
+            "annotation" in detail &&
+            detail.annotation
+              ? detail.annotation
+              : (detail as RawAnnotationLike | undefined);
+          const uid = raw?.annotationUID || raw?.metadata?.toolName || "ann";
+          const prev = annTimers.get(uid);
+          if (prev) window.clearTimeout(prev);
+          annTimers.set(
+            uid,
+            window.setTimeout(() => {
+              annTimers.delete(uid);
+              emitAnnotationFrom(raw);
+            }, 80)
+          );
+        };
+        const toolEventNames = toolsEnums.Events as {
+          ANNOTATION_COMPLETED?: string;
+          ANNOTATION_MODIFIED?: string;
+        };
+        const annCompleted =
+          toolEventNames?.ANNOTATION_COMPLETED ||
+          "CORNERSTONE_TOOLS_ANNOTATION_COMPLETED";
+        const annModified =
+          toolEventNames?.ANNOTATION_MODIFIED ||
+          "CORNERSTONE_TOOLS_ANNOTATION_MODIFIED";
+
         el.addEventListener(stackEvt, emitSlice as EventListener);
         el.addEventListener(voiEvt, emitVoi as EventListener);
         el.addEventListener(camEvt, emitCamera as EventListener);
+        el.addEventListener(annCompleted, onAnnotationEvent as EventListener);
+        el.addEventListener(annModified, onAnnotationEvent as EventListener);
         detachListeners = () => {
           el.removeEventListener(stackEvt, emitSlice as EventListener);
           el.removeEventListener(voiEvt, emitVoi as EventListener);
           el.removeEventListener(camEvt, emitCamera as EventListener);
+          el.removeEventListener(annCompleted, onAnnotationEvent as EventListener);
+          el.removeEventListener(annModified, onAnnotationEvent as EventListener);
+          annTimers.forEach((id) => window.clearTimeout(id));
+          annTimers.clear();
         };
 
         // --- Multi-series switching (no remount) ----------------------------
@@ -609,9 +839,113 @@ export default function CornerstoneViewer({
           setInverted(viewport.getProperties().invert ?? false);
           setActivePreset(null);
         };
-        clearRef.current = () => {
-          annotation.state.removeAllAnnotations();
-          viewport.render();
+        const clearAnnotations = () => {
+          beginSuppress();
+          try {
+            annotation.state.removeAllAnnotations();
+            viewportRef.current?.render();
+          } catch {
+            /* tool state already gone */
+          }
+          window.setTimeout(() => endSuppress(), 50);
+        };
+        clearRef.current = clearAnnotations;
+
+        // Place a recorded stroke back onto the viewport (teach guide / applyEvent).
+        // Returns false when world mapping isn't available — the caller draws
+        // the overlay stroke instead.
+        const placeNative = (
+          e: Extract<RecordedEvent, { type: "annotation" }>
+        ): boolean => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || typeof vp.canvasToWorld !== "function") return false;
+          const handles = (e.handles?.length ? e.handles : [e.from, e.to]).filter(
+            (p) =>
+              Array.isArray(p) &&
+              p.length >= 2 &&
+              Number.isFinite(p[0]) &&
+              Number.isFinite(p[1])
+          );
+          if (!handles.length) return false;
+          const canvas = host.querySelector("canvas");
+          const w = canvas?.clientWidth || host.clientWidth || 1;
+          const h = canvas?.clientHeight || host.clientHeight || 1;
+          let worlds: [number, number, number][];
+          try {
+            worlds = handles.map(([x, y]) => vp.canvasToWorld!([x * w, y * h]));
+          } catch {
+            return false;
+          }
+          if (worlds.some((p) => !p || p.some((n) => !Number.isFinite(n)))) return false;
+          const toolName = e.tool || (e.shape === "arrow" ? "ArrowAnnotate" : "Length");
+          const imageId =
+            typeof vp.getCurrentImageId === "function" ? vp.getCurrentImageId() : undefined;
+          const camera = vp.getCamera?.();
+          const ann = {
+            annotationUID: `guide-${e.annotationUID || "stroke"}-${Date.now().toString(36)}`,
+            highlighted: false,
+            invalidated: true,
+            isLocked: true,
+            isVisible: true,
+            metadata: {
+              toolName,
+              referencedImageId: imageId,
+              FrameOfReferenceUID: vp.getFrameOfReferenceUID?.(),
+              viewPlaneNormal: camera?.viewPlaneNormal,
+              viewUp: camera?.viewUp,
+            },
+            data: {
+              handles: {
+                points: worlds,
+                activeHandleIndex: null,
+                textBox: {
+                  hasMoved: false,
+                  worldPosition: worlds[worlds.length - 1],
+                  worldBoundingBox: {
+                    topLeft: worlds[0],
+                    topRight: worlds[0],
+                    bottomLeft: worlds[0],
+                    bottomRight: worlds[0],
+                  },
+                },
+              },
+              label: e.label || "",
+              cachedStats: imageId
+                ? {
+                    [`imageId:${imageId}`]: {
+                      length: e.lengthMm,
+                      mean: e.meanHu,
+                      max: e.maxHu,
+                      min: e.minHu,
+                      stdDev: e.stdHu,
+                      area: e.areaMm2,
+                      unit: e.unit,
+                      modalityUnit: e.unit,
+                    },
+                  }
+                : {},
+            },
+          };
+          try {
+            annotation.state.addAnnotation(
+              ann as unknown as Parameters<typeof annotation.state.addAnnotation>[0],
+              host
+            );
+            const trigger = (
+              tools as {
+                utilities?: {
+                  triggerAnnotationRenderForViewportIds?: (ids: string[]) => void;
+                };
+              }
+            ).utilities?.triggerAnnotationRenderForViewportIds;
+            trigger?.([viewportId]);
+            vp.render();
+            return true;
+          } catch (err) {
+            console.warn("CornerstoneViewer applyEvent annotation", err);
+            return false;
+          }
         };
         invertRef.current = (value?: boolean) => {
           const cur = viewport.getProperties().invert ?? false;
@@ -624,42 +958,57 @@ export default function CornerstoneViewer({
           if (value === undefined) emit({ type: "invert", value: next });
         };
 
-        // --- Replay: re-apply ONE recorded event verbatim (snaps, no tween) -
+        // --- Replay / teach guide: re-apply ONE recorded event --------------
+        // Slice and series are chained so a fast script doesn't race the decoder.
+        // Annotation strokes are placed back on the viewport (native tool).
         const applyEvent = (e: RecordedEvent) => {
           const vp = viewportRef.current;
           if (!vp) return;
           cancelTweenRef.current();
-          switch (e.type) {
-            case "slice": {
-              const ids = vp.getImageIds();
-              const idx = Math.max(0, Math.min(ids.length - 1, e.index));
-              if (idx !== vp.getCurrentImageIdIndex()) void vp.setImageIdIndex(idx);
-              break;
+          beginSuppress();
+          chain(async () => {
+            const live = viewportRef.current;
+            if (!live) return;
+            switch (e.type) {
+              case "slice": {
+                const ids = live.getImageIds();
+                const idx = Math.max(0, Math.min(ids.length - 1, e.index));
+                if (idx !== live.getCurrentImageIdIndex()) {
+                  await live.setImageIdIndex(idx);
+                }
+                live.render();
+                break;
+              }
+              case "voi":
+                live.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
+                live.render();
+                break;
+              case "camera":
+                live.setZoom(e.zoom);
+                live.setPan(e.pan);
+                live.render();
+                break;
+              case "invert":
+                live.setProperties({ invert: e.value });
+                live.render();
+                setInverted(e.value);
+                break;
+              case "series": {
+                const list = seriesRef.current;
+                const idx = list?.findIndex(
+                  (s) => s.seriesInstanceUID === e.seriesInstanceUID
+                );
+                if (list && idx != null && idx >= 0) await switchSeries(idx, false);
+                break;
+              }
+              case "annotation":
+                annotationApplied = placeNative(e);
+                break;
+              default:
+                break;
             }
-            case "voi":
-              vp.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
-              break;
-            case "camera":
-              vp.setZoom(e.zoom);
-              vp.setPan(e.pan);
-              break;
-            case "invert":
-              vp.setProperties({ invert: e.value });
-              setInverted(e.value);
-              break;
-            case "series": {
-              // Replay: switch to the recorded series WITHOUT emitting (this is
-              // a programmatic drive). loadStack will render once decoded.
-              const list = seriesRef.current;
-              const idx = list?.findIndex(
-                (s) => s.seriesInstanceUID === e.seriesInstanceUID
-              );
-              if (list && idx != null && idx >= 0) void switchSeries(idx, false);
-              return; // render happens inside loadStack after the new stack loads
-            }
-            // cursor/annotation are overlay-only — not viewer state.
-          }
-          vp.render();
+          });
+          void pending.then(() => endSuppress());
         };
 
         const getStartState = (): {
@@ -688,23 +1037,52 @@ export default function CornerstoneViewer({
 
         // --- Smooth (interpolated) driving for the guided tour --------------
         // Adaptive: small ΔWW/WC scrolls like a radiologist; large preset jumps snap.
-        const setWindow = (ww: number, wc: number, durationMs?: number): void => {
+        const setWindow = (
+          ww: number,
+          wc: number,
+          durationMs?: number
+        ): Promise<void> => {
           const vp = viewportRef.current;
-          if (!vp) return;
+          if (!vp) return Promise.resolve();
+          settleWindow?.();
+          settleWindow = null;
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
-          const ms =
-            durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
+          const ms = durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
+          beginSuppress();
           if (ms <= 0) {
             vp.setProperties({ voiRange: wwWcToVoi(ww, wc) });
             vp.render();
-            return;
+            endSuppress();
+            return Promise.resolve();
           }
-          cancelTweenRef.current = tween(ms, (e) => {
-            vp.setProperties({
-              voiRange: wwWcToVoi(lerp(from.ww, ww, e), lerp(from.wc, wc, e)),
-            });
-            vp.render();
+          return new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+              if (settled) return;
+              settled = true;
+              if (settleWindow === done) settleWindow = null;
+              endSuppress();
+              resolve();
+            };
+            settleWindow = done;
+            const cancelRaf = tween(
+              ms,
+              (eased) => {
+                vp.setProperties({
+                  voiRange: wwWcToVoi(
+                    lerp(from.ww, ww, eased),
+                    lerp(from.wc, wc, eased)
+                  ),
+                });
+                vp.render();
+              },
+              done
+            );
+            cancelTweenRef.current = () => {
+              cancelRaf();
+              done();
+            };
           });
         };
 
@@ -817,7 +1195,7 @@ export default function CornerstoneViewer({
           const list =
             all.length > 0
               ? all
-              : (["Length", "EllipticalROI", "RectangleROI", "Probe"] as const).flatMap(
+              : (["Length", "EllipticalROI", "RectangleROI", "Probe", "ArrowAnnotate", "Angle"] as const).flatMap(
                   (toolName) => {
                     try {
                       return (annotation.state.getAnnotations(toolName, el) ??
@@ -871,7 +1249,16 @@ export default function CornerstoneViewer({
           showSeries: (uid: string) => {
             const list = seriesRef.current;
             const idx = list?.findIndex((s) => s.seriesInstanceUID === uid);
-            if (list && idx != null && idx >= 0) void switchSeriesRef.current(idx, false);
+            if (list && idx != null && idx >= 0) {
+              beginSuppress();
+              chain(() => switchSeries(idx, false));
+              void pending.then(() => endSuppress());
+            }
+          },
+          clearAnnotations,
+          settle: () => pending,
+          get annotationApplied() {
+            return annotationApplied;
           },
         };
         if (controls) controls.current = handle;
@@ -888,6 +1275,7 @@ export default function CornerstoneViewer({
     return () => {
       disposed = true;
       cancelTweenRef.current();
+      window.clearTimeout(readoutTimerRef.current);
       detachListeners();
       viewportRef.current = null;
       loadedSeriesIndexRef.current = -1;
@@ -917,13 +1305,21 @@ export default function CornerstoneViewer({
 
   // Close the preset menu on outside click / Escape.
   const presetMenuRef = useRef<HTMLDivElement>(null);
+  const measureMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!presetOpen) return;
+    if (!presetOpen && !measureOpen) return;
     const onDocClick = (e: MouseEvent) => {
-      if (!presetMenuRef.current?.contains(e.target as Node)) setPresetOpen(false);
+      const node = e.target as Node;
+      if (presetMenuRef.current?.contains(node)) return;
+      if (measureMenuRef.current?.contains(node)) return;
+      setPresetOpen(false);
+      setMeasureOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPresetOpen(false);
+      if (e.key === "Escape") {
+        setPresetOpen(false);
+        setMeasureOpen(false);
+      }
     };
     document.addEventListener("mousedown", onDocClick);
     document.addEventListener("keydown", onKey);
@@ -931,144 +1327,118 @@ export default function CornerstoneViewer({
       document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onKey);
     };
-  }, [presetOpen]);
+  }, [presetOpen, measureOpen]);
 
   const activePresetLabel =
     activePreset === FULL_DYNAMIC_ID
       ? "Full dynamic"
       : WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? "W/L";
 
-  // Floating PACS-style toolbar — shown in BOTH demo and driven modes.
+  const activeToolMeta = PRIMARY_TOOLS.find((t) => t.name === activeTool);
+  const activeToolLabel = activeToolMeta?.label ?? "Window / Level";
+
   const toolbar = (
-    <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/60 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55 surface-hairline">
-      {/* Brand mark */}
-      <span className="flex select-none items-center gap-1.5 pl-1 pr-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md border border-strong bg-elevated text-accent">
-          <Activity className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-        </span>
-        <span className="hidden font-display text-[11px] font-semibold tracking-tight text-primary sm:inline">
-          FlowRad
-        </span>
-      </span>
-      <span className="mx-0.5 h-6 w-px bg-strong/60" />
+    <ViewerToolbar
+      orientation="horizontal"
+      compact={edge}
+      ready={ready}
+      activeTool={activeTool}
+      activeToolLabel={activeToolLabel}
+      annotationsEnabled={annotationsEnabled}
+      inverted={inverted}
+      presetOpen={presetOpen}
+      measureOpen={measureOpen}
+      activePresetLabel={activePresetLabel}
+      activePreset={activePreset}
+      presets={presets}
+      presetMenuRef={presetMenuRef}
+      measureMenuRef={measureMenuRef}
+      onTogglePreset={() => {
+        setMeasureOpen(false);
+        setPresetOpen((o) => !o);
+      }}
+      onToggleMeasure={() => {
+        setPresetOpen(false);
+        setMeasureOpen((o) => !o);
+      }}
+      onSelectTool={(name) => {
+        setLeftToolRef.current(name);
+        setMeasureOpen(false);
+      }}
+      onPreset={(preset) => {
+        applyPresetRef.current(preset);
+        setPresetOpen(false);
+      }}
+      onInvert={() => invertRef.current()}
+      onReset={() => resetRef.current()}
+      onClear={() => clearRef.current()}
+    />
+  );
 
-      {PRIMARY_TOOLS.map((t) => {
-        // Annotation tools stay enabled by default; we only disable (never hide)
-        // them on a study we've confirmed has no pixel spacing, with a tooltip
-        // that explains why.
-        const blocked = !!t.annotation && !annotationsEnabled;
-        return (
-          <ToolButton
-            key={t.name}
-            label={
-              blocked
-                ? `${t.label} — this study has no pixel spacing for measurements`
-                : t.label
-            }
-            active={activeTool === t.name}
-            disabled={!ready || blocked}
-            onClick={() => setLeftToolRef.current(t.name)}
-          >
-            <ToolIcon name={t.name} />
-          </ToolButton>
-        );
-      })}
+  const readoutLabel =
+    readout == null
+      ? undefined
+      : readout.ww != null && readout.wc != null
+        ? `Slice ${readout.slice} of ${readout.count}, window ${readout.ww}, level ${readout.wc}`
+        : `Slice ${readout.slice} of ${readout.count}`;
 
-      <span className="mx-0.5 h-6 w-px bg-strong/70" />
-
-      {/* Window/Level preset menu */}
-      <div className="relative" ref={presetMenuRef}>
-        <button
-          type="button"
-          disabled={!ready}
-          aria-haspopup="menu"
-          aria-expanded={presetOpen}
-          aria-label="Window/Level presets"
-          onClick={() => setPresetOpen((o) => !o)}
+  return (
+    <div
+      className={cn(
+        docked && "flex w-full flex-col gap-2",
+        edge && "flex h-full w-full flex-col",
+        !docked && !edge && "relative h-full w-full",
+        className
+      )}
+    >
+      <div
+        className={cn(
+          "relative",
+          docked && "w-full",
+          edge && "min-h-0 flex-1",
+          !docked && !edge && "h-full w-full"
+        )}
+      >
+        <div
+          ref={elementRef}
           className={cn(
-            "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-all duration-150",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-            "disabled:cursor-not-allowed disabled:opacity-40",
-            presetOpen || activePreset
-              ? "bg-accent/15 text-accent"
-              : "text-secondary hover:bg-surface hover:text-primary"
+            "bg-imaging",
+            docked
+              ? "aspect-square w-full overflow-hidden rounded-xl border border-subtle"
+              : "absolute inset-0"
           )}
-        >
-          <ToolIcon name="Preset" />
-          <span className="max-w-[6rem] truncate tabular-nums">{activePresetLabel}</span>
-          <ChevronDown className="h-3 w-3" strokeWidth={2.2} aria-hidden="true" />
-        </button>
-        {presetOpen && (
-          <div
-            role="menu"
-            aria-label="Window/Level presets"
-            className="absolute left-0 top-full z-30 mt-1.5 w-48 origin-top-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated/95 p-1 shadow-lg backdrop-blur"
+          onContextMenu={(e) => e.preventDefault()}
+          aria-label="DICOM viewer"
+          role="img"
+        />
+        {readout && ready && (
+          <p
+            className="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-black/80 px-2 py-1 text-xs font-medium leading-tight text-white shadow-md ring-1 ring-white/20"
+            aria-label={readoutLabel}
           >
-            <PresetItem
-              label="Full dynamic"
-              hint="series default"
-              active={activePreset === FULL_DYNAMIC_ID}
-              onClick={() => {
-                applyPresetRef.current(null);
-                setPresetOpen(false);
-              }}
-            />
-            <span className="my-1 block h-px bg-strong/50" />
-            {presets.map((p) => (
-              <PresetItem
-                key={p.id}
-                label={p.label}
-                hint={`${p.ww} / ${p.wc}`}
-                active={activePreset === p.id}
-                onClick={() => {
-                  applyPresetRef.current(p);
-                  setPresetOpen(false);
-                }}
-              />
-            ))}
+            <span className="block tabular-nums">
+              {readout.slice} / {readout.count}
+            </span>
+            {readout.ww != null && readout.wc != null && (
+              <span className="block tabular-nums">
+                W {readout.ww} L {readout.wc}
+              </span>
+            )}
+          </p>
+        )}
+        {!ready && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
+              {status}
+            </span>
           </div>
         )}
       </div>
-
-      <span className="mx-0.5 h-6 w-px bg-strong/70" />
-
-      <ToolButton label="Invert" active={inverted} disabled={!ready} onClick={() => invertRef.current()}>
-        <ToolIcon name="Invert" />
-      </ToolButton>
-      <ToolButton label="Reset view" disabled={!ready} onClick={() => resetRef.current()}>
-        <ToolIcon name="Reset" />
-      </ToolButton>
-      <ToolButton label="Clear annotations" disabled={!ready} onClick={() => clearRef.current()}>
-        <ToolIcon name="Clear" />
-      </ToolButton>
-    </div>
-  );
-
-  return (
-    <div className={cn("relative", showToolbar ? "w-full" : "h-full w-full", className)}>
-      <div
-        ref={elementRef}
-        className={cn(
-          "bg-imaging",
-          showToolbar
-            ? "aspect-square w-full overflow-hidden rounded-xl border border-subtle"
-            : "absolute inset-0"
-        )}
-        onContextMenu={(e) => e.preventDefault()}
-        aria-label="DICOM viewer"
-        role="img"
-      />
-      {toolbar}
-      {!ready && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="rounded-md bg-elevated/80 px-3 py-1.5 text-xs text-muted backdrop-blur">
-            {status}
-          </span>
-        </div>
-      )}
-      {showToolbar && (
-        <p className="mt-2 text-xs text-muted">
-          Wheel scroll · right-drag zoom · middle-drag pan · left button = selected tool
+      {(docked || edge) && toolbar}
+      {docked && (
+        <p className="text-xs text-secondary">
+          <span className="font-medium text-primary">{activeToolLabel}</span>
+          {" on the left button · Wheel scroll · right-drag zoom · middle-drag pan"}
           {ready && !annotationsEnabled && (
             <>
               {" · "}
@@ -1083,14 +1453,258 @@ export default function CornerstoneViewer({
   );
 }
 
+function ViewerToolbar({
+  orientation,
+  compact = false,
+  ready,
+  activeTool,
+  activeToolLabel,
+  annotationsEnabled,
+  inverted,
+  presetOpen,
+  measureOpen,
+  activePresetLabel,
+  activePreset,
+  presets,
+  presetMenuRef,
+  measureMenuRef,
+  onTogglePreset,
+  onToggleMeasure,
+  onSelectTool,
+  onPreset,
+  onInvert,
+  onReset,
+  onClear,
+}: {
+  orientation: "horizontal" | "vertical";
+  /** Student pane: one tight row, no group captions. */
+  compact?: boolean;
+  ready: boolean;
+  activeTool: string;
+  activeToolLabel: string;
+  annotationsEnabled: boolean;
+  inverted: boolean;
+  presetOpen: boolean;
+  measureOpen: boolean;
+  activePresetLabel: string;
+  activePreset: string | null;
+  presets: WindowPreset[];
+  presetMenuRef: MutableRefObject<HTMLDivElement | null>;
+  measureMenuRef: MutableRefObject<HTMLDivElement | null>;
+  onTogglePreset: () => void;
+  onToggleMeasure: () => void;
+  onSelectTool: (name: string) => void;
+  onPreset: (preset: WindowPreset | null) => void;
+  onInvert: () => void;
+  onReset: () => void;
+  onClear: () => void;
+}) {
+  const vertical = orientation === "vertical";
+  const activeMeasure =
+    MEASURE_TOOLS.find((t) => t.name === activeTool) ?? MEASURE_TOOLS[0];
+  const measureActive = MEASURE_TOOLS.some((t) => t.name === activeTool);
+
+  const toolLabel = (tool: ViewerTool) =>
+    tool.annotation && !annotationsEnabled
+      ? `${tool.label} — this study has no pixel spacing for measurements`
+      : tool.label;
+
+  const menuClass = vertical
+    ? "absolute left-full top-0 z-30 ml-1.5 w-48 origin-top-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated p-1 shadow-lg"
+    : "absolute bottom-full left-0 z-30 mb-1.5 w-48 origin-bottom-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated p-1 shadow-lg";
+
+  const nav = NAV_TOOLS.map((tool) => (
+    <ToolButton
+      key={tool.name}
+      label={tool.label}
+      caption={vertical ? undefined : tool.short}
+      active={activeTool === tool.name}
+      disabled={!ready}
+      onClick={() => onSelectTool(tool.name)}
+    >
+      <ToolIcon name={tool.name} />
+    </ToolButton>
+  ));
+
+  const measureSplit = (
+    <div className={cn("relative flex", vertical ? "flex-col items-center" : "items-end")} ref={measureMenuRef}>
+      <ToolButton
+        label={toolLabel(activeMeasure)}
+        caption={vertical ? undefined : activeMeasure.short}
+        active={measureActive}
+        disabled={!ready || (!!activeMeasure.annotation && !annotationsEnabled)}
+        onClick={() => onSelectTool(activeMeasure.name)}
+      >
+        <ToolIcon name={activeMeasure.name} />
+      </ToolButton>
+      <button
+        type="button"
+        disabled={!ready}
+        aria-haspopup="menu"
+        aria-expanded={measureOpen}
+        aria-label="More measurement tools"
+        onClick={onToggleMeasure}
+        className={cn(
+          "flex items-center justify-center rounded-lg text-secondary transition-colors",
+          "hover:bg-overlay hover:text-primary",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+          "disabled:cursor-not-allowed disabled:opacity-40",
+          vertical ? "h-8 w-9" : "h-12 w-8",
+          measureOpen && "bg-overlay text-primary"
+        )}
+      >
+        <ChevronDown
+          className={cn("h-3.5 w-3.5", vertical && "-rotate-90")}
+          strokeWidth={2.2}
+          aria-hidden="true"
+        />
+      </button>
+      {measureOpen && (
+        <div role="menu" aria-label="Measurement tools" className={menuClass}>
+          {MEASURE_TOOLS.map((tool) => {
+            const blocked = !!tool.annotation && !annotationsEnabled;
+            return (
+              <PresetItem
+                key={tool.name}
+                label={tool.label}
+                hint={blocked ? "no spacing" : tool.short}
+                active={activeTool === tool.name}
+                disabled={!ready || blocked}
+                onClick={() => onSelectTool(tool.name)}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  const presetControl = (
+    <div className="relative" ref={presetMenuRef}>
+      <button
+        type="button"
+        disabled={!ready}
+        aria-haspopup="menu"
+        aria-expanded={presetOpen}
+        aria-label={`Window presets, ${activePresetLabel}`}
+        onClick={onTogglePreset}
+        className={cn(
+          "flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+          "disabled:cursor-not-allowed disabled:opacity-40",
+          vertical ? "h-9 w-9" : "h-12 min-w-12 flex-col px-2 text-xs",
+          presetOpen || activePreset
+            ? "bg-accent/15 text-accent"
+            : "text-secondary hover:bg-overlay hover:text-primary"
+        )}
+      >
+        <ToolIcon name="Preset" />
+        {vertical ? null : (
+          <span className="max-w-[4.5rem] truncate leading-none">{activePresetLabel}</span>
+        )}
+      </button>
+      {presetOpen && (
+        <div role="menu" aria-label="Window/Level presets" className={menuClass}>
+          <PresetItem
+            label="Full dynamic"
+            hint="series default"
+            active={activePreset === FULL_DYNAMIC_ID}
+            onClick={() => onPreset(null)}
+          />
+          <span className="my-1 block h-px bg-strong/50" />
+          {presets.map((p) => (
+            <PresetItem
+              key={p.id}
+              label={p.label}
+              hint={`W ${p.ww}  L ${p.wc}`}
+              active={activePreset === p.id}
+              onClick={() => onPreset(p)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const display = (
+    <>
+      {presetControl}
+      <ToolButton
+        label="Invert"
+        caption={vertical ? undefined : "Invert"}
+        active={inverted}
+        disabled={!ready}
+        onClick={onInvert}
+      >
+        <ToolIcon name="Invert" />
+      </ToolButton>
+      <ToolButton
+        label="Reset view"
+        caption={vertical ? undefined : "Reset"}
+        disabled={!ready}
+        onClick={onReset}
+      >
+        <ToolIcon name="Reset" />
+      </ToolButton>
+      <ToolButton
+        label="Clear annotations"
+        caption={vertical ? undefined : "Clear"}
+        disabled={!ready}
+        onClick={onClear}
+      >
+        <ToolIcon name="Clear" />
+      </ToolButton>
+    </>
+  );
+
+  return (
+    <div
+      role="toolbar"
+      aria-label="Viewer tools"
+      aria-orientation="horizontal"
+      className={cn(
+        "flex flex-wrap items-end gap-x-3 gap-y-2 border border-subtle bg-surface px-2 py-2",
+        compact ? "rounded-none border-x-0 border-b-0" : "rounded-xl"
+      )}
+    >
+      <div className="flex flex-col gap-1">
+        {compact ? null : (
+          <span className="px-1 text-xs font-medium text-secondary">Navigate</span>
+        )}
+        <div className="flex items-center gap-0.5">{nav}</div>
+      </div>
+      <div className="flex flex-col gap-1">
+        {compact ? null : (
+          <span className="px-1 text-xs font-medium text-secondary">Measure</span>
+        )}
+        {measureSplit}
+      </div>
+      <div className="flex flex-col gap-1">
+        {compact ? null : (
+          <span className="px-1 text-xs font-medium text-secondary">Display</span>
+        )}
+        <div className="flex items-center gap-0.5">{display}</div>
+      </div>
+      {compact ? null : (
+        <p className="mb-1 ml-auto hidden text-xs text-secondary sm:block">
+          Left button: <span className="font-medium text-primary">{activeToolLabel}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ToolButton({
   label,
+  caption,
   active,
   disabled,
   onClick,
   children,
 }: {
   label: string;
+  /** Visible short name under the icon. Omitted on the edge rail. */
+  caption?: string;
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -1105,15 +1719,23 @@ function ToolButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150",
+        "transition-colors duration-150",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
         "disabled:cursor-not-allowed disabled:opacity-40",
+        caption
+          ? "flex h-12 min-w-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1.5"
+          : "flex h-9 w-9 items-center justify-center rounded-lg",
         active
           ? "bg-accent text-accent-foreground shadow-sm"
-          : "text-secondary hover:bg-overlay hover:text-primary active:scale-95"
+          : "text-secondary hover:bg-overlay hover:text-primary"
       )}
     >
       {children}
+      {caption ? (
+        <span className="max-w-[3.5rem] truncate text-xs font-medium leading-none">
+          {caption}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -1122,11 +1744,13 @@ function PresetItem({
   label,
   hint,
   active,
+  disabled,
   onClick,
 }: {
   label: string;
   hint: string;
   active?: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -1134,15 +1758,17 @@ function PresetItem({
       type="button"
       role="menuitemradio"
       aria-checked={active}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
+        "flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        "disabled:cursor-not-allowed disabled:opacity-40",
         active ? "bg-accent/15 text-accent" : "text-secondary hover:bg-surface hover:text-primary"
       )}
     >
       <span className="font-medium">{label}</span>
-      <span className="tabular-nums text-muted">{hint}</span>
+      <span className="tabular-nums text-secondary">{hint}</span>
     </button>
   );
 }
@@ -1150,7 +1776,7 @@ function PresetItem({
 // PACS toolbar glyphs, mapped to lucide icons. Each tool keeps its name; only
 // the rendered glyph changed (no Cornerstone tool binding is touched).
 const TOOL_ICONS: Record<string, LucideIcon> = {
-  WindowLevel: Contrast,
+  WindowLevel: Blend,
   Pan: Move,
   Zoom: ZoomIn,
   StackScroll: LayersIconL,
@@ -1161,7 +1787,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   Probe: Crosshair,
   ArrowAnnotate: MoveUpRight,
   Preset: Settings2,
-  Invert: Contrast,
+  Invert: SunMoon,
   Reset: RotateCcw,
   Clear: Eraser,
 };
