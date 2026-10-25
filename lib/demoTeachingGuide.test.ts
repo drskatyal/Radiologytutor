@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { playTeachingGuide } from "./replay.ts";
+import { nextGuidedIndex } from "./tourAdapt.ts";
 import { authoredGuideLines, resolveTeachingGuide } from "./teachingGuide.ts";
 import { getPublicCaseTemplate } from "./publicCases/catalog.ts";
 import type { Finding, TeachViewerAction } from "./types.ts";
@@ -216,4 +217,71 @@ test("playTeachingGuide speaks the nodule pearl after the lean-in", async () => 
   assert.ok(applied.includes("window:1500/-600"));
   assert.ok(applied.includes("zoom:2.2"));
   assert.ok(applied.includes("point"));
+});
+
+test("three LIDC guides each play orient through pearl when TTS never ends", async () => {
+  const findings = buildLidcSeedCase().findings;
+  assert.equal(findings.length, 3);
+  const played: string[] = [];
+  let index: number | null = 0;
+  while (index != null) {
+    const finding = findings[index];
+    const guide = finding.teachingGuide;
+    assert.ok(guide, finding.label);
+    const said: string[] = [];
+    const applied: string[] = [];
+    let slice = guide.start.sliceIndex;
+    const ctrl = playTeachingGuide(
+      guide,
+      {
+        applyEvent: (event) => {
+          if (event.type === "slice") slice = event.index;
+        },
+        getSliceIndex: () => slice,
+        settle: async () => {},
+        setWindow: async (ww, wc) => {
+          applied.push(`window:${ww}/${wc}`);
+        },
+        showState: async (state) => {
+          if (state.zoom != null) applied.push(`zoom:${state.zoom}`);
+        },
+        overlay: {
+          animateTo: async (x, y) => {
+            applied.push(`point:${x},${y}`);
+          },
+        },
+      },
+      {
+        timeScale: 0,
+        narrationHoldMs: () => 15,
+        narrate: (text) => {
+          said.push(text);
+          return new Promise(() => {});
+        },
+      }
+    );
+    await ctrl.finished;
+    assert.equal(said.length, 5, finding.label);
+    assert.match(said[0] ?? "", /^Follow the stack/);
+    assert.match(said[1] ?? "", /windows/i);
+    assert.match(said[2] ?? "", /^Lean in/);
+    assert.equal(said[3], "Look here.");
+    assert.ok((said[4] ?? "").length > 40, finding.label);
+    assert.equal(slice, finding.sliceIndex, finding.label);
+    assert.ok(
+      applied.includes(`window:${finding.windowWidth}/${finding.windowCenter}`),
+      finding.label
+    );
+    assert.ok(applied.indexOf("zoom:1") < applied.indexOf("zoom:2.2"), finding.label);
+    const marker = finding.marker;
+    assert.ok(marker, finding.label);
+    assert.ok(applied.includes(`point:${marker.x_pct},${marker.y_pct}`), finding.label);
+    played.push(finding.label);
+    index = nextGuidedIndex(index, findings.length);
+  }
+  assert.deepEqual(played, [
+    "Lung window — start mid-chest",
+    "Peripheral nodule survey",
+    "Mediastinal window pass",
+  ]);
 });

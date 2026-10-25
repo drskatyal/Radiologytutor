@@ -258,6 +258,26 @@ export function tutorSpeechPlan(input: TutorSpeechPlan): TutorSpeechDecision {
   };
 }
 
+/** Floor so a short look-cue still has time to start. */
+export const NARRATION_HOLD_MIN_MS = 2_000;
+/**
+ * Ceiling for one beat. A dead fetch, a clip that never fires `ended`, or a
+ * long pearl must not freeze the next gesture or the next finding.
+ */
+export const NARRATION_HOLD_MAX_MS = 12_000;
+
+/**
+ * How long Teach may wait on one spoken line before the next beat runs.
+ * Blank text waits nothing. Otherwise ~14 characters/second plus a short
+ * lead-in, clamped so TTS failure cannot soft-lock the tour.
+ */
+export function narrationHoldMs(text: string): number {
+  const chars = text.trim().length;
+  if (chars === 0) return 0;
+  const estimated = Math.round((chars / 14) * 1000) + 1_500;
+  return Math.min(NARRATION_HOLD_MAX_MS, Math.max(NARRATION_HOLD_MIN_MS, estimated));
+}
+
 /**
  * Zero-length audio must not block Teach. Unknown duration (null) can block
  * until the element ends or the playback watchdog fires.

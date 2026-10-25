@@ -12,6 +12,9 @@ import { teachingSystemPrompt } from "./teachingPrompt.ts";
 import {
   ensureSpokenAnswer,
   mayNameFinding,
+  NARRATION_HOLD_MAX_MS,
+  NARRATION_HOLD_MIN_MS,
+  narrationHoldMs,
   speechAudioCanBlock,
   tutorSpeechPlan,
   type SpokenFindingSource,
@@ -221,6 +224,15 @@ test("empty audio cannot block the tour", () => {
   assert.equal(speechAudioCanBlock(128, 0), false);
   assert.equal(speechAudioCanBlock(128, 2.4), true);
   assert.equal(speechAudioCanBlock(128, null), true);
+});
+
+test("narration hold is zero for silence and capped for a long pearl", () => {
+  assert.equal(narrationHoldMs(""), 0);
+  assert.equal(narrationHoldMs("  \n"), 0);
+  assert.equal(narrationHoldMs("Hi"), NARRATION_HOLD_MIN_MS);
+  assert.equal(narrationHoldMs("a".repeat(70)), 6_500);
+  assert.equal(narrationHoldMs("a".repeat(400)), NARRATION_HOLD_MAX_MS);
+  assert.ok(NARRATION_HOLD_MAX_MS <= 12_000);
 });
 
 test("empty-answer fallback keeps the consultant drive inside the eval speech bar", async () => {
