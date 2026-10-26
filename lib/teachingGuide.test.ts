@@ -627,6 +627,163 @@ test("annotate save omits acts whose gesture was never landed", () => {
   assert.match(linesOf(stroked.finding.teachingGuide), /12|millimetre/i);
 });
 
+function sayOf(guide: TeachingGuide | null | undefined, act: string): string {
+  return guide?.beats.find((beat) => beat.act === act)?.say ?? "";
+}
+
+test("notes-sourced annotate guide speaks the finding, not the demo stack walk", () => {
+  const saved = commitAnnotatedFinding(
+    {
+      label: "Right chest wall opacity",
+      description: "Pleural-based opacity along the right chest wall.",
+      teachingPoints: ["Check the extrapleural fat.", "Window the soft tissues."],
+      marker: { x_pct: 0.82, y_pct: 0.4, shape: "circle" },
+      sliceIndex: 40,
+      windowWidth: 399,
+      windowCenter: 45,
+      teachingGuide: DEMO_GUIDE,
+    },
+    { sliceIndex: 40, windowWidth: 399, windowCenter: 45 }
+  );
+  assert.deepEqual(saved.receipt.acts, ["orient", "search", "commit", "pearl"]);
+  const guide = saved.finding.teachingGuide;
+  assert.equal(sayOf(guide, "orient"), "Right chest wall opacity, on slice 40.");
+  assert.equal(sayOf(guide, "search"), "Window 399 over 45.");
+  assert.equal(sayOf(guide, "commit"), "Pleural-based opacity along the right chest wall.");
+  assert.equal(
+    sayOf(guide, "pearl"),
+    "Check the extrapleural fat. Window the soft tissues."
+  );
+  const said = linesOf(guide);
+  assert.doesNotMatch(said, /Follow the stack|Follow the vessels|lung window was hiding|mediastinum|Look here|Lean in|look at the edge/i);
+  const point = guide?.beats
+    .find((beat) => beat.act === "commit")
+    ?.actions.find((action) => action.type === "point");
+  assert.equal(point?.type, "point");
+  if (point?.type === "point") {
+    assert.equal(point.x, 0.82);
+    assert.equal(point.y, 0.4);
+  }
+  const live = resolveTeachingGuide({ ...saved.finding, teachingGuide: DEMO_GUIDE });
+  assert.equal(linesOf(live), said);
+  const revised = resolveTeachingGuide({
+    ...saved.finding,
+    description: "A marker on the pleura.",
+    teachingPoints: ["Fat plane stays thin."],
+    teachingGuide: DEMO_GUIDE,
+  });
+  assert.equal(sayOf(revised, "orient"), "Right chest wall opacity, on slice 40.");
+  assert.equal(sayOf(revised, "commit"), "A marker on the pleura.");
+  assert.equal(sayOf(revised, "pearl"), "Fat plane stays thin.");
+  assert.doesNotMatch(linesOf(revised), /Follow the stack|lung window was hiding|extrapleural/i);
+});
+
+test("notes-sourced sentences spread across the acts and the pearl stays the teaching point", () => {
+  const saved = commitAnnotatedFinding(
+    {
+      label: "Chest wall opacity",
+      description: "The opacity is pleural based. It silhouettes the chest wall.",
+      teachingPoints: ["Check the extrapleural fat."],
+      marker: { x_pct: 0.8, y_pct: 0.4, shape: "circle" },
+      sliceIndex: 40,
+      windowWidth: 399,
+      windowCenter: 45,
+    },
+    { sliceIndex: 40, windowWidth: 399, windowCenter: 45 }
+  );
+  const guide = saved.finding.teachingGuide;
+  assert.equal(
+    sayOf(guide, "orient"),
+    "Chest wall opacity, on slice 40. The opacity is pleural based."
+  );
+  assert.equal(sayOf(guide, "search"), "Window 399 over 45.");
+  assert.equal(sayOf(guide, "commit"), "It silhouettes the chest wall.");
+  assert.equal(sayOf(guide, "pearl"), "Check the extrapleural fat.");
+  assert.doesNotMatch(sayOf(guide, "pearl"), /pleural based|silhouettes/i);
+  assert.doesNotMatch(linesOf(guide), /Follow the stack|lung window was hiding/i);
+});
+
+test("notes-sourced lean-in uses the zoom and is omitted when the camera stays fit", () => {
+  const zoomed = commitAnnotatedFinding(
+    {
+      label: "Leaned in",
+      description: "Edge of the lesion.",
+      teachingPoints: ["Hold the margin."],
+      marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      sliceIndex: 12,
+      windowWidth: 400,
+      windowCenter: 40,
+    },
+    { zoom: 2.4, pan: [0, 0], sliceIndex: 12, windowWidth: 400, windowCenter: 40 }
+  );
+  assert.deepEqual(zoomed.receipt.acts, ["orient", "search", "lean-in", "commit", "pearl"]);
+  const guide = zoomed.finding.teachingGuide;
+  assert.equal(sayOf(guide, "orient"), "Leaned in, on slice 12.");
+  assert.equal(sayOf(guide, "search"), "Window 400 over 40.");
+  assert.equal(sayOf(guide, "lean-in"), "Closer, about 2.4 times.");
+  assert.equal(sayOf(guide, "commit"), "Edge of the lesion.");
+  assert.equal(sayOf(guide, "pearl"), "Hold the margin.");
+  assert.doesNotMatch(linesOf(guide), /Follow the stack|look at the edge|Lean in/i);
+
+  const fitted = commitAnnotatedFinding(
+    {
+      label: "Fit",
+      description: "No magnification.",
+      teachingPoints: ["Stay wide."],
+      marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      sliceIndex: 3,
+    },
+    { zoom: 1, pan: [0, 0], sliceIndex: 3 }
+  );
+  assert.equal(fitted.receipt.acts.includes("lean-in"), false);
+  assert.equal(sayOf(fitted.finding.teachingGuide, "orient"), "Fit, on slice 3.");
+  assert.equal(sayOf(fitted.finding.teachingGuide, "commit"), "No magnification.");
+  assert.equal(sayOf(fitted.finding.teachingGuide, "pearl"), "Stay wide.");
+  assert.doesNotMatch(linesOf(fitted.finding.teachingGuide), /Closer|Lean in|Follow the stack/i);
+});
+
+test("authored stack and mediastinum lines are spoken only when the notes contain them", () => {
+  const saved = commitAnnotatedFinding(
+    {
+      label: "Second pass",
+      description: "Follow the stack toward the vessels.",
+      teachingPoints: ["Leave the mediastinum for the second pass."],
+      marker: { x_pct: 0.4, y_pct: 0.4, shape: "circle" },
+      sliceIndex: 18,
+      windowWidth: 399,
+      windowCenter: 45,
+    },
+    { sliceIndex: 18, windowWidth: 399, windowCenter: 45 }
+  );
+  const guide = saved.finding.teachingGuide;
+  assert.equal(sayOf(guide, "orient"), "Second pass, on slice 18.");
+  assert.equal(sayOf(guide, "commit"), "Follow the stack toward the vessels.");
+  assert.equal(sayOf(guide, "pearl"), "Leave the mediastinum for the second pass.");
+  assert.doesNotMatch(sayOf(guide, "orient"), /Follow the stack|Follow the vessels|mediastinum/i);
+  assert.doesNotMatch(sayOf(guide, "search"), /hiding|Follow the vessels|mediastinum/i);
+});
+
+test("a recorded take still opens on the stack cue", () => {
+  const saved = commitRecordedFinding(
+    {
+      label: "Right chest wall opacity",
+      description: "Pleural-based opacity along the right chest wall.",
+      teachingPoints: ["Check the extrapleural fat."],
+      marker: { x_pct: 0.42, y_pct: 0.55, shape: "circle" },
+    },
+    track,
+    {
+      label: "Right chest wall opacity",
+      description: "Pleural-based opacity along the right chest wall.",
+      teachingPoints: ["Check the extrapleural fat."],
+      take: { gap: "empty-mic" },
+    }
+  );
+  assert.match(sayOf(saved.finding.teachingGuide, "orient"), /^Follow the stack/);
+  const live = resolveTeachingGuide(saved.finding);
+  assert.match(sayOf(live, "orient"), /^Follow the stack/);
+});
+
 test("withRecordedTeaching stores prose spans when the mic returned nothing", () => {
   const blip: RecordedTrack = {
     durationMs: 0,
