@@ -70,7 +70,7 @@ test("record → guide → play supersedes the LIDC demo and speaks the take", a
   assert.ok(report.play.walk.length >= 3);
   assert.equal(report.play.walk.at(-1), finding.sliceIndex);
   assert.deepEqual(report.play.said, poisoned?.beats.map((beat) => beat.say));
-  const lungAt = report.play.log.indexOf("window:1500/-600");
+  const lungAt = report.play.log.lastIndexOf("window:1500/-600");
   const zoomAt = report.play.log.indexOf("zoom:2.4");
   const pointAt = report.play.log.indexOf("point");
   assert.ok(lungAt > report.play.log.indexOf(`slice:${finding.sliceIndex}`));

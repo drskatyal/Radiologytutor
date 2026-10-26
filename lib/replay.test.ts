@@ -10,6 +10,7 @@ import {
   startReplay,
 } from "./replay.ts";
 import { displaySliceNumber } from "./findingDisplayState.ts";
+import { voiNear } from "./viewportVoi.ts";
 import { commitAnnotatedFinding, commitSpeakOnceWithoutMic, resolveTeachingGuide } from "./teachingGuide.ts";
 import type { RecordedEvent, RecordedTrack, TeachingGuide } from "./types.ts";
 
@@ -603,6 +604,8 @@ test("a long scripted gap becomes an attending hold, not dead air", () => {
 test("search walks intermediate slices; commit does not scroll again", async () => {
   const log: string[] = [];
   let slice = 0;
+  let ww = 400;
+  let wc = 40;
   const guide: TeachingGuide = {
     durationMs: 1600,
     start: { sliceIndex: 0 },
@@ -639,6 +642,10 @@ test("search walks intermediate slices; commit does not scroll again", async () 
       applyEvent: (event) => {
         if (event.type === "slice") {
           slice = event.index;
+          // A slice load writes the DICOM soft-tissue window back. The
+          // window action after the landing slice has to put lung back.
+          ww = 400;
+          wc = 40;
           log.push(`slice:${event.index}`);
         } else if (event.type === "series") {
           log.push("series");
@@ -646,8 +653,10 @@ test("search walks intermediate slices; commit does not scroll again", async () 
       },
       getSliceIndex: () => slice,
       settle: async () => {},
-      setWindow: async (ww, wc) => {
-        log.push(`window:${ww}/${wc}`);
+      setWindow: async (w, c) => {
+        ww = w;
+        wc = c;
+        log.push(`window:${w}/${c}`);
       },
       showState: async (state) => {
         if (state.zoom != null) log.push(`zoom:${state.zoom}`);
@@ -662,13 +671,16 @@ test("search walks intermediate slices; commit does not scroll again", async () 
       timeScale: 0,
       narrate: async (text) => {
         log.push(`say:${text}`);
+        if (text.startsWith("Lung windows")) {
+          assert.ok(voiNear({ ww, wc }, { ww: 1500, wc: -600 }), `${ww}/${wc}`);
+        }
       },
     }
   );
   await ctrl.finished;
   const lung = log.indexOf("say:Lung windows. Walk the lungs.");
   const money = log.indexOf("slice:40");
-  const windowAt = log.indexOf("window:1500/-600");
+  const windowAt = log.lastIndexOf("window:1500/-600");
   const pointAt = log.indexOf("point");
   assert.ok(lung >= 0 && money > lung, log.join(" | "));
   assert.ok(windowAt > money, log.join(" | "));
@@ -682,6 +694,8 @@ test("search walks intermediate slices; commit does not scroll again", async () 
     false,
     log.join(" | ")
   );
+  assert.equal(ww, 1500);
+  assert.equal(wc, -600);
 });
 
 test("commit annotation lands on its slice without stepping the stack", async () => {
