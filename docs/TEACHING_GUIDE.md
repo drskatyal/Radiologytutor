@@ -14,6 +14,8 @@ A recorded finding becomes a live teach script. The student viewer scrolls, wind
 
    If the learner is more than 8 slices from the money slice when a **commit** or **pearl** is about to play, the tour walks them onto that slice and speaks a directional line before the pointer or the name ("You're still too high — come toward the carina."). The place comes from the finding's optional landmark (author field **Level to name first**). The finding label is withheld, so the hint does not diagnose. The search act already walked to the money slice, so a learner who follows the script does not hear that line. The hint uses the same attending `narrate` callback as the other beats.
 
+   Changing the active finding — the rail, Next, or the tour advancing on its own — cancels the guide that is playing and stops its TTS before the next guide starts (`interruptGuidePlayback`). Cancel runs first. A `speak()` that starts after speech was stopped would play the previous line over the new finding; that is how a notes orient ("Notes orient prove #34, on slice 33.") was preceded by the prior finding's "Follow the stack." A notes landing (`voice: "notes"`) still does not use that look-cue unless the author wrote it. A recorded take keeps it.
+
 ## Demo
 
 1. Run the app (`npm run dev`) and open **Author** on a case with a real stack (annotation tools need a study; the synthetic sample may disable them).

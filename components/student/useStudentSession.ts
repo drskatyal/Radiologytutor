@@ -31,7 +31,7 @@ import {
   type SpokenFindingSource,
 } from "@/lib/tutorSpeech";
 import { findingViewerState } from "@/lib/viewerController";
-import { playTeachingGuide, type ReplayController } from "@/lib/replay";
+import { interruptGuidePlayback, playTeachingGuide, type ReplayController } from "@/lib/replay";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
 import {
   authoredGuideLines,
@@ -126,6 +126,12 @@ export function useStudentSession(
    * speech callback from the previous finding must not start the one after.
    */
   const tourGenRef = useRef(0);
+  /**
+   * Bumped by interruptPlayback. A guide narrate closure captures the value
+   * from when its finding started and refuses to call speak() after a later
+   * finding takes the floor.
+   */
+  const playbackGenRef = useRef(0);
   /** play_guide is the only speech on this turn — speak its beats. */
   const narrateGuideRef = useRef(false);
   const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
@@ -289,10 +295,29 @@ export function useStudentSession(
     setReady(true);
   }, []);
 
-  // Stop any in-flight finding replay (track retrace + its narration audio).
+  // Stop any in-flight finding replay (track retrace). Does not stop TTS:
+  // a tutor sentence may still be speaking while the viewer moves.
   const stopReplay = useCallback(() => {
     replayRef.current?.cancel();
     replayRef.current = null;
+    if (replayAudioRef.current) {
+      replayAudioRef.current.pause();
+      replayAudioRef.current = null;
+    }
+    overlay.current?.clear();
+    controls.current?.clearAnnotations?.();
+    setReplaying(false);
+    setPointing(false);
+  }, []);
+
+  // Finding change and tour advance. Cancel the guide first, then TTS.
+  // speak() after stopSpeaking starts a new clip — that is how the previous
+  // finding's "Follow the stack." was landing on the notes finding.
+  const interruptPlayback = useCallback(() => {
+    playbackGenRef.current += 1;
+    const ctrl = replayRef.current;
+    replayRef.current = null;
+    interruptGuidePlayback(ctrl, stopSpeaking);
     if (replayAudioRef.current) {
       replayAudioRef.current.pause();
       replayAudioRef.current = null;
@@ -307,8 +332,8 @@ export function useStudentSession(
     tourGenRef.current += 1;
     tourActiveRef.current = false;
     setTourActive(false);
-    replayRef.current?.cancel();
-  }, []);
+    interruptPlayback();
+  }, [interruptPlayback]);
 
   /** Animate the laser to a normalized point, then optionally land a marker. */
   const pointLaser = useCallback(async (x: number, y: number, landMarker?: Marker) => {
@@ -577,12 +602,15 @@ export function useStudentSession(
             // top would cancel that clip. Narrate only when this call is the
             // speech (a tool-only turn with nothing else to say).
             if (narrateGuideRef.current) {
+              interruptPlayback();
+              const playbackGen = playbackGenRef.current;
               const turnId = nextId();
               setTurns((prev) => [...prev, { id: turnId, role: "assistant", text: "" }]);
               setPhase("speaking");
               setSpeakingTurnId(turnId);
               await playFindingGuide(target, guide, {
                 narrate: async (text) => {
+                  if (playbackGen !== playbackGenRef.current) return;
                   setTurns((prev) =>
                     prev.map((turn) =>
                       turn.id === turnId
@@ -590,6 +618,7 @@ export function useStudentSession(
                         : turn
                     )
                   );
+                  if (playbackGen !== playbackGenRef.current) return;
                   await speak(text, undefined, { persona: "attending" });
                 },
               });
@@ -611,7 +640,7 @@ export function useStudentSession(
           break;
       }
     },
-    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed]
+    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -861,6 +890,15 @@ export function useStudentSession(
       const gen = ++tourGenRef.current;
       const stale = () => gen !== tourGenRef.current || !tourActiveRef.current;
       if (!tourActiveRef.current) return;
+      // Drop the previous finding's guide and any clip still in flight
+      // before this finding is the one on screen. Tour auto-advance uses
+      // this same entry, not only the finding rail.
+      interruptPlayback();
+      const playbackGen = playbackGenRef.current;
+      const speakLine = async (text: string) => {
+        if (stale() || playbackGen !== playbackGenRef.current) return;
+        await speak(text, undefined, { persona: "attending" });
+      };
       if (index >= orderedFindings.length) {
         finishTour();
         return;
@@ -900,7 +938,7 @@ export function useStudentSession(
         const guidePlay = playFindingGuide(finding, guide, {
           narrate: says.length && turnId
             ? async (text) => {
-                if (stale()) return;
+                if (stale() || playbackGen !== playbackGenRef.current) return;
                 setTurns((prev) =>
                   prev.map((t) =>
                     t.id === turnId
@@ -908,31 +946,31 @@ export function useStudentSession(
                       : t
                   )
                 );
-                await speak(text, undefined, { persona: "attending" });
+                await speakLine(text);
               }
             : undefined,
         });
         const cuePlay =
           fallbackCue && turnId
             ? (async () => {
-                if (stale()) return;
+                if (stale() || playbackGen !== playbackGenRef.current) return;
                 setTurns((prev) =>
                   prev.map((t) => (t.id === turnId ? { ...t, text: fallbackCue } : t))
                 );
-                await speak(fallbackCue, undefined, { persona: "attending" });
+                await speakLine(fallbackCue);
               })()
             : Promise.resolve();
         await Promise.all([guidePlay, cuePlay]);
-        if (stale()) return;
+        if (stale() || playbackGen !== playbackGenRef.current) return;
         if (fallbackRest && turnId) {
           setTurns((prev) =>
             prev.map((t) =>
               t.id === turnId ? { ...t, text: `${fallbackCue} ${fallbackRest}` } : t
             )
           );
-          await speak(fallbackRest, undefined, { persona: "attending" });
+          await speakLine(fallbackRest);
         }
-        if (stale()) return;
+        if (stale() || playbackGen !== playbackGenRef.current) return;
         setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
         setPhase((p) => (p === "speaking" ? "idle" : p));
         if (finding.marker) {
@@ -977,6 +1015,7 @@ export function useStudentSession(
       revealFinding,
       finishTour,
       caseData.authorId,
+      interruptPlayback,
     ]
   );
 
@@ -992,8 +1031,7 @@ export function useStudentSession(
     const index = activeIndexRef.current;
     const timer = window.setTimeout(() => {
       if (tourGenRef.current !== gen || !tourActiveRef.current) return;
-      stopSpeaking();
-      stopReplay();
+      interruptPlayback();
       setSpeakingTurnId(null);
       setPhase((current) => (current === "speaking" ? "idle" : current));
       const next = nextGuidedIndex(index, orderedFindings.length);
@@ -1006,7 +1044,7 @@ export function useStudentSession(
       void runGuidedRef.current(next);
     }, NARRATION_HOLD_MAX_MS + 2_000);
     return () => window.clearTimeout(timer);
-  }, [mode, tourActive, phase, turns, orderedFindings.length, stopReplay]);
+  }, [mode, tourActive, phase, turns, orderedFindings.length, interruptPlayback]);
 
   const resumeTour = useCallback(() => {
     if (mode !== "guided" || busy) return;
@@ -1039,8 +1077,6 @@ export function useStudentSession(
       const trimmed = text.trim();
       if (!trimmed || busy) return;
       pauseTour();
-      stopSpeaking();
-      stopReplay();
       const history = turnsRef.current;
       const findingId =
         activeIndexRef.current >= 0
@@ -1049,7 +1085,7 @@ export function useStudentSession(
       setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed, findingId }]);
       runTutor(trimmed, history);
     },
-    [busy, orderedFindings, runTutor, stopReplay, pauseTour]
+    [busy, orderedFindings, runTutor, pauseTour]
   );
 
   const sayDontKnow = useCallback(() => {
@@ -1068,15 +1104,13 @@ export function useStudentSession(
   const onMicStart = useCallback(async () => {
     if (busy) return;
     pauseTour();
-    stopSpeaking();
-    stopReplay();
     try {
       await recorder.start();
       setPhase("recording");
     } catch {
       toast({ title: "Microphone blocked", description: "Allow mic access to ask by voice.", variant: "warning" });
     }
-  }, [busy, recorder, toast, stopReplay, pauseTour]);
+  }, [busy, recorder, toast, pauseTour]);
 
   const onMicStop = useCallback(async () => {
     const rec = await recorder.stop();
@@ -1138,17 +1172,16 @@ export function useStudentSession(
     (index: number) => {
       if (busy || !ready) return;
       if (index < 0 || index >= orderedFindings.length) return;
-      stopSpeaking();
-      stopReplay();
       if (mode === "guided") {
         tourActiveRef.current = true;
         setTourActive(true);
         void runGuidedRef.current(index);
         return;
       }
+      interruptPlayback();
       revealFinding(index, { spoil: true });
     },
-    [busy, ready, orderedFindings.length, revealFinding, stopReplay, mode]
+    [busy, ready, orderedFindings.length, revealFinding, interruptPlayback, mode]
   );
   const next = useCallback(() => goTo(Math.min(activeIndexRef.current + 1, orderedFindings.length - 1)), [goTo, orderedFindings.length]);
   const prev = useCallback(() => goTo(Math.max(activeIndexRef.current - 1, 0)), [goTo]);
@@ -1162,10 +1195,9 @@ export function useStudentSession(
       goTo(nextIdx);
       return;
     }
-    stopSpeaking();
-    stopReplay();
+    interruptPlayback();
     void revealFinding(nextIdx, { spoil: !examMode });
-  }, [busy, ready, orderedFindings.length, examMode, revealFinding, stopReplay, mode, goTo]);
+  }, [busy, ready, orderedFindings.length, examMode, revealFinding, interruptPlayback, mode, goTo]);
 
   const revealCurrent = useCallback(() => {
     if (busy || !ready) return;
@@ -1177,10 +1209,9 @@ export function useStudentSession(
         prev.includes(finding.id) ? prev : [...prev, finding.id]
       );
     }
-    stopSpeaking();
-    stopReplay();
+    interruptPlayback();
     void revealFinding(cur, { spoil: true });
-  }, [busy, ready, revealFinding, stopReplay, orderedFindings]);
+  }, [busy, ready, revealFinding, interruptPlayback, orderedFindings]);
 
   const onLocateClick = useCallback(
     (x: number, y: number) => {
@@ -1249,8 +1280,7 @@ export function useStudentSession(
         if (phase === "speaking") setPhase("idle");
         return;
       }
-      stopSpeaking();
-      stopReplay();
+      interruptPlayback();
       setPhase("speaking");
       setSpeakingTurnId(turn.id);
       speak(
@@ -1262,7 +1292,7 @@ export function useStudentSession(
         { authorId: caseData.authorId }
       );
     },
-    [speakingTurnId, phase, stopReplay, caseData.authorId]
+    [speakingTurnId, phase, interruptPlayback, caseData.authorId]
   );
 
   // Seat the first finding once the viewer is ready, then start the experience.

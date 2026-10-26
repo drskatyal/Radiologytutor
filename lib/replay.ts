@@ -196,6 +196,12 @@ export interface GuideDrivers {
 export interface GuidePlayOptions {
   /** Speak one beat. Omit for a silent visual pass (the tutor's own TTS). */
   narrate?: (text: string) => Promise<void>;
+  /**
+   * Fired once from `cancel`, before waits are released. Use it to stop
+   * TTS when this guide owns the clip. A `speak()` that starts after
+   * speech was stopped restarts the previous line.
+   */
+  onInterrupt?: () => void;
   onEnd?: () => void;
   /** Delay between stepped slices. Tests pass 0. */
   sliceStepMs?: number;
@@ -403,6 +409,20 @@ async function driveAction(
 }
 
 /**
+ * Abort the guide on screen and stop its speech before another finding's
+ * guide starts. Cancel runs first. A beat that calls `speak()` after speech
+ * was stopped restarts the previous line — the demo "Follow the stack." —
+ * over the finding that is now active.
+ */
+export function interruptGuidePlayback(
+  current: ReplayController | null | undefined,
+  stopSpeech: () => void
+): void {
+  current?.cancel();
+  stopSpeech();
+}
+
+/**
  * Perform a cleaned teach script. Primes the recorded slice and window, then
  * runs each beat's viewer actions while that beat's line is spoken. Orient
  * and search step-scroll toward the money slice; lean-in, commit, and pearl
@@ -483,6 +503,29 @@ export function playTeachingGuide(
     if (ms <= 0) return work;
     return raceCap(work, ms);
   };
+
+  // Hold bounds how long a line may block the next beat. Cancel always
+  // releases the wait, including a timeScale of 0 (hold 0), which otherwise
+  // sits on the narrate promise until the clip ends.
+  const awaitSpeech = (task: Promise<void>, holdMs: number) =>
+    new Promise<void>((resolve) => {
+      if (cancelled) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        stops.delete(stop);
+        resolve();
+      };
+      const stop = () => finish();
+      stops.add(stop);
+      const timer = holdMs > 0 ? setTimeout(finish, holdMs) : 0;
+      task.then(finish, finish);
+    });
 
   const pace: GuidePace = {
     stepMs,
@@ -607,15 +650,18 @@ export function playTeachingGuide(
         const line = beat.say?.trim() ?? "";
         // A blank line must not call narrate. A rejected or hung TTS call
         // must not skip the rest of the script or leave Speaking latched.
+        // Cancel resolves this wait even when the hold is 0, so a later beat
+        // cannot start after the finding has changed. The in-flight narrate
+        // promise may still settle; onInterrupt stops its audio.
         const speechWork =
-          line && opts.narrate
+          line && opts.narrate && !cancelled
             ? opts.narrate(line).then(
                 () => undefined,
                 () => undefined
               )
             : Promise.resolve();
         const hold = line ? holdFor(line) : 0;
-        const speech = hold > 0 ? raceCap(speechWork, hold) : speechWork;
+        const speech = awaitSpeech(speechWork, hold);
         await Promise.all([motion, speech]);
         prevT = beat.t;
         prevEnded = performance.now();
@@ -657,6 +703,9 @@ export function playTeachingGuide(
     cancel() {
       if (cancelled || ended) return;
       cancelled = true;
+      // Stop speech before releasing waits. A resumed beat that calls
+      // speak() after stopSpeaking restarts the line that was just cut.
+      opts.onInterrupt?.();
       for (const stop of [...stops]) stop();
     },
     get done() {

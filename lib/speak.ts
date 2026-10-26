@@ -15,6 +15,13 @@ let pipelineGen = 0;
 let ttsAbort: AbortController | null = null;
 /** Tears down the clip in playBlob. stopSpeaking calls it instead of poking src. */
 let releaseAudio: (() => void) | null = null;
+/**
+ * True after we hand a line to speechSynthesis. Chrome often leaves
+ * `speaking` and `pending` false until a later task, so stopSpeaking
+ * cannot trust those flags — a queued "Follow the stack." would start
+ * after the finding had already changed.
+ */
+let synthArmed = false;
 
 /** Soft hint from the last TTS response — prefer Gemini Live next turn. */
 let preferRealtimeNext = false;
@@ -208,20 +215,11 @@ function playBlob(
     currentAudio = audio;
     let settled = false;
     let started = false;
+    let killed = false;
     let timer = 0;
     // Assigned below. finish only runs after that, from a timer or stopSpeaking.
     let release: () => void = () => {};
-    const finish = (result: "played" | "unplayed") => {
-      if (settled) return;
-      settled = true;
-      if (releaseAudio === release) releaseAudio = null;
-      window.clearTimeout(timer);
-      // Drop handlers before pause/revoke. Clearing src, or revoking a blob
-      // the element is still fetching, is a media error Chrome logs in red.
-      audio.onended = null;
-      audio.onerror = null;
-      audio.onplaying = null;
-      audio.onloadedmetadata = null;
+    const silence = () => {
       try {
         audio.pause();
         // Detach the blob before revoking it. Assigning src="" is a failed
@@ -231,6 +229,24 @@ function playBlob(
       } catch {
         /* element already gone */
       }
+    };
+    const finish = (result: "played" | "unplayed") => {
+      if (settled) {
+        // play() can resolve after pause and start the element again.
+        if (killed || cancelled()) silence();
+        return;
+      }
+      settled = true;
+      killed = true;
+      if (releaseAudio === release) releaseAudio = null;
+      window.clearTimeout(timer);
+      // Drop handlers before pause/revoke. Clearing src, or revoking a blob
+      // the element is still fetching, is a media error Chrome logs in red.
+      audio.onended = null;
+      audio.onerror = null;
+      audio.onplaying = null;
+      audio.onloadedmetadata = null;
+      silence();
       URL.revokeObjectURL(url);
       if (currentAudio === audio) currentAudio = null;
       resolve(result);
@@ -247,17 +263,32 @@ function playBlob(
       timer = window.setTimeout(() => finish(started ? "played" : "unplayed"), ms);
     };
     audio.onplaying = () => {
+      if (killed || cancelled()) {
+        silence();
+        if (!settled) finish(started ? "played" : "unplayed");
+        return;
+      }
       started = true;
       const durMs = Number.isFinite(audio.duration) ? audio.duration * 1000 + 500 : cap;
       arm(Math.min(cap, Math.max(800, durMs)));
     };
     audio.onloadedmetadata = () => {
+      if (killed || cancelled()) return;
       const duration = Number.isFinite(audio.duration) ? audio.duration : null;
       if (!speechAudioCanBlock(blob.size, duration)) finish("unplayed");
     };
     audio.onended = () => finish("played");
     audio.onerror = () => finish("unplayed");
-    audio.play().catch(() => finish("unplayed"));
+    // play() is async. pause() before it starts does not stick — the
+    // element begins after stopSpeaking unless we silence that resolution.
+    audio
+      .play()
+      .then(() => {
+        if (killed || cancelled()) silence();
+      })
+      .catch(() => {
+        if (!settled) finish("unplayed");
+      });
   });
 }
 
@@ -271,8 +302,18 @@ function fallbackSpeakAsync(
       resolve();
       return;
     }
-    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-      window.speechSynthesis.cancel();
+    const synth = window.speechSynthesis;
+    if (synth.speaking || synth.pending || synthArmed) {
+      synthArmed = false;
+      try {
+        synth.cancel();
+      } catch {
+        /* empty queue */
+      }
+    }
+    if (cancelled()) {
+      resolve();
+      return;
     }
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1.0;
@@ -289,9 +330,27 @@ function fallbackSpeakAsync(
     timer = window.setTimeout(done, Math.max(250, maxMs));
     utter.onend = done;
     utter.onerror = done;
+    utter.onstart = () => {
+      if (!cancelled()) return;
+      synthArmed = false;
+      try {
+        synth.cancel();
+      } catch {
+        /* already stopped */
+      }
+      done();
+    };
+    // Re-check immediately before queueing. stopSpeaking during the
+    // utterance constructor must not leave this line to start later.
+    if (cancelled()) {
+      done();
+      return;
+    }
+    synthArmed = true;
     try {
-      window.speechSynthesis.speak(utter);
+      synth.speak(utter);
     } catch {
+      synthArmed = false;
       done();
     }
   });
@@ -307,5 +366,14 @@ export function stopSpeaking(): void {
   if (typeof window === "undefined") return;
   const synth = window.speechSynthesis;
   // cancel() with an empty queue still fires an error event in Chrome.
-  if (synth && (synth.speaking || synth.pending)) synth.cancel();
+  // synthArmed covers the gap where speak() has been called but Chrome
+  // has not flipped speaking/pending yet.
+  if (synth && (synthArmed || synth.speaking || synth.pending)) {
+    synthArmed = false;
+    try {
+      synth.cancel();
+    } catch {
+      /* already idle */
+    }
+  }
 }

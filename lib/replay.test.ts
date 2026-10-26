@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {
   ATTENDING_HOLD_MAX_MS,
   attendingGapMs,
+  interruptGuidePlayback,
   planSliceWalk,
   playTeachingGuide,
   SCROLL_WALK_MAX_STEPS,
   startReplay,
 } from "./replay.ts";
+import { commitAnnotatedFinding } from "./teachingGuide.ts";
 import type { RecordedEvent, RecordedTrack, TeachingGuide } from "./types.ts";
 
 // --- A controllable fake clock + rAF so replay is deterministic in node. ----
@@ -751,4 +753,128 @@ test("playTeachingGuide does not sit out a 25s scripted gap", async () => {
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 4_500, `elapsed ${elapsed}`);
   assert.ok(elapsed >= ATTENDING_HOLD_MAX_MS - 200, `elapsed ${elapsed}`);
+});
+
+test("cancel during in-flight narration does not speak the next beat", async () => {
+  const said: string[] = [];
+  let release: () => void = () => {};
+  let interrupts = 0;
+  const guide: TeachingGuide = {
+    durationMs: 2000,
+    start: { sliceIndex: 0 },
+    beats: [
+      {
+        t: 0,
+        act: "orient",
+        say: "Follow the stack.",
+        actions: [{ type: "scroll", sliceIndex: 4 }],
+      },
+      {
+        t: 400,
+        act: "search",
+        say: "Lung windows. Notice what the lung window was hiding.",
+        actions: [],
+      },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    { applyEvent: () => {}, getSliceIndex: () => 0, settle: async () => {} },
+    {
+      timeScale: 0,
+      onInterrupt: () => {
+        interrupts += 1;
+      },
+      narrate: (text) => {
+        said.push(text);
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      },
+    }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(said, ["Follow the stack."]);
+  ctrl.cancel();
+  assert.equal(interrupts, 1);
+  assert.equal(ctrl.done, true);
+  await ctrl.finished;
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(said, ["Follow the stack."]);
+});
+
+test("handoff to a notes guide drops the previous look-cue", async () => {
+  const said: string[] = [];
+  let release: () => void = () => {};
+  const stops: string[] = [];
+  const previous: TeachingGuide = {
+    durationMs: 1600,
+    start: { sliceIndex: 0 },
+    beats: [
+      {
+        t: 0,
+        act: "orient",
+        say: "Follow the stack.",
+        actions: [{ type: "scroll", sliceIndex: 10 }],
+      },
+      {
+        t: 600,
+        act: "search",
+        say: "Follow the vessels into the mediastinum.",
+        actions: [],
+      },
+    ],
+  };
+  const drivers = {
+    applyEvent: () => {},
+    getSliceIndex: () => 0,
+    settle: async () => {},
+  };
+  const current = playTeachingGuide(previous, drivers, {
+    timeScale: 0,
+    narrate: (text) => {
+      said.push(text);
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(said, ["Follow the stack."]);
+  interruptGuidePlayback(current, () => {
+    stops.push("stop");
+  });
+  await current.finished;
+  release();
+
+  const notes = commitAnnotatedFinding(
+    {
+      label: "Notes orient prove #34",
+      description: "Marker at the centre.",
+      teachingPoints: ["Hold the level."],
+      marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      sliceIndex: 32,
+    },
+    { sliceIndex: 32 }
+  ).finding.teachingGuide;
+  assert.ok(notes);
+  const next = playTeachingGuide(notes!, drivers, {
+    timeScale: 0,
+    narrate: async (text) => {
+      said.push(text);
+    },
+  });
+  await next.finished;
+  assert.deepEqual(stops, ["stop"]);
+  assert.equal(
+    said.filter((line) => line === "Follow the stack.").length,
+    1
+  );
+  assert.equal(
+    said.some((line) => /vessels|mediastinum|lung window was hiding/i.test(line)),
+    false
+  );
+  assert.match(said.join(" "), /Notes orient prove #34, on slice 33/);
+  assert.doesNotMatch(said[said.length - 1] ?? "", /^Follow the stack/);
 });
