@@ -32,6 +32,11 @@ export interface UseRecordReplay {
   phase: RecordPhase;
   /** Whether mic capture is supported in this browser. */
   supported: boolean;
+  /**
+   * Microphone for the take in progress (or the one just finished).
+   * `unavailable` means the viewer track is recording without audio.
+   */
+  micCapture: "unknown" | "live" | "unavailable";
   /** ms elapsed in the current recording (live HUD). */
   elapsedMs: number;
   /** The most recent finalized track (null until a recording completes). */
@@ -44,8 +49,8 @@ export interface UseRecordReplay {
   onViewerEvent: (e: ViewerEvent) => void;
   /** Call from a pointer handler over the viewport (normalized 0..1). */
   onCursor: (x: number, y: number) => void;
-  /** Begin/stop recording (also driven by the Alt+X hotkey). */
-  startRecording: () => Promise<void>;
+  /** Begin recording (also driven by the Alt+X hotkey). False if the viewer is not ready. */
+  startRecording: () => Promise<boolean>;
   stopRecording: () => Promise<{
     track: RecordedTrack;
     audio: { base64: string; mimeType: string } | null;
@@ -72,6 +77,7 @@ export function useRecordReplay(opts: {
   const { controls, overlay, ready } = opts;
 
   const [phase, setPhase] = useState<RecordPhase>("idle");
+  const [micCapture, setMicCapture] = useState<"unknown" | "live" | "unavailable">("unknown");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [track, setTrack] = useState<RecordedTrack | null>(null);
   const [audio, setAudio] = useState<{ base64: string; mimeType: string } | null>(null);
@@ -87,8 +93,8 @@ export function useRecordReplay(opts: {
   const supported = TrackRecorder.supported;
 
   // --- Recording ------------------------------------------------------------
-  const startRecording = useCallback(async () => {
-    if (phaseRef.current !== "idle" || !ready || !controls.current) return;
+  const startRecording = useCallback(async (): Promise<boolean> => {
+    if (phaseRef.current !== "idle" || !ready || !controls.current) return false;
     // Cancel any in-flight replay first.
     replayRef.current?.cancel();
     replayRef.current = null;
@@ -97,7 +103,8 @@ export function useRecordReplay(opts: {
     const rec = new TrackRecorder();
     recorderRef.current = rec;
     const priming = controls.current.getStartState();
-    await rec.start(priming);
+    setMicCapture("unknown");
+    await rec.start(priming, { onMic: (state) => setMicCapture(state) });
     setPhase("recording");
     setElapsedMs(0);
     const t0 = performance.now();
@@ -105,6 +112,7 @@ export function useRecordReplay(opts: {
       () => setElapsedMs(Math.round(performance.now() - t0)),
       100
     );
+    return true;
   }, [ready, controls, overlay]);
 
   const stopRecording = useCallback(async (): Promise<{
@@ -184,6 +192,7 @@ export function useRecordReplay(opts: {
     setTrack(null);
     setAudio(null);
     setProgress(0);
+    setMicCapture("unknown");
   }, [stopReplay]);
 
   // --- Alt+X hold-to-record hotkey -----------------------------------------
@@ -234,6 +243,7 @@ export function useRecordReplay(opts: {
   return {
     phase,
     supported,
+    micCapture,
     elapsedMs,
     track,
     audio,

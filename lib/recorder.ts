@@ -41,6 +41,11 @@ function pickMime(): string {
 }
 
 const CURSOR_THROTTLE_MS = 40;
+/**
+ * How long stop() will wait for a mic that has not opened yet. A hung
+ * getUserMedia must not block Save. A device that is mid-grant still attaches.
+ */
+const MIC_STOP_WAIT_MS = 300;
 
 /**
  * A single-finding recorder. Construct, then call `start(priming)` with the
@@ -55,6 +60,11 @@ export class TrackRecorder {
   private chunks: Blob[] = [];
   private stream: MediaStream | null = null;
   private start_: RecordedTrack["start"] = { sliceIndex: 0 };
+  private micAttempt: Promise<void> = Promise.resolve();
+  /** Still accept a mic that opens while stop() is finalizing. */
+  private micHold = false;
+  private mic: "pending" | "live" | "unavailable" = "unavailable";
+  private onMic: ((state: "live" | "unavailable") => void) | null = null;
 
   /** Whether mic capture is even possible in this environment. */
   static get supported(): boolean {
@@ -75,22 +85,60 @@ export class TrackRecorder {
     pushCursor: (x, y) => this.cursor(x, y),
   };
 
+  /** Mic opened, or it was denied / missing / abandoned. */
+  get micCapture(): "pending" | "live" | "unavailable" {
+    return this.mic;
+  }
+
+  private setMic(state: "live" | "unavailable") {
+    this.mic = state;
+    this.onMic?.(state);
+  }
+
   /**
    * Begin recording. `priming` is the viewer's current slice/window so replay
-   * can prime the viewport before the first event. Mic is best-effort: if it's
-   * denied or unavailable we still record the event log (silent track).
+   * can prime the viewport before the first event. The viewer log starts
+   * immediately. The microphone is best-effort and must not gate that log: a
+   * denial, a missing device, or a getUserMedia call that never settles still
+   * leaves `isRecording` true. A device that opens later is attached.
    */
-  async start(priming: RecordedTrack["start"]): Promise<void> {
+  async start(
+    priming: RecordedTrack["start"],
+    hooks?: { onMic?: (state: "live" | "unavailable") => void }
+  ): Promise<void> {
     this.events = [];
     this.chunks = [];
+    this.rec = null;
+    this.stream = null;
     this.start_ = priming;
     this.t0 = performance.now();
     this.lastCursorT = -Infinity;
     this.recording = true;
+    this.micHold = true;
+    this.mic = "pending";
+    this.onMic = hooks?.onMic ?? null;
 
-    if (!TrackRecorder.supported) return;
+    this.micAttempt = this.openMic();
+    // Yield once so a mic that rejects on the next microtask is known before
+    // we return, without waiting out a prompt or a hung getUserMedia.
+    await Promise.race([
+      this.micAttempt,
+      new Promise<void>((resolve) => setTimeout(resolve, 0)),
+    ]);
+  }
+
+  private async openMic(): Promise<void> {
+    if (!TrackRecorder.supported) {
+      this.setMic("unavailable");
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!this.recording && !this.micHold) {
+        stream.getTracks().forEach((t) => t.stop());
+        if (this.mic === "pending") this.setMic("unavailable");
+        return;
+      }
       this.stream = stream;
       const mimeType = pickMime();
       const rec = new MediaRecorder(stream, { mimeType });
@@ -99,9 +147,12 @@ export class TrackRecorder {
       };
       rec.start();
       this.rec = rec;
+      this.setMic("live");
     } catch {
       // Mic blocked/unavailable — record a silent track (events only).
       this.rec = null;
+      this.stream = null;
+      this.setMic("unavailable");
     }
   }
 
@@ -123,6 +174,14 @@ export class TrackRecorder {
   async stop(): Promise<RecorderResult> {
     this.recording = false;
     const durationMs = Math.round(performance.now() - this.t0);
+    // A grant that arrives as the author hits stop still belongs to this take.
+    // A microphone that never answers does not hold the track hostage.
+    await Promise.race([
+      this.micAttempt,
+      new Promise<void>((resolve) => setTimeout(resolve, MIC_STOP_WAIT_MS)),
+    ]);
+    this.micHold = false;
+    if (this.mic === "pending") this.setMic("unavailable");
 
     const finishAudio = (): Promise<RecorderResult["audio"]> =>
       new Promise((resolve) => {

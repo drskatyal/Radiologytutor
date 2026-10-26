@@ -277,11 +277,12 @@ export interface RecordedTrack {
    */
   narration?: NarrationSpan[];
   /**
-   * `notes` is a click-to-annotate landing with no microphone tape. Teach
-   * rebuilds say lines from the label, description, teaching points, and the
-   * landed slice, window, and marker. The spoken slice is 1-based, matching
-   * the Studio annotate dialog and finding card. A real take leaves this unset
-   * and keeps the look-cue script.
+   * `notes` means Teach speaks the author's notes instead of the look-cue
+   * script. Click-to-annotate sets it on a synthetic landing. Speak-once sets
+   * it on the captured viewer track when the microphone produced no usable
+   * audio. Say lines come from the label, description, teaching points, and
+   * the landed slice, window, zoom, and marker. The spoken slice is 1-based,
+   * matching Studio. A real microphone take leaves this unset.
    */
   voice?: "notes";
 }
