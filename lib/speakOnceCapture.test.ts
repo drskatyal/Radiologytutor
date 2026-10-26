@@ -188,9 +188,11 @@ test("speak-once without a microphone saves a notes guide from the viewer track"
     assert.doesNotMatch(say("orient"), /Follow the stack/);
     assert.doesNotMatch(lines(guide), /Lung windows|Follow the vessels|Look here|must not play/);
 
+    assert.equal(guide?.voice, "notes");
     const scroll = guide?.beats.find((beat) => beat.act === "orient")?.actions[0];
     assert.equal(scroll?.type, "scroll");
     if (scroll?.type === "scroll") assert.equal(scroll.sliceIndex, 21);
+    assert.equal(displaySliceNumber(21), 22);
     const zoom = guide?.beats.find((beat) => beat.act === "lean-in")?.actions[0];
     assert.equal(zoom?.type, "zoom");
     if (zoom?.type === "zoom") assert.equal(zoom.zoom, 2.4);

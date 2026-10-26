@@ -303,6 +303,15 @@ interface GuidePace {
   cap: (task: Promise<void> | void, ms: number) => Promise<void>;
 }
 
+function readSliceIndex(drivers: GuideDrivers): number | undefined {
+  try {
+    return drivers.getSliceIndex?.();
+  } catch {
+    // A throwing readout must not cancel the rest of the script.
+    return undefined;
+  }
+}
+
 async function driveScroll(
   drivers: GuideDrivers,
   sliceIndex: number,
@@ -315,8 +324,15 @@ async function driveScroll(
     if (drivers.settle) await pace.guard(drivers.settle());
   }
   if (pace.cancelled()) return;
-  const current = drivers.getSliceIndex?.();
-  if (mode === "land" || current == null || current === sliceIndex) {
+  // Land does not ask the viewport where it is. A notes orient names one
+  // index; reading the stack must not throw away that scroll.
+  if (mode === "land") {
+    drivers.applyEvent({ t: 0, type: "slice", index: sliceIndex });
+    if (drivers.settle) await pace.guard(drivers.settle());
+    return;
+  }
+  const current = readSliceIndex(drivers);
+  if (current == null || current === sliceIndex) {
     drivers.applyEvent({ t: 0, type: "slice", index: sliceIndex });
     if (drivers.settle) await pace.guard(drivers.settle());
     return;
@@ -424,11 +440,14 @@ export function interruptGuidePlayback(
 
 /**
  * Perform a cleaned teach script. Primes the recorded slice and window, then
- * runs each beat's viewer actions while that beat's line is spoken. Orient
- * and search step-scroll toward the money slice; lean-in, commit, and pearl
- * land on the exact index. A long scripted gap is an attending hold (at most
- * a few seconds). A pause holds the image. Hung speech loses to the narration
- * hold so Speaking cannot latch forever.
+ * runs each beat's viewer actions while that beat's line is spoken. A look-cue
+ * orient defers its scroll to the search line so the stack walks with that
+ * sentence. A notes orient names one slice, so that scroll lands with the
+ * orient line (stored index; the sentence says index + 1). Lean-in, commit,
+ * and pearl land on the exact index. A long scripted gap is an attending hold
+ * (at most a few seconds). A pause holds the image. Hung speech loses to the
+ * narration hold so Speaking cannot latch forever. A gesture that throws does
+ * not drop the beats after it.
  */
 export function playTeachingGuide(
   guide: TeachingGuide,
@@ -598,6 +617,9 @@ export function playTeachingGuide(
       }
 
       const guideHasSearch = guide.beats.some((beat) => beat.act === "search");
+      // Notes orient says "on slice N". Deferring that scroll until search
+      // leaves the stack on the opening slice for the whole sentence.
+      const deferOrientScroll = guideHasSearch && guide.voice !== "notes";
       let pendingWalk: Extract<TeachViewerAction, { type: "scroll" }> | null = null;
       let prevT = 0;
       let prevEnded = origin;
@@ -612,39 +634,47 @@ export function playTeachingGuide(
           }
         }
         const motion = (async () => {
-          if (beat.act === "search" && pendingWalk) {
-            const pending = pendingWalk;
-            pendingWalk = null;
-            await driveScroll(
-              drivers,
-              pending.sliceIndex,
-              pending.seriesInstanceUID,
-              pace,
-              "walk"
-            );
-            if (cancelled) return;
-          }
-          for (const action of beat.actions) {
-            if (cancelled) return;
-            if (action.type === "pause") {
-              if (scale > 0 && action.ms > 0) {
-                const ms = Math.min(action.ms, ATTENDING_HOLD_MAX_MS);
-                if (ms > 20) await wait(ms);
+          try {
+            if (beat.act === "search" && pendingWalk) {
+              const pending = pendingWalk;
+              pendingWalk = null;
+              await driveScroll(
+                drivers,
+                pending.sliceIndex,
+                pending.seriesInstanceUID,
+                pace,
+                "walk"
+              );
+              if (cancelled) return;
+            }
+            for (const action of beat.actions) {
+              if (cancelled) return;
+              if (action.type === "pause") {
+                if (scale > 0 && action.ms > 0) {
+                  const ms = Math.min(action.ms, ATTENDING_HOLD_MAX_MS);
+                  if (ms > 20) await wait(ms);
+                }
+                continue;
               }
-              continue;
+              // Look-cue money scroll is authored on orient. Walk it with the
+              // search line so the stack moves while the window is set.
+              // A notes orient names the slice, so it lands here instead.
+              if (action.type === "scroll" && beat.act === "orient" && guide.voice === "notes") {
+                await driveAction(action, drivers, pace, "land");
+                continue;
+              }
+              if (action.type === "scroll" && beat.act === "orient" && deferOrientScroll) {
+                pendingWalk = action;
+                continue;
+              }
+              const scrollMode: ScrollMode =
+                beat.act === "lean-in" || beat.act === "commit" || beat.act === "pearl"
+                  ? "land"
+                  : "walk";
+              await driveAction(action, drivers, pace, scrollMode);
             }
-            // The money-slice scroll is authored on orient. Play it with the
-            // search line so the stack walks while we set the search window,
-            // instead of teleporting before that sentence.
-            if (action.type === "scroll" && beat.act === "orient" && guideHasSearch) {
-              pendingWalk = action;
-              continue;
-            }
-            const scrollMode: ScrollMode =
-              beat.act === "lean-in" || beat.act === "commit" || beat.act === "pearl"
-                ? "land"
-                : "walk";
-            await driveAction(action, drivers, pace, scrollMode);
+          } catch {
+            // A failed scroll or window must not swallow commit and pearl.
           }
         })();
         const line = beat.say?.trim() ?? "";
@@ -673,26 +703,30 @@ export function playTeachingGuide(
         // Orient is the scroll onto the money slice. A hint before it would
         // double the linear path. Commit points and pearl names — those wait
         // until the learner is actually on the slice.
-        if (opts.adaptive !== false && isNamingAct(beat.act) && money) {
-          const here = drivers.getSliceIndex?.();
-          if (
-            here != null &&
-            studentIsFar(here, money.sliceIndex, opts.farSlices)
-          ) {
-            await performBeat(
-              reseatBeat({
-                currentSlice: here,
-                targetSlice: money.sliceIndex,
-                t: beat.t,
-                landmark: opts.landmark,
-                withhold: opts.withholdTerms,
-                seriesInstanceUID: money.seriesInstanceUID,
-              })
-            );
-            if (cancelled) break;
+        try {
+          if (opts.adaptive !== false && isNamingAct(beat.act) && money) {
+            const here = readSliceIndex(drivers);
+            if (
+              here != null &&
+              studentIsFar(here, money.sliceIndex, opts.farSlices)
+            ) {
+              await performBeat(
+                reseatBeat({
+                  currentSlice: here,
+                  targetSlice: money.sliceIndex,
+                  t: beat.t,
+                  landmark: opts.landmark,
+                  withhold: opts.withholdTerms,
+                  seriesInstanceUID: money.seriesInstanceUID,
+                })
+              );
+              if (cancelled) break;
+            }
           }
+          await performBeat(beat);
+        } catch {
+          if (cancelled) break;
         }
-        await performBeat(beat);
       }
     } finally {
       close(true);

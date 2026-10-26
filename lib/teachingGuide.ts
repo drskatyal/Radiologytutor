@@ -15,7 +15,8 @@
  * `voice: "notes"` and speak the author's label, description, and teaching
  * points, with the slice, window, and zoom that were landed.
  * The spoken slice is the 1-based number Studio shows. Scroll actions stay
- * the stored 0-based image index.
+ * the stored 0-based image index, and playback lands that scroll with the
+ * orient line that names it.
  */
 
 import { displaySliceNumber } from "./findingDisplayState";
@@ -773,6 +774,9 @@ export function buildTeachingGuide(
       wc: track.start.wc,
     },
     beats,
+    // Playback reads this so the orient scroll is not deferred to search.
+    // A look-cue take leaves it unset and still walks during the search line.
+    ...(fromNotes ? { voice: "notes" as const } : {}),
   };
 }
 
