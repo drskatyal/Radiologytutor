@@ -15,6 +15,24 @@ export interface TeachingPromptInput {
   mode: TeachingMode;
   findingsContext: string;
   currentFindingId?: string;
+  /**
+   * Socratic / viva rung for this turn. 0 look-cue, 1 location, 2 mimic,
+   * 3 label + pearl. Omit only when the caller has no transcript yet.
+   */
+  hintLevel?: 0 | 1 | 2 | 3;
+}
+
+function hintLadderBlock(level: 0 | 1 | 2 | 3 | undefined): string {
+  const current =
+    level == null
+      ? "This turn's level was not supplied — treat a first partial answer as level 1 and do not say the diagnosis."
+      : `This turn is level ${level}. Obey that level even if you call show_finding.`;
+  return `HINT LADDER — tighten one step at a time. This overrides the instruction to name the finding in a later sentence. Never invent anatomy. Copy location and discrimination only from this finding's description and teaching points. Do not say the diagnosis on levels 0–2.
+- Level 0: no attempt yet. Look-cue only. Drive the viewer. Withhold the name. Ask what they see.
+- Level 1: first partial answer (right place, wrong diagnosis, or any unnamed attempt). One location or search hint from the description or a teaching point. Do not say the diagnosis. Do not use the mimic line yet.
+- Level 2: still partial after one hint. One discrimination from teaching points (mimic versus the finding). Do not say the diagnosis.
+- Level 3: they named it, said they don't know / show me / reveal / give up, or two hints were already given. Full reveal: say the label, then one pearl.
+${current}`;
 }
 
 /** Compact, ordered finding list the tutor reasons over — never spoken aloud. */
@@ -118,9 +136,10 @@ Speech contract:
     return (
       base +
       `\n\nMODE: SOCRATIC.
-- Do not call show_finding or play_guide until the student has attempted an answer or explicitly asks to be shown.
-- Ask one hinting question. After an attempt: affirm or correct in one sentence, THEN show_finding, then one pearl from teaching points.
-- Never dump the label in the opening question.`
+- You may drive the viewer so they can look. A drive is not permission to name the finding.
+- Never dump the label in the opening question.
+- ${hintLadderBlock(input.hintLevel)}
+- One short question per turn. Do not advance to the next finding in the same turn.`
     );
   }
   if (input.mode === "free") {
@@ -146,12 +165,12 @@ Speech contract:
       base +
       `\n\nMODE: VIVA (oral examiner).
 - Ask ONE focused question, then STOP. Wait for the next student turn. Do not call next_in_tour in the same turn as a new question.
-- Opening ("Begin the session." / empty): seat the first finding with show_finding ONLY if you will hide the diagnosis — prefer a location/observation question that does not name the label. If you must drive the viewer, still do not speak the diagnosis.
-- Students may CLICK the image to locate the finding. If they say they clicked it or "that's it", call show_finding and teach the pearl. If they missed, hint without naming.
+- Opening ("Begin the session." / empty) is level 0. You may seat the slice. Do not speak the diagnosis.
+- Students may CLICK the image to locate the finding. A click or "that's it" is an attempt — follow the hint ladder. Do not teach the pearl unless this turn is level 3.
 - If a finding lists a compare(...) landing, two panes may already be open. Teach both views from authored anchors only — never invent a second series or coordinates.
-- After they answer: one-sentence verdict (right / close / missed), call show_finding or point_to to the evidence, then ONE teaching pearl from that finding. Do not advance yet.
-- Call next_in_tour only when they say they are ready, ask for the next finding, or you have already taught the current one on a prior turn.
-- "I don't know" / "show me": reveal with show_finding immediately and teach the pearl. Still do not skip ahead in the same turn.
+- ${hintLadderBlock(input.hintLevel)}
+- Call next_in_tour only when they say they are ready, ask for the next finding, or you have already revealed the current one on a prior turn.
+- "I don't know" / "show me" is level 3: reveal with show_finding and teach the pearl. Still do not skip ahead in the same turn.
 - Keep it a conversation, not a slideshow.`
     );
   }

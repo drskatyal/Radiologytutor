@@ -9,7 +9,7 @@
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
-import { ensureSpokenAnswer, type SpokenFindingSource } from "./tutorSpeech";
+import { ensureSpokenAnswer, examHintLevel, type SpokenFindingSource } from "./tutorSpeech";
 import {
   HARNESS_VIEWER_TOOLS,
   harnessActionFromCall,
@@ -412,8 +412,22 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     parts: [{ text: input.question || "Begin the session." }],
   });
 
+  const spokenFindings = input.findings ?? [];
+  const hinted =
+    spokenFindings.find((finding) => finding.id === input.currentFindingId) ??
+    [...spokenFindings].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0];
+  // Same rung the empty-text fallback speaks, so a partial answer is not told
+  // to reveal just because the model may call show_finding.
+  const hintLevel = examHintLevel({
+    mode: input.mode,
+    question: input.question,
+    finding: hinted,
+    findings: spokenFindings,
+    history: input.history,
+  });
+
   const result = await generate({
-    systemInstruction: teachingSystemPrompt(input),
+    systemInstruction: teachingSystemPrompt({ ...input, hintLevel }),
     temperature: 0.4,
     tools: TEACHING_TOOLS,
     // Web-grounded teaching: answers cite current radiology references.
@@ -432,8 +446,9 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     mode: input.mode,
     question: input.question,
     actions,
-    findings: input.findings ?? [],
+    findings: spokenFindings,
     currentFindingId: input.currentFindingId,
+    history: input.history,
   });
 
   return {

@@ -124,3 +124,33 @@ test("examFallbackStem does not name the finding", () => {
   assert.doesNotMatch(stem, /caudate/i);
   assert.match(stem, /don't know/i);
 });
+
+test("socratic and viva prompts state the hint ladder for this turn", () => {
+  const socratic = teachingSystemPrompt({
+    caseTitle: "BBMRI",
+    modality: "MR",
+    mode: "socratic",
+    findingsContext: formatFindingsContext(findings),
+    currentFindingId: "f1",
+    hintLevel: 1,
+  });
+  assert.match(socratic, /level 0/i);
+  assert.match(socratic, /level 1/i);
+  assert.match(socratic, /level 2/i);
+  assert.match(socratic, /level 3/i);
+  assert.match(socratic, /this turn is level 1/i);
+  assert.match(socratic, /do not say the diagnosis/i);
+  assert.match(socratic, /mimic/i);
+  assert.match(socratic, /Never invent anatomy/);
+
+  const viva = teachingSystemPrompt({
+    caseTitle: "BBMRI",
+    modality: "MR",
+    mode: "viva",
+    findingsContext: formatFindingsContext(findings),
+    hintLevel: 2,
+  });
+  assert.match(viva, /this turn is level 2/i);
+  assert.match(viva, /show me/i);
+  assert.match(viva, /do not say the diagnosis/i);
+});

@@ -91,6 +91,8 @@ export async function POST(req: NextRequest) {
       order: finding.order,
     }));
 
+    // history excludes the current question. runTeachingPlan turns that into
+    // the socratic/viva hint rung (location, then mimic, then the label).
     const result = await runTeachingPlan({
       question,
       history,

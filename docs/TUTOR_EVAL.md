@@ -158,7 +158,9 @@ The guided prompt prefers `play_guide` and still mentions `set_window` before
 A live model that only talks fails `text_only`. A live model that moves the
 viewer and says nothing fails `spoken_beat`. A live model that zooms after
 the laser fails `human_sequence`. A blank `play_guide` is the organized
-script: drive first, then the pearl names the finding.
+script: drive first, then the pearl names the finding. Guided empty-answer
+fallback stays on that path. Socratic and viva empty replies use the hint
+ladder instead of speaking the label on the first partial answer.
 
 ## LIDC demo guide
 

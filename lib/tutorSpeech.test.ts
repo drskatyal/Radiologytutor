@@ -149,6 +149,154 @@ test("viva reveal after an attempt names the finding after the cue", () => {
   assert.match(answer, /Do not call it a skin fold/);
 });
 
+const partial = "There is a line at the right apex. I think it is consolidation.";
+
+test("socratic partial answer hints location and withholds the diagnosis", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: partial,
+    actions: [{ type: "show_finding", findingId: "f_ptx" }],
+    findings,
+    currentFindingId: "f_ptx",
+  });
+  const sentences = splitSentences(answer);
+  assert.match(sentences[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /pleural line|apex/i);
+  assert.doesNotMatch(answer, /pneumothorax/i);
+  assert.doesNotMatch(answer, /skin fold/i);
+  assert.doesNotMatch(answer, /consolidation/i);
+  assert.doesNotMatch(answer, /\bf_ptx\b/);
+  assert.doesNotMatch(answer, /\b0\.\d{2,}\b/);
+});
+
+test("second partial tightens to the mimic and still withholds the label", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: "The place is right, but I still call it consolidation.",
+    history: [{ role: "user", text: partial }],
+    actions: [{ type: "show_finding", findingId: "f_ptx" }],
+    findings,
+    currentFindingId: "f_ptx",
+  });
+  assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /skin fold/i);
+  assert.doesNotMatch(answer, /pneumothorax/i);
+  assert.doesNotMatch(answer, /pleural line/i);
+  assert.doesNotMatch(answer, /consolidation/i);
+});
+
+test("a third partial is the last hint and reveals label plus pearl", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "viva",
+    question: "I still think it is consolidation.",
+    history: [
+      { role: "user", text: partial },
+      { role: "assistant", text: "Look at this slice. Visceral pleural line at the apex." },
+      { role: "user", text: "The place is right, but I still call it consolidation." },
+      { role: "assistant", text: "Look at this slice. Do not call it a skin fold." },
+    ],
+    actions: [{ type: "point_to", findingId: "f_ptx" }],
+    findings,
+    currentFindingId: "f_ptx",
+  });
+  assert.doesNotMatch(splitSentences(answer)[0] ?? "", /pneumothorax/i);
+  assert.match(answer, /Right apical pneumothorax/);
+  assert.match(answer, /skin fold/i);
+  assert.doesNotMatch(answer, /consolidation/i);
+});
+
+test("show me and a correct name reveal immediately", () => {
+  const shown = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: "show me",
+    actions: [{ type: "show_finding", findingId: "f_ptx" }],
+    findings,
+    currentFindingId: "f_ptx",
+  });
+  assert.match(shown, /Right apical pneumothorax/);
+  assert.match(shown, /skin fold/i);
+
+  const named = ensureSpokenAnswer({
+    answer: "",
+    mode: "viva",
+    question: "It is a pneumothorax.",
+    actions: [{ type: "show_finding", findingId: "f_ptx" }],
+    findings,
+    currentFindingId: "f_ptx",
+  });
+  assert.match(named, /Right apical pneumothorax/);
+  assert.doesNotMatch(splitSentences(named)[0] ?? "", /pneumothorax/i);
+});
+
+test("location hint redacts the diagnosis and does not invent a mimic", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: "Round opacity in the left lower lobe. I call it a vessel.",
+    actions: [],
+    findings: [
+      {
+        id: "f_nod",
+        label: "Left lower lobe nodule",
+        description: "8 mm solid nodule in the left lower lobe.",
+        teachingPoints: ["If it vanishes on the next slice it is a vessel, not a nodule."],
+        order: 1,
+      },
+    ],
+    currentFindingId: "f_nod",
+  });
+  assert.match(answer, /left lower lobe/i);
+  assert.doesNotMatch(answer, /nodule/i);
+  assert.doesNotMatch(answer, /vessel/i);
+  assert.doesNotMatch(answer, /carina|pleura|pneumothorax|consolidation/i);
+});
+
+test("a reveal resets the ladder for the next partial answer", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: "Now this one looks like a scar.",
+    history: [
+      { role: "user", text: partial },
+      { role: "user", text: "Still consolidation." },
+      { role: "assistant", text: "Look at this slice. Right apical pneumothorax." },
+    ],
+    actions: [{ type: "show_finding", findingId: "f_nod" }],
+    findings,
+    currentFindingId: "f_nod",
+  });
+  assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /left lower lobe|8 mm/i);
+  assert.doesNotMatch(answer, /nodule/i);
+  assert.doesNotMatch(answer, /pneumothorax/i);
+  assert.doesNotMatch(answer, /scar/i);
+});
+
+test("empty authored hint text invents no anatomy", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "viva",
+    question: "Something is wrong at the top.",
+    actions: [{ type: "show_finding", findingId: "f_empty" }],
+    findings: [
+      {
+        id: "f_empty",
+        label: "Right apical pneumothorax",
+        description: "",
+        teachingPoints: [],
+        order: 0,
+      },
+    ],
+    currentFindingId: "f_empty",
+  });
+  assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.doesNotMatch(answer, /pneumothorax|pleura|apex|carina|skin fold|nodule/i);
+});
+
 test("missing authored text still yields a look-cue and invents nothing", () => {
   const answer = ensureSpokenAnswer({
     answer: "",
