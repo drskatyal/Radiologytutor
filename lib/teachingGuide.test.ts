@@ -4,6 +4,7 @@ import {
   authoredGuideLines,
   buildTeachingGuide,
   coerceNarrationSpans,
+  commitAnnotatedFinding,
   commitRecordedFinding,
   formatRecordedSave,
   formatTeachingGuideLine,
@@ -497,6 +498,133 @@ test("preview counts the marker commit the save will store", () => {
   const withPoint = recordedGuidePreview(bare, { point: { x: 0.4, y: 0.6 } });
   assert.equal(withPoint.acts.includes("commit"), true);
   assert.deepEqual(withPoint.acts, ["orient", "search", "commit", "pearl"]);
+});
+
+test("click-annotate save with no microphone stores spans, a guide, and a beat count", () => {
+  const description = "Pleural-based opacity along the right chest wall.";
+  const teachingPoints = ["Check the extrapleural fat.", "Window the soft tissues."];
+  const saved = commitAnnotatedFinding(
+    {
+      label: "QA test finding - right chest wall marker",
+      description,
+      teachingPoints,
+      marker: { x_pct: 0.82, y_pct: 0.4, shape: "circle" },
+      sliceIndex: 40,
+      windowWidth: 1500,
+      windowCenter: -600,
+      teachingGuide: DEMO_GUIDE,
+    },
+    { sliceIndex: 40, windowWidth: 1500, windowCenter: -600 }
+  );
+  assert.equal(saved.receipt.gap, "empty-mic");
+  assert.equal(saved.receipt.alignment, "prose");
+  assert.equal(saved.receipt.transcriptAligned, false);
+  assert.equal(saved.receipt.shortTrack, false);
+  assert.equal(saved.receipt.demoSuperseded, true);
+  assert.deepEqual(saved.receipt.acts, ["orient", "search", "commit", "pearl"]);
+  assert.equal(saved.receipt.acts.includes("lean-in"), false);
+  assert.ok(saved.finding.track?.narration?.length);
+  const narrated = (saved.finding.track?.narration ?? []).map((span) => span.text).join(" ");
+  assert.match(narrated, /chest wall/i);
+  assert.match(narrated, /extrapleural/i);
+  assert.match(narrated, /soft tissues/i);
+  assert.equal(authoredGuideLines(saved.finding.teachingGuide).length, saved.receipt.beatCount);
+  assert.equal(saved.receipt.beatCount, 4);
+  const scroll = saved.finding.teachingGuide?.beats.find((beat) => beat.act === "orient")?.actions[0];
+  assert.equal(scroll?.type, "scroll");
+  if (scroll?.type === "scroll") assert.equal(scroll.sliceIndex, 40);
+  const point = saved.finding.teachingGuide?.beats
+    .find((beat) => beat.act === "commit")
+    ?.actions.find((action) => action.type === "point");
+  assert.equal(point?.type, "point");
+  if (point?.type === "point") {
+    assert.equal(point.x, 0.82);
+    assert.equal(point.y, 0.4);
+  }
+  const said = linesOf(saved.finding.teachingGuide);
+  assert.match(said, /chest wall/i);
+  assert.match(said, /extrapleural/i);
+  assert.match(said, /soft tissues/i);
+  const poisoned = resolveTeachingGuide({ ...saved.finding, teachingGuide: DEMO_GUIDE });
+  assert.equal(linesOf(poisoned), said);
+  assert.doesNotMatch(linesOf(poisoned), /Demo pearl|must not play/);
+  const message = formatRecordedSave(saved.receipt);
+  assert.match(message.description, /4 teach beats/);
+  assert.match(message.description, /No microphone/);
+  assert.match(message.description, /Demo tour replaced/);
+});
+
+test("annotate save omits acts whose gesture was never landed", () => {
+  const bare = commitAnnotatedFinding({
+    label: "Marker only",
+    description: "A click, nothing else.",
+    teachingPoints: ["Stay on this slice."],
+    marker: { x_pct: 0.2, y_pct: 0.3, shape: "arrow" },
+  });
+  assert.deepEqual(bare.receipt.acts, ["orient", "commit", "pearl"]);
+  assert.equal(authoredGuideLines(bare.finding.teachingGuide).length, bare.receipt.beatCount);
+  assert.match(formatRecordedSave(bare.receipt).description, /3 teach beats/);
+
+  const zoomed = commitAnnotatedFinding(
+    {
+      label: "Leaned in",
+      description: "Edge of the lesion.",
+      teachingPoints: [],
+      marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      sliceIndex: 12,
+      windowWidth: 400,
+      windowCenter: 40,
+    },
+    { zoom: 2.4, pan: [0, 0], sliceIndex: 12, windowWidth: 400, windowCenter: 40 }
+  );
+  assert.deepEqual(zoomed.receipt.acts, ["orient", "search", "lean-in", "commit", "pearl"]);
+  const zoom = zoomed.finding.teachingGuide?.beats
+    .find((beat) => beat.act === "lean-in")
+    ?.actions.find((action) => action.type === "zoom");
+  assert.equal(zoom?.type, "zoom");
+  if (zoom?.type === "zoom") assert.equal(zoom.zoom, 2.4);
+
+  const fitted = commitAnnotatedFinding(
+    {
+      label: "Fit",
+      description: "No magnification.",
+      teachingPoints: [],
+      marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+    },
+    { zoom: 1, pan: [0, 0] }
+  );
+  assert.equal(fitted.receipt.acts.includes("lean-in"), false);
+
+  const stroked = commitAnnotatedFinding(
+    {
+      label: "Caliper",
+      description: "Measure the nodule.",
+      teachingPoints: ["Long axis."],
+      marker: { x_pct: 0.4, y_pct: 0.6, shape: "circle" },
+      sliceIndex: 8,
+    },
+    {
+      sliceIndex: 8,
+      measurements: [
+        {
+          id: "len-qa",
+          kind: "length",
+          handles: [
+            [0.4, 0.5],
+            [0.62, 0.58],
+          ],
+          lengthMm: 12,
+          unit: "mm",
+        },
+      ],
+    }
+  );
+  const draw = stroked.finding.teachingGuide?.beats
+    .find((beat) => beat.act === "commit")
+    ?.actions.find((action) => action.type === "annotate");
+  assert.equal(draw?.type, "annotate");
+  if (draw?.type === "annotate") assert.equal(draw.lengthMm, 12);
+  assert.match(linesOf(stroked.finding.teachingGuide), /12|millimetre/i);
 });
 
 test("withRecordedTeaching stores prose spans when the mic returned nothing", () => {

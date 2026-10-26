@@ -194,12 +194,14 @@ export interface CornerstoneControls {
   reset: () => void;
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
-  /** Current slice / VOI / SOP — primes recordings and finding landings. */
+  /** Current slice / VOI / camera / SOP — primes recordings and finding landings. */
   getStartState: () => {
     sliceIndex: number;
     ww?: number;
     wc?: number;
     sopInstanceUID?: string;
+    zoom?: number;
+    pan?: [number, number];
   };
   /**
    * Snapshot of Length / Ellipse / Probe annotations currently on the
@@ -1017,6 +1019,8 @@ export default function CornerstoneViewer({
           ww?: number;
           wc?: number;
           sopInstanceUID?: string;
+          zoom?: number;
+          pan?: [number, number];
         } => {
           const vp = viewportRef.current;
           if (!vp) return { sliceIndex: 0 };
@@ -1028,11 +1032,15 @@ export default function CornerstoneViewer({
               ? vp.getCurrentImageId()
               : ids[idx];
           const sop = sopUidFromImageId(imageId);
+          const zoom = vp.getZoom();
+          const pan = vp.getPan();
           return {
             sliceIndex: idx,
             ww: v?.ww,
             wc: v?.wc,
             sopInstanceUID: sop,
+            ...(Number.isFinite(zoom) ? { zoom } : {}),
+            ...(pan ? { pan } : {}),
           };
         };
 

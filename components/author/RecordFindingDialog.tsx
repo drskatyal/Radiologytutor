@@ -38,7 +38,7 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
-import type { RecordedSaveReceipt } from "@/lib/teachingGuide";
+import { commitAnnotatedFinding, type RecordedSaveReceipt } from "@/lib/teachingGuide";
 import { LandmarkField } from "./LandmarkField";
 import { RecordedTakeNote } from "./RecordedTakeNote";
 import {
@@ -257,6 +257,20 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
       if (active && active.seriesInstanceUID !== BUNDLED_CASE_SERIES[0]?.seriesInstanceUID) {
         base.seriesInstanceUID = active.seriesInstanceUID;
         base.studyInstanceUID = active.studyInstanceUID;
+      }
+
+      if (!hasTrack) {
+        const landed = commitAnnotatedFinding(base, {
+          sliceIndex: base.sliceIndex ?? start?.sliceIndex,
+          windowWidth: base.windowWidth ?? start?.ww,
+          windowCenter: base.windowCenter ?? start?.wc,
+          zoom: start?.zoom,
+          pan: start?.pan,
+          seriesInstanceUID: base.seriesInstanceUID,
+          measurements,
+        });
+        base = landed.finding;
+        receipt = landed.receipt;
       }
 
       await onCreate(base, receipt);
