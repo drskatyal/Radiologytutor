@@ -65,6 +65,7 @@ import {
   secondaryViewerState,
   wantsCompare,
 } from "@/lib/findingAnchors";
+import { compareSeatKey, planCompareSeat } from "@/lib/compareSeat";
 
 export type SessionMode = "guided" | "socratic" | "free" | "reporting" | "viva";
 
@@ -222,6 +223,8 @@ export function useStudentSession(
   );
   const activeIndexRef = useRef(-1);
   activeIndexRef.current = activeIndex;
+  const orderedFindingsRef = useRef(orderedFindings);
+  orderedFindingsRef.current = orderedFindings;
   const findingCountRef = useRef(orderedFindings.length);
   findingCountRef.current = orderedFindings.length;
   /** Selection that owns the header badge. A late reveal must not rewind it. */
@@ -243,16 +246,21 @@ export function useStudentSession(
     setRevealedIds((prev) => mergeExamReveal(prev, id, epoch, revealEpochRef.current));
   }, []);
 
+  /**
+   * Bumps on every compare-pane ready, including a remount that leaves
+   * `secondaryReady` true. The boolean edge alone drops the secondary landing.
+   */
+  const secondaryViewportGenRef = useRef(0);
+  const [secondaryViewportGen, setSecondaryViewportGen] = useState(0);
+  /** `${viewportGeneration}:${findingId}` of the last successful apply. */
+  const seatedCompareKeyRef = useRef("");
+
   const onSecondaryReady = useCallback((c: CornerstoneControls) => {
     secondaryControls.current = c;
+    secondaryViewportGenRef.current += 1;
+    setSecondaryViewportGen(secondaryViewportGenRef.current);
     setSecondaryReady(true);
   }, []);
-
-  /** Finding waiting for the compare pane's first ready callback. */
-  const pendingSecondaryRef = useRef<{
-    finding: (typeof orderedFindings)[number];
-    spoil: boolean;
-  } | null>(null);
 
   const seatSecondary = useCallback(
     async (finding: (typeof orderedFindings)[number], spoil: boolean) => {
@@ -260,15 +268,11 @@ export function useStudentSession(
       const sec = secondaryAnchor(finding);
       const view = secondaryViewerState(finding);
       if (!sec || !view) {
-        pendingSecondaryRef.current = null;
         setSecondaryMarker(null);
         setSecondaryMarkerVisible(false);
         return;
       }
       if (gen !== compareGenRef.current) return;
-      setSecondarySeriesIndex(
-        comparePaneSeriesIndex(series, finding, controls.current?.activeSeriesUID)
-      );
       // Compare/C opens the pane. A finding change must not pop it open, and
       // must not move the primary viewport (close-compare restore stays intact).
       if (!compareOpenRef.current) {
@@ -276,15 +280,27 @@ export function useStudentSession(
         setSecondaryMarkerVisible(false);
         return;
       }
+      const controlsReady = secondaryControls.current != null;
+      const plan = planCompareSeat({
+        compareOpen: true,
+        openGeneration: gen,
+        liveGeneration: compareGenRef.current,
+        viewportGeneration: controlsReady ? secondaryViewportGenRef.current : 0,
+        seatedKey: seatedCompareKeyRef.current,
+        findingId: finding.id,
+        view,
+      });
+      if (plan.action === "skip") return;
+      setSecondarySeriesIndex(
+        comparePaneSeriesIndex(series, finding, controls.current?.activeSeriesUID)
+      );
       const c = secondaryControls.current;
-      if (!c) {
-        // Pane not mounted yet — reseat when secondaryReady flips true.
-        pendingSecondaryRef.current = { finding, spoil };
+      if (plan.action === "defer" || !c) {
         setSecondaryMarker(sec.marker ?? null);
         setSecondaryMarkerVisible(spoil);
         return;
       }
-      pendingSecondaryRef.current = null;
+      const seatGen = secondaryViewportGenRef.current;
       try {
         if (
           sec.seriesInstanceUID &&
@@ -295,35 +311,36 @@ export function useStudentSession(
           await c.settle();
         }
         if (gen !== compareGenRef.current) return;
-        // Slice, window, and camera. The primary viewport is not touched, so
-        // closing compare can still restore the teach lung window (#45/#46).
-        await c.showState(view, 500);
+        if (secondaryViewportGenRef.current !== seatGen) return;
+        // Slice, window, and camera on the compare pane only. The primary
+        // viewport is not touched, so closing compare can still restore the
+        // teach lung window (#45/#46).
+        await c.showState(plan.view, 500);
       } catch {
         return;
       }
       if (gen !== compareGenRef.current) return;
+      if (secondaryViewportGenRef.current !== seatGen) return;
+      const current = orderedFindingsRef.current[activeIndexRef.current];
+      if (current && current.id !== finding.id) return;
+      seatedCompareKeyRef.current = compareSeatKey(seatGen, finding.id);
       setSecondaryMarker(sec.marker ?? null);
       setSecondaryMarkerVisible(spoil);
     },
     [series]
   );
 
-  useEffect(() => {
-    if (!secondaryReady || !pendingSecondaryRef.current) return;
-    const pending = pendingSecondaryRef.current;
-    pendingSecondaryRef.current = null;
-    void seatSecondary(pending.finding, pending.spoil);
-  }, [secondaryReady, seatSecondary]);
-
-  // Compare/C and finding changes. A secondary anchor drives the pane.
-  // A finding without one leaves the manual second series (or the only series) alone.
+  // Compare/C, finding changes, and every compare-pane ready. A secondary
+  // anchor drives the pane. A finding without one leaves the manual second
+  // series (or the only series) alone. Ready already being true is not a
+  // reason to skip — a remount puts the stack back on the mid-slice default.
   useEffect(() => {
     if (!compareOpen) return;
     const finding = activeIndex >= 0 ? orderedFindings[activeIndex] : null;
     if (!finding || !wantsCompare(finding)) return;
     const spoil = !examMode || revealedIdsRef.current.includes(finding.id);
     void seatSecondary(finding, spoil);
-  }, [compareOpen, activeIndex, orderedFindings, examMode, seatSecondary]);
+  }, [compareOpen, activeIndex, orderedFindings, examMode, seatSecondary, secondaryViewportGen]);
 
   useEffect(() => {
     if (!compareOpen || !examMode) return;
@@ -1407,7 +1424,7 @@ export function useStudentSession(
   const toggleCompare = useCallback(() => {
     if (compareOpenRef.current) {
       compareGenRef.current += 1;
-      pendingSecondaryRef.current = null;
+      seatedCompareKeyRef.current = "";
       setSecondaryReady(false);
       setSecondaryMarkerVisible(false);
       setCompareOpen(false);
