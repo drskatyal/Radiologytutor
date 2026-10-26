@@ -9,7 +9,7 @@
 // keeps the viewer track, and Save builds narration spans plus a notes-voiced
 // teaching guide from that track and the typed label, description, and points.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Layers, Mic, Sparkles, Trash2 } from "lucide-react";
 import {
   Badge,
@@ -47,6 +47,21 @@ import type { MutableRefObject } from "react";
 
 type RR = ReturnType<typeof useRecordReplay>;
 
+/**
+ * The speak-once disc follows the recorder. `settling` only covers the gap
+ * while a stop is flushing; it must not keep the red stop square up after
+ * the take has ended (the transport bar and Alt+X stop the recorder directly).
+ */
+export function speakOnceMicState(
+  recording: boolean,
+  structuring: boolean,
+  settling: boolean
+): MicState {
+  if (structuring || settling) return "processing";
+  if (recording) return "recording";
+  return "idle";
+}
+
 export function ContinuousCapture({
   caseId,
   rr,
@@ -63,7 +78,7 @@ export function ContinuousCapture({
   onCaseUpdated: (c: Awaited<ReturnType<typeof addFinding>>) => void;
 }) {
   const { toast } = useToast();
-  const [micState, setMicState] = useState<MicState>("idle");
+  const [settling, setSettling] = useState(false);
   const [structuring, setStructuring] = useState(false);
   const [saving, setSaving] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -76,27 +91,30 @@ export function ContinuousCapture({
 
   const recording = rr.phase === "recording";
   const notesMode = Boolean(lastTake && !lastTake.audio && proposals.length > 0 && !recording);
+  // True only after Speak once itself started the take. The transport bar and
+  // the Alt+X hotkey call rr.stopRecording() without going through stop(), so
+  // the button state is derived from the recorder and this flag adopts the take.
+  const speakSession = useRef(false);
 
   async function start() {
     setNotice("");
     setProposals([]);
     setTranscript("");
     setLastTake(null);
+    speakSession.current = true;
     try {
       const started = await rr.startRecording();
       if (!started) {
-        setMicState("idle");
+        speakSession.current = false;
         setNotice("The viewer isn't ready yet — wait for the study, then start again.");
-        return;
       }
-      setMicState("recording");
     } catch {
+      speakSession.current = false;
       toast({
         variant: "warning",
         title: "Couldn't start capture",
         description: "The viewer track didn't start. Try again once the study is open.",
       });
-      setMicState("idle");
     }
   }
 
@@ -117,11 +135,13 @@ export function ContinuousCapture({
     setNotice("");
   }
 
-  async function stop() {
-    setMicState("processing");
-    const captured = await rr.stopRecording();
+  async function finishStoppedTake(
+    captured: {
+      track: RecordedTrack;
+      audio: { base64: string; mimeType: string } | null;
+    } | null
+  ) {
     if (!captured?.track) {
-      setMicState("idle");
       setNotice("Nothing captured — scroll the study, then stop.");
       return;
     }
@@ -129,7 +149,6 @@ export function ContinuousCapture({
     setLastTake({ track, audio });
     if (!audio) {
       openNotesDraft(track);
-      setMicState("idle");
       return;
     }
     setStructuring(true);
@@ -144,7 +163,6 @@ export function ContinuousCapture({
         setNotice(
           "AI structuring is off (no Gemini key). You can still save a single walk-through from the panel below."
         );
-        setMicState("idle");
         return;
       }
       setTranscript(result.transcript);
@@ -166,7 +184,31 @@ export function ContinuousCapture({
       }
     } finally {
       setStructuring(false);
-      setMicState("idle");
+    }
+  }
+
+  const finishRef = useRef(finishStoppedTake);
+  finishRef.current = finishStoppedTake;
+
+  useEffect(() => {
+    if (recording || !speakSession.current) return;
+    speakSession.current = false;
+    const captured = rr.track ? { track: rr.track, audio: rr.audio } : null;
+    void finishRef.current(captured);
+  }, [recording, rr.track, rr.audio]);
+
+  async function stop() {
+    setSettling(true);
+    try {
+      const captured = await rr.stopRecording();
+      if (!captured) {
+        speakSession.current = false;
+        setNotice("Nothing captured — scroll the study, then stop.");
+      }
+    } catch {
+      speakSession.current = false;
+    } finally {
+      setSettling(false);
     }
   }
 
@@ -392,7 +434,7 @@ export function ContinuousCapture({
 
       <div className="rounded-xl border border-subtle bg-surface/80 px-3 py-3">
         <MicButton
-          state={structuring ? "processing" : micState}
+          state={speakOnceMicState(recording, structuring, settling)}
           onStart={start}
           onStop={stop}
           disabled={structuring || saving || rr.phase === "replaying"}
