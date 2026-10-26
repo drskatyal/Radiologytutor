@@ -131,6 +131,7 @@ export default function StudentSession({
   const heldRef = useRef(false);
   const hotkeyRef = useRef({
     busy: s.busy,
+    navLocked: s.findingNavLocked,
     recording: s.micState === "recording",
     start: s.onMicStart,
     stop: s.onMicStop,
@@ -142,6 +143,7 @@ export default function StudentSession({
   });
   hotkeyRef.current = {
     busy: s.busy,
+    navLocked: s.findingNavLocked,
     recording: s.micState === "recording",
     start: s.onMicStart,
     stop: s.onMicStop,
@@ -184,10 +186,10 @@ export default function StudentSession({
         hotkeyRef.current.compare();
       } else if (k === "n") {
         e.preventDefault();
-        if (!hotkeyRef.current.busy) hotkeyRef.current.next();
+        if (!hotkeyRef.current.navLocked) hotkeyRef.current.next();
       } else if (k === "p") {
         e.preventDefault();
-        if (!hotkeyRef.current.busy) hotkeyRef.current.prev();
+        if (!hotkeyRef.current.navLocked) hotkeyRef.current.prev();
       } else if (k === "r" && hotkeyRef.current.examMode) {
         e.preventDefault();
         if (!hotkeyRef.current.busy) hotkeyRef.current.reveal();
@@ -217,20 +219,26 @@ export default function StudentSession({
     ? s.revealedIds.includes(activeFinding.id)
     : false;
   const lastAssistant = useMemo(() => {
-    for (let i = s.turns.length - 1; i >= 0; i--) {
-      if (s.turns[i].role === "assistant" && !s.turns[i].error) return s.turns[i];
+    const floor = s.captionFloor ?? 0;
+    for (let i = s.turns.length - 1; i >= floor; i--) {
+      const turn = s.turns[i];
+      if (turn?.role === "assistant" && !turn.error) return turn;
     }
     return null;
-  }, [s.turns]);
+  }, [s.turns, s.captionFloor]);
   const waitingForTeach =
     intent === "teach" &&
     s.ready &&
     !s.locateHint &&
     !lastAssistant?.text &&
     (s.phase === "thinking" || s.phase === "idle");
+  // The hit layer is mounted only once this study's images are on screen.
+  // Invite the click then — not while a fallback canvas would eat it.
+  const locateOnImage = s.locateMode && imagingResolved;
   const captionText =
     s.locateHint ||
     lastAssistant?.text ||
+    (locateOnImage ? "Click the image where the finding is." : "") ||
     (waitingForTeach ? "Attending is seating the first finding…" : "");
   const stepLabel =
     hasFindings && s.activeIndex >= 0
@@ -244,7 +252,7 @@ export default function StudentSession({
 
   const dockHint =
     intent === "exam"
-      ? s.locateMode
+      ? locateOnImage
         ? "Click the image to locate · Space to talk"
         : "Exam mode · Space to talk · Ask or answer"
       : s.tourActive
@@ -405,7 +413,7 @@ export default function StudentSession({
           }
           replaying={s.replaying || s.pointing}
           ready={s.ready}
-          locateMode={s.locateMode && imagingResolved}
+          locateMode={locateOnImage}
           onLocateClick={s.onLocateClick}
           secondary={
             s.compareOpen
@@ -510,7 +518,7 @@ export default function StudentSession({
             caseModality={caseData.modality}
             activeIndex={s.activeIndex}
             replaying={s.replaying || s.pointing}
-            busy={s.busy}
+            busy={s.findingNavLocked}
             ready={s.ready}
             onSelect={s.goTo}
             examMode={s.examMode}
@@ -579,7 +587,7 @@ export default function StudentSession({
                   type="button"
                   aria-label={`Finding ${i + 1}: ${f.label || "untitled"}`}
                   aria-current={i === s.activeIndex ? "true" : undefined}
-                  disabled={s.busy}
+                  disabled={s.findingNavLocked}
                   onClick={() => s.goTo(i)}
                   className="flex h-8 min-w-8 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
                 >

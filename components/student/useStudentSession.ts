@@ -44,7 +44,15 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, Finding, FindingMeasurement, Marker, TeachingGuide } from "@/lib/types";
 import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
-import { clickHitsFinding } from "@/lib/clickFinding";
+import {
+  decideLocateClick,
+  examEntryPlan,
+  examSpoilOnSeat,
+  findingNavigationLocked,
+  locateModeArmed,
+  phaseAfterInterrupt,
+  withholdUnrevealedExamActions,
+} from "@/lib/examLocate";
 import { nextGuidedIndex } from "@/lib/tourAdapt";
 import {
   secondaryAnchor,
@@ -179,6 +187,12 @@ export function useStudentSession(
   const locateMissesRef = useRef(0);
   const [locatedIds, setLocatedIds] = useState<string[]>([]);
   const [helpedIds, setHelpedIds] = useState<string[]>([]);
+  /** Assistant turns before this index are Teach speech and stay out of the examiner caption. */
+  const [captionFloor, setCaptionFloor] = useState(0);
+  /** Bumped by each viewer seat so an in-flight Teach reveal cannot land its marker later. */
+  const seatGenRef = useRef(0);
+  /** Exam entry before the viewer is ready still has to seat once `ready` flips. */
+  const pendingExamSeatRef = useRef(false);
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
@@ -190,11 +204,25 @@ export function useStudentSession(
   );
   const activeIndexRef = useRef(-1);
   activeIndexRef.current = activeIndex;
+  const revealedIdsRef = useRef(revealedIds);
+  revealedIdsRef.current = revealedIds;
+  const locatedIdsRef = useRef(locatedIds);
+  locatedIdsRef.current = locatedIds;
+  const helpedIdsRef = useRef(helpedIds);
+  helpedIdsRef.current = helpedIds;
+  const examModeRef = useRef(examMode);
+  examModeRef.current = examMode;
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
   const busy = phase === "transcribing" || phase === "thinking";
+  const findingNavLocked = findingNavigationLocked({ examMode, phase, ready });
   const startedRef = useRef(false);
 
   const markRevealed = useCallback((id: string) => {
+    if (!revealedIdsRef.current.includes(id)) {
+      revealedIdsRef.current = [...revealedIdsRef.current, id];
+    }
     setRevealedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
   }, []);
 
@@ -326,6 +354,10 @@ export function useStudentSession(
     controls.current?.clearAnnotations?.();
     setReplaying(false);
     setPointing(false);
+    setSpeakingTurnId(null);
+    // A guide that bails on this generation never reaches its own setPhase(idle).
+    // Leave recording alone — the student may still be holding the mic.
+    setPhase((current) => phaseAfterInterrupt(current));
   }, []);
 
   const pauseTour = useCallback(() => {
@@ -337,6 +369,7 @@ export function useStudentSession(
 
   /** Animate the laser to a normalized point, then optionally land a marker. */
   const pointLaser = useCallback(async (x: number, y: number, landMarker?: Marker) => {
+    const gen = seatGenRef.current;
     if (!overlay.current?.animateTo) return;
     const nx = Number.isFinite(x) ? x : 0.5;
     const ny = Number.isFinite(y) ? y : 0.5;
@@ -344,6 +377,8 @@ export function useStudentSession(
     setMarkerVisible(false);
     try {
       await overlay.current.animateTo(nx, ny, { durationMs: 900 });
+      // A newer seat (Exam entry, another finding) owns the overlay now.
+      if (gen !== seatGenRef.current) return;
       if (landMarker) {
         setMarker(landMarker);
         setMarkerVisible(true);
@@ -362,6 +397,7 @@ export function useStudentSession(
     async (index: number, opts?: { spoil?: boolean }) => {
       const finding = orderedFindings[index];
       if (!finding || !controls.current) return;
+      const gen = ++seatGenRef.current;
       const spoil = opts?.spoil !== false;
       stopReplay();
       setMarkerVisible(false);
@@ -405,19 +441,25 @@ export function useStudentSession(
       }
 
       await controls.current.showState(view, 750);
+      if (gen !== seatGenRef.current) return;
       setActiveIndex(index);
       const m = finding.marker ?? null;
       const meas = finding.measurements ?? [];
       setMeasurements(meas);
       if (spoil && m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
+        if (!revealedIdsRef.current.includes(finding.id)) {
+          revealedIdsRef.current = [...revealedIdsRef.current, finding.id];
+        }
         markRevealed(finding.id);
         await pointLaser(m.x_pct, m.y_pct, m);
+        if (gen !== seatGenRef.current) return;
         setMeasurementsVisible(meas.length > 0);
       } else {
         setMarker(m);
         setMarkerVisible(false);
         setMeasurementsVisible(spoil && meas.length > 0);
       }
+      if (gen !== seatGenRef.current) return;
       await seatSecondary(finding, spoil);
     },
     [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary]
@@ -477,15 +519,29 @@ export function useStudentSession(
       switch (action.type) {
         case "show_finding": {
           const idx = orderedFindings.findIndex((f) => f.id === action.findingId);
-          if (idx >= 0) await revealFinding(idx);
+          if (idx >= 0) {
+            const revealed = revealedIdsRef.current.includes(action.findingId);
+            await revealFinding(idx, {
+              spoil: examSpoilOnSeat(examModeRef.current, revealed),
+            });
+          }
           break;
         }
         case "next_in_tour":
-          await revealFinding(Math.min(cur + 1, orderedFindings.length - 1));
+        case "prev_in_tour": {
+          const idx =
+            action.type === "next_in_tour"
+              ? Math.min(cur + 1, orderedFindings.length - 1)
+              : Math.max(cur - 1, 0);
+          const id = orderedFindings[idx]?.id;
+          await revealFinding(idx, {
+            spoil: examSpoilOnSeat(
+              examModeRef.current,
+              Boolean(id && revealedIdsRef.current.includes(id))
+            ),
+          });
           break;
-        case "prev_in_tour":
-          await revealFinding(Math.max(cur - 1, 0));
-          break;
+        }
         case "set_window":
           if (action.windowWidth != null && action.windowCenter != null) {
             // Adaptive: scrolls when Δ is small, snaps bone↔lung when large.
@@ -493,6 +549,12 @@ export function useStudentSession(
           }
           break;
         case "point_to": {
+          if (examModeRef.current) {
+            const targetId =
+              action.findingId ?? orderedFindings[activeIndexRef.current]?.id;
+            // The laser is the answer. Leave it off until this finding is revealed.
+            if (!targetId || !revealedIdsRef.current.includes(targetId)) break;
+          }
           let x = action.x_pct;
           let y = action.y_pct;
           let land: Marker | undefined;
@@ -538,6 +600,10 @@ export function useStudentSession(
           controls.current?.applyEvent({ t: 0, type: "invert", value: action.value });
           break;
         case "draw_annotation": {
+          if (examModeRef.current) {
+            const id = action.findingId ?? orderedFindings[activeIndexRef.current]?.id;
+            if (!id || !revealedIdsRef.current.includes(id)) break;
+          }
           const target = action.findingId
             ? orderedFindings.find((item) => item.id === action.findingId)
             : orderedFindings[activeIndexRef.current];
@@ -594,6 +660,13 @@ export function useStudentSession(
             orderedFindings[activeIndexRef.current];
           if (!target) break;
           const idx = orderedFindings.indexOf(target);
+          const seatAtStart = seatGenRef.current;
+          // A teach guide draws the marker. In an unrevealed exam, seat the
+          // slice only — the candidate still has to click.
+          if (examModeRef.current && !revealedIdsRef.current.includes(target.id)) {
+            if (idx >= 0) await revealFinding(idx, { spoil: false });
+            break;
+          }
           if (idx >= 0) setActiveIndex(idx);
           markRevealed(target.id);
           const guide = resolveTeachingGuide(target);
@@ -628,7 +701,17 @@ export function useStudentSession(
               await playFindingGuide(target, guide);
             }
           } else if (idx >= 0) {
-            await revealFinding(idx);
+            await revealFinding(idx, {
+              spoil: examSpoilOnSeat(
+                examModeRef.current,
+                revealedIdsRef.current.includes(target.id)
+              ),
+            });
+          }
+          if (seatAtStart !== seatGenRef.current) break;
+          if (examModeRef.current && !revealedIdsRef.current.includes(target.id)) {
+            setMarkerVisible(false);
+            break;
           }
           if (target.marker) {
             setMarker(target.marker);
@@ -762,6 +845,29 @@ export function useStudentSession(
             })
           : 3;
 
+        const prepareExamActions = (raw: ViewerAction[]): ViewerAction[] => {
+          if (!examMode) return raw;
+          // Level 3 is the reveal rung. Mark it before the guide or laser runs
+          // so those actions are allowed to show the answer they just earned.
+          if (
+            examLevel >= 3 &&
+            currentFindingId &&
+            !revealedIdsRef.current.includes(currentFindingId)
+          ) {
+            revealedIdsRef.current = [...revealedIdsRef.current, currentFindingId];
+            markRevealed(currentFindingId);
+          }
+          return withholdUnrevealedExamActions(
+            seatExamReveal(raw, examLevel, currentFindingId),
+            {
+              examMode: true,
+              hintLevel: examLevel,
+              revealedIds: revealedIdsRef.current,
+              currentFindingId,
+            }
+          );
+        };
+
         if (!res.ok) {
           // 503 means GEMINI_API_KEY isn't set — still speak an authored line
           // (Teach) or the exam stem (viva) instead of a silent error toast.
@@ -769,9 +875,7 @@ export function useStudentSession(
           if (res.status === 503) {
             setAiAvailable(false);
             setSearching(false);
-            const offlineActions = examMode
-              ? seatExamReveal([], examLevel, currentFindingId)
-              : [];
+            const offlineActions = prepareExamActions([]);
             const speech = tutorSpeechPlan({
               answer: "",
               actions: offlineActions,
@@ -800,16 +904,9 @@ export function useStudentSession(
         }
         setAiAvailable(true);
 
-        const opening = question === "Begin the session.";
-        let actions = normalizeTutorActions(
-          data as { action?: ViewerAction; actions?: ViewerAction[] }
+        let actions = prepareExamActions(
+          normalizeTutorActions(data as { action?: ViewerAction; actions?: ViewerAction[] })
         );
-        // Opening a viva: we already seated the slice. Don't spoil the
-        // marker just because the model called show_finding with the stem.
-        if (examMode && opening) {
-          actions = actions.filter((a) => a.type !== "show_finding");
-        }
-        if (examMode) actions = seatExamReveal(actions, examLevel, currentFindingId);
 
         const sources: ChatSource[] = Array.isArray(data.sources)
           ? (data.sources as ChatSource[])
@@ -960,8 +1057,16 @@ export function useStudentSession(
                 await speakLine(fallbackCue);
               })()
             : Promise.resolve();
+        const dropIfStale = () => {
+          if (!stale() && playbackGen === playbackGenRef.current) return false;
+          // Interrupt already stopped the clip. Don't leave Speaking latched,
+          // and don't clobber a newer examiner turn that has moved to thinking.
+          setSpeakingTurnId((cur) => (turnId && cur === turnId ? null : cur));
+          setPhase((current) => (current === "speaking" ? "idle" : current));
+          return true;
+        };
         await Promise.all([guidePlay, cuePlay]);
-        if (stale() || playbackGen !== playbackGenRef.current) return;
+        if (dropIfStale()) return;
         if (fallbackRest && turnId) {
           setTurns((prev) =>
             prev.map((t) =>
@@ -970,9 +1075,15 @@ export function useStudentSession(
           );
           await speakLine(fallbackRest);
         }
-        if (stale() || playbackGen !== playbackGenRef.current) return;
+        if (dropIfStale()) return;
         setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
         setPhase((p) => (p === "speaking" ? "idle" : p));
+        // Exam entry clears teach spoils. Don't land the guide's marker after that.
+        if (examModeRef.current && !revealedIdsRef.current.includes(finding.id)) {
+          setMarkerVisible(false);
+          setMeasurementsVisible(false);
+          return;
+        }
         if (finding.marker) {
           setMarker(finding.marker);
           setMarkerVisible(true);
@@ -1170,7 +1281,7 @@ export function useStudentSession(
   // --- Tour controls (step rail) -------------------------------------------
   const goTo = useCallback(
     (index: number) => {
-      if (busy || !ready) return;
+      if (findingNavigationLocked({ examMode, phase, ready })) return;
       if (index < 0 || index >= orderedFindings.length) return;
       if (mode === "guided") {
         tourActiveRef.current = true;
@@ -1178,16 +1289,22 @@ export function useStudentSession(
         void runGuidedRef.current(index);
         return;
       }
+      abortRef.current?.abort();
       interruptPlayback();
-      revealFinding(index, { spoil: true });
+      const finding = orderedFindings[index];
+      const revealed = Boolean(
+        finding && revealedIdsRef.current.includes(finding.id)
+      );
+      if (examMode) setCaptionFloor(turnsRef.current.length);
+      void revealFinding(index, { spoil: examSpoilOnSeat(examMode, revealed) });
     },
-    [busy, ready, orderedFindings.length, revealFinding, interruptPlayback, mode]
+    [examMode, phase, ready, orderedFindings, revealFinding, interruptPlayback, mode]
   );
   const next = useCallback(() => goTo(Math.min(activeIndexRef.current + 1, orderedFindings.length - 1)), [goTo, orderedFindings.length]);
   const prev = useCallback(() => goTo(Math.max(activeIndexRef.current - 1, 0)), [goTo]);
 
   const skip = useCallback(() => {
-    if (busy || !ready) return;
+    if (findingNavigationLocked({ examMode, phase, ready })) return;
     const cur = activeIndexRef.current;
     const nextIdx = Math.min(cur + 1, orderedFindings.length - 1);
     if (nextIdx === cur && cur >= 0) return;
@@ -1195,9 +1312,13 @@ export function useStudentSession(
       goTo(nextIdx);
       return;
     }
+    abortRef.current?.abort();
     interruptPlayback();
-    void revealFinding(nextIdx, { spoil: !examMode });
-  }, [busy, ready, orderedFindings.length, examMode, revealFinding, interruptPlayback, mode, goTo]);
+    const finding = orderedFindings[nextIdx];
+    const revealed = Boolean(finding && revealedIdsRef.current.includes(finding.id));
+    if (examMode) setCaptionFloor(turnsRef.current.length);
+    void revealFinding(nextIdx, { spoil: examSpoilOnSeat(examMode, revealed) });
+  }, [examMode, phase, ready, orderedFindings, revealFinding, interruptPlayback, mode, goTo]);
 
   const revealCurrent = useCallback(() => {
     if (busy || !ready) return;
@@ -1215,30 +1336,46 @@ export function useStudentSession(
 
   const onLocateClick = useCallback(
     (x: number, y: number) => {
-      if (busy) return;
       const cur = activeIndexRef.current;
       const finding = cur >= 0 ? orderedFindings[cur] : null;
-      if (!finding || !examMode) return;
-      if (revealedIds.includes(finding.id)) return;
-      const hit = clickHitsFinding(finding.marker, x, y);
-      if (hit) {
-        locateMissesRef.current = 0;
-        setLocateHint("");
-        setLocatedIds((prev) =>
-          prev.includes(finding.id) ? prev : [...prev, finding.id]
-        );
-        void revealFinding(cur, { spoil: true });
-        sendText("I clicked the finding on the image.");
+      if (!finding) return;
+      const decision = decideLocateClick({
+        examMode,
+        revealed: revealedIdsRef.current.includes(finding.id),
+        marker: finding.marker,
+        x,
+        y,
+        misses: locateMissesRef.current,
+        phase: phaseRef.current,
+      });
+      if (decision.type === "ignore") return;
+      if (decision.type === "miss") {
+        locateMissesRef.current = decision.misses;
+        setLocateHint(decision.hint);
         return;
       }
-      locateMissesRef.current += 1;
-      setLocateHint(
-        locateMissesRef.current >= 2
-          ? "Still not it — say you don't know, or try one more click."
-          : "Not quite — click the lesion, or hold the mic to describe it."
-      );
+      locateMissesRef.current = 0;
+      setLocateHint("");
+      if (!locatedIdsRef.current.includes(finding.id)) {
+        locatedIdsRef.current = [...locatedIdsRef.current, finding.id];
+      }
+      setLocatedIds(locatedIdsRef.current);
+      if (!revealedIdsRef.current.includes(finding.id)) {
+        revealedIdsRef.current = [...revealedIdsRef.current, finding.id];
+      }
+      void revealFinding(cur, { spoil: true });
+      // The click is the answer. A stuck Speaking/thinking lock must not drop it.
+      const text = "I clicked the finding on the image.";
+      const history = turnsRef.current;
+      setTurns((prev) => [
+        ...prev,
+        { id: nextId(), role: "user", text, findingId: finding.id },
+      ]);
+      abortRef.current?.abort();
+      interruptPlayback();
+      void runTutorRef.current(text, history);
     },
-    [busy, examMode, orderedFindings, revealedIds, revealFinding, sendText]
+    [examMode, orderedFindings, revealFinding, interruptPlayback]
   );
 
   const toggleCompare = useCallback(() => {
@@ -1327,13 +1464,60 @@ export function useStudentSession(
     }
   }, [ready, orderedFindings.length, examMode, mode, revealFinding, runTutor]);
 
-  // Mode switches: reset tour flag so we don't leak auto-advance into viva.
+  // Leaving Teach cancels the guide and its speech. Entering Exam/Viva
+  // drops teach-only reveals so locate can arm, then seats the current
+  // finding without the marker. A Speaking lock must not outlive the switch.
+  const prevModeRef = useRef(mode);
   useEffect(() => {
-    if (mode !== "guided") {
+    const prev = prevModeRef.current;
+    const modeChanged = prev !== mode;
+    prevModeRef.current = mode;
+    const wasExam = prev === "viva" || prev === "socratic";
+    const nowExam = mode === "viva" || mode === "socratic";
+    if (modeChanged && prev === "guided" && mode !== "guided") {
+      tourGenRef.current += 1;
       tourActiveRef.current = false;
       setTourActive(false);
+      abortRef.current?.abort();
+      abortRef.current = null;
+      seatGenRef.current += 1;
+      interruptPlayback();
+      setSpeakingTurnId(null);
+      setPhase("idle");
+      if (phaseRef.current === "recording") void recorder.stop();
     }
-  }, [mode]);
+    // Cold start (viewer not ready yet) is seated by the effect above. This
+    // path is only for a session that already began in Teach.
+    if (modeChanged && nowExam && !wasExam && startedRef.current) {
+      pendingExamSeatRef.current = true;
+    }
+    if (!pendingExamSeatRef.current || !ready || !startedRef.current) return;
+    pendingExamSeatRef.current = false;
+    const index = activeIndexRef.current;
+    const finding = orderedFindings[index];
+    const plan = examEntryPlan({
+      locatedIds: locatedIdsRef.current,
+      helpedIds: helpedIdsRef.current,
+      activeFindingId: finding?.id ?? null,
+    });
+    revealedIdsRef.current = plan.revealedIds;
+    setRevealedIds(plan.revealedIds);
+    setCaptionFloor(turnsRef.current.length);
+    setLocateHint("");
+    locateMissesRef.current = 0;
+    if (!plan.spoilActive) {
+      setMarkerVisible(false);
+      setMeasurementsVisible(false);
+    }
+    if (finding && controls.current) {
+      void revealFinding(index, { spoil: plan.spoilActive });
+    }
+    if (mode === "viva") {
+      void runTutorRef.current("Begin the session.", []);
+    }
+    // recorder.stop is stable; the recorder object itself is a fresh literal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, ready, orderedFindings, interruptPlayback, revealFinding]);
 
   // Leaving exam mode uncovers the active finding so guided/report aren't blank.
   useEffect(() => {
@@ -1403,17 +1587,20 @@ export function useStudentSession(
     compareOpen,
     toggleCompare,
     locateHint,
+    captionFloor,
+    findingNavLocked,
     vivaScore: {
       located: locatedIds.length,
       helped: helpedIds.length,
       total: orderedFindings.length,
     },
     onLocateClick,
-    locateMode:
-      examMode &&
-      activeIndex >= 0 &&
-      !!orderedFindings[activeIndex] &&
-      !revealedIds.includes(orderedFindings[activeIndex].id),
+    locateMode: locateModeArmed({
+      examMode,
+      findingId: activeIndex >= 0 ? orderedFindings[activeIndex]?.id : null,
+      revealedIds,
+      marker: activeIndex >= 0 ? orderedFindings[activeIndex]?.marker : null,
+    }),
     // Agent-orb + premium chat surface state.
     orbState,
     micLevel,
