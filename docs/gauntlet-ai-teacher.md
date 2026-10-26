@@ -1,7 +1,8 @@
 # Gauntlet — AI radiology teacher (Phase 0 → N)
 
-> Status: **P3 slice** — sentence-pipelined attending TTS, caption follows the
-> sentence in flight, Space barges in. Full duplex and P4 report grade are still open.
+> Status: **P4 slice** — a structured report is graded against authored gold
+> lines (covered / incomplete / missing / contradicts), never a bare score.
+> Full duplex and MCQ are still open.
 > Product truth: the AI never invents anatomy. It teaches from what a
 > radiologist authored — clicks, series, slices, and dictated evidence —
 > then *performs* that script like an examiner: drives the viewer while speaking.
@@ -65,7 +66,7 @@ FindingAnchor {
 2. **P1.5 (this loop):** reading-room chrome, on-image examiner, hide-until-reveal, organized teaching sequence + publish readiness, tighter viva/structure prompts.
 3. **P2:** dual viewport compare + click-the-finding locate; author pins a secondary landing.
 4. **P3 (this slice):** the next say line's TTS is fetched while the current line plays and the beat's scroll / window / zoom / point run with that line. The on-image caption is the sentence just started. Space interrupts tour speech and yields the floor (hold to answer). Full duplex is still open.
-5. **P4 (this loop, slice):** AI-graded structured report against the authored rubric (never a bare score). MCQ still later.
+5. **P4 (this slice):** Report mode grades a structured report against each finding's authored gold line and must-mention phrases. Feedback names what was missing or contradicted. The model cannot add a finding that is not on that rubric. MCQ still later.
 
 ---
 

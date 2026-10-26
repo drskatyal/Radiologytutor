@@ -21,7 +21,12 @@ import {
 import { prepareCompileFrames, type CompileFrame } from "@/lib/compileMedia";
 
 /** The structured (text) slice of a finding the author edits. */
-export type FindingDraft = StructuredFinding;
+export type FindingDraft = StructuredFinding & {
+  /** Gold report sentence. Blank when this finding has no report rubric. */
+  reportGold?: string;
+  /** Phrases the report must include. Empty when unset. */
+  reportMustMention?: string[];
+};
 
 /**
  * Prefer the author's last recorded cursor as the teaching marker when they
@@ -46,6 +51,8 @@ export function toDraft(f: Finding): FindingDraft {
     description: f.description,
     teachingPoints: [...f.teachingPoints],
     landmark: f.landmark ?? "",
+    reportGold: f.reportGold ?? "",
+    reportMustMention: [...(f.reportMustMention ?? [])],
   };
 }
 
@@ -54,8 +61,13 @@ export function draftsDiffer(a: FindingDraft, b: FindingDraft): boolean {
   if (a.label !== b.label) return true;
   if (a.description !== b.description) return true;
   if ((a.landmark ?? "") !== (b.landmark ?? "")) return true;
+  if ((a.reportGold ?? "") !== (b.reportGold ?? "")) return true;
   if (a.teachingPoints.length !== b.teachingPoints.length) return true;
-  return a.teachingPoints.some((p, i) => p !== b.teachingPoints[i]);
+  if (a.teachingPoints.some((p, i) => p !== b.teachingPoints[i])) return true;
+  const aPhrases = a.reportMustMention ?? [];
+  const bPhrases = b.reportMustMention ?? [];
+  if (aPhrases.length !== bPhrases.length) return true;
+  return aPhrases.some((p, i) => p !== bPhrases[i]);
 }
 
 /** Trim a draft and drop blank teaching points before saving. */
@@ -65,6 +77,8 @@ export function normalizeDraft(d: FindingDraft): FindingDraft {
     description: d.description.trim(),
     teachingPoints: d.teachingPoints.map((p) => p.trim()).filter(Boolean),
     landmark: (d.landmark ?? "").trim(),
+    reportGold: (d.reportGold ?? "").trim(),
+    reportMustMention: (d.reportMustMention ?? []).map((p) => p.trim()).filter(Boolean),
   };
 }
 
@@ -75,6 +89,9 @@ export const LIMITS = {
   teachingPoint: 200,
   teachingPoints: 8,
   landmark: 80,
+  reportGold: 400,
+  reportPhrase: 80,
+  reportPhrases: 6,
 } as const;
 
 export interface DraftErrors {
@@ -82,6 +99,8 @@ export interface DraftErrors {
   description?: string;
   teachingPoints?: string;
   landmark?: string;
+  reportGold?: string;
+  reportMustMention?: string;
 }
 
 /** Validation: a finding must at least have a label; everything stays in range. */
@@ -99,6 +118,13 @@ export function validateDraft(d: FindingDraft): DraftErrors {
     errors.teachingPoints = `Use at most ${LIMITS.teachingPoints} teaching points.`;
   else if (points.some((p) => p.length > LIMITS.teachingPoint))
     errors.teachingPoints = `Keep each teaching point under ${LIMITS.teachingPoint} characters.`;
+  if ((d.reportGold ?? "").trim().length > LIMITS.reportGold)
+    errors.reportGold = `Keep the gold line under ${LIMITS.reportGold} characters.`;
+  const phrases = (d.reportMustMention ?? []).map((p) => p.trim()).filter(Boolean);
+  if (phrases.length > LIMITS.reportPhrases)
+    errors.reportMustMention = `Use at most ${LIMITS.reportPhrases} rubric phrases.`;
+  else if (phrases.some((p) => p.length > LIMITS.reportPhrase))
+    errors.reportMustMention = `Keep each rubric phrase under ${LIMITS.reportPhrase} characters.`;
   return errors;
 }
 

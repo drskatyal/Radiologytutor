@@ -93,6 +93,9 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
           "Do not chase mediastinum until both lungs are surveyed.",
         ],
+        reportGold:
+          "Narrow lung window (W 1500 / L -600). Both lungs surveyed from the carina inferiorly before the mediastinum.",
+        reportMustMention: ["1500", "-600", "both lungs", "carina"],
         state: " ",
         marker: { x_pct: 0.52, y_pct: 0.42, shape: "circle" },
         order: 1,
@@ -110,6 +113,9 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Scroll through the nodule — if it disappears it may be a vessel.",
           "Note solid vs subsolid density before measuring.",
         ],
+        reportGold:
+          "Periphery checked on lung windows for round opacities. A true nodule is distinguished from a vessel on end on adjacent slices. Density is noted as solid or subsolid before measuring.",
+        reportMustMention: ["round opacities", "nodule", "vessel", "solid", "subsolid"],
         state: " ",
         marker: { x_pct: 0.68, y_pct: 0.55, shape: "circle" },
         order: 2,
@@ -127,6 +133,9 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Two-pass reading reduces missed apical or posterior nodules.",
           "Finish with an impression that separates actionable nodules from benign calcified granulomas.",
         ],
+        reportGold:
+          "Mediastinal windows through the hila and mediastinum, then a second peripheral sweep on lung windows. Impression separates actionable nodules from benign calcified granulomas.",
+        reportMustMention: ["mediastinal", "hila", "calcified granulomas"],
         state: " ",
         marker: { x_pct: 0.48, y_pct: 0.38, shape: "circle" },
         order: 3,

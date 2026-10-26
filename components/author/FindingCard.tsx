@@ -145,6 +145,8 @@ export function FindingCard({
       description: next.description,
       teachingPoints: [...next.teachingPoints],
       landmark: d.landmark,
+      reportGold: d.reportGold ?? "",
+      reportMustMention: d.reportMustMention ?? [],
     }));
     setEditing(true);
     requestAnimationFrame(() => labelRef.current?.focus());
@@ -330,6 +332,48 @@ export function FindingCard({
               onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
             />
 
+            <Field
+              label="Report gold"
+              error={errors.reportGold}
+              hint={
+                errors.reportGold
+                  ? undefined
+                  : "Sentence a passing report must cover. Blank grades from the description."
+              }
+            >
+              {(p) => (
+                <Textarea
+                  {...p}
+                  rows={2}
+                  maxLength={LIMITS.reportGold}
+                  placeholder="Gold report line for this finding…"
+                  value={draft.reportGold ?? ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, reportGold: e.target.value }))}
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Rubric phrases"
+              error={errors.reportMustMention}
+              hint="One phrase per line, taken from the gold line. The grader cannot add findings beyond these."
+            >
+              {(p) => (
+                <Textarea
+                  {...p}
+                  rows={3}
+                  placeholder={"1500\nboth lungs"}
+                  value={(draft.reportMustMention ?? []).join("\n")}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      reportMustMention: e.target.value.split("\n").slice(0, LIMITS.reportPhrases),
+                    }))
+                  }
+                />
+              )}
+            </Field>
+
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-secondary">
@@ -422,6 +466,24 @@ export function FindingCard({
               </p>
             ) : (
               <p className="text-sm italic text-muted">No description yet.</p>
+            )}
+
+            {finding.reportGold?.trim() && (
+              <div>
+                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                  Report gold
+                </p>
+                <p className="text-sm leading-relaxed text-secondary">{finding.reportGold.trim()}</p>
+                {(finding.reportMustMention ?? []).filter((phrase) => phrase.trim()).length > 0 && (
+                  <p className="mt-1 text-xs leading-snug text-muted">
+                    Must mention:{" "}
+                    {(finding.reportMustMention ?? [])
+                      .map((phrase) => phrase.trim())
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                )}
+              </div>
             )}
 
             {finding.teachingPoints.length > 0 && (
