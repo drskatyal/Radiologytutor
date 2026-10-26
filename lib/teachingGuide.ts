@@ -11,8 +11,9 @@
  *
  * A real take speaks the look-cues (orient opens with "Follow the stack.")
  * plus any transcript span that does not name the finding. A click-to-annotate
- * landing sets `voice: "notes"` and speaks the author's label, description,
- * and teaching points, with the slice, window, and zoom that were landed.
+ * landing, and a speak-once take whose microphone produced nothing, set
+ * `voice: "notes"` and speak the author's label, description, and teaching
+ * points, with the slice, window, and zoom that were landed.
  * The spoken slice is the 1-based number Studio shows. Scroll actions stay
  * the stored 0-based image index.
  */
@@ -1354,6 +1355,33 @@ export function commitAnnotatedFinding<T extends Partial<Finding>>(
       take: { gap: "empty-mic" },
     },
     landing?.measurements ?? base.measurements
+  );
+}
+
+/**
+ * Speak-once save when getUserMedia produced no usable audio. The captured
+ * viewer track (scroll, window, zoom, point) stays the clock. `voice: "notes"`
+ * selects the same say lines as click-to-annotate, from the typed label,
+ * description, and teaching points. A transcribed take must not call this —
+ * it leaves `voice` unset so the look-cue script stays. The input track is
+ * not mutated, so a seeded recorded guide is left alone.
+ */
+export function commitSpeakOnceWithoutMic<T extends Partial<Finding>>(
+  base: T,
+  track: RecordedTrack,
+  liveMeasurements?: FindingMeasurement[]
+): { finding: T; receipt: RecordedSaveReceipt } {
+  const noted: RecordedTrack = { ...track, voice: "notes" };
+  return commitRecordedFinding(
+    base,
+    noted,
+    {
+      label: base.label,
+      description: base.description,
+      teachingPoints: base.teachingPoints,
+      take: { gap: "empty-mic" },
+    },
+    liveMeasurements
   );
 }
 
