@@ -140,6 +140,51 @@ describe("runTeachingPlan spoken answer", { concurrency: 1 }, () => {
     );
   });
 
+  test("an empty socratic reply to a partial answer does not dump the label", async () => {
+    const prevKey = process.env.GEMINI_API_KEY;
+    const prevFetch = globalThis.fetch;
+    let systemInstruction = "";
+    process.env.GEMINI_API_KEY = "test-key";
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        systemInstruction?: { parts?: { text?: string }[] };
+      };
+      systemInstruction = body.systemInstruction?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ functionCall: { name: "show_finding", args: { findingId: "f_ptx" } } }],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+    try {
+      const result = await runTeachingPlan({
+        question: "There is a line at the right apex. I think it is consolidation.",
+        history: [],
+        caseTitle: "LIDC nodule search",
+        modality: "CT",
+        mode: "socratic",
+        findingsContext: "id=f_ptx",
+        currentFindingId: "f_ptx",
+        findings: [finding],
+      });
+      assert.match(result.answer, /pleural line|apex/i);
+      assert.doesNotMatch(result.answer, /pneumothorax/i);
+      assert.doesNotMatch(result.answer, /skin fold/i);
+      assert.match(systemInstruction, /this turn is level 1/i);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevKey;
+    }
+  });
+
   test("a spoken answer from the model is kept", async () => {
     await withGemini([{ text: "Look at this slice. The pleural line is continuous." }], async () => {
       const result = await runTeachingPlan({

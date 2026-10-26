@@ -710,9 +710,12 @@ export function useStudentSession(
           );
         };
 
+        const priorTurns = history.map((turn) => ({ role: turn.role, text: turn.text }));
+
         if (!res.ok) {
           // 503 means GEMINI_API_KEY isn't set — still speak an authored line
           // (Teach) or the exam stem (viva) instead of a silent error toast.
+          // A partial exam answer climbs the hint ladder instead of the stem.
           if (res.status === 503) {
             setAiAvailable(false);
             setSearching(false);
@@ -725,6 +728,7 @@ export function useStudentSession(
               currentFindingId,
               tourActive,
               viewerAlreadySeated: tourActive,
+              history: priorTurns,
             });
             const line = speech.speak
               ? speech.answer
@@ -769,6 +773,7 @@ export function useStudentSession(
           currentFindingId,
           tourActive,
           viewerAlreadySeated: tourActive,
+          history: priorTurns,
         });
         if (!speech.speak) {
           narrateGuideRef.current = true;
