@@ -45,11 +45,14 @@ import type { CaseData, Finding, FindingMeasurement, Marker, TeachingGuide } fro
 import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
 import {
+  appendGuideTurn,
   applyLocateClick,
+  commitGuideLine,
   examEntryTransition,
   isExamMode,
   locateModeArmed,
   mergeExamReveal,
+  seatExamTranscript,
   spoilFindingOnNavigate,
 } from "@/lib/examLocate";
 import { nextGuidedIndex } from "@/lib/tourAdapt";
@@ -635,18 +638,22 @@ export function useStudentSession(
               interruptPlayback();
               const playbackGen = playbackGenRef.current;
               const turnId = nextId();
-              setTurns((prev) => [...prev, { id: turnId, role: "assistant", text: "" }]);
+              setTurns((prev) =>
+                appendGuideTurn(
+                  prev,
+                  { id: turnId, role: "assistant", text: "" },
+                  epoch,
+                  revealEpochRef.current
+                )
+              );
               setPhase("speaking");
               setSpeakingTurnId(turnId);
               await playFindingGuide(target, guide, {
                 narrate: async (text) => {
                   if (playbackGen !== playbackGenRef.current) return;
+                  const lineEpoch = revealEpochRef.current;
                   setTurns((prev) =>
-                    prev.map((turn) =>
-                      turn.id === turnId
-                        ? { ...turn, text: turn.text ? `${turn.text} ${text}` : text }
-                        : turn
-                    )
+                    commitGuideLine(prev, turnId, text, lineEpoch, revealEpochRef.current)
                   );
                   if (playbackGen !== playbackGenRef.current) return;
                   await speak(text, undefined, { persona: "attending" });
@@ -753,10 +760,15 @@ export function useStudentSession(
             return;
           }
           const id = nextId();
-          setTurns((prev) => [
-            ...prev,
-            { id, role: "assistant", text: "", sources, findingId: currentFindingId },
-          ]);
+          const epoch = revealEpochRef.current;
+          setTurns((prev) =>
+            appendGuideTurn(
+              prev,
+              { id, role: "assistant", text: "", sources, findingId: currentFindingId },
+              epoch,
+              revealEpochRef.current
+            )
+          );
           setPhase("speaking");
           setSpeakingTurnId(id);
           void speakBeats(
@@ -769,7 +781,7 @@ export function useStudentSession(
                   .map((beat) => beat.text)
                   .join(" ");
                 setTurns((prev) =>
-                  prev.map((turn) => (turn.id === id ? { ...turn, text: soFar } : turn))
+                  commitGuideLine(prev, id, soFar, epoch, revealEpochRef.current, "replace")
                 );
                 for (const action of spoken[i].actions) {
                   void executeAction(action);
@@ -976,8 +988,16 @@ export function useStudentSession(
         const fallbackCue = fallbackSentences[0] ?? "";
         const fallbackRest = fallbackSentences.slice(1).join(" ");
         const turnId = says.length || fallbackCue ? nextId() : null;
+        const epoch = revealEpochRef.current;
         if (turnId) {
-          setTurns((prev) => [...prev, { id: turnId, role: "assistant", text: "" }]);
+          setTurns((prev) =>
+            appendGuideTurn(
+              prev,
+              { id: turnId, role: "assistant", text: "" },
+              epoch,
+              revealEpochRef.current
+            )
+          );
           setPhase("speaking");
           setSpeakingTurnId(turnId);
         }
@@ -985,12 +1005,9 @@ export function useStudentSession(
           narrate: says.length && turnId
             ? async (text) => {
                 if (stale() || playbackGen !== playbackGenRef.current) return;
+                const lineEpoch = revealEpochRef.current;
                 setTurns((prev) =>
-                  prev.map((t) =>
-                    t.id === turnId
-                      ? { ...t, text: t.text ? `${t.text} ${text}` : text }
-                      : t
-                  )
+                  commitGuideLine(prev, turnId, text, lineEpoch, revealEpochRef.current)
                 );
                 await speakLine(text);
               }
@@ -1000,8 +1017,16 @@ export function useStudentSession(
           fallbackCue && turnId
             ? (async () => {
                 if (stale() || playbackGen !== playbackGenRef.current) return;
+                const lineEpoch = revealEpochRef.current;
                 setTurns((prev) =>
-                  prev.map((t) => (t.id === turnId ? { ...t, text: fallbackCue } : t))
+                  commitGuideLine(
+                    prev,
+                    turnId,
+                    fallbackCue,
+                    lineEpoch,
+                    revealEpochRef.current,
+                    "replace"
+                  )
                 );
                 await speakLine(fallbackCue);
               })()
@@ -1009,9 +1034,15 @@ export function useStudentSession(
         await Promise.all([guidePlay, cuePlay]);
         if (stale() || playbackGen !== playbackGenRef.current) return;
         if (fallbackRest && turnId) {
+          const lineEpoch = revealEpochRef.current;
           setTurns((prev) =>
-            prev.map((t) =>
-              t.id === turnId ? { ...t, text: `${fallbackCue} ${fallbackRest}` } : t
+            commitGuideLine(
+              prev,
+              turnId,
+              `${fallbackCue} ${fallbackRest}`,
+              lineEpoch,
+              revealEpochRef.current,
+              "replace"
             )
           );
           await speakLine(fallbackRest);
@@ -1421,8 +1452,22 @@ export function useStudentSession(
     setSecondaryMarkerVisible(false);
     setLocateHint("");
     locateMissesRef.current = 0;
-    setExamCaptionFloor(turnsRef.current.length);
-  }, [mode, interruptPlayback]);
+    // The floor used to hide this line from the footer only. The examiner
+    // panel still rendered it. Replace the transcript with the exam stem
+    // (or nothing, if the stem is blank) so both surfaces agree.
+    const activeId =
+      activeIndexRef.current >= 0
+        ? orderedFindings[activeIndexRef.current]?.id
+        : undefined;
+    const seated = seatExamTranscript(turnsRef.current, {
+      id: nextId(),
+      role: "assistant" as const,
+      text: examFallbackStem(orderedFindings.length),
+      ...(activeId ? { findingId: activeId } : {}),
+    });
+    setTurns(seated.turns);
+    setExamCaptionFloor(seated.captionFloor);
+  }, [mode, interruptPlayback, orderedFindings]);
 
   // Leaving exam mode uncovers the active finding so guided/report aren't blank.
   useEffect(() => {

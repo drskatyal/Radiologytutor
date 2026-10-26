@@ -1,12 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  appendGuideTurn,
   applyLocateClick,
+  commitGuideLine,
   examEntryTransition,
+  examinerCaptionTurn,
+  examinerVisibleTurns,
   locateModeArmed,
   mergeExamReveal,
+  seatExamTranscript,
   spoilFindingOnNavigate,
 } from "./examLocate.ts";
+import { examFallbackStem } from "./teachingPrompt.ts";
 import type { Marker } from "./types.ts";
 
 /** case-lidc-nodule-search finding 2, "Peripheral nodule survey". */
@@ -180,6 +186,98 @@ test("a teach reveal queued before Exam entry cannot re-spoil the finding", () =
   const stripped: string[] = [];
   assert.deepEqual(mergeExamReveal(stripped, findingId, 1, 2), []);
   assert.deepEqual(mergeExamReveal(stripped, findingId, 2, 2), [findingId]);
+});
+
+const tourLine = "Follow the stack. Follow the vessels as you move.";
+
+test("Teach → Exam drops the tour caption from the examiner panel and seats the stem", () => {
+  const prior = [
+    { id: "tour", role: "assistant" as const, text: tourLine },
+    { id: "ask", role: "user" as const, text: "why that window?" },
+  ];
+  // Raising the floor hides the footer caption. The panel still listed every turn.
+  assert.equal(examinerCaptionTurn(prior, prior.length), null);
+  assert.deepEqual(examinerVisibleTurns(prior, prior.length), []);
+
+  const stem = examFallbackStem(3);
+  const seated = seatExamTranscript(prior, {
+    id: "stem",
+    role: "assistant",
+    text: stem,
+    findingId,
+  });
+  const panel = examinerVisibleTurns(seated.turns, seated.captionFloor);
+  const caption = examinerCaptionTurn(panel, 0);
+  assert.equal(seated.captionFloor, 0);
+  assert.equal(caption?.text, stem);
+  assert.deepEqual(
+    panel.map((turn) => turn.text),
+    [stem]
+  );
+  assert.doesNotMatch(panel.map((turn) => turn.text).join(" "), /Follow the stack|Follow the vessels/);
+  assert.match(stem, /what do you see/i);
+  assert.equal(caption?.findingId, findingId);
+
+  const entered = examEntryTransition({
+    fromMode: "guided",
+    toMode: "viva",
+    phase: "speaking",
+    revealedIds: [findingId],
+    locatedIds: [],
+  });
+  assert.ok(entered);
+  assert.equal(
+    locateModeArmed({
+      examMode: true,
+      finding: { id: findingId, marker: nodule },
+      revealedIds: entered.revealedIds,
+      locatedIds: [],
+    }),
+    true
+  );
+});
+
+test("a blank exam stem leaves the examiner transcript empty", () => {
+  const seated = seatExamTranscript(
+    [{ id: "tour", role: "assistant", text: tourLine }],
+    { id: "stem", role: "assistant", text: "   " }
+  );
+  assert.equal(seated.captionFloor, 0);
+  assert.deepEqual(seated.turns, []);
+  assert.equal(examinerCaptionTurn(seated.turns, seated.captionFloor), null);
+});
+
+test("a guide line scheduled before Exam cannot rewrite the seated stem", () => {
+  const stem = examFallbackStem(3);
+  const seated = seatExamTranscript(
+    [{ id: "tour", role: "assistant", text: "Follow the stack." }],
+    { id: "stem", role: "assistant", text: stem }
+  );
+  const appended = commitGuideLine(
+    seated.turns,
+    "stem",
+    "Follow the vessels as you move.",
+    1,
+    2
+  );
+  const replaced = commitGuideLine(appended, "stem", tourLine, 1, 2, "replace");
+  const added = appendGuideTurn(
+    replaced,
+    { id: "late", role: "assistant" as const, text: tourLine },
+    1,
+    2
+  );
+  assert.deepEqual(
+    added.map((turn) => turn.text),
+    [stem]
+  );
+});
+
+test("guide lines still accumulate while Teach owns the epoch", () => {
+  const started = appendGuideTurn([], { id: "tour", role: "assistant" as const, text: "" }, 1, 1);
+  const orient = commitGuideLine(started, "tour", "Follow the stack.", 1, 1, "replace");
+  const next = commitGuideLine(orient, "tour", "Follow the vessels as you move.", 1, 1);
+  assert.equal(next[0]?.text, tourLine);
 });
 
 test("moving between findings in exam does not uncover the marker", () => {

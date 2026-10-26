@@ -27,6 +27,7 @@ import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import { caseSeriesToSource } from "@/lib/viewerSource";
 import type { PrefetchManifest } from "@/lib/prefetch";
+import { examinerCaptionTurn, examinerVisibleTurns } from "@/lib/examLocate";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
@@ -216,15 +217,17 @@ export default function StudentSession({
   const activeRevealed = activeFinding
     ? s.revealedIds.includes(activeFinding.id)
     : false;
-  const lastAssistant = useMemo(() => {
-    // Exam caption starts at the switch. The tour line that was speaking is
-    // not the examiner prompt, and it must not stay on screen after Teach.
-    const floor = intent === "exam" ? s.examCaptionFloor : 0;
-    for (let i = s.turns.length - 1; i >= floor; i--) {
-      if (s.turns[i].role === "assistant" && !s.turns[i].error) return s.turns[i];
-    }
-    return null;
-  }, [s.turns, intent, s.examCaptionFloor]);
+  const transcriptFloor = intent === "exam" ? s.examCaptionFloor : 0;
+  // The rail and the footer caption share one slice. A floor that only the
+  // footer honored left the Teach line ("Follow the stack…") under Examiner.
+  const visibleTurns = useMemo(
+    () => examinerVisibleTurns(s.turns, transcriptFloor),
+    [s.turns, transcriptFloor]
+  );
+  const lastAssistant = useMemo(
+    () => examinerCaptionTurn(visibleTurns, 0),
+    [visibleTurns]
+  );
   const waitingForTeach =
     intent === "teach" &&
     s.ready &&
@@ -531,7 +534,7 @@ export default function StudentSession({
             />
           )}
           <TutorChat
-            turns={s.turns}
+            turns={visibleTurns}
             phase={s.phase}
             orbState={s.orbState}
             micState={s.micState}
