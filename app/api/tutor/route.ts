@@ -26,6 +26,7 @@ export const runtime = "nodejs";
 interface InMessage {
   role: "user" | "assistant";
   text: string;
+  findingId?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -78,10 +79,16 @@ export async function POST(req: NextRequest) {
         : (lastUser?.text ?? "");
 
     // History = the turns before the current question (so we don't duplicate it).
-    const history =
+    // findingId keeps the hint ladder on one finding when the chat has several.
+    const history = (
       lastUser && messages[messages.length - 1]?.text === question
         ? messages.slice(0, -1)
-        : messages;
+        : messages
+    ).map((turn) => ({
+      role: turn.role,
+      text: String(turn.text ?? ""),
+      findingId: turn.findingId ? String(turn.findingId) : undefined,
+    }));
 
     const findings: SpokenFindingSource[] = data.findings.map((finding) => ({
       id: finding.id,
@@ -92,7 +99,7 @@ export async function POST(req: NextRequest) {
     }));
 
     // history excludes the current question. runTeachingPlan turns that into
-    // the socratic/viva hint rung (location, then mimic, then the label).
+    // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
     const result = await runTeachingPlan({
       question,
       history,

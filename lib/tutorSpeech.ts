@@ -9,11 +9,14 @@
 // name. buildPerformancePlan puts action i on sentence i and the scorer applies
 // that action after the sentence, so the label must sit on a later sentence.
 //
-// Socratic and viva do not use that name on a partial answer. The rung is
-// look-cue, then a location line from the description, then one mimic line
-// from the teaching points, then the label and one pearl. Give-up, show me,
-// a correct name, or two hints already given jump to the reveal. The words
-// come from the authored finding. Guided teach is unchanged.
+// Socratic and viva do not use that name on a partial answer. Successive
+// partials on the SAME finding climb one ladder: look-cue, then a location
+// line from the description or teaching points (diagnosis removed), then one
+// mimic contrast from the teaching points, then the label and one pearl.
+// Give-up, show me, a correct name, or both content hints already given jump
+// to the reveal. A non-empty model line that misses the rung is replaced with
+// that same ladder. The words come from the authored finding. Guided teach
+// is unchanged.
 
 import { splitSentences } from "./performancePlan";
 import type { TeachingMode } from "./teachingPrompt";
@@ -34,6 +37,8 @@ export interface SpokenAction {
 export interface SpokenTurn {
   role: "user" | "assistant";
   text: string;
+  /** Finding this turn was about. Other findings do not climb this ladder. */
+  findingId?: string;
 }
 
 /** Socratic / viva rung. 0 look-cue, 1 location, 2 mimic, 3 label + pearl. */
@@ -175,24 +180,56 @@ const LOCATION_WORDS = new Set([
   "soft",
   "tissue",
   "bone",
+  "mediastinal",
+  "mediastinum",
 ]);
 
-/** Mimic-versus-finding lines. These are level 2, not the location hint. */
-const DISCRIMINATE =
-  /\b(do not|don't|dont|never|versus|vs\.?|rather than|instead of|instead|mimic|pitfall|not a|not an|until you|distinguish|compare|could be|may be|mistake)\b/i;
+/**
+ * Method words that show up in search-step labels ("Lung window", "nodule
+ * survey"). They are not the diagnosis, so a search line that says "window"
+ * must not reset the ladder or count as a reveal.
+ */
+const NOT_DIAGNOSIS = new Set([
+  "window",
+  "windows",
+  "start",
+  "survey",
+  "search",
+  "pattern",
+  "slice",
+  "slices",
+  "pass",
+  "reading",
+  "image",
+  "study",
+  "series",
+  "first",
+  "level",
+  "width",
+  "center",
+  "narrow",
+  "approx",
+]);
+
+/** Mimic-versus-finding lines. A search instruction ("do not chase") is not one. */
+const MIMIC_LINE =
+  /\b(versus|vs\.?|rather than|instead of|mimic|pitfall|not a|not an|distinguish|could be|may be|mistake|confused with|differential|do not call|don't call|dont call|never call|do not mistake|don't mistake)\b/i;
+
+/** Region and landmark words. A location rung has to name a place. */
+const LANDMARK =
+  /\b(apex|apices|apical|base|bases|basal|carina|hilum|hila|hilar|fissure|lobe|lobes|segment|segments|periphery|peripheral|mediastinum|mediastinal|pleura|pleural|upper|lower|right|left|anterior|posterior|medial|lateral|bilateral|central|costophrenic|hemithorax|lingula)\b/i;
 
 const GENERIC_LOCATION = "Where would you look on this slice?";
 const GENERIC_MIMIC = "What would you mistake this for?";
-
-/** A teaching point that tells the student where to search, not a reporting pearl. */
-const SEARCH_HINT =
-  /\b(scroll|window|search|look|survey|periphery|slice|apex|lobe|begin|start|carina|edge|border|line|contour|opacity|where|level)\b/i;
 
 function diagnosisTokens(label: string): string[] {
   return label
     .split(/[^A-Za-z0-9]+/)
     .map((word) => word.trim())
-    .filter((word) => word.length >= 5 && !LOCATION_WORDS.has(word.toLowerCase()));
+    .filter((word) => {
+      const lower = word.toLowerCase();
+      return word.length >= 5 && !LOCATION_WORDS.has(lower) && !NOT_DIAGNOSIS.has(lower);
+    });
 }
 
 function containsToken(text: string, token: string): boolean {
@@ -212,12 +249,21 @@ function isOpening(question: string): boolean {
 
 function priorPartialAttempts(
   history: readonly SpokenTurn[] | undefined,
-  labels: readonly string[]
+  findings: readonly SpokenFindingSource[],
+  currentFindingId?: string
 ): number {
+  const current = currentFindingId
+    ? findings.find((finding) => finding.id === currentFindingId)
+    : undefined;
+  const labels = findings.map((finding) => finding.label).filter(Boolean);
   let count = 0;
   for (const turn of history ?? []) {
+    // A turn tagged to another finding does not climb, or reset, this one.
+    if (currentFindingId && turn.findingId && turn.findingId !== currentFindingId) continue;
     const text = turn.text ?? "";
-    const named = labels.some((label) => label && namesDiagnosis(text, label));
+    const named = turn.findingId
+      ? Boolean(current?.label && namesDiagnosis(text, current.label))
+      : labels.some((label) => label && namesDiagnosis(text, label));
     if (turn.role === "assistant") {
       if (named) count = 0;
       continue;
@@ -233,8 +279,10 @@ function priorPartialAttempts(
 
 /**
  * Socratic and viva rung for this student turn.
- * History must exclude the current question. Naming any authored diagnosis,
- * or an assistant reveal, resets the count so the next finding starts again.
+ * History must exclude the current question. 0 look, 1 location, 2 mimic,
+ * 3 label + pearl. The count is partial answers on this finding only.
+ * An assistant reveal of the diagnosis resets it. Give-up, show me, and a
+ * correct name are level 3 even on the first turn.
  */
 export function examHintLevel(input: {
   mode: TeachingMode;
@@ -242,19 +290,22 @@ export function examHintLevel(input: {
   finding?: SpokenFindingSource;
   findings?: readonly SpokenFindingSource[];
   history?: readonly SpokenTurn[];
+  currentFindingId?: string;
 }): ExamHintLevel {
   if (input.mode !== "socratic" && input.mode !== "viva") return 3;
-  const labels = (input.findings?.length ? input.findings : input.finding ? [input.finding] : [])
-    .map((finding) => finding.label)
-    .filter(Boolean);
-  const current = input.finding?.label ?? "";
-  if (GIVE_UP.test(input.question) || (current && namesDiagnosis(input.question, current))) {
+  const list = input.findings?.length ? [...input.findings] : input.finding ? [input.finding] : [];
+  const currentId = input.currentFindingId ?? input.finding?.id;
+  const current =
+    (currentId ? list.find((finding) => finding.id === currentId) : undefined) ?? input.finding;
+  const label = current?.label ?? "";
+  if (GIVE_UP.test(input.question) || (label && namesDiagnosis(input.question, label))) {
     return 3;
   }
   if (isOpening(input.question)) return 0;
-  const prior = priorPartialAttempts(input.history, labels);
-  if (prior <= 0) return 1;
-  if (prior === 1) return 2;
+  const prior = priorPartialAttempts(input.history, list, currentId);
+  if (prior <= 0) return 0;
+  if (prior === 1) return 1;
+  if (prior === 2) return 2;
   return 3;
 }
 
@@ -276,8 +327,9 @@ export function mayNameFinding(
       question,
       finding: opts?.finding,
       findings: opts?.findings,
-      history: opts?.history,
-    }) >= 3
+    history: opts?.history,
+    currentFindingId: opts?.finding?.id,
+  }) >= 3
   );
 }
 
@@ -361,9 +413,28 @@ function usableHint(sentence: string, labels: readonly string[]): boolean {
   return Boolean(sentence) && !mentionsAnyDiagnosis(sentence, labels) && wordCount(sentence) >= 3;
 }
 
+function isMimicSentence(sentence: string): boolean {
+  return MIMIC_LINE.test(sentence);
+}
+
+function landmarkScore(sentence: string): number {
+  return [...sentence.matchAll(new RegExp(LANDMARK.source, "gi"))].length;
+}
+
+function hintSentence(
+  sentence: string,
+  label: string,
+  ids: string[],
+  labels: readonly string[]
+): string {
+  if (usableHint(sentence, labels)) return sentence;
+  const redacted = tidy(redactDiagnosis(sentence, label), ids);
+  return usableHint(redacted, labels) ? redacted : "";
+}
+
 /**
- * Level 1 — where to look, from the description or a search teaching point.
- * Diagnosis words are dropped. A reporting pearl is not a location hint.
+ * Level 1 — a region or landmark from the description or teaching points.
+ * Diagnosis words are dropped. A mimic contrast is not a location hint.
  * Nothing is added that the author didn't write.
  */
 function locationHint(
@@ -373,21 +444,20 @@ function locationHint(
 ): string {
   if (!finding) return GENERIC_LOCATION;
   const label = finding.label ?? "";
-  const description = sentencesOf(finding.description ?? "", ids);
-  const searchPoints = (finding.teachingPoints ?? [])
+  const describe = sentencesOf(finding.description ?? "", ids)
+    .map((sentence) => hintSentence(sentence, label, ids, labels))
+    .filter((sentence) => sentence && !isMimicSentence(sentence));
+  const points = (finding.teachingPoints ?? [])
     .flatMap((point) => sentencesOf(point, ids))
-    .filter((sentence) => !DISCRIMINATE.test(sentence) && SEARCH_HINT.test(sentence));
-  for (const sentence of description) {
-    if (usableHint(sentence, labels)) return ensurePeriod(sentence);
-  }
-  for (const sentence of searchPoints) {
-    if (usableHint(sentence, labels)) return ensurePeriod(sentence);
-  }
-  for (const sentence of [...description, ...searchPoints]) {
-    const redacted = tidy(redactDiagnosis(sentence, label), ids);
-    if (usableHint(redacted, labels)) return ensurePeriod(redacted);
-  }
-  return GENERIC_LOCATION;
+    .map((sentence) => hintSentence(sentence, label, ids, labels))
+    .filter((sentence) => sentence && !isMimicSentence(sentence));
+  const placed = (sentences: string[]) =>
+    sentences
+      .filter((sentence) => landmarkScore(sentence) > 0)
+      .sort((a, b) => landmarkScore(b) - landmarkScore(a))[0];
+  // The description's place wins over a search-pattern teaching point.
+  const best = placed(describe) ?? placed(points) ?? describe[0] ?? points[0];
+  return best ? ensurePeriod(best) : GENERIC_LOCATION;
 }
 
 /** Level 2 — mimic versus finding, only from teaching points. */
@@ -400,13 +470,10 @@ function discriminateHint(
   const label = finding.label ?? "";
   const contrasts = (finding.teachingPoints ?? [])
     .flatMap((point) => sentencesOf(point, ids))
-    .filter((sentence) => DISCRIMINATE.test(sentence));
+    .filter((sentence) => isMimicSentence(sentence));
   for (const sentence of contrasts) {
-    if (usableHint(sentence, labels)) return ensurePeriod(sentence);
-  }
-  for (const sentence of contrasts) {
-    const redacted = tidy(redactDiagnosis(sentence, label), ids);
-    if (usableHint(redacted, labels)) return ensurePeriod(redacted);
+    const line = hintSentence(sentence, label, ids, labels);
+    if (line) return ensurePeriod(line);
   }
   return GENERIC_MIMIC;
 }
@@ -450,52 +517,140 @@ function joinSpeech(parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ");
 }
 
+const HINT_STOP = new Set([
+  "this",
+  "that",
+  "with",
+  "from",
+  "your",
+  "have",
+  "been",
+  "they",
+  "them",
+  "what",
+  "when",
+  "then",
+  "into",
+  "over",
+  "under",
+  "both",
+  "until",
+  "before",
+  "after",
+  "about",
+  "there",
+  "where",
+  "look",
+  "here",
+  "slice",
+  "watch",
+  "follow",
+  "would",
+  "could",
+  "should",
+  "through",
+  "their",
+  "which",
+]);
+
+function contentWords(sentence: string): string[] {
+  return sentence
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 4 && !HINT_STOP.has(word));
+}
+
+/** True when the model already said this rung's authored line. */
+function coversHint(answer: string, hint: string): boolean {
+  const folded = hint.trim().toLowerCase().replace(/[.!?]+$/g, "");
+  if (folded.length >= 12 && answer.toLowerCase().includes(folded)) return true;
+  const words = contentWords(hint);
+  if (words.length === 0) return folded.length > 0 && answer.toLowerCase().includes(folded);
+  const hay = answer.toLowerCase();
+  const hit = words.filter((word) => new RegExp(`\\b${escapeReg(word)}\\b`).test(hay));
+  const need = words.length <= 2 ? words.length : Math.ceil(words.length * 0.5);
+  return hit.length >= need;
+}
+
+function examLadderSpeech(
+  input: EnsureSpokenInput,
+  level: ExamHintLevel,
+  finding: SpokenFindingSource | undefined,
+  ids: string[],
+  labels: readonly string[]
+): string {
+  const terms = authoredTerms(finding, ids);
+  const cues =
+    input.actions.length > 0
+      ? input.actions.map((action, index) => pickCue(action.type, index, terms))
+      : [pickCue("show_finding", 0, terms)];
+  return joinSpeech([...cues, ...examTail(level, finding, ids, labels)]);
+}
+
 /**
- * Keep a real answer. When tools fired and the message is empty, speak
+ * A model line may stay only when it already satisfies this rung.
+ * Levels 0–2 must not name the finding. Level 3 must.
+ */
+function examRungSatisfied(
+  text: string,
+  level: ExamHintLevel,
+  finding: SpokenFindingSource | undefined,
+  ids: string[],
+  labels: readonly string[]
+): boolean {
+  const label = finding?.label ?? "";
+  const named = Boolean(label) && namesDiagnosis(text, label);
+  if (level >= 3) return named;
+  if (named) return false;
+  if (level <= 0) return true;
+  if (level === 1) return coversHint(text, locationHint(finding, ids, labels));
+  return coversHint(text, discriminateHint(finding, ids, labels));
+}
+
+function ensureExamSpoken(input: EnsureSpokenInput, original: string): string {
+  const ids = input.findings.map((finding) => finding.id);
+  const finding = resolveFinding(input.findings, input.actions, input.currentFindingId);
+  const labels = input.findings.map((item) => item.label).filter(Boolean);
+  const level = examHintLevel({
+    mode: input.mode,
+    question: input.question,
+    finding,
+    findings: input.findings,
+    history: input.history,
+    currentFindingId: finding?.id ?? input.currentFindingId,
+  });
+  const ladder = examLadderSpeech(input, level, finding, ids, labels);
+  if (!hasSpokenContent(original)) return ladder;
+  if (examRungSatisfied(original, level, finding, ids, labels)) return original;
+  return ladder;
+}
+
+/**
+ * Keep a real guided answer. When tools fired and the message is empty, speak
  * look-cues first and the authored finding only after those cues.
+ * Socratic and viva share examLadderSpeech, including when the model text
+ * misses the rung for this finding.
  */
 export function ensureSpokenAnswer(input: EnsureSpokenInput): string {
   const original = input.answer.replace(/\s+/g, " ").trim();
+  if (input.mode === "socratic" || input.mode === "viva") {
+    return ensureExamSpoken(input, original);
+  }
   if (hasSpokenContent(original)) return original;
 
   const ids = input.findings.map((finding) => finding.id);
   const finding = resolveFinding(input.findings, input.actions, input.currentFindingId);
-  const exam = input.mode === "socratic" || input.mode === "viva";
-  const level = exam
-    ? examHintLevel({
-        mode: input.mode,
-        question: input.question,
-        finding,
-        findings: input.findings,
-        history: input.history,
-      })
-    : 3;
-  const labels = input.findings.map((item) => item.label).filter(Boolean);
-  const name = exam
-    ? level >= 3
-    : mayNameFinding(input.mode, input.question, input.actions, {
-        finding,
-        findings: input.findings,
-        history: input.history,
-      });
+  const name = mayNameFinding(input.mode, input.question, input.actions, {
+    finding,
+    findings: input.findings,
+    history: input.history,
+  });
 
   if (input.actions.length > 0) {
     const terms = authoredTerms(finding, ids);
     const cues = input.actions.map((action, index) => pickCue(action.type, index, terms));
-    const tail = exam
-      ? examTail(level, finding, ids, labels)
-      : name
-        ? authoredSentences(finding, ids)
-        : ["What do you see?"];
+    const tail = name ? authoredSentences(finding, ids) : ["What do you see?"];
     return joinSpeech([...cues, ...tail]);
-  }
-
-  if (exam && level >= 1) {
-    const terms = authoredTerms(finding, ids);
-    return joinSpeech([
-      pickCue("show_finding", 0, terms),
-      ...examTail(level, finding, ids, labels),
-    ]);
   }
 
   if (

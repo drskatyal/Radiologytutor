@@ -139,6 +139,8 @@ test("socratic and viva prompts state the hint ladder for this turn", () => {
   assert.match(socratic, /level 2/i);
   assert.match(socratic, /level 3/i);
   assert.match(socratic, /this turn is level 1/i);
+  assert.match(socratic, /same finding/i);
+  assert.match(socratic, /location line/i);
   assert.match(socratic, /do not say the diagnosis/i);
   assert.match(socratic, /mimic/i);
   assert.match(socratic, /Never invent anatomy/);

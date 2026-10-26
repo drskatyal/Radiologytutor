@@ -11,6 +11,7 @@ import {
 import { teachingSystemPrompt } from "./teachingPrompt.ts";
 import {
   ensureSpokenAnswer,
+  examHintLevel,
   mayNameFinding,
   NARRATION_HOLD_MAX_MS,
   NARRATION_HOLD_MIN_MS,
@@ -151,7 +152,7 @@ test("viva reveal after an attempt names the finding after the cue", () => {
 
 const partial = "There is a line at the right apex. I think it is consolidation.";
 
-test("socratic partial answer hints location and withholds the diagnosis", () => {
+test("socratic partial answer is a look-cue and withholds the diagnosis", () => {
   const answer = ensureSpokenAnswer({
     answer: "",
     mode: "socratic",
@@ -161,25 +162,83 @@ test("socratic partial answer hints location and withholds the diagnosis", () =>
     currentFindingId: "f_ptx",
   });
   const sentences = splitSentences(answer);
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: partial,
+      finding: findings[0],
+      findings,
+      history: [],
+    }),
+    0
+  );
   assert.match(sentences[0] ?? "", /^(Look|See|Watch|Follow)\b/);
-  assert.match(answer, /pleural line|apex/i);
+  assert.match(answer, /What do you see\?/);
   assert.doesNotMatch(answer, /pneumothorax/i);
+  assert.doesNotMatch(answer, /pleural line/i);
   assert.doesNotMatch(answer, /skin fold/i);
   assert.doesNotMatch(answer, /consolidation/i);
   assert.doesNotMatch(answer, /\bf_ptx\b/);
   assert.doesNotMatch(answer, /\b0\.\d{2,}\b/);
 });
 
-test("second partial tightens to the mimic and still withholds the label", () => {
+test("second vague answer is a location line and withholds the diagnosis", () => {
   const answer = ensureSpokenAnswer({
     answer: "",
     mode: "socratic",
     question: "The place is right, but I still call it consolidation.",
-    history: [{ role: "user", text: partial }],
+    history: [{ role: "user", text: partial, findingId: "f_ptx" }],
     actions: [{ type: "show_finding", findingId: "f_ptx" }],
     findings,
     currentFindingId: "f_ptx",
   });
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "still not sure",
+      finding: findings[0],
+      findings,
+      history: [{ role: "user", text: partial, findingId: "f_ptx" }],
+      currentFindingId: "f_ptx",
+    }),
+    1
+  );
+  assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /pleural line|apex/i);
+  assert.doesNotMatch(answer, /pneumothorax/i);
+  assert.doesNotMatch(answer, /skin fold/i);
+  assert.doesNotMatch(answer, /consolidation/i);
+});
+
+test("third vague answer is the mimic contrast and still withholds the label", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "",
+    mode: "viva",
+    question: "I still think it is consolidation.",
+    history: [
+      { role: "user", text: partial, findingId: "f_ptx" },
+      { role: "assistant", text: "Look at this slice. Visceral pleural line at the apex.", findingId: "f_ptx" },
+      { role: "user", text: "The place is right, but I still call it consolidation.", findingId: "f_ptx" },
+      { role: "assistant", text: "Look at this slice. Visceral pleural line at the apex.", findingId: "f_ptx" },
+    ],
+    actions: [{ type: "point_to", findingId: "f_ptx" }],
+    findings,
+    currentFindingId: "f_ptx",
+  });
+  assert.equal(
+    examHintLevel({
+      mode: "viva",
+      question: "I still think it is consolidation.",
+      finding: findings[0],
+      findings,
+      history: [
+        { role: "user", text: partial, findingId: "f_ptx" },
+        { role: "user", text: "The place is right, but I still call it consolidation.", findingId: "f_ptx" },
+      ],
+      currentFindingId: "f_ptx",
+    }),
+    2
+  );
   assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
   assert.match(answer, /skin fold/i);
   assert.doesNotMatch(answer, /pneumothorax/i);
@@ -187,25 +246,37 @@ test("second partial tightens to the mimic and still withholds the label", () =>
   assert.doesNotMatch(answer, /consolidation/i);
 });
 
-test("a third partial is the last hint and reveals label plus pearl", () => {
+test("a later partial reveals once location and mimic were already given", () => {
+  const history = [
+    { role: "user" as const, text: partial, findingId: "f_ptx" },
+    { role: "assistant" as const, text: "Look at this slice. Visceral pleural line at the apex.", findingId: "f_ptx" },
+    { role: "user" as const, text: "Still consolidation.", findingId: "f_ptx" },
+    { role: "assistant" as const, text: "Look at this slice. Do not call it a skin fold.", findingId: "f_ptx" },
+    { role: "user" as const, text: "I still think it is consolidation.", findingId: "f_ptx" },
+  ];
   const answer = ensureSpokenAnswer({
     answer: "",
-    mode: "viva",
-    question: "I still think it is consolidation.",
-    history: [
-      { role: "user", text: partial },
-      { role: "assistant", text: "Look at this slice. Visceral pleural line at the apex." },
-      { role: "user", text: "The place is right, but I still call it consolidation." },
-      { role: "assistant", text: "Look at this slice. Do not call it a skin fold." },
-    ],
-    actions: [{ type: "point_to", findingId: "f_ptx" }],
+    mode: "socratic",
+    question: "No, still consolidation.",
+    history,
+    actions: [{ type: "show_finding", findingId: "f_ptx" }],
     findings,
     currentFindingId: "f_ptx",
   });
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "No, still consolidation.",
+      finding: findings[0],
+      findings,
+      history,
+      currentFindingId: "f_ptx",
+    }),
+    3
+  );
   assert.doesNotMatch(splitSentences(answer)[0] ?? "", /pneumothorax/i);
   assert.match(answer, /Right apical pneumothorax/);
   assert.match(answer, /skin fold/i);
-  assert.doesNotMatch(answer, /consolidation/i);
 });
 
 test("show me and a correct name reveal immediately", () => {
@@ -232,25 +303,179 @@ test("show me and a correct name reveal immediately", () => {
   assert.doesNotMatch(splitSentences(named)[0] ?? "", /pneumothorax/i);
 });
 
+const lidcSearch = {
+  id: "f_lidc",
+  label: "Lung window — start mid-chest",
+  description:
+    "Set a narrow lung window (approx. W 1500 / L -600). Begin at the carina and scroll inferiorly through both lungs.",
+  teachingPoints: [
+    "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+    "Do not chase mediastinum until both lungs are surveyed.",
+  ],
+  order: 0,
+};
+
+test("a search line that says window does not reset the same finding", () => {
+  const history = [
+    { role: "user" as const, text: "is it a vessel?", findingId: "f_lidc" },
+    {
+      role: "assistant" as const,
+      text: "Follow the pointer. Set a narrow lung window. Begin at the carina.",
+      findingId: "f_lidc",
+    },
+  ];
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "still not sure",
+      finding: lidcSearch,
+      findings: [lidcSearch],
+      history,
+      currentFindingId: "f_lidc",
+    }),
+    1
+  );
+});
+
+test("second vague turn replaces a repeated search line with the location", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "Follow the pointer. Do not chase mediastinum until both lungs are surveyed.",
+    mode: "socratic",
+    question: "still not sure",
+    history: [
+      { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
+      {
+        role: "assistant",
+        text: "Follow the pointer. Begin at the carina.",
+        findingId: "f_lidc",
+      },
+    ],
+    actions: [{ type: "point_to", findingId: "f_lidc" }],
+    findings: [lidcSearch],
+    currentFindingId: "f_lidc",
+  });
+  assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /carina/i);
+  assert.doesNotMatch(answer, /chase mediastinum/i);
+  assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
+  assert.doesNotMatch(answer, /nodule/i);
+});
+
+test("I don't know replaces a bare look-cue with the label and one pearl", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "Look at this slice.",
+    mode: "socratic",
+    question: "I don't know. Please show me this finding and teach it.",
+    history: [
+      { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
+      { role: "assistant", text: "Follow the pointer. Begin at the carina.", findingId: "f_lidc" },
+    ],
+    actions: [],
+    findings: [lidcSearch],
+    currentFindingId: "f_lidc",
+  });
+  assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /Lung window — start mid-chest/);
+  assert.match(answer, /search pattern|upper lobes/i);
+  assert.doesNotMatch(answer, /nodule|pneumothorax|consolidation/i);
+});
+
+test("attempts on another finding do not climb this one", () => {
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "still not sure",
+      finding: findings[1],
+      findings,
+      currentFindingId: "f_nod",
+      history: [
+        { role: "user", text: partial, findingId: "f_ptx" },
+        { role: "user", text: "Still consolidation.", findingId: "f_ptx" },
+        { role: "assistant", text: "Right apical pneumothorax.", findingId: "f_ptx" },
+      ],
+    }),
+    0
+  );
+});
+
+test("offline fallback climbs the same ladder as an empty model", () => {
+  const first = tutorSpeechPlan({
+    answer: "",
+    mode: "socratic",
+    question: partial,
+    actions: [],
+    findings,
+    currentFindingId: "f_ptx",
+    tourActive: false,
+    history: [],
+  });
+  assert.equal(first.speak, true);
+  assert.match(first.answer, /^(Look|See|Watch|Follow)\b/);
+  assert.match(first.answer, /What do you see\?/);
+  assert.doesNotMatch(first.answer, /pneumothorax|pleural|skin fold/i);
+
+  const second = tutorSpeechPlan({
+    answer: "",
+    mode: "socratic",
+    question: "still not sure",
+    actions: [],
+    findings,
+    currentFindingId: "f_ptx",
+    tourActive: false,
+    history: [{ role: "user", text: partial, findingId: "f_ptx" }],
+  });
+  assert.match(second.answer, /pleural line|apex/i);
+  assert.doesNotMatch(second.answer, /\bpneumothorax\b/i);
+  assert.doesNotMatch(second.answer, /skin fold/i);
+
+  const third = tutorSpeechPlan({
+    answer: "",
+    mode: "socratic",
+    question: "still not sure",
+    actions: [],
+    findings,
+    currentFindingId: "f_ptx",
+    tourActive: false,
+    history: [
+      { role: "user", text: partial, findingId: "f_ptx" },
+      { role: "user", text: "The apex, but not sure.", findingId: "f_ptx" },
+    ],
+  });
+  assert.match(third.answer, /skin fold/i);
+  assert.doesNotMatch(third.answer, /\bpneumothorax\b/i);
+
+  const reveal = tutorSpeechPlan({
+    answer: "Look at this slice.",
+    mode: "socratic",
+    question: "show me",
+    actions: [],
+    findings,
+    currentFindingId: "f_ptx",
+    tourActive: false,
+  });
+  assert.match(reveal.answer, /Right apical pneumothorax/);
+  assert.match(reveal.answer, /skin fold/i);
+});
+
 test("location hint redacts the diagnosis and does not invent a mimic", () => {
+  const nod = {
+    id: "f_nod",
+    label: "Left lower lobe nodule",
+    description: "8 mm solid nodule in the left lower lobe.",
+    teachingPoints: ["If it vanishes on the next slice it is a vessel, not a nodule."],
+    order: 1,
+  };
   const answer = ensureSpokenAnswer({
     answer: "",
     mode: "socratic",
     question: "Round opacity in the left lower lobe. I call it a vessel.",
+    history: [{ role: "user", text: "Something round. Maybe a vessel.", findingId: "f_nod" }],
     actions: [],
-    findings: [
-      {
-        id: "f_nod",
-        label: "Left lower lobe nodule",
-        description: "8 mm solid nodule in the left lower lobe.",
-        teachingPoints: ["If it vanishes on the next slice it is a vessel, not a nodule."],
-        order: 1,
-      },
-    ],
+    findings: [nod],
     currentFindingId: "f_nod",
   });
   assert.match(answer, /left lower lobe/i);
-  assert.doesNotMatch(answer, /nodule/i);
+  assert.doesNotMatch(answer, /\bnodule\b/i);
   assert.doesNotMatch(answer, /vessel/i);
   assert.doesNotMatch(answer, /carina|pleura|pneumothorax|consolidation/i);
 });
@@ -270,8 +495,9 @@ test("a reveal resets the ladder for the next partial answer", () => {
     currentFindingId: "f_nod",
   });
   assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
-  assert.match(answer, /left lower lobe|8 mm/i);
+  assert.match(answer, /What do you see\?/);
   assert.doesNotMatch(answer, /nodule/i);
+  assert.doesNotMatch(answer, /left lower lobe/i);
   assert.doesNotMatch(answer, /pneumothorax/i);
   assert.doesNotMatch(answer, /scar/i);
 });

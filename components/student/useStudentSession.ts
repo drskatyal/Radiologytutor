@@ -79,6 +79,8 @@ export interface ChatTurn {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Finding this turn was about. The exam ladder climbs one finding at a time. */
+  findingId?: string;
   /** A spoken (voice) user turn. */
   voice?: boolean;
   /** A user turn whose transcript hasn't arrived yet. */
@@ -630,11 +632,15 @@ export function useStudentSession(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: ac.signal,
-          body: JSON.stringify({
+            body: JSON.stringify({
             caseId: caseData.caseId,
             mode,
             question,
-            messages: history.map((t) => ({ role: t.role, text: t.text })),
+            messages: history.map((t) => ({
+              role: t.role,
+              text: t.text,
+              findingId: t.findingId,
+            })),
             currentFindingId:
               activeIndexRef.current >= 0
                 ? orderedFindings[activeIndexRef.current]?.id
@@ -682,7 +688,10 @@ export function useStudentSession(
             return;
           }
           const id = nextId();
-          setTurns((prev) => [...prev, { id, role: "assistant", text: "", sources }]);
+          setTurns((prev) => [
+            ...prev,
+            { id, role: "assistant", text: "", sources, findingId: currentFindingId },
+          ]);
           setPhase("speaking");
           setSpeakingTurnId(id);
           void speakBeats(
@@ -710,7 +719,11 @@ export function useStudentSession(
           );
         };
 
-        const priorTurns = history.map((turn) => ({ role: turn.role, text: turn.text }));
+        const priorTurns = history.map((turn) => ({
+          role: turn.role,
+          text: turn.text,
+          findingId: turn.findingId,
+        }));
 
         if (!res.ok) {
           // 503 means GEMINI_API_KEY isn't set — still speak an authored line
@@ -1017,10 +1030,14 @@ export function useStudentSession(
       stopSpeaking();
       stopReplay();
       const history = turnsRef.current;
-      setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed }]);
+      const findingId =
+        activeIndexRef.current >= 0
+          ? orderedFindings[activeIndexRef.current]?.id
+          : undefined;
+      setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed, findingId }]);
       runTutor(trimmed, history);
     },
-    [busy, runTutor, stopReplay, pauseTour]
+    [busy, orderedFindings, runTutor, stopReplay, pauseTour]
   );
 
   const sayDontKnow = useCallback(() => {
@@ -1058,7 +1075,14 @@ export function useStudentSession(
 
     // Render a pending user turn immediately, fill it with the transcript.
     const pendingId = nextId();
-    setTurns((prev) => [...prev, { id: pendingId, role: "user", text: "", voice: true, pending: true }]);
+    const findingId =
+      activeIndexRef.current >= 0
+        ? orderedFindings[activeIndexRef.current]?.id
+        : undefined;
+    setTurns((prev) => [
+      ...prev,
+      { id: pendingId, role: "user", text: "", voice: true, pending: true, findingId },
+    ]);
     setPhase("transcribing");
 
     try {
@@ -1095,7 +1119,7 @@ export function useStudentSession(
       toast({ title: "Voice unavailable", description: msg, variant: "danger" });
       setPhase("idle");
     }
-  }, [recorder, runTutor, toast]);
+  }, [orderedFindings, recorder, runTutor, toast]);
 
   // --- Tour controls (step rail) -------------------------------------------
   const goTo = useCallback(
