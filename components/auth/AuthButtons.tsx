@@ -76,7 +76,6 @@ export function GoogleSignInButton({
 }
 
 export function DemoSignInButton({ next }: { next?: string }) {
-  const router = useRouter();
   const [busyRole, setBusyRole] = useState<DemoPick | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,8 +100,10 @@ export function DemoSignInButton({ next }: { next?: string }) {
           membershipRole?: MembershipRole | null;
         };
       };
-      router.push(dest || homeFor(data.user ?? {}));
-      router.refresh();
+      // Full navigation so the new demo cookie is the one the next document
+      // loads, and AppShell refetches /api/me instead of keeping the previous
+      // persona (Teacher demo was sticking on Demo Student).
+      window.location.assign(dest || homeFor(data.user ?? {}));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Demo sign-in failed.");
       setBusyRole(null);
