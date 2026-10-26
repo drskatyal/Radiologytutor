@@ -5,6 +5,7 @@ import {
   applyLocateClick,
   beginFindingStep,
   commitGuideLine,
+  commitSpokenProgress,
   commitSelectedFinding,
   examEntryTransition,
   examinerCaptionTurn,
@@ -282,6 +283,22 @@ test("guide lines still accumulate while Teach owns the epoch", () => {
   const orient = commitGuideLine(started, "tour", "Follow the stack.", 1, 1, "replace");
   const next = commitGuideLine(orient, "tour", "Follow the vessels as you move.", 1, 1);
   assert.equal(next[0]?.text, tourLine);
+});
+
+test("spoken progress captions the sentence in flight and keeps the transcript", () => {
+  const started = appendGuideTurn([], { id: "tour", role: "assistant" as const, text: "" }, 1, 1);
+  const first = commitSpokenProgress(started, "tour", "Follow the stack.", 1, 1);
+  const second = commitSpokenProgress(first, "tour", "Name the nodule.", 1, 1);
+  assert.equal(second[0]?.text, "Follow the stack. Name the nodule.");
+  assert.equal(second[0]?.liveCaption, "Name the nodule.");
+  const caption = examinerCaptionTurn(second, 0);
+  assert.equal(caption?.text, "Name the nodule.");
+  // Rail still has both sentences. Only the on-image line is the live one.
+  assert.equal(second[0]?.text.includes("Follow the stack."), true);
+
+  const late = commitSpokenProgress(second, "tour", "A stale pearl.", 1, 2);
+  assert.equal(late[0]?.liveCaption, "Name the nodule.");
+  assert.equal(late[0]?.text.includes("stale"), false);
 });
 
 test("moving between findings in exam does not uncover the marker", () => {

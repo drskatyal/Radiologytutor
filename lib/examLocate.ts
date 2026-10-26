@@ -72,14 +72,18 @@ export function examinerVisibleTurns<T>(turns: readonly T[], floor: number): T[]
 }
 
 /** Last assistant line in the visible examiner transcript. Null when the panel should sit ready. */
-export function examinerCaptionTurn<T extends { role: string; text: string; error?: boolean }>(
-  turns: readonly T[],
-  floor: number
-): T | null {
+export function examinerCaptionTurn<
+  T extends { role: string; text: string; error?: boolean; liveCaption?: string }
+>(turns: readonly T[], floor: number): T | null {
   const visible = examinerVisibleTurns(turns, floor);
   for (let i = visible.length - 1; i >= 0; i--) {
     const turn = visible[i];
-    if (turn.role === "assistant" && !turn.error && turn.text.trim()) return turn;
+    if (turn.role !== "assistant" || turn.error) continue;
+    // While a sentence is in flight the on-image line is that sentence.
+    // The rail keeps the accumulated transcript on `text`.
+    const live = turn.liveCaption?.trim() ?? "";
+    if (live) return { ...turn, text: live };
+    if (turn.text.trim()) return turn;
   }
   return null;
 }
@@ -126,6 +130,55 @@ export function commitGuideLine<T extends { id: string; text: string }>(
     found = true;
     const text = how === "replace" || !turn.text.trim() ? trimmed : `${turn.text} ${trimmed}`;
     return { ...turn, text };
+  });
+  return found ? next : [...turns];
+}
+
+/**
+ * One spoken sentence has started. The transcript accumulates every sentence
+ * so the rail does not lose the tour. `liveCaption` is only the sentence
+ * whose audio just started, so the on-image line moves with speech instead
+ * of sticking the whole beat up front.
+ * A write scheduled before Exam (epoch moved) is dropped.
+ */
+export function commitSpokenProgress<
+  T extends { id: string; text: string; liveCaption?: string }
+>(
+  turns: readonly T[],
+  turnId: string,
+  sentence: string,
+  epochAtSchedule: number,
+  epochNow: number
+): T[] {
+  if (epochAtSchedule !== epochNow) return [...turns];
+  const line = sentence.trim();
+  if (!line) return [...turns];
+  let found = false;
+  const next = turns.map((turn) => {
+    if (turn.id !== turnId) return turn;
+    found = true;
+    const text = turn.text.trim() ? `${turn.text.trim()} ${line}` : line;
+    return { ...turn, text, liveCaption: line };
+  });
+  return found ? next : [...turns];
+}
+
+/**
+ * Point the on-image caption at a sentence without appending. Used when the
+ * transcript already holds the full answer (replay of a finished turn).
+ */
+export function focusLiveCaption<T extends { id: string; liveCaption?: string }>(
+  turns: readonly T[],
+  turnId: string,
+  sentence: string
+): T[] {
+  const line = sentence.trim();
+  if (!line) return [...turns];
+  let found = false;
+  const next = turns.map((turn) => {
+    if (turn.id !== turnId) return turn;
+    found = true;
+    return { ...turn, liveCaption: line };
   });
   return found ? next : [...turns];
 }

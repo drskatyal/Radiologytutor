@@ -3,7 +3,7 @@
 import { Modal, Kbd } from "@/components/ui";
 
 const ROWS: { keys: string[]; does: string }[] = [
-  { keys: ["Space"], does: "Hold to speak (push-to-talk) — pauses Teach tour" },
+  { keys: ["Space"], does: "Interrupt the attending, then hold to answer" },
   { keys: ["Wheel"], does: "Scroll the stack" },
   { keys: ["Right-drag"], does: "Zoom" },
   { keys: ["Middle-drag"], does: "Pan" },

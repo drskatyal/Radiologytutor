@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRecorder } from "@/components/useRecorder";
 import { useToast, type MicState } from "@/components/ui";
-import { speak, speakBeats, stopSpeaking } from "@/lib/speak";
+import { primeAttendingSpeech, speakBeats, stopSpeaking } from "@/lib/speak";
 import {
   buildPerformancePlan,
   normalizeTutorActions,
@@ -48,8 +48,9 @@ import {
   appendGuideTurn,
   applyLocateClick,
   beginFindingStep,
-  commitGuideLine,
   commitSelectedFinding,
+  commitSpokenProgress,
+  focusLiveCaption,
   examEntryTransition,
   isExamMode,
   locateModeArmed,
@@ -107,6 +108,11 @@ export interface ChatTurn {
   error?: boolean;
   /** Web sources the tutor cited (assistant turns; from grounding). */
   sources?: ChatSource[];
+  /**
+   * Sentence whose audio just started. The rail keeps the full `text`.
+   * The on-image caption prefers this so it moves with speech.
+   */
+  liveCaption?: string;
 }
 
 type ViewerAction = HarnessViewerAction;
@@ -431,6 +437,32 @@ export function useStudentSession(
     interruptPlayback();
   }, [interruptPlayback]);
 
+  // Prefetch the next beat's first sentence. speakBeats plays that sentence
+  // from the primed blob and fetches any further sentences while it plays.
+  const primeGuideLine = useCallback((text: string) => {
+    const first = splitSentences(text)[0];
+    if (first) primeAttendingSpeech(first);
+  }, []);
+
+  const speakGuideSentences = useCallback(
+    async (turnId: string, text: string, stale: () => boolean) => {
+      const sentences = splitSentences(text);
+      if (sentences.length === 0 || stale()) return;
+      await speakBeats(sentences, {
+        persona: "attending",
+        onStartBeat: (index) => {
+          if (stale()) return;
+          const sentence = sentences[index] ?? "";
+          const lineEpoch = revealEpochRef.current;
+          setTurns((prev) =>
+            commitSpokenProgress(prev, turnId, sentence, lineEpoch, revealEpochRef.current)
+          );
+        },
+      });
+    },
+    []
+  );
+
   /** Animate the laser to a normalized point, then optionally land a marker. */
   const pointLaser = useCallback(async (x: number, y: number, landMarker?: Marker) => {
     if (!overlay.current?.animateTo) return;
@@ -552,7 +584,10 @@ export function useStudentSession(
     async (
       finding: Finding,
       guide: TeachingGuide,
-      opts?: { narrate?: (text: string) => Promise<void> }
+      opts?: {
+        narrate?: (text: string) => Promise<void>;
+        primeNarration?: (text: string) => void;
+      }
     ) => {
       if (!controls.current) return;
       stopReplay();
@@ -578,6 +613,7 @@ export function useStudentSession(
         },
         {
           narrate: opts?.narrate,
+          primeNarration: opts?.primeNarration,
           // Hint only. The script's own say lines already go through narrate.
           // Do not fill this with tutorSpeech — guided mode would name the finding.
           landmark: finding.landmark,
@@ -744,15 +780,13 @@ export function useStudentSession(
               setPhase("speaking");
               setSpeakingTurnId(turnId);
               await playFindingGuide(target, guide, {
-                narrate: async (text) => {
-                  if (playbackGen !== playbackGenRef.current) return;
-                  const lineEpoch = revealEpochRef.current;
-                  setTurns((prev) =>
-                    commitGuideLine(prev, turnId, text, lineEpoch, revealEpochRef.current)
-                  );
-                  if (playbackGen !== playbackGenRef.current) return;
-                  await speak(text, undefined, { persona: "attending" });
-                },
+                primeNarration: primeGuideLine,
+                narrate: (text) =>
+                  speakGuideSentences(
+                    turnId,
+                    text,
+                    () => playbackGen !== playbackGenRef.current
+                  ),
               });
               setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
               setPhase((phase) => (phase === "speaking" ? "idle" : phase));
@@ -773,7 +807,7 @@ export function useStudentSession(
           break;
       }
     },
-    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep]
+    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep, primeGuideLine, speakGuideSentences]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -871,13 +905,12 @@ export function useStudentSession(
             {
               authorId: caseData.authorId,
               onStartBeat: (i) => {
-                const soFar = spoken
-                  .slice(0, i + 1)
-                  .map((beat) => beat.text)
-                  .join(" ");
+                const sentence = spoken[i]?.text ?? "";
                 setTurns((prev) =>
-                  commitGuideLine(prev, id, soFar, epoch, revealEpochRef.current, "replace")
+                  commitSpokenProgress(prev, id, sentence, epoch, revealEpochRef.current)
                 );
+                // This sentence's tools start with the sentence, not after
+                // the whole answer has been spoken.
                 for (const action of spoken[i].actions) {
                   void executeAction(action);
                 }
@@ -1048,10 +1081,7 @@ export function useStudentSession(
       // this same entry, not only the finding rail.
       interruptPlayback();
       const playbackGen = playbackGenRef.current;
-      const speakLine = async (text: string) => {
-        if (stale() || playbackGen !== playbackGenRef.current) return;
-        await speak(text, undefined, { persona: "attending" });
-      };
+      const lineStale = () => stale() || playbackGen !== playbackGenRef.current;
       if (index >= orderedFindings.length) {
         finishTour();
         return;
@@ -1097,50 +1127,20 @@ export function useStudentSession(
           setSpeakingTurnId(turnId);
         }
         const guidePlay = playFindingGuide(finding, guide, {
-          narrate: says.length && turnId
-            ? async (text) => {
-                if (stale() || playbackGen !== playbackGenRef.current) return;
-                const lineEpoch = revealEpochRef.current;
-                setTurns((prev) =>
-                  commitGuideLine(prev, turnId, text, lineEpoch, revealEpochRef.current)
-                );
-                await speakLine(text);
-              }
-            : undefined,
+          primeNarration: primeGuideLine,
+          narrate:
+            says.length && turnId
+              ? (text) => speakGuideSentences(turnId, text, lineStale)
+              : undefined,
         });
         const cuePlay =
           fallbackCue && turnId
-            ? (async () => {
-                if (stale() || playbackGen !== playbackGenRef.current) return;
-                const lineEpoch = revealEpochRef.current;
-                setTurns((prev) =>
-                  commitGuideLine(
-                    prev,
-                    turnId,
-                    fallbackCue,
-                    lineEpoch,
-                    revealEpochRef.current,
-                    "replace"
-                  )
-                );
-                await speakLine(fallbackCue);
-              })()
+            ? speakGuideSentences(turnId, fallbackCue, lineStale)
             : Promise.resolve();
         await Promise.all([guidePlay, cuePlay]);
         if (stale() || playbackGen !== playbackGenRef.current) return;
         if (fallbackRest && turnId) {
-          const lineEpoch = revealEpochRef.current;
-          setTurns((prev) =>
-            commitGuideLine(
-              prev,
-              turnId,
-              `${fallbackCue} ${fallbackRest}`,
-              lineEpoch,
-              revealEpochRef.current,
-              "replace"
-            )
-          );
-          await speakLine(fallbackRest);
+          await speakGuideSentences(turnId, fallbackRest, lineStale);
         }
         if (stale() || playbackGen !== playbackGenRef.current) return;
         setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
@@ -1189,6 +1189,8 @@ export function useStudentSession(
       caseData.authorId,
       interruptPlayback,
       commitFindingStep,
+      primeGuideLine,
+      speakGuideSentences,
     ]
   );
 
@@ -1461,14 +1463,18 @@ export function useStudentSession(
       interruptPlayback();
       setPhase("speaking");
       setSpeakingTurnId(turn.id);
-      speak(
-        turn.text,
-        () => {
+      const sentences = splitSentences(turn.text);
+      void speakBeats(sentences.length ? sentences : [turn.text], {
+        authorId: caseData.authorId,
+        onStartBeat: (index) => {
+          const sentence = sentences[index] ?? turn.text;
+          setTurns((prev) => focusLiveCaption(prev, turn.id, sentence));
+        },
+        onEnd: () => {
           setSpeakingTurnId((cur) => (cur === turn.id ? null : cur));
           setPhase((p) => (p === "speaking" ? "idle" : p));
         },
-        { authorId: caseData.authorId }
-      );
+      });
     },
     [speakingTurnId, phase, interruptPlayback, caseData.authorId]
   );
