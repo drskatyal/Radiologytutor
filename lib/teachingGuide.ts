@@ -27,6 +27,15 @@ import type {
   TeachingGuide,
 } from "./types";
 
+/** Act order a cleaned take is allowed to teach. Omitted acts are gestures the take never landed. */
+export const TEACH_ACTS: readonly TeachAct[] = ["orient", "search", "lean-in", "commit", "pearl"];
+
+/**
+ * Below this, the take is too short to be a full walk-through. Save still
+ * builds a guide from the gestures that exist plus the authored prose.
+ */
+export const SHORT_TRACK_MS = 1500;
+
 export type { NarrationSpan };
 
 const WW_EPS = 20;
@@ -696,6 +705,15 @@ export function guideForFindingTrack(
   });
 }
 
+/** True when a finding carries a teacher take Teach should rebuild from. */
+export function teacherTrackPresent(finding: {
+  track?: Pick<RecordedTrack, "events" | "durationMs"> | null;
+}): boolean {
+  const track = finding.track;
+  if (!track) return false;
+  return (track.events?.length ?? 0) > 0 || (track.durationMs ?? 0) > 0;
+}
+
 /**
  * Precedence, highest first:
  * 1. RecordedTrack — rebuild with buildTeachingGuide from the track and the
@@ -708,20 +726,22 @@ export function guideForFindingTrack(
  * replaces what Teach says, because the track is the source.
  */
 export function resolveTeachingGuide(
-  finding: Pick<
-    Finding,
-    | "track"
-    | "teachingGuide"
-    | "description"
-    | "teachingPoints"
-    | "label"
-    | "sliceIndex"
-    | "windowWidth"
-    | "windowCenter"
-    | "marker"
+  finding: Partial<
+    Pick<
+      Finding,
+      | "track"
+      | "teachingGuide"
+      | "description"
+      | "teachingPoints"
+      | "label"
+      | "sliceIndex"
+      | "windowWidth"
+      | "windowCenter"
+      | "marker"
+    >
   >
 ): TeachingGuide | null {
-  if (finding.track && (finding.track.events?.length || finding.track.durationMs > 0)) {
+  if (finding.track && teacherTrackPresent(finding)) {
     return guideForFindingTrack(finding.track, {
       label: finding.label,
       description: finding.description,
@@ -830,10 +850,48 @@ export function measurementsFromGuide(guide: TeachingGuide): FindingMeasurement[
   });
 }
 
+/** Clock used to place spans. A zero-length take still gets a 1ms span. */
+export function trackClockMs(track: Pick<RecordedTrack, "durationMs" | "events">): number {
+  const last = (track.events ?? []).reduce(
+    (max, event) => Math.max(max, Number.isFinite(event.t) ? event.t : 0),
+    0
+  );
+  return Math.max(track.durationMs || 0, last, 1);
+}
+
+/** A blip, not a walk-through. Save still keeps it. */
+export function isShortTrack(track: Pick<RecordedTrack, "durationMs" | "events">): boolean {
+  return trackClockMs(track) < SHORT_TRACK_MS;
+}
+
+/**
+ * Sentence spans for a take whose microphone produced nothing Teach can time.
+ * Description and teaching points win; the label is the last resort so the
+ * track never stores an empty narration.
+ */
+export function proseFallbackSpans(
+  input: { label?: string; description?: string; teachingPoints?: string[] },
+  durationMs: number
+): NarrationSpan[] {
+  const prose = narrationText(input);
+  const text = prose || input.label?.trim() || "Finding.";
+  const duration = Math.max(1, durationMs);
+  const spans = spansFromTranscript(text, duration);
+  if (spans.length) return spans;
+  return [{ tStartMs: 0, tEndMs: duration, text }];
+}
+
+function ensureTrackClock(track: RecordedTrack): RecordedTrack {
+  const durationMs = trackClockMs(track);
+  return durationMs === track.durationMs ? track : { ...track, durationMs };
+}
+
 /**
  * Attach the track, its teach script, and any strokes the recording captured
  * onto a finding draft. Live viewport measurements win when both exist.
  * Transcript spans stay on the track so a later session can rebuild the script.
+ * When the mic produced no spans, authored prose (or the label) is stored instead
+ * so Teach still has a narration clock.
  */
 export function withRecordedTeaching<T extends Partial<Finding>>(
   base: T,
@@ -846,27 +904,212 @@ export function withRecordedTeaching<T extends Partial<Finding>>(
   },
   liveMeasurements?: FindingMeasurement[]
 ): T {
-  const spans = normalizeNarrationSpans(
-    narration.spans ?? track.narration,
-    Math.max(1, track.durationMs)
-  );
-  const stored: RecordedTrack = spans.length ? { ...track, narration: spans } : { ...track };
+  const clocked = ensureTrackClock(track);
+  const provided = narration.spans !== undefined ? narration.spans : clocked.narration;
+  const normalized = normalizeNarrationSpans(provided, trackClockMs(clocked));
+  const spans = normalized.length
+    ? normalized
+    : proseFallbackSpans(
+        {
+          label: narration.label ?? base.label,
+          description: narration.description ?? base.description,
+          teachingPoints: narration.teachingPoints ?? base.teachingPoints,
+        },
+        trackClockMs(clocked)
+      );
+  const stored: RecordedTrack = { ...clocked, narration: spans };
   const teachingGuide = guideForFindingTrack(stored, {
     label: narration.label ?? base.label,
-    description: narration.description,
-    teachingPoints: narration.teachingPoints,
+    description: narration.description ?? base.description,
+    teachingPoints: narration.teachingPoints ?? base.teachingPoints,
     spans: stored.narration,
     point:
       base.marker && Number.isFinite(base.marker.x_pct) && Number.isFinite(base.marker.y_pct)
         ? { x: base.marker.x_pct, y: base.marker.y_pct }
         : undefined,
   });
-  const measurements = mergeMeasurements(liveMeasurements, measurementsFromTrack(track));
+  const measurements = mergeMeasurements(liveMeasurements, measurementsFromTrack(clocked));
   return {
     ...base,
     track: stored,
-    durationMs: track.durationMs,
+    durationMs: stored.durationMs,
     teachingGuide,
     ...(measurements.length ? { measurements } : {}),
+  };
+}
+
+/** How the spans on a saved take were timed. */
+export type RecordedNarrationKind = NarrationAlignment | "prose";
+
+/** Why a save had no model transcript. `none` means a transcript was kept. */
+export type RecordedNarrationGap = "none" | "empty-mic" | "empty-transcript" | "stt-failed";
+
+/** What Studio shows after Record → Save, and what tests assert. */
+export interface RecordedSaveReceipt {
+  beatCount: number;
+  acts: TeachAct[];
+  alignment: RecordedNarrationKind;
+  /** Model segment times were kept. A word-count split is not aligned. */
+  transcriptAligned: boolean;
+  /** The finding was on a demo guide, and Teach now rebuilds from this take. */
+  demoSuperseded: boolean;
+  shortTrack: boolean;
+  gap: RecordedNarrationGap;
+}
+
+export interface RecordedTakeNarration {
+  transcript?: string;
+  spans?: NarrationSpan[];
+  alignment?: NarrationAlignment;
+  /** Set when there is no usable transcript. */
+  gap?: Exclude<RecordedNarrationGap, "none">;
+}
+
+/**
+ * Map an STT response onto the save. A null result is a failed call. An empty
+ * transcript is a silent mic, not a timing success.
+ */
+export function narrationFromTranscribeResult(
+  audioPresent: boolean,
+  result: { transcript: string; spans: NarrationSpan[]; alignment: NarrationAlignment } | null
+): { published: RecordedTakeNarration | null; gap: RecordedNarrationGap } {
+  if (!audioPresent) return { published: null, gap: "empty-mic" };
+  if (!result) return { published: null, gap: "stt-failed" };
+  const transcript = result.transcript.trim();
+  if (!transcript && result.spans.length === 0) {
+    return { published: null, gap: "empty-transcript" };
+  }
+  return {
+    published: { transcript, spans: result.spans, alignment: result.alignment },
+    gap: "none",
+  };
+}
+
+function spansFromTake(
+  take: RecordedTakeNarration | null | undefined,
+  durationMs: number
+): { spans: NarrationSpan[]; alignment: NarrationAlignment } | null {
+  if (!take) return null;
+  const transcript = take.transcript?.trim() ?? "";
+  const raw = take.spans ?? [];
+  if (!transcript && raw.length === 0) return null;
+  if (raw.length && take.alignment) {
+    const spans = normalizeNarrationSpans(raw, Math.max(1, durationMs));
+    if (spans.length) return { spans, alignment: take.alignment };
+  }
+  const published = publishNarrationTake({ transcript, segments: raw }, Math.max(1, durationMs));
+  if (!published.transcript && published.spans.length === 0) return null;
+  return published;
+}
+
+/**
+ * Acts `buildTeachingGuide` will emit for this track before any transcript.
+ * Pass the marker the save will store so a click (or the centre placeholder)
+ * shows the commit beat the toast will count.
+ */
+export function recordedGuidePreview(
+  track: RecordedTrack,
+  anchors?: { point?: { x: number; y: number } }
+): {
+  beatCount: number;
+  acts: TeachAct[];
+  shortTrack: boolean;
+} {
+  const guide = buildTeachingGuide(ensureTrackClock(track), {
+    anchors: anchors?.point ? { point: anchors.point } : undefined,
+  });
+  return {
+    beatCount: guide.beats.length,
+    acts: guide.beats.map((beat) => beat.act).filter((act): act is TeachAct => Boolean(act)),
+    shortTrack: isShortTrack(track),
+  };
+}
+
+/**
+ * Save seam for a one-take finding. Always stores narration spans and a
+ * teaching guide. A missing transcript falls back to authored prose. The
+ * returned finding is what `resolveTeachingGuide` rebuilds — a demo guide
+ * left on the draft does not win.
+ */
+export function commitRecordedFinding<T extends Partial<Finding>>(
+  base: T,
+  track: RecordedTrack,
+  narration: {
+    description?: string;
+    teachingPoints?: string[];
+    label?: string;
+    take?: RecordedTakeNarration | null;
+  },
+  liveMeasurements?: FindingMeasurement[]
+): { finding: T; receipt: RecordedSaveReceipt } {
+  const priorGuide = base.teachingGuide;
+  const priorWasDemo = Boolean(priorGuide?.beats?.length) && !teacherTrackPresent(base);
+  const clocked = ensureTrackClock(track);
+  const published = spansFromTake(narration.take, trackClockMs(clocked));
+  const gap: RecordedNarrationGap = published ? "none" : (narration.take?.gap ?? "empty-mic");
+  const drafted = withRecordedTeaching(
+    base,
+    clocked,
+    {
+      label: narration.label ?? base.label,
+      description: narration.description ?? base.description,
+      teachingPoints: narration.teachingPoints ?? base.teachingPoints,
+      spans: published?.spans ?? [],
+    },
+    liveMeasurements
+  );
+  const money = settledDisplay(drafted.track ?? clocked);
+  const finding = {
+    ...drafted,
+    sliceIndex: money.sliceIndex,
+    ...(money.ww != null ? { windowWidth: money.ww } : {}),
+    ...(money.wc != null ? { windowCenter: money.wc } : {}),
+  };
+  const guide = finding.teachingGuide;
+  const acts = (guide?.beats ?? [])
+    .map((beat) => beat.act)
+    .filter((act): act is TeachAct => Boolean(act));
+  const storedLines = authoredGuideLines(guide).join("\n");
+  const demoLines = authoredGuideLines(priorGuide).join("\n");
+  const liveLines = authoredGuideLines(
+    resolveTeachingGuide(priorWasDemo ? { ...finding, teachingGuide: priorGuide } : finding)
+  ).join("\n");
+  const alignment: RecordedNarrationKind = published ? published.alignment : "prose";
+  return {
+    finding,
+    receipt: {
+      beatCount: guide?.beats.length ?? 0,
+      acts,
+      alignment,
+      transcriptAligned: alignment === "estimated",
+      demoSuperseded:
+        priorWasDemo && storedLines.length > 0 && liveLines === storedLines && liveLines !== demoLines,
+      shortTrack: isShortTrack(clocked),
+      gap,
+    },
+  };
+}
+
+/** Author-facing summary of a one-take save. */
+export function formatRecordedSave(receipt: RecordedSaveReceipt): {
+  title: string;
+  description: string;
+  tone: "ready" | "degraded";
+} {
+  const beats = `${receipt.beatCount} teach ${receipt.beatCount === 1 ? "beat" : "beats"}`;
+  let source: string;
+  if (receipt.transcriptAligned) source = "Transcript aligned to the take.";
+  else if (receipt.alignment === "proportional") source = "Transcript split across the take.";
+  else if (receipt.gap === "stt-failed") source = "Transcription failed — teaching from your notes.";
+  else if (receipt.gap === "empty-transcript") source = "Microphone was silent — teaching from your notes.";
+  else source = "No microphone — teaching from your notes.";
+  const extra = [
+    receipt.shortTrack ? "Short take kept." : "",
+    receipt.demoSuperseded ? "Demo tour replaced." : "",
+  ].filter(Boolean);
+  return {
+    title: receipt.demoSuperseded ? "Recorded take replaces the demo" : "Teach guide saved",
+    description: [`${beats}.`, source, ...extra].join(" "),
+    tone: receipt.gap === "stt-failed" ? "degraded" : "ready",
   };
 }

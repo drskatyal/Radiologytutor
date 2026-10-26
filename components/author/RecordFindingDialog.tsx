@@ -38,9 +38,16 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
-import { settledDisplay, withRecordedTeaching } from "@/lib/teachingGuide";
+import type { RecordedSaveReceipt } from "@/lib/teachingGuide";
 import { LandmarkField } from "./LandmarkField";
-import { LIMITS, attachTakeAudio, markerFromTrack, structureFindingFromAudio, validateDraft } from "./lib";
+import { RecordedTakeNote } from "./RecordedTakeNote";
+import {
+  LIMITS,
+  assembleRecordedFinding,
+  markerFromTrack,
+  structureFindingFromAudio,
+  validateDraft,
+} from "./lib";
 
 interface RecordFindingDialogProps {
   open: boolean;
@@ -48,7 +55,7 @@ interface RecordFindingDialogProps {
   /** The case being authored — used to resolve its series rail for capture. */
   caseId?: string;
   /** Append the finding; resolves when created (parent toasts/refreshes). */
-  onCreate: (finding: Partial<Finding>) => Promise<void>;
+  onCreate: (finding: Partial<Finding>, receipt?: RecordedSaveReceipt) => Promise<void>;
 }
 
 const EMPTY: StructuredFinding = { label: "", description: "", teachingPoints: [] };
@@ -145,6 +152,9 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
   if (!open) return null;
 
   const hasTrack = !!rr.track && rr.track.events.length > 0;
+  const previewMarker = hasTrack
+    ? markerFromTrack(rr.track) ?? { x_pct: 0.5, y_pct: 0.5 }
+    : null;
   const errors = validateDraft(draft);
   const canSave = !!draft.label.trim() && !errors.label;
   const micBlocked = mic === "denied" || mic === "unsupported";
@@ -219,34 +229,25 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
+      let receipt: RecordedSaveReceipt | undefined;
 
       if (hasTrack) {
-        const prepared = await attachTakeAudio(rr.track as RecordedTrack, rr.audio);
-        const description =
-          base.description?.trim() || prepared.transcript || "";
-        base = {
-          ...base,
-          description,
-        };
-        base = withRecordedTeaching(
+        const assembled = await assembleRecordedFinding(
           base,
-          prepared.track,
-          {
-            label: base.label,
-            description,
-            teachingPoints: base.teachingPoints,
-            spans: prepared.track.narration,
-          },
+          rr.track as RecordedTrack,
+          rr.audio,
           measurements
         );
-        const money = settledDisplay(prepared.track);
-        if (money.sliceIndex !== start?.sliceIndex) base.sopInstanceUID = undefined;
+        base = assembled.finding;
+        receipt = assembled.receipt;
+        const moneySlice = base.sliceIndex ?? start?.sliceIndex ?? 0;
+        if (moneySlice !== start?.sliceIndex) base.sopInstanceUID = undefined;
         base = withDisplaySnapshot(base, {
-          sliceIndex: money.sliceIndex,
-          ww: money.ww,
-          wc: money.wc,
+          sliceIndex: moneySlice,
+          ww: base.windowWidth,
+          wc: base.windowCenter,
           sopInstanceUID:
-            money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+            moneySlice === start?.sliceIndex ? start?.sopInstanceUID : undefined,
         });
       } else if (measurements.length > 0) {
         base.measurements = measurements;
@@ -258,7 +259,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         base.studyInstanceUID = active.studyInstanceUID;
       }
 
-      await onCreate(base);
+      await onCreate(base, receipt);
       handleClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create finding");
@@ -405,11 +406,16 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
             to record while you talk. The hotkey is ignored while you type.
           </p>
         )}
-        {hasTrack && !rr.audio && rr.phase === "idle" && (
-          <p className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
-            Captured a silent walk-through (no narration recorded). You can re-record
-            with audio, or save it as-is and type the teaching text below.
-          </p>
+        {hasTrack && rr.phase === "idle" && rr.track && (
+          <RecordedTakeNote
+            track={rr.track}
+            hasAudio={Boolean(rr.audio)}
+            point={
+              previewMarker
+                ? { x: previewMarker.x_pct, y: previewMarker.y_pct }
+                : undefined
+            }
+          />
         )}
 
         {notice && (
