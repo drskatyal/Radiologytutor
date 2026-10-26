@@ -36,6 +36,7 @@ import { spaceGesture } from "@/lib/speechPipeline";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
+import { CheckInCard } from "./CheckInCard";
 import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
 import { TutorCaption } from "./TutorCaption";
@@ -111,6 +112,14 @@ export default function StudentSession({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on intent edge
   }, [intent, s.ready]);
 
+  // The question lives in the rail. Open it when the attending asks, and
+  // keep the viewer on the anchor — the choices are text, not a click target.
+  useEffect(() => {
+    if (!s.checkIn) return;
+    setRailOpen(true);
+    setPanel("ask");
+  }, [s.checkIn]);
+
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
   const onSeriesChange = useCallback(
     (uid: string) => {
@@ -143,6 +152,7 @@ export default function StudentSession({
     start: s.onMicStart,
     stop: s.onMicStop,
     bargeIn: s.pauseTour,
+    awaitingAnswer: Boolean(s.checkIn),
     next: s.skip,
     prev: s.prev,
     reveal: s.revealCurrent,
@@ -160,6 +170,7 @@ export default function StudentSession({
       s.pauseTour();
       s.onStopSpeaking();
     },
+    awaitingAnswer: Boolean(s.checkIn),
     next: s.skip,
     prev: s.prev,
     reveal: s.revealCurrent,
@@ -184,6 +195,7 @@ export default function StudentSession({
           busy: keys.busy,
           speaking: keys.speaking,
           recording: keys.recording,
+          awaitingAnswer: keys.awaitingAnswer,
         });
         // Capture Space when a mic can take the answer, or when the attending
         // is speaking and the learner needs the floor even without a mic.
@@ -295,6 +307,10 @@ export default function StudentSession({
           Exam mode · <Kbd>Space</Kbd> to talk · Ask or answer
         </>
       )
+    ) : s.checkIn ? (
+      <>
+        Check-in — answer in the tutor rail · <Kbd>Space</Kbd> interrupts
+      </>
     ) : s.tourActive ? (
       <>
         Teaching — the viewer follows the tutor · <Kbd>Space</Kbd> interrupts
@@ -594,6 +610,8 @@ export default function StudentSession({
             onTypingFocus={onTypingFocus}
             onTypingBlur={onTypingBlur}
             hideMic
+            checkIn={s.checkIn}
+            onAnswerCheckIn={s.answerCheckIn}
           />
         </div>
       </aside>
@@ -642,6 +660,14 @@ export default function StudentSession({
                 </button>
               ))}
             </div>
+          )}
+
+          {s.checkIn && !railOpen && (
+            <CheckInCard
+              prompt={s.checkIn.prompt}
+              options={s.checkIn.options}
+              onSelect={s.answerCheckIn}
+            />
           )}
 
           <div className="flex flex-wrap items-center justify-center gap-2">
@@ -711,7 +737,7 @@ export default function StudentSession({
                   Continue
                 </Button>
               )}
-              {intent === "teach" && s.tourActive && s.phase === "speaking" && (
+              {intent === "teach" && s.tourActive && (s.phase === "speaking" || s.checkIn) && (
                 <Button
                   size="sm"
                   variant="ghost"

@@ -9,8 +9,9 @@
 // Teach mode (guided) plays a cleaned teaching guide when the finding has one
 // (scroll, window, zoom, laser, strokes). Authored say lines go through
 // speak(); a motion guide with none uses tutorSpeechPlan. Otherwise it asks
-// the model to teach. An empty tutor answer advances the tour. Student
-// voice/text pauses the tour.
+// the model to teach. Before the commit (or a beat marked decision) the tour
+// pauses for a text check-in. A miss replays the lean-in; a hit skips the
+// pearl. An empty tutor answer advances the tour. Student voice/text pauses it.
 // Viva is the oral-exam path. The dense track is not played as a mic tape.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,6 +33,17 @@ import {
 } from "@/lib/tutorSpeech";
 import { findingViewerState } from "@/lib/viewerController";
 import { interruptGuidePlayback, playTeachingGuide, type ReplayController } from "@/lib/replay";
+import {
+  adaptRemainingFromState,
+  decisionBeatIndex,
+  fallbackCheckIn,
+  gradeCheckIn,
+  loadTourCheckIn,
+  recordCheckIn,
+  type ActiveCheckIn,
+  type CheckInBranch,
+  type FindingCheckInState,
+} from "@/lib/tourCheckIn";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
 import {
   authoredGuideLines,
@@ -166,6 +178,13 @@ export function useStudentSession(
   );
   const runGuidedRef = useRef<(index: number) => Promise<void>>(async () => {});
   const finishTourRef = useRef<() => void>(() => {});
+  /** In-flight check-in fetch. Interrupt aborts it so a late payload cannot land. */
+  const checkInAbortRef = useRef<AbortController | null>(null);
+  /** Resolves the option the student picked, or -1 when the tour is paused. */
+  const checkInResolveRef = useRef<((index: number) => void) | null>(null);
+  /** Which assistant bubble the next guide line appends to. */
+  const narrateTurnRef = useRef<string | null>(null);
+  const checkInsRef = useRef<FindingCheckInState[]>([]);
 
   const [ready, setReady] = useState(false);
   const [replaying, setReplaying] = useState(false);
@@ -178,6 +197,10 @@ export function useStudentSession(
   const [measurementsVisible, setMeasurementsVisible] = useState(false);
   /** Teach-mode autonomous tour is running (false after student interrupt). */
   const [tourActive, setTourActive] = useState(false);
+  /** Per-finding check-in results. Later beats in that finding read this. */
+  const [checkIns, setCheckIns] = useState<FindingCheckInState[]>([]);
+  /** MCQ on screen. Null while the tour is speaking a scripted beat. */
+  const [checkIn, setCheckIn] = useState<ActiveCheckIn | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [phase, setPhase] = useState<SessionPhase>("idle");
   // True while a "thinking" turn looks like it's reaching for the web — drives
@@ -412,10 +435,30 @@ export function useStudentSession(
     setPointing(false);
   }, []);
 
+  const releaseCheckIn = useCallback((index: number) => {
+    const resolve = checkInResolveRef.current;
+    checkInResolveRef.current = null;
+    setCheckIn(null);
+    if (index < 0 && resolve) {
+      setSpeakingTurnId(null);
+      setPhase((phase) => (phase === "speaking" ? "idle" : phase));
+    }
+    resolve?.(index);
+  }, []);
+
+  const answerCheckIn = useCallback(
+    (index: number) => {
+      releaseCheckIn(index);
+    },
+    [releaseCheckIn]
+  );
+
   // Finding change and tour advance. Cancel the guide first, then TTS.
   // speak() after stopSpeaking starts a new clip — that is how the previous
   // finding's "Follow the stack." was landing on the notes finding.
   const interruptPlayback = useCallback(() => {
+    checkInAbortRef.current?.abort();
+    releaseCheckIn(-1);
     playbackGenRef.current += 1;
     const ctrl = replayRef.current;
     replayRef.current = null;
@@ -428,7 +471,7 @@ export function useStudentSession(
     controls.current?.clearAnnotations?.();
     setReplaying(false);
     setPointing(false);
-  }, []);
+  }, [releaseCheckIn]);
 
   const pauseTour = useCallback(() => {
     tourGenRef.current += 1;
@@ -587,6 +630,10 @@ export function useStudentSession(
       opts?: {
         narrate?: (text: string) => Promise<void>;
         primeNarration?: (text: string) => void;
+        onCheckIn?: (ctx: {
+          beat: { say?: string };
+          index: number;
+        }) => Promise<CheckInBranch | "skip" | "paused" | null | void>;
       }
     ) => {
       if (!controls.current) return;
@@ -614,6 +661,7 @@ export function useStudentSession(
         {
           narrate: opts?.narrate,
           primeNarration: opts?.primeNarration,
+          onCheckIn: opts?.onCheckIn,
           // Hint only. The script's own say lines already go through narrate.
           // Do not fill this with tutorSpeech — guided mode would name the finding.
           landmark: finding.landmark,
@@ -1112,8 +1160,10 @@ export function useStudentSession(
             );
         const fallbackCue = fallbackSentences[0] ?? "";
         const fallbackRest = fallbackSentences.slice(1).join(" ");
-        const turnId = says.length || fallbackCue ? nextId() : null;
+        const ask = decisionBeatIndex(guide) != null;
+        const turnId = says.length || fallbackCue || ask ? nextId() : null;
         const epoch = revealEpochRef.current;
+        narrateTurnRef.current = turnId;
         if (turnId) {
           setTurns((prev) =>
             appendGuideTurn(
@@ -1126,12 +1176,97 @@ export function useStudentSession(
           setPhase("speaking");
           setSpeakingTurnId(turnId);
         }
+        const readyRef: { current: Awaited<ReturnType<typeof loadTourCheckIn>> | undefined } = {
+          current: undefined,
+        };
+        if (ask) {
+          const ac = new AbortController();
+          checkInAbortRef.current = ac;
+          void loadTourCheckIn(finding, ac.signal).then((value) => {
+            if (ac.signal.aborted) return;
+            readyRef.current = value;
+          });
+        }
         const guidePlay = playFindingGuide(finding, guide, {
           primeNarration: primeGuideLine,
-          narrate:
-            says.length && turnId
-              ? (text) => speakGuideSentences(turnId, text, lineStale)
-              : undefined,
+          narrate: turnId
+            ? (text) => {
+                const id = narrateTurnRef.current ?? turnId;
+                if (lineStale()) return Promise.resolve();
+                setPhase("speaking");
+                setSpeakingTurnId(id);
+                return speakGuideSentences(id, text, lineStale);
+              }
+            : undefined,
+          onCheckIn: ask
+            ? async () => {
+                if (stale()) return "paused";
+                const check =
+                  readyRef.current !== undefined ? readyRef.current : fallbackCheckIn(finding);
+                if (!check || stale()) return "skip";
+                const qId = nextId();
+                setTurns((prev) =>
+                  appendGuideTurn(
+                    prev,
+                    { id: qId, role: "assistant", text: "" },
+                    epoch,
+                    revealEpochRef.current
+                  )
+                );
+                setPhase("speaking");
+                setSpeakingTurnId(qId);
+                const askGen = tourGenRef.current;
+                const pickedPromise = new Promise<number>((resolve) => {
+                  checkInResolveRef.current = resolve;
+                  setCheckIn({
+                    findingId: finding.id,
+                    prompt: check.prompt,
+                    options: check.options,
+                  });
+                });
+                // The card is up before the clip ends so Space and the choices
+                // both work while the question is still being spoken.
+                void speakGuideSentences(qId, check.prompt, lineStale).finally(() => {
+                  if (tourGenRef.current !== askGen) return;
+                  if (!checkInResolveRef.current) return;
+                  setSpeakingTurnId((id) => (id === qId ? null : id));
+                  setPhase((phase) => (phase === "speaking" ? "idle" : phase));
+                });
+                const picked = await pickedPromise;
+                if (picked < 0 || stale()) return "paused";
+                const result = gradeCheckIn(check, picked);
+                const nextState = recordCheckIn(checkInsRef.current, {
+                  findingId: finding.id,
+                  result,
+                  prompt: check.prompt,
+                });
+                checkInsRef.current = nextState;
+                setCheckIns(nextState);
+                const option = check.options[picked] ?? "Don't know";
+                const userId = nextId();
+                const replyId = nextId();
+                narrateTurnRef.current = replyId;
+                setTurns((prev) =>
+                  appendGuideTurn(
+                    [
+                      ...prev,
+                      {
+                        id: userId,
+                        role: "user" as const,
+                        text: option,
+                        findingId: finding.id,
+                      },
+                    ],
+                    { id: replyId, role: "assistant", text: "" },
+                    epoch,
+                    revealEpochRef.current
+                  )
+                );
+                setPhase("speaking");
+                setSpeakingTurnId(replyId);
+                return adaptRemainingFromState(guide, nextState, finding.id, check) ?? "skip";
+              }
+            : undefined,
         });
         const cuePlay =
           fallbackCue && turnId
@@ -1201,7 +1336,8 @@ export function useStudentSession(
   // New caption text resets the timer, so a guide that is still advancing
   // is left alone. The last finding unlocks Continue; earlier ones advance.
   useEffect(() => {
-    if (mode !== "guided" || !tourActive || phase !== "speaking") return;
+    // A check-in is a deliberate pause. Hung-speech recovery must not skip it.
+    if (mode !== "guided" || !tourActive || phase !== "speaking" || checkIn) return;
     const gen = tourGenRef.current;
     const index = activeIndexRef.current;
     const timer = window.setTimeout(() => {
@@ -1219,7 +1355,7 @@ export function useStudentSession(
       void runGuidedRef.current(next);
     }, NARRATION_HOLD_MAX_MS + 2_000);
     return () => window.clearTimeout(timer);
-  }, [mode, tourActive, phase, turns, orderedFindings.length, interruptPlayback]);
+  }, [mode, tourActive, phase, turns, orderedFindings.length, interruptPlayback, checkIn]);
 
   const resumeTour = useCallback(() => {
     if (mode !== "guided" || busy) return;
@@ -1585,6 +1721,9 @@ export function useStudentSession(
   // Cleanup: stop audio/replay + abort any in-flight tutor call on unmount.
   useEffect(
     () => () => {
+      checkInAbortRef.current?.abort();
+      checkInResolveRef.current?.(-1);
+      checkInResolveRef.current = null;
       stopSpeaking();
       replayRef.current?.cancel();
       replayAudioRef.current?.pause();
@@ -1607,6 +1746,9 @@ export function useStudentSession(
     tourActive,
     pauseTour,
     resumeTour,
+    checkIn,
+    checkIns,
+    answerCheckIn,
     turns,
     phase,
     busy,
