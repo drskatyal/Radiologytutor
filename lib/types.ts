@@ -259,6 +259,12 @@ export interface TeachingGuide {
   /** Viewport to prime before the first beat. */
   start: { sliceIndex: number; ww?: number; wc?: number };
   beats: TeachBeat[];
+  /**
+   * Set when this script was rebuilt from a `voice: "notes"` track.
+   * Orient names the stored slice (spoken as that index plus one). Playback
+   * lands the orient scroll with that sentence.
+   */
+  voice?: "notes";
 }
 
 /** One finding's recorded demonstration: ordered events + optional narration.
