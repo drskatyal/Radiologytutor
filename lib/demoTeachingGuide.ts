@@ -9,6 +9,8 @@
  * `resolveTeachingGuide` then rebuilds from that track.
  */
 
+import { DEFAULT_ORG_ID } from "./cases";
+import { secondaryAnchor } from "./findingAnchors";
 import { getPublicCaseTemplate } from "./publicCases/catalog";
 import { buildTeachingGuide, teacherTrackPresent } from "./teachingGuide";
 import type {
@@ -19,7 +21,6 @@ import type {
   RecordedTrack,
   TeachingGuide,
 } from "./types";
-import { DEFAULT_ORG_ID } from "./cases";
 
 export const LIDC_CASE_ID = "case-lidc-nodule-search";
 
@@ -183,9 +184,67 @@ export function attachDemoTeachingGuide<T extends Partial<Finding>>(finding: T):
   };
 }
 
+function authoredRubricPresent(finding: Partial<Finding>): boolean {
+  if (finding.reportGold?.trim()) return true;
+  return (finding.reportMustMention ?? []).some((phrase) => phrase.trim());
+}
+
+/**
+ * Catalog report gold to copy onto a finding that has none.
+ * A non-empty `reportGold` or `reportMustMention` is left alone.
+ * Returns null when there is nothing to copy.
+ */
+export function missingReportRubric(
+  finding: Partial<Finding>,
+  source: Partial<Finding> | undefined
+): Partial<Pick<Finding, "reportGold" | "reportMustMention">> | null {
+  if (!source || authoredRubricPresent(finding)) return null;
+  const reportGold = source.reportGold?.trim() ?? "";
+  const reportMustMention = (source.reportMustMention ?? [])
+    .map((phrase) => phrase.trim())
+    .filter(Boolean);
+  if (!reportGold && reportMustMention.length === 0) return null;
+  return {
+    ...(reportGold ? { reportGold } : {}),
+    ...(reportMustMention.length ? { reportMustMention } : {}),
+  };
+}
+
+function mergeMissingReportRubric<T extends Partial<Finding>>(
+  finding: T,
+  source: Partial<Finding> | undefined
+): T {
+  const patch = missingReportRubric(finding, source);
+  if (!patch) return finding;
+  return { ...finding, ...patch };
+}
+
+/**
+ * Patch applied when `seed:lidc-teach` revisits a stored LIDC finding.
+ * Report gold comes from the catalog and is filled only when the finding
+ * has neither field. A teacher track is not replaced. The demo guide is
+ * attached only when that track is absent and the finding can host one.
+ */
+export function lidcReseedPatch(finding: Finding): Partial<Finding> | null {
+  const template = getPublicCaseTemplate(LIDC_CASE_ID);
+  const source = template?.findings.find((item) => item.order === finding.order);
+  const rubric = missingReportRubric(finding, source);
+  if (findingHasTeacherTrack(finding) || finding.sliceIndex == null || !finding.marker) {
+    return rubric;
+  }
+  const patch: Partial<Finding> = {
+    ...(rubric ?? {}),
+    teachingGuide: buildLidcDemoGuide(finding),
+  };
+  const anchors = lidcNoduleCompareAnchors(finding);
+  if (anchors && !secondaryAnchor(finding)) patch.anchors = anchors;
+  return patch;
+}
+
 /**
  * Findings to keep vs create on import. Only the LIDC case receives a demo
  * guide, and only for findings that do not yet have a teacher track.
+ * A kept track still receives catalog report gold when it has none.
  */
 export function planPublicCaseFindings(
   caseId: string,
@@ -200,7 +259,7 @@ export function planPublicCaseFindings(
   for (const draft of scaled) {
     const prior = existing.find((finding) => finding.order === draft.order);
     if (prior && findingHasTeacherTrack(prior)) {
-      kept.push(prior);
+      kept.push(mergeMissingReportRubric(prior, draft));
       continue;
     }
     create.push(withLidcCompareLanding(attachDemoTeachingGuide(draft)));
