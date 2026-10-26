@@ -6,12 +6,18 @@ import type {
   CaptureSession,
   CaseData,
   Finding,
+  FindingMeasurement,
   Marker,
   NarrationSpan,
   RecordedTrack,
   StructuredFinding,
   StructuredSession,
 } from "@/lib/types";
+import {
+  commitRecordedFinding,
+  narrationFromTranscribeResult,
+  type RecordedSaveReceipt,
+} from "@/lib/teachingGuide";
 
 /** The structured (text) slice of a finding the author edits. */
 export type FindingDraft = StructuredFinding;
@@ -297,56 +303,95 @@ export async function transcribeNarrationAudio(
       }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      if (looksLikeMissingKey(res.status, data?.error)) return null;
-      throw new Error(data?.error || "Failed to transcribe narration");
-    }
+    if (!res.ok) return null;
     const spans = Array.isArray(data?.spans) ? (data.spans as NarrationSpan[]) : [];
     return {
       transcript: typeof data?.transcript === "string" ? data.transcript.trim() : "",
       spans,
       alignment: data?.alignment === "estimated" ? "estimated" : "proportional",
     };
-  } catch (e) {
-    if (e instanceof AiUnavailableError) return null;
-    throw e;
+  } catch {
+    return null;
   }
+}
+
+export interface AttachedTake {
+  track: RecordedTrack;
+  transcript: string;
+  published: AlignedNarration | null;
+  gap: "none" | "empty-mic" | "empty-transcript" | "stt-failed";
 }
 
 /**
  * Upload the mic (when present) and align a transcript to the track.
- * Failures stay non-fatal: the caller still saves the dense log.
+ * Upload and transcription failures stay non-fatal: the caller still saves
+ * the dense log and builds the teach script from authored prose.
  */
 export async function attachTakeAudio(
   track: RecordedTrack,
   audio: { base64: string; mimeType: string } | null | undefined
-): Promise<{ track: RecordedTrack; transcript: string }> {
-  if (!audio) return { track, transcript: "" };
+): Promise<AttachedTake> {
+  if (!audio?.base64) {
+    return { track, transcript: "", published: null, gap: "empty-mic" };
+  }
   let audioUrl = track.audioUrl;
   try {
     audioUrl = await uploadAudio(audio.base64, audio.mimeType);
   } catch {
     // The retrace still saves if the audio upload fails.
   }
-  let narration = track.narration;
-  let transcript = "";
-  try {
-    const aligned = await transcribeNarrationAudio(audio.base64, audio.mimeType, track.durationMs);
-    if (aligned) {
-      transcript = aligned.transcript;
-      if (aligned.spans.length) narration = aligned.spans;
-    }
-  } catch {
-    // Authored description still arms the script.
-  }
-  return {
-    track: {
-      ...track,
-      ...(audioUrl ? { audioUrl } : {}),
-      ...(narration?.length ? { narration } : {}),
-    },
-    transcript,
+  const aligned = await transcribeNarrationAudio(audio.base64, audio.mimeType, track.durationMs);
+  const mapped = narrationFromTranscribeResult(true, aligned);
+  const withAudio: RecordedTrack = {
+    ...track,
+    ...(audioUrl ? { audioUrl } : {}),
+    ...(mapped.published?.spans?.length ? { narration: mapped.published.spans } : {}),
   };
+  return {
+    track: withAudio,
+    transcript: mapped.published?.transcript ?? "",
+    published: mapped.published
+      ? {
+          transcript: mapped.published.transcript ?? "",
+          spans: mapped.published.spans ?? [],
+          alignment: mapped.published.alignment === "estimated" ? "estimated" : "proportional",
+        }
+      : null,
+    gap: mapped.gap === "none" ? "none" : mapped.gap,
+  };
+}
+
+/**
+ * One-take save: optional mic, then a Teach-ready finding. Speech-to-text
+ * failure, a silent mic, and a short track all return a guide built from the
+ * gestures plus the written notes.
+ */
+export async function assembleRecordedFinding<T extends Partial<Finding>>(
+  base: T,
+  track: RecordedTrack,
+  audio: { base64: string; mimeType: string } | null | undefined,
+  liveMeasurements?: FindingMeasurement[]
+): Promise<{ finding: T; receipt: RecordedSaveReceipt }> {
+  const attached = await attachTakeAudio(track, audio);
+  const description = base.description?.trim() || attached.transcript || "";
+  const drafted = { ...base, description };
+  return commitRecordedFinding(
+    drafted,
+    attached.track,
+    {
+      label: drafted.label,
+      description,
+      teachingPoints: drafted.teachingPoints,
+      take: attached.published
+        ? {
+            transcript: attached.published.transcript,
+            spans: attached.published.spans,
+            alignment: attached.published.alignment,
+          }
+        : { gap: attached.gap === "none" ? "empty-transcript" : attached.gap },
+    },
+    liveMeasurements
+  );
 }
 
 /** Upload narration audio; returns the durable same-origin URL to store. */

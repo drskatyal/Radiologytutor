@@ -58,6 +58,7 @@ import {
 import type {
   CaseData,
   Finding,
+  FindingMeasurement,
   Marker,
   MarkerShape,
   RecordedTrack,
@@ -79,15 +80,21 @@ import {
   patchFinding,
   reorderFindings,
   structureFindingFromAudio,
-  attachTakeAudio,
+  assembleRecordedFinding,
   LIMITS,
 } from "@/components/author/lib";
+import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { withSecondaryAnchor } from "@/lib/findingAnchors";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
-import { settledDisplay, withRecordedTeaching } from "@/lib/teachingGuide";
+import {
+  formatRecordedSave,
+  settledDisplay,
+  teacherTrackPresent,
+  type RecordedSaveReceipt,
+} from "@/lib/teachingGuide";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -306,6 +313,54 @@ export function RecordingStudio({
     }
   }
 
+  function previewPoint(track: RecordedTrack, clicked: Marker | null): { x: number; y: number } {
+    const marker = clicked ?? markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
+    return { x: marker.x_pct, y: marker.y_pct };
+  }
+
+  function priorDemoGuide() {
+    if (!editingFindingId) return undefined;
+    const prior = findings.find((item) => item.id === editingFindingId);
+    if (!prior || teacherTrackPresent(prior) || !prior.teachingGuide?.beats?.length) return undefined;
+    return prior.teachingGuide;
+  }
+
+  async function applyTake(
+    base: Partial<Finding>,
+    track: RecordedTrack,
+    measurements: FindingMeasurement[]
+  ) {
+    const start = controls.current?.getStartState();
+    const demo = priorDemoGuide();
+    const assembled = await assembleRecordedFinding(
+      demo ? { ...base, teachingGuide: demo } : base,
+      track,
+      rr.audio,
+      measurements
+    );
+    let finding = assembled.finding;
+    const money = settledDisplay(finding.track ?? track);
+    if (money.sliceIndex !== start?.sliceIndex) finding = { ...finding, sopInstanceUID: undefined };
+    finding = withDisplaySnapshot(finding, {
+      sliceIndex: money.sliceIndex,
+      ww: money.ww,
+      wc: money.wc,
+      sopInstanceUID:
+        money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+    });
+    return { finding, receipt: assembled.receipt };
+  }
+
+  function toastRecorded(receipt: RecordedSaveReceipt) {
+    const message = formatRecordedSave(receipt);
+    toast({
+      variant: message.tone === "degraded" ? "warning" : "success",
+      title: message.title,
+      description: message.description,
+      duration: 7000,
+    });
+  }
+
   /** Persist a click-annotated finding (marker is required). */
   async function saveAnnotatedFinding() {
     if (!pendingMarker || !annotateDraft.label.trim() || annotateSaving) return;
@@ -347,41 +402,23 @@ export function RecordingStudio({
         base.studyInstanceUID = activeSeries.studyInstanceUID;
       }
       // Optional: attach a walk-through recorded just before annotate.
-      if (hasTrack) {
-        const prepared = await attachTakeAudio(rr.track as RecordedTrack, rr.audio);
-        const description = base.description?.trim() || prepared.transcript || "";
-        base = { ...base, description };
-        base = withRecordedTeaching(
-          base,
-          prepared.track,
-          {
-            label: base.label,
-            description,
-            teachingPoints: base.teachingPoints,
-            spans: prepared.track.narration,
-          },
-          measurements
-        );
-        const money = settledDisplay(prepared.track);
-        if (money.sliceIndex !== start?.sliceIndex) base.sopInstanceUID = undefined;
-        base = withDisplaySnapshot(base, {
-          sliceIndex: money.sliceIndex,
-          ww: money.ww,
-          wc: money.wc,
-          sopInstanceUID:
-            money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
-        });
-      }
+      const recorded = hasTrack
+        ? await applyTake(base, rr.track as RecordedTrack, measurements)
+        : null;
+      if (recorded) base = recorded.finding;
 
       const updated =
         editingFindingId != null
           ? await patchFinding(caseData.caseId, editingFindingId, base)
           : await addFinding(caseData.caseId, base);
       setCaseData(updated);
-      toast({
-        variant: "success",
-        title: editingFindingId ? "Finding updated" : "Finding captured",
-      });
+      if (recorded) toastRecorded(recorded.receipt);
+      else {
+        toast({
+          variant: "success",
+          title: editingFindingId ? "Finding updated" : "Finding captured",
+        });
+      }
       closeAnnotate();
       resetCapture();
     } catch (e) {
@@ -462,31 +499,10 @@ export function RecordingStudio({
       const measurements = controls.current?.getMeasurements?.() ?? [];
       if (!hasTrack && measurements.length > 0) base.measurements = measurements;
 
-      if (hasTrack) {
-        const prepared = await attachTakeAudio(rr.track as RecordedTrack, rr.audio);
-        const description = base.description?.trim() || prepared.transcript || "";
-        base = { ...base, description };
-        base = withRecordedTeaching(
-          base,
-          prepared.track,
-          {
-            label: base.label,
-            description,
-            teachingPoints: base.teachingPoints,
-            spans: prepared.track.narration,
-          },
-          measurements
-        );
-        const money = settledDisplay(prepared.track);
-        if (money.sliceIndex !== start?.sliceIndex) base.sopInstanceUID = undefined;
-        base = withDisplaySnapshot(base, {
-          sliceIndex: money.sliceIndex,
-          ww: money.ww,
-          wc: money.wc,
-          sopInstanceUID:
-            money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
-        });
-      }
+      const recorded = hasTrack
+        ? await applyTake(base, rr.track as RecordedTrack, measurements)
+        : null;
+      if (recorded) base = recorded.finding;
 
       // Anchor the finding to the active study/series (drives prefetch + the
       // student's series switch on playback).
@@ -517,10 +533,13 @@ export function RecordingStudio({
           ? await patchFinding(caseData.caseId, editingFindingId, base)
           : await addFinding(caseData.caseId, base);
       setCaseData(updated);
-      toast({
-        variant: "success",
-        title: editingFindingId ? "Finding re-recorded" : "Finding captured",
-      });
+      if (recorded) toastRecorded(recorded.receipt);
+      else {
+        toast({
+          variant: "success",
+          title: editingFindingId ? "Finding re-recorded" : "Finding captured",
+        });
+      }
       closeAnnotate();
       resetCapture();
     } catch (e) {
@@ -887,6 +906,16 @@ export function RecordingStudio({
                   ? "This browser can't record audio — you can still click to place a marker and type each finding."
                   : "Microphone access is blocked. Allow it in your browser's address bar to dictate, or type the finding after clicking."}
               </p>
+            )}
+            {hasTrack && rr.phase === "idle" && rr.track && (
+              <div className="mt-3">
+                <RecordedTakeNote
+                  track={rr.track}
+                  hasAudio={Boolean(rr.audio)}
+                  replacesDemo={Boolean(priorDemoGuide())}
+                  point={previewPoint(rr.track, pendingMarker)}
+                />
+              </div>
             )}
           </Card>
         </div>

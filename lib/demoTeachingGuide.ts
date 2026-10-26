@@ -10,7 +10,7 @@
  */
 
 import { getPublicCaseTemplate } from "./publicCases/catalog";
-import { buildTeachingGuide } from "./teachingGuide";
+import { buildTeachingGuide, teacherTrackPresent } from "./teachingGuide";
 import type { Case, Finding, RecordedEvent, RecordedTrack, TeachingGuide } from "./types";
 import { DEFAULT_ORG_ID } from "./cases";
 
@@ -36,9 +36,7 @@ type GuideInput = Partial<Finding> &
   };
 
 export function findingHasTeacherTrack(finding: { track?: Finding["track"] }): boolean {
-  const track = finding.track;
-  if (!track) return false;
-  return (track.events?.length ?? 0) > 0 || (track.durationMs ?? 0) > 0;
+  return teacherTrackPresent(finding);
 }
 
 /** Scale catalog slice indices onto the imported stack. */

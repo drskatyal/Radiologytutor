@@ -125,6 +125,19 @@ export function SequenceBoard({
                               Slice {f.sliceIndex + 1}
                             </Badge>
                           )}
+                          {f.teachingGuide && f.teachingGuide.beats.length > 0 && (
+                            <Badge
+                              variant="accent"
+                              className="tabular-nums"
+                              title={f.teachingGuide.beats
+                                .map((beat) => beat.act)
+                                .filter(Boolean)
+                                .join(" → ")}
+                            >
+                              {f.teachingGuide.beats.length} teach{" "}
+                              {f.teachingGuide.beats.length === 1 ? "beat" : "beats"}
+                            </Badge>
+                          )}
                           {wantsCompare(f) && (
                             <Badge variant="accent">Compare</Badge>
                           )}

@@ -240,6 +240,19 @@ export function FindingCard({
                   Flow · {finding.keyframes!.length}
                 </Badge>
               )}
+              {finding.teachingGuide && finding.teachingGuide.beats.length > 0 && (
+                <Badge
+                  variant="accent"
+                  className="tabular-nums"
+                  title={finding.teachingGuide.beats
+                    .map((beat) => beat.act)
+                    .filter(Boolean)
+                    .join(" → ")}
+                >
+                  {finding.teachingGuide.beats.length} teach{" "}
+                  {finding.teachingGuide.beats.length === 1 ? "beat" : "beats"}
+                </Badge>
+              )}
               {justSaved && (
                 <Badge variant="success" className="animate-fade-in">
                   <CheckIcon />
