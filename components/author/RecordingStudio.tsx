@@ -88,8 +88,13 @@ import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
-import { withSecondaryAnchor } from "@/lib/findingAnchors";
-import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import {
+  wantsCompare,
+  withPrimaryAnchor,
+  withSecondaryAnchor,
+  withoutSecondaryAnchor,
+} from "@/lib/findingAnchors";
+import { withAnchorSnapshot, withDisplaySnapshot } from "@/lib/findingDisplayState";
 import {
   commitAnnotatedFinding,
   formatRecordedSave,
@@ -237,34 +242,65 @@ export function RecordingStudio({
     if (!f) return;
     const start = controls.current?.getStartState();
     const active = series[activeSeriesIndex];
+    const studyInstanceUID = !usingSample ? active?.studyInstanceUID : f.studyInstanceUID;
+    const sameStudy =
+      !studyInstanceUID || !f.studyInstanceUID || studyInstanceUID === f.studyInstanceUID;
     try {
-      const landing = withDisplaySnapshot(
+      const landing = withAnchorSnapshot(
         {
-          studyInstanceUID: !usingSample ? active?.studyInstanceUID : undefined,
+          studyInstanceUID,
           seriesInstanceUID:
             !usingSample
               ? active?.seriesInstanceUID
               : controls.current?.activeSeriesUID,
           marker: { x_pct: x, y_pct: y, shape: "circle" },
           viewportRole: "secondary" as const,
-          studyRole: "prior" as const,
+          studyRole: sameStudy ? ("current" as const) : ("prior" as const),
         },
         start
       );
-      const updated = await patchFinding(caseData.caseId, findingId, {
-        anchors: withSecondaryAnchor(f, landing),
-      });
+      const anchors = withSecondaryAnchor(f, landing);
+      if (!wantsCompare({ ...f, anchors })) {
+        toast({
+          variant: "warning",
+          title: "That view matches the primary finding",
+          description:
+            "Scroll to another slice, change the window or zoom, or switch series, then click again.",
+        });
+        return;
+      }
+      const updated = await patchFinding(caseData.caseId, findingId, { anchors });
       setCaseData(updated);
       setPinningId(null);
       toast({
         variant: "success",
         title: "Compare landing saved",
-        description: "Students will see this series beside the primary finding.",
+        description:
+          "Students open Compare on this slice, window, and camera — beside the primary finding.",
       });
     } catch (e) {
       toast({
         variant: "danger",
         title: "Couldn't save compare landing",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    }
+  }
+
+  async function clearCompareLanding(findingId: string) {
+    const f = findings.find((item) => item.id === findingId);
+    if (!f) return;
+    try {
+      const updated = await patchFinding(caseData.caseId, findingId, {
+        anchors: withoutSecondaryAnchor(f),
+      });
+      setCaseData(updated);
+      setPinningId((cur) => (cur === findingId ? null : cur));
+      toast({ variant: "success", title: "Compare landing removed" });
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't remove compare landing",
         description: e instanceof Error ? e.message : undefined,
       });
     }
@@ -405,7 +441,7 @@ export function RecordingStudio({
     setAnnotateSaving(true);
     try {
       const start = controls.current?.getStartState();
-      const primaryAnchor = withDisplaySnapshot(
+      const primaryLanding = withAnchorSnapshot(
         {
           studyInstanceUID:
             activeSeries && !usingSample ? activeSeries.studyInstanceUID : undefined,
@@ -429,7 +465,6 @@ export function RecordingStudio({
           landmark: annotateDraft.landmark?.trim() || undefined,
           state: " ",
           marker: pendingMarker,
-          anchors: [primaryAnchor],
         },
         start
       );
@@ -452,6 +487,12 @@ export function RecordingStudio({
           receipt = landed.receipt;
         }
       }
+      const prior = editingFindingId
+        ? findings.find((item) => item.id === editingFindingId)
+        : undefined;
+      base.anchors = prior
+        ? withPrimaryAnchor(prior, primaryLanding)
+        : [{ ...primaryLanding, viewportRole: "primary" as const }];
 
       const updated =
         editingFindingId != null
@@ -569,23 +610,29 @@ export function RecordingStudio({
           receipt = landed.receipt;
         }
       }
-      base.anchors = [
-        withDisplaySnapshot(
-          {
-            studyInstanceUID: base.studyInstanceUID,
-            seriesInstanceUID: base.seriesInstanceUID,
-            marker,
-            viewportRole: "primary" as const,
-            studyRole: "current" as const,
-          },
-          {
-            sliceIndex: base.sliceIndex ?? start?.sliceIndex ?? 0,
-            ww: base.windowWidth ?? start?.ww,
-            wc: base.windowCenter ?? start?.wc,
-            sopInstanceUID: base.sopInstanceUID ?? start?.sopInstanceUID,
-          }
-        ),
-      ];
+      const primaryLanding = withAnchorSnapshot(
+        {
+          studyInstanceUID: base.studyInstanceUID,
+          seriesInstanceUID: base.seriesInstanceUID,
+          marker,
+          viewportRole: "primary" as const,
+          studyRole: "current" as const,
+        },
+        {
+          sliceIndex: base.sliceIndex ?? start?.sliceIndex ?? 0,
+          ww: base.windowWidth ?? start?.ww,
+          wc: base.windowCenter ?? start?.wc,
+          sopInstanceUID: base.sopInstanceUID ?? start?.sopInstanceUID,
+          zoom: start?.zoom,
+          pan: start?.pan,
+        }
+      );
+      const prior = editingFindingId
+        ? findings.find((item) => item.id === editingFindingId)
+        : undefined;
+      base.anchors = prior
+        ? withPrimaryAnchor(prior, primaryLanding)
+        : [primaryLanding];
 
       const updated =
         editingFindingId != null
@@ -1002,7 +1049,7 @@ export function RecordingStudio({
                   toast({
                     title: "Pin a compare landing",
                     description:
-                      "Switch series if needed, then click the same finding on that view.",
+                      "Scroll, window, or zoom to the view students should see beside this finding, then click it. Switch series when the study has another.",
                   });
                 }
                 return next;
@@ -1010,6 +1057,7 @@ export function RecordingStudio({
               setFocusedFindingId(f.id);
               setCaptureTab("sequence");
             }}
+            onClearCompare={(f) => void clearCompareLanding(f.id)}
           />
 
           <Tabs
@@ -1027,8 +1075,8 @@ export function RecordingStudio({
               <h2 className="text-sm font-semibold text-primary">Click to annotate</h2>
               <p className="mt-1.5 text-xs leading-relaxed text-muted">
                 {pinningId
-                  ? "Switch to the compare series, then click the same finding. That landing becomes the second pane for students."
-                  : "Click the lesion on the image. Dictate or type. Save lands a real marker and slice — that is the script the examiner follows. Use Speak once when you want to narrate many findings in a single take. Compare landing pins a second series/slice beside it."}
+                  ? "Set the slice, window, and zoom for the compare pane, then click that view. A single-series study can still pin a different slice or window. The click is rejected if it matches the primary landing."
+                  : "Click the lesion on the image. Dictate or type. Save lands a real marker and slice — that is the script the examiner follows. Use Speak once when you want to narrate many findings in a single take. Compare landing pins a second slice, window, or series beside it."}
               </p>
             </Card>
           )}

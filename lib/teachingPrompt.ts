@@ -83,10 +83,17 @@ export function formatFindingsContext(findings: Finding[]): string {
       }
       const sec = secondaryAnchor(f);
       if (sec?.marker) {
+        const voi =
+          sec.windowWidth != null &&
+          sec.windowCenter != null &&
+          Number.isFinite(sec.windowWidth) &&
+          Number.isFinite(sec.windowCenter)
+            ? `,voi(ww=${Math.round(sec.windowWidth)},wc=${Math.round(sec.windowCenter)})`
+            : "";
         bits.push(
           `compare(series=${sec.seriesInstanceUID ?? "same"},slice=${
             sec.sliceIndex ?? "?"
-          },marker@(${sec.marker.x_pct.toFixed(3)},${sec.marker.y_pct.toFixed(3)}))`
+          },marker@(${sec.marker.x_pct.toFixed(3)},${sec.marker.y_pct.toFixed(3)})${voi})`
         );
       }
       return `- ${bits.join(" · ")}`;

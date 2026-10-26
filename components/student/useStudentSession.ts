@@ -60,8 +60,9 @@ import {
 } from "@/lib/examLocate";
 import { nextGuidedIndex } from "@/lib/tourAdapt";
 import {
+  comparePaneSeriesIndex,
   secondaryAnchor,
-  seriesIndexFor,
+  secondaryViewerState,
   wantsCompare,
 } from "@/lib/findingAnchors";
 
@@ -194,6 +195,10 @@ export function useStudentSession(
   const [secondaryMarkerVisible, setSecondaryMarkerVisible] = useState(false);
   const [secondarySeriesIndex, setSecondarySeriesIndex] = useState(0);
   const [compareOpen, setCompareOpen] = useState(false);
+  const compareOpenRef = useRef(false);
+  compareOpenRef.current = compareOpen;
+  /** Bumped when compare closes so an in-flight seat cannot reopen the pane. */
+  const compareGenRef = useRef(0);
   const [locateHint, setLocateHint] = useState("");
   const locateMissesRef = useRef(0);
   const [locatedIds, setLocatedIds] = useState<string[]>([]);
@@ -251,16 +256,26 @@ export function useStudentSession(
 
   const seatSecondary = useCallback(
     async (finding: (typeof orderedFindings)[number], spoil: boolean) => {
+      const gen = compareGenRef.current;
       const sec = secondaryAnchor(finding);
-      if (!sec || !wantsCompare(finding)) {
+      const view = secondaryViewerState(finding);
+      if (!sec || !view) {
         pendingSecondaryRef.current = null;
         setSecondaryMarker(null);
         setSecondaryMarkerVisible(false);
         return;
       }
-      setCompareOpen(true);
-      const idx = seriesIndexFor(series, sec.seriesInstanceUID);
-      setSecondarySeriesIndex(idx);
+      if (gen !== compareGenRef.current) return;
+      setSecondarySeriesIndex(
+        comparePaneSeriesIndex(series, finding, controls.current?.activeSeriesUID)
+      );
+      // Compare/C opens the pane. A finding change must not pop it open, and
+      // must not move the primary viewport (close-compare restore stays intact).
+      if (!compareOpenRef.current) {
+        setSecondaryMarker(sec.marker ?? null);
+        setSecondaryMarkerVisible(false);
+        return;
+      }
       const c = secondaryControls.current;
       if (!c) {
         // Pane not mounted yet — reseat when secondaryReady flips true.
@@ -270,16 +285,23 @@ export function useStudentSession(
         return;
       }
       pendingSecondaryRef.current = null;
-      if (
-        sec.seriesInstanceUID &&
-        c.seriesUIDs.includes(sec.seriesInstanceUID) &&
-        c.activeSeriesUID !== sec.seriesInstanceUID
-      ) {
-        c.showSeries(sec.seriesInstanceUID);
+      try {
+        if (
+          sec.seriesInstanceUID &&
+          c.seriesUIDs.includes(sec.seriesInstanceUID) &&
+          c.activeSeriesUID !== sec.seriesInstanceUID
+        ) {
+          c.showSeries(sec.seriesInstanceUID);
+          await c.settle();
+        }
+        if (gen !== compareGenRef.current) return;
+        // Slice, window, and camera. The primary viewport is not touched, so
+        // closing compare can still restore the teach lung window (#45/#46).
+        await c.showState(view, 500);
+      } catch {
+        return;
       }
-      if (sec.sliceIndex != null && Number.isFinite(sec.sliceIndex)) {
-        await c.showState({ sliceIndex: sec.sliceIndex }, 500);
-      }
+      if (gen !== compareGenRef.current) return;
       setSecondaryMarker(sec.marker ?? null);
       setSecondaryMarkerVisible(spoil);
     },
@@ -292,6 +314,23 @@ export function useStudentSession(
     pendingSecondaryRef.current = null;
     void seatSecondary(pending.finding, pending.spoil);
   }, [secondaryReady, seatSecondary]);
+
+  // Compare/C and finding changes. A secondary anchor drives the pane.
+  // A finding without one leaves the manual second series (or the only series) alone.
+  useEffect(() => {
+    if (!compareOpen) return;
+    const finding = activeIndex >= 0 ? orderedFindings[activeIndex] : null;
+    if (!finding || !wantsCompare(finding)) return;
+    const spoil = !examMode || revealedIdsRef.current.includes(finding.id);
+    void seatSecondary(finding, spoil);
+  }, [compareOpen, activeIndex, orderedFindings, examMode, seatSecondary]);
+
+  useEffect(() => {
+    if (!compareOpen || !examMode) return;
+    const finding = activeIndex >= 0 ? orderedFindings[activeIndex] : null;
+    if (!finding || !wantsCompare(finding)) return;
+    setSecondaryMarkerVisible(revealedIds.includes(finding.id));
+  }, [compareOpen, examMode, activeIndex, revealedIds, orderedFindings]);
 
   const micState: MicState =
     phase === "recording" ? "recording" : phase === "transcribing" ? "processing" : "idle";
@@ -1366,23 +1405,21 @@ export function useStudentSession(
   );
 
   const toggleCompare = useCallback(() => {
-    setCompareOpen((o) => {
-      const next = !o;
-      if (!next) {
-        setSecondaryReady(false);
-        setSecondaryMarkerVisible(false);
-        return next;
-      }
-      if (series.length > 1) {
-        const curUid = controls.current?.activeSeriesUID;
-        const other = series.findIndex((s) => s.seriesInstanceUID !== curUid);
-        setSecondarySeriesIndex(other >= 0 ? other : 1);
-      } else {
-        setSecondarySeriesIndex(0);
-      }
-      return next;
-    });
-  }, [series]);
+    if (compareOpenRef.current) {
+      compareGenRef.current += 1;
+      pendingSecondaryRef.current = null;
+      setSecondaryReady(false);
+      setSecondaryMarkerVisible(false);
+      setCompareOpen(false);
+      return;
+    }
+    const finding =
+      activeIndexRef.current >= 0 ? orderedFindings[activeIndexRef.current] : null;
+    setSecondarySeriesIndex(
+      comparePaneSeriesIndex(series, finding, controls.current?.activeSeriesUID)
+    );
+    setCompareOpen(true);
+  }, [orderedFindings, series]);
 
   const onStopSpeaking = useCallback(() => {
     if (phase === "speaking") {
