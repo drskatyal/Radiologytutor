@@ -55,6 +55,14 @@ import {
 import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
+  finiteVoi,
+  resolveViewportVoi,
+  voiToWwWc,
+  voiWriteSteps,
+  wwWcToVoi,
+  type Voi,
+} from "../lib/viewportVoi";
+import {
   SHARED_RENDERING_ENGINE_ID,
   planViewportLayoutRestore,
   presentationCameraUsable,
@@ -162,7 +170,12 @@ interface DrivableViewport {
   getCurrentImageIdIndex: () => number;
   getCurrentImageId?: () => string;
   setImageIdIndex: (i: number) => Promise<void> | void;
-  getProperties: () => { voiRange?: { lower: number; upper: number }; invert?: boolean };
+  getProperties: () => {
+    voiRange?: { lower: number; upper: number };
+    invert?: boolean;
+    /** False once setProperties has locked the window across slices. */
+    isComputedVOI?: boolean;
+  };
   setProperties: (p: { voiRange?: { lower: number; upper: number }; invert?: boolean }) => void;
   getZoom: () => number;
   setZoom: (z: number) => void;
@@ -235,14 +248,6 @@ export interface CornerstoneControls {
   settle: () => Promise<void>;
   /** True when the last annotation applyEvent landed on the viewport. */
   readonly annotationApplied: boolean;
-}
-
-function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: number } | null {
-  if (!voi) return null;
-  return { ww: voi.upper - voi.lower, wc: (voi.upper + voi.lower) / 2 };
-}
-function wwWcToVoi(ww: number, wc: number): { lower: number; upper: number } {
-  return { lower: wc - ww / 2, upper: wc + ww / 2 };
 }
 
 /**
@@ -774,6 +779,59 @@ export default function CornerstoneViewer({
         };
         let annotationApplied = false;
         let settleWindow: (() => void) | null = null;
+        // Last window a teach beat, preset, or the user asked for. A slice
+        // load applies the DICOM window (W 400 / L 40 on this chest CT) unless
+        // we put this back after the image is on screen.
+        let pinnedVoi: Voi | null = null;
+        let layoutGen = 0;
+
+        const writeVoi = (ww: number, wc: number): boolean => {
+          const vp = viewportRef.current;
+          const wanted = finiteVoi(ww, wc);
+          if (!vp || !wanted) return false;
+          const props = vp.getProperties();
+          const steps = voiWriteSteps(props.voiRange, wanted.ww, wanted.wc, {
+            locked: props.isComputedVOI === false,
+          });
+          if (steps.length > 0) {
+            beginSuppress();
+            try {
+              for (const voiRange of steps) vp.setProperties({ voiRange });
+              vp.render();
+            } catch {
+              return false;
+            } finally {
+              endSuppress();
+            }
+          }
+          publishReadout();
+          const live = voiToWwWc(vp.getProperties().voiRange);
+          return (
+            live != null &&
+            Math.abs(live.ww - wanted.ww) <= 1 &&
+            Math.abs(live.wc - wanted.wc) <= 1
+          );
+        };
+
+        const pinVoi = (ww: number, wc: number) => {
+          const next = finiteVoi(ww, wc);
+          if (next) pinnedVoi = next;
+        };
+
+        const applyPinnedVoi = () => {
+          const wanted = pinnedVoi;
+          if (!wanted) return;
+          if (writeVoi(wanted.ww, wanted.wc)) return;
+          // The actor is missing mid slice-swap. Retry once it is back.
+          requestAnimationFrame(() => {
+            if (pinnedVoi === wanted) writeVoi(wanted.ww, wanted.wc);
+          });
+        };
+
+        const releasePinnedVoi = () => {
+          pinnedVoi = null;
+          layoutGen += 1;
+        };
 
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
@@ -785,16 +843,23 @@ export default function CornerstoneViewer({
           rememberPresentation();
           emit({ type: "slice", index: vp.getCurrentImageIdIndex() });
           scheduleReadout();
+          // STACK_NEW_IMAGE runs after Cornerstone writes the image window,
+          // and a per-image default can write again before this stack yields.
+          // Reapply on a microtask so the teach window is the last writer.
+          if (pinnedVoi) queueMicrotask(applyPinnedVoi);
         };
         const emitVoi = () => {
           const vp = viewportRef.current;
           if (!vp) return;
           rememberPresentation();
           scheduleReadout();
+          const v = voiToWwWc(vp.getProperties().voiRange);
+          // A drag on the window tool replaces the teach window. Programmatic
+          // writes are suppressed and must not pin a mid-tween value.
+          if (v && !suppressed()) pinnedVoi = { ww: v.ww, wc: v.wc };
           const now = performance.now();
           if (now - lastVoiEmit < THROTTLE) return;
           lastVoiEmit = now;
-          const v = voiToWwWc(vp.getProperties().voiRange);
           if (v) emit({ type: "voi", ww: v.ww, wc: v.wc });
         };
         const emitCamera = () => {
@@ -941,6 +1006,7 @@ export default function CornerstoneViewer({
             // A newer switch superseded us, or we've been torn down — bail.
             if (token !== switchSeq || disposed) return;
             await loadStack(ids);
+            applyPinnedVoi();
           } catch (err) {
             console.error("CornerstoneViewer switchSeries error", err);
           }
@@ -949,6 +1015,7 @@ export default function CornerstoneViewer({
 
         resetRef.current = () => {
           cancelTweenRef.current();
+          releasePinnedVoi();
           const host = elementRef.current;
           // Fit against the pane's current size. A stale half-width buffer
           // (left over from compare) makes resetCamera miss the anatomy.
@@ -1104,11 +1171,12 @@ export default function CornerstoneViewer({
                   await live.setImageIdIndex(idx);
                 }
                 live.render();
+                applyPinnedVoi();
                 break;
               }
               case "voi":
-                live.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
-                live.render();
+                pinVoi(e.ww, e.wc);
+                writeVoi(e.ww, e.wc);
                 break;
               case "camera":
                 live.setZoom(e.zoom);
@@ -1175,6 +1243,7 @@ export default function CornerstoneViewer({
           wc: number,
           durationMs?: number
         ): Promise<void> => {
+          pinVoi(ww, wc);
           const vp = viewportRef.current;
           if (!vp) return Promise.resolve();
           settleWindow?.();
@@ -1182,19 +1251,29 @@ export default function CornerstoneViewer({
           const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
           const ms = durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
-          beginSuppress();
+          cancelTweenRef.current = () => {};
+          const stillPinned = () =>
+            pinnedVoi != null && pinnedVoi.ww === ww && pinnedVoi.wc === wc;
+          // In-flight slice loads finish after a capped settle and write the
+          // DICOM window. Apply again when that chain drains.
+          const commit = () => {
+            writeVoi(ww, wc);
+            void pending.then(() => {
+              if (stillPinned()) applyPinnedVoi();
+            });
+          };
           if (ms <= 0) {
-            vp.setProperties({ voiRange: wwWcToVoi(ww, wc) });
-            vp.render();
-            endSuppress();
+            commit();
             return Promise.resolve();
           }
+          beginSuppress();
           return new Promise((resolve) => {
             let settled = false;
             const done = () => {
               if (settled) return;
               settled = true;
               if (settleWindow === done) settleWindow = null;
+              if (stillPinned()) commit();
               endSuppress();
               resolve();
             };
@@ -1224,9 +1303,11 @@ export default function CornerstoneViewer({
             // Full dynamic: reset to the series' own VOI.
             const vp = viewportRef.current;
             cancelTweenRef.current();
+            releasePinnedVoi();
             vp?.resetProperties?.();
             vp?.render();
             setActivePreset(FULL_DYNAMIC_ID);
+            publishReadout();
             return;
           }
           // Presets are often far apart — let adaptive logic snap bone↔lung.
@@ -1242,6 +1323,14 @@ export default function CornerstoneViewer({
           const vp = viewportRef.current;
           if (!vp) return;
           cancelTweenRef.current();
+          if (
+            state.windowWidth != null &&
+            state.windowCenter != null &&
+            Number.isFinite(state.windowWidth) &&
+            Number.isFinite(state.windowCenter)
+          ) {
+            pinVoi(state.windowWidth, state.windowCenter);
+          }
 
           // Slice change snaps (a new slice must be decoded) before the tween.
           if (state.sliceIndex != null || state.sliceFraction != null) {
@@ -1258,6 +1347,10 @@ export default function CornerstoneViewer({
                   );
             if (idx !== vp.getCurrentImageIdIndex()) {
               await vp.setImageIdIndex(idx);
+              // The new image brings its DICOM window. The pin (this state's
+              // window, or the teach window already on screen) has to win
+              // before the camera tween samples VOI.
+              applyPinnedVoi();
             }
           }
 
@@ -1392,6 +1485,7 @@ export default function CornerstoneViewer({
             live,
             lastGood,
           });
+          const gen = ++layoutGen;
           restoring = true;
           try {
             try {
@@ -1400,6 +1494,7 @@ export default function CornerstoneViewer({
               console.warn("CornerstoneViewer layout restore", err);
             }
             const paint = () => {
+              if (gen !== layoutGen) return;
               const current = viewportRef.current;
               if (!current) return;
               if (!plan.keepCamera) {
@@ -1416,13 +1511,18 @@ export default function CornerstoneViewer({
                     /* the fit camera still shows the slice */
                   }
                 }
-                // Fit/resetCamera leaves the teach window alone, but a slice
-                // reload does not. Put the lung window back without going
-                // through resetProperties (that restores the DICOM default).
-                if (plan.ww != null && plan.wc != null) {
-                  current.setProperties({ voiRange: wwWcToVoi(plan.ww, plan.wc) });
-                }
               }
+              // Read the pin now, not the VOI captured when this resize was
+              // scheduled. A teach beat may have set lung windows since, and
+              // resize/resetCamera must not leave the DICOM default behind.
+              // Kept when the camera is kept — compare close included.
+              const snapshot =
+                plan.ww != null && plan.wc != null ? { ww: plan.ww, wc: plan.wc } : null;
+              const wanted = resolveViewportVoi({
+                requested: pinnedVoi,
+                live: snapshot,
+              });
+              if (wanted) writeVoi(wanted.ww, wanted.wc);
               current.render();
               lastRestoreW = width;
               lastRestoreH = height;
