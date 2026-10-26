@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import {
   appendGuideTurn,
   applyLocateClick,
+  beginFindingStep,
   commitGuideLine,
+  commitSelectedFinding,
   examEntryTransition,
   examinerCaptionTurn,
   examinerVisibleTurns,
+  findingStepLabel,
   locateModeArmed,
   mergeExamReveal,
   seatExamTranscript,
+  settleFindingReveal,
   spoilFindingOnNavigate,
 } from "./examLocate.ts";
 import { examFallbackStem } from "./teachingPrompt.ts";
@@ -285,4 +289,50 @@ test("moving between findings in exam does not uncover the marker", () => {
   assert.equal(spoilFindingOnNavigate("socratic"), false);
   assert.equal(spoilFindingOnNavigate("guided"), true);
   assert.equal(spoilFindingOnNavigate("reporting"), true);
+});
+
+test("selecting finding 2 shows Finding 2 / 3 before the viewer tween settles", () => {
+  // case-lidc-nodule-search: index 1 is "Peripheral nodule survey".
+  // The header, rail, and progress dots read this step. They must not wait
+  // for showState, in Exam or in Teach.
+  const seated = commitSelectedFinding(beginFindingStep(), 0, 3);
+  assert.ok(seated);
+  assert.equal(findingStepLabel(seated.activeIndex, 3), "1 / 3");
+
+  const picked = commitSelectedFinding(seated, 1, 3);
+  assert.ok(picked);
+  assert.equal(picked.activeIndex, 1);
+  assert.equal(findingStepLabel(picked.activeIndex, 3), "2 / 3");
+
+  // Finding 1's showState resolves after the click. It must not rewind the badge.
+  const late = settleFindingReveal(picked, {
+    index: 0,
+    count: 3,
+    selection: seated.selection,
+  });
+  assert.equal(late.activeIndex, 1);
+  assert.equal(findingStepLabel(late.activeIndex, 3), "2 / 3");
+  assert.equal(late.selection, picked.selection);
+});
+
+test("a reveal that is still the current selection keeps the step it committed", () => {
+  const picked = commitSelectedFinding(beginFindingStep(), 1, 3);
+  assert.ok(picked);
+  const settled = settleFindingReveal(picked, {
+    index: 1,
+    count: 3,
+    selection: picked.selection,
+  });
+  assert.equal(settled.activeIndex, 1);
+  assert.equal(findingStepLabel(settled.activeIndex, 3), "2 / 3");
+});
+
+test("an out-of-range finding selection leaves the step chrome alone", () => {
+  const seated = commitSelectedFinding(beginFindingStep(), 0, 3);
+  assert.ok(seated);
+  assert.equal(commitSelectedFinding(seated, -1, 3), null);
+  assert.equal(commitSelectedFinding(seated, 3, 3), null);
+  assert.equal(commitSelectedFinding(seated, 1, 0), null);
+  assert.equal(findingStepLabel(-1, 3), null);
+  assert.equal(findingStepLabel(1, 0), null);
 });

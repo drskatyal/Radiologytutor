@@ -210,3 +210,59 @@ export function mergeExamReveal(
 export function spoilFindingOnNavigate(mode: string): boolean {
   return !isExamMode(mode);
 }
+
+/**
+ * Header badge, findings rail, and progress dots share this step.
+ * Teach and Exam both read it. The viewer tween is not part of the step:
+ * selecting finding 2 shows "2 / 3" while the slice is still catching up,
+ * and a reveal that started earlier must not put the badge back.
+ */
+export type FindingStep = {
+  activeIndex: number;
+  /** Monotonic id of the selection that owns the step. */
+  selection: number;
+};
+
+export function beginFindingStep(): FindingStep {
+  return { activeIndex: -1, selection: 0 };
+}
+
+/** Header body, e.g. "2 / 3". Null before a finding is selected. */
+export function findingStepLabel(index: number, count: number): string | null {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  if (!Number.isInteger(index) || index < 0 || index >= count) return null;
+  return `${index + 1} / ${count}`;
+}
+
+/**
+ * The student selected a finding (dot, card, next, or previous).
+ * The step chrome takes this index now. Null when `index` is outside the
+ * case — the previous step stays on screen.
+ */
+export function commitSelectedFinding(
+  step: FindingStep,
+  index: number,
+  count: number
+): FindingStep | null {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  if (!Number.isInteger(index) || index < 0 || index >= count) return null;
+  return { activeIndex: index, selection: step.selection + 1 };
+}
+
+/**
+ * A viewer transition finished. Only the selection that still owns the
+ * step may publish an index. Finding 1's showState resolving after the
+ * student picked finding 2 leaves the badge on finding 2.
+ */
+export function settleFindingReveal(
+  step: FindingStep,
+  input: { index: number; count: number; selection: number }
+): FindingStep {
+  if (input.selection !== step.selection) return step;
+  if (!Number.isInteger(input.count) || input.count <= 0) return step;
+  if (!Number.isInteger(input.index) || input.index < 0 || input.index >= input.count) {
+    return step;
+  }
+  if (step.activeIndex === input.index) return step;
+  return { ...step, activeIndex: input.index };
+}
