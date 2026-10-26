@@ -276,6 +276,13 @@ export interface RecordedTrack {
    * it rebuilds; the dense events are not themselves the spoken lines.
    */
   narration?: NarrationSpan[];
+  /**
+   * `notes` is a click-to-annotate landing with no microphone tape. Teach
+   * rebuilds say lines from the label, description, teaching points, and the
+   * landed slice, window, and marker. A real take leaves this unset and keeps
+   * the look-cue script.
+   */
+  voice?: "notes";
 }
 
 export interface Finding {

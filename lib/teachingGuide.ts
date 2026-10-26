@@ -8,6 +8,11 @@
  *
  * Learners follow this script (lib/replay.ts playTeachingGuide) and hear
  * each act via TTS. They do not hear the microphone tape.
+ *
+ * A real take speaks the look-cues (orient opens with "Follow the stack.")
+ * plus any transcript span that does not name the finding. A click-to-annotate
+ * landing sets `voice: "notes"` and speaks the author's label, description,
+ * and teaching points, with the slice, window, and zoom that were landed.
  */
 
 import { splitSentences } from "./performancePlan";
@@ -533,6 +538,117 @@ function measureLine(action: TeachViewerAction | undefined): string {
   return "";
 }
 
+function notesVoice(track: RecordedTrack): boolean {
+  return track.voice === "notes";
+}
+
+/** Label as a clause. A trailing period would read as "Opacity., on slice 4." */
+function notesLabel(label: string | undefined): string {
+  return label?.trim().replace(/[.!?]+$/g, "").trim() ?? "";
+}
+
+/**
+ * Author's description sentences across the gesture acts. One sentence lands
+ * with the marker (the last act). Longer notes fill orient, then search, then
+ * lean-in, and the final sentence still commits.
+ */
+function descriptionProseByAct(description: string | undefined, acts: TeachAct[]): Map<TeachAct, string> {
+  const map = new Map<TeachAct, string>();
+  const walk = acts.filter((act) => act !== "pearl");
+  const sentences = splitSentences(description ?? "");
+  if (!walk.length || !sentences.length) return map;
+  const last = walk[walk.length - 1];
+  if (sentences.length === 1) {
+    map.set(last, sentence(sentences[0]));
+    return map;
+  }
+  const early = walk.slice(0, -1);
+  if (!early.length) {
+    map.set(last, sentences.map((line) => sentence(line)).join(" "));
+    return map;
+  }
+  const head = sentences.slice(0, -1);
+  head.forEach((line, i) => {
+    const act = early[Math.min(i, early.length - 1)];
+    const next = sentence(line);
+    const prev = map.get(act);
+    map.set(act, prev ? `${prev} ${next}` : next);
+  });
+  map.set(last, sentence(sentences[sentences.length - 1]));
+  return map;
+}
+
+function joinSay(lead: string, extra: string): string {
+  const head = sentence(lead);
+  return extra ? `${head} ${extra}` : head;
+}
+
+/**
+ * Spoken line for a notes-only landing. Viewer facts are the slice, window,
+ * zoom, and measurement that were actually landed. The author's sentences
+ * fill the acts. Demo look-cues are not used here.
+ */
+function notesActSay(
+  beat: TeachBeat,
+  anchors: SparseAnchors | undefined,
+  prose: string | undefined
+): string {
+  const extra = prose?.trim() ?? "";
+  const label = notesLabel(anchors?.label);
+  const act = beat.act;
+  if (act === "orient") {
+    const scroll = beat.actions.find((action) => action.type === "scroll");
+    const slice = scroll?.type === "scroll" ? scroll.sliceIndex : 0;
+    const lead = label ? `${label}, on slice ${slice}` : `On slice ${slice}`;
+    return joinSay(lead, extra);
+  }
+  if (act === "search") {
+    const windowAction = beat.actions.find((action) => action.type === "window");
+    if (windowAction?.type === "window") {
+      return joinSay(
+        `Window ${Math.round(windowAction.ww)} over ${Math.round(windowAction.wc)}`,
+        extra
+      );
+    }
+  }
+  if (act === "lean-in") {
+    const zoomAction = beat.actions.find((action) => action.type === "zoom");
+    if (zoomAction?.type === "zoom") {
+      return joinSay(`Closer, about ${zoomAction.zoom.toFixed(1)} times`, extra);
+    }
+  }
+  if (act === "commit") {
+    const measure = measureLine(beat.actions.find((action) => action.type === "annotate"));
+    const parts = [extra, measure ? sentence(measure) : ""].filter(Boolean);
+    if (parts.length) return parts.join(" ");
+    if (label) return sentence(label);
+  }
+  return extra || sentence(label || "Finding");
+}
+
+/** Pearl is the teaching points. With none, close on the label the author wrote. */
+function notesPearl(anchors: SparseAnchors | undefined): string {
+  const points = (anchors?.teachingPoints ?? [])
+    .map((point) => point.trim())
+    .filter(Boolean)
+    .map((point) => sentence(point));
+  if (points.length) return points.join(" ");
+  const label = notesLabel(anchors?.label);
+  if (label) return sentence(`This is ${label}`);
+  const desc = anchors?.description?.trim();
+  if (desc) return splitSentences(desc).map((line) => sentence(line)).join(" ");
+  return sentence("This is the finding");
+}
+
+function applyNotesVoice(beats: TeachBeat[], anchors: SparseAnchors | undefined): void {
+  const acts = beats.map((beat) => beat.act).filter((act): act is TeachAct => Boolean(act));
+  const prose = descriptionProseByAct(anchors?.description, acts);
+  for (const beat of beats) {
+    if (!beat.act || beat.act === "pearl") continue;
+    beat.say = notesActSay(beat, anchors, prose.get(beat.act));
+  }
+}
+
 /**
  * Collapse a dense record into five attending acts at most.
  * Values come from the committed anchors. Times come from the final run
@@ -607,22 +723,29 @@ export function buildTeachingGuide(
     say: sentence(draft.stem),
   }));
 
+  const fromNotes = notesVoice(track);
   const corpus = findingCorpus(opts?.anchors);
   const spans = normalizeNarrationSpans(opts?.narration ?? track.narration, Math.max(duration, 1));
   const used = new Set<number>();
-  beats.forEach((beat, i) => {
-    if (beat.act === "pearl") return;
-    const end = beats[i + 1]?.t ?? Math.max(duration, beat.t + 1);
-    const hit = spans.findIndex((span, idx) => {
-      if (used.has(idx)) return false;
-      const mid = (span.tStartMs + span.tEndMs) / 2;
-      if (mid < beat.t || mid >= end) return false;
-      return !overlapsFinding(span.text, corpus);
+  // A notes landing already speaks the authored prose. A real take still
+  // layers a transcript span onto the look-cue when it does not name the finding.
+  if (!fromNotes) {
+    beats.forEach((beat, i) => {
+      if (beat.act === "pearl") return;
+      const end = beats[i + 1]?.t ?? Math.max(duration, beat.t + 1);
+      const hit = spans.findIndex((span, idx) => {
+        if (used.has(idx)) return false;
+        const mid = (span.tStartMs + span.tEndMs) / 2;
+        if (mid < beat.t || mid >= end) return false;
+        return !overlapsFinding(span.text, corpus);
+      });
+      if (hit < 0) return;
+      used.add(hit);
+      beat.say = `${beat.say} ${sentence(spans[hit].text)}`.trim();
     });
-    if (hit < 0) return;
-    used.add(hit);
-    beat.say = `${beat.say} ${sentence(spans[hit].text)}`.trim();
-  });
+  } else {
+    applyNotesVoice(beats, opts?.anchors);
+  }
 
   const held = spans.filter((_, idx) => !used.has(idx)).map((span) => span.text);
   const pearlT = (beats[beats.length - 1]?.t ?? 0) + 1;
@@ -630,7 +753,7 @@ export function buildTeachingGuide(
     t: Math.min(Math.max(duration, pearlT), Math.max(pearlT, times[times.length - 1] ?? 0) + 1),
     act: "pearl",
     actions: [],
-    say: pearlSay(opts?.anchors, held),
+    say: fromNotes ? notesPearl(opts?.anchors) : pearlSay(opts?.anchors, held),
   });
   // Keep pearl strictly after the last drive so the name is not spoken on the way in.
   const lastDrive = beats[beats.length - 2];
@@ -724,7 +847,8 @@ export function teacherTrackPresent(finding: {
  * 1. RecordedTrack — rebuild with buildTeachingGuide from the track and the
  *    current prose. A stored teachingGuide is ignored, including the LIDC
  *    demo script. A click-to-annotate save with no microphone stores a
- *    landing track, so that guide wins the same way.
+ *    landing track marked `voice: "notes"`, so that guide wins the same way
+ *    and the say lines stay the author's notes.
  * 2. Stored teachingGuide — demo fallback when the finding has no teacher track.
  * 3. null — nothing to play.
  *
@@ -1199,6 +1323,7 @@ function trackFromAnnotatedLanding(
     durationMs: Math.max(ANNOTATE_CLOCK_MS, lastT),
     start: { sliceIndex: slice, ...(hasWindow ? { ww, wc } : {}) },
     events,
+    voice: "notes",
   };
 }
 
@@ -1206,7 +1331,10 @@ function trackFromAnnotatedLanding(
  * Click-to-annotate, and any save with no usable microphone or track.
  * Narration spans come from the label, description, and teaching points.
  * The guide is orient → search → lean-in → commit → pearl, dropping any act
- * whose gesture was never landed. A demo guide left on the draft does not win.
+ * whose gesture was never landed. Say lines come from the label, description,
+ * teaching points, and the landed slice, window, zoom, and marker. The track
+ * is marked `voice: "notes"` so a later rebuild does not restore the demo
+ * look-cues. A demo guide left on the draft does not win.
  */
 export function commitAnnotatedFinding<T extends Partial<Finding>>(
   base: T,
