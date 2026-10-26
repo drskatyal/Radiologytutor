@@ -306,6 +306,17 @@ function voiClose(
   return Math.abs(ww - targetWw) < WW_EPS && Math.abs(wc - targetWc) < WC_EPS;
 }
 
+/** A zoom that stays in. A fit-to-window camera is not a lean-in. */
+function leanInCamera(
+  zoom: number,
+  pan: [number, number]
+): { zoom: number; pan: [number, number] } | undefined {
+  if (!Number.isFinite(zoom)) return undefined;
+  const panMag = Math.hypot(pan[0] ?? 0, pan[1] ?? 0);
+  if (Math.abs(zoom - 1) >= ZOOM_EPS || panMag >= PAN_EPS) return { zoom, pan };
+  return undefined;
+}
+
 /** Committed landing from the end of the log. Fumbles in the middle are ignored. */
 export function settledDisplay(track: RecordedTrack): {
   sliceIndex: number;
@@ -328,13 +339,7 @@ function moneyFromTrack(track: RecordedTrack): Money {
     lastAnn?.sliceIndex != null && Number.isFinite(lastAnn.sliceIndex)
       ? lastAnn.sliceIndex
       : (lastSlice?.index ?? track.start.sliceIndex);
-  let zoom: Money["zoom"];
-  if (lastCam) {
-    const panMag = Math.hypot(lastCam.pan[0], lastCam.pan[1]);
-    if (Math.abs(lastCam.zoom - 1) >= ZOOM_EPS || panMag >= PAN_EPS) {
-      zoom = { zoom: lastCam.zoom, pan: lastCam.pan };
-    }
-  }
+  const zoom = lastCam ? leanInCamera(lastCam.zoom, lastCam.pan) : undefined;
   return {
     sliceIndex,
     ww: lastVoi?.ww ?? track.start.ww,
@@ -718,12 +723,13 @@ export function teacherTrackPresent(finding: {
  * Precedence, highest first:
  * 1. RecordedTrack — rebuild with buildTeachingGuide from the track and the
  *    current prose. A stored teachingGuide is ignored, including the LIDC
- *    demo script.
+ *    demo script. A click-to-annotate save with no microphone stores a
+ *    landing track, so that guide wins the same way.
  * 2. Stored teachingGuide — demo fallback when the finding has no teacher track.
  * 3. null — nothing to play.
  *
- * A re-record or an edit to the label, description, or teaching points
- * replaces what Teach says, because the track is the source.
+ * A re-record, an annotate save, or an edit to the label, description, or
+ * teaching points replaces what Teach says, because the track is the source.
  */
 export function resolveTeachingGuide(
   finding: Partial<
@@ -1088,6 +1094,135 @@ export function commitRecordedFinding<T extends Partial<Finding>>(
       gap,
     },
   };
+}
+
+/** Gestures a click-to-annotate save actually landed. Omitted fields are omitted acts. */
+export interface AnnotatedLanding {
+  sliceIndex?: number;
+  windowWidth?: number;
+  windowCenter?: number;
+  /** Viewport magnification. A fit (about 1×) is not a lean-in. */
+  zoom?: number;
+  pan?: [number, number];
+  seriesInstanceUID?: string;
+  measurements?: FindingMeasurement[];
+}
+
+const ANNOTATE_CLOCK_MS = 1600;
+
+function finiteLanding(n: number | undefined): n is number {
+  return n != null && Number.isFinite(n);
+}
+
+const MEASUREMENT_TOOL: Record<FindingMeasurement["kind"], string> = {
+  length: "Length",
+  ellipse: "EllipticalROI",
+  probe: "Probe",
+  bidirectional: "Bidirectional",
+  arrow: "ArrowAnnotate",
+  angle: "Angle",
+};
+
+function annotationEventFromMeasurement(
+  measurement: FindingMeasurement,
+  t: number,
+  sliceIndex: number
+): RecordedEvent | null {
+  const handles = (measurement.handles ?? []).filter(
+    (point): point is [number, number] =>
+      Array.isArray(point) &&
+      point.length >= 2 &&
+      Number.isFinite(point[0]) &&
+      Number.isFinite(point[1])
+  );
+  if (!handles.length) return null;
+  const from = handles[0];
+  const to = handles[handles.length - 1];
+  return {
+    t,
+    type: "annotation",
+    shape: measurement.kind === "arrow" ? "arrow" : "circle",
+    from,
+    to,
+    tool: MEASUREMENT_TOOL[measurement.kind],
+    handles,
+    sliceIndex: finiteLanding(measurement.sliceIndex) ? measurement.sliceIndex : sliceIndex,
+    annotationUID: measurement.id,
+    ...(measurement.label ? { label: measurement.label } : {}),
+    ...(finiteLanding(measurement.lengthMm) ? { lengthMm: measurement.lengthMm } : {}),
+    ...(finiteLanding(measurement.meanHu) ? { meanHu: measurement.meanHu } : {}),
+    ...(finiteLanding(measurement.maxHu) ? { maxHu: measurement.maxHu } : {}),
+    ...(finiteLanding(measurement.minHu) ? { minHu: measurement.minHu } : {}),
+    ...(finiteLanding(measurement.stdHu) ? { stdHu: measurement.stdHu } : {}),
+    ...(finiteLanding(measurement.areaMm2) ? { areaMm2: measurement.areaMm2 } : {}),
+    ...(measurement.unit ? { unit: measurement.unit } : {}),
+  };
+}
+
+/**
+ * Clock for a save that never recorded a walk-through. Slice, window, held
+ * zoom, point, and strokes are events only when the author landed them.
+ * `buildTeachingGuide` then keeps orient and pearl and drops the rest.
+ */
+function trackFromAnnotatedLanding(
+  base: Partial<Finding>,
+  landing?: AnnotatedLanding
+): RecordedTrack {
+  const rawSlice = landing?.sliceIndex ?? base.sliceIndex;
+  const slice = finiteLanding(rawSlice) ? rawSlice : 0;
+  const rawWw = landing?.windowWidth ?? base.windowWidth;
+  const rawWc = landing?.windowCenter ?? base.windowCenter;
+  const ww = finiteLanding(rawWw) ? rawWw : undefined;
+  const wc = finiteLanding(rawWc) ? rawWc : undefined;
+  const hasWindow = ww != null && wc != null;
+  const series = (landing?.seriesInstanceUID ?? base.seriesInstanceUID)?.trim();
+  const rawZoom = landing?.zoom;
+  const leaned = finiteLanding(rawZoom) ? leanInCamera(rawZoom, landing?.pan ?? [0, 0]) : undefined;
+  const marker = base.marker;
+  const hasPoint =
+    marker != null && Number.isFinite(marker.x_pct) && Number.isFinite(marker.y_pct);
+
+  const events: RecordedEvent[] = [];
+  if (series) events.push({ t: 0, type: "series", seriesInstanceUID: series });
+  events.push({ t: 200, type: "slice", index: slice });
+  if (hasWindow) events.push({ t: 600, type: "voi", ww, wc });
+  if (leaned) events.push({ t: 1000, type: "camera", zoom: leaned.zoom, pan: leaned.pan });
+  if (hasPoint) events.push({ t: 1400, type: "cursor", x: marker.x_pct, y: marker.y_pct });
+  const measurements = landing?.measurements ?? base.measurements ?? [];
+  measurements.forEach((measurement, index) => {
+    const stroke = annotationEventFromMeasurement(measurement, 1500 + index, slice);
+    if (stroke) events.push(stroke);
+  });
+
+  const lastT = events.reduce((max, event) => Math.max(max, event.t), 0);
+  return {
+    durationMs: Math.max(ANNOTATE_CLOCK_MS, lastT),
+    start: { sliceIndex: slice, ...(hasWindow ? { ww, wc } : {}) },
+    events,
+  };
+}
+
+/**
+ * Click-to-annotate, and any save with no usable microphone or track.
+ * Narration spans come from the label, description, and teaching points.
+ * The guide is orient → search → lean-in → commit → pearl, dropping any act
+ * whose gesture was never landed. A demo guide left on the draft does not win.
+ */
+export function commitAnnotatedFinding<T extends Partial<Finding>>(
+  base: T,
+  landing?: AnnotatedLanding
+): { finding: T; receipt: RecordedSaveReceipt } {
+  return commitRecordedFinding(
+    base,
+    trackFromAnnotatedLanding(base, landing),
+    {
+      label: base.label,
+      description: base.description,
+      teachingPoints: base.teachingPoints,
+      take: { gap: "empty-mic" },
+    },
+    landing?.measurements ?? base.measurements
+  );
 }
 
 /** Author-facing summary of a one-take save. */
