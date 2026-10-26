@@ -111,6 +111,10 @@ export interface FindingAnchor {
    */
   windowWidth?: number;
   windowCenter?: number;
+  /** Parallel-scale zoom at pin time (1 = fit). Absent = leave the pane's camera. */
+  zoom?: number;
+  /** Pan in viewport CSS pixels at pin time. */
+  pan?: [number, number];
   /** Which pane in a multi-viewport layout (Phase 2). */
   viewportRole?: "primary" | "secondary" | "compare";
   /** Chronology role when the case spans studies. */

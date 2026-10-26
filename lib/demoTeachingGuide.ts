@@ -11,7 +11,14 @@
 
 import { getPublicCaseTemplate } from "./publicCases/catalog";
 import { buildTeachingGuide, teacherTrackPresent } from "./teachingGuide";
-import type { Case, Finding, RecordedEvent, RecordedTrack, TeachingGuide } from "./types";
+import type {
+  Case,
+  Finding,
+  FindingAnchor,
+  RecordedEvent,
+  RecordedTrack,
+  TeachingGuide,
+} from "./types";
 import { DEFAULT_ORG_ID } from "./cases";
 
 export const LIDC_CASE_ID = "case-lidc-nodule-search";
@@ -25,6 +32,14 @@ export const LIDC_STACK_SLICES = 65;
 
 /** Magnification passed to buildTeachingGuide as the lean-in anchor. */
 export const DEMO_LEAN_IN_ZOOM = 2.2;
+
+/**
+ * How many slices above the nodule survey the compare pane opens.
+ * The public LIDC case has one series. This adjacent slice is the demo that
+ * Compare is not a second copy of the primary landing. Two slices stays inside
+ * the case prefetch radius around slice 49.
+ */
+export const LIDC_COMPARE_SLICE_DELTA = 2;
 
 type GuideInput = Partial<Finding> &
   Pick<Finding, "label" | "description" | "teachingPoints" | "marker"> & {
@@ -111,6 +126,53 @@ export function buildLidcDemoGuide(finding: GuideInput): TeachingGuide {
   });
 }
 
+/**
+ * Compare landing for the peripheral nodule survey (order 2).
+ * Same series and lung window, two slices above the committed slice, fit camera.
+ * Other findings stay single-pane. Returns undefined when the slice cannot move.
+ */
+export function lidcNoduleCompareAnchors(
+  finding: Partial<Finding>
+): FindingAnchor[] | undefined {
+  if (finding.order !== 2) return undefined;
+  if (finding.sliceIndex == null || !Number.isFinite(finding.sliceIndex) || !finding.marker) {
+    return undefined;
+  }
+  const adjacent = Math.max(0, finding.sliceIndex - LIDC_COMPARE_SLICE_DELTA);
+  if (adjacent === finding.sliceIndex) return undefined;
+  const ww = finding.windowWidth ?? 1500;
+  const wc = finding.windowCenter ?? -600;
+  const primary: FindingAnchor = {
+    studyInstanceUID: finding.studyInstanceUID,
+    seriesInstanceUID: finding.seriesInstanceUID,
+    sliceIndex: finding.sliceIndex,
+    windowWidth: ww,
+    windowCenter: wc,
+    marker: finding.marker,
+    viewportRole: "primary",
+    studyRole: "current",
+  };
+  const secondary: FindingAnchor = {
+    studyInstanceUID: finding.studyInstanceUID,
+    seriesInstanceUID: finding.seriesInstanceUID,
+    sliceIndex: adjacent,
+    windowWidth: ww,
+    windowCenter: wc,
+    zoom: 1,
+    pan: [0, 0],
+    marker: finding.marker,
+    viewportRole: "secondary",
+    studyRole: "current",
+  };
+  return [primary, secondary];
+}
+
+function withLidcCompareLanding<T extends Partial<Finding>>(finding: T): T {
+  const anchors = lidcNoduleCompareAnchors(finding);
+  if (!anchors) return finding;
+  return { ...finding, anchors };
+}
+
 /** Attach the demo guide unless a teacher track already owns the finding. */
 export function attachDemoTeachingGuide<T extends Partial<Finding>>(finding: T): T {
   if (findingHasTeacherTrack(finding)) return finding;
@@ -141,7 +203,7 @@ export function planPublicCaseFindings(
       kept.push(prior);
       continue;
     }
-    create.push(attachDemoTeachingGuide(draft));
+    create.push(withLidcCompareLanding(attachDemoTeachingGuide(draft)));
   }
   return { kept, create };
 }

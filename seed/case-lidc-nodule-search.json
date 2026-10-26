@@ -179,6 +179,41 @@
           }
         ]
       },
+      "anchors": [
+        {
+          "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+          "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+          "sliceIndex": 49,
+          "windowWidth": 1500,
+          "windowCenter": -600,
+          "marker": {
+            "x_pct": 0.68,
+            "y_pct": 0.55,
+            "shape": "circle"
+          },
+          "viewportRole": "primary",
+          "studyRole": "current"
+        },
+        {
+          "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+          "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+          "sliceIndex": 47,
+          "windowWidth": 1500,
+          "windowCenter": -600,
+          "zoom": 1,
+          "pan": [
+            0,
+            0
+          ],
+          "marker": {
+            "x_pct": 0.68,
+            "y_pct": 0.55,
+            "shape": "circle"
+          },
+          "viewportRole": "secondary",
+          "studyRole": "current"
+        }
+      ],
       "id": "f_caselidcno_2"
     },
     {

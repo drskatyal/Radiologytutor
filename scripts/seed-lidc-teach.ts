@@ -12,12 +12,15 @@
  */
 
 import { DEFAULT_ORG_ID, getCaseForOrg, saveCase, updateFindingScoped } from "../lib/cases";
+import { secondaryAnchor } from "../lib/findingAnchors";
 import {
   LIDC_CASE_ID,
   buildLidcDemoGuide,
   buildLidcSeedCase,
   findingHasTeacherTrack,
+  lidcNoduleCompareAnchors,
 } from "../lib/demoTeachingGuide";
+import type { Finding } from "../lib/types";
 
 async function main() {
   const existing = await getCaseForOrg(DEFAULT_ORG_ID, LIDC_CASE_ID);
@@ -42,9 +45,12 @@ async function main() {
       console.warn(`Skipped ${finding.id}: needs a slice and a marker before a demo guide can land.`);
       continue;
     }
-    await updateFindingScoped(DEFAULT_ORG_ID, LIDC_CASE_ID, finding.id, {
+    const patch: Partial<Finding> = {
       teachingGuide: buildLidcDemoGuide(finding),
-    });
+    };
+    const anchors = lidcNoduleCompareAnchors(finding);
+    if (anchors && !secondaryAnchor(finding)) patch.anchors = anchors;
+    await updateFindingScoped(DEFAULT_ORG_ID, LIDC_CASE_ID, finding.id, patch);
     patched += 1;
   }
   console.log(

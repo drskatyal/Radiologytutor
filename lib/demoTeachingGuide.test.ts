@@ -8,7 +8,14 @@ import { authoredGuideLines, resolveTeachingGuide } from "./teachingGuide.ts";
 import { getPublicCaseTemplate } from "./publicCases/catalog.ts";
 import type { Finding, TeachViewerAction } from "./types.ts";
 import {
+  primaryAnchor,
+  secondaryAnchor,
+  secondaryViewerState,
+  wantsCompare,
+} from "./findingAnchors.ts";
+import {
   LIDC_CASE_ID,
+  LIDC_COMPARE_SLICE_DELTA,
   LIDC_STACK_SLICES,
   attachDemoTeachingGuide,
   buildLidcDemoGuide,
@@ -167,6 +174,33 @@ test("committed seed case matches the demo guide for a 65-slice stack", () => {
     built.findings.map((finding) => finding.teachingGuide)
   );
   assert.ok(seed.findings.every((finding) => !finding.track));
+  const seedNodule = seed.findings.find((finding) => finding.order === 2);
+  const builtNodule = built.findings.find((finding) => finding.order === 2);
+  assert.ok(seedNodule && builtNodule);
+  assert.deepEqual(seedNodule.anchors, builtNodule.anchors);
+});
+
+test("LIDC nodule compare is an adjacent slice of the only series", () => {
+  const nodule = buildLidcSeedCase().findings.find((finding) => finding.order === 2);
+  assert.ok(nodule);
+  assert.equal(wantsCompare(nodule), true);
+  const pri = primaryAnchor(nodule);
+  const sec = secondaryAnchor(nodule);
+  assert.ok(sec);
+  assert.equal(sec.viewportRole, "secondary");
+  assert.equal(sec.seriesInstanceUID, pri.seriesInstanceUID);
+  assert.equal(sec.seriesInstanceUID, nodule.seriesInstanceUID);
+  assert.equal(pri.sliceIndex, 49);
+  assert.equal(sec.sliceIndex, 49 - LIDC_COMPARE_SLICE_DELTA);
+  assert.notEqual(sec.sliceIndex, pri.sliceIndex);
+  assert.equal(sec.windowWidth, 1500);
+  assert.equal(sec.windowCenter, -600);
+  assert.equal(sec.zoom, 1);
+  const view = secondaryViewerState(nodule);
+  assert.equal(view?.sliceIndex, sec.sliceIndex);
+  assert.notEqual(view?.sliceIndex, nodule.sliceIndex);
+  const others = buildLidcSeedCase().findings.filter((finding) => finding.order !== 2);
+  assert.ok(others.every((finding) => !wantsCompare(finding)));
 });
 
 test("playTeachingGuide speaks the nodule pearl after the lean-in", async () => {
