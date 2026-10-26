@@ -44,7 +44,14 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { CaseData, Finding, FindingMeasurement, Marker, TeachingGuide } from "@/lib/types";
 import type { CaseSeries } from "@/lib/viewerSource";
 import { examFallbackStem } from "@/lib/teachingPrompt";
-import { clickHitsFinding } from "@/lib/clickFinding";
+import {
+  applyLocateClick,
+  examEntryTransition,
+  isExamMode,
+  locateModeArmed,
+  mergeExamReveal,
+  spoilFindingOnNavigate,
+} from "@/lib/examLocate";
 import { nextGuidedIndex } from "@/lib/tourAdapt";
 import {
   secondaryAnchor,
@@ -132,6 +139,12 @@ export function useStudentSession(
    * finding takes the floor.
    */
   const playbackGenRef = useRef(0);
+  /**
+   * Bumped when Teach hands off to Exam. A reveal or tutor call that started
+   * on the old epoch must not uncover the marker after locate has armed.
+   */
+  const revealEpochRef = useRef(0);
+  const modeRef = useRef(mode);
   /** play_guide is the only speech on this turn — speak its beats. */
   const narrateGuideRef = useRef(false);
   const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
@@ -179,6 +192,14 @@ export function useStudentSession(
   const locateMissesRef = useRef(0);
   const [locatedIds, setLocatedIds] = useState<string[]>([]);
   const [helpedIds, setHelpedIds] = useState<string[]>([]);
+  /** Assistant turns before this index are Teach narration, not the exam caption. */
+  const [examCaptionFloor, setExamCaptionFloor] = useState(0);
+  const revealedIdsRef = useRef(revealedIds);
+  revealedIdsRef.current = revealedIds;
+  const locatedIdsRef = useRef(locatedIds);
+  locatedIdsRef.current = locatedIds;
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
@@ -194,8 +215,8 @@ export function useStudentSession(
   const busy = phase === "transcribing" || phase === "thinking";
   const startedRef = useRef(false);
 
-  const markRevealed = useCallback((id: string) => {
-    setRevealedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  const markRevealed = useCallback((id: string, epoch = revealEpochRef.current) => {
+    setRevealedIds((prev) => mergeExamReveal(prev, id, epoch, revealEpochRef.current));
   }, []);
 
   const onSecondaryReady = useCallback((c: CornerstoneControls) => {
@@ -360,6 +381,7 @@ export function useStudentSession(
   // Author Studio still uses lib/replay for capture QA.
   const revealFinding = useCallback(
     async (index: number, opts?: { spoil?: boolean }) => {
+      const epoch = revealEpochRef.current;
       const finding = orderedFindings[index];
       if (!finding || !controls.current) return;
       const spoil = opts?.spoil !== false;
@@ -405,19 +427,26 @@ export function useStudentSession(
       }
 
       await controls.current.showState(view, 750);
+      if (epoch !== revealEpochRef.current) return;
       setActiveIndex(index);
       const m = finding.marker ?? null;
       const meas = finding.measurements ?? [];
       setMeasurements(meas);
       if (spoil && m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
-        markRevealed(finding.id);
+        markRevealed(finding.id, epoch);
         await pointLaser(m.x_pct, m.y_pct, m);
+        if (epoch !== revealEpochRef.current) {
+          setMarkerVisible(false);
+          setMeasurementsVisible(false);
+          return;
+        }
         setMeasurementsVisible(meas.length > 0);
       } else {
         setMarker(m);
         setMarkerVisible(false);
         setMeasurementsVisible(spoil && meas.length > 0);
       }
+      if (epoch !== revealEpochRef.current) return;
       await seatSecondary(finding, spoil);
     },
     [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary]
@@ -593,9 +622,10 @@ export function useStudentSession(
             orderedFindings.find((item) => item.id === action.findingId) ??
             orderedFindings[activeIndexRef.current];
           if (!target) break;
+          const epoch = revealEpochRef.current;
           const idx = orderedFindings.indexOf(target);
           if (idx >= 0) setActiveIndex(idx);
-          markRevealed(target.id);
+          markRevealed(target.id, epoch);
           const guide = resolveTeachingGuide(target);
           if (guide && guideHasMotion(guide)) {
             // A live answer is already in speakBeats. Speaking the guide on
@@ -630,6 +660,7 @@ export function useStudentSession(
           } else if (idx >= 0) {
             await revealFinding(idx);
           }
+          if (epoch !== revealEpochRef.current) break;
           if (target.marker) {
             setMarker(target.marker);
             setMarkerVisible(true);
@@ -646,6 +677,12 @@ export function useStudentSession(
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
   const runTutor = useCallback(
     async (question: string, history: ChatTurn[]) => {
+      // A tutor call started under Teach must not speak or reveal after Exam.
+      if (isExamMode(modeRef.current) && !isExamMode(mode)) return;
+      const epoch = revealEpochRef.current;
+      const staleTutor = () =>
+        epoch !== revealEpochRef.current ||
+        (isExamMode(modeRef.current) && !isExamMode(mode));
       setPhase("thinking");
       // Light the "searching" orb up front when the question reads like it
       // needs outside evidence; sources arriving below confirm it after.
@@ -673,7 +710,9 @@ export function useStudentSession(
                 : undefined,
           }),
         });
+        if (staleTutor()) return;
         const data = await res.json();
+        if (staleTutor()) return;
         const currentFindingId =
           activeIndexRef.current >= 0
             ? orderedFindings[activeIndexRef.current]?.id
@@ -789,6 +828,7 @@ export function useStudentSession(
                 ? examFallbackStem(orderedFindings.length)
                 : "";
             if (line.trim()) {
+              if (staleTutor()) return;
               deliverSpeech(line, offlineActions, []);
               return;
             }
@@ -829,19 +869,25 @@ export function useStudentSession(
           viewerAlreadySeated: tourActive,
           history: priorTurns,
         });
+        if (staleTutor()) return;
         if (!speech.speak) {
           narrateGuideRef.current = true;
           try {
-            for (const action of actions) await executeAction(action);
+            for (const action of actions) {
+              if (staleTutor()) return;
+              await executeAction(action);
+            }
           } finally {
             narrateGuideRef.current = false;
           }
+          if (staleTutor()) return;
           setPhase("idle");
           if (speech.advanceWithoutSpeech) queueGuidedAdvance();
           return;
         }
         deliverSpeech(speech.answer, actions, sources);
       } catch (e) {
+        if (staleTutor()) return;
         setSearching(false);
         if (e instanceof DOMException && e.name === "AbortError") return;
         const msg = e instanceof Error ? e.message : "Tutor error";
@@ -1179,7 +1225,7 @@ export function useStudentSession(
         return;
       }
       interruptPlayback();
-      revealFinding(index, { spoil: true });
+      revealFinding(index, { spoil: spoilFindingOnNavigate(mode) });
     },
     [busy, ready, orderedFindings.length, revealFinding, interruptPlayback, mode]
   );
@@ -1196,8 +1242,8 @@ export function useStudentSession(
       return;
     }
     interruptPlayback();
-    void revealFinding(nextIdx, { spoil: !examMode });
-  }, [busy, ready, orderedFindings.length, examMode, revealFinding, interruptPlayback, mode, goTo]);
+    void revealFinding(nextIdx, { spoil: spoilFindingOnNavigate(mode) });
+  }, [busy, ready, orderedFindings.length, revealFinding, interruptPlayback, mode, goTo]);
 
   const revealCurrent = useCallback(() => {
     if (busy || !ready) return;
@@ -1215,13 +1261,24 @@ export function useStudentSession(
 
   const onLocateClick = useCallback(
     (x: number, y: number) => {
-      if (busy) return;
       const cur = activeIndexRef.current;
       const finding = cur >= 0 ? orderedFindings[cur] : null;
-      if (!finding || !examMode) return;
-      if (revealedIds.includes(finding.id)) return;
-      const hit = clickHitsFinding(finding.marker, x, y);
-      if (hit) {
+      const armed = locateModeArmed({
+        examMode,
+        finding,
+        revealedIds: revealedIdsRef.current,
+        locatedIds: locatedIdsRef.current,
+      });
+      const result = applyLocateClick({
+        armed,
+        busy: phaseRef.current === "transcribing" || phaseRef.current === "thinking",
+        marker: finding?.marker,
+        x,
+        y,
+        priorMisses: locateMissesRef.current,
+      });
+      if (result.type === "ignore" || !finding) return;
+      if (result.type === "hit") {
         locateMissesRef.current = 0;
         setLocateHint("");
         setLocatedIds((prev) =>
@@ -1231,14 +1288,10 @@ export function useStudentSession(
         sendText("I clicked the finding on the image.");
         return;
       }
-      locateMissesRef.current += 1;
-      setLocateHint(
-        locateMissesRef.current >= 2
-          ? "Still not it — say you don't know, or try one more click."
-          : "Not quite — click the lesion, or hold the mic to describe it."
-      );
+      locateMissesRef.current = result.misses;
+      setLocateHint(result.hint);
     },
-    [busy, examMode, orderedFindings, revealedIds, revealFinding, sendText]
+    [examMode, orderedFindings, revealFinding, sendText]
   );
 
   const toggleCompare = useCallback(() => {
@@ -1327,13 +1380,49 @@ export function useStudentSession(
     }
   }, [ready, orderedFindings.length, examMode, mode, revealFinding, runTutor]);
 
-  // Mode switches: reset tour flag so we don't leak auto-advance into viva.
+  // Teach → Exam: the guide has already marked this finding revealed and is
+  // often still speaking. Drop that spoiler, stop the clip, and let locate arm
+  // on the authored marker. A finding the student already clicked stays open.
   useEffect(() => {
-    if (mode !== "guided") {
-      tourActiveRef.current = false;
-      setTourActive(false);
+    const previous = modeRef.current;
+    modeRef.current = mode;
+    if (previous === mode) {
+      if (mode !== "guided") {
+        tourActiveRef.current = false;
+        setTourActive(false);
+      }
+      return;
     }
-  }, [mode]);
+    const entered = examEntryTransition({
+      fromMode: previous,
+      toMode: mode,
+      phase: phaseRef.current,
+      revealedIds: revealedIdsRef.current,
+      locatedIds: locatedIdsRef.current,
+    });
+    if (!entered) {
+      if (mode !== "guided") {
+        tourActiveRef.current = false;
+        setTourActive(false);
+      }
+      return;
+    }
+    revealEpochRef.current += 1;
+    tourGenRef.current += 1;
+    tourActiveRef.current = false;
+    setTourActive(false);
+    interruptPlayback();
+    abortRef.current?.abort();
+    setSpeakingTurnId(null);
+    setPhase(entered.phase);
+    setRevealedIds(entered.revealedIds);
+    setMarkerVisible(false);
+    setMeasurementsVisible(false);
+    setSecondaryMarkerVisible(false);
+    setLocateHint("");
+    locateMissesRef.current = 0;
+    setExamCaptionFloor(turnsRef.current.length);
+  }, [mode, interruptPlayback]);
 
   // Leaving exam mode uncovers the active finding so guided/report aren't blank.
   useEffect(() => {
@@ -1381,6 +1470,7 @@ export function useStudentSession(
     orderedFindings,
     examMode,
     revealedIds,
+    examCaptionFloor,
     onViewerReady,
     sendText,
     onMicStart,
@@ -1409,11 +1499,12 @@ export function useStudentSession(
       total: orderedFindings.length,
     },
     onLocateClick,
-    locateMode:
-      examMode &&
-      activeIndex >= 0 &&
-      !!orderedFindings[activeIndex] &&
-      !revealedIds.includes(orderedFindings[activeIndex].id),
+    locateMode: locateModeArmed({
+      examMode,
+      finding: activeIndex >= 0 ? orderedFindings[activeIndex] : null,
+      revealedIds,
+      locatedIds,
+    }),
     // Agent-orb + premium chat surface state.
     orbState,
     micLevel,
