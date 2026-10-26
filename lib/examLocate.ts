@@ -4,6 +4,9 @@
 // speaking after the student switches to Exam. Locate must arm from the
 // authored marker and from whether this exam has uncovered it — a teach-time
 // reveal is not a locate. Misses hint. A hit is scored by the session.
+//
+// The tour line stays in the transcript unless Exam entry replaces it. The
+// footer caption floor alone left that line under the examiner panel.
 
 import { clickHitsFinding } from "./clickFinding";
 import type { Marker } from "./types";
@@ -53,9 +56,91 @@ export type ExamEntry = {
   phase: LocateSessionPhase;
   /** Teach spoilers fall away. A finding the student already located stays open. */
   revealedIds: string[];
-  /** Footer caption must not keep reading the tour line. */
+  /**
+   * The examiner caption and the transcript panel must not keep the tour line.
+   * Seat a fresh stem in its place (or leave the transcript empty).
+   */
   dropPriorCaption: true;
 };
+
+/** Turns the examiner caption and the rail are allowed to show. */
+export function examinerVisibleTurns<T>(turns: readonly T[], floor: number): T[] {
+  const start = Number.isFinite(floor) ? Math.max(0, Math.floor(floor)) : 0;
+  if (start <= 0) return [...turns];
+  if (start >= turns.length) return [];
+  return turns.slice(start);
+}
+
+/** Last assistant line in the visible examiner transcript. Null when the panel should sit ready. */
+export function examinerCaptionTurn<T extends { role: string; text: string; error?: boolean }>(
+  turns: readonly T[],
+  floor: number
+): T | null {
+  const visible = examinerVisibleTurns(turns, floor);
+  for (let i = visible.length - 1; i >= 0; i--) {
+    const turn = visible[i];
+    if (turn.role === "assistant" && !turn.error && turn.text.trim()) return turn;
+  }
+  return null;
+}
+
+export type SeatedExamTranscript<T> = {
+  turns: T[];
+  /** Zero: the stored list is already the exam, so the panel and the caption agree. */
+  captionFloor: 0;
+};
+
+/**
+ * Teach → Exam. Prior turns are attending tour copy. They are not kept under
+ * the examiner chrome. A non-blank stem becomes the only line; a blank stem
+ * leaves the transcript empty so the dock can sit at Ready.
+ */
+export function seatExamTranscript<T extends { text: string }>(
+  _prior: readonly unknown[],
+  stem: T | null
+): SeatedExamTranscript<T> {
+  const text = stem?.text.trim() ?? "";
+  if (!stem || !text) return { turns: [], captionFloor: 0 };
+  return { turns: [{ ...stem, text }], captionFloor: 0 };
+}
+
+/**
+ * A guide caption write captures the epoch when it was scheduled. Exam entry
+ * bumps that epoch; applying the write afterwards would put the tour line
+ * back on the seated stem.
+ */
+export function commitGuideLine<T extends { id: string; text: string }>(
+  turns: readonly T[],
+  turnId: string,
+  line: string,
+  epochAtSchedule: number,
+  epochNow: number,
+  how: "append" | "replace" = "append"
+): T[] {
+  if (epochAtSchedule !== epochNow) return [...turns];
+  const trimmed = line.trim();
+  if (!trimmed) return [...turns];
+  let found = false;
+  const next = turns.map((turn) => {
+    if (turn.id !== turnId) return turn;
+    found = true;
+    const text = how === "replace" || !turn.text.trim() ? trimmed : `${turn.text} ${trimmed}`;
+    return { ...turn, text };
+  });
+  return found ? next : [...turns];
+}
+
+/** Same epoch rule for the turn a guide opens before its first line lands. */
+export function appendGuideTurn<T extends { id: string }>(
+  turns: readonly T[],
+  turn: T,
+  epochAtSchedule: number,
+  epochNow: number
+): T[] {
+  if (epochAtSchedule !== epochNow) return [...turns];
+  if (turns.some((item) => item.id === turn.id)) return [...turns];
+  return [...turns, turn];
+}
 
 /**
  * Teach → Exam (or Socratic). Null when the session was already an exam, or
