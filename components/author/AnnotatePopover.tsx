@@ -250,10 +250,8 @@ export function AnnotatePopover({
                   onChange={(e) =>
                     onDraftChange({
                       ...draft,
-                      teachingPoints: e.target.value
-                        .split("\n")
-                        .map((s) => s.trimEnd())
-                        .slice(0, LIMITS.teachingPoints),
+                      // Keep spaces while typing. Save trims blank lines.
+                      teachingPoints: e.target.value.split("\n").slice(0, LIMITS.teachingPoints),
                     })
                   }
                 />
