@@ -21,6 +21,7 @@ import {
   type MicState,
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import { displaySliceNumber } from "@/lib/findingDisplayState";
 import type { Marker, MarkerShape, StructuredFinding } from "@/lib/types";
 import { LandmarkField } from "@/components/author/LandmarkField";
 import { LIMITS } from "@/components/author/lib";
@@ -140,7 +141,7 @@ export function AnnotatePopover({
                 {sequenceIndex != null ? `Finding ${sequenceIndex + 1} · ` : ""}
                 Mark @ {(marker.x_pct * 100).toFixed(0)}%,{" "}
                 {(marker.y_pct * 100).toFixed(0)}%
-                {sliceIndex != null ? ` · slice ${sliceIndex + 1}` : ""}
+                {sliceIndex != null ? ` · slice ${displaySliceNumber(sliceIndex)}` : ""}
               </span>
             </div>
             <IconButton
