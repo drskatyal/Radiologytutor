@@ -47,12 +47,15 @@ import { examFallbackStem } from "@/lib/teachingPrompt";
 import {
   appendGuideTurn,
   applyLocateClick,
+  beginFindingStep,
   commitGuideLine,
+  commitSelectedFinding,
   examEntryTransition,
   isExamMode,
   locateModeArmed,
   mergeExamReveal,
   seatExamTranscript,
+  settleFindingReveal,
   spoilFindingOnNavigate,
 } from "@/lib/examLocate";
 import { nextGuidedIndex } from "@/lib/tourAdapt";
@@ -214,6 +217,19 @@ export function useStudentSession(
   );
   const activeIndexRef = useRef(-1);
   activeIndexRef.current = activeIndex;
+  const findingCountRef = useRef(orderedFindings.length);
+  findingCountRef.current = orderedFindings.length;
+  /** Selection that owns the header badge. A late reveal must not rewind it. */
+  const stepRef = useRef(beginFindingStep());
+
+  const commitFindingStep = useCallback((index: number) => {
+    const next = commitSelectedFinding(stepRef.current, index, findingCountRef.current);
+    if (!next) return null;
+    stepRef.current = next;
+    activeIndexRef.current = next.activeIndex;
+    setActiveIndex(next.activeIndex);
+    return next;
+  }, []);
 
   const busy = phase === "transcribing" || phase === "thinking";
   const startedRef = useRef(false);
@@ -387,6 +403,13 @@ export function useStudentSession(
       const epoch = revealEpochRef.current;
       const finding = orderedFindings[index];
       if (!finding || !controls.current) return;
+      // The badge, dots, and locate target follow the selection now. showState
+      // snaps the slice and then tweens the camera; waiting for that promise
+      // left "Finding 1 / 3" on screen after the stack had already moved.
+      const committed = commitFindingStep(index);
+      if (!committed) return;
+      const selection = committed.selection;
+      const stillCurrent = () => stepRef.current.selection === selection;
       const spoil = opts?.spoil !== false;
       stopReplay();
       setMarkerVisible(false);
@@ -411,6 +434,7 @@ export function useStudentSession(
       const sliceHint = total > 1 ? index / (total - 1) : 0.5;
       let view =
         (await findingViewerState(finding, sliceHint)) ?? { sliceFraction: sliceHint };
+      if (!stillCurrent()) return;
       if (finding.sliceIndex != null && Number.isFinite(finding.sliceIndex)) {
         view = { ...view, sliceIndex: finding.sliceIndex };
       }
@@ -430,14 +454,26 @@ export function useStudentSession(
       }
 
       await controls.current.showState(view, 750);
+      // A newer selection owns the step. Do not rewind the badge or paint
+      // this finding's marker over it. Exam entry still blocks the spoiler
+      // (#41) without giving the step back to the previous finding.
+      const settled = settleFindingReveal(stepRef.current, {
+        index,
+        count: orderedFindings.length,
+        selection,
+      });
+      if (settled.selection !== selection) return;
+      stepRef.current = settled;
+      activeIndexRef.current = settled.activeIndex;
+      setActiveIndex(settled.activeIndex);
       if (epoch !== revealEpochRef.current) return;
-      setActiveIndex(index);
       const m = finding.marker ?? null;
       const meas = finding.measurements ?? [];
       setMeasurements(meas);
       if (spoil && m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
         markRevealed(finding.id, epoch);
         await pointLaser(m.x_pct, m.y_pct, m);
+        if (!stillCurrent()) return;
         if (epoch !== revealEpochRef.current) {
           setMarkerVisible(false);
           setMeasurementsVisible(false);
@@ -449,10 +485,10 @@ export function useStudentSession(
         setMarkerVisible(false);
         setMeasurementsVisible(spoil && meas.length > 0);
       }
-      if (epoch !== revealEpochRef.current) return;
+      if (!stillCurrent() || epoch !== revealEpochRef.current) return;
       await seatSecondary(finding, spoil);
     },
-    [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary]
+    [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary, commitFindingStep]
   );
 
   // --- Play a cleaned teach script (learner clock, not the mic tape) ------
@@ -627,7 +663,10 @@ export function useStudentSession(
           if (!target) break;
           const epoch = revealEpochRef.current;
           const idx = orderedFindings.indexOf(target);
-          if (idx >= 0) setActiveIndex(idx);
+          // The guide owns the step from here. A later student selection
+          // bumps the selection token, so this call cannot rewind the badge
+          // when its viewer work finishes.
+          if (idx >= 0) commitFindingStep(idx);
           markRevealed(target.id, epoch);
           const guide = resolveTeachingGuide(target);
           if (guide && guideHasMotion(guide)) {
@@ -678,7 +717,7 @@ export function useStudentSession(
           break;
       }
     },
-    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback]
+    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -965,7 +1004,7 @@ export function useStudentSession(
       if (!finding) return;
       const guide = resolveTeachingGuide(finding);
       if (guide && guideHasMotion(guide) && controls.current) {
-        setActiveIndex(index);
+        commitFindingStep(index);
         markRevealed(finding.id);
         const says = authoredGuideLines(guide);
         // A guide with motion but no authored lines used to play silently.
@@ -1093,6 +1132,7 @@ export function useStudentSession(
       finishTour,
       caseData.authorId,
       interruptPlayback,
+      commitFindingStep,
     ]
   );
 

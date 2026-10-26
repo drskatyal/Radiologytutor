@@ -27,7 +27,11 @@ import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import { caseSeriesToSource } from "@/lib/viewerSource";
 import type { PrefetchManifest } from "@/lib/prefetch";
-import { examinerCaptionTurn, examinerVisibleTurns } from "@/lib/examLocate";
+import {
+  examinerCaptionTurn,
+  examinerVisibleTurns,
+  findingStepLabel,
+} from "@/lib/examLocate";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
@@ -238,10 +242,7 @@ export default function StudentSession({
     s.locateHint ||
     lastAssistant?.text ||
     (waitingForTeach ? "Attending is seating the first finding…" : "");
-  const stepLabel =
-    hasFindings && s.activeIndex >= 0
-      ? `${s.activeIndex + 1} / ${s.orderedFindings.length}`
-      : undefined;
+  const stepLabel = findingStepLabel(s.activeIndex, s.orderedFindings.length);
 
   const compareSeries =
     s.compareOpen && series[s.secondarySeriesIndex]
