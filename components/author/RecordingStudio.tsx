@@ -9,8 +9,8 @@
 //
 // Secondary loop (optional demo recording):
 //   Hold Alt+X / Record to capture a narrated walk-through (cursor + viewer
-//   events). Students retrace that track; without a track they still get the
-//   AI laser tween to the click marker.
+//   events). A click-to-annotate save with no microphone still stores a
+//   teach script from the landing (slice, window, zoom, marker) and the notes.
 //
 // WHILE RECORDING a pulsing frame marks the viewer live. Captured findings
 // list with replay / re-record / edit / delete. Then publish.
@@ -90,6 +90,7 @@ import { casePublishReadiness } from "@/lib/findingQuality";
 import { withSecondaryAnchor } from "@/lib/findingAnchors";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import {
+  commitAnnotatedFinding,
   formatRecordedSave,
   settledDisplay,
   teacherTrackPresent,
@@ -361,6 +362,42 @@ export function RecordingStudio({
     });
   }
 
+  /**
+   * No walk-through tape (click-to-annotate, or a save with no usable mic).
+   * Build the teach script from the landing gestures and the written notes.
+   * An existing teacher track is left alone — this must not replace a real take.
+   */
+  function withLandingGuide(
+    base: Partial<Finding>,
+    start:
+      | {
+          sliceIndex?: number;
+          ww?: number;
+          wc?: number;
+          zoom?: number;
+          pan?: [number, number];
+        }
+      | null
+      | undefined,
+    measurements: FindingMeasurement[]
+  ): { finding: Partial<Finding>; receipt: RecordedSaveReceipt } | null {
+    if (editingFindingId) {
+      const prior = findings.find((item) => item.id === editingFindingId);
+      if (prior && teacherTrackPresent(prior)) return null;
+    }
+    const demo = priorDemoGuide();
+    const drafted = demo ? { ...base, teachingGuide: demo } : base;
+    return commitAnnotatedFinding(drafted, {
+      sliceIndex: drafted.sliceIndex ?? start?.sliceIndex,
+      windowWidth: drafted.windowWidth ?? start?.ww,
+      windowCenter: drafted.windowCenter ?? start?.wc,
+      zoom: start?.zoom,
+      pan: start?.pan,
+      seriesInstanceUID: drafted.seriesInstanceUID,
+      measurements,
+    });
+  }
+
   /** Persist a click-annotated finding (marker is required). */
   async function saveAnnotatedFinding() {
     if (!pendingMarker || !annotateDraft.label.trim() || annotateSaving) return;
@@ -401,18 +438,26 @@ export function RecordingStudio({
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
       }
-      // Optional: attach a walk-through recorded just before annotate.
-      const recorded = hasTrack
-        ? await applyTake(base, rr.track as RecordedTrack, measurements)
-        : null;
-      if (recorded) base = recorded.finding;
+      // A walk-through tape wins. Otherwise the click itself is the script.
+      let receipt: RecordedSaveReceipt | undefined;
+      if (hasTrack) {
+        const recorded = await applyTake(base, rr.track as RecordedTrack, measurements);
+        base = recorded.finding;
+        receipt = recorded.receipt;
+      } else {
+        const landed = withLandingGuide(base, start, measurements);
+        if (landed) {
+          base = landed.finding;
+          receipt = landed.receipt;
+        }
+      }
 
       const updated =
         editingFindingId != null
           ? await patchFinding(caseData.caseId, editingFindingId, base)
           : await addFinding(caseData.caseId, base);
       setCaseData(updated);
-      if (recorded) toastRecorded(recorded.receipt);
+      if (receipt) toastRecorded(receipt);
       else {
         toast({
           variant: "success",
@@ -499,16 +544,25 @@ export function RecordingStudio({
       const measurements = controls.current?.getMeasurements?.() ?? [];
       if (!hasTrack && measurements.length > 0) base.measurements = measurements;
 
-      const recorded = hasTrack
-        ? await applyTake(base, rr.track as RecordedTrack, measurements)
-        : null;
-      if (recorded) base = recorded.finding;
+      let receipt: RecordedSaveReceipt | undefined;
+      if (hasTrack) {
+        const recorded = await applyTake(base, rr.track as RecordedTrack, measurements);
+        base = recorded.finding;
+        receipt = recorded.receipt;
+      }
 
       // Anchor the finding to the active study/series (drives prefetch + the
       // student's series switch on playback).
       if (activeSeries && !usingSample) {
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
+      }
+      if (!receipt) {
+        const landed = withLandingGuide(base, start, measurements);
+        if (landed) {
+          base = landed.finding;
+          receipt = landed.receipt;
+        }
       }
       base.anchors = [
         withDisplaySnapshot(
@@ -533,7 +587,7 @@ export function RecordingStudio({
           ? await patchFinding(caseData.caseId, editingFindingId, base)
           : await addFinding(caseData.caseId, base);
       setCaseData(updated);
-      if (recorded) toastRecorded(recorded.receipt);
+      if (receipt) toastRecorded(receipt);
       else {
         toast({
           variant: "success",
