@@ -10,7 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
 import { geminiConfigured, transcribeNarrationTake } from "@/lib/gemini";
-import { coerceNarrationSpans } from "@/lib/teachingGuide";
+import { narrationRequestFromBody, publishNarrationTake } from "@/lib/teachingGuide";
 
 export const runtime = "nodejs";
 
@@ -24,24 +24,17 @@ export async function POST(req: NextRequest) {
 
   try {
     await requireAuthorOrg();
-    const body = await req.json();
-    const base64 = body?.audio?.base64;
-    const mime = typeof body?.audio?.mime === "string" ? body.audio.mime : "audio/webm";
-    const durationMs = Number(body?.durationMs);
-    if (typeof base64 !== "string" || !base64) {
-      return NextResponse.json({ error: "audio.base64 is required" }, { status: 400 });
-    }
-    if (!Number.isFinite(durationMs) || durationMs <= 0) {
-      return NextResponse.json({ error: "durationMs is required" }, { status: 400 });
+    const parsed = narrationRequestFromBody(await req.json());
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
 
-    const taken = await transcribeNarrationTake(base64, mime, durationMs);
-    const aligned = coerceNarrationSpans(taken.segments, taken.transcript, durationMs);
-    return NextResponse.json({
-      transcript: taken.transcript,
-      spans: aligned.spans,
-      alignment: aligned.alignment,
-    });
+    const taken = await transcribeNarrationTake(
+      parsed.audioBase64,
+      parsed.mime,
+      parsed.durationMs
+    );
+    return NextResponse.json(publishNarrationTake(taken, parsed.durationMs));
   } catch (err) {
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;
