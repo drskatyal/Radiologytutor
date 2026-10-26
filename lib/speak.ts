@@ -13,6 +13,8 @@ import { narrationHoldMs, speechAudioCanBlock, TTS_START_BUDGET_MS } from "./tut
 let currentAudio: HTMLAudioElement | null = null;
 let pipelineGen = 0;
 let ttsAbort: AbortController | null = null;
+/** Tears down the clip in playBlob. stopSpeaking calls it instead of poking src. */
+let releaseAudio: (() => void) | null = null;
 
 /** Soft hint from the last TTS response — prefer Gemini Live next turn. */
 let preferRealtimeNext = false;
@@ -207,17 +209,34 @@ function playBlob(
     let settled = false;
     let started = false;
     let timer = 0;
+    // Assigned below. finish only runs after that, from a timer or stopSpeaking.
+    let release: () => void = () => {};
     const finish = (result: "played" | "unplayed") => {
       if (settled) return;
       settled = true;
+      if (releaseAudio === release) releaseAudio = null;
       window.clearTimeout(timer);
-      audio.pause();
-      URL.revokeObjectURL(url);
+      // Drop handlers before pause/revoke. Clearing src, or revoking a blob
+      // the element is still fetching, is a media error Chrome logs in red.
       audio.onended = null;
       audio.onerror = null;
+      audio.onplaying = null;
+      audio.onloadedmetadata = null;
+      try {
+        audio.pause();
+        // Detach the blob before revoking it. Assigning src="" is a failed
+        // media load, which Chrome prints even when onerror is handled.
+        audio.removeAttribute("src");
+        audio.load();
+      } catch {
+        /* element already gone */
+      }
+      URL.revokeObjectURL(url);
       if (currentAudio === audio) currentAudio = null;
       resolve(result);
     };
+    release = () => finish(started ? "played" : "unplayed");
+    releaseAudio = release;
     const cap = Math.max(250, maxMs);
     timer = window.setTimeout(
       () => finish(started ? "played" : "unplayed"),
@@ -252,7 +271,9 @@ function fallbackSpeakAsync(
       resolve();
       return;
     }
-    window.speechSynthesis.cancel();
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+    }
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1.0;
     utter.lang = "en-US";
@@ -268,7 +289,11 @@ function fallbackSpeakAsync(
     timer = window.setTimeout(done, Math.max(250, maxMs));
     utter.onend = done;
     utter.onerror = done;
-    window.speechSynthesis.speak(utter);
+    try {
+      window.speechSynthesis.speak(utter);
+    } catch {
+      done();
+    }
   });
 }
 
@@ -276,11 +301,11 @@ export function stopSpeaking(): void {
   pipelineGen += 1;
   ttsAbort?.abort();
   ttsAbort = null;
+  const release = releaseAudio;
+  releaseAudio = null;
+  release?.();
   if (typeof window === "undefined") return;
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.src = "";
-    currentAudio = null;
-  }
-  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  const synth = window.speechSynthesis;
+  // cancel() with an empty queue still fires an error event in Chrome.
+  if (synth && (synth.speaking || synth.pending)) synth.cancel();
 }

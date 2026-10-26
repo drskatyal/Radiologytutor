@@ -10,11 +10,12 @@
 //   • seriesOrder is the finding walk-through (not Orthanc series-number order).
 //   • Cover metadata for the LIST is cheap and fetched in parallel batches of
 //     3–4 from CasesPrefetcher (Promise.allSettled) — never serial.
-//   • On OPEN, the client warms finding series 0 immediately, then remaining
-//     series in parallel batches (see components/student/prefetch.ts). Do not
-//     waterfall 2–3 GB CTAs; cap slices and overlap series.
+//   • On OPEN, the client warms the slice the viewer opens on and a small
+//     window around each finding (see components/student/prefetch.ts and
+//     lib/prefetchWarm.ts). Do not waterfall the whole CT, and do not warm
+//     the apex just because it is instance 0.
 //   • Frames may later be served from the R2 cache (lib/r2.ts) via the
-//     DICOMweb proxy; the manifest shape stays the same.
+//     DICOMweb proxy. `focus` is the finding slice list the warmer prefers.
 //
 // Two products:
 //   1. listCaseCover(caseId)      — cheap cover metadata for the case LIST.
@@ -34,6 +35,7 @@ import {
   type SeriesMeta,
   type InstanceRef,
 } from "./orthanc";
+import { collectFocusSlices, type WarmFocus } from "./prefetchWarm";
 import type { Case, CaseStudyRef } from "./types";
 import type { CaseSeries } from "./viewerSource";
 
@@ -121,6 +123,11 @@ export interface PrefetchManifest {
   series: PrefetchSeries[];
   /** True when imaging metadata resolved from Orthanc; else manifest is sparse. */
   hasImaging: boolean;
+  /**
+   * Finding slice indexes (0-based, teaching order). The client warms these
+   * and the stack's opening slice — not a prefix of the series.
+   */
+  focus: WarmFocus[];
 }
 
 /**
@@ -144,6 +151,7 @@ export async function buildPrefetchManifest(
     seriesOrder,
     series: [],
     hasImaging: false,
+    focus: collectFocusSlices(c.findings),
   };
 
   if (!orthancConfigured()) return manifest;
