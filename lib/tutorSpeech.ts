@@ -12,15 +12,19 @@
 // Socratic and viva do not use that name on a partial answer. Successive
 // partials on the SAME finding climb one ladder: look-cue, then one region
 // or landmark from that finding's description (diagnosis removed, search
-// instructions dropped), then one mimic contrast, then the diagnosis label
+// instructions dropped), then one mimic contrast, then the finding name
 // and one pearl. A search-step title ("Lung window — start mid-chest") is
-// not the label, and a search-pattern prompt is not the pearl. Give-up,
-// show me, a correct name, or both content hints already given jump to the
-// reveal. A non-empty model line that misses the rung is replaced. The
-// words come from the authored finding. Guided teach is unchanged.
+// not the name. The name is then the next authored clinical line: a
+// description sentence, the commit narration, or the case diagnosis.
+// A search-pattern prompt is not the pearl. Give-up, show me, a correct
+// name, or both content hints already given jump to the reveal. A
+// non-empty model line that misses the rung is replaced. The words come
+// from the authored finding. Guided teach is unchanged.
 
 import { splitSentences } from "./performancePlan";
+import { resolveTeachingGuide } from "./teachingGuide";
 import type { TeachingMode } from "./teachingPrompt";
+import type { Finding } from "./types";
 
 export interface SpokenFindingSource {
   id: string;
@@ -28,6 +32,36 @@ export interface SpokenFindingSource {
   description?: string;
   teachingPoints?: string[];
   order?: number;
+  /**
+   * Case diagnosis, or another authored diagnosis, used when `label` is a
+   * search-step title. Never spoken on the look, location, or mimic rungs.
+   */
+  diagnosis?: string;
+  /** Commit-act narration. A clinical line here can name the finding. */
+  commitLines?: string[];
+}
+
+/** What the exam ladder is allowed to say. Guide commit lines included. */
+export function spokenFindingSources(
+  findings: readonly Finding[],
+  primaryDiagnosis?: string
+): SpokenFindingSource[] {
+  const diagnosis = primaryDiagnosis?.trim() || undefined;
+  return findings.map((finding) => {
+    const guide = resolveTeachingGuide(finding);
+    const commitLines = (guide?.beats ?? [])
+      .map((beat) => (beat.act === "commit" ? beat.say?.trim() ?? "" : ""))
+      .filter((line) => line.length > 0);
+    return {
+      id: finding.id,
+      label: finding.label,
+      description: finding.description,
+      teachingPoints: finding.teachingPoints,
+      order: finding.order,
+      ...(diagnosis ? { diagnosis } : {}),
+      ...(commitLines.length ? { commitLines } : {}),
+    };
+  });
 }
 
 export interface SpokenAction {
@@ -212,6 +246,19 @@ const NOT_DIAGNOSIS = new Set([
   "approx",
 ]);
 
+/**
+ * Words that show up in a case-diagnosis sentence ("Teaching search —
+ * characterize nodules if present") and are not themselves the finding.
+ */
+const GENERIC_NAME = new Set([
+  "teaching",
+  "characterize",
+  "characterise",
+  "present",
+  "possible",
+  "likely",
+]);
+
 /** Mimic-versus-finding lines. A search instruction ("do not chase") is not one. */
 const MIMIC_LINE =
   /\b(versus|vs\.?|rather than|instead of|mimic|pitfall|not a|not an|distinguish|could be|may be|mistake|confused with|differential|do not call|don't call|dont call|never call|do not mistake|don't mistake)\b/i;
@@ -225,7 +272,12 @@ function diagnosisTokens(label: string): string[] {
     .map((word) => word.trim())
     .filter((word) => {
       const lower = word.toLowerCase();
-      return word.length >= 5 && !LOCATION_WORDS.has(lower) && !NOT_DIAGNOSIS.has(lower);
+      return (
+        word.length >= 5 &&
+        !LOCATION_WORDS.has(lower) &&
+        !NOT_DIAGNOSIS.has(lower) &&
+        !GENERIC_NAME.has(lower)
+      );
     });
 }
 
@@ -264,15 +316,14 @@ function priorPartialAttempts(
   const current = currentFindingId
     ? findings.find((finding) => finding.id === currentFindingId)
     : undefined;
-  const labels = findings.map((finding) => finding.label).filter(Boolean);
   let count = 0;
   for (const turn of history ?? []) {
     // A turn tagged to another finding does not climb, or reset, this one.
     if (currentFindingId && turn.findingId && turn.findingId !== currentFindingId) continue;
     const text = turn.text ?? "";
     const named = turn.findingId
-      ? Boolean(current?.label && namesDiagnosis(text, current.label))
-      : labels.some((label) => label && namesDiagnosis(text, label));
+      ? textNamesFinding(text, current)
+      : findings.some((finding) => textNamesFinding(text, finding));
     if (turn.role === "assistant") {
       if (named) count = 0;
       continue;
@@ -306,8 +357,7 @@ export function examHintLevel(input: {
   const currentId = input.currentFindingId ?? input.finding?.id;
   const current =
     (currentId ? list.find((finding) => finding.id === currentId) : undefined) ?? input.finding;
-  const label = current?.label ?? "";
-  if (GIVE_UP.test(input.question) || (label && namesDiagnosis(input.question, label))) {
+  if (GIVE_UP.test(input.question) || textNamesFinding(input.question, current)) {
     return 3;
   }
   if (isOpening(input.question)) return 0;
@@ -553,7 +603,9 @@ function locationHint(
   const ranked = (sentences: string[]) =>
     [...sentences].sort((a, b) => regionScore(b) - regionScore(a))[0];
   const best = ranked(clean) ?? ranked(describe);
-  return best ? ensurePeriod(best) : GENERIC_LOCATION;
+  const scrubbed = scrubSpokenName(best ?? "", revealName(finding, ids), ids);
+  if (scrubbed && regionScore(scrubbed) > 0) return ensurePeriod(scrubbed);
+  return GENERIC_LOCATION;
 }
 
 /** Level 2 — mimic versus finding, only from teaching points. */
@@ -567,17 +619,77 @@ function discriminateHint(
   const contrasts = (finding.teachingPoints ?? [])
     .flatMap((point) => sentencesOf(point, ids))
     .filter((sentence) => isMimicSentence(sentence));
+  const name = revealName(finding, ids);
   for (const sentence of contrasts) {
     const line = hintSentence(sentence, label, ids, labels);
-    if (line) return ensurePeriod(line);
+    const scrubbed = scrubSpokenName(line, name, ids);
+    if (scrubbed && isMimicSentence(scrubbed) && !namesDiagnosis(scrubbed, name)) {
+      return ensurePeriod(scrubbed);
+    }
   }
   return GENERIC_MIMIC;
 }
 
+function isLookCueSentence(sentence: string): boolean {
+  return LOOK_CUE.test(sentence.trim());
+}
+
+/** A sentence that names a finding, not a window, a scroll, or a search prompt. */
+function isClinicalName(sentence: string): boolean {
+  const trimmed = sentence.replace(/[.!?]+$/g, "").trim();
+  if (!trimmed || isLookCueSentence(trimmed)) return false;
+  if (isSearchStepTitle(trimmed) || isSearchPatternPrompt(trimmed)) return false;
+  if (isSearchInstruction(trimmed)) return false;
+  return diagnosisTokens(trimmed).length > 0;
+}
+
+/**
+ * Diagnosis field. The word "search" does not disqualify it when a clinical
+ * token remains ("characterize nodules if present").
+ */
+function usableAuthoredDiagnosis(text: string, ids: string[]): string {
+  const trimmed = tidy(text, ids).replace(/[.!?]+$/g, "").trim();
+  if (!trimmed || isLookCueSentence(trimmed)) return "";
+  if (isSearchStepTitle(trimmed) || isSearchPatternPrompt(trimmed)) return "";
+  if (diagnosisTokens(trimmed).length === 0) return "";
+  return trimmed;
+}
+
+/**
+ * The name a reveal speaks. A real label wins. A search-step title is
+ * replaced by the description, then the commit line, then the case diagnosis.
+ */
+function revealName(finding: SpokenFindingSource | undefined, ids: string[]): string {
+  if (!finding) return "";
+  const label = tidy(finding.label ?? "", ids);
+  if (label && !isSearchStepTitle(label)) return label;
+  for (const sentence of sentencesOf(finding.description ?? "", ids)) {
+    if (isClinicalName(sentence)) return sentence.replace(/[.!?]+$/g, "").trim();
+  }
+  for (const line of finding.commitLines ?? []) {
+    for (const sentence of sentencesOf(line, ids)) {
+      if (isClinicalName(sentence)) return sentence.replace(/[.!?]+$/g, "").trim();
+    }
+  }
+  return usableAuthoredDiagnosis(finding.diagnosis ?? "", ids);
+}
+
+function textNamesFinding(text: string, finding: SpokenFindingSource | undefined): boolean {
+  if (!finding || !text.trim()) return false;
+  const label = finding.label?.trim() ?? "";
+  if (label && namesDiagnosis(text, label)) return true;
+  const name = revealName(finding, [finding.id]);
+  if (!name || name.toLowerCase() === label.toLowerCase()) return false;
+  return namesDiagnosis(text, name);
+}
+
+function scrubSpokenName(line: string, name: string, ids: string[]): string {
+  if (!line || !name) return line;
+  return tidy(redactDiagnosis(line, name), ids);
+}
+
 function diagnosisLabel(finding: SpokenFindingSource | undefined, ids: string[]): string {
-  const label = tidy(finding?.label ?? "", ids);
-  if (!label || isSearchStepTitle(label)) return "";
-  return label;
+  return revealName(finding, ids);
 }
 
 /** One teaching point that is not a search-step title or a search-pattern prompt. */

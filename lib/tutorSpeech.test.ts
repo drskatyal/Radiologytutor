@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildPerformancePlan, splitSentences } from "./performancePlan.ts";
@@ -13,6 +14,7 @@ import {
   ensureSpokenAnswer,
   examHintLevel,
   mayNameFinding,
+  spokenFindingSources,
   NARRATION_HOLD_MAX_MS,
   NARRATION_HOLD_MIN_MS,
   TTS_START_BUDGET_MS,
@@ -303,6 +305,9 @@ test("show me and a correct name reveal immediately", () => {
   assert.doesNotMatch(splitSentences(named)[0] ?? "", /pneumothorax/i);
 });
 
+/** Case diagnosis on the live LIDC search case. Not a finding label. */
+const lidcDiagnosis = "Teaching search — characterize nodules if present";
+
 const lidcSearch = {
   id: "f_lidc",
   label: "Lung window — start mid-chest",
@@ -312,6 +317,8 @@ const lidcSearch = {
     "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
     "Do not chase mediastinum until both lungs are surveyed.",
   ],
+  diagnosis: lidcDiagnosis,
+  commitLines: ["Look here."],
   order: 0,
 };
 
@@ -396,25 +403,168 @@ test("second vague turn replaces search copy with the region", () => {
   assert.doesNotMatch(answer, /nodule/i);
 });
 
-test("I don't know does not reveal a search-step title or a search-pattern prompt", () => {
+test("I don't know names the authored diagnosis and the pearl, not the search script", () => {
+  const asked = [
+    "I don't know. Please show me this finding and teach it.",
+    "show me",
+    "They are nodules.",
+  ];
+  for (const question of asked) {
+    const answer = ensureSpokenAnswer({
+      answer:
+        "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+      mode: "socratic",
+      question,
+      history: [
+        { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
+        { role: "assistant", text: "Follow the pointer. What do you see?", findingId: "f_lidc" },
+      ],
+      actions: [{ type: "show_finding", findingId: "f_lidc" }],
+      findings: [lidcSearch],
+      currentFindingId: "f_lidc",
+    });
+    assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+    assert.match(answer, /characterize nodules if present/i);
+    assert.match(answer, /Do not chase mediastinum until both lungs are surveyed/i);
+    assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
+    assert.doesNotMatch(answer, /search pattern/i);
+    assert.doesNotMatch(answer, /upper lobes first/i);
+    assert.doesNotMatch(answer, /Look here/i);
+    assert.doesNotMatch(splitSentences(answer)[0] ?? "", /nodule/i);
+  }
+});
+
+test("after both hints, the reveal still names the finding", () => {
+  const history = [
+    { role: "user" as const, text: "is it a vessel?", findingId: "f_lidc" },
+    { role: "assistant" as const, text: "Follow the pointer. What do you see?", findingId: "f_lidc" },
+    { role: "user" as const, text: "still not sure", findingId: "f_lidc" },
+    { role: "assistant" as const, text: "Follow the pointer. Both lungs.", findingId: "f_lidc" },
+    { role: "user" as const, text: "maybe mediastinum", findingId: "f_lidc" },
+    { role: "assistant" as const, text: "What would you mistake this for?", findingId: "f_lidc" },
+  ];
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "I am still lost",
+      finding: lidcSearch,
+      findings: [lidcSearch],
+      history,
+      currentFindingId: "f_lidc",
+    }),
+    3
+  );
   const answer = ensureSpokenAnswer({
-    answer: "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+    answer: "Look at this slice.",
     mode: "socratic",
-    question: "I don't know. Please show me this finding and teach it.",
-    history: [
-      { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
-      { role: "assistant", text: "Follow the pointer. What do you see?", findingId: "f_lidc" },
-    ],
+    question: "I am still lost",
+    history,
     actions: [{ type: "show_finding", findingId: "f_lidc" }],
     findings: [lidcSearch],
     currentFindingId: "f_lidc",
   });
+  assert.match(answer, /characterize nodules if present/i);
+  assert.match(answer, /Do not chase mediastinum until both lungs are surveyed/i);
+  assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
+  assert.doesNotMatch(answer, /search pattern/i);
+  assert.doesNotMatch(answer, /\bcarina\b/i);
+  assert.doesNotMatch(answer, /\bscroll\b/i);
+});
+
+test("a search-titled finding prefers a clinical description, then the commit line", () => {
+  const described = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: "I don't know. Please show me this finding and teach it.",
+    actions: [{ type: "show_finding", findingId: "f_lidc" }],
+    findings: [
+      {
+        ...lidcSearch,
+        description:
+          "Spiculated right upper lobe nodule. Begin at the carina and scroll inferiorly through both lungs.",
+        commitLines: ["Case diagnosis should not win over this description."],
+      },
+    ],
+    currentFindingId: "f_lidc",
+  });
+  assert.match(described, /Spiculated right upper lobe nodule/i);
+  assert.match(described, /Do not chase mediastinum until both lungs are surveyed/i);
+  assert.doesNotMatch(described, /characterize nodules if present/i);
+  assert.doesNotMatch(described, /Lung window — start mid-chest/i);
+  assert.doesNotMatch(described, /search pattern/i);
+  assert.doesNotMatch(described, /\bcarina\b/i);
+  assert.doesNotMatch(described, /\bscroll\b/i);
+
+  const committed = ensureSpokenAnswer({
+    answer: "",
+    mode: "viva",
+    question: "show me",
+    actions: [],
+    findings: [
+      {
+        ...lidcSearch,
+        commitLines: ["Spiculated right upper lobe nodule."],
+      },
+    ],
+    currentFindingId: "f_lidc",
+  });
+  assert.match(committed, /Spiculated right upper lobe nodule/i);
+  assert.match(committed, /Do not chase mediastinum until both lungs are surveyed/i);
+  assert.doesNotMatch(committed, /characterize nodules if present/i);
+  assert.doesNotMatch(committed, /Lung window — start mid-chest/i);
+  assert.doesNotMatch(committed, /search pattern/i);
+});
+
+test("the seeded LIDC finding reveals the case diagnosis and the pearl", () => {
+  const raw = JSON.parse(readFileSync("seed/case-lidc-nodule-search.json", "utf8")) as {
+    primaryDiagnosis: string;
+    findings: Parameters<typeof spokenFindingSources>[0];
+  };
+  const sources = spokenFindingSources(raw.findings, raw.primaryDiagnosis);
+  const first = sources[0];
+  assert.equal(first?.label, "Lung window — start mid-chest");
+  assert.deepEqual(first?.commitLines, ["Look here."]);
+  assert.equal(first?.diagnosis, lidcDiagnosis);
+  const answer = ensureSpokenAnswer({
+    answer:
+      "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+    mode: "socratic",
+    question: "I don't know. Please show me this finding and teach it.",
+    actions: [{ type: "show_finding", findingId: first?.id }],
+    findings: sources,
+    currentFindingId: first?.id,
+  });
   assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
+  assert.match(answer, /characterize nodules if present/i);
   assert.match(answer, /Do not chase mediastinum until both lungs are surveyed/i);
   assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
   assert.doesNotMatch(answer, /search pattern/i);
   assert.doesNotMatch(answer, /upper lobes first/i);
-  assert.doesNotMatch(answer, /nodule|pneumothorax|consolidation/i);
+  assert.doesNotMatch(answer, /Look here/i);
+  assert.doesNotMatch(answer, /\bcarina\b/i);
+  assert.doesNotMatch(answer, /\bscroll\b/i);
+});
+
+test("a normal finding reveals its label, not the case diagnosis", () => {
+  const answer = ensureSpokenAnswer({
+    answer: "Look at this slice.",
+    mode: "socratic",
+    question: "I don't know. Please show me this finding and teach it.",
+    actions: [{ type: "show_finding", findingId: "f_ptx" }],
+    findings: [
+      {
+        ...findings[0],
+        diagnosis: lidcDiagnosis,
+        commitLines: ["Spiculated right upper lobe nodule."],
+      },
+    ],
+    currentFindingId: "f_ptx",
+  });
+  assert.match(answer, /Right apical pneumothorax/);
+  assert.match(answer, /Do not call it a skin fold/i);
+  assert.doesNotMatch(answer, /characterize nodules if present/i);
+  assert.doesNotMatch(answer, /Spiculated right upper lobe nodule/i);
+  assert.doesNotMatch(splitSentences(answer)[0] ?? "", /pneumothorax/i);
 });
 
 const lidcNodule: SpokenFindingSource = {
