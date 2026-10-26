@@ -635,6 +635,18 @@ export function playTeachingGuide(
         }
         const motion = (async () => {
           try {
+            // The search line names the window ("Lung windows, 1500 over
+            // -600") while the orient scroll is still walking. Set that
+            // window before the walk so the sentence and the viewport match.
+            // The action below runs it again after the landing slice — a
+            // slice load reloads the DICOM window unless the viewer pins it.
+            if (beat.act === "search" && pendingWalk) {
+              for (const action of beat.actions) {
+                if (cancelled) return;
+                if (action.type !== "window") continue;
+                await driveAction(action, drivers, pace, "walk");
+              }
+            }
             if (beat.act === "search" && pendingWalk) {
               const pending = pendingWalk;
               pendingWalk = null;

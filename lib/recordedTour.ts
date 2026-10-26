@@ -322,7 +322,7 @@ export async function evaluateRecordedTour(
   const textOnly = await scoreTutorSession(fixture, textOnlyTutor, "text-only fake");
   const silent = await scoreTutorSession(fixture, silentToolsTutor, "silent tools");
   const driver = await scoreTutorSession(fixture, guideReplayTutor, "recorded-guide replay");
-  const lung = play.log.indexOf("window:1500/-600");
+  const lung = play.log.lastIndexOf("window:1500/-600");
   const slicesBeforeLung = play.log.slice(0, Math.max(0, lung)).filter((line) => line.startsWith("slice:"));
   return {
     applied,
