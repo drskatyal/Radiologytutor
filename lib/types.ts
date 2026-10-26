@@ -279,8 +279,9 @@ export interface RecordedTrack {
   /**
    * `notes` is a click-to-annotate landing with no microphone tape. Teach
    * rebuilds say lines from the label, description, teaching points, and the
-   * landed slice, window, and marker. A real take leaves this unset and keeps
-   * the look-cue script.
+   * landed slice, window, and marker. The spoken slice is 1-based, matching
+   * the Studio annotate dialog and finding card. A real take leaves this unset
+   * and keeps the look-cue script.
    */
   voice?: "notes";
 }
@@ -315,7 +316,11 @@ export interface Finding {
   sopInstanceUIDs?: string[];
   /** Exact SOP for the primary landing (when known). */
   sopInstanceUID?: string;
-  /** 0-based slice index for the primary landing. */
+  /**
+   * 0-based Cornerstone image index for the primary landing.
+   * Studio labels and notes Teach speech show this plus one (`displaySliceNumber`).
+   * Scroll actions keep this stored index.
+   */
   sliceIndex?: number;
   /**
    * Anatomical level to say if the learner is off this finding's slice

@@ -2,9 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   authoredDisplayState,
+  displaySliceNumber,
   sopUidFromImageId,
   withDisplaySnapshot,
 } from "./findingDisplayState.ts";
+
+test("displaySliceNumber is the 1-based slice Studio shows", () => {
+  assert.equal(displaySliceNumber(0), 1);
+  assert.equal(displaySliceNumber(32), 33);
+  assert.equal(displaySliceNumber(40), 41);
+});
 
 test("sopUidFromImageId parses wadors imageIds", () => {
   const id =

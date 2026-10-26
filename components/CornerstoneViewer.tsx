@@ -52,7 +52,7 @@ import {
   lerp,
   type CornerstoneViewerState,
 } from "../lib/viewerController";
-import { sopUidFromImageId } from "../lib/findingDisplayState";
+import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
   normalizeMeasurements,
@@ -572,7 +572,7 @@ export default function CornerstoneViewer({
           if (!vp) return;
           const v = voiToWwWc(vp.getProperties().voiRange);
           const count = vp.getImageIds().length;
-          const slice = vp.getCurrentImageIdIndex() + 1;
+          const slice = displaySliceNumber(vp.getCurrentImageIdIndex());
           const ww = v ? Math.round(v.ww) : undefined;
           const wc = v ? Math.round(v.wc) : undefined;
           setReadout((prev) =>

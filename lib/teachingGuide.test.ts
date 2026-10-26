@@ -16,6 +16,7 @@ import {
   TEACH_ACTS,
   withRecordedTeaching,
 } from "./teachingGuide.ts";
+import { displaySliceNumber } from "./findingDisplayState.ts";
 import type { TeachingGuide } from "./types.ts";
 import { measurementsFromTrack } from "./findingMeasurements.ts";
 import type { RecordedTrack } from "./types.ts";
@@ -631,6 +632,42 @@ function sayOf(guide: TeachingGuide | null | undefined, act: string): string {
   return guide?.beats.find((beat) => beat.act === act)?.say ?? "";
 }
 
+function orientScroll(guide: TeachingGuide | null | undefined) {
+  return guide?.beats
+    .find((beat) => beat.act === "orient")
+    ?.actions.find((action) => action.type === "scroll");
+}
+
+test("notes-sourced orient speaks the Studio slice and keeps the stored scroll target", () => {
+  // Live prove: annotate dialog and finding card showed "slice 33"; notes
+  // orient said "on slice 32". Storage is the 0-based Cornerstone index.
+  // Studio shows that index plus one. The scroll action stays the stored index.
+  const stored = 32;
+  const saved = commitAnnotatedFinding(
+    {
+      label: "Notes orient prove #34",
+      description: "Marker at the centre.",
+      teachingPoints: ["Hold the level."],
+      marker: { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      sliceIndex: stored,
+    },
+    { sliceIndex: stored }
+  );
+  assert.equal(saved.finding.track?.voice, "notes");
+  assert.equal(saved.finding.sliceIndex, stored);
+  assert.equal(displaySliceNumber(stored), stored + 1);
+  const scroll = orientScroll(saved.finding.teachingGuide);
+  assert.equal(scroll?.type, "scroll");
+  if (scroll?.type === "scroll") assert.equal(scroll.sliceIndex, stored);
+  const spoken = `Notes orient prove #34, on slice ${displaySliceNumber(stored)}.`;
+  assert.equal(sayOf(saved.finding.teachingGuide, "orient"), spoken);
+  const rebuilt = resolveTeachingGuide(saved.finding);
+  const rebuiltScroll = orientScroll(rebuilt);
+  assert.equal(rebuiltScroll?.type, "scroll");
+  if (rebuiltScroll?.type === "scroll") assert.equal(rebuiltScroll.sliceIndex, stored);
+  assert.equal(sayOf(rebuilt, "orient"), spoken);
+});
+
 test("notes-sourced annotate guide speaks the finding, not the demo stack walk", () => {
   const saved = commitAnnotatedFinding(
     {
@@ -647,7 +684,7 @@ test("notes-sourced annotate guide speaks the finding, not the demo stack walk",
   );
   assert.deepEqual(saved.receipt.acts, ["orient", "search", "commit", "pearl"]);
   const guide = saved.finding.teachingGuide;
-  assert.equal(sayOf(guide, "orient"), "Right chest wall opacity, on slice 40.");
+  assert.equal(sayOf(guide, "orient"), `Right chest wall opacity, on slice ${displaySliceNumber(40)}.`);
   assert.equal(sayOf(guide, "search"), "Window 399 over 45.");
   assert.equal(sayOf(guide, "commit"), "Pleural-based opacity along the right chest wall.");
   assert.equal(
@@ -672,7 +709,7 @@ test("notes-sourced annotate guide speaks the finding, not the demo stack walk",
     teachingPoints: ["Fat plane stays thin."],
     teachingGuide: DEMO_GUIDE,
   });
-  assert.equal(sayOf(revised, "orient"), "Right chest wall opacity, on slice 40.");
+  assert.equal(sayOf(revised, "orient"), `Right chest wall opacity, on slice ${displaySliceNumber(40)}.`);
   assert.equal(sayOf(revised, "commit"), "A marker on the pleura.");
   assert.equal(sayOf(revised, "pearl"), "Fat plane stays thin.");
   assert.doesNotMatch(linesOf(revised), /Follow the stack|lung window was hiding|extrapleural/i);
@@ -694,7 +731,7 @@ test("notes-sourced sentences spread across the acts and the pearl stays the tea
   const guide = saved.finding.teachingGuide;
   assert.equal(
     sayOf(guide, "orient"),
-    "Chest wall opacity, on slice 40. The opacity is pleural based."
+    `Chest wall opacity, on slice ${displaySliceNumber(40)}. The opacity is pleural based.`
   );
   assert.equal(sayOf(guide, "search"), "Window 399 over 45.");
   assert.equal(sayOf(guide, "commit"), "It silhouettes the chest wall.");
@@ -718,7 +755,7 @@ test("notes-sourced lean-in uses the zoom and is omitted when the camera stays f
   );
   assert.deepEqual(zoomed.receipt.acts, ["orient", "search", "lean-in", "commit", "pearl"]);
   const guide = zoomed.finding.teachingGuide;
-  assert.equal(sayOf(guide, "orient"), "Leaned in, on slice 12.");
+  assert.equal(sayOf(guide, "orient"), `Leaned in, on slice ${displaySliceNumber(12)}.`);
   assert.equal(sayOf(guide, "search"), "Window 400 over 40.");
   assert.equal(sayOf(guide, "lean-in"), "Closer, about 2.4 times.");
   assert.equal(sayOf(guide, "commit"), "Edge of the lesion.");
@@ -736,7 +773,7 @@ test("notes-sourced lean-in uses the zoom and is omitted when the camera stays f
     { zoom: 1, pan: [0, 0], sliceIndex: 3 }
   );
   assert.equal(fitted.receipt.acts.includes("lean-in"), false);
-  assert.equal(sayOf(fitted.finding.teachingGuide, "orient"), "Fit, on slice 3.");
+  assert.equal(sayOf(fitted.finding.teachingGuide, "orient"), `Fit, on slice ${displaySliceNumber(3)}.`);
   assert.equal(sayOf(fitted.finding.teachingGuide, "commit"), "No magnification.");
   assert.equal(sayOf(fitted.finding.teachingGuide, "pearl"), "Stay wide.");
   assert.doesNotMatch(linesOf(fitted.finding.teachingGuide), /Closer|Lean in|Follow the stack/i);
@@ -756,7 +793,7 @@ test("authored stack and mediastinum lines are spoken only when the notes contai
     { sliceIndex: 18, windowWidth: 399, windowCenter: 45 }
   );
   const guide = saved.finding.teachingGuide;
-  assert.equal(sayOf(guide, "orient"), "Second pass, on slice 18.");
+  assert.equal(sayOf(guide, "orient"), `Second pass, on slice ${displaySliceNumber(18)}.`);
   assert.equal(sayOf(guide, "commit"), "Follow the stack toward the vessels.");
   assert.equal(sayOf(guide, "pearl"), "Leave the mediastinum for the second pass.");
   assert.doesNotMatch(sayOf(guide, "orient"), /Follow the stack|Follow the vessels|mediastinum/i);
@@ -780,8 +817,14 @@ test("a recorded take still opens on the stack cue", () => {
     }
   );
   assert.match(sayOf(saved.finding.teachingGuide, "orient"), /^Follow the stack/);
+  const scroll = orientScroll(saved.finding.teachingGuide);
+  assert.equal(scroll?.type, "scroll");
+  if (scroll?.type === "scroll") assert.equal(scroll.sliceIndex, 14);
   const live = resolveTeachingGuide(saved.finding);
   assert.match(sayOf(live, "orient"), /^Follow the stack/);
+  const liveScroll = orientScroll(live);
+  assert.equal(liveScroll?.type, "scroll");
+  if (liveScroll?.type === "scroll") assert.equal(liveScroll.sliceIndex, 14);
 });
 
 test("withRecordedTeaching stores prose spans when the mic returned nothing", () => {
