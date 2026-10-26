@@ -3,10 +3,11 @@
 // ContinuousCapture — harness demonstration UI ("speak once" authoring).
 //
 // The radiologist scrolls/windows/clicks while holding one take. We record the
-// viewer event log, and the microphone when it opens, on one clock. On stop,
-// Gemini segments a real dictation into structured findings; mergeCaptureDemonstration
-// aligns each segment to the DICOM track. With no microphone the same stop still
-// keeps the viewer track, and Save builds narration spans plus a notes-voiced
+// viewer event log, viewport stills, and the microphone when it opens, on one
+// clock. On stop, Gemini Flash compiles structured findings from the voice and
+// the stills; marker and slice landings come from the track, and
+// mergeCaptureDemonstration stores the teach script. With no microphone the
+// same stop still keeps the viewer track, and Save builds a notes-voiced
 // teaching guide from that track and the typed label, description, and points.
 
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +26,7 @@ import {
 } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { Finding, RecordedTrack, StructuredSessionFinding } from "@/lib/types";
+import { COMPILING_FROM_RECORDING, type CompileFrame } from "@/lib/compileMedia";
 import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import {
   AiUnavailableError,
@@ -139,13 +141,14 @@ export function ContinuousCapture({
     captured: {
       track: RecordedTrack;
       audio: { base64: string; mimeType: string } | null;
+      frames?: CompileFrame[];
     } | null
   ) {
     if (!captured?.track) {
       setNotice("Nothing captured — scroll the study, then stop.");
       return;
     }
-    const { track, audio } = captured;
+    const { track, audio, frames } = captured;
     setLastTake({ track, audio });
     if (!audio) {
       openNotesDraft(track);
@@ -158,6 +161,7 @@ export function ContinuousCapture({
         audioMime: audio.mimeType,
         durationMs: track.durationMs,
         track,
+        frames,
       });
       if (!result) {
         setNotice(
@@ -167,10 +171,11 @@ export function ContinuousCapture({
       }
       setTranscript(result.transcript);
       setProposals(result.findings);
+      const stills = frames?.length ?? 0;
       setNotice(
         result.findings.length
-          ? `Segmented into ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"} — review fields, then save all.`
-          : "No findings detected in the dictation — try speaking lesion names and signs clearly."
+          ? `Compiled ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"} from the recording${stills ? ` and ${stills} viewport still${stills === 1 ? "" : "s"}` : ""} — review fields, then save all.`
+          : "No findings detected in the recording — try naming each lesion as you scroll."
       );
     } catch (e) {
       if (e instanceof AiUnavailableError) {
@@ -193,9 +198,11 @@ export function ContinuousCapture({
   useEffect(() => {
     if (recording || !speakSession.current) return;
     speakSession.current = false;
-    const captured = rr.track ? { track: rr.track, audio: rr.audio } : null;
+    const captured = rr.track
+      ? { track: rr.track, audio: rr.audio, frames: rr.frames }
+      : null;
     void finishRef.current(captured);
-  }, [recording, rr.track, rr.audio]);
+  }, [recording, rr.track, rr.audio, rr.frames]);
 
   async function stop() {
     setSettling(true);
@@ -426,10 +433,10 @@ export function ContinuousCapture({
       </div>
 
       <p className="mb-3 text-xs leading-relaxed text-muted">
-        Scroll the study and narrate every finding in one take. We timestamp the
-        viewer and your voice, then merge them into the teaching script. Without
-        a microphone the viewer track still records, and Save teaches from the
-        notes you type.
+        Scroll the study and narrate every finding in one take. With a microphone
+        we compile the teaching script from your voice, viewport stills, and the
+        viewer log. Without a microphone the viewer track still records, and Save
+        teaches from the notes you type.
       </p>
 
       <div className="rounded-xl border border-subtle bg-surface/80 px-3 py-3">
@@ -446,7 +453,7 @@ export function ContinuousCapture({
                   ? "Capturing the viewer — no microphone"
                   : "Capturing the viewer…"
               : structuring
-                ? "Structuring session…"
+                ? COMPILING_FROM_RECORDING
                 : "Start continuous capture"
           }
         />
@@ -461,7 +468,7 @@ export function ContinuousCapture({
       {structuring && (
         <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
           <Spinner size="sm" />
-          Transcribing &amp; segmenting findings…
+          {COMPILING_FROM_RECORDING}
         </div>
       )}
 
@@ -612,7 +619,7 @@ export function ContinuousCapture({
           {rr.micCapture === "unavailable"
             ? "Session live — viewer events are timestamped. Save will teach from your notes."
             : rr.micCapture === "live"
-              ? "Session live — viewer events are timestamped with your voice."
+              ? "Session live — voice, viewport stills, and viewer events share one clock."
               : "Session live — viewer events are timestamped."}
         </p>
       )}

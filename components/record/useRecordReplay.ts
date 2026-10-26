@@ -19,6 +19,11 @@ import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import type { RecordedTrack, ViewerEvent } from "@/lib/types";
+import {
+  pushViewportStill,
+  VIEWPORT_SAMPLE_MS,
+  type CompileFrame,
+} from "@/lib/compileMedia";
 
 export type RecordPhase = "idle" | "recording" | "replaying";
 
@@ -43,6 +48,11 @@ export interface UseRecordReplay {
   track: RecordedTrack | null;
   /** Raw audio of the most recent recording (for upload by the caller). */
   audio: { base64: string; mimeType: string } | null;
+  /**
+   * Viewport stills from the take that just finished. Empty when the mic was
+   * off or the imaging surface could not be read. Students never see these.
+   */
+  frames: CompileFrame[];
   /** Replay progress [0,1]. */
   progress: number;
   /** Wire to CornerstoneViewer's onEvent (records while recording). */
@@ -54,6 +64,7 @@ export interface UseRecordReplay {
   stopRecording: () => Promise<{
     track: RecordedTrack;
     audio: { base64: string; mimeType: string } | null;
+    frames: CompileFrame[];
   } | null>;
   /** Replay a track (defaults to the last recorded one). */
   replay: (track?: RecordedTrack, audioUrl?: string) => void;
@@ -69,6 +80,18 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
+/** Best-effort imaging still. A throw or a blank canvas must not stop the take. */
+function readViewportStill(
+  controls: CornerstoneControls | null
+): { mimeType: string; base64: string } | null {
+  if (!controls?.captureViewportStill) return null;
+  try {
+    return controls.captureViewportStill();
+  } catch {
+    return null;
+  }
+}
+
 export function useRecordReplay(opts: {
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
@@ -81,9 +104,11 @@ export function useRecordReplay(opts: {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [track, setTrack] = useState<RecordedTrack | null>(null);
   const [audio, setAudio] = useState<{ base64: string; mimeType: string } | null>(null);
+  const [frames, setFrames] = useState<CompileFrame[]>([]);
   const [progress, setProgress] = useState(0);
 
   const recorderRef = useRef<TrackRecorder | null>(null);
+  const framesRef = useRef<CompileFrame[]>([]);
   const replayRef = useRef<ReplayController | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -102,6 +127,8 @@ export function useRecordReplay(opts: {
 
     const rec = new TrackRecorder();
     recorderRef.current = rec;
+    framesRef.current = [];
+    setFrames([]);
     const priming = controls.current.getStartState();
     setMicCapture("unknown");
     await rec.start(priming, { onMic: (state) => setMicCapture(state) });
@@ -118,18 +145,31 @@ export function useRecordReplay(opts: {
   const stopRecording = useCallback(async (): Promise<{
     track: RecordedTrack;
     audio: { base64: string; mimeType: string } | null;
+    frames: CompileFrame[];
   } | null> => {
     const rec = recorderRef.current;
     if (!rec || phaseRef.current !== "recording") return null;
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     elapsedTimerRef.current = null;
+    if (rec.micCapture === "live") {
+      const shot = readViewportStill(controls.current);
+      if (shot) {
+        framesRef.current = pushViewportStill(framesRef.current, {
+          tMs: rec.elapsedMs(),
+          mimeType: shot.mimeType,
+          base64: shot.base64,
+        });
+      }
+    }
     const { track: newTrack, audio: newAudio } = await rec.stop();
+    const stills = framesRef.current;
     recorderRef.current = null;
     setTrack(newTrack);
     setAudio(newAudio);
+    setFrames(stills);
     setPhase("idle");
-    return { track: newTrack, audio: newAudio };
-  }, []);
+    return { track: newTrack, audio: newAudio, frames: stills };
+  }, [controls]);
 
   // --- Replay ---------------------------------------------------------------
   const stopReplay = useCallback(() => {
@@ -189,11 +229,33 @@ export function useRecordReplay(opts: {
 
   const reset = useCallback(() => {
     stopReplay();
+    framesRef.current = [];
     setTrack(null);
     setAudio(null);
+    setFrames([]);
     setProgress(0);
     setMicCapture("unknown");
   }, [stopReplay]);
+
+  // Viewport stills share the recorder clock, and only while the mic is live.
+  // A failed grab is ignored — the track and audio still save.
+  useEffect(() => {
+    if (phase !== "recording" || micCapture !== "live") return;
+    const sample = () => {
+      const rec = recorderRef.current;
+      if (!rec || rec.micCapture !== "live") return;
+      const shot = readViewportStill(controls.current);
+      if (!shot) return;
+      framesRef.current = pushViewportStill(framesRef.current, {
+        tMs: rec.elapsedMs(),
+        mimeType: shot.mimeType,
+        base64: shot.base64,
+      });
+    };
+    sample();
+    const id = window.setInterval(sample, VIEWPORT_SAMPLE_MS);
+    return () => window.clearInterval(id);
+  }, [phase, micCapture, controls]);
 
   // --- Alt+X hold-to-record hotkey -----------------------------------------
   useEffect(() => {
@@ -247,6 +309,7 @@ export function useRecordReplay(opts: {
     elapsedMs,
     track,
     audio,
+    frames,
     progress,
     onViewerEvent,
     onCursor,

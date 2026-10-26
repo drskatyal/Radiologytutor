@@ -87,6 +87,7 @@ import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
+import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
 import { withSecondaryAnchor } from "@/lib/findingAnchors";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import {
@@ -499,10 +500,14 @@ export function RecordingStudio({
     setStructuring(true);
     setNotice("");
     try {
-      const result = await structureFindingFromAudio(rr.audio.base64, rr.audio.mimeType);
+      const result = await structureFindingFromAudio(
+        rr.audio.base64,
+        rr.audio.mimeType,
+        rr.frames
+      );
       if (result) {
         setDraft((d) => ({ ...result, landmark: d.landmark }));
-        setNotice("Structured from your narration — review and save.");
+        setNotice("Compiled from the recording — review and save.");
       } else {
         setNotice("AI structuring is off (no Gemini key). Type the finding in below.");
       }
@@ -1114,7 +1119,7 @@ export function RecordingStudio({
               {structuring && (
                 <div className="flex items-center gap-2.5 rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
                   <Spinner size="sm" />
-                  Structuring from your narration…
+                  {COMPILING_FROM_RECORDING}
                 </div>
               )}
 
