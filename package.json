@@ -10,6 +10,7 @@
     "test": "tsx --test lib/*.test.ts lib/harness/*.test.ts lib/dicomImport/*.test.ts",
     "test:access": "node scripts/access-harness.mjs",
     "eval:tutor": "tsx scripts/eval-tutor.ts",
+    "eval:record-guide": "tsx scripts/eval-recorded-tour.ts",
     "import:cases": "tsx scripts/import-public-cases.ts",
     "seed:lidc-teach": "tsx scripts/seed-lidc-teach.ts"
   },

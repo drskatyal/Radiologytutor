@@ -228,6 +228,44 @@ export function coerceNarrationSpans(
   };
 }
 
+/**
+ * Body of POST /api/transcribe-narration, before Gemini. Same checks the
+ * route returns as 400. A fixture WAV uses this so CI does not need a mic.
+ */
+export function narrationRequestFromBody(
+  body: unknown
+):
+  | { ok: true; audioBase64: string; mime: string; durationMs: number }
+  | { ok: false; error: string } {
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const audio =
+    record.audio && typeof record.audio === "object"
+      ? (record.audio as Record<string, unknown>)
+      : {};
+  const audioBase64 = typeof audio.base64 === "string" ? audio.base64.trim() : "";
+  const mime = typeof audio.mime === "string" && audio.mime.trim() ? audio.mime : "audio/webm";
+  const durationMs = Number(record.durationMs);
+  if (!audioBase64) return { ok: false, error: "audio.base64 is required" };
+  if (!Number.isFinite(durationMs) || durationMs <= 0) {
+    return { ok: false, error: "durationMs is required" };
+  }
+  return { ok: true, audioBase64, mime, durationMs };
+}
+
+/**
+ * What /api/transcribe-narration returns after STT. Segment times are kept
+ * when they are ordered and inside the take; otherwise the verbatim
+ * transcript is split by word count.
+ */
+export function publishNarrationTake(
+  taken: { transcript?: string; segments?: Array<Partial<NarrationSpan>> },
+  durationMs: number
+): { transcript: string; spans: NarrationSpan[]; alignment: NarrationAlignment } {
+  const transcript = typeof taken.transcript === "string" ? taken.transcript.trim() : "";
+  const aligned = coerceNarrationSpans(taken.segments, transcript, durationMs);
+  return { transcript, spans: aligned.spans, alignment: aligned.alignment };
+}
+
 interface Money {
   sliceIndex: number;
   ww?: number;
@@ -659,9 +697,15 @@ export function guideForFindingTrack(
 }
 
 /**
- * Rebuild from the track when we have one, so author edits and stored
- * transcript spans apply. A persisted guide is the fallback for a finding
- * whose dense track was not kept.
+ * Precedence, highest first:
+ * 1. RecordedTrack — rebuild with buildTeachingGuide from the track and the
+ *    current prose. A stored teachingGuide is ignored, including the LIDC
+ *    demo script.
+ * 2. Stored teachingGuide — demo fallback when the finding has no teacher track.
+ * 3. null — nothing to play.
+ *
+ * A re-record or an edit to the label, description, or teaching points
+ * replaces what Teach says, because the track is the source.
  */
 export function resolveTeachingGuide(
   finding: Pick<
