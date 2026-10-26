@@ -217,11 +217,14 @@ export default function StudentSession({
     ? s.revealedIds.includes(activeFinding.id)
     : false;
   const lastAssistant = useMemo(() => {
-    for (let i = s.turns.length - 1; i >= 0; i--) {
+    // Exam caption starts at the switch. The tour line that was speaking is
+    // not the examiner prompt, and it must not stay on screen after Teach.
+    const floor = intent === "exam" ? s.examCaptionFloor : 0;
+    for (let i = s.turns.length - 1; i >= floor; i--) {
       if (s.turns[i].role === "assistant" && !s.turns[i].error) return s.turns[i];
     }
     return null;
-  }, [s.turns]);
+  }, [s.turns, intent, s.examCaptionFloor]);
   const waitingForTeach =
     intent === "teach" &&
     s.ready &&
