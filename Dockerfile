@@ -1,5 +1,7 @@
-# FlowRad Learn — Fly.io production image (Next.js standalone).
+# FlowRad Learn — production image (Next.js standalone).
+# Used by Fly.io (fly.toml) and Cloud Run (deploy/gcp). Same image.
 # Requires `output: "standalone"` in next.config.mjs (already set).
+# Cloud Run sets PORT at runtime (8080); the server honors it.
 #
 # Multi-stage so the runner has no npm, no source, no secrets.
 # Do NOT run the Next build with --turbo (Cornerstone wasm needs webpack).

@@ -22,11 +22,12 @@
 // `orgId` so real auth slots in without a refactor.
 //
 // Store selection is ENV-GATED and LAZY: with no `MONGODB_URI` the app uses the
-// JSON-on-volume store under DATA_DIR (env-overridable) so it can point at a
-// Railway persistent Volume that survives redeploys with no database. Set
-// `MONGODB_URI` and the entire data layer silently runs on MongoDB instead —
-// no caller changes. Either store seeds itself from the committed `/seed` cases
-// the first time it is empty, so demos always have sample data.
+// JSON-on-volume store under DATA_DIR (env-overridable) so local dev and tests
+// run with no database. Set `MONGODB_URI` and the entire data layer silently
+// runs on MongoDB instead — no caller changes. Cloud Run sets `K_SERVICE`;
+// that runtime refuses the JSON fallback (`assertCloudRunMongo`) because the
+// container disk is not durable. Either store seeds itself from the committed
+// `/seed` cases the first time it is empty, so demos always have sample data.
 // ============================================================================
 
 import { promises as fs } from "fs";
@@ -62,6 +63,7 @@ import type {
 } from "./types";
 import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
+import { assertCloudRunMongo } from "./durableStore";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 import { sortRelatedCourses } from "./relatedCourses";
 
@@ -440,6 +442,7 @@ class MongoCollection<T extends { id: string }> implements Collection<T> {
  * run with no database). No caller is aware of which store is returned.
  */
 function collection<T extends { id: string }>(name: CollectionName): Collection<T> {
+  assertCloudRunMongo();
   if (mongoConfigured()) {
     return new MongoCollection<T>(name);
   }

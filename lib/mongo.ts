@@ -7,7 +7,9 @@
 // It is deliberately self-contained: nothing here is imported unless a DB is
 // actually configured (`MONGODB_URI` set). Connecting is LAZY — we never touch
 // the network at import/build time, so `npm run build` and `npm test` work with
-// no database (the JSON-on-volume store remains the default/fallback).
+// no database (the JSON-on-volume store remains the dev/test fallback).
+// Cloud Run (K_SERVICE) is not allowed to use that fallback — see
+// assertCloudRunMongo in lib/durableStore.ts.
 //
 // Singleton connection: serverless platforms (and Next.js hot-reload in dev)
 // re-evaluate modules frequently. To avoid a connection storm we cache the

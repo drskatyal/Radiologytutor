@@ -127,6 +127,16 @@ rate limits and body-size caps.
   references has a passing `DeidReport` in its own org. Header scrubbing is real; **pixel OCR
   for burned-in PHI is not implemented and is never claimed** — see `lib/deid.ts`.
 
+## Production imaging
+
+Study bytes in production go to a **Cloud Healthcare API DICOM store** next to the Next.js app on **Cloud Run** (GCP project `radlearn-app`, region `europe-west2`). The browser still only calls `/api/dicomweb`. Local and Fly Orthanc stay on `ORTHANC_URL` — do not set `DICOMWEB_BACKEND=healthcare` on a machine that uses localhost Orthanc. Cases on Cloud Run live in MongoDB Atlas (`MONGODB_URI` in Secret Manager); the container refuses the JSON-on-disk fallback.
+
+```bash
+docker compose -f docker-compose.orthanc.yml up -d   # local Orthanc on :8042
+```
+
+Deploy scripts, the latency notes, and the Fly migration checklist: [`docs/GCP_CLOUD_RUN.md`](./docs/GCP_CLOUD_RUN.md).
+
 ## Database
 
 With no `MONGODB_URI`, cases and friends persist as JSON under `DATA_DIR` (default `./data`;
@@ -137,7 +147,9 @@ The Mongo connection is a cached singleton that connects lazily on first use, so
 data layer at build time never touches the network. Indexes are created once on first connect.
 
 **MongoDB Atlas:** create a cluster and database user, allow your app's IP under Network Access,
-put the connection string in `MONGODB_URI`, optionally set `MONGODB_DB` (default `flowrad`).
+put the connection string in `MONGODB_URI`, optionally set `MONGODB_DB` (app default `flowrad`;
+Cloud Run sets `radlearn`). Production Atlas is GCP region `EUROPE_WEST_2` — see
+`docs/GCP_CLOUD_RUN.md`. Cloud Run will not fall back to JSON if `MONGODB_URI` is missing.
 
 ## Tests
 

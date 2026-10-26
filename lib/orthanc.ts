@@ -1,7 +1,12 @@
-// Server-only helpers for talking to our Orthanc DICOMweb backend.
-// Orthanc lives on Fly.io (private 6PN, see fly.orthanc.toml); the browser
-// never talks to it directly — our API routes (DICOMweb proxy + upload) do,
-// so there's no CORS and the credentials never reach the client.
+// Server-only helpers for the imaging archive.
+//
+// The browser never talks to the archive. /api/dicomweb proxies WADO-RS and
+// upload/ingest goes through orthancIngestInstance (de-id gate, then store).
+//
+// Two backends, one caller-facing API (see lib/imagingBackend.ts):
+//   orthanc      — local docker / Fly 6PN. REST ids are Orthanc's own.
+//   healthcare   — Cloud Healthcare API DICOM store. Ids ARE DICOM UIDs.
+//                  QIDO/STOW live in lib/healthcareDicom.ts.
 
 import {
   assertDeidPass,
@@ -9,21 +14,48 @@ import {
   type DeidInspectOptions,
   type DeidReport,
 } from "./deid";
+import { gcpAccessToken } from "./gcpAuth";
+import {
+  dicomWebRoot,
+  imagingBackend,
+  imagingConfigured,
+  orthancBaseUrl,
+  orthancBasicAuth,
+  upstreamAccept,
+  type InstanceRef,
+  type SeriesMeta,
+} from "./imagingBackend";
+import {
+  healthcareFindSeries,
+  healthcareFindStudy,
+  healthcareSeriesInstances,
+  healthcareSeriesMeta,
+  healthcareStoreInstance,
+  healthcareStudySeriesMeta,
+  healthcareStudySummary,
+} from "./healthcareDicom";
 
-const ORTHANC_URL = process.env.ORTHANC_URL ?? "";
-const ORTHANC_USER = process.env.ORTHANC_USER ?? "flowrad";
-const ORTHANC_PASSWORD = process.env.ORTHANC_PASSWORD ?? "";
+export { dicomWebRoot, imagingBackend, upstreamAccept };
+export type { InstanceRef, SeriesMeta };
 
 export function orthancConfigured(): boolean {
-  return Boolean(ORTHANC_URL);
+  return imagingConfigured();
 }
 
 export function orthancBase(): string {
-  return ORTHANC_URL.replace(/\/+$/, "");
+  return orthancBaseUrl();
 }
 
 export function orthancAuthHeader(): string {
-  return "Basic " + Buffer.from(`${ORTHANC_USER}:${ORTHANC_PASSWORD}`).toString("base64");
+  return orthancBasicAuth();
+}
+
+/** Bearer token on Healthcare, Basic on Orthanc. */
+export async function imagingAuthHeader(): Promise<string> {
+  if (imagingBackend() === "healthcare") {
+    return "Bearer " + (await gcpAccessToken());
+  }
+  return orthancAuthHeader();
 }
 
 /** GET an Orthanc REST endpoint and parse JSON. */
@@ -44,6 +76,7 @@ export interface OrthancStoreResult {
   Status: string;
 }
 export async function orthancStoreInstance(bytes: ArrayBuffer): Promise<OrthancStoreResult> {
+  if (imagingBackend() === "healthcare") return healthcareStoreInstance(bytes);
   const res = await fetch(`${orthancBase()}/instances`, {
     method: "POST",
     headers: {
@@ -56,18 +89,52 @@ export async function orthancStoreInstance(bytes: ArrayBuffer): Promise<OrthancS
   return (await res.json()) as OrthancStoreResult;
 }
 
-/** Resolve a study's DICOM StudyInstanceUID + description from its Orthanc id. */
+/** Resolve a study's DICOM StudyInstanceUID + description from its archive id. */
 export async function orthancStudyUIDs(
   orthancStudyId: string
 ): Promise<{ studyInstanceUID: string; description: string }> {
+  const summary = await imagingStudySummary(orthancStudyId);
+  return { studyInstanceUID: summary.studyInstanceUID, description: summary.studyDescription };
+}
+
+/**
+ * UID, description, and date for an archive study id.
+ * On Healthcare the id is the StudyInstanceUID. On Orthanc it is Orthanc's id.
+ */
+export async function imagingStudySummary(studyId: string): Promise<{
+  studyInstanceUID: string;
+  studyDescription: string;
+  studyDate?: string;
+}> {
+  if (imagingBackend() === "healthcare") return healthcareStudySummary(studyId);
   const study = await orthancGet<{
-    MainDicomTags: { StudyInstanceUID: string; StudyDescription?: string };
+    MainDicomTags: {
+      StudyInstanceUID: string;
+      StudyDescription?: string;
+      StudyDate?: string;
+    };
     PatientMainDicomTags?: { PatientName?: string };
-  }>(`/studies/${orthancStudyId}`);
+  }>(`/studies/${studyId}`);
+  const tags = study.MainDicomTags;
   return {
-    studyInstanceUID: study.MainDicomTags.StudyInstanceUID,
-    description: study.MainDicomTags.StudyDescription || study.PatientMainDicomTags?.PatientName || "Study",
+    studyInstanceUID: tags.StudyInstanceUID,
+    studyDescription: tags.StudyDescription || study.PatientMainDicomTags?.PatientName || "Study",
+    studyDate: tags.StudyDate || undefined,
   };
+}
+
+/**
+ * Id to pass to orthancStudySeriesMeta.
+ * Healthcare ignores a stored Orthanc hash and resolves the DICOM UID, so a
+ * study row written on Fly still opens after the archive moves.
+ */
+export async function imagingStudyKey(
+  storedOrthancId: string | undefined,
+  studyInstanceUID: string
+): Promise<string | null> {
+  if (imagingBackend() === "healthcare") return healthcareFindStudy(studyInstanceUID);
+  if (storedOrthancId) return storedOrthancId;
+  return orthancFindStudyByUID(studyInstanceUID);
 }
 
 /** Resolve a series' DICOM SeriesInstanceUID from its Orthanc id. */
@@ -120,19 +187,6 @@ export async function orthancIngestInstance(
 // heavier DICOMweb QIDO, so they stay light.
 // ============================================================================
 
-/** Compact metadata for one series (for covers + prefetch ordering). */
-export interface SeriesMeta {
-  seriesInstanceUID: string;
-  orthancSeriesId: string;
-  modality?: string;
-  seriesDescription?: string;
-  seriesNumber?: number;
-  /** Number of instances (slices) in the series. */
-  instanceCount: number;
-  /** SOP Instance UID of the first slice — enough for a cover thumbnail. */
-  firstInstanceUID?: string;
-}
-
 interface OrthancSeriesRecord {
   MainDicomTags: {
     SeriesInstanceUID: string;
@@ -147,8 +201,9 @@ interface OrthancInstanceRecord {
   MainDicomTags: { SOPInstanceUID?: string; InstanceNumber?: string };
 }
 
-/** List a study's series (by Orthanc study id) with compact, cover-ready metadata. */
+/** List a study's series (by archive study id) with compact, cover-ready metadata. */
 export async function orthancStudySeriesMeta(orthancStudyId: string): Promise<SeriesMeta[]> {
+  if (imagingBackend() === "healthcare") return healthcareStudySeriesMeta(orthancStudyId);
   const study = await orthancGet<{ Series: string[] }>(`/studies/${orthancStudyId}`);
   const metas = await Promise.all(
     study.Series.map((sid) => orthancSeriesMeta(sid))
@@ -156,8 +211,9 @@ export async function orthancStudySeriesMeta(orthancStudyId: string): Promise<Se
   return metas.sort((a, b) => (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0));
 }
 
-/** Compact metadata for a single series (by Orthanc series id). */
+/** Compact metadata for a single series (by archive series id). */
 export async function orthancSeriesMeta(orthancSeriesId: string): Promise<SeriesMeta> {
+  if (imagingBackend() === "healthcare") return healthcareSeriesMeta(orthancSeriesId);
   const series = await orthancGet<OrthancSeriesRecord>(`/series/${orthancSeriesId}`);
   const tags = series.MainDicomTags;
   const firstInstanceOrthancId = series.Instances[0];
@@ -181,17 +237,12 @@ export async function orthancSeriesMeta(orthancSeriesId: string): Promise<Series
   };
 }
 
-/** One instance reference, ordered by InstanceNumber (for prefetch ordering). */
-export interface InstanceRef {
-  sopInstanceUID: string;
-  instanceNumber?: number;
-}
-
 /**
  * Ordered SOP Instance UIDs of a series (by Orthanc series id), sorted by
  * InstanceNumber. Used to enumerate exactly which slices a case will need.
  */
 export async function orthancSeriesInstances(orthancSeriesId: string): Promise<InstanceRef[]> {
+  if (imagingBackend() === "healthcare") return healthcareSeriesInstances(orthancSeriesId);
   const series = await orthancGet<OrthancSeriesRecord>(`/series/${orthancSeriesId}`);
   const refs = await Promise.all(
     series.Instances.map(async (iid): Promise<InstanceRef | null> => {
@@ -218,6 +269,7 @@ export async function orthancSeriesInstances(orthancSeriesId: string): Promise<I
 /** Resolve an Orthanc study id from a DICOM StudyInstanceUID (via REST lookup). */
 export async function orthancFindStudyByUID(studyInstanceUID: string): Promise<string | null> {
   try {
+    if (imagingBackend() === "healthcare") return await healthcareFindStudy(studyInstanceUID);
     const matches = await orthancFind<string[]>("Study", { StudyInstanceUID: studyInstanceUID });
     return matches[0] ?? null;
   } catch {
@@ -228,6 +280,7 @@ export async function orthancFindStudyByUID(studyInstanceUID: string): Promise<s
 /** Resolve an Orthanc series id from a DICOM SeriesInstanceUID (via REST lookup). */
 export async function orthancFindSeriesByUID(seriesInstanceUID: string): Promise<string | null> {
   try {
+    if (imagingBackend() === "healthcare") return await healthcareFindSeries(seriesInstanceUID);
     const matches = await orthancFind<string[]>("Series", {
       SeriesInstanceUID: seriesInstanceUID,
     });
@@ -235,6 +288,58 @@ export async function orthancFindSeriesByUID(seriesInstanceUID: string): Promise
   } catch {
     return null;
   }
+}
+
+/**
+ * WADO-RS retrieve of one Part-10 instance. Works on Orthanc and Healthcare
+ * (Accept application/dicom, no transcode). Used to re-read bytes for de-id
+ * when the instance is already in the archive.
+ */
+/**
+ * One instance from a series, for the de-id re-check on import.
+ * Orthanc uses its REST file endpoint (one series GET + one file GET).
+ * Healthcare uses QIDO limit=1 plus a WADO-RS retrieve — not a full instance list.
+ */
+export async function fetchSeriesSampleDicom(
+  studyInstanceUID: string,
+  seriesInstanceUID: string
+): Promise<ArrayBuffer | null> {
+  if (imagingBackend() === "healthcare") {
+    const meta = await healthcareSeriesMeta(seriesInstanceUID);
+    if (!meta.firstInstanceUID) return null;
+    return fetchInstanceDicom(studyInstanceUID, seriesInstanceUID, meta.firstInstanceUID);
+  }
+  const seriesId = await orthancFindSeriesByUID(seriesInstanceUID);
+  if (!seriesId) return null;
+  const series = await orthancGet<{ Instances: string[] }>(`/series/${seriesId}`);
+  const instId = series.Instances[0];
+  if (!instId) return null;
+  const fileRes = await fetch(`${orthancBase()}/instances/${instId}/file`, {
+    headers: { Authorization: orthancAuthHeader() },
+    cache: "no-store",
+  });
+  if (!fileRes.ok) return null;
+  return fileRes.arrayBuffer();
+}
+
+export async function fetchInstanceDicom(
+  studyInstanceUID: string,
+  seriesInstanceUID: string,
+  sopInstanceUID: string
+): Promise<ArrayBuffer | null> {
+  const url =
+    `${dicomWebRoot()}/studies/${encodeURIComponent(studyInstanceUID)}` +
+    `/series/${encodeURIComponent(seriesInstanceUID)}` +
+    `/instances/${encodeURIComponent(sopInstanceUID)}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: await imagingAuthHeader(),
+      Accept: "application/dicom; transfer-syntax=*",
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  return res.arrayBuffer();
 }
 
 /** POST to Orthanc's /tools/find with a query; returns matching resource ids. */

@@ -1,7 +1,8 @@
-// Same-origin proxy to Orthanc's DICOMweb endpoint (/dicom-web/...).
+// Same-origin proxy to the imaging archive's DICOMweb endpoint.
+// Orthanc: `{ORTHANC_URL}/dicom-web`. Healthcare: the regional dicomWeb root.
 // The Cornerstone viewer fetches `wadors:/api/dicomweb/...` so the browser
-// only ever hits our own origin — no CORS, and Orthanc's Basic-auth creds
-// stay server-side. Streams responses through unchanged (incl. multipart
+// only ever hits our own origin — no CORS, and archive credentials stay
+// server-side. Streams responses through unchanged (incl. multipart
 // pixel data) so WADO-RS works end to end.
 //
 // ACCESS (CLAUDE.md §4a — everything is scoped by orgId):
@@ -17,15 +18,19 @@
 //      metadata. Marked `private` — these are per-tenant bytes, never
 //      shared-cacheable. 4xx/5xx are not cached: a prefetch 400 must not
 //      become the viewer's answer on the next scroll.
-//   2. Optional Cloudflare R2 object cache for frame bytes when R2_* is set —
-//      cold Fly machines skip Orthanc on repeat opens (≤30s interactive path).
+//   2. Optional object cache (Cloudflare R2, or GCS via R2_ENDPOINT) for frame
+//      bytes. A miss must not stall the first slice: we only wait
+//      FRAME_CACHE_WAIT_MS (default 25) before going to the archive.
 
 import { NextRequest } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { getStudyByUID } from "@/lib/cases";
 import { responseCacheControl, upstreamAccept, varyHeaderForDicomwebPath } from "@/lib/dicomwebProxy";
-import { orthancBase, orthancAuthHeader, orthancConfigured } from "@/lib/orthanc";
-import { getObject, putObject, r2Configured } from "@/lib/r2";
+import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "@/lib/orthanc";
+import { getObject, putObject, r2Configured, type GetObjectResult } from "@/lib/r2";
+
+/** How long a frame-cache read may block the archive fetch. 0 skips the read. */
+const FRAME_CACHE_WAIT_MS = Number(process.env.FRAME_CACHE_WAIT_MS ?? 25);
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -85,7 +90,10 @@ function studyUidFromPath(segments: string[]): string | null {
 
 async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   if (!orthancConfigured()) {
-    return new Response("Orthanc backend not configured (set ORTHANC_URL).", { status: 503 });
+    return new Response(
+      "Imaging archive is not configured (set ORTHANC_URL, or DICOMWEB_BACKEND=healthcare).",
+      { status: 503 }
+    );
   }
 
   // Imaging is never anonymous.
@@ -109,11 +117,11 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
 
   const path = segments.join("/");
   const search = req.nextUrl.search || "";
-  const target = `${orthancBase()}/dicom-web/${path}${search}`;
+  const target = `${dicomWebRoot()}/${path}${search}`;
   const r2Key = !search ? frameCacheKey(path) : null;
 
-  if (r2Key && r2Configured()) {
-    const hit = await getObject(r2Key).catch(() => null);
+  if (r2Key && r2Configured() && FRAME_CACHE_WAIT_MS > 0) {
+    const hit = await readFrameCache(r2Key);
     if (hit) {
       const outHeaders = new Headers();
       outHeaders.set("content-type", hit.contentType || "application/octet-stream");
@@ -123,7 +131,7 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
     }
   }
 
-  const headers: Record<string, string> = { Authorization: orthancAuthHeader() };
+  const headers: Record<string, string> = { Authorization: await imagingAuthHeader() };
   const accept = upstreamAccept(path, req.headers.get("accept"));
   if (accept) headers["Accept"] = accept;
 
@@ -133,7 +141,7 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   if (ct) outHeaders.set("content-type", ct);
   applyResponseCache(outHeaders, path, resp.status);
 
-  // Buffer frame bodies so we can fill R2; stream everything else.
+  // Buffer frame bodies so we can fill the object cache; stream everything else.
   if (r2Key && r2Configured() && req.method === "GET" && resp.ok) {
     const buf = Buffer.from(await resp.arrayBuffer());
     void putObject(r2Key, buf, ct || "application/octet-stream").catch(() => undefined);
@@ -142,6 +150,17 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   }
 
   return new Response(resp.body, { status: resp.status, headers: outHeaders });
+}
+
+/**
+ * Frame-cache read with a short budget. A slow bucket must not sit in front
+ * of the first slice; the archive request starts as soon as the budget ends.
+ */
+function readFrameCache(key: string): Promise<GetObjectResult | null> {
+  return Promise.race([
+    getObject(key).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), FRAME_CACHE_WAIT_MS)),
+  ]);
 }
 
 // Read-only by design: no POST/PUT export. Ingest goes through /api/upload so

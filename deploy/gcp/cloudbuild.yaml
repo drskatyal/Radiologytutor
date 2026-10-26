@@ -1,0 +1,41 @@
+# Build and push the Next.js image. Deploy stays in deploy-app.sh so secret
+# versions are checked before Cloud Run is updated.
+#
+#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml \
+#     --project=radlearn-app --substitutions=_REGION=europe-west2,_REPO=radlearn
+#
+# Then: SKIP_BUILD=1 IMAGE=... deploy/gcp/deploy-app.sh
+#
+# Do not pass --turbo. The Dockerfile runs `npm run build` (webpack).
+
+substitutions:
+  _REGION: europe-west2
+  _REPO: radlearn
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1800s
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest

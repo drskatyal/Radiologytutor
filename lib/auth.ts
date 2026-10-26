@@ -5,8 +5,9 @@
 // source of truth; Better Auth is only the credential provider.
 //
 // Without MONGODB_URI we use the in-memory adapter so `npm run build` and
-// local demo work with no database. A signed demo cookie additionally lets
-// "Continue as demo" work even when the memory adapter is empty.
+// local demo work with no database. Cloud Run (K_SERVICE) refuses that
+// fallback — MONGODB_URI must come from Secret Manager. A signed demo cookie
+// additionally lets "Continue as demo" work even when the memory adapter is empty.
 
 import { createHmac, timingSafeEqual } from "crypto";
 import { betterAuth } from "better-auth";
@@ -14,6 +15,7 @@ import { mongodbAdapter } from "better-auth/adapters/mongodb";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { nextCookies, toNextJsHandler } from "better-auth/next-js";
 import { MongoClient } from "mongodb";
+import { assertCloudRunMongo } from "./durableStore";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
@@ -97,6 +99,7 @@ const memoryDb: MemoryDB = {
 };
 
 function buildDatabase() {
+  assertCloudRunMongo();
   const uri = process.env.MONGODB_URI?.trim();
   if (!uri) return memoryAdapter(memoryDb);
   // Construct the client without connecting — first adapter op opens the pool.
