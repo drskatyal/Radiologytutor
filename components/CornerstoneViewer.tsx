@@ -77,6 +77,12 @@ import {
   type RawAnnotationLike,
 } from "../lib/findingMeasurements";
 import {
+  jpegStillFromGrayscale,
+  largestCanvas,
+  stillFromCanvas,
+  type GrayscaleFrame,
+} from "../lib/compileMedia";
+import {
   annotationViewerEvent,
   sameAnnotationStroke,
 } from "../lib/annotationCapture";
@@ -248,6 +254,67 @@ export interface CornerstoneControls {
   settle: () => Promise<void>;
   /** True when the last annotation applyEvent landed on the viewport. */
   readonly annotationApplied: boolean;
+  /**
+   * One JPEG of the imaging surface for author compile. Read-only: it does not
+   * resize the engine, reset the camera, or touch the compare layout. Returns
+   * null when the bitmap is blank and the cached pixels cannot be windowed.
+   */
+  captureViewportStill?: () => { mimeType: string; base64: string } | null;
+}
+
+type CachedSlice = {
+  color?: boolean;
+  columns?: number;
+  rows?: number;
+  width?: number;
+  height?: number;
+  slope?: number;
+  intercept?: number;
+  invert?: boolean;
+  isPreScaled?: boolean;
+  photometricInterpretation?: string;
+  getPixelData?: () => ArrayLike<number>;
+};
+
+/**
+ * Prefer the painted canvas (it includes the current zoom). If that bitmap is
+ * blank — WebGL often clears the drawing buffer — window the cached slice
+ * instead. Neither path resizes the engine or resets the camera.
+ */
+function grabViewportStill(
+  host: HTMLElement | null,
+  vp: DrivableViewport | null
+): { mimeType: string; base64: string } | null {
+  const canvas = host ? largestCanvas(Array.from(host.querySelectorAll("canvas"))) : null;
+  if (canvas) {
+    const shot = stillFromCanvas(canvas);
+    if (shot.ok) return { mimeType: shot.mimeType, base64: shot.base64 };
+  }
+  if (!vp) return null;
+  const image = (
+    vp as DrivableViewport & { getCornerstoneImage?: () => CachedSlice | undefined }
+  ).getCornerstoneImage?.();
+  if (!image || image.color || typeof image.getPixelData !== "function") return null;
+  const samples = image.getPixelData();
+  const columns = image.columns || image.width || 0;
+  const rows = image.rows || image.height || 0;
+  if (!samples || columns < 2 || rows < 2 || samples.length < columns * rows) return null;
+  const voi = voiToWwWc(vp.getProperties().voiRange);
+  if (!voi || !(voi.ww > 1)) return null;
+  const preScaled = Boolean(image.isPreScaled);
+  const monochrome1 = image.photometricInterpretation === "MONOCHROME1";
+  const invert = Boolean(vp.getProperties().invert) !== Boolean(image.invert) !== monochrome1;
+  const frame: GrayscaleFrame = {
+    columns,
+    rows,
+    samples,
+    slope: preScaled ? 1 : Number(image.slope ?? 1) || 1,
+    intercept: preScaled ? 0 : Number(image.intercept ?? 0) || 0,
+    ww: voi.ww,
+    wc: voi.wc,
+    invert,
+  };
+  return jpegStillFromGrayscale(frame);
 }
 
 /**
@@ -1593,6 +1660,7 @@ export default function CornerstoneViewer({
           get annotationApplied() {
             return annotationApplied;
           },
+          captureViewportStill: () => grabViewportStill(elementRef.current, viewportRef.current),
         };
         if (controls) controls.current = handle;
         onReady?.(handle);
