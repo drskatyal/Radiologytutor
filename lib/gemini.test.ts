@@ -174,10 +174,84 @@ describe("runTeachingPlan spoken answer", { concurrency: 1 }, () => {
         currentFindingId: "f_ptx",
         findings: [finding],
       });
-      assert.match(result.answer, /pleural line|apex/i);
+      assert.match(result.answer, /^(Look|See|Watch|Follow)\b/);
+      assert.match(result.answer, /What do you see\?/);
       assert.doesNotMatch(result.answer, /pneumothorax/i);
+      assert.doesNotMatch(result.answer, /pleural line/i);
       assert.doesNotMatch(result.answer, /skin fold/i);
+      assert.match(systemInstruction, /this turn is level 0/i);
+      assert.match(systemInstruction, /same finding/i);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevKey;
+    }
+  });
+
+  test("later empty turns climb location then mimic, and don't-know reveals", async () => {
+    const prevKey = process.env.GEMINI_API_KEY;
+    const prevFetch = globalThis.fetch;
+    let systemInstruction = "";
+    let parts: unknown[] = [];
+    process.env.GEMINI_API_KEY = "test-key";
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        systemInstruction?: { parts?: { text?: string }[] };
+      };
+      systemInstruction = body.systemInstruction?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts } }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+    const plan = {
+      caseTitle: "LIDC nodule search",
+      modality: "CT",
+      mode: "socratic" as const,
+      findingsContext: "id=f_ptx",
+      currentFindingId: "f_ptx",
+      findings: [finding],
+    };
+    try {
+      parts = [{ functionCall: { name: "show_finding", args: { findingId: "f_ptx" } } }];
+      const second = await runTeachingPlan({
+        ...plan,
+        question: "still not sure",
+        history: [{ role: "user", text: "There is a line at the right apex. I think it is consolidation." }],
+      });
       assert.match(systemInstruction, /this turn is level 1/i);
+      assert.match(systemInstruction, /location line/i);
+      assert.match(second.answer, /pleural line|apex/i);
+      assert.doesNotMatch(second.answer, /pneumothorax/i);
+      assert.doesNotMatch(second.answer, /skin fold/i);
+
+      const third = await runTeachingPlan({
+        ...plan,
+        question: "still not sure",
+        history: [
+          { role: "user", text: "There is a line at the right apex. I think it is consolidation." },
+          { role: "assistant", text: "Look at this slice. Visceral pleural line at the apex." },
+          { role: "user", text: "The place is right, but I still call it consolidation." },
+        ],
+      });
+      assert.match(systemInstruction, /this turn is level 2/i);
+      assert.match(third.answer, /skin fold/i);
+      assert.doesNotMatch(third.answer, /pneumothorax/i);
+
+      parts = [{ text: "Look at this slice." }];
+      const reveal = await runTeachingPlan({
+        ...plan,
+        question: "I don't know. Please show me this finding and teach it.",
+        history: [
+          { role: "user", text: "is it a vessel?" },
+          { role: "assistant", text: "Follow the pointer. Begin at the carina." },
+        ],
+      });
+      assert.match(systemInstruction, /this turn is level 3/i);
+      assert.match(reveal.answer, /Right apical pneumothorax/);
+      assert.match(reveal.answer, /skin fold/i);
+      assert.equal(reveal.actions[0]?.type, "show_finding");
+      assert.equal(reveal.actions[0] && "findingId" in reveal.actions[0] ? reveal.actions[0].findingId : "", "f_ptx");
     } finally {
       globalThis.fetch = prevFetch;
       if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
