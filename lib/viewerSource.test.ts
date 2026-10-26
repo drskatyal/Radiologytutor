@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   caseSeriesToSource,
+  viewerSourceKey,
   BUNDLED_CASE,
   BUNDLED_CASE_SERIES,
   BUNDLED_STUDY_UID,
@@ -24,6 +25,22 @@ test("caseSeriesToSource resolves a wadors series through the proxy root", () =>
     StudyInstanceUID: "1.2.3.study",
     SeriesInstanceUID: "1.2.3.series",
   });
+});
+
+test("viewerSourceKey ignores object identity for the same series", () => {
+  const s: CaseSeries = {
+    seriesInstanceUID: "1.2.3.series",
+    studyInstanceUID: "1.2.3.study",
+    modality: "CT",
+    instanceCount: 65,
+    wadoRsRoot: "/api/dicomweb",
+  };
+  const a = caseSeriesToSource(s);
+  const b = caseSeriesToSource(s);
+  assert.notEqual(a, b);
+  assert.equal(viewerSourceKey(a), viewerSourceKey(b));
+  const other = caseSeriesToSource({ ...s, seriesInstanceUID: "1.2.3.other" });
+  assert.notEqual(viewerSourceKey(a), viewerSourceKey(other));
 });
 
 test("caseSeriesToSource resolves the bundled sentinel to the offline sample", () => {

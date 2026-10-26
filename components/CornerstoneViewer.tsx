@@ -44,6 +44,7 @@ import { stackOpenIndex } from "../lib/stackIndex";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
+  viewerSourceKey,
   type CaseSeries,
   type ViewerSource,
 } from "../lib/viewerSource";
@@ -560,6 +561,13 @@ export default function CornerstoneViewer({
   const destroyToolGroupRef = useRef<(id: string) => void>(() => {});
 
   const presets = presetsForModality(modality);
+
+  // `source` is often a fresh object with the same study/series (Teach rebuilds
+  // the compare descriptor every render). Object identity must not tear the
+  // engine down — that reloads the stack at the mid-slice default and strands
+  // a secondary landing. Series changes on an existing rail go through
+  // switchSeries, which does not change this key.
+  const sourceKey = viewerSourceKey(source);
 
   useEffect(() => {
     let disposed = false;
@@ -1708,7 +1716,7 @@ export default function CornerstoneViewer({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  }, [sourceKey]);
 
   // React to the navigator selecting a different series (user-driven switch).
   // Runs after init has wired switchSeriesRef; no-ops on the already-loaded
