@@ -40,6 +40,7 @@ import {
   type ReactNode,
 } from "react";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
+import { stackOpenIndex } from "../lib/stackIndex";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
@@ -598,7 +599,7 @@ export default function CornerstoneViewer({
         };
 
         const loadStack = async (ids: string[]): Promise<void> => {
-          await viewport.setStack(ids, Math.floor(ids.length / 2));
+          await viewport.setStack(ids, stackOpenIndex(ids.length));
           viewport.render();
 
           const sampleIds = ids.slice(0, Math.min(ids.length, 4));

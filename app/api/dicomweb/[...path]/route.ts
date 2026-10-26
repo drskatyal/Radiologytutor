@@ -13,29 +13,31 @@
 //   route around that gate, so no write verb is exported.
 //
 // Caching:
-//   1. Browser Cache-Control on frames (immutable) + short TTL on metadata.
-//      Marked `private` — these are per-tenant bytes, never shared-cacheable.
+//   1. Browser Cache-Control on successful frames (immutable) + short TTL on
+//      metadata. Marked `private` — these are per-tenant bytes, never
+//      shared-cacheable. 4xx/5xx are not cached: a prefetch 400 must not
+//      become the viewer's answer on the next scroll.
 //   2. Optional Cloudflare R2 object cache for frame bytes when R2_* is set —
 //      cold Fly machines skip Orthanc on repeat opens (≤30s interactive path).
 
 import { NextRequest } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { getStudyByUID } from "@/lib/cases";
+import { responseCacheControl, upstreamAccept, varyHeaderForDicomwebPath } from "@/lib/dicomwebProxy";
 import { orthancBase, orthancAuthHeader, orthancConfigured } from "@/lib/orthanc";
 import { getObject, putObject, r2Configured } from "@/lib/r2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Pixel / rendered frame paths are content-addressed by SOP UID — cache hard. */
-function cacheControlForPath(path: string): string | null {
-  if (/\/frames\/\d+/i.test(path) || /\/rendered$/i.test(path)) {
-    return "private, max-age=86400, stale-while-revalidate=604800, immutable";
+function applyResponseCache(headers: Headers, path: string, status: number): void {
+  const cc = responseCacheControl(path, status);
+  if (cc) headers.set("Cache-Control", cc);
+  // Vary only on a body we might store. An error must not be reusable.
+  if (status >= 200 && status < 300) {
+    const vary = varyHeaderForDicomwebPath(path);
+    if (vary) headers.set("Vary", vary);
   }
-  if (/\/metadata$/i.test(path) || /\/series(\/|$)/i.test(path)) {
-    return "private, max-age=60, stale-while-revalidate=300";
-  }
-  return null;
 }
 
 /** R2 key for a frame path — null when the path is not a cacheable frame. */
@@ -116,22 +118,20 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
       const outHeaders = new Headers();
       outHeaders.set("content-type", hit.contentType || "application/octet-stream");
       outHeaders.set("x-flowrad-cache", "r2");
-      const cc = cacheControlForPath(path);
-      if (cc) outHeaders.set("Cache-Control", cc);
+      applyResponseCache(outHeaders, path, 200);
       return new Response(new Uint8Array(hit.bytes), { status: 200, headers: outHeaders });
     }
   }
 
   const headers: Record<string, string> = { Authorization: orthancAuthHeader() };
-  const accept = req.headers.get("accept");
+  const accept = upstreamAccept(path, req.headers.get("accept"));
   if (accept) headers["Accept"] = accept;
 
   const resp = await fetch(target, { method: req.method, headers, cache: "no-store" });
   const outHeaders = new Headers();
   const ct = resp.headers.get("content-type");
   if (ct) outHeaders.set("content-type", ct);
-  const cc = cacheControlForPath(path);
-  if (cc) outHeaders.set("Cache-Control", cc);
+  applyResponseCache(outHeaders, path, resp.status);
 
   // Buffer frame bodies so we can fill R2; stream everything else.
   if (r2Key && r2Configured() && req.method === "GET" && resp.ok) {
