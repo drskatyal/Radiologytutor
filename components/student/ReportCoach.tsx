@@ -234,7 +234,7 @@ export function ReportCoach({
                   {item.gap && (
                     <p className="mt-0.5 text-[11px] leading-snug text-secondary">{item.gap}</p>
                   )}
-                  {gold && item.verdict !== "hit" && (
+                  {gold && item.verdict !== "hit" && !item.gap.includes(gold) && (
                     <p className="mt-0.5 text-[11px] leading-snug text-muted">Gold: {gold}</p>
                   )}
                 </li>
