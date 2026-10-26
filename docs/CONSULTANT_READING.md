@@ -61,7 +61,7 @@ Teach mode follows the **cleaned guide** (scroll → window → zoom → point �
 
 | Concern | Choice | Env |
 |---------|--------|-----|
-| Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.7-flash`**) | `GEMINI_API_KEY` |
+| Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.8-flash`**) | `GEMINI_API_KEY` |
 | Tutor voice | **ElevenLabs** clone when enrolled | `ELEVENLABS_API_KEY` |
 | TTS fallback | Gemini TTS | `GEMINI_TTS_*` |
 | High-latency discussion | **Gemini Live** ephemeral token (`POST /api/voice/realtime`) | same Gemini key |

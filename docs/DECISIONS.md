@@ -5,12 +5,12 @@
 ## Infra
 | Layer | Choice |
 |--------|--------|
-| App + Orthanc | **Fly.io** (two apps; Orthanc private + volume). Ops: `docs/FLY_R2.md` |
-| Domain DB | **MongoDB Atlas** (JSON fallback in dev) |
-| Auth | **Better Auth** + **Google OAuth** (password optional). Seam: `lib/auth.ts` only |
-| Frames/audio cache | **Cloudflare R2** (`lib/r2.ts`) |
-| DICOM archive | **Orthanc** DICOMweb |
-| AI | Gemini Flash orchestration (`GEMINI_MODEL`, default `gemini-3.7-flash`) behind `lib/gemini.ts` |
+| App | **Cloud Run** in GCP project `radlearn-app`, region `europe-west2` (Next.js standalone image). Fly.io remains until cutover — `docs/GCP_CLOUD_RUN.md`, `docs/FLY_R2.md` |
+| DICOM archive | **Cloud Healthcare API DICOM store** `radlearn` / `radlearn-dicom` in `europe-west2`. **Orthanc** stays local/dev and the Fly archive until studies are re-imported |
+| Domain DB | **MongoDB Atlas** on GCP `EUROPE_WEST_2`. Cloud Run requires `MONGODB_URI` (Secret Manager); JSON-on-disk is dev/test only |
+| Auth | **Better Auth** + **Google OAuth** (password optional). Seam: `lib/auth.ts` only. DICOM store uses the Cloud Run service account, not IAP |
+| Frames/audio cache | **S3-compatible** (`lib/r2.ts`): Cloudflare R2, or GCS via `R2_ENDPOINT`. Private. Not a public CDN |
+| AI | Gemini Flash orchestration (`GEMINI_MODEL`, default `gemini-3.8-flash`) behind `lib/gemini.ts`. Same env on Cloud Run, values in Secret Manager |
 | Live tutor voice | **ElevenLabs** clone when enrolled (`lib/voice.ts` / `lib/elevenlabs.ts`); Gemini TTS fallback |
 | Realtime voice fallback | Gemini Live native audio (`GEMINI_LIVE_MODEL`) via ephemeral token from `POST /api/voice/realtime` when TTS latency exceeds `VOICE_LATENCY_BUDGET_MS` — see `docs/CONSULTANT_READING.md` |
 | Payments | Deferred — `lib/payments.ts` stub; Razorpay/Cashfree later |
@@ -54,6 +54,6 @@
 - Research notes: `docs/MARKETPLACE_RESEARCH.md`
 
 ## Deploy / what users see
-- **Production deploy branch:** `claude/epic-noether-3nvcbf` (Fly `flowrad-learn`).
+- **Production deploy branch:** `claude/epic-noether-3nvcbf`. Target is Cloud Run in `radlearn-app` (`europe-west2`). Fly `flowrad-learn` stays until the cutover checklist in `docs/GCP_CLOUD_RUN.md` has been run.
 - PR #6 (`cursor/marketplace-foundation-a5b0`) is **retargeted at that branch** and marked ready for review — merge it to ship Teach to production.
 - Student product intent: **Teach** = AI attending drives viewer while teaching how to report; **Exam** = viva; **Report** = sectioned practice with model-on-viewer.
