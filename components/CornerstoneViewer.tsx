@@ -55,6 +55,15 @@ import {
 import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
+  SHARED_RENDERING_ENGINE_ID,
+  planViewportLayoutRestore,
+  presentationCameraUsable,
+  viewportEngineRegistry,
+  viewportIdFor,
+  toolGroupIdFor,
+  type ViewPresentation,
+} from "../lib/compareViewport";
+import {
   normalizeMeasurements,
   statsFromAnnotation,
   type RawAnnotationLike,
@@ -192,6 +201,12 @@ export interface CornerstoneControls {
   setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
   reset: () => void;
+  /**
+   * Resize onto the current pane and repaint. Used when compare closes so the
+   * primary buffer matches the single-pane layout without dropping the teach
+   * window.
+   */
+  restoreLayout: () => void;
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
   /** Current slice / VOI / camera / SOP — primes recordings and finding landings. */
@@ -305,6 +320,61 @@ async function buildImageIds(source: ViewerSource): Promise<string[]> {
     );
   }
   return createImageIdsAndCacheMetaData(source);
+}
+
+type SharedEngine = {
+  enableElement: (entry: {
+    viewportId: string;
+    type: unknown;
+    element: HTMLDivElement;
+  }) => void;
+  disableElement: (viewportId: string) => void;
+  getViewport: (viewportId: string) => unknown;
+  resize: (immediate?: boolean, keepCamera?: boolean) => void;
+  destroy: () => void;
+  hasBeenDestroyed?: boolean;
+};
+
+type EngineHost = {
+  getRenderingEngine: (id: string) => SharedEngine | undefined;
+  RenderingEngine: new (id: string) => unknown;
+};
+
+let sharedCore: EngineHost | null = null;
+let engineCreate: Promise<void> | null = null;
+
+function liveSharedEngine(core: EngineHost): SharedEngine | null {
+  const existing = core.getRenderingEngine(SHARED_RENDERING_ENGINE_ID);
+  if (existing && !existing.hasBeenDestroyed) return existing;
+  return null;
+}
+
+async function obtainSharedEngine(core: EngineHost): Promise<SharedEngine> {
+  const found = liveSharedEngine(core);
+  if (found) return found;
+  if (!engineCreate) {
+    engineCreate = Promise.resolve()
+      .then(() => {
+        if (!liveSharedEngine(core)) new core.RenderingEngine(SHARED_RENDERING_ENGINE_ID);
+      })
+      .finally(() => {
+        engineCreate = null;
+      });
+  }
+  await engineCreate;
+  const engine = liveSharedEngine(core);
+  if (!engine) throw new Error("FlowRad rendering engine was not created");
+  return engine;
+}
+
+function destroySharedEngineIfIdle(engine: SharedEngine | null | undefined) {
+  if (!engine || engine.hasBeenDestroyed) return;
+  if (viewportEngineRegistry.size > 0) return;
+  try {
+    engine.destroy();
+  } catch {
+    /* already gone */
+  }
 }
 
 export default function CornerstoneViewer({
@@ -421,18 +491,26 @@ export default function CornerstoneViewer({
 
   useEffect(() => {
     let disposed = false;
-    let renderingEngine: { destroy: () => void } | null = null;
     let detachListeners: () => void = () => {};
-    const toolGroupId = `flowrad-tg-${instanceId}`;
+    let resizeObserver: ResizeObserver | null = null;
+    let restoreRaf = 0;
+    const viewportId = viewportIdFor(instanceId);
+    const toolGroupId = toolGroupIdFor(instanceId);
+    // One engine for every pane. A second RenderingEngine allocates another
+    // WebGL context pool; opening compare then loses the primary context and
+    // the canvas clears to black when the split closes.
+    const renderingEngineId = SHARED_RENDERING_ENGINE_ID;
 
     (async () => {
       if (started.current || !elementRef.current) return;
       started.current = true;
+      viewportEngineRegistry.acquire(instanceId);
 
       try {
         const core = await import("@cornerstonejs/core");
         const loader = await import("@cornerstonejs/dicom-image-loader");
         const tools = await import("@cornerstonejs/tools");
+        sharedCore = core as unknown as EngineHost;
 
         await core.init();
         await tools.init();
@@ -442,10 +520,11 @@ export default function CornerstoneViewer({
         const imageIds = await buildImageIds(initialSource);
         if (disposed || !elementRef.current) return;
 
-        const renderingEngineId = `flowrad-engine-${instanceId}`;
-        const viewportId = `FLOWRAD_STACK_${instanceId}`;
-        const engine = new core.RenderingEngine(renderingEngineId);
-        renderingEngine = engine;
+        const engine = await obtainSharedEngine(core as unknown as EngineHost);
+        if (disposed || !elementRef.current) {
+          destroySharedEngineIfIdle(engine);
+          return;
+        }
 
         engine.enableElement({
           viewportId,
@@ -567,6 +646,35 @@ export default function CornerstoneViewer({
         // re-render the chrome on every pointer move — the canvas itself is
         // untouched by this state.
         let lastReadoutAt = 0;
+        // Last finite teach camera + window. Layout restore falls back to this
+        // when the live camera was measured against a 0×0 pane.
+        let lastGood: ViewPresentation | null = null;
+        let lastRestoreW = -1;
+        let lastRestoreH = -1;
+        const rememberPresentation = () => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || host.clientWidth < 2 || host.clientHeight < 2) return;
+          let zoom: number | undefined;
+          let pan: [number, number] | undefined;
+          try {
+            zoom = vp.getZoom();
+            pan = vp.getPan();
+          } catch {
+            return;
+          }
+          const voi = voiToWwWc(vp.getProperties().voiRange);
+          const next: ViewPresentation = {
+            sliceIndex: vp.getCurrentImageIdIndex(),
+            zoom,
+            pan,
+            ww: voi?.ww,
+            wc: voi?.wc,
+          };
+          if (presentationCameraUsable(next) || (voi != null && voi.ww > 0)) {
+            lastGood = next;
+          }
+        };
         const publishReadout = () => {
           const vp = viewportRef.current;
           if (!vp) return;
@@ -584,6 +692,7 @@ export default function CornerstoneViewer({
               ? prev
               : { slice, count, ww, wc }
           );
+          rememberPresentation();
         };
         const scheduleReadout = () => {
           const now = performance.now();
@@ -632,6 +741,7 @@ export default function CornerstoneViewer({
         };
 
         await loadStack(imageIds);
+        if (disposed || !elementRef.current) return;
         viewportRef.current = viewport;
         publishReadout();
         // Record which series is loaded so switches no-op on the active one.
@@ -672,12 +782,14 @@ export default function CornerstoneViewer({
         const emitSlice = () => {
           const vp = viewportRef.current;
           if (!vp) return;
+          rememberPresentation();
           emit({ type: "slice", index: vp.getCurrentImageIdIndex() });
           scheduleReadout();
         };
         const emitVoi = () => {
           const vp = viewportRef.current;
           if (!vp) return;
+          rememberPresentation();
           scheduleReadout();
           const now = performance.now();
           if (now - lastVoiEmit < THROTTLE) return;
@@ -688,6 +800,7 @@ export default function CornerstoneViewer({
         const emitCamera = () => {
           const vp = viewportRef.current;
           if (!vp) return;
+          rememberPresentation();
           const now = performance.now();
           if (now - lastCamEmit < THROTTLE) return;
           lastCamEmit = now;
@@ -836,11 +949,22 @@ export default function CornerstoneViewer({
 
         resetRef.current = () => {
           cancelTweenRef.current();
+          const host = elementRef.current;
+          // Fit against the pane's current size. A stale half-width buffer
+          // (left over from compare) makes resetCamera miss the anatomy.
+          if (host && host.clientWidth >= 2 && host.clientHeight >= 2) {
+            try {
+              engine.resize(true, false);
+            } catch {
+              /* resetCamera below still runs */
+            }
+          }
           viewport.resetCamera();
           viewport.resetProperties?.();
           viewport.render();
           setInverted(viewport.getProperties().invert ?? false);
           setActivePreset(null);
+          rememberPresentation();
         };
         const clearAnnotations = () => {
           beginSuppress();
@@ -1237,6 +1361,105 @@ export default function CornerstoneViewer({
           return normalizeMeasurements(mapped);
         };
 
+        let restoring = false;
+        let pendingForce = false;
+        const applyLayoutRestore = (force: boolean) => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || restoring) return;
+          const width = host.clientWidth;
+          const height = host.clientHeight;
+          if (width < 2 || height < 2) return;
+          let live: ViewPresentation;
+          try {
+            const voi = voiToWwWc(vp.getProperties().voiRange);
+            live = {
+              sliceIndex: vp.getCurrentImageIdIndex(),
+              zoom: vp.getZoom(),
+              pan: vp.getPan(),
+              ww: voi?.ww,
+              wc: voi?.wc,
+            };
+          } catch {
+            return;
+          }
+          const sizeUnchanged =
+            Math.abs(width - lastRestoreW) < 2 && Math.abs(height - lastRestoreH) < 2;
+          if (!force && sizeUnchanged && presentationCameraUsable(live)) return;
+          const plan = planViewportLayoutRestore({
+            width,
+            height,
+            live,
+            lastGood,
+          });
+          restoring = true;
+          try {
+            try {
+              engine.resize(true, plan.keepCamera);
+            } catch (err) {
+              console.warn("CornerstoneViewer layout restore", err);
+            }
+            const paint = () => {
+              const current = viewportRef.current;
+              if (!current) return;
+              if (!plan.keepCamera) {
+                try {
+                  current.resetCamera();
+                } catch {
+                  /* resize already fitted */
+                }
+                if (plan.reapply) {
+                  try {
+                    current.setZoom(plan.reapply.zoom);
+                    current.setPan(plan.reapply.pan);
+                  } catch {
+                    /* the fit camera still shows the slice */
+                  }
+                }
+                // Fit/resetCamera leaves the teach window alone, but a slice
+                // reload does not. Put the lung window back without going
+                // through resetProperties (that restores the DICOM default).
+                if (plan.ww != null && plan.wc != null) {
+                  current.setProperties({ voiRange: wwWcToVoi(plan.ww, plan.wc) });
+                }
+              }
+              current.render();
+              lastRestoreW = width;
+              lastRestoreH = height;
+              rememberPresentation();
+            };
+            if (!plan.keepCamera && plan.sliceIndex !== vp.getCurrentImageIdIndex()) {
+              Promise.resolve(vp.setImageIdIndex(plan.sliceIndex)).finally(paint);
+            } else {
+              paint();
+            }
+          } finally {
+            restoring = false;
+          }
+        };
+        const scheduleLayoutRestore = (force: boolean) => {
+          pendingForce = pendingForce || force;
+          if (restoreRaf) return;
+          let attempts = 0;
+          const tick = () => {
+            const host = elementRef.current;
+            if (!host) {
+              restoreRaf = 0;
+              return;
+            }
+            if ((host.clientWidth < 2 || host.clientHeight < 2) && attempts < 8) {
+              attempts += 1;
+              restoreRaf = requestAnimationFrame(tick);
+              return;
+            }
+            restoreRaf = 0;
+            const forced = pendingForce;
+            pendingForce = false;
+            applyLayoutRestore(forced);
+          };
+          restoreRaf = requestAnimationFrame(tick);
+        };
+
         const handle: CornerstoneControls = {
           ready: true,
           imageCount: imageIds.length,
@@ -1244,6 +1467,7 @@ export default function CornerstoneViewer({
           setWindow,
           setInvert: (v: boolean) => invertRef.current(v),
           reset: () => resetRef.current(),
+          restoreLayout: () => scheduleLayoutRestore(true),
           applyEvent,
           getStartState,
           getMeasurements,
@@ -1273,6 +1497,11 @@ export default function CornerstoneViewer({
         if (controls) controls.current = handle;
         onReady?.(handle);
 
+        if (elementRef.current && typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => scheduleLayoutRestore(false));
+          resizeObserver.observe(elementRef.current);
+        }
+
         setReady(true);
         setStatus(`${imageIds.length} images loaded`);
       } catch (err) {
@@ -1285,6 +1514,8 @@ export default function CornerstoneViewer({
       disposed = true;
       cancelTweenRef.current();
       window.clearTimeout(readoutTimerRef.current);
+      if (restoreRaf) cancelAnimationFrame(restoreRaf);
+      resizeObserver?.disconnect();
       detachListeners();
       viewportRef.current = null;
       loadedSeriesIndexRef.current = -1;
@@ -1293,12 +1524,20 @@ export default function CornerstoneViewer({
       // engine and the re-run would early-return, leaving a blank viewport.
       started.current = false;
       if (controls) controls.current = null;
-      try {
-        renderingEngine?.destroy();
-      } catch {
-        /* ignore */
-      }
+      // Drop this pane's tool group before the viewport so a shared engine
+      // is not destroyed out from under the primary pane.
       destroyToolGroupRef.current(toolGroupId);
+      const plan = viewportEngineRegistry.release(instanceId);
+      const engine = sharedCore?.getRenderingEngine(SHARED_RENDERING_ENGINE_ID);
+      if (!engine || engine.hasBeenDestroyed) return;
+      try {
+        if (plan.destroyEngine) engine.destroy();
+        else if (plan.disableViewport && engine.getViewport(viewportId)) {
+          engine.disableElement(viewportId);
+        }
+      } catch {
+        /* already gone */
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);

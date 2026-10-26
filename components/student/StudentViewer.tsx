@@ -8,7 +8,7 @@
 // marker — no new imaging infra.
 
 import dynamic from "next/dynamic";
-import { useRef, type MouseEvent, type MutableRefObject } from "react";
+import { useEffect, useRef, type MouseEvent, type MutableRefObject } from "react";
 import { Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
@@ -81,6 +81,14 @@ export function StudentViewer({
   secondary?: ViewerPane | null;
 }) {
   const compare = !!secondary;
+  // Compare close changes the primary pane's size without remounting it.
+  // Ask the live viewport to resize onto that pane and keep the teach window.
+  const compareWasOpen = useRef(false);
+  useEffect(() => {
+    const wasOpen = compareWasOpen.current;
+    compareWasOpen.current = compare;
+    if (wasOpen && !compare) controls.current?.restoreLayout();
+  }, [compare, controls]);
 
   return (
     <div
