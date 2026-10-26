@@ -9,7 +9,8 @@ import {
   SCROLL_WALK_MAX_STEPS,
   startReplay,
 } from "./replay.ts";
-import { commitAnnotatedFinding } from "./teachingGuide.ts";
+import { displaySliceNumber } from "./findingDisplayState.ts";
+import { commitAnnotatedFinding, commitSpeakOnceWithoutMic, resolveTeachingGuide } from "./teachingGuide.ts";
 import type { RecordedEvent, RecordedTrack, TeachingGuide } from "./types.ts";
 
 // --- A controllable fake clock + rAF so replay is deterministic in node. ----
@@ -877,4 +878,156 @@ test("handoff to a notes guide drops the previous look-cue", async () => {
   );
   assert.match(said.join(" "), /Notes orient prove #34, on slice 33/);
   assert.doesNotMatch(said[said.length - 1] ?? "", /^Follow the stack/);
+});
+
+test("a notes guide lands the stored slice with the orient line and still speaks commit and pearl", async () => {
+  // Live prove: caption said "Speak-once prove #37, on slice 39" while the
+  // stack stayed on the opening frame (33/65). Storage is 0-based. Display
+  // and the spoken number are that index plus one. The opening frame of a
+  // 65-slice stack is index 32.
+  const stored = 38;
+  const opener = 32;
+  const label = "Speak-once prove #37";
+  const description = "Solid nodule at the right apex.";
+  const pearl = "Compare it with the vessel";
+  const track: RecordedTrack = {
+    durationMs: 4000,
+    start: { sliceIndex: opener, ww: 400, wc: 40 },
+    events: [
+      { t: 200, type: "slice", index: opener },
+      { t: 800, type: "voi", ww: 1500, wc: -600 },
+      { t: 1400, type: "camera", zoom: 2.2, pan: [0.1, 0] },
+      { t: 2200, type: "slice", index: stored },
+      { t: 3000, type: "cursor", x: 0.42, y: 0.58 },
+    ],
+  };
+  const saved = commitSpeakOnceWithoutMic(
+    {
+      label,
+      description,
+      teachingPoints: [pearl],
+      marker: { x_pct: 0.42, y_pct: 0.58, shape: "circle" },
+    },
+    track
+  );
+  const guide = resolveTeachingGuide(saved.finding);
+  assert.ok(guide);
+  assert.equal(guide.voice, "notes");
+  assert.equal(displaySliceNumber(stored), stored + 1);
+  const scroll = guide.beats
+    .find((beat) => beat.act === "orient")
+    ?.actions.find((action) => action.type === "scroll");
+  assert.equal(scroll?.type, "scroll");
+  if (scroll?.type === "scroll") assert.equal(scroll.sliceIndex, stored);
+  const orientLine = `${label}, on slice ${displaySliceNumber(stored)}.`;
+  assert.equal(guide.beats.find((beat) => beat.act === "orient")?.say, orientLine);
+  assert.ok(guide.beats.some((beat) => beat.act === "search"));
+  assert.equal(guide.beats.find((beat) => beat.act === "commit")?.say, description);
+  assert.equal(guide.beats.find((beat) => beat.act === "pearl")?.say, `${pearl}.`);
+
+  let slice = opener;
+  const slicesAtSay: Array<{ text: string; slice: number }> = [];
+  const windows: string[] = [];
+  const points: string[] = [];
+  let releaseOrient: () => void = () => {};
+  const orientHung = new Promise<void>((resolve) => {
+    releaseOrient = resolve;
+  });
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: (event) => {
+        if (event.type === "slice") slice = event.index;
+      },
+      getSliceIndex: () => {
+        throw new Error("readout unavailable");
+      },
+      settle: async () => {},
+      setWindow: async (ww, wc) => {
+        windows.push(`${ww}/${wc}`);
+      },
+      showState: async (state) => {
+        if (state.zoom != null) points.push(`zoom:${state.zoom}`);
+      },
+      overlay: {
+        animateTo: async (x, y) => {
+          points.push(`point:${x},${y}`);
+        },
+      },
+    },
+    {
+      timeScale: 0,
+      narrationHoldMs: () => 40,
+      narrate: (text) => {
+        slicesAtSay.push({ text, slice });
+        if (text === orientLine) return orientHung;
+        return Promise.resolve();
+      },
+    }
+  );
+  await ctrl.finished;
+  releaseOrient();
+  const orient = slicesAtSay.find((row) => row.text === orientLine);
+  assert.ok(orient);
+  assert.equal(orient.slice, stored);
+  assert.equal(slice, stored);
+  assert.deepEqual(
+    slicesAtSay.map((row) => row.text),
+    [
+      orientLine,
+      "Window 1500 over -600.",
+      "Closer, about 2.2 times.",
+      description,
+      `${pearl}.`,
+    ]
+  );
+  assert.ok(windows.includes("1500/-600"));
+  assert.ok(points.includes("point:0.42,0.58"));
+});
+
+test("click-to-annotate notes also land the stored slice before the orient line is spoken", async () => {
+  const stored = 40;
+  const saved = commitAnnotatedFinding(
+    {
+      label: "Right chest wall opacity",
+      description: "Pleural-based opacity along the right chest wall.",
+      teachingPoints: ["Check the extrapleural fat."],
+      marker: { x_pct: 0.82, y_pct: 0.4, shape: "circle" },
+      sliceIndex: stored,
+      windowWidth: 399,
+      windowCenter: 45,
+    },
+    { sliceIndex: stored, windowWidth: 399, windowCenter: 45 }
+  );
+  const guide = resolveTeachingGuide(saved.finding);
+  assert.equal(guide?.voice, "notes");
+  const orientLine = `Right chest wall opacity, on slice ${displaySliceNumber(stored)}.`;
+  let slice = 10;
+  let sliceWhenSpoken = -1;
+  const said: string[] = [];
+  const ctrl = playTeachingGuide(
+    guide!,
+    {
+      applyEvent: (event) => {
+        if (event.type === "slice") slice = event.index;
+      },
+      getSliceIndex: () => slice,
+      settle: async () => {},
+      setWindow: async () => {},
+      overlay: { animateTo: async () => {} },
+    },
+    {
+      timeScale: 0,
+      narrate: async (text) => {
+        if (text === orientLine) sliceWhenSpoken = slice;
+        said.push(text);
+      },
+    }
+  );
+  await ctrl.finished;
+  assert.equal(sliceWhenSpoken, stored);
+  assert.equal(slice, stored);
+  assert.equal(said[0], orientLine);
+  assert.equal(said.at(-2), "Pleural-based opacity along the right chest wall.");
+  assert.equal(said.at(-1), "Check the extrapleural fat.");
 });
