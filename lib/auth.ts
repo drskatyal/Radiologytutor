@@ -255,6 +255,27 @@ function demoCookieOptions() {
   };
 }
 
+/** Better Auth session cookies. Demo persona switches must drop these or
+ *  getSession() keeps the previous account and ignores flowrad_demo. */
+const BETTER_AUTH_COOKIE_NAMES = [
+  "better-auth.session_token",
+  "__Secure-better-auth.session_token",
+  "better-auth.session_data",
+  "__Secure-better-auth.session_data",
+];
+
+function clearBetterAuthCookies(res: NextResponse) {
+  for (const name of BETTER_AUTH_COOKIE_NAMES) {
+    res.cookies.set(name, "", {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+      secure: name.startsWith("__Secure-"),
+    });
+  }
+}
+
 async function sessionFromDomainUser(user: User): Promise<AppSession> {
   const memberships = await listMembershipsForUser(user.id);
   return { user: toSessionUser(user, memberships), memberships };
@@ -402,11 +423,12 @@ export function demoAuthEnabled(): boolean {
 }
 
 /**
- * Highest demo role this deployment will hand out.
+ * Highest *implicit* demo role this deployment will hand out.
  *
- * Even where demo sign-in is deliberately enabled in production (a public
- * sandbox), it tops out at `author` — platform super-admin is never something
- * an unauthenticated request can mint.
+ * An empty body and "Continue as demo" ask for platform super-admin. Outside
+ * production that is allowed. In production it is never minted: the cap is
+ * `student` unless `DEMO_AUTH_MAX_ROLE=author`. Explicit Teacher / Student
+ * personas are handled in `clampDemoRole` and are not collapsed into this cap.
  */
 export function maxDemoRole(): DemoRole {
   if (process.env.NODE_ENV !== "production") return "super_admin";
@@ -419,9 +441,27 @@ const DEMO_ROLE_RANK: Record<DemoRole, number> = {
   super_admin: 2,
 };
 
-/** Clamp a requested demo role to what this deployment allows. */
+/**
+ * Clamp a requested demo role to what this deployment allows.
+ *
+ * `student` and an explicit `author` are personas. Teacher demo posts
+ * `{ role: "author" }` and must receive the author membership — including on a
+ * production-mode local stack where demo auth is enabled — or Studio stays
+ * behind the student gate. The implicit super-admin request (empty body /
+ * Continue as demo) still follows `maxDemoRole` and is never a platform
+ * super-admin in production.
+ *
+ * Set `DEMO_AUTH_MAX_ROLE=student` to lock the author persona down as well.
+ */
 export function clampDemoRole(requested: DemoRole): DemoRole {
   const cap = maxDemoRole();
+  if (
+    requested === "author" &&
+    cap === "student" &&
+    process.env.DEMO_AUTH_MAX_ROLE?.trim() !== "student"
+  ) {
+    return "author";
+  }
   return DEMO_ROLE_RANK[requested] > DEMO_ROLE_RANK[cap] ? cap : requested;
 }
 
@@ -449,12 +489,14 @@ export async function createDemoSessionResponse(
   const session = await sessionFromDomainUser(user);
   const res = NextResponse.json({ user: toClientUser(session.user) });
   res.cookies.set(DEMO_COOKIE, signDemoToken(user.id), demoCookieOptions());
+  clearBetterAuthCookies(res);
   return res;
 }
 
 export function clearDemoSessionResponse(): NextResponse {
   const res = NextResponse.json({ ok: true });
   res.cookies.set(DEMO_COOKIE, "", { ...demoCookieOptions(), maxAge: 0 });
+  clearBetterAuthCookies(res);
   return res;
 }
 

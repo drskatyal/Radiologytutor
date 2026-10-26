@@ -224,7 +224,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [pathname]);
 
   // Student case = reading room. Hide product chrome so the DICOM is the
   // composition. The session HUD carries back-to-library itself.

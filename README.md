@@ -45,9 +45,12 @@ gracefully: with no `ORTHANC_URL` the imaging surfaces report "not configured", 
 - **`BETTER_AUTH_SECRET` is required in production.** With `NODE_ENV=production` and no value,
   the app refuses to serve rather than fall back to a signing key that ships in this repo.
   Generate one with `openssl rand -base64 32`.
-- **`DEMO_AUTH_ENABLED`** controls the keyless "Continue as demo" button. It is on outside
+- **`DEMO_AUTH_ENABLED`** controls the keyless demo buttons. It is on outside
   production and off in production unless you set it — left open it is a full authentication
-  bypass. Even when deliberately enabled in production it caps out at `student`.
+  bypass. In production an empty body or "Continue as demo" never mints platform
+  super-admin (it stays a student unless `DEMO_AUTH_MAX_ROLE=author`). Teacher demo
+  (`role=author`) and Student demo are distinct personas; set `DEMO_AUTH_MAX_ROLE=student`
+  to lock Teacher demo down to a learner as well.
 
 ### Getting cases into a fresh install
 

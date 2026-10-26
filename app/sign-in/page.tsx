@@ -14,7 +14,10 @@ export default function SignInPage({
 }: {
   searchParams?: { next?: string };
 }) {
-  const next = searchParams?.next?.startsWith("/") ? searchParams.next : "/dashboard";
+  const next =
+    searchParams?.next?.startsWith("/") && !searchParams.next.startsWith("//")
+      ? searchParams.next
+      : undefined;
   return (
     <div className="relative flex min-h-[calc(100vh-0px)] flex-col items-center justify-center px-6 py-16">
       <SignInAtmosphere />
