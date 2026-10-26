@@ -315,6 +315,38 @@ const lidcSearch = {
   order: 0,
 };
 
+test("a search-step title is not a correct name and does not reset the ladder", () => {
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "Lung window — start mid-chest",
+      finding: lidcSearch,
+      findings: [lidcSearch],
+      currentFindingId: "f_lidc",
+      history: [{ role: "user", text: "is it a vessel?", findingId: "f_lidc" }],
+    }),
+    1
+  );
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "still not sure",
+      finding: lidcSearch,
+      findings: [lidcSearch],
+      currentFindingId: "f_lidc",
+      history: [
+        { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
+        {
+          role: "assistant",
+          text: "Lung window — start mid-chest. Name your search pattern before you scroll.",
+          findingId: "f_lidc",
+        },
+      ],
+    }),
+    1
+  );
+});
+
 test("a search line that says window does not reset the same finding", () => {
   const history = [
     { role: "user" as const, text: "is it a vessel?", findingId: "f_lidc" },
@@ -337,16 +369,16 @@ test("a search line that says window does not reset the same finding", () => {
   );
 });
 
-test("second vague turn replaces a repeated search line with the location", () => {
+test("second vague turn replaces search copy with the region", () => {
   const answer = ensureSpokenAnswer({
-    answer: "Follow the pointer. Do not chase mediastinum until both lungs are surveyed.",
+    answer: "Follow the pointer. Begin at the carina and scroll inferiorly through both lungs.",
     mode: "socratic",
     question: "still not sure",
     history: [
       { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
       {
         role: "assistant",
-        text: "Follow the pointer. Begin at the carina.",
+        text: "Follow the pointer. What do you see?",
         findingId: "f_lidc",
       },
     ],
@@ -355,29 +387,123 @@ test("second vague turn replaces a repeated search line with the location", () =
     currentFindingId: "f_lidc",
   });
   assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
-  assert.match(answer, /carina/i);
-  assert.doesNotMatch(answer, /chase mediastinum/i);
+  assert.match(answer, /both lungs/i);
+  assert.doesNotMatch(answer, /\bcarina\b/i);
+  assert.doesNotMatch(answer, /\bscroll\b/i);
+  assert.doesNotMatch(answer, /\bsurvey\b/i);
+  assert.doesNotMatch(answer, /\bwindow\b/i);
   assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
   assert.doesNotMatch(answer, /nodule/i);
 });
 
-test("I don't know replaces a bare look-cue with the label and one pearl", () => {
+test("I don't know does not reveal a search-step title or a search-pattern prompt", () => {
   const answer = ensureSpokenAnswer({
-    answer: "Look at this slice.",
+    answer: "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
     mode: "socratic",
     question: "I don't know. Please show me this finding and teach it.",
     history: [
       { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
-      { role: "assistant", text: "Follow the pointer. Begin at the carina.", findingId: "f_lidc" },
+      { role: "assistant", text: "Follow the pointer. What do you see?", findingId: "f_lidc" },
     ],
-    actions: [],
+    actions: [{ type: "show_finding", findingId: "f_lidc" }],
     findings: [lidcSearch],
     currentFindingId: "f_lidc",
   });
   assert.match(splitSentences(answer)[0] ?? "", /^(Look|See|Watch|Follow)\b/);
-  assert.match(answer, /Lung window — start mid-chest/);
-  assert.match(answer, /search pattern|upper lobes/i);
+  assert.match(answer, /Do not chase mediastinum until both lungs are surveyed/i);
+  assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
+  assert.doesNotMatch(answer, /search pattern/i);
+  assert.doesNotMatch(answer, /upper lobes first/i);
   assert.doesNotMatch(answer, /nodule|pneumothorax|consolidation/i);
+});
+
+const lidcNodule: SpokenFindingSource = {
+  id: "f_nodule",
+  label: "Peripheral nodule",
+  description:
+    "Round opacity in the periphery of the right upper lobe. Begin at the carina and scroll inferiorly through both lungs.",
+  teachingPoints: [
+    "Lung window — start mid-chest",
+    "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+    "If it vanishes on the next slice it is a vessel, not a nodule.",
+  ],
+  order: 1,
+};
+
+test("LIDC-like second vague is the description landmark, not the carina scroll", () => {
+  const history = [
+    { role: "user" as const, text: "is it a vessel?", findingId: "f_nodule" },
+    {
+      role: "assistant" as const,
+      text: "Follow the pointer. What do you see?",
+      findingId: "f_nodule",
+    },
+  ];
+  assert.equal(
+    examHintLevel({
+      mode: "socratic",
+      question: "still not sure",
+      finding: lidcNodule,
+      findings: [lidcSearch, lidcNodule],
+      history,
+      currentFindingId: "f_nodule",
+    }),
+    1
+  );
+  const empty = ensureSpokenAnswer({
+    answer: "",
+    mode: "socratic",
+    question: "still not sure",
+    history,
+    actions: [{ type: "point_to", findingId: "f_lidc" }],
+    findings: [lidcSearch, lidcNodule],
+    currentFindingId: "f_nodule",
+  });
+  const offline = tutorSpeechPlan({
+    answer: "",
+    mode: "socratic",
+    question: "still not sure",
+    history,
+    actions: [],
+    findings: [lidcSearch, lidcNodule],
+    currentFindingId: "f_nodule",
+    tourActive: false,
+  });
+  for (const answer of [empty, offline.answer]) {
+    assert.match(answer, /periphery|right upper lobe/i);
+    assert.doesNotMatch(answer, /\bcarina\b/i);
+    assert.doesNotMatch(answer, /\bscroll\b/i);
+    assert.doesNotMatch(answer, /\bsurvey\b/i);
+    assert.doesNotMatch(answer, /\bwindow\b/i);
+    assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
+    assert.doesNotMatch(answer, /\bnodule\b/i);
+  }
+});
+
+test("I don't know speaks the diagnosis label and pearl, not the search-step title", () => {
+  const asked = "I don't know. Please show me this finding and teach it.";
+  const history = [
+    { role: "user" as const, text: "is it a vessel?", findingId: "f_nodule" },
+    { role: "assistant" as const, text: "Follow the pointer. What do you see?", findingId: "f_nodule" },
+    { role: "user" as const, text: "still not sure", findingId: "f_nodule" },
+  ];
+  const answer = ensureSpokenAnswer({
+    answer:
+      "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+    mode: "socratic",
+    question: asked,
+    history,
+    actions: [],
+    findings: [lidcSearch, lidcNodule],
+    currentFindingId: "f_nodule",
+  });
+  assert.match(answer, /Peripheral nodule/);
+  assert.match(answer, /vessel, not a nodule/i);
+  assert.doesNotMatch(answer, /Lung window — start mid-chest/i);
+  assert.doesNotMatch(answer, /search pattern/i);
+  assert.doesNotMatch(answer, /upper lobes first/i);
+  assert.doesNotMatch(answer, /\bcarina\b/i);
+  assert.doesNotMatch(answer, /\bscroll\b/i);
 });
 
 test("attempts on another finding do not climb this one", () => {
@@ -662,9 +788,13 @@ test("prompt and tool schema require a spoken answer whenever tools fire", () =>
     modality: "CT",
     mode: "viva",
     findingsContext: "id=f_ptx",
+    hintLevel: 1,
   });
   assert.match(viva, /empty message is invalid/i);
   assert.match(viva, /do not speak the diagnosis/i);
+  assert.match(viva, /region or landmark/i);
+  assert.match(viva, /not the label/i);
+  assert.match(viva, /search-step title/i);
 
   assert.ok(HARNESS_VIEWER_TOOLS.length >= 10);
   for (const tool of HARNESS_VIEWER_TOOLS) {

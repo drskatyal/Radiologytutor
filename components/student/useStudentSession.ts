@@ -24,6 +24,8 @@ import {
 } from "@/lib/performancePlan";
 import {
   NARRATION_HOLD_MAX_MS,
+  examHintLevel,
+  seatExamReveal,
   tutorSpeechPlan,
   type SpokenFindingSource,
 } from "@/lib/tutorSpeech";
@@ -724,6 +726,17 @@ export function useStudentSession(
           text: turn.text,
           findingId: turn.findingId,
         }));
+        const spokenFindings = spokenSources(orderedFindings);
+        const examLevel = examMode
+          ? examHintLevel({
+              mode,
+              question,
+              findings: spokenFindings,
+              history: priorTurns,
+              currentFindingId,
+              finding: spokenFindings.find((item) => item.id === currentFindingId),
+            })
+          : 3;
 
         if (!res.ok) {
           // 503 means GEMINI_API_KEY isn't set — still speak an authored line
@@ -732,12 +745,15 @@ export function useStudentSession(
           if (res.status === 503) {
             setAiAvailable(false);
             setSearching(false);
+            const offlineActions = examMode
+              ? seatExamReveal([], examLevel, currentFindingId)
+              : [];
             const speech = tutorSpeechPlan({
               answer: "",
-              actions: [],
+              actions: offlineActions,
               mode,
               question,
-              findings: spokenSources(orderedFindings),
+              findings: spokenFindings,
               currentFindingId,
               tourActive,
               viewerAlreadySeated: tourActive,
@@ -749,7 +765,7 @@ export function useStudentSession(
                 ? examFallbackStem(orderedFindings.length)
                 : "";
             if (line.trim()) {
-              deliverSpeech(line, [], []);
+              deliverSpeech(line, offlineActions, []);
               return;
             }
             setPhase("idle");
@@ -769,6 +785,7 @@ export function useStudentSession(
         if (examMode && opening) {
           actions = actions.filter((a) => a.type !== "show_finding");
         }
+        if (examMode) actions = seatExamReveal(actions, examLevel, currentFindingId);
 
         const sources: ChatSource[] = Array.isArray(data.sources)
           ? (data.sources as ChatSource[])
@@ -782,7 +799,7 @@ export function useStudentSession(
           actions,
           mode,
           question,
-          findings: spokenSources(orderedFindings),
+          findings: spokenFindings,
           currentFindingId,
           tourActive,
           viewerAlreadySeated: tourActive,
