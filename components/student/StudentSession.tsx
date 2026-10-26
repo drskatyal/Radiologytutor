@@ -248,6 +248,17 @@ export default function StudentSession({
     s.compareOpen && series[s.secondarySeriesIndex]
       ? series[s.secondarySeriesIndex]
       : null;
+  // A fresh object every render reloads the compare stack at the mid-slice
+  // default (33/65 soft-tissue on LIDC) and drops the secondary landing.
+  const compareSourceKey = compareSeries
+    ? `${compareSeries.wadoRsRoot}\0${compareSeries.studyInstanceUID}\0${compareSeries.seriesInstanceUID}`
+    : "";
+  const compareSource = useMemo(
+    () => (compareSeries ? caseSeriesToSource(compareSeries) : null),
+    // The key is the series identity. compareSeries is the object for that key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [compareSourceKey]
+  );
 
   const dockHint =
     intent === "exam"
@@ -417,9 +428,7 @@ export default function StudentSession({
           secondary={
             s.compareOpen
               ? {
-                  source: compareSeries
-                    ? caseSeriesToSource(compareSeries)
-                    : source,
+                  source: compareSource ?? source,
                   series: series.length > 0 ? series : undefined,
                   activeSeriesIndex: s.secondarySeriesIndex,
                   onSeriesChange: (uid) => {

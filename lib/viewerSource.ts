@@ -87,3 +87,16 @@ export function caseSeriesToSource(s: CaseSeries): ViewerSource {
     SeriesInstanceUID: s.seriesInstanceUID,
   };
 }
+
+/**
+ * Content identity of a viewer source. `caseSeriesToSource` allocates a new
+ * object on every call; two equal keys are the same stack and must not reload
+ * the engine. A reload opens at the mid-slice default and drops a seated
+ * compare landing.
+ */
+export function viewerSourceKey(source: ViewerSource): string {
+  if (source.kind === "wadouri") {
+    return `wadouri\0${source.url}\0${source.frames}`;
+  }
+  return `wadors\0${source.wadoRsRoot}\0${source.StudyInstanceUID}\0${source.SeriesInstanceUID}`;
+}
