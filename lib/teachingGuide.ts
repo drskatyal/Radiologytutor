@@ -13,8 +13,11 @@
  * plus any transcript span that does not name the finding. A click-to-annotate
  * landing sets `voice: "notes"` and speaks the author's label, description,
  * and teaching points, with the slice, window, and zoom that were landed.
+ * The spoken slice is the 1-based number Studio shows. Scroll actions stay
+ * the stored 0-based image index.
  */
 
+import { displaySliceNumber } from "./findingDisplayState";
 import { splitSentences } from "./performancePlan";
 import {
   measurementsFromTrack,
@@ -598,7 +601,8 @@ function notesActSay(
   const act = beat.act;
   if (act === "orient") {
     const scroll = beat.actions.find((action) => action.type === "scroll");
-    const slice = scroll?.type === "scroll" ? scroll.sliceIndex : 0;
+    const stored = scroll?.type === "scroll" ? scroll.sliceIndex : 0;
+    const slice = displaySliceNumber(stored);
     const lead = label ? `${label}, on slice ${slice}` : `On slice ${slice}`;
     return joinSay(lead, extra);
   }

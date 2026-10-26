@@ -21,6 +21,7 @@ import {
   IconButton,
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import { displaySliceNumber } from "@/lib/findingDisplayState";
 import type { Finding } from "@/lib/types";
 import {
   casePublishReadiness,
@@ -122,7 +123,7 @@ export function SequenceBoard({
                           )}
                           {f.sliceIndex != null && (
                             <Badge variant="neutral" className="tabular-nums">
-                              Slice {f.sliceIndex + 1}
+                              Slice {displaySliceNumber(f.sliceIndex)}
                             </Badge>
                           )}
                           {f.teachingGuide && f.teachingGuide.beats.length > 0 && (

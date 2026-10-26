@@ -33,7 +33,7 @@ import {
   saveCaptureSession,
 } from "@/components/author/lib";
 import { mergeCaptureDemonstration } from "@/lib/harness/mergeCapture";
-import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { displaySliceNumber, withDisplaySnapshot } from "@/lib/findingDisplayState";
 import type { useRecordReplay } from "@/components/record/useRecordReplay";
 import type { MutableRefObject } from "react";
 
@@ -301,7 +301,7 @@ export function ContinuousCapture({
                       mark {(p.suggestedMarker.x_pct * 100).toFixed(0)}%,
                       {(p.suggestedMarker.y_pct * 100).toFixed(0)}%
                       {p.suggestedSliceIndex != null
-                        ? ` · slice ${p.suggestedSliceIndex + 1}`
+                        ? ` · slice ${displaySliceNumber(p.suggestedSliceIndex)}`
                         : ""}
                     </Badge>
                   )}

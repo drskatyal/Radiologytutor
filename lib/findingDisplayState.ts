@@ -9,6 +9,15 @@
 import type { Finding, FindingAnchor } from "./types";
 import type { CornerstoneViewerState } from "./viewerController";
 
+/**
+ * 1-based slice Studio shows and notes Teach speaks.
+ * `sliceIndex` is the 0-based Cornerstone image index stored on the finding,
+ * the track, and scroll actions. The viewer readout uses this same number.
+ */
+export function displaySliceNumber(sliceIndex: number): number {
+  return sliceIndex + 1;
+}
+
 /** Parse SOP Instance UID from a Cornerstone wadors:/wadouri: imageId. */
 export function sopUidFromImageId(imageId: string | undefined | null): string | undefined {
   if (!imageId) return undefined;
