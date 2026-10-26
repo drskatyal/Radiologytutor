@@ -361,6 +361,16 @@ export interface Finding {
   captureSessionId?: string;
   tStartMs?: number;
   tEndMs?: number;
+  /**
+   * Gold structured-report sentence for this finding. Report grading uses it
+   * instead of the teaching script. Optional; older findings omit it.
+   */
+  reportGold?: string;
+  /**
+   * Short phrases the report must include for this finding, copied from the
+   * authored gold. The grader may not add findings beyond this list.
+   */
+  reportMustMention?: string[];
 }
 
 export interface CaseData {

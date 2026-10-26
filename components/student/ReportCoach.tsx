@@ -19,6 +19,7 @@ import type { Finding } from "@/lib/types";
 import {
   buildReportRubric,
   type ReportGrade,
+  type ReportVerdict,
 } from "@/lib/reportGrade";
 
 type Section = "technique" | "findings" | "impression";
@@ -80,6 +81,15 @@ export function ReportCoach({
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data.fallback && data.grade) {
+          setGrade(data.grade as ReportGrade);
+          toast({
+            title: "Graded from the rubric phrases",
+            description: "The model is offline. This pass checks the authored lines only.",
+            variant: "warning",
+          });
+          return;
+        }
         if (data.grade) setGrade(data.grade as ReportGrade);
         throw new Error(data.error || "Grader unavailable");
       }
@@ -176,28 +186,29 @@ export function ReportCoach({
         )}
       </Field>
 
-      {!compact && (
-        <ul className="flex flex-col gap-1.5">
-          <li className="text-[10px] font-semibold uppercase tracking-wide text-muted">
-            Rubric
-          </li>
-          {rubric.map((item, i) => (
-            <li
-              key={item.findingId}
-              className="rounded-lg border border-subtle bg-elevated px-2.5 py-2"
-            >
-              <p className="text-xs font-medium text-primary">
-                <span className="tabular-nums text-muted">{i + 1}.</span> {item.label}
+      <ul className={compact ? "flex max-h-40 flex-col gap-1.5 overflow-y-auto" : "flex flex-col gap-1.5"}>
+        <li className="text-[10px] font-semibold uppercase tracking-wide text-muted">
+          Rubric
+        </li>
+        {rubric.map((item, i) => (
+          <li
+            key={item.findingId}
+            className="rounded-lg border border-subtle bg-elevated px-2.5 py-2"
+          >
+            <p className="text-xs font-medium text-primary">
+              <span className="tabular-nums text-muted">{i + 1}.</span> {item.label}
+            </p>
+            {item.gold && (
+              <p className="mt-0.5 text-[11px] leading-snug text-secondary">{item.gold}</p>
+            )}
+            {item.mustMention.some((phrase) => phrase !== item.gold) && (
+              <p className="mt-0.5 text-[11px] leading-snug text-muted">
+                Must mention: {item.mustMention.filter((phrase) => phrase !== item.gold).join(" · ")}
               </p>
-              {item.mustMention.length > 0 && (
-                <p className="mt-0.5 text-[11px] leading-snug text-secondary">
-                  {item.mustMention.join(" · ")}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+            )}
+          </li>
+        ))}
+      </ul>
 
       {busy && !grade && (
         <div className="flex items-center gap-2 text-xs text-secondary">
@@ -208,11 +219,33 @@ export function ReportCoach({
 
       {grade && (
         <div className="rounded-lg border border-subtle bg-surface p-3">
-          <div className="mb-2 flex items-center gap-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">
+            Against the gold
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {(grade.items ?? []).map((item) => {
+              const gold = grade.rubric.find((row) => row.findingId === item.findingId)?.gold;
+              return (
+                <li key={item.findingId}>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium text-primary">{item.label}</p>
+                    <Badge variant={verdictVariant(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
+                  </div>
+                  {item.gap && (
+                    <p className="mt-0.5 text-[11px] leading-snug text-secondary">{item.gap}</p>
+                  )}
+                  {gold && item.verdict !== "hit" && (
+                    <p className="mt-0.5 text-[11px] leading-snug text-muted">Gold: {gold}</p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mb-2 mt-3 flex items-center gap-2">
             <Badge variant="accent" className="tabular-nums">
               {grade.overall}/100
             </Badge>
-            <span className="text-xs text-muted">Against authored rubric</span>
+            <span className="text-xs text-muted">Score with the line-by-line comparison</span>
           </div>
           <ul className="flex flex-col gap-2">
             {grade.bands.map((b) => (
@@ -227,11 +260,6 @@ export function ReportCoach({
               </li>
             ))}
           </ul>
-          {grade.missed.length > 0 && (
-            <p className="mt-2 text-[11px] text-warning">
-              Missed: {grade.missed.join(", ")}
-            </p>
-          )}
           {grade.modelImpression && (
             <p className="mt-2 text-[11px] leading-snug text-secondary">
               <span className="font-medium text-primary">Model impression. </span>
@@ -242,4 +270,17 @@ export function ReportCoach({
       )}
     </div>
   );
+}
+
+function verdictLabel(verdict: ReportVerdict): string {
+  if (verdict === "hit") return "Covered";
+  if (verdict === "partial") return "Incomplete";
+  if (verdict === "wrong") return "Contradicts";
+  return "Missing";
+}
+
+function verdictVariant(verdict: ReportVerdict): "success" | "warning" | "danger" {
+  if (verdict === "hit") return "success";
+  if (verdict === "partial") return "warning";
+  return "danger";
 }

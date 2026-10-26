@@ -36,7 +36,7 @@ Optional Alt+X walk-through remains for an exact cursor retrace.
 4. Viva: click the finding on the image (graded against the authored marker) or speak. Marker stays hidden until a hit, Reveal, or "I don't know."
 5. Compare: a second stack opens when the finding has a secondary landing (`C` toggles).
 6. Examiner AI speaks + drives the viewer in the same beat (first sentence + laser). Caption grows sentence by sentence. Does **not** auto-advance in viva — waits for an answer.
-7. Report mode: dictate a structured report; grade against the authored rubric (score + bands + missed + model impression).
+7. Report mode: dictate a structured report; grade against the authored gold lines (line-by-line hit / incomplete / missing / contradicts, plus score, bands, and a model impression). Never a bare score, and never a finding that is not on the rubric.
 8. Web-grounded questions when guidelines are needed.
 9. Guided mode still auto-advances after TTS. Expand rail for lesson cards / full transcript.
 
