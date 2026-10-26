@@ -12,11 +12,12 @@ import {
   getPatient,
   getStudyByUID,
   updateCaseForOrg,
+  updateFindingScoped,
   upsertDeidReport,
 } from "@/lib/cases";
 import { downloadTciaSeriesDicom } from "@/lib/dicomImport/tcia";
 import { getPublicCaseTemplate } from "@/lib/publicCases/catalog";
-import { planPublicCaseFindings } from "@/lib/demoTeachingGuide";
+import { missingReportRubric, planPublicCaseFindings } from "@/lib/demoTeachingGuide";
 import {
   orthancAuthHeader,
   orthancBase,
@@ -213,6 +214,13 @@ async function upsertCaseRecords(
     for (const f of existing.findings) {
       if (keepIds.has(f.id)) continue;
       await deleteFindingScoped(orgId, template.caseId, f.id);
+    }
+    for (const keptFinding of planned.kept) {
+      const prior = existing.findings.find((f) => f.id === keptFinding.id);
+      if (!prior) continue;
+      const rubric = missingReportRubric(prior, keptFinding);
+      if (!rubric) continue;
+      await updateFindingScoped(orgId, template.caseId, keptFinding.id, rubric);
     }
   } else {
     created = true;

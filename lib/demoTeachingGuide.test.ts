@@ -21,6 +21,8 @@ import {
   buildLidcDemoGuide,
   buildLidcSeedCase,
   findingHasTeacherTrack,
+  lidcReseedPatch,
+  missingReportRubric,
   planPublicCaseFindings,
 } from "./demoTeachingGuide.ts";
 
@@ -173,11 +175,120 @@ test("committed seed case matches the demo guide for a 65-slice stack", () => {
     seed.findings.map((finding) => finding.teachingGuide),
     built.findings.map((finding) => finding.teachingGuide)
   );
+  assert.deepEqual(
+    seed.findings.map((finding) => ({
+      order: finding.order,
+      reportGold: finding.reportGold,
+      reportMustMention: finding.reportMustMention,
+    })),
+    built.findings.map((finding) => ({
+      order: finding.order,
+      reportGold: finding.reportGold,
+      reportMustMention: finding.reportMustMention,
+    }))
+  );
+  assert.ok(seed.findings.every((finding) => finding.reportGold?.trim()));
   assert.ok(seed.findings.every((finding) => !finding.track));
   const seedNodule = seed.findings.find((finding) => finding.order === 2);
   const builtNodule = built.findings.find((finding) => finding.order === 2);
   assert.ok(seedNodule && builtNodule);
   assert.deepEqual(seedNodule.anchors, builtNodule.anchors);
+});
+
+test("re-seed copies catalog report gold onto findings that lack it", () => {
+  for (const draft of template.findings) {
+    assert.ok(draft.reportGold?.trim(), draft.label);
+    assert.ok(draft.reportMustMention?.length, draft.label);
+    const stored: Finding = {
+      ...draft,
+      id: `f_${draft.order}`,
+      reportGold: undefined,
+      reportMustMention: undefined,
+    };
+    const patch = lidcReseedPatch(stored);
+    assert.ok(patch, draft.label);
+    assert.equal(patch.reportGold, draft.reportGold, draft.label);
+    assert.deepEqual(patch.reportMustMention, draft.reportMustMention, draft.label);
+    assert.ok(patch.teachingGuide, draft.label);
+    assert.equal(patch.track, undefined);
+    assert.equal(Object.hasOwn(patch, "track"), false);
+
+    const authored: Finding = {
+      ...stored,
+      reportGold: "Teacher gold line.",
+      reportMustMention: ["teacher"],
+    };
+    const again = lidcReseedPatch(authored);
+    assert.ok(again?.teachingGuide, draft.label);
+    assert.equal(again.reportGold, undefined);
+    assert.equal(again.reportMustMention, undefined);
+  }
+
+  const nodule = noduleDraft();
+  const bare: Finding = {
+    ...nodule,
+    id: "f_bare",
+    sliceIndex: undefined,
+    reportGold: "   ",
+    reportMustMention: ["  "],
+  };
+  const rubricOnly = lidcReseedPatch(bare);
+  assert.equal(rubricOnly?.reportGold, nodule.reportGold);
+  assert.deepEqual(rubricOnly?.reportMustMention, nodule.reportMustMention);
+  assert.equal(rubricOnly?.teachingGuide, undefined);
+});
+
+test("re-seed fills report gold on a teacher track without replacing it", () => {
+  const nodule = noduleDraft();
+  const recordedSay = "Recorded by the teacher.";
+  const teacher: Finding = {
+    ...nodule,
+    id: "f_teacher",
+    sliceIndex: 49,
+    reportGold: undefined,
+    reportMustMention: undefined,
+    teachingGuide: {
+      durationMs: 10,
+      start: { sliceIndex: 49 },
+      beats: [{ t: 0, act: "pearl", actions: [], say: recordedSay }],
+    },
+    track: {
+      durationMs: 800,
+      start: { sliceIndex: 40, ww: 1500, wc: -600 },
+      events: [{ t: 400, type: "slice", index: 49 }],
+    },
+  };
+
+  const patch = lidcReseedPatch(teacher);
+  assert.ok(patch);
+  assert.equal(patch.reportGold, nodule.reportGold);
+  assert.deepEqual(patch.reportMustMention, nodule.reportMustMention);
+  assert.equal(patch.teachingGuide, undefined);
+  assert.equal(patch.anchors, undefined);
+  assert.equal(Object.hasOwn(patch, "track"), false);
+  const kept = { ...teacher, ...patch };
+  assert.equal(kept.track, teacher.track);
+  assert.equal(kept.teachingGuide?.beats[0].say, recordedSay);
+
+  const authored: Finding = {
+    ...teacher,
+    reportGold: "Teacher gold line.",
+    reportMustMention: ["teacher"],
+  };
+  assert.equal(lidcReseedPatch(authored), null);
+
+  const planned = planPublicCaseFindings(LIDC_CASE_ID, template.findings, LIDC_STACK_SLICES, [
+    teacher,
+  ]);
+  assert.equal(planned.kept.length, 1);
+  assert.equal(planned.kept[0].reportGold, nodule.reportGold);
+  assert.deepEqual(planned.kept[0].reportMustMention, nodule.reportMustMention);
+  assert.equal(planned.kept[0].track, teacher.track);
+  assert.equal(planned.kept[0].teachingGuide?.beats[0].say, recordedSay);
+  const write = missingReportRubric(teacher, planned.kept[0]);
+  assert.equal(write?.reportGold, nodule.reportGold);
+  assert.deepEqual(write?.reportMustMention, nodule.reportMustMention);
+  assert.equal(Object.hasOwn(write ?? {}, "track"), false);
 });
 
 test("LIDC nodule compare is an adjacent slice of the only series", () => {
