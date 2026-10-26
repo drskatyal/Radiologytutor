@@ -16,6 +16,13 @@ let ttsAbort: AbortController | null = null;
 /** Tears down the clip in playBlob. stopSpeaking calls it instead of poking src. */
 let releaseAudio: (() => void) | null = null;
 /**
+ * Next attending line, fetched while the current clip plays. Not the active
+ * playback abort: starting a line must not cancel the fetch already in flight
+ * for the line after it. Interrupt (stopSpeaking) drops it so a stale
+ * "Follow the stack." cannot land on the next finding.
+ */
+let primed: { key: string; abort: AbortController; blob: Promise<Blob | null> } | null = null;
+/**
  * True after we hand a line to speechSynthesis. Chrome often leaves
  * `speaking` and `pending` false until a later task, so stopSpeaking
  * cannot trust those flags — a queued "Follow the stack." would start
@@ -47,6 +54,69 @@ export async function speak(
   await speakBeats([text], { onEnd, ...opts });
 }
 
+function primeKey(text: string, persona?: SpeakOpts["persona"]): string {
+  return `${persona ?? "tutor"}:${text.trim()}`;
+}
+
+/**
+ * Start the attending TTS fetch for a line that is not playing yet.
+ * Safe to call while another clip is speaking: this does not stop audio.
+ * A second prime for a different line replaces the first. The same line
+ * keeps the fetch already in flight.
+ */
+export function primeAttendingSpeech(text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed || typeof window === "undefined") return;
+  const key = primeKey(trimmed, "attending");
+  if (primed?.key === key) return;
+  primed?.abort.abort();
+  const abort = new AbortController();
+  const hold = narrationHoldMs(trimmed);
+  primed = {
+    key,
+    abort,
+    blob: fetchTtsBlob(
+      trimmed,
+      abort.signal,
+      { persona: "attending" },
+      Math.min(hold, Math.max(TTS_START_BUDGET_MS, 4_000))
+    ),
+  };
+}
+
+function takePrimed(text: string, persona?: SpeakOpts["persona"]): Promise<Blob | null> | null {
+  const key = primeKey(text, persona);
+  if (!primed || primed.key !== key) return null;
+  const blob = primed.blob;
+  primed = null;
+  return blob;
+}
+
+function dropPrimed(): void {
+  primed?.abort.abort();
+  primed = null;
+}
+
+/** Stop the clip that is playing. Does not drop a primed next line. */
+function haltPlayback(): void {
+  pipelineGen += 1;
+  ttsAbort?.abort();
+  ttsAbort = null;
+  const release = releaseAudio;
+  releaseAudio = null;
+  release?.();
+  if (typeof window === "undefined") return;
+  const synth = window.speechSynthesis;
+  if (synth && (synthArmed || synth.speaking || synth.pending)) {
+    synthArmed = false;
+    try {
+      synth.cancel();
+    } catch {
+      /* already idle */
+    }
+  }
+}
+
 export type SpeakOpts = {
   /** ElevenLabs voice id for the case author (cloned tutor). */
   voiceId?: string | null;
@@ -72,7 +142,12 @@ export async function speakBeats(
     return;
   }
 
-  stopSpeaking();
+  // Take a primed fetch before halting. haltPlayback bumps the generation
+  // and aborts the clip that is finishing; it must not abort the blob this
+  // call is about to play. The fetch for chunks[1] starts inside the loop,
+  // overlapped with playback of chunks[0].
+  const primedFirst = takePrimed(chunks[0] ?? "", opts?.persona);
+  haltPlayback();
   const gen = pipelineGen;
   ttsAbort = new AbortController();
   const signal = ttsAbort.signal;
@@ -92,19 +167,30 @@ export async function speakBeats(
   // One pipeline deadline so a hung fetch cannot outlive the guide's beat cap.
   const budget = holds.reduce((sum, ms) => sum + ms, 0) + 400;
 
+  const fetchChunk = (text: string, hold: number) =>
+    fetchTtsBlob(text, signal, voice, Math.min(hold, Math.max(TTS_START_BUDGET_MS, 4_000)));
+
   const work = (async () => {
+    // Sentence 0 may already be in flight (primed while the previous line
+    // played). Sentence i+1 is issued before we wait out sentence i, so the
+    // next clip is fetched while this one is still speaking.
+    let upcoming: Promise<Blob | null> | null = primedFirst;
     for (let i = 0; i < chunks.length; i++) {
       if (gen !== pipelineGen) return;
-      opts?.onStartBeat?.(i);
       const hold = holds[i] ?? narrationHoldMs(chunks[i]);
+      const currentFetch = upcoming ?? fetchChunk(chunks[i], hold);
+      upcoming = null;
+      if (i + 1 < chunks.length) {
+        const nextHold = holds[i + 1] ?? narrationHoldMs(chunks[i + 1]);
+        upcoming = fetchChunk(chunks[i + 1], nextHold);
+      }
+      // Tools and the on-image caption move with this sentence. They do not
+      // wait for the fetch when the blob was primed, and they do not wait
+      // for the previous sentence's clip — that clip has already ended.
+      opts?.onStartBeat?.(i);
       let played = false;
       try {
-        const blob = await fetchTtsBlob(
-          chunks[i],
-          signal,
-          voice,
-          Math.min(hold, Math.max(TTS_START_BUDGET_MS, 4_000))
-        );
+        const blob = await currentFetch;
         if (gen !== pipelineGen) return;
         if (blob && speechAudioCanBlock(blob.size, null)) {
           const result = await playBlob(blob, () => gen !== pipelineGen, hold);
@@ -357,23 +443,7 @@ function fallbackSpeakAsync(
 }
 
 export function stopSpeaking(): void {
-  pipelineGen += 1;
-  ttsAbort?.abort();
-  ttsAbort = null;
-  const release = releaseAudio;
-  releaseAudio = null;
-  release?.();
-  if (typeof window === "undefined") return;
-  const synth = window.speechSynthesis;
-  // cancel() with an empty queue still fires an error event in Chrome.
-  // synthArmed covers the gap where speak() has been called but Chrome
-  // has not flipped speaking/pending yet.
-  if (synth && (synthArmed || synth.speaking || synth.pending)) {
-    synthArmed = false;
-    try {
-      synth.cancel();
-    } catch {
-      /* already idle */
-    }
-  }
+  haltPlayback();
+  // A primed next line is the line we are no longer going to say.
+  dropPrimed();
 }

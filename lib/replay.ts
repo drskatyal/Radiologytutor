@@ -23,6 +23,7 @@ import type {
   TeachViewerAction,
   TeachingGuide,
 } from "./types";
+import { nextGuideSay } from "./speechPipeline";
 import { narrationHoldMs } from "./tutorSpeech";
 import {
   isNamingAct,
@@ -196,6 +197,12 @@ export interface GuideDrivers {
 export interface GuidePlayOptions {
   /** Speak one beat. Omit for a silent visual pass (the tutor's own TTS). */
   narrate?: (text: string) => Promise<void>;
+  /**
+   * Prefetch the next say line while this beat is still speaking and driving.
+   * Called after the current `narrate` has started (so it does not cancel the
+   * clip in flight) and before that clip finishes. Must not start playback.
+   */
+  primeNarration?: (text: string) => void;
   /**
    * Fired once from `cancel`, before waits are released. Use it to stop
    * TTS when this guide owns the clip. A `speak()` that starts after
@@ -440,7 +447,10 @@ export function interruptGuidePlayback(
 
 /**
  * Perform a cleaned teach script. Primes the recorded slice and window, then
- * runs each beat's viewer actions while that beat's line is spoken. A look-cue
+ * runs each beat's viewer actions while that beat's line is spoken. The next
+ * say line is handed to `primeNarration` after this line's speech starts, so
+ * its TTS fetch overlaps the clip and the gestures. The following beat does
+ * not start until this beat's motion finishes. A look-cue
  * orient defers its scroll to the search line so the stack walks with that
  * sentence. A notes orient names one slice, so that scroll lands with the
  * orient line (stored index; the sentence says index + 1). Lean-in, commit,
@@ -624,7 +634,7 @@ export function playTeachingGuide(
       let prevT = 0;
       let prevEnded = origin;
 
-      const performBeat = async (beat: TeachBeat) => {
+      const performBeat = async (beat: TeachBeat, primeNext: string) => {
         if (cancelled) return;
         if (scale > 0) {
           const gap = attendingGapMs(beat.t - prevT, performance.now() - prevEnded);
@@ -695,6 +705,13 @@ export function playTeachingGuide(
         // Cancel resolves this wait even when the hold is 0, so a later beat
         // cannot start after the finding has changed. The in-flight narrate
         // promise may still settle; onInterrupt stops its audio.
+        //
+        // Motion is already running (the async IIFE above). narrate is
+        // started in the same turn, so scroll / window / zoom / point are
+        // not gated on the clip ending. primeNarration runs after narrate
+        // has entered its TTS call: the next line's fetch overlaps this
+        // clip and this beat's gestures. The next beat still waits until
+        // this beat's motion finishes, so two scrolls cannot race.
         const speechWork =
           line && opts.narrate && !cancelled
             ? opts.narrate(line).then(
@@ -702,6 +719,7 @@ export function playTeachingGuide(
                 () => undefined
               )
             : Promise.resolve();
+        if (!cancelled && primeNext) opts.primeNarration?.(primeNext);
         const hold = line ? holdFor(line) : 0;
         const speech = awaitSpeech(speechWork, hold);
         await Promise.all([motion, speech]);
@@ -722,6 +740,10 @@ export function playTeachingGuide(
               here != null &&
               studentIsFar(here, money.sliceIndex, opts.farSlices)
             ) {
+              // The hint is unprimed. Do not pass the scripted next line
+              // here: the hint's narrate would still be the current speech,
+              // and priming the beat after this one would replace the fetch
+              // already started for `beat` itself.
               await performBeat(
                 reseatBeat({
                   currentSlice: here,
@@ -730,12 +752,13 @@ export function playTeachingGuide(
                   landmark: opts.landmark,
                   withhold: opts.withholdTerms,
                   seriesInstanceUID: money.seriesInstanceUID,
-                })
+                }),
+                ""
               );
               if (cancelled) break;
             }
           }
-          await performBeat(beat);
+          await performBeat(beat, nextGuideSay(guide.beats, guide.beats.indexOf(beat)));
         } catch {
           if (cancelled) break;
         }

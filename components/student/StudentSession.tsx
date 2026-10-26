@@ -32,6 +32,7 @@ import {
   examinerVisibleTurns,
   findingStepLabel,
 } from "@/lib/examLocate";
+import { spaceGesture } from "@/lib/speechPipeline";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
@@ -136,9 +137,12 @@ export default function StudentSession({
   const heldRef = useRef(false);
   const hotkeyRef = useRef({
     busy: s.busy,
+    speaking: s.phase === "speaking",
     recording: s.micState === "recording",
+    micSupported: s.micSupported,
     start: s.onMicStart,
     stop: s.onMicStop,
+    bargeIn: s.pauseTour,
     next: s.skip,
     prev: s.prev,
     reveal: s.revealCurrent,
@@ -147,9 +151,15 @@ export default function StudentSession({
   });
   hotkeyRef.current = {
     busy: s.busy,
+    speaking: s.phase === "speaking",
     recording: s.micState === "recording",
+    micSupported: s.micSupported,
     start: s.onMicStart,
     stop: s.onMicStop,
+    bargeIn: () => {
+      s.pauseTour();
+      s.onStopSpeaking();
+    },
     next: s.skip,
     prev: s.prev,
     reveal: s.revealCurrent,
@@ -165,11 +175,25 @@ export default function StudentSession({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingRef.current || isTextTarget(e.target)) return;
-      if (e.code === "Space" && !e.repeat && s.micSupported) {
+      if (e.code === "Space" && !e.repeat) {
+        const keys = hotkeyRef.current;
+        const gesture = spaceGesture({
+          code: "Space",
+          repeat: false,
+          typing: false,
+          busy: keys.busy,
+          speaking: keys.speaking,
+          recording: keys.recording,
+        });
+        // Capture Space when a mic can take the answer, or when the attending
+        // is speaking and the learner needs the floor even without a mic.
+        if (!keys.micSupported && gesture !== "barge") return;
         e.preventDefault();
-        if (!heldRef.current && !hotkeyRef.current.busy) {
+        if (gesture === "ignore") return;
+        if (gesture === "barge") keys.bargeIn();
+        if (keys.micSupported && !heldRef.current) {
           heldRef.current = true;
-          void hotkeyRef.current.start();
+          void keys.start();
         }
         return;
       }
@@ -261,13 +285,23 @@ export default function StudentSession({
   );
 
   const dockHint =
-    intent === "exam"
-      ? s.locateMode
-        ? "Click the image to locate · Space to talk"
-        : "Exam mode · Space to talk · Ask or answer"
-      : s.tourActive
-        ? "Teaching — the viewer follows the tutor · Space to interrupt"
-        : "Tour paused · Continue teaching or ask a question";
+    intent === "exam" ? (
+      s.locateMode ? (
+        <>
+          Click the image to locate · <Kbd>Space</Kbd> to talk
+        </>
+      ) : (
+        <>
+          Exam mode · <Kbd>Space</Kbd> to talk · Ask or answer
+        </>
+      )
+    ) : s.tourActive ? (
+      <>
+        Teaching — the viewer follows the tutor · <Kbd>Space</Kbd> interrupts
+      </>
+    ) : (
+      <>Tour paused · Continue teaching or ask a question</>
+    );
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-canvas">

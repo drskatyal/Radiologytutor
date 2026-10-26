@@ -180,6 +180,66 @@ test("calls onEnd once the clock passes the duration", () => {
   assert.equal(ended, 1);
 });
 
+test("playTeachingGuide drives while the line is still speaking and primes the next say", async () => {
+  const order: string[] = [];
+  let releaseFirst: (() => void) | null = null;
+  let said = 0;
+  const guide: TeachingGuide = {
+    durationMs: 800,
+    start: { sliceIndex: 2 },
+    beats: [
+      {
+        t: 0,
+        act: "search",
+        say: "Lung windows.",
+        actions: [{ type: "window", ww: 1500, wc: -600 }],
+      },
+      {
+        t: 10,
+        act: "lean-in",
+        say: "Lean in.",
+        actions: [{ type: "zoom", zoom: 2.2, pan: [0, 0] }],
+      },
+    ],
+  };
+  const ctrl = playTeachingGuide(
+    guide,
+    {
+      applyEvent: (event) => {
+        if (event.type === "voi") order.push("window");
+      },
+      setWindow: async () => {
+        order.push("window");
+      },
+      showState: async (state) => {
+        if (state.zoom != null && state.zoom > 1) order.push("zoom");
+      },
+    },
+    {
+      timeScale: 0,
+      primeNarration: (text) => order.push(`prime:${text}`),
+      narrate: (text) => {
+        order.push(`say:${text}`);
+        said += 1;
+        if (said > 1) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      },
+    }
+  );
+  for (let i = 0; i < 20 && !order.includes("prime:Lean in."); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(order.indexOf("window") < order.indexOf("say:Lung windows."), order.join(" | "));
+  assert.ok(order.indexOf("say:Lung windows.") < order.indexOf("prime:Lean in."), order.join(" | "));
+  assert.equal(order.includes("zoom"), false, order.join(" | "));
+  releaseFirst?.();
+  await ctrl.finished;
+  assert.ok(order.includes("zoom"));
+  assert.ok(order.indexOf("say:Lung windows.") < order.indexOf("zoom"));
+});
+
 test("playTeachingGuide scrolls, tweens window and zoom, and draws a missed stroke", async () => {
   const applied: string[] = [];
   let slice = 0;
