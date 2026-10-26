@@ -28,9 +28,11 @@ export function spaceGesture(input: {
   busy: boolean;
   speaking: boolean;
   recording: boolean;
+  /** An MCQ is on screen. Space takes the floor even after the question clip ends. */
+  awaitingAnswer?: boolean;
 }): SpaceGesture {
   if (input.typing || input.repeat || input.code !== "Space") return "ignore";
   if (input.recording || input.busy) return "ignore";
-  if (input.speaking) return "barge";
+  if (input.speaking || input.awaitingAnswer) return "barge";
   return "push-to-talk";
 }

@@ -19,11 +19,11 @@
 import type {
   RecordedEvent,
   RecordedTrack,
+  TeachAct,
   TeachBeat,
   TeachViewerAction,
   TeachingGuide,
 } from "./types";
-import { nextGuideSay } from "./speechPipeline";
 import { narrationHoldMs } from "./tutorSpeech";
 import {
   isNamingAct,
@@ -31,6 +31,7 @@ import {
   reseatBeat,
   studentIsFar,
 } from "./tourAdapt";
+import { decisionBeatIndex, type CheckInBranch } from "./tourCheckIn";
 
 /** What an applier (the CornerstoneControls handle) must provide. */
 export interface ReplayTarget {
@@ -233,6 +234,16 @@ export interface GuidePlayOptions {
   adaptive?: boolean;
   /** Distance in slices that counts as far. Default 8. */
   farSlices?: number;
+  /**
+   * Pause before the decision beat (commit, or a beat marked `decision`)
+   * and wait for a text check-in. Omit to play the script straight through.
+   * `"paused"` stops the guide. `"skip"` or null plays the beat as authored.
+   * A branch's preface runs first; its `skipActs` drop later beats (the pearl
+   * after a correct answer). The callback must not move the viewer.
+   */
+  onCheckIn?: (
+    ctx: { beat: TeachBeat; index: number }
+  ) => Promise<CheckInBranch | "skip" | "paused" | null | void>;
   /** Anatomical level the hint may name, e.g. "carina". */
   landmark?: string;
   /** Terms the hint must not say — the finding label. */
@@ -728,8 +739,48 @@ export function playTeachingGuide(
       };
 
       const money = moneySliceFromGuide(guide);
-      for (const beat of guide.beats) {
-        if (cancelled) break;
+      const decisionAt = opts.onCheckIn ? (decisionBeatIndex(guide) ?? -1) : -1;
+      const skip = new Set<TeachAct>();
+
+      const sayAfter = (index: number) => {
+        for (let j = index + 1; j < guide.beats.length; j++) {
+          const later = guide.beats[j];
+          if (later?.act && skip.has(later.act)) continue;
+          const line = later?.say?.trim() ?? "";
+          if (line) return line;
+        }
+        return "";
+      };
+
+      // Cancel resolves this even when the student never picks. The callback
+      // must not be required to settle — Pause and Space both cancel the guide.
+      const awaitDecision = (beat: TeachBeat, index: number) =>
+        new Promise<CheckInBranch | "skip" | "paused" | null>((resolve) => {
+          let settled = false;
+          const finish = (value: CheckInBranch | "skip" | "paused" | null) => {
+            if (settled) return;
+            settled = true;
+            stops.delete(stop);
+            resolve(value);
+          };
+          const stop = () => finish("paused");
+          stops.add(stop);
+          if (!opts.onCheckIn) {
+            finish("skip");
+            return;
+          }
+          Promise.resolve()
+            .then(() => opts.onCheckIn?.({ beat, index }))
+            .then(
+              (value) => finish(value && typeof value === "object" ? value : value === "paused" ? "paused" : "skip"),
+              () => finish("skip")
+            );
+        });
+
+      for (let i = 0; i < guide.beats.length; i++) {
+        const beat = guide.beats[i];
+        if (!beat || cancelled) break;
+        if (i !== decisionAt && beat.act && skip.has(beat.act)) continue;
         // Orient is the scroll onto the money slice. A hint before it would
         // double the linear path. Commit points and pearl names — those wait
         // until the learner is actually on the slice.
@@ -758,7 +809,20 @@ export function playTeachingGuide(
               if (cancelled) break;
             }
           }
-          await performBeat(beat, nextGuideSay(guide.beats, guide.beats.indexOf(beat)));
+          if (i === decisionAt) {
+            const resolution = await awaitDecision(beat, i);
+            if (cancelled || resolution === "paused") break;
+            if (resolution && typeof resolution === "object") {
+              for (const extra of resolution.preface) {
+                if (cancelled) break;
+                await performBeat(extra, "");
+              }
+              if (cancelled) break;
+              for (const act of resolution.skipActs) skip.add(act);
+            }
+          }
+          if (cancelled) break;
+          await performBeat(beat, sayAfter(i));
         } catch {
           if (cancelled) break;
         }

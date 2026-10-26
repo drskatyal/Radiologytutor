@@ -42,6 +42,18 @@ test("Space barges in while the attending is speaking", () => {
       code: "Space",
       repeat: false,
       typing: false,
+      busy: false,
+      speaking: false,
+      recording: false,
+      awaitingAnswer: true,
+    }),
+    "barge"
+  );
+  assert.equal(
+    spaceGesture({
+      code: "Space",
+      repeat: false,
+      typing: false,
       busy: true,
       speaking: false,
       recording: false,
