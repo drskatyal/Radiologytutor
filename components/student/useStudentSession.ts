@@ -26,6 +26,7 @@ import {
   NARRATION_HOLD_MAX_MS,
   examHintLevel,
   seatExamReveal,
+  spokenFindingSources,
   tutorSpeechPlan,
   type SpokenFindingSource,
 } from "@/lib/tutorSpeech";
@@ -95,14 +96,8 @@ export interface ChatTurn {
 
 type ViewerAction = HarnessViewerAction;
 
-function spokenSources(findings: Finding[]): SpokenFindingSource[] {
-  return findings.map((finding) => ({
-    id: finding.id,
-    label: finding.label,
-    description: finding.description,
-    teachingPoints: finding.teachingPoints,
-    order: finding.order,
-  }));
+function spokenSources(findings: Finding[], primaryDiagnosis?: string): SpokenFindingSource[] {
+  return spokenFindingSources(findings, primaryDiagnosis);
 }
 
 let turnSeq = 0;
@@ -726,7 +721,7 @@ export function useStudentSession(
           text: turn.text,
           findingId: turn.findingId,
         }));
-        const spokenFindings = spokenSources(orderedFindings);
+        const spokenFindings = spokenSources(orderedFindings, caseData.primaryDiagnosis);
         const examLevel = examMode
           ? examHintLevel({
               mode,
@@ -889,7 +884,7 @@ export function useStudentSession(
                 actions: [{ type: "show_finding", findingId: finding.id }],
                 mode: "guided",
                 question: "Teach the finding now on screen.",
-                findings: spokenSources(orderedFindings),
+                findings: spokenSources(orderedFindings, caseData.primaryDiagnosis),
                 currentFindingId: finding.id,
                 tourActive: true,
               }).answer

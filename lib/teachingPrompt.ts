@@ -31,7 +31,7 @@ function hintLadderBlock(level: 0 | 1 | 2 | 3 | undefined): string {
 - Level 0: opening, or the first partial answer on this finding. Look-cue only. Drive the viewer. Withhold the name. Do not give a search instruction, a location, or a mimic. Ask what they see.
 - Level 1: second partial on this same finding. One location line: a single region or landmark copied from this finding's description, with the diagnosis words removed. Do not speak a search instruction (scroll, window, survey, begin at the carina, search pattern). Do not say the diagnosis. Do not use the mimic line.
 - Level 2: third partial on this same finding. One mimic-versus-finding contrast from the teaching points. Do not say the diagnosis. Do not repeat a search instruction.
-- Level 3: they named it, said they don't know / show me / reveal / give up, or the location hint and the mimic hint were both already given. Full reveal: say the diagnosis label, then one pearl. A search-step title (window, start, survey, pass) is not the label. A line that only tells them to name a search pattern is not the pearl. Call show_finding.
+- Level 3: they named it, said they don't know / show me / reveal / give up, or the location hint and the mimic hint were both already given. Full reveal: say the finding name, then one pearl. A search-step title (window, start, survey, pass) is not the label — say the next authored clinical name instead (a description sentence that names the finding, the commit line, or the case diagnosis). Never omit the name and never speak the search-step title. A line that only tells them to name a search pattern is not the pearl. Call show_finding.
 ${current}`;
 }
 
@@ -95,7 +95,10 @@ export function formatFindingsContext(findings: Finding[]): string {
 }
 
 export function formatFindingsContextFromCase(data: CaseData): string {
-  return formatFindingsContext(data.findings);
+  const findings = formatFindingsContext(data.findings);
+  const diagnosis = data.primaryDiagnosis?.trim();
+  if (!diagnosis) return findings;
+  return `Case diagnosis (the reveal name when a finding label is a search-step title; withhold until level 3): ${diagnosis}\n${findings}`;
 }
 
 /**

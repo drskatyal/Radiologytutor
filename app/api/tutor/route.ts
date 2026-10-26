@@ -18,7 +18,7 @@ import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCaseForOrg } from "@/lib/cases";
 import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
-import type { SpokenFindingSource } from "@/lib/tutorSpeech";
+import { spokenFindingSources } from "@/lib/tutorSpeech";
 
 export const runtime = "nodejs";
 
@@ -90,13 +90,7 @@ export async function POST(req: NextRequest) {
       findingId: turn.findingId ? String(turn.findingId) : undefined,
     }));
 
-    const findings: SpokenFindingSource[] = data.findings.map((finding) => ({
-      id: finding.id,
-      label: finding.label,
-      description: finding.description,
-      teachingPoints: finding.teachingPoints,
-      order: finding.order,
-    }));
+    const findings = spokenFindingSources(data.findings, data.primaryDiagnosis);
 
     // history excludes the current question. runTeachingPlan turns that into
     // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
