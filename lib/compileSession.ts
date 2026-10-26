@@ -4,7 +4,7 @@
  * Flash hears the audio and, when present, sees a sparse strip of viewport
  * stills. The call goes through `lib/gemini.ts` `generate` — the same
  * generateContent Flash the rest of the app uses (`GEMINI_MODEL`, default
- * gemini-3.7-flash). This module does not name a separate model.
+ * gemini-3.8-flash). This module does not name a separate model.
  *
  * Time ranges come from the model. Marker and slice landings do not: they are
  * read from the recorded track with markerNearTime / sliceNearTime. A coordinate

@@ -1,37 +1,59 @@
 variable "project_id" {
-  description = "GCP project id. Placeholder until apply: your-gcp-project."
+  description = "GCP project id. Live project: radlearn-app (display name RadLearn)."
   type        = string
+  default     = "radlearn-app"
 }
 
 variable "region" {
-  description = "Region for Cloud Run, the Healthcare dataset, and the frame bucket. They must match. us-east4 pairs with Fly iad. asia-south1 if learners are in India."
+  description = "Region for Cloud Run, the Healthcare dataset, Cloud NAT, and the frame bucket. They must match. europe-west2 is London; Atlas uses EUROPE_WEST_2."
   type        = string
-  default     = "us-east4"
+  default     = "europe-west2"
 }
 
 variable "dataset_id" {
   type    = string
-  default = "flowrad"
+  default = "radlearn"
 }
 
 variable "dicom_store_id" {
   type    = string
-  default = "flowrad-dicom"
+  default = "radlearn-dicom"
 }
 
 variable "service_name" {
   type    = string
-  default = "flowrad-learn"
+  default = "radlearn"
 }
 
 variable "service_account_id" {
   type    = string
-  default = "flowrad-app"
+  default = "radlearn-app"
 }
 
 variable "artifact_repo" {
   type    = string
-  default = "flowrad"
+  default = "radlearn"
+}
+
+variable "network_name" {
+  type    = string
+  default = "radlearn"
+}
+
+variable "subnet_name" {
+  type    = string
+  default = "radlearn-run"
+}
+
+variable "subnet_cidr" {
+  type    = string
+  default = "10.8.0.0/24"
+}
+
+variable "vpc_egress" {
+  description = "Cloud Run Direct VPC egress. ALL_TRAFFIC uses Cloud NAT so Atlas can allow one IP. PRIVATE_RANGES_ONLY after Atlas Private Service Connect."
+  type        = string
+  default     = "ALL_TRAFFIC"
 }
 
 variable "frame_bucket" {
@@ -69,6 +91,13 @@ variable "public_url" {
 }
 
 variable "mongodb_db" {
-  type    = string
-  default = "flowrad"
+  description = "Database name inside the Atlas cluster. Cloud Run does not use JSON-on-disk."
+  type        = string
+  default     = "radlearn"
+}
+
+variable "gemini_model" {
+  description = "GEMINI_MODEL on Cloud Run. Stable Gemini 3.8 Flash."
+  type        = string
+  default     = "gemini-3.8-flash"
 }

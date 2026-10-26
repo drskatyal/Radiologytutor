@@ -1,15 +1,16 @@
 # Build and push the Next.js image. Deploy stays in deploy-app.sh so secret
 # versions are checked before Cloud Run is updated.
 #
-#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml --substitutions=_REGION=us-east4
+#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml \
+#     --project=radlearn-app --substitutions=_REGION=europe-west2,_REPO=radlearn
 #
 # Then: SKIP_BUILD=1 IMAGE=... deploy/gcp/deploy-app.sh
 #
 # Do not pass --turbo. The Dockerfile runs `npm run build` (webpack).
 
 substitutions:
-  _REGION: us-east4
-  _REPO: flowrad
+  _REGION: europe-west2
+  _REPO: radlearn
 
 options:
   logging: CLOUD_LOGGING_ONLY

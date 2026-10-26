@@ -11,7 +11,7 @@ locals {
     HEALTHCARE_DATASET     = var.dataset_id
     HEALTHCARE_DICOM_STORE = var.dicom_store_id
     MONGODB_DB             = var.mongodb_db
-    GEMINI_MODEL           = "gemini-3.7-flash"
+    GEMINI_MODEL           = var.gemini_model
     GEMINI_TTS_MODEL       = "gemini-2.5-flash-preview-tts"
     GEMINI_TTS_VOICE       = "Kore"
     GEMINI_LIVE_MODEL      = "gemini-live-2.5-flash-native-audio"
@@ -41,6 +41,14 @@ resource "google_cloud_run_v2_service" "app" {
     timeout                          = "300s"
     max_instance_request_concurrency = 40
     execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+
+    vpc_access {
+      egress = var.vpc_egress
+      network_interfaces {
+        network    = google_compute_network.app.name
+        subnetwork = google_compute_subnetwork.app.name
+      }
+    }
 
     scaling {
       min_instance_count = var.min_instances
@@ -124,7 +132,7 @@ resource "google_cloud_run_v2_service" "app" {
     }
   }
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis, google_compute_router_nat.app]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {

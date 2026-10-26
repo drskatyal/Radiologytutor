@@ -1,6 +1,6 @@
 # Fly.io + Cloudflare R2
 
-Current Fly deployment. **Production target for DICOM latency is Google Cloud Run + a Cloud Healthcare API DICOM store** — see `docs/GCP_CLOUD_RUN.md`. Keep this path until that checklist is signed off. Local Orthanc (`ORTHANC_URL`, `docker-compose.orthanc.yml`) is unchanged.
+Current Fly deployment. **Production target is RadLearn on Cloud Run** (project `radlearn-app`, `europe-west2`) with a Cloud Healthcare API DICOM store and MongoDB Atlas — see `docs/GCP_CLOUD_RUN.md`. Keep Fly until that cutover checklist has been run. Local Orthanc (`ORTHANC_URL`, `docker-compose.orthanc.yml`) is unchanged.
 
 Product decisions: `docs/DECISIONS.md`.
 

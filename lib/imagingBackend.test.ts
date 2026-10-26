@@ -11,10 +11,10 @@ import {
 import { dicomJsonString, looksLikeDicomUid, readDicomUids } from "./healthcareDicom.ts";
 
 const HEALTHCARE: ImagingEnv = {
-  healthcareProject: "my-project",
-  healthcareLocation: "us-east4",
-  healthcareDataset: "flowrad",
-  healthcareDicomStore: "flowrad-dicom",
+  healthcareProject: "radlearn-app",
+  healthcareLocation: "europe-west2",
+  healthcareDataset: "radlearn",
+  healthcareDicomStore: "radlearn-dicom",
 };
 
 test("local Orthanc stays selected when ORTHANC_URL is set", () => {
@@ -28,7 +28,7 @@ test("Healthcare is selected when it is configured and Orthanc is not", () => {
   assert.equal(resolveImagingBackend(HEALTHCARE), "healthcare");
   assert.equal(
     dicomWebRoot(HEALTHCARE),
-    "https://healthcare.googleapis.com/v1/projects/my-project/locations/us-east4/datasets/flowrad/dicomStores/flowrad-dicom/dicomWeb"
+    "https://healthcare.googleapis.com/v1/projects/radlearn-app/locations/europe-west2/datasets/radlearn/dicomStores/radlearn-dicom/dicomWeb"
   );
 });
 

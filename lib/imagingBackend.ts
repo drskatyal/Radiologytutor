@@ -132,8 +132,8 @@ export function orthancBasicAuth(env: ImagingEnv = readImagingEnv()): string {
  *
  * Frames: Cornerstone asks for `transfer-syntax=*` so the archive returns the
  * stored encoding and skips a transcode. A bare `application/octet-stream`
- * (our prefetch) is rewritten to that multipart form — Healthcare rejects the
- * bare type with 406.
+ * is rewritten to that multipart form — Healthcare rejects the bare type
+ * with 406. The student warmer sends the Cornerstone Accept itself.
  *
  * Rendered thumbnails: `<img>` sends `image/webp,image/*`. Healthcare rendered
  * resources answer `image/jpeg` (single part), which the browser can paint.

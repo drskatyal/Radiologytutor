@@ -1,7 +1,8 @@
-# Copy to terraform.tfvars (gitignored if you keep it out of the repo) and replace placeholders.
-project_id    = "your-gcp-project"
-region        = "us-east4"
-frame_bucket  = "" # e.g. "flowrad-frames-your-gcp-project"
+# Copy to terraform.tfvars (gitignored). Defaults match the live RadLearn project.
+project_id    = "radlearn-app"
+region        = "europe-west2"
+frame_bucket  = "" # e.g. "radlearn-app-frames"
 deploy_app    = false
 app_image     = ""
 public_url    = ""
+gemini_model  = "gemini-3.8-flash"

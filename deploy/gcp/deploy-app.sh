@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 # Build (unless SKIP_BUILD=1) and deploy the Next.js app to Cloud Run.
-# The DICOM store must already exist (deploy/gcp/setup.sh).
+# The DICOM store, VPC, and Cloud NAT must already exist (deploy/gcp/setup.sh).
 # Required secret versions: GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI.
+# Cloud Run refuses to boot the JSON store: MONGODB_URI is mandatory.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-PROJECT_ID=${PROJECT_ID:?Set PROJECT_ID (see deploy/gcp/env.example)}
-REGION=${REGION:-us-east4}
-SERVICE=${SERVICE:-flowrad-learn}
-DATASET=${DATASET:-flowrad}
-STORE=${STORE:-flowrad-dicom}
-REPO=${REPO:-flowrad}
-SA_NAME=${SA_NAME:-flowrad-app}
+PROJECT_ID=${PROJECT_ID:-radlearn-app}
+REGION=${REGION:-europe-west2}
+SERVICE=${SERVICE:-radlearn}
+DATASET=${DATASET:-radlearn}
+STORE=${STORE:-radlearn-dicom}
+REPO=${REPO:-radlearn}
+SA_NAME=${SA_NAME:-radlearn-app}
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 FRAME_BUCKET=${FRAME_BUCKET:-}
+NETWORK=${NETWORK:-radlearn}
+SUBNET=${SUBNET:-radlearn-run}
+VPC_EGRESS=${VPC_EGRESS:-all-traffic}
 MIN_INSTANCES=${MIN_INSTANCES:-1}
 MAX_INSTANCES=${MAX_INSTANCES:-10}
-MONGODB_DB=${MONGODB_DB:-flowrad}
+MONGODB_DB=${MONGODB_DB:-radlearn}
 IMAGE=${IMAGE:-"${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/app:latest"}
 
 for name in GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI; do
@@ -39,7 +43,7 @@ ENV_VARS+=",HEALTHCARE_LOCATION=${REGION}"
 ENV_VARS+=",HEALTHCARE_DATASET=${DATASET}"
 ENV_VARS+=",HEALTHCARE_DICOM_STORE=${STORE}"
 ENV_VARS+=",MONGODB_DB=${MONGODB_DB}"
-ENV_VARS+=",GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.7-flash}"
+ENV_VARS+=",GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}"
 ENV_VARS+=",GEMINI_TTS_MODEL=${GEMINI_TTS_MODEL:-gemini-2.5-flash-preview-tts}"
 ENV_VARS+=",GEMINI_TTS_VOICE=${GEMINI_TTS_VOICE:-Kore}"
 ENV_VARS+=",GEMINI_LIVE_MODEL=${GEMINI_LIVE_MODEL:-gemini-live-2.5-flash-native-audio}"
@@ -80,9 +84,12 @@ gcloud run deploy "${SERVICE}" \
   --cpu-boost \
   --no-cpu-throttling \
   --execution-environment=gen2 \
+  --network="${NETWORK}" \
+  --subnet="${SUBNET}" \
+  --vpc-egress="${VPC_EGRESS}" \
   --ingress=all \
   --allow-unauthenticated \
-  --labels=app=flowrad,role=web \
+  --labels=app=radlearn,role=web \
   --startup-probe="initialDelaySeconds=5,timeoutSeconds=3,periodSeconds=5,failureThreshold=24,httpGet.port=8080,httpGet.path=/" \
   --set-env-vars="${ENV_VARS}" \
   --set-secrets="${SECRETS}"

@@ -5,7 +5,7 @@
 // Never import this into client components — it reads GEMINI_API_KEY.
 //
 // We hit the REST endpoint directly with fetch to avoid SDK version churn.
-// Model is configurable via GEMINI_MODEL (default: current Flash workhorse).
+// Model is configurable via GEMINI_MODEL (default: gemini-3.8-flash).
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
@@ -21,8 +21,8 @@ import {
   type HarnessViewerAction,
 } from "./harness/tools";
 
-/** Orchestration / STT / tools. Override via GEMINI_MODEL when Google ships next Flash. */
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+/** Orchestration / STT / tools. Gemini 3.8 Flash (stable). Override with GEMINI_MODEL. */
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 /** Viewer action alias — canonical definition lives in lib/harness/tools. */
