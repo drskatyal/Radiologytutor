@@ -4,11 +4,18 @@ import {
   authoredGuideLines,
   buildTeachingGuide,
   coerceNarrationSpans,
+  commitRecordedFinding,
+  formatRecordedSave,
   formatTeachingGuideLine,
   guideForFindingTrack,
+  narrationFromTranscribeResult,
+  recordedGuidePreview,
   resolveTeachingGuide,
   spansFromTranscript,
+  TEACH_ACTS,
+  withRecordedTeaching,
 } from "./teachingGuide.ts";
+import type { TeachingGuide } from "./types.ts";
 import { measurementsFromTrack } from "./findingMeasurements.ts";
 import type { RecordedTrack } from "./types.ts";
 
@@ -298,4 +305,217 @@ test("authoredGuideLines keeps spoken beats and drops blanks", () => {
     ["Follow the stack.", "Look here."]
   );
   assert.deepEqual(authoredGuideLines(null), []);
+});
+
+const DEMO_GUIDE: TeachingGuide = {
+  durationMs: 1600,
+  start: { sliceIndex: 0, ww: 400, wc: 40 },
+  beats: [
+    { t: 0, act: "orient", actions: [{ type: "scroll", sliceIndex: 1 }], say: "Demo orient that must not play." },
+    { t: 400, act: "search", actions: [{ type: "window", ww: 400, wc: 40 }], say: "Demo search." },
+    { t: 800, act: "lean-in", actions: [{ type: "zoom", zoom: 2.2, pan: [0, 0] }], say: "Lean in, about 2.2 times." },
+    { t: 1200, act: "commit", actions: [{ type: "point", x: 0.1, y: 0.1 }], say: "Demo look here." },
+    { t: 1500, act: "pearl", actions: [], say: "Demo pearl that must not survive a real take." },
+  ],
+};
+
+function linesOf(guide: TeachingGuide | null | undefined): string {
+  return authoredGuideLines(guide).join("\n");
+}
+
+function assertCanonicalActs(acts: string[]) {
+  let prev = -1;
+  for (const act of acts) {
+    const at = TEACH_ACTS.indexOf(act as (typeof TEACH_ACTS)[number]);
+    assert.ok(at > prev, `act ${act} out of order`);
+    prev = at;
+  }
+  assert.equal(acts[0], "orient");
+  assert.equal(acts[acts.length - 1], "pearl");
+}
+
+test("narrationFromTranscribeResult separates a silent mic from a failed call", () => {
+  assert.equal(narrationFromTranscribeResult(false, null).gap, "empty-mic");
+  assert.equal(narrationFromTranscribeResult(true, null).gap, "stt-failed");
+  assert.equal(
+    narrationFromTranscribeResult(true, { transcript: "  ", spans: [], alignment: "proportional" }).gap,
+    "empty-transcript"
+  );
+  const kept = narrationFromTranscribeResult(true, {
+    transcript: "Come down through the apex.",
+    spans: [{ tStartMs: 0, tEndMs: 400, text: "Come down through the apex." }],
+    alignment: "estimated",
+  });
+  assert.equal(kept.gap, "none");
+  assert.equal(kept.published?.alignment, "estimated");
+});
+
+test("save with an estimated transcript beats a stored demo guide", () => {
+  const description = "Visceral pleural line at the apex.";
+  const teachingPoints = ["No lung markings beyond it."];
+  const saved = commitRecordedFinding(
+    {
+      label: "Pneumothorax",
+      description,
+      teachingPoints,
+      teachingGuide: DEMO_GUIDE,
+      marker: { x_pct: 0.42, y_pct: 0.55, shape: "circle" },
+    },
+    track,
+    {
+      label: "Pneumothorax",
+      description,
+      teachingPoints,
+      take: {
+        alignment: "estimated",
+        transcript: "Come down through the apex with me. The visceral pleural line is the finding.",
+        spans: [
+          { tStartMs: 0, tEndMs: 400, text: "Come down through the apex with me." },
+          { tStartMs: 2000, tEndMs: 2600, text: "The visceral pleural line is the finding." },
+        ],
+      },
+    }
+  );
+  assert.equal(saved.receipt.transcriptAligned, true);
+  assert.equal(saved.receipt.demoSuperseded, true);
+  assert.equal(saved.receipt.alignment, "estimated");
+  assert.deepEqual(saved.receipt.acts, ["orient", "search", "lean-in", "commit", "pearl"]);
+  assert.ok(saved.finding.track?.narration && saved.finding.track.narration.length >= 2);
+  assert.ok(saved.finding.teachingGuide);
+  const poisoned = resolveTeachingGuide({ ...saved.finding, teachingGuide: DEMO_GUIDE });
+  assert.equal(linesOf(poisoned), linesOf(saved.finding.teachingGuide));
+  const said = linesOf(poisoned);
+  assert.match(said, /Come down through the apex/);
+  assert.match(said, /pleural/);
+  assert.doesNotMatch(said, /Demo pearl|must not play/);
+  const message = formatRecordedSave(saved.receipt);
+  assert.equal(message.title, "Recorded take replaces the demo");
+  assert.match(message.description, /5 teach beats/);
+  assert.match(message.description, /Transcript aligned/);
+  assert.match(message.description, /Demo tour replaced/);
+});
+
+test("STT failure still saves prose spans and a guide Teach rebuilds", () => {
+  const description = "Visceral pleural line at the apex.";
+  const teachingPoints = ["No lung markings beyond it."];
+  const saved = commitRecordedFinding(
+    {
+      label: "Pneumothorax",
+      description,
+      teachingPoints,
+      teachingGuide: DEMO_GUIDE,
+    },
+    track,
+    { description, teachingPoints, label: "Pneumothorax", take: { gap: "stt-failed" } }
+  );
+  assert.equal(saved.receipt.alignment, "prose");
+  assert.equal(saved.receipt.transcriptAligned, false);
+  assert.equal(saved.receipt.gap, "stt-failed");
+  assert.equal(saved.receipt.demoSuperseded, true);
+  assert.ok(saved.finding.track?.narration?.length);
+  assert.deepEqual(saved.receipt.acts, ["orient", "search", "lean-in", "commit", "pearl"]);
+  assert.equal(authoredGuideLines(saved.finding.teachingGuide).length, saved.receipt.beatCount);
+  const poisoned = resolveTeachingGuide({ ...saved.finding, teachingGuide: DEMO_GUIDE });
+  assert.equal(linesOf(poisoned), linesOf(saved.finding.teachingGuide));
+  assert.match(linesOf(poisoned), /pleural/);
+  assert.match(linesOf(poisoned), /lung markings/i);
+  assert.doesNotMatch(linesOf(poisoned), /Demo pearl|must not play/);
+  const message = formatRecordedSave(saved.receipt);
+  assert.equal(message.tone, "degraded");
+  assert.match(message.description, /Transcription failed/);
+});
+
+test("empty mic and a short track still produce a spoken guide", () => {
+  const short: RecordedTrack = {
+    durationMs: 480,
+    start: { sliceIndex: 2, ww: 1500, wc: -600 },
+    events: [{ t: 200, type: "slice", index: 9 }],
+  };
+  const saved = commitRecordedFinding(
+    {
+      label: "Effusion",
+      description: "Small effusion at the base.",
+      teachingPoints: ["Check the costophrenic angle."],
+    },
+    short,
+    { take: { gap: "empty-mic" } }
+  );
+  assert.equal(saved.receipt.shortTrack, true);
+  assert.equal(saved.receipt.alignment, "prose");
+  assert.equal(saved.receipt.gap, "empty-mic");
+  assert.equal(saved.receipt.demoSuperseded, false);
+  assert.ok(saved.finding.track?.narration?.length);
+  assertCanonicalActs(saved.receipt.acts);
+  assert.equal(saved.receipt.acts.includes("lean-in"), false);
+  assert.equal(authoredGuideLines(saved.finding.teachingGuide).length, saved.receipt.beatCount);
+  const poisoned = resolveTeachingGuide({
+    ...saved.finding,
+    teachingGuide: {
+      durationMs: 1,
+      start: { sliceIndex: 0 },
+      beats: [{ t: 0, actions: [], say: "stale demo" }],
+    },
+  });
+  assert.equal(linesOf(poisoned), linesOf(saved.finding.teachingGuide));
+  assert.match(linesOf(poisoned), /effusion/i);
+  assert.match(linesOf(poisoned), /costophrenic/i);
+  assert.doesNotMatch(linesOf(poisoned), /stale demo/);
+  const message = formatRecordedSave(saved.receipt);
+  assert.match(message.description, /No microphone/);
+  assert.match(message.description, /Short take kept/);
+  assert.equal(message.tone, "ready");
+});
+
+test("a word-count transcript is not reported as aligned", () => {
+  const transcript = "Hi. Keep the grey level while you look.";
+  const saved = commitRecordedFinding(
+    { label: "Window", description: "Lung windows show the vessels.", teachingPoints: [] },
+    track,
+    {
+      take: {
+        alignment: "proportional",
+        transcript,
+        spans: spansFromTranscript(transcript, track.durationMs),
+      },
+    }
+  );
+  assert.equal(saved.receipt.alignment, "proportional");
+  assert.equal(saved.receipt.transcriptAligned, false);
+  assert.match(linesOf(saved.finding.teachingGuide), /grey level/);
+  assert.match(formatRecordedSave(saved.receipt).description, /split across the take/);
+  const poisoned = resolveTeachingGuide({ ...saved.finding, teachingGuide: DEMO_GUIDE });
+  assert.equal(linesOf(poisoned), linesOf(saved.finding.teachingGuide));
+});
+
+test("preview counts the marker commit the save will store", () => {
+  const bare: RecordedTrack = {
+    durationMs: 2000,
+    start: { sliceIndex: 2, ww: 1500, wc: -600 },
+    events: [{ t: 400, type: "slice", index: 8 }],
+  };
+  assert.equal(recordedGuidePreview(bare).acts.includes("commit"), false);
+  const withPoint = recordedGuidePreview(bare, { point: { x: 0.4, y: 0.6 } });
+  assert.equal(withPoint.acts.includes("commit"), true);
+  assert.deepEqual(withPoint.acts, ["orient", "search", "commit", "pearl"]);
+});
+
+test("withRecordedTeaching stores prose spans when the mic returned nothing", () => {
+  const blip: RecordedTrack = {
+    durationMs: 0,
+    start: { sliceIndex: 1, ww: 400, wc: 40 },
+    events: [{ t: 0, type: "slice", index: 4 }],
+  };
+  const saved = withRecordedTeaching(
+    { label: "Nodule", description: "Round opacity.", teachingPoints: ["Compare to vessels."] },
+    blip,
+    { spans: [] }
+  );
+  assert.ok(saved.track?.narration?.length);
+  assert.ok((saved.track?.durationMs ?? 0) >= 1);
+  assert.ok(saved.teachingGuide && saved.teachingGuide.beats.length >= 2);
+  assert.equal(authoredGuideLines(saved.teachingGuide).length, saved.teachingGuide.beats.length);
+  const live = resolveTeachingGuide({ ...saved, teachingGuide: DEMO_GUIDE });
+  assert.equal(linesOf(live), linesOf(saved.teachingGuide));
+  assert.match(linesOf(live), /opacity|vessels/i);
+  assert.doesNotMatch(linesOf(live), /Demo pearl/);
 });
