@@ -165,13 +165,13 @@ test("recording MicButton keeps the stop name and the capturing label", () => {
 test("processing MicButton keeps the processing name and ignores the label click", () => {
   const { button, calls } = harness.render({
     state: "processing",
-    label: "Structuring session…",
+    label: "Compiling from recording…",
     onStart() {},
     onStop() {},
   });
   assert.equal(button.getAttribute("aria-label"), "Processing audio");
   assert.equal(button.disabled, true);
-  clickLabel(button, "Structuring session…");
+  clickLabel(button, "Compiling from recording…");
   assert.equal(calls.start, 0);
   assert.equal(calls.stop, 0);
 });

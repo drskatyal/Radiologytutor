@@ -18,6 +18,7 @@ import {
   narrationFromTranscribeResult,
   type RecordedSaveReceipt,
 } from "@/lib/teachingGuide";
+import { prepareCompileFrames, type CompileFrame } from "@/lib/compileMedia";
 
 /** The structured (text) slice of a finding the author edits. */
 export type FindingDraft = StructuredFinding;
@@ -214,7 +215,9 @@ function looksLikeMissingKey(status: number, message: unknown): boolean {
  * to the manual path; throws a normal Error for genuine failures.
  */
 async function structureRequest(
-  body: { transcript: string } | { audioBase64: string; audioMime: string }
+  body:
+    | { transcript: string }
+    | { audioBase64: string; audioMime: string; frames?: CompileFrame[] }
 ): Promise<StructuredFinding> {
   const res = await fetch("/api/structure-finding", {
     method: "POST",
@@ -242,10 +245,16 @@ export async function structureFinding(transcript: string): Promise<StructuredFi
  */
 export async function structureFindingFromAudio(
   base64: string,
-  mime: string
+  mime: string,
+  frames?: CompileFrame[]
 ): Promise<StructuredFinding | null> {
   try {
-    return await structureRequest({ audioBase64: base64, audioMime: mime });
+    const prepared = frames?.length ? prepareCompileFrames(frames) : [];
+    return await structureRequest(
+      prepared.length
+        ? { audioBase64: base64, audioMime: mime, frames: prepared }
+        : { audioBase64: base64, audioMime: mime }
+    );
   } catch (e) {
     if (e instanceof AiUnavailableError) return null;
     throw e;
@@ -259,12 +268,15 @@ export async function structureSession(input: {
   transcript?: string;
   durationMs: number;
   track?: RecordedTrack;
+  frames?: CompileFrame[];
 }): Promise<StructuredSession | null> {
   try {
+    const { frames: rawFrames, ...rest } = input;
+    const frames = rawFrames?.length ? prepareCompileFrames(rawFrames) : [];
     const res = await fetch("/api/structure-session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...rest, ...(frames.length ? { frames } : {}) }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

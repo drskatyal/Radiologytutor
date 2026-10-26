@@ -6,8 +6,8 @@
 // (with the laser-pointer overlay) to check it, then SAVE:
 //
 //   1. upload the narration audio   → POST /api/audio  (durable URL)
-//   2. structure it (Gemini STT + structuring) if a key is configured — else a
-//      graceful no-op and the author fills the text in by hand
+//   2. compile it with Gemini Flash (audio, plus viewport stills when the mic
+//      was live) if a key is configured — else the author fills the text in by hand
 //   3. create the finding via lib/cases with its `track` + `audioUrl` + text
 //
 // The created finding is then fully editable in the existing Author UI.
@@ -38,6 +38,7 @@ import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
 import { commitAnnotatedFinding, type RecordedSaveReceipt } from "@/lib/teachingGuide";
 import { LandmarkField } from "./LandmarkField";
 import { RecordedTakeNote } from "./RecordedTakeNote";
@@ -185,10 +186,14 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
     setError("");
     setNotice("");
     try {
-      const result = await structureFindingFromAudio(rr.audio.base64, rr.audio.mimeType);
+      const result = await structureFindingFromAudio(
+        rr.audio.base64,
+        rr.audio.mimeType,
+        rr.frames
+      );
       if (result) {
         setDraft((d) => ({ ...result, landmark: d.landmark }));
-        setNotice("Structured from your narration — review below.");
+        setNotice("Compiled from the recording — review below.");
       } else {
         setNotice("AI structuring is off (no Gemini key). Fill the fields in by hand.");
       }
@@ -521,7 +526,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         {structuring && (
           <div className="flex items-center gap-3 rounded-xl border border-subtle bg-surface px-4 py-3 text-sm text-secondary">
             <Spinner size="sm" />
-            Structuring from your narration…
+            {COMPILING_FROM_RECORDING}
           </div>
         )}
 

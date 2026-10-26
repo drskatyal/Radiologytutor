@@ -100,6 +100,7 @@ before(async () => {
     const [micCapture, setMicCapture] = React.useState<UseRecordReplay["micCapture"]>("unknown");
     const [track, setTrack] = React.useState<RecordedTrack | null>(null);
     const [audio, setAudio] = React.useState<UseRecordReplay["audio"]>(null);
+    const [frames, setFrames] = React.useState<UseRecordReplay["frames"]>([]);
     const phaseRef = React.useRef(phase);
     phaseRef.current = phase;
 
@@ -110,6 +111,7 @@ before(async () => {
       elapsedMs: 1800,
       track,
       audio,
+      frames,
       progress: 0,
       onViewerEvent() {},
       onCursor() {},
@@ -124,15 +126,17 @@ before(async () => {
         const next = capturedTrack();
         setTrack(next);
         setAudio(null);
+        setFrames([]);
         setMicCapture("unavailable");
         setPhase("idle");
-        return { track: next, audio: null };
+        return { track: next, audio: null, frames: [] };
       },
       replay() {},
       stopReplay() {},
       reset() {
         setTrack(null);
         setAudio(null);
+        setFrames([]);
         setMicCapture("unknown");
       },
     };
@@ -192,7 +196,7 @@ before(async () => {
         return (
           text.includes("Start continuous capture") ||
           text.includes("Capturing the viewer") ||
-          text.includes("Structuring session")
+          text.includes("Compiling from recording")
         );
       });
       assert.ok(button instanceof window.HTMLButtonElement, "speak-once mic control");
@@ -229,6 +233,13 @@ function assertSpeakOnceIdle(root: ParentNode) {
   });
   assert.equal(stale.length, 0);
 }
+
+test("speak-once describes compiling from the recording", async () => {
+  await studio.mount();
+  const text = studio.container.textContent ?? "";
+  assert.match(text, /viewport stills/i);
+  assert.doesNotMatch(text, /Transcribing/);
+});
 
 test("stopping speak-once from the transport bar returns the idle mic", async () => {
   await studio.mount();

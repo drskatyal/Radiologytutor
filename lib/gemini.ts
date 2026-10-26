@@ -122,13 +122,22 @@ async function callGemini(
   throw new Error(`Gemini API error ${lastStatus || 500}`);
 }
 
-/** Build a user content part list from optional text + optional audio. */
+/** Build a user content part list from optional stills, audio, and text. */
 export function userParts(opts: {
   text?: string;
   audioBase64?: string;
   audioMime?: string;
+  /** Viewport stills. Each caption is a text part immediately before the image. */
+  images?: Array<{ mimeType: string; data: string; caption?: string }>;
 }): GeminiPart[] {
   const parts: GeminiPart[] = [];
+  for (const image of opts.images ?? []) {
+    if (!image?.data) continue;
+    if (image.caption) parts.push({ text: image.caption });
+    parts.push({
+      inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data },
+    });
+  }
   if (opts.audioBase64) {
     parts.push({
       inlineData: { mimeType: opts.audioMime || "audio/webm", data: opts.audioBase64 },

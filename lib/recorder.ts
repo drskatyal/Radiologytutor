@@ -54,6 +54,7 @@ const MIC_STOP_WAIT_MS = 300;
 export class TrackRecorder {
   private events: RecordedEvent[] = [];
   private t0 = 0;
+  private clockStarted = false;
   private recording = false;
   private lastCursorT = -Infinity;
   private rec: MediaRecorder | null = null;
@@ -77,6 +78,12 @@ export class TrackRecorder {
 
   get isRecording(): boolean {
     return this.recording;
+  }
+
+  /** Milliseconds on the same clock as recorded events. 0 before start. */
+  elapsedMs(): number {
+    if (!this.clockStarted) return 0;
+    return Math.max(0, Math.round(performance.now() - this.t0));
   }
 
   /** The live handle the viewer wires events through. Stable across renders. */
@@ -112,6 +119,7 @@ export class TrackRecorder {
     this.stream = null;
     this.start_ = priming;
     this.t0 = performance.now();
+    this.clockStarted = true;
     this.lastCursorT = -Infinity;
     this.recording = true;
     this.micHold = true;
