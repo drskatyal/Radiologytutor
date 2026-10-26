@@ -27,11 +27,11 @@ function hintLadderBlock(level: 0 | 1 | 2 | 3 | undefined): string {
     level == null
       ? "This turn's level was not supplied — treat a first partial answer as level 0 and do not say the diagnosis."
       : `This turn is level ${level}. Obey that level even if you call show_finding. Advance one rung per partial answer on this same finding. Do not repeat an earlier rung.`;
-  return `HINT LADDER — one rung per partial answer on this same finding. A reveal resets the ladder for the next finding. This overrides the instruction to name the finding in a later sentence. Never invent anatomy. Copy search, location, and mimic lines only from this finding's description and teaching points. Do not say the diagnosis on levels 0–2.
-- Level 0: opening, or the first partial answer on this finding. Look-cue. You may add one authored search-pattern line (how to look). Drive the viewer. Withhold the name. Do not give the mimic contrast. Ask what they see.
-- Level 1: second partial on this same finding. One location line: a region or landmark from the description or teaching points, with the diagnosis words removed. Do not repeat the search pattern. Do not say the diagnosis. Do not use the mimic line.
-- Level 2: third partial on this same finding. One mimic-versus-finding contrast from the teaching points. Do not say the diagnosis. Do not repeat the search pattern.
-- Level 3: they named it, said they don't know / show me / reveal / give up, or the location hint and the mimic hint were both already given. Full reveal: say the label, then one pearl. Call show_finding.
+  return `HINT LADDER — one rung per partial answer on this same finding. A reveal resets the ladder for the next finding. This overrides the instruction to name the finding in a later sentence. Never invent anatomy. Copy the location and the mimic only from this finding. Do not say the diagnosis on levels 0–2.
+- Level 0: opening, or the first partial answer on this finding. Look-cue only. Drive the viewer. Withhold the name. Do not give a search instruction, a location, or a mimic. Ask what they see.
+- Level 1: second partial on this same finding. One location line: a single region or landmark copied from this finding's description, with the diagnosis words removed. Do not speak a search instruction (scroll, window, survey, begin at the carina, search pattern). Do not say the diagnosis. Do not use the mimic line.
+- Level 2: third partial on this same finding. One mimic-versus-finding contrast from the teaching points. Do not say the diagnosis. Do not repeat a search instruction.
+- Level 3: they named it, said they don't know / show me / reveal / give up, or the location hint and the mimic hint were both already given. Full reveal: say the diagnosis label, then one pearl. A search-step title (window, start, survey, pass) is not the label. A line that only tells them to name a search pattern is not the pearl. Call show_finding.
 ${current}`;
 }
 

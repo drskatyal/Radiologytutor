@@ -9,7 +9,12 @@
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
-import { ensureSpokenAnswer, examHintLevel, type SpokenFindingSource } from "./tutorSpeech";
+import {
+  ensureSpokenAnswer,
+  examHintLevel,
+  seatExamReveal,
+  type SpokenFindingSource,
+} from "./tutorSpeech";
 import {
   HARNESS_VIEWER_TOOLS,
   harnessActionFromCall,
@@ -438,27 +443,15 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     contents,
   });
 
-  let actions = result.functionCalls
+  const called = result.functionCalls
     .map((call) => toAction(call))
     .filter((a) => a.type !== "none");
 
   // Reveal without a seat leaves the slice still and Located unchanged.
-  // Teach-out drives the current finding when the model only talked.
-  if ((input.mode === "socratic" || input.mode === "viva") && hintLevel >= 3) {
-    const findingId = input.currentFindingId ?? hinted?.id;
-    const seats = new Set([
-      "show_finding",
-      "play_guide",
-      "point_to",
-      "next_in_tour",
-      "prev_in_tour",
-      "scroll_to",
-      "zoom_to",
-    ]);
-    if (findingId && !actions.some((action) => seats.has(action.type))) {
-      actions = [{ type: "show_finding", findingId }, ...actions];
-    }
-  }
+  const actions =
+    input.mode === "socratic" || input.mode === "viva"
+      ? seatExamReveal(called, hintLevel, input.currentFindingId ?? hinted?.id)
+      : called;
 
   // Tool-only replies leave Discussion blank and stall Teach on speech onEnd.
   // Fill a drive-first line from the authored finding; never invent anatomy.

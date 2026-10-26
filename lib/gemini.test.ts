@@ -252,6 +252,76 @@ describe("runTeachingPlan spoken answer", { concurrency: 1 }, () => {
       assert.match(reveal.answer, /skin fold/i);
       assert.equal(reveal.actions[0]?.type, "show_finding");
       assert.equal(reveal.actions[0] && "findingId" in reveal.actions[0] ? reveal.actions[0].findingId : "", "f_ptx");
+
+      const lidc = {
+        id: "f_lidc",
+        label: "Peripheral nodule",
+        description:
+          "Round opacity in the periphery of the right upper lobe. Begin at the carina and scroll inferiorly through both lungs.",
+        teachingPoints: [
+          "Lung window — start mid-chest",
+          "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+          "If it vanishes on the next slice it is a vessel, not a nodule.",
+        ],
+        order: 1,
+      };
+      parts = [
+        {
+          text: "Follow the pointer. Begin at the carina and scroll inferiorly through both lungs.",
+        },
+        { functionCall: { name: "point_to", args: { findingId: "f_search" } } },
+      ];
+      const lidcSecond = await runTeachingPlan({
+        caseTitle: "LIDC nodule search",
+        modality: "CT",
+        mode: "socratic",
+        findingsContext: "id=f_lidc",
+        currentFindingId: "f_lidc",
+        findings: [
+          {
+            id: "f_search",
+            label: "Lung window — start mid-chest",
+            description:
+              "Set a narrow lung window. Begin at the carina and scroll inferiorly through both lungs.",
+            teachingPoints: [
+              "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+            ],
+            order: 0,
+          },
+          lidc,
+        ],
+        question: "still not sure",
+        history: [
+          { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
+          { role: "assistant", text: "Follow the pointer. What do you see?", findingId: "f_lidc" },
+        ],
+      });
+      assert.match(systemInstruction, /this turn is level 1/i);
+      assert.match(lidcSecond.answer, /periphery|right upper lobe/i);
+      assert.doesNotMatch(lidcSecond.answer, /\bcarina\b/i);
+      assert.doesNotMatch(lidcSecond.answer, /\bscroll\b/i);
+
+      parts = [
+        {
+          text: "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+        },
+      ];
+      const lidcReveal = await runTeachingPlan({
+        caseTitle: "LIDC nodule search",
+        modality: "CT",
+        mode: "socratic",
+        findingsContext: "id=f_lidc",
+        currentFindingId: "f_lidc",
+        findings: [lidc],
+        question: "I don't know. Please show me this finding and teach it.",
+        history: [{ role: "user", text: "is it a vessel?", findingId: "f_lidc" }],
+      });
+      assert.match(systemInstruction, /this turn is level 3/i);
+      assert.match(lidcReveal.answer, /Peripheral nodule/);
+      assert.match(lidcReveal.answer, /vessel, not a nodule/i);
+      assert.doesNotMatch(lidcReveal.answer, /Lung window — start mid-chest/i);
+      assert.doesNotMatch(lidcReveal.answer, /search pattern/i);
+      assert.equal(lidcReveal.actions[0]?.type, "show_finding");
     } finally {
       globalThis.fetch = prevFetch;
       if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
