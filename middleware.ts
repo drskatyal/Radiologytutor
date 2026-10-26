@@ -25,6 +25,7 @@ import { NextResponse, type NextRequest } from "next/server";
 export const config = {
   matcher: [
     "/api/tutor",
+    "/api/tour-check-in",
     "/api/transcribe",
     "/api/transcribe-narration",
     "/api/tts",
@@ -52,6 +53,8 @@ const MINUTE = 60_000;
 const BUDGETS: Record<string, Budget> = {
   // A student asking questions: a handful of turns a minute.
   "/api/tutor": { limit: 20, windowMs: MINUTE, maxBodyBytes: 256 * 1024 },
+  // One check-in per finding. The body is teaching text, not audio.
+  "/api/tour-check-in": { limit: 30, windowMs: MINUTE, maxBodyBytes: 32 * 1024 },
   // Mic capture — base64 audio, so allow real size but bound it.
   "/api/transcribe": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
   "/api/transcribe-narration": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },

@@ -237,6 +237,11 @@ export interface TeachBeat {
   say?: string;
   /** Which attending act this beat is. Pearl names the finding; earlier acts do not. */
   act?: TeachAct;
+  /**
+   * Pause for a text check-in before this beat's reveal. When no beat sets
+   * this, the commit act is the decision. Options are words, not coordinates.
+   */
+  decision?: boolean;
 }
 
 /**

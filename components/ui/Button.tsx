@@ -41,6 +41,8 @@ export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   loading?: boolean;
+  /** Keep the full label. The default truncates a single line. */
+  wrap?: boolean;
   /** Icon rendered before the label. */
   leadingIcon?: React.ReactNode;
   /** Icon rendered after the label. */
@@ -53,6 +55,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       variant = "primary",
       size = "md",
       loading = false,
+      wrap = false,
       leadingIcon,
       trailingIcon,
       disabled,
@@ -69,7 +72,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         type={type}
         disabled={disabled || loading}
         aria-busy={loading || undefined}
-        className={cn(buttonVariants({ variant, size }), className)}
+        className={cn(
+          buttonVariants({ variant, size }),
+          wrap && "h-auto whitespace-normal",
+          className
+        )}
         {...props}
       >
         {loading ? (
@@ -79,7 +86,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
             <span className="shrink-0 [&_svg]:h-4 [&_svg]:w-4">{leadingIcon}</span>
           )
         )}
-        {children && <span className="truncate">{children}</span>}
+        {children && (
+          <span className={wrap ? "min-w-0 whitespace-normal text-left" : "truncate"}>
+            {children}
+          </span>
+        )}
         {!loading && trailingIcon && (
           <span className="shrink-0 transition-transform duration-150 group-hover/btn:translate-x-0.5 [&_svg]:h-4 [&_svg]:w-4">
             {trailingIcon}
