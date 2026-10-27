@@ -8,7 +8,7 @@
 // marker — no new imaging infra.
 
 import dynamic from "next/dynamic";
-import { useEffect, useRef, type MouseEvent, type MutableRefObject } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type MutableRefObject } from "react";
 import { Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { OpenSlice } from "@/lib/viewerLoad";
@@ -188,6 +188,10 @@ function ImagingPane({
   onLocateClick?: (x: number, y: number) => void;
 }) {
   const hitRef = useRef<HTMLDivElement>(null);
+  // Markers and the laser are stored in stack-image fractions. Hide them
+  // while MPR is up so they are not drawn across the three planes.
+  const [layout, setLayout] = useState<"stack" | "mpr">("stack");
+  const stackOverlay = layout === "stack";
 
   function handleLocate(e: MouseEvent<HTMLButtonElement>) {
     const el = hitRef.current;
@@ -214,22 +218,25 @@ function ImagingPane({
         onReady={onReady}
         instanceId={instanceId}
         className="h-full w-full bg-imaging"
+        onViewModeChange={setLayout}
       />
 
       <div ref={hitRef} className="pointer-events-none absolute inset-0">
-        {marker && <FindingMarker marker={marker} visible={markerVisible} />}
-        {measurements && measurements.length > 0 && (
+        {stackOverlay && marker && <FindingMarker marker={marker} visible={markerVisible} />}
+        {stackOverlay && measurements && measurements.length > 0 && (
           <MeasurementOverlay
             measurements={measurements}
             visible={Boolean(measurementsVisible)}
           />
         )}
-        <ReplayOverlay
-          ref={(h) => {
-            overlay.current = h;
-          }}
-          active={replaying}
-        />
+        {stackOverlay && (
+          <ReplayOverlay
+            ref={(h) => {
+              overlay.current = h;
+            }}
+            active={replaying}
+          />
+        )}
         {locateMode && onLocateClick && (
           <button
             type="button"
