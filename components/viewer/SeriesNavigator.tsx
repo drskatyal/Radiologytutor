@@ -3,36 +3,34 @@
 // SeriesNavigator — the PACS series rail.
 //
 // A vertical list of the case's series (Pacsbin-style). Each card shows a cover
-// thumbnail (the series' first frame, rendered straight from the WADO-RS proxy),
+// thumbnail (the series' middle slice, rendered straight from the WADO-RS proxy),
 // modality + description + image count. Clicking a card loads that series into
 // the main viewport; the active series is highlighted. Fully keyboard-driven
 // (roving list of real <button>s, Up/Down to move, Enter/Space to select).
 //
 // Design-system only: tokens, lucide icons, calm/dense reading-room look. The
 // thumbnail uses a tiny rendered JPEG (96px) from /api/dicomweb so we don't
-// stand up a second Cornerstone canvas per series.
+// stand up a second Cornerstone canvas per series. Covers are withheld until
+// the caller says the main image is up (`thumbPending`).
 
 import { useRef, useState } from "react";
 import { ImageOff, Layers, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
-import type { CaseSeries } from "@/lib/viewerSource";
+import { seriesThumbUrl, type RailEntry } from "@/lib/seriesRail";
 
-/** WADO-RS rendered cover for a series' first instance (small JPEG via proxy). */
-function thumbUrl(s: CaseSeries): string | null {
-  if (!s.thumbnailInstanceUID) return null;
-  return (
-    `${s.wadoRsRoot}/studies/${encodeURIComponent(s.studyInstanceUID)}` +
-    `/series/${encodeURIComponent(s.seriesInstanceUID)}` +
-    `/instances/${encodeURIComponent(s.thumbnailInstanceUID)}/rendered?viewport=96,96`
-  );
-}
-
-function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }) {
-  const url = thumbUrl(series);
+function SeriesThumb({ series, active }: { series: RailEntry; active: boolean }) {
+  const url = series.thumbPending ? null : seriesThumbUrl(series);
+  const [seen, setSeen] = useState(url);
   const [state, setState] = useState<"loading" | "loaded" | "error">(
     url ? "loading" : "error"
   );
+  // The cover SOP arrives after the main image. Reset the load state with it
+  // or a withheld thumb stays on the broken-image icon.
+  if (url !== seen) {
+    setSeen(url);
+    setState(url ? "loading" : "error");
+  }
 
   return (
     <div
@@ -46,7 +44,7 @@ function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }
         <img
           src={url}
           alt=""
-          loading="lazy"
+          loading="eager"
           className={cn(
             "h-full w-full object-cover transition-opacity duration-200",
             state === "loaded" ? "opacity-100" : "opacity-0"
@@ -55,13 +53,13 @@ function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }
           onError={() => setState("error")}
         />
       )}
-      {url && state === "loading" && (
+      {(series.thumbPending || (url && state === "loading")) && (
         <Loader2
           className="absolute h-4 w-4 animate-spin text-white/80"
           aria-hidden="true"
         />
       )}
-      {state === "error" && (
+      {!series.thumbPending && state === "error" && (
         <ImageOff className="h-5 w-5 text-white/80" aria-hidden="true" />
       )}
     </div>
@@ -75,7 +73,7 @@ export function SeriesNavigator({
   loading = false,
   className,
 }: {
-  series: CaseSeries[];
+  series: RailEntry[];
   /** Index of the series currently in the viewport. */
   activeIndex: number;
   /** Load a series into the main viewport (by index). */
@@ -155,7 +153,11 @@ export function SeriesNavigator({
                     }}
                     type="button"
                     aria-current={active ? "true" : undefined}
-                    aria-label={`${title}${s.modality ? `, ${s.modality}` : ""}, ${s.instanceCount} image${s.instanceCount === 1 ? "" : "s"}`}
+                    aria-label={
+                      s.countPending
+                        ? `${title}${s.modality ? `, ${s.modality}` : ""}, image count loading`
+                        : `${title}${s.modality ? `, ${s.modality}` : ""}, ${s.instanceCount} image${s.instanceCount === 1 ? "" : "s"}`
+                    }
                     title={title}
                     onClick={() => onSelect(i)}
                     onKeyDown={(e) => onKeyDown(e, i)}
@@ -183,9 +185,16 @@ export function SeriesNavigator({
                             {s.modality}
                           </Badge>
                         )}
-                        <span>
-                          {s.instanceCount} image{s.instanceCount === 1 ? "" : "s"}
-                        </span>
+                        {s.countPending ? (
+                          <span
+                            className="inline-block h-2.5 w-12 animate-pulse rounded bg-elevated"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <span>
+                            {s.instanceCount} image{s.instanceCount === 1 ? "" : "s"}
+                          </span>
+                        )}
                         {s.seriesNumber != null && <span>· #{s.seriesNumber}</span>}
                       </span>
                     </span>
