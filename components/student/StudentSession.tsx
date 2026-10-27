@@ -399,6 +399,8 @@ export default function StudentSession({
           <ImagingLayout
             fill
             series={series}
+            listedSeries={manifest?.series}
+            mainImageReady={s.ready}
             activeIndex={activeSeriesIndex}
             onSelectSeries={(index) => {
               const uid = series[index]?.seriesInstanceUID;

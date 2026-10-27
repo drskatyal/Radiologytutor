@@ -99,6 +99,9 @@ function seriesMetaFrom(row: DicomJson, seriesUid: string, firstInstanceUID?: st
     modality: dicomJsonString(row, "00080060"),
     seriesDescription: dicomJsonString(row, "0008103E"),
     seriesNumber: dicomJsonNumber(row, "00200011"),
+    // Healthcare QIDO does not return NumberOfSeriesRelatedInstances (0020,1209),
+    // even when includefield asks for it. Missing means 0 here. The series rail
+    // does not trust this field — it counts the instance list (lib/seriesRail.ts).
     instanceCount: dicomJsonNumber(row, "00201209") ?? 0,
     firstInstanceUID,
   };
