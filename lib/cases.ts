@@ -47,6 +47,7 @@ import type {
   Course,
   Playlist,
   Membership,
+  Org,
   Enrollment,
   Progress,
   WishlistItem,
@@ -206,6 +207,7 @@ type CollectionName =
   | "courses"
   | "playlists"
   | "users"
+  | "orgs"
   | "memberships"
   | "enrollments"
   | "progress"
@@ -468,6 +470,7 @@ const authorsStore = collection<Author>("authors");
 const coursesStore = collection<Course>("courses");
 const playlistsStore = collection<Playlist>("playlists");
 const usersStore = collection<User>("users");
+const orgsStore = collection<Org>("orgs");
 const membershipsStore = collection<Membership>("memberships");
 const enrollmentsStore = collection<Enrollment>("enrollments");
 const progressStore = collection<Progress>("progress");
@@ -1486,17 +1489,100 @@ export async function updateUser(
 }
 
 /**
- * After Better Auth creates a user, ensure a domain User + org membership
- * exist. Looks up by email first so demo identities and re-signups link.
+ * Public email/Google sign-up is a teacher. `"student"` is only for an
+ * explicit learner sign-up.
+ */
+export type AuthSignupIntent = "teacher" | "student";
+
+export async function getOrg(orgId: string): Promise<Org | null> {
+  return orgsStore.get(orgId);
+}
+
+function teachingOrgName(name: string | undefined, email: string): string {
+  return name?.trim() || email.split("@")[0]?.trim() || "Teacher";
+}
+
+/** A personal org the teacher owns. Not the shared demo tenant. */
+async function createPersonalOrg(name: string): Promise<Org> {
+  const org: Org = {
+    id: genId("org"),
+    name,
+    createdAt: nowIso(),
+  };
+  await orgsStore.put(org);
+  return org;
+}
+
+async function ensureOrgRecord(orgId: string, name: string): Promise<void> {
+  if (await orgsStore.get(orgId)) return;
+  const org: Org = { id: orgId, name, createdAt: nowIso() };
+  await orgsStore.put(org);
+}
+
+/**
+ * Seed a membership when the user has none.
+ * A teacher never receives an author seat on the shared demo org.
+ * Existing memberships are not rewritten.
+ */
+async function ensureSignupMembership(user: User, intent: AuthSignupIntent): Promise<void> {
+  const mems = await listMembershipsForUser(user.id);
+  if (mems.length > 0) return;
+
+  if (user.platformRole === "super_admin") {
+    await createMembership({
+      userId: user.id,
+      orgId: user.orgId || DEFAULT_ORG_ID,
+      role: "owner",
+    });
+    return;
+  }
+
+  if (intent === "student") {
+    await createMembership({
+      userId: user.id,
+      orgId: user.orgId || DEFAULT_ORG_ID,
+      role: "student",
+    });
+    return;
+  }
+
+  let orgId = user.orgId;
+  if (!orgId || orgId === DEFAULT_ORG_ID) {
+    const org = await createPersonalOrg(teachingOrgName(user.name, user.email));
+    orgId = org.id;
+    await updateUser(user.id, { orgId, role: "author" });
+  } else {
+    await ensureOrgRecord(orgId, teachingOrgName(user.name, user.email));
+    if (user.role !== "author") await updateUser(user.id, { role: "author" });
+  }
+  await createMembership({
+    userId: user.id,
+    orgId,
+    role: "author",
+  });
+}
+
+/**
+ * After Better Auth creates a user (email or Google), ensure a domain User and
+ * an org membership exist. Looks up by email first so demo identities and
+ * re-signups link.
+ *
+ * Default public sign-up is a teacher: a personal org with membership role
+ * `author`, which is what `requireAuthorOrg` checks. Pass `intent: "student"`
+ * only for an explicit learner sign-up (shared `org_demo` student seat).
+ * Existing memberships are kept — a learner is not promoted and a teacher is
+ * not demoted.
  */
 export async function provisionAuthUser(input: {
   authProviderId: string;
   email: string;
   name?: string;
   image?: string;
+  intent?: AuthSignupIntent;
 }): Promise<User> {
   await ensureDemoIdentity();
   const email = normalizeEmail(input.email);
+  const intent: AuthSignupIntent = input.intent === "student" ? "student" : "teacher";
   const existing =
     (await getUserByAuthProviderId(input.authProviderId)) ?? (await getUserByEmail(email));
   if (existing) {
@@ -1507,30 +1593,34 @@ export async function provisionAuthUser(input: {
       image: input.image ?? existing.image,
     };
     await usersStore.put(updated);
-    const mems = await listMembershipsForUser(updated.id);
-    if (mems.length === 0) {
-      await createMembership({
-        userId: updated.id,
-        orgId: updated.orgId || DEFAULT_ORG_ID,
-        role: updated.platformRole === "super_admin" ? "owner" : "student",
-      });
-    }
-    return updated;
+    await ensureSignupMembership(updated, intent);
+    return (await getUser(updated.id)) ?? updated;
   }
+
+  if (intent === "student") {
+    const user = await createUser({
+      email,
+      name: input.name,
+      image: input.image,
+      role: "student",
+      authProviderId: input.authProviderId,
+      orgId: DEFAULT_ORG_ID,
+    });
+    await ensureSignupMembership(user, "student");
+    return (await getUser(user.id)) ?? user;
+  }
+
+  const org = await createPersonalOrg(teachingOrgName(input.name, email));
   const user = await createUser({
     email,
     name: input.name,
     image: input.image,
-    role: "student",
+    role: "author",
     authProviderId: input.authProviderId,
-    orgId: DEFAULT_ORG_ID,
+    orgId: org.id,
   });
-  await createMembership({
-    userId: user.id,
-    orgId: DEFAULT_ORG_ID,
-    role: "student",
-  });
-  return user;
+  await ensureSignupMembership(user, "teacher");
+  return (await getUser(user.id)) ?? user;
 }
 
 export async function listMemberships(orgId: string): Promise<Membership[]> {
