@@ -50,10 +50,10 @@ export function prefetchNeighborImageIds(
         const imageId = imageIds[index];
         if (!imageId || !loader?.loadAndCacheImage) continue;
         try {
-          const queued = loader.loadAndCacheImage(
-            imageId,
-            requestType ? { requestType } : undefined
-          ) as { promise?: Promise<unknown> } | Promise<unknown>;
+          const queued = loader.loadAndCacheImage(imageId, {
+            priority: -5,
+            requestType: requestType ?? "prefetch",
+          }) as { promise?: Promise<unknown> } | Promise<unknown>;
           const promise =
             queued && typeof queued === "object" && "promise" in queued ? queued.promise : queued;
           void Promise.resolve(promise).catch(() => undefined);
@@ -114,7 +114,7 @@ async function fetchInstanceMetadata(
   study: string,
   series: string,
   sop: string,
-  signal: AbortSignal
+  signal: AbortSignal | undefined
 ): Promise<unknown | null> {
   const url =
     `${root.replace(/\/$/, "")}/studies/${study}` +
