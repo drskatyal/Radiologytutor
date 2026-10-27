@@ -1,7 +1,8 @@
 import { cn } from "@/components/ui/cn";
 
 /**
- * RadLearn mark. A reticle on black, drawn as a single stroke weight.
+ * RadLearn mark: a slice stack plus the attending voice.
+ * Cobalt square, white strokes. No reticle.
  */
 export function BrandMark({
   className,
@@ -15,29 +16,30 @@ export function BrandMark({
       ? "h-16 w-16"
       : size === "lg"
         ? "h-12 w-12"
-        : size === "sm"
-          ? "h-8 w-8"
-          : "h-8 w-8";
+        : "h-8 w-8";
 
   return (
     <span
       className={cn(
-        "relative inline-flex shrink-0 items-center justify-center rounded-lg bg-imaging text-primary",
+        "relative inline-flex shrink-0 items-center justify-center rounded-lg bg-accent text-white",
         box,
         className
       )}
       aria-hidden="true"
     >
-      <svg viewBox="0 0 32 32" className="h-4/5 w-4/5" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="16" cy="16" r="11" stroke="currentColor" strokeWidth="1.25" />
-        <circle cx="16" cy="16" r="3.5" stroke="currentColor" strokeWidth="1.25" />
-        <path d="M16 3.5v5M16 23.5V29M3.5 16h5M23.5 16H29" stroke="currentColor" strokeWidth="1.25" />
+      <svg viewBox="0 0 32 32" className="h-4/5 w-4/5" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="11" height="3" rx="1" opacity="0.5" />
+        <rect x="6" y="11" width="15" height="3" rx="1" opacity="0.75" />
+        <rect x="6" y="16" width="20" height="3" rx="1" />
+        <rect x="8" y="22" width="2.2" height="5" rx="1" />
+        <rect x="12.4" y="20" width="2.2" height="7" rx="1" />
+        <rect x="16.8" y="22" width="2.2" height="5" rx="1" />
       </svg>
     </span>
   );
 }
 
-/** Wordmark. One typeface, one weight step, no second color split. */
+/** Wordmark. One typeface. "Learn" carries the signal color. */
 export function Wordmark({
   className,
   size = "md",
@@ -55,8 +57,9 @@ export function Wordmark({
           : "text-lg";
 
   return (
-    <span className={cn("font-sans font-semibold tracking-tight text-primary", text, className)}>
-      RadLearn
+    <span className={cn("font-sans tracking-tight", text, className)}>
+      <span className="font-medium text-primary">Rad</span>
+      <span className="font-semibold text-accent">Learn</span>
     </span>
   );
 }

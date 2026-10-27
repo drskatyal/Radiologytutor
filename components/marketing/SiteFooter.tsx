@@ -1,11 +1,12 @@
 import Link from "next/link";
+import { Wordmark } from "@/components/brand/BrandMark";
 
 export function SiteFooter() {
   return (
     <footer className="bg-surface">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-12 sm:flex-row sm:items-end sm:justify-between sm:px-8">
         <div className="max-w-[65ch]">
-          <p className="text-sm font-semibold text-primary">RadLearn</p>
+          <Wordmark size="sm" />
           <p className="mt-2 text-sm text-secondary text-pretty">
             Teach radiology on the DICOM study. A teaching product, not a diagnostic device.
           </p>

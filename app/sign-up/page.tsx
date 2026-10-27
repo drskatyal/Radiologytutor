@@ -25,7 +25,7 @@ export default function SignUpPage({
           <BrandMark size="lg" />
           <Wordmark size="lg" />
         </Link>
-        <div className="rounded-2xl bg-surface p-6">
+        <div className="rounded-2xl border border-subtle bg-surface p-6 shadow-sm">
           <AuthForm
             mode="sign-up"
             googleEnabled={googleAuthEnabled()}

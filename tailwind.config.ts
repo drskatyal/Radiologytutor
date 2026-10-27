@@ -4,7 +4,7 @@ import animate from "tailwindcss-animate";
 /**
  * RadLearn design tokens.
  *
- * Neutral dark surfaces from the design scale. Imaging stays pure black
+ * Paper canvas, white surfaces, cobalt signal. Imaging stays pure black
  * (`bg-imaging`). `ease-draw` is cubic-bezier(0.22, 1, 0.36, 1).
  */
 const config: Config = {
@@ -68,9 +68,9 @@ const config: Config = {
         "3xl": "1.25rem",
       },
       boxShadow: {
-        sm: "0 1px 2px 0 rgb(0 0 0 / 0.35)",
-        md: "0 4px 12px -2px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.3)",
-        lg: "0 12px 28px -8px rgb(0 0 0 / 0.5), 0 4px 8px -4px rgb(0 0 0 / 0.35)",
+        sm: "0 1px 2px 0 rgb(18 18 18 / 0.06)",
+        md: "0 8px 24px -8px rgb(18 18 18 / 0.12)",
+        lg: "0 24px 48px -16px rgb(18 18 18 / 0.16)",
         focus: "0 0 0 3px rgb(var(--accent) / 0.3)",
         glow: "0 0 0 1px rgb(var(--accent) / 0.4)",
       },
@@ -119,6 +119,14 @@ const config: Config = {
         shimmer: {
           "100%": { transform: "translateX(100%)" },
         },
+        "slice-drift": {
+          "0%, 100%": { transform: "translateY(0)" },
+          "50%": { transform: "translateY(-8px)" },
+        },
+        "voice-level": {
+          "0%, 100%": { transform: "scaleY(0.4)" },
+          "50%": { transform: "scaleY(1)" },
+        },
       },
       animation: {
         "marker-pulse": "marker-pulse 1.6s infinite",
@@ -128,6 +136,8 @@ const config: Config = {
         "overlay-in": "overlay-in 0.3s cubic-bezier(0.22, 1, 0.36, 1)",
         "modal-in": "modal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1)",
         shimmer: "shimmer 1.6s infinite",
+        "slice-drift": "slice-drift 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite",
+        "voice-level": "voice-level 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite",
       },
     },
   },

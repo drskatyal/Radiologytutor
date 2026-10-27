@@ -14,14 +14,14 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Funnel,
-  GraduationCap,
   MagnifyingGlass,
   SlidersHorizontal,
   SquaresFour,
-  UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { TeachMotif } from "@/components/brand/TeachMotif";
+import { TeachStage } from "@/components/marketing/TeachStage";
 import {
   Badge,
   Button,
@@ -397,27 +397,30 @@ function FilterSelect({
 
 function LibraryStart({ teachHref, uploadHref }: { teachHref: string; uploadHref: string }) {
   return (
-    <section className="grid gap-6 py-8 md:grid-cols-2" aria-label="Empty library">
-      <EmptyState
-        icon={<UploadSimple aria-hidden="true" weight="regular" />}
-        title="Upload a study"
-        description="Start with a DICOM study you are allowed to teach from. It stays private until you publish the teach."
-        action={
-          <Link href={uploadHref}>
-            <Button variant="secondary">Upload a study</Button>
-          </Link>
-        }
-      />
-      <EmptyState
-        icon={<GraduationCap aria-hidden="true" weight="regular" />}
-        title="Record your first teach"
-        description="Scroll, window, and narrate the finding. Registrars replay that path with the tutor on the same study."
-        action={
-          <Link href={teachHref}>
-            <Button>Record your first teach</Button>
-          </Link>
-        }
-      />
+    <section className="grid items-center gap-8 py-8 md:grid-cols-2" aria-label="Empty library">
+      <TeachStage compact />
+      <div className="flex flex-col gap-6">
+        <EmptyState
+          icon={<TeachMotif kind="stack" />}
+          title="Upload a study"
+          description="Start with a DICOM study you are allowed to teach from. It stays private until you publish the teach."
+          action={
+            <Link href={uploadHref}>
+              <Button variant="secondary">Upload a study</Button>
+            </Link>
+          }
+        />
+        <EmptyState
+          icon={<TeachMotif kind="voice" />}
+          title="Record your first teach"
+          description="Scroll, window, and narrate the finding. Registrars replay that path with the tutor on the same study."
+          action={
+            <Link href={teachHref}>
+              <Button>Start teaching</Button>
+            </Link>
+          }
+        />
+      </div>
     </section>
   );
 }

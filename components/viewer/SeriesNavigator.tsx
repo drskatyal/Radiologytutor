@@ -57,12 +57,12 @@ function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }
       )}
       {url && state === "loading" && (
         <Loader2
-          className="absolute h-4 w-4 animate-spin text-muted"
+          className="absolute h-4 w-4 animate-spin text-white/80"
           aria-hidden="true"
         />
       )}
       {state === "error" && (
-        <ImageOff className="h-5 w-5 text-muted" aria-hidden="true" />
+        <ImageOff className="h-5 w-5 text-white/80" aria-hidden="true" />
       )}
     </div>
   );
