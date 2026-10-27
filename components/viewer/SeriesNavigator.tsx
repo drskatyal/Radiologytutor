@@ -73,6 +73,7 @@ export function SeriesNavigator({
   loading = false,
   className,
   headerAccessory,
+  appearance = "paper",
 }: {
   series: RailEntry[];
   /** Index of the series currently in the viewport. */
@@ -84,7 +85,10 @@ export function SeriesNavigator({
   className?: string;
   /** Collapse control, kept in the header row so it does not cover thumbnails. */
   headerAccessory?: ReactNode;
+  /** Dark chrome sits on the black viewport (narrow, fullscreen, exam overlay). */
+  appearance?: "paper" | "dark";
 }) {
+  const dark = appearance === "dark";
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Roving keyboard navigation across the rail.
@@ -104,19 +108,38 @@ export function SeriesNavigator({
     <nav
       aria-label="Series"
       className={cn(
-        "flex h-full min-h-0 flex-col border-subtle bg-surface",
+        "flex h-full min-h-0 flex-col",
+        dark ? "border-white/10 bg-[#121212] text-white" : "border-subtle bg-surface",
         className
       )}
     >
-      <div className="flex items-center gap-2 border-b border-subtle px-3 py-1.5">
-        <Layers className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-secondary">
+      <div
+        className={cn(
+          "flex min-h-11 items-center gap-2 border-b px-2 py-1",
+          dark ? "border-white/10" : "border-subtle"
+        )}
+      >
+        <Layers
+          className={cn("h-4 w-4 shrink-0", dark ? "text-white/70" : "text-muted")}
+          aria-hidden="true"
+        />
+        <h2
+          className={cn(
+            "text-xs font-semibold uppercase tracking-wide",
+            dark ? "text-white/80" : "text-secondary"
+          )}
+        >
           Series
         </h2>
         {(!loading && series.length > 0) || headerAccessory ? (
           <div className="ml-auto flex items-center gap-1.5">
             {!loading && series.length > 0 && (
-              <span className="rounded-full bg-elevated px-2 py-0.5 text-[11px] tabular-nums text-muted">
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                  dark ? "bg-white/10 text-white/70" : "bg-elevated text-muted"
+                )}
+              >
                 {series.length}
               </span>
             )}
@@ -131,7 +154,10 @@ export function SeriesNavigator({
             {Array.from({ length: 4 }).map((_, i) => (
               <li
                 key={i}
-                className="flex items-center gap-3 rounded-lg border border-subtle bg-elevated/40 p-2"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg border p-2",
+                  dark ? "border-white/10 bg-white/5" : "border-subtle bg-elevated/40"
+                )}
               >
                 <div className="h-14 w-14 shrink-0 animate-pulse rounded-md bg-elevated" />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -143,8 +169,10 @@ export function SeriesNavigator({
           </ul>
         ) : series.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 py-8 text-center">
-            <ImageOff className="h-6 w-6 text-muted" aria-hidden="true" />
-            <p className="text-xs text-muted">No series available for this case.</p>
+            <ImageOff className={cn("h-6 w-6", dark ? "text-white/70" : "text-muted")} aria-hidden="true" />
+            <p className={cn("text-xs", dark ? "text-white/70" : "text-muted")}>
+              No series available for this case.
+            </p>
           </div>
         ) : (
           <ul className="flex flex-col gap-1.5">
@@ -170,11 +198,13 @@ export function SeriesNavigator({
                     onClick={() => onSelect(i)}
                     onKeyDown={(e) => onKeyDown(e, i)}
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors",
+                      "flex min-h-11 w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
                       active
-                        ? "border-accent/50 bg-accent/10"
-                        : "border-subtle bg-elevated/40 hover:border-strong hover:bg-elevated"
+                        ? "border-accent/50 bg-accent/15"
+                        : dark
+                          ? "border-white/10 bg-white/5 hover:border-white/25 hover:bg-white/10"
+                          : "border-subtle bg-elevated/40 hover:border-strong hover:bg-elevated"
                     )}
                   >
                     <SeriesThumb series={s} active={active} />
@@ -182,12 +212,23 @@ export function SeriesNavigator({
                       <span
                         className={cn(
                           "truncate text-sm font-medium",
-                          active ? "text-primary" : "text-secondary"
+                          dark
+                            ? active
+                              ? "text-white"
+                              : "text-white/80"
+                            : active
+                              ? "text-primary"
+                              : "text-secondary"
                         )}
                       >
                         {title}
                       </span>
-                      <span className="flex flex-wrap items-center gap-1.5 text-[11px] tabular-nums text-muted">
+                      <span
+                        className={cn(
+                          "flex flex-wrap items-center gap-1.5 text-[11px] tabular-nums",
+                          dark ? "text-white/65" : "text-muted"
+                        )}
+                      >
                         {s.modality && (
                           <Badge variant={active ? "accent" : "neutral"}>
                             {s.modality}

@@ -6,6 +6,12 @@
 
 export const SERIES_RAIL_STORAGE_KEY = "radlearn.seriesRailOpen";
 
+/**
+ * Phone and portrait-tablet preference. Kept separate from the wide key so a
+ * desktop "open" choice cannot force the rail over a narrow image.
+ */
+export const SERIES_RAIL_NARROW_STORAGE_KEY = "radlearn.seriesRailOpenNarrow";
+
 /** Unmodified `[` toggles the rail. Shared by the viewer and the cheatsheet. */
 export const SERIES_RAIL_TOGGLE_KEY = "[";
 
@@ -35,6 +41,41 @@ export function writeSeriesRailOpen(
   if (!storage) return;
   try {
     storage.setItem(SERIES_RAIL_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    /* private mode or a full quota — the in-memory toggle still applies */
+  }
+}
+
+export function seriesRailStorageKey(narrow: boolean): string {
+  return narrow ? SERIES_RAIL_NARROW_STORAGE_KEY : SERIES_RAIL_STORAGE_KEY;
+}
+
+/**
+ * Wide viewports stay open until the reader collapses them.
+ * Narrow viewports start collapsed so the series list and the tutor drawer
+ * cannot sit side by side and cover the image. An explicit "1" still reopens.
+ */
+export function readSeriesRailOpenForViewport(
+  storage: SeriesRailStorage | null | undefined,
+  narrow: boolean
+): boolean {
+  if (!narrow) return readSeriesRailOpen(storage);
+  if (!storage) return false;
+  try {
+    return storage.getItem(SERIES_RAIL_NARROW_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeSeriesRailOpenForViewport(
+  storage: SeriesRailStorage | null | undefined,
+  narrow: boolean,
+  open: boolean
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(seriesRailStorageKey(narrow), open ? "1" : "0");
   } catch {
     /* private mode or a full quota — the in-memory toggle still applies */
   }

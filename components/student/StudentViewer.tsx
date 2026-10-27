@@ -97,8 +97,8 @@ export function StudentViewer({
   return (
     <div
       className={cn(
-        "relative h-full w-full overflow-hidden bg-imaging",
-        compare && "grid grid-cols-1 md:grid-cols-2"
+        "relative h-full w-full min-w-0 overflow-hidden bg-imaging",
+        compare && "grid h-full min-h-0 grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"
       )}
     >
       <ImagingPane
@@ -204,7 +204,7 @@ function ImagingPane({
   }
 
   return (
-    <div className="relative h-full w-full min-w-0 overflow-hidden bg-imaging md:border-r md:border-subtle/40 md:last:border-r-0">
+    <div className="relative h-full min-h-0 w-full min-w-0 overflow-hidden bg-imaging lg:border-r lg:border-subtle/40 lg:last:border-r-0">
       <CornerstoneViewer
         source={source}
         series={series}
@@ -215,6 +215,7 @@ function ImagingPane({
         controls={controls}
         showToolbar={false}
         chrome="edge"
+        defaultTool="StackScroll"
         onReady={onReady}
         instanceId={instanceId}
         className="h-full w-full bg-imaging"

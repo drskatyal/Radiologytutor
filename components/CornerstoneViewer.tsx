@@ -168,10 +168,12 @@ type ViewerTool = {
 // an overflow, matching OHIF's MeasurementTools split + MoreTools — ten equal
 // icons is how a toolbar becomes wallpaper.
 const NAV_TOOLS: ViewerTool[] = [
+  // Scroll leads so the reading-room default stays on screen when a narrow
+  // series rail leaves only ~150px for the bar. Window/Level is the next tap.
+  { name: "StackScroll", label: "Scroll", short: "Scroll" },
   { name: "WindowLevel", label: "Window / Level", short: "W/L" },
   { name: "Pan", label: "Pan", short: "Pan" },
   { name: "Zoom", label: "Zoom", short: "Zoom" },
-  { name: "StackScroll", label: "Scroll", short: "Scroll" },
 ];
 
 const MEASURE_TOOLS: ViewerTool[] = [
@@ -514,6 +516,7 @@ export default function CornerstoneViewer({
   instanceId = "primary",
   imageOverlay,
   openSlice = null,
+  defaultTool = "WindowLevel",
   onViewModeChange,
 }: {
   source?: ViewerSource;
@@ -562,12 +565,19 @@ export default function CornerstoneViewer({
    * case stored one. Otherwise the stack opens at the middle.
    */
   openSlice?: OpenSlice | null;
+  /**
+   * Tool that owns left-drag and one-finger drag on mount.
+   * Reading rooms pass `StackScroll`. Studio record keeps `WindowLevel`.
+   */
+  defaultTool?: string;
   /** Stack markers and lasers are in image fractions. Callers hide them in MPR. */
   onViewModeChange?: (mode: MprMode) => void;
 }) {
   const chrome = resolveChrome(showToolbar, chromeProp);
   const docked = chrome === "dock";
   const edge = chrome === "edge";
+  const defaultToolRef = useRef(defaultTool);
+  defaultToolRef.current = defaultTool;
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   // Stable handles the toolbar uses after init.
@@ -605,7 +615,7 @@ export default function CornerstoneViewer({
       : source;
 
   const [status, setStatus] = useState("Initializing viewer…");
-  const [activeTool, setActiveTool] = useState("WindowLevel");
+  const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
   const [ready, setReady] = useState(false);
   /** True once any frame has been drawn. The loading chip moves off the anatomy. */
   const [painted, setPainted] = useState(false);
@@ -784,13 +794,17 @@ export default function CornerstoneViewer({
         tg.addViewport(viewportId, renderingEngineId);
 
         const { MouseBindings } = toolsEnums;
-        // Fixed bindings: wheel = scroll, right = zoom, middle = pan. These are
-        // permanent and never move to/from the left button.
+        // Fixed bindings: wheel = scroll, right-drag = zoom, pinch = zoom,
+        // middle = pan. These never move to another tool.
+        // One-finger drag follows the selected tool (same as the left button),
+        // modelled in lib/toolBindings.ts.
+        const touchPrimary = { numTouchPoints: 1 };
+        const touchPinch = { numTouchPoints: 2 };
         tg.setToolActive(StackScrollTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Wheel }],
         });
         tg.setToolActive(ZoomTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Secondary }],
+          bindings: [{ mouseButton: MouseBindings.Secondary }, touchPinch],
         });
         tg.setToolActive(PanTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Auxiliary }],
@@ -810,24 +824,26 @@ export default function CornerstoneViewer({
         // looked fine only because they also have wheel/right/middle bindings.
         //
         // Fix: track the current left-button tool and, on switch, explicitly
-        // remove ONLY the Primary binding from the outgoing tool before giving
-        // it to the incoming one — so exactly one tool ever owns the left button.
+        // remove ONLY the Primary and one-finger bindings from the outgoing
+        // tool before giving them to the incoming one. Wheel, right-drag,
+        // pinch, and middle-drag stay put.
         // (The same algorithm is modelled + unit-tested in lib/toolBindings.ts.)
         let leftTool: string | null = null;
         const setLeftTool = (name: string) => {
           const primary = { mouseButton: MouseBindings.Primary };
           if (leftTool && leftTool !== name) {
-            // Drop only the Primary binding from the outgoing tool. Pan/Zoom/
-            // Scroll keep their permanent wheel/right/middle bindings (and stay
-            // active); WindowLevel/annotation tools become passive.
-            tg.setToolPassive(leftTool, { removeAllBindings: [primary] });
+            // Drop only Primary and one-finger from the outgoing tool. Pan/Zoom/
+            // Scroll keep their permanent bindings (and stay active);
+            // WindowLevel/annotation tools become passive.
+            tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
           }
-          tg.setToolActive(name, { bindings: [primary] });
+          tg.setToolActive(name, { bindings: [primary, touchPrimary] });
           leftTool = name;
           mprSessionRef.current?.setLeftTool(name);
           setActiveTool(name);
         };
-        setLeftTool("WindowLevel");
+        const requested = defaultToolRef.current;
+        setLeftTool(requested && requested.length > 0 ? requested : "WindowLevel");
         setLeftToolRef.current = setLeftTool;
 
         // Load a stack into the viewport + (re)run the annotation-tool gate.
@@ -957,7 +973,10 @@ export default function CornerstoneViewer({
             );
             setAnnotationsEnabled(annotatable);
             if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
-              setLeftTool("WindowLevel");
+              const fallback = defaultToolRef.current;
+              setLeftTool(
+                fallback && !ANNOTATION_TOOL_NAMES.has(fallback) ? fallback : "WindowLevel"
+              );
             }
           };
           evaluateAnnotatable();
@@ -2558,7 +2577,8 @@ export default function CornerstoneViewer({
       className={cn(
         docked && "flex w-full flex-col gap-2",
         edge && "flex h-full w-full flex-col",
-        !docked && !edge && "relative h-full w-full",
+        !docked && !edge &&         "relative h-full w-full",
+        "min-w-0 max-w-full",
         className
       )}
     >
@@ -2573,9 +2593,9 @@ export default function CornerstoneViewer({
         <div
           ref={elementRef}
           className={cn(
-            "bg-imaging",
+            "touch-none select-none overscroll-contain bg-imaging",
             docked
-              ? "aspect-square w-full overflow-hidden rounded-xl border border-subtle"
+              ? "aspect-square w-full max-w-full overflow-hidden rounded-xl border border-subtle"
               : "absolute inset-0",
             mprLive && "invisible pointer-events-none"
           )}
@@ -2597,15 +2617,15 @@ export default function CornerstoneViewer({
         )}
         {readout && ready && (
           <p
-            className="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-black/80 px-2 py-1 text-xs font-medium leading-tight text-white shadow-md ring-1 ring-white/20"
+            className="imaging-readout pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-3.5rem)] rounded-md bg-black/80 px-2 py-1 text-xs font-medium leading-tight text-white shadow-md ring-1 ring-white/20 lg:max-w-[calc(100%-8.5rem)]"
             aria-label={readoutLabel}
           >
-            <span className="block tabular-nums">
+            <span className="block whitespace-nowrap tabular-nums">
               {readout.plane ? `${readout.plane} ` : ""}
               {readout.slice} / {readout.count}
             </span>
             {readout.ww != null && readout.wc != null && (
-              <span className="block tabular-nums">
+              <span className="block whitespace-nowrap tabular-nums">
                 W {readout.ww} L {readout.wc}
               </span>
             )}
@@ -2753,11 +2773,10 @@ function ViewerToolbar({
         aria-label="More measurement tools"
         onClick={onToggleMeasure}
         className={cn(
-          "flex items-center justify-center rounded-lg text-white/85 transition-colors",
+          "flex h-11 w-11 items-center justify-center rounded-lg text-white/85 transition-colors",
           "hover:bg-white/10 hover:text-white",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
           "disabled:cursor-not-allowed disabled:opacity-40",
-          vertical ? "h-8 w-9" : "h-12 w-8",
           measureOpen && "bg-white/10 text-white"
         )}
       >
@@ -2800,7 +2819,7 @@ function ViewerToolbar({
           "flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
           "disabled:cursor-not-allowed disabled:opacity-40",
-          vertical ? "h-9 w-9" : "h-12 min-w-12 flex-col px-2 text-xs",
+          vertical ? "h-11 w-11" : "h-11 min-h-11 min-w-11 flex-col px-2 text-xs max-lg:w-11",
           activePreset
             ? "bg-accent text-white"
             : presetOpen
@@ -2810,7 +2829,7 @@ function ViewerToolbar({
       >
         <ToolIcon name="Preset" />
         {vertical ? null : (
-          <span className="max-w-[4.5rem] truncate leading-none">{activePresetLabel}</span>
+          <span className="max-w-[4.5rem] truncate leading-none max-lg:sr-only">{activePresetLabel}</span>
         )}
       </button>
       {presetOpen && (
@@ -2869,43 +2888,55 @@ function ViewerToolbar({
 
   return (
     <div
+      className={cn(
+        // Scroll container is a block, not the flex row. A flex row that is
+        // also the scroller still reports its content width to the page, which
+        // opened a horizontal scrollbar on the record stage. Black on every
+        // surface so the bar matches the imaging viewport (#68).
+        "w-full min-w-0 max-w-full touch-pan-x overflow-x-auto overscroll-x-contain border border-[#1F1F1F] bg-[#181818] text-white",
+        compact ? "rounded-none border-x-0 border-b-0" : "rounded-xl"
+      )}
+    >
+    <div
       role="toolbar"
       aria-label="Viewer tools"
       aria-orientation="horizontal"
       className={cn(
-        "flex flex-wrap items-end gap-x-3 gap-y-2 border border-[#1F1F1F] bg-[#181818] px-2 py-2 text-white",
-        compact ? "rounded-none border-x-0 border-b-0" : "rounded-xl"
+        "flex w-full min-w-0 items-end gap-x-1 gap-y-1 px-1 py-1",
+        "max-lg:w-max max-lg:flex-nowrap",
+        compact ? "" : "flex-wrap"
       )}
     >
-      <div className="flex flex-col gap-1">
+      <div className="order-first flex flex-col gap-1 max-lg:order-last">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70">Layout</span>
+          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Layout</span>
         )}
         <LayoutToggle mode={viewMode} ready={ready} onChange={onViewMode} />
       </div>
       <div className="flex flex-col gap-1">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70">Navigate</span>
+          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Navigate</span>
         )}
         <div className="flex items-center gap-0.5">{nav}</div>
       </div>
       <div className="flex flex-col gap-1">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70">Measure</span>
+          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Measure</span>
         )}
         {measureSplit}
       </div>
       <div className="flex flex-col gap-1">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70">Display</span>
+          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Display</span>
         )}
         <div className="flex items-center gap-0.5">{display}</div>
       </div>
       {compact ? null : (
-        <p className="mb-1 ml-auto hidden text-xs text-white/70 sm:block">
+        <p className="mb-1 ml-auto hidden text-xs text-white/70 lg:block">
           Left button: <span className="font-medium text-white">{activeToolLabel}</span>
         </p>
       )}
+    </div>
     </div>
   );
 }
@@ -2935,12 +2966,12 @@ function ToolButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "transition-colors duration-150",
+        "shrink-0 transition-colors duration-150",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
         "disabled:cursor-not-allowed disabled:opacity-40",
         caption
-          ? "flex h-12 min-w-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1.5"
-          : "flex h-9 w-9 items-center justify-center rounded-lg",
+          ? "flex h-11 min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-lg px-1.5 lg:h-12 lg:min-w-12"
+          : "flex h-11 w-11 items-center justify-center rounded-lg",
         active
           ? "bg-accent text-white"
           : "text-white/85 hover:bg-white/10 hover:text-white"
@@ -2948,7 +2979,7 @@ function ToolButton({
     >
       {children}
       {caption ? (
-        <span className="max-w-[3.5rem] truncate text-xs font-medium leading-none">
+        <span className="max-w-[3.5rem] truncate text-xs font-medium leading-none max-lg:sr-only">
           {caption}
         </span>
       ) : null}
@@ -2977,7 +3008,7 @@ function PresetItem({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
+        "flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
         "disabled:cursor-not-allowed disabled:opacity-40",
         active ? "bg-accent text-white" : "text-white/90 hover:bg-white/10 hover:text-white"

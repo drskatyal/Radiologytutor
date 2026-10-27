@@ -865,7 +865,7 @@ export function RecordingStudio({
           </span>
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             {showStudentTest && (
               <Button size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openStudentTest}>
                 Test as student
@@ -912,7 +912,7 @@ export function RecordingStudio({
         <Stepper steps={CASE_FLOW_STEPS} currentId={stepperStage} />
       </PageHeader>
 
-      <div className="mx-auto grid max-w-[1500px] gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_400px]">
+      <div className="mx-auto grid min-w-0 max-w-[1500px] gap-6 overflow-x-clip px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_400px]">
         {/* ── Capture stage ─────────────────────────────────────────────── */}
         <div className="min-w-0">
           {/* The recording-flow frame: a pulsing glow + ring frames the WHOLE

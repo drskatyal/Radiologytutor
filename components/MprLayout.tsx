@@ -141,7 +141,7 @@ export function LayoutToggle({
               select(value === "stack" ? "mpr" : "stack");
             }}
             className={cn(
-              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              "min-h-11 rounded-md px-2.5 text-xs font-medium transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
               "disabled:cursor-not-allowed disabled:opacity-40",
               selected

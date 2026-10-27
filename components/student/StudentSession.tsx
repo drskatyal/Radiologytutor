@@ -6,7 +6,7 @@
 // registrar how to report. Dock = voice + Teach/Exam intent. Rail is optional
 // transcript / finding spine. Capture tracks arm the model; they are not a tape.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -42,6 +42,7 @@ import { TutorCaption } from "./TutorCaption";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
 import { ImagingLayout } from "@/components/viewer/ImagingLayout";
+import { NARROW_LAYOUT_MEDIA } from "@/lib/viewerLayout";
 import { ReportCoach } from "./ReportCoach";
 
 type PanelTab = "lesson" | "ask";
@@ -84,7 +85,10 @@ export default function StudentSession({
   // Teach is the product: autonomous attending. Exam = viva.
   const [mode, setMode] = useState<SessionMode>(initialIntent === "exam" ? "viva" : "guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
-  const [railOpen, setRailOpen] = useState(true);
+  // Closed until measured. Opening both this drawer and the series rail on a
+  // phone covers the image completely.
+  const [railOpen, setRailOpen] = useState(false);
+  const tutorChosen = useRef(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const hinted = series;
   const resolved = useResolvedSeries(caseData.caseId, hinted);
@@ -102,6 +106,21 @@ export default function StudentSession({
   );
   const s = useStudentSession(caseData, mode, rail, { courseId });
   const intent = intentFromMode(mode);
+
+  useLayoutEffect(() => {
+    const mq = window.matchMedia(NARROW_LAYOUT_MEDIA);
+    const apply = () => {
+      if (!tutorChosen.current) {
+        setRailOpen(!mq.matches);
+        tutorChosen.current = true;
+        return;
+      }
+      if (mq.matches) setRailOpen(false);
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
 
   const openAsk = useCallback(() => {
     setRailOpen(true);
@@ -323,13 +342,13 @@ export default function StudentSession({
     );
 
   return (
-    <div className="flex h-screen min-h-0 flex-col bg-canvas">
-      <header className="z-30 flex shrink-0 flex-col border-b border-subtle bg-surface">
-        <div className="flex min-h-12 items-center justify-between gap-2 px-3 py-2">
+    <div className="flex h-dvh max-h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-canvas">
+      <header className="z-30 flex shrink-0 flex-col border-b border-subtle bg-surface pt-[env(safe-area-inset-top)]">
+        <div className="flex min-h-12 min-w-0 flex-wrap items-center justify-between gap-2 px-2 py-2 sm:px-3">
           <div className="flex min-w-0 items-center gap-2">
             <a
               href="/library"
-              className="inline-flex h-9 shrink-0 items-center rounded-lg px-2.5 text-sm font-medium text-secondary hover:bg-overlay hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              className="inline-flex h-11 shrink-0 items-center rounded-lg px-2.5 text-sm font-medium text-secondary hover:bg-overlay hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             >
               Library
             </a>
@@ -350,10 +369,11 @@ export default function StudentSession({
               </Badge>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 flex-wrap items-center gap-1">
             <IconButton
               aria-label={s.compareOpen ? "Close compare" : "Open compare"}
               size="md"
+              className="h-11 w-11"
               variant={s.compareOpen ? "primary" : "secondary"}
               onClick={s.toggleCompare}
             >
@@ -362,6 +382,7 @@ export default function StudentSession({
             <IconButton
               aria-label="Keyboard shortcuts"
               size="md"
+              className="h-11 w-11"
               variant="secondary"
               onClick={() => setKeysOpen(true)}
             >
@@ -370,6 +391,7 @@ export default function StudentSession({
             <IconButton
               aria-label="Previous finding"
               size="md"
+              className="h-11 w-11"
               variant="secondary"
               disabled={!hasFindings || s.activeIndex <= 0 || s.busy}
               onClick={s.prev}
@@ -379,6 +401,7 @@ export default function StudentSession({
             <IconButton
               aria-label="Next finding"
               size="md"
+              className="h-11 w-11"
               variant="secondary"
               disabled={
                 !hasFindings ||
@@ -392,6 +415,7 @@ export default function StudentSession({
             <IconButton
               aria-label={railOpen ? "Collapse tutor rail" : "Open tutor rail"}
               size="md"
+              className="h-11 w-11"
               variant="secondary"
               onClick={() => setRailOpen((o) => !o)}
             >
@@ -405,11 +429,11 @@ export default function StudentSession({
         </div>
       </header>
 
-      <div className="relative flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div
           className={cn(
             "relative min-h-0 min-w-0 flex-1 bg-imaging",
-            railOpen && "md:mr-[380px]"
+            railOpen && "lg:mr-[380px]"
           )}
         >
           <ImagingLayout
@@ -424,6 +448,21 @@ export default function StudentSession({
               if (uid) onSeriesChange(uid);
             }}
             className="absolute inset-0"
+            fullscreenDock={
+              <MicButton
+                state={s.micState}
+                onStart={s.onMicStart}
+                onStop={s.onMicStop}
+                disabled={!s.micSupported || (s.busy && s.micState === "idle")}
+                label={
+                  s.liveStatus === "connecting"
+                    ? "Connecting…"
+                    : s.liveStatus === "open"
+                      ? "End session"
+                      : "Open microphone"
+                }
+              />
+            }
           >
             {showViewer ? (
             <StudentViewer
@@ -489,8 +528,12 @@ export default function StudentSession({
 
       <aside
         className={cn(
-          "absolute bottom-0 right-0 top-0 z-40 flex w-full max-w-[380px] flex-col border-l border-subtle bg-surface/95 shadow-lg backdrop-blur transition-transform duration-300 md:w-[380px]",
-          railOpen ? "translate-x-0" : "translate-x-full"
+          "absolute z-40 flex flex-col bg-surface/95 shadow-lg backdrop-blur transition-transform duration-300",
+          "max-lg:inset-x-0 max-lg:bottom-0 max-lg:top-auto max-lg:h-[min(52dvh,24rem)] max-lg:w-full max-lg:border-t max-lg:border-subtle",
+          "lg:inset-y-0 lg:right-0 lg:w-[380px] lg:border-l lg:border-subtle",
+          railOpen
+            ? "translate-x-0 translate-y-0"
+            : "pointer-events-none max-lg:translate-y-full lg:translate-x-full"
         )}
         aria-hidden={!railOpen}
       >
@@ -580,7 +623,7 @@ export default function StudentSession({
       </aside>
       </div>
 
-      <footer className="z-30 shrink-0 border-t border-subtle bg-surface px-4 py-3">
+      <footer className="z-30 shrink-0 border-t border-subtle bg-surface px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2.5">
           <TutorCaption
             text={captionText}
@@ -717,8 +760,9 @@ export default function StudentSession({
             </div>
           </div>
 
-          <p className="text-center text-xs text-secondary">
-            {dockHint} · Left drag uses the tool on the image · <Kbd>?</Kbd>
+          <p className="max-w-full text-center text-xs text-secondary">
+            <span className="max-lg:hidden">{dockHint} · </span>
+            Drag scrolls the stack · pinch zooms · <Kbd>?</Kbd>
           </p>
           {tutorVoice?.cloned && (
             <p className="text-center text-xs text-secondary">

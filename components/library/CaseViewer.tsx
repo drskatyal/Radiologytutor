@@ -121,6 +121,7 @@ export function CaseViewer({
             onSeriesChange={onSeriesChange}
             modality={modality}
             chrome="edge"
+            defaultTool="StackScroll"
             onReady={() => setReady(true)}
             instanceId={`view-${caseId}`}
             className="h-full w-full"

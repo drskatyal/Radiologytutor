@@ -134,6 +134,7 @@ export function RecordStage({
             onEvent={onEvent}
             showToolbar
             chrome={expanded ? "edge" : undefined}
+            defaultTool="WindowLevel"
             className={expanded ? "h-full w-full" : "w-full"}
             imageOverlay={
               <div ref={imageRef} className="pointer-events-none absolute inset-0">
