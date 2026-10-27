@@ -1,8 +1,8 @@
 // Blank blocking identity tags on an Explicit VR Little Endian Part-10 file and
 // write a teaching fixture the Studio upload gate will store.
 //
-// Not used by /api/upload. Residual PatientName / PatientID / PatientBirthDate
-// on a real study still fail lib/deid.ts.
+// Not used by /api/upload. Teacher uploads rewrite files in lib/teachingDeidentify.ts.
+// This script only regenerates the Explicit VR fixture public/dicom/teach_anon_mr.dcm.
 //
 //   npx tsx scripts/anonymize-teaching-dicom.ts
 //   npx tsx scripts/anonymize-teaching-dicom.ts public/dicom/emri_small.dcm public/dicom/teach_anon_mr.dcm

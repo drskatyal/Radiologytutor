@@ -138,8 +138,9 @@ const SENTINEL =
  * data — but they are NOT safe to accept from an arbitrary uploader.
  *
  * This allowance is therefore OPT-IN and off by default: only the curated public
- * importer passes `allowResearchPseudonyms`, never `/api/upload`. A teacher
- * uploading a real study still fails the gate on any present PatientID/PatientName.
+ * importer passes `allowResearchPseudonyms`, never `/api/upload`. Teacher uploads
+ * strip identity tags in lib/teachingDeidentify.ts before this gate runs. Calling
+ * the gate on raw bytes that still contain PatientID or PatientName still fails.
  *
  * The pattern is a FULL match (collection prefix + separator + alphanumeric subject
  * id), not a prefix test, so free text that merely starts with a collection name

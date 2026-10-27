@@ -195,7 +195,7 @@ export function CreateCaseFlow() {
       </>
     ) : (
       <>
-        Upload an anonymized study and pick the series.{" "}
+        Upload a study and pick the series. Patient identifiers in the file headers are removed automatically.{" "}
         <span className="font-medium text-primary">Next:</span> the viewer opens on this case so you can review it
         and start recording. Case details can wait.
       </>
@@ -396,7 +396,7 @@ function UploadStep({
         <div className="flex flex-col gap-0.5">
           <h3 className="text-sm font-semibold text-primary">DICOM study</h3>
           <p className="text-xs text-muted">
-            Upload an anonymized study; we group it into series you can preview and pick from.
+            Upload a study. Patient names and IDs are removed before it is stored. We group the images into series you can preview and pick from.
           </p>
         </div>
 

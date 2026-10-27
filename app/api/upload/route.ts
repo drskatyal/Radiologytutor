@@ -10,9 +10,9 @@
 // Classification, the de-id gate, and STOW live in lib/uploadIngest.ts.
 // requireAuthorOrg stays here and is unchanged. Pixel OCR is not claimed.
 //
-// Prove file: public/dicom/teach_anon_mr.dcm (identity tags blanked). The
-// bundled viewer sample public/dicom/emri_small.dcm still carries
-// PatientBirthDate 20000101 and is refused on purpose.
+// Identity tags are stripped in lib/teachingDeidentify.ts before STOW.
+// public/dicom/emri_small.dcm still has PatientBirthDate and is accepted
+// only because that rewrite runs first. The ingest gate still refuses raw PHI.
 
 import { NextRequest, NextResponse } from "next/server";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
