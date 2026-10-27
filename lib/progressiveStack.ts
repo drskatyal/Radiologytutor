@@ -4,12 +4,17 @@
 // wait for any other series. Order of imageIds is the series metadata array
 // order (the historical Cornerstone stack order) so sliceIndex stays put.
 //
-// 1. If the teacher stored a SOP, fetch that one instance's metadata and
-//    hand it back immediately.
-// 2. Otherwise stream series metadata and hand back the teacher slice index,
-//    or the middle instance, as soon as that object has been parsed.
-// 3. The rest of the metadata body registers in the background. When it
-//    finishes, the caller setStacks the full list and the series is scrollable.
+// 1. Resolve the opening instance on its own: the teacher SOP, or a QIDO
+//    offset for the stored slice / the middle of the series, then that one
+//    instance's WADO metadata. Hand the imageId back immediately.
+// 2. Wait until the caller has requested that frame (`releaseMetadata`,
+//    after setStack) before fetching the series metadata document. Orthanc
+//    builds that document in one shot; starting it first left the viewport
+//    black with "Loading stack…" while the opening frame waited behind it.
+//    If the direct instance fetch misses, the series document starts at once
+//    so the stream can still emit an opening imageId.
+// 3. When the body finishes, the caller setStacks the full list and the
+//    series is scrollable.
 // 4. Neighbor prefetch is a separate call, after the opening frame is requested.
 
 import cornerstoneDICOMImageLoader from "@cornerstonejs/dicom-image-loader";
@@ -33,6 +38,11 @@ export interface ProgressiveStack {
   opening: Promise<string>;
   /** Resolves once every instance in the series is registered, in stack order. */
   full: Promise<{ imageIds: string[]; openIndex: number }>;
+  /**
+   * Start the series metadata document. Call after the opening frame request
+   * is in flight so that document cannot sit ahead of the first pixels.
+   */
+  releaseMetadata: () => void;
 }
 
 export function prefetchNeighborImageIds(
@@ -79,19 +89,45 @@ function imageIdFor(root: string, study: string, dataset: unknown, fallbackSerie
   return wadorsImageId(root, study, series, sop);
 }
 
-async function qidoInstanceCount(
+async function qidoSopAt(
+  root: string,
+  study: string,
+  series: string,
+  index: number,
+  signal: AbortSignal | undefined
+): Promise<string | null> {
+  const params = new URLSearchParams({
+    limit: "1",
+    offset: String(Math.max(0, index)),
+    includefield: SOP_TAG,
+  });
+  const url = `${root}/studies/${study}/series/${series}/instances?${params}`;
+  const res = await fetch(url, {
+    signal,
+    credentials: "same-origin",
+    cache: "default",
+    headers: { Accept: JSON_ACCEPT },
+  });
+  if (!res.ok) return null;
+  const rows = (await res.json()) as unknown;
+  if (!Array.isArray(rows) || !rows[0]) return null;
+  return dicomTagString(rows[0], SOP_TAG) ?? null;
+}
+
+/** Middle SOP in QIDO order. One light page of instance UIDs, not full metadata. */
+async function qidoMiddleSop(
   root: string,
   study: string,
   series: string,
   signal: AbortSignal | undefined
-): Promise<number | null> {
-  let total = 0;
+): Promise<string | null> {
+  const sops: string[] = [];
   const page = 2000;
   for (let offset = 0; offset < 50_000; offset += page) {
     const params = new URLSearchParams({
       limit: String(page),
       offset: String(offset),
-      includefield: "00200013",
+      includefield: SOP_TAG,
     });
     const url = `${root}/studies/${study}/series/${series}/instances?${params}`;
     const res = await fetch(url, {
@@ -100,13 +136,17 @@ async function qidoInstanceCount(
       cache: "default",
       headers: { Accept: JSON_ACCEPT },
     });
-    if (!res.ok) return total > 0 ? total : null;
+    if (!res.ok) return sops.length > 0 ? (sops[stackOpenIndex(sops.length)] ?? null) : null;
     const rows = (await res.json()) as unknown;
     if (!Array.isArray(rows) || rows.length === 0) break;
-    total += rows.length;
+    for (const row of rows) {
+      const sop = dicomTagString(row, SOP_TAG);
+      if (sop) sops.push(sop);
+    }
     if (rows.length < page) break;
   }
-  return total > 0 ? total : null;
+  if (sops.length === 0) return null;
+  return sops[stackOpenIndex(sops.length)] ?? null;
 }
 
 async function fetchInstanceMetadata(
@@ -157,6 +197,18 @@ export function startProgressiveWadorsLoad(input: {
     rejectOpening = reject;
   });
 
+  let metadataReleased = false;
+  let releaseMetadataGate: () => void = () => undefined;
+  const metadataGate = new Promise<void>((resolve) => {
+    releaseMetadataGate = () => {
+      if (metadataReleased) return;
+      metadataReleased = true;
+      resolve();
+    };
+  });
+  const releaseMetadata = () => releaseMetadataGate();
+  signal?.addEventListener("abort", releaseMetadata, { once: true });
+
   const emit = (imageId: string) => {
     if (openingSettled) return;
     openingSettled = true;
@@ -175,10 +227,50 @@ export function startProgressiveWadorsLoad(input: {
         ? Math.max(0, Math.round(hint.sliceIndex))
         : null;
     const datasets: unknown[] = [];
-    // Target index in metadata order. A stored slice is known immediately.
-    // The middle slice needs a count, from a lightweight instance QIDO that
-    // does not download pixel data or full metadata.
+    // Fallback when the direct instance fetch misses: a stored slice index
+    // can still be emitted as soon as the stream has parsed that object.
+    // The middle slice is emitted at the end of the body.
     let midTarget: number | null = sliceHint;
+
+    const publishDataset = (dataset: unknown) => {
+      const imageId = imageIdFor(root, study, dataset, series);
+      if (!imageId) return;
+      registerMetadata(imageId, dataset);
+      emit(imageId);
+    };
+
+    try {
+      if (earlySop) {
+        const dataset = await fetchInstanceMetadata(root, study, series, earlySop, signal);
+        if (dataset) publishDataset(dataset);
+      } else {
+        const sop =
+          sliceHint != null
+            ? await qidoSopAt(root, study, series, sliceHint, signal)
+            : await qidoMiddleSop(root, study, series, signal);
+        if (sop) {
+          const dataset = await fetchInstanceMetadata(root, study, series, sop, signal);
+          if (dataset) publishDataset(dataset);
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+    }
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    // The opening frame is already addressable. Hold the heavy series
+    // document until that frame request is in flight (or the backstop fires
+    // so a caller that never releases still gets a scrollable stack).
+    if (openingSettled) {
+      await Promise.race([
+        metadataGate,
+        new Promise<void>((resolve) => setTimeout(resolve, 12_000)),
+      ]);
+    } else {
+      releaseMetadata();
+    }
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
     const emitParsedTarget = () => {
       if (openingSettled || earlySop || midTarget == null) return;
       if (datasets.length <= midTarget) return;
@@ -186,28 +278,6 @@ export function startProgressiveWadorsLoad(input: {
       const imageId = dataset ? imageIdFor(root, study, dataset, series) : null;
       if (imageId && dataset) emit(imageId);
     };
-    if (!earlySop && sliceHint == null) {
-      void qidoInstanceCount(root, study, series, signal)
-        .then((count) => {
-          if (count == null || count <= 0 || openingSettled) return;
-          midTarget = stackOpenIndex(count);
-          emitParsedTarget();
-        })
-        .catch(() => undefined);
-    }
-    if (earlySop) {
-      try {
-        const dataset = await fetchInstanceMetadata(root, study, series, earlySop, signal);
-        const imageId = dataset ? imageIdFor(root, study, dataset, series) : null;
-        if (imageId && dataset) {
-          registerMetadata(imageId, dataset);
-          emit(imageId);
-        }
-      } catch (err) {
-        if (signal?.aborted) throw err;
-      }
-    }
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
     const url = `${root}/studies/${study}/series/${series}/metadata`;
     const res = await fetch(url, {
@@ -272,5 +342,5 @@ export function startProgressiveWadorsLoad(input: {
     throw err;
   });
 
-  return { opening, full };
+  return { opening, full, releaseMetadata };
 }

@@ -319,6 +319,9 @@ export function ImagingLayout({
               )}
             >
               <ChevronRight className="h-4 w-4 shrink-0" />
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-white [writing-mode:vertical-rl]">
+                Series
+              </span>
               {railSeries.length > 0 && (
                 <span className="text-xs font-medium tabular-nums leading-none text-white/80">
                   {railSeries.length}
