@@ -38,16 +38,19 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type MutableRefObject,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
   prefetchNeighborImageIds,
   startProgressiveWadorsLoad,
 } from "../lib/progressiveStack";
+import { NEIGHBOR_PREFETCH_DELAY_MS, tuneStackScrollTool } from "../lib/scrollSensitivity";
 import { stackOpenIndex } from "../lib/stackIndex";
 import type { OpenSlice } from "../lib/viewerLoad";
 import {
@@ -667,6 +670,7 @@ export default function CornerstoneViewer({
 
   useEffect(() => {
     let disposed = false;
+    let prefetchTimer = 0;
     let detachListeners: () => void = () => {};
     let resizeObserver: ResizeObserver | null = null;
     let restoreRaf = 0;
@@ -845,6 +849,13 @@ export default function CornerstoneViewer({
         const requested = defaultToolRef.current;
         setLeftTool(requested && requested.length > 0 ? requested : "WindowLevel");
         setLeftToolRef.current = setLeftTool;
+        // One slice per detent, and a longer drag per slice. The library
+        // otherwise steps on every wheel event and uses a 2px drag floor.
+        tuneStackScrollTool(
+          (tg as { getToolInstance?: (name: string) => unknown }).getToolInstance?.(
+            StackScrollTool.toolName
+          )
+        );
 
         // Load a stack into the viewport + (re)run the annotation-tool gate.
         // Reused for the initial series AND every series switch (no remount).
@@ -998,31 +1009,31 @@ export default function CornerstoneViewer({
 
         const stackIdsRef: { current: string[] } = { current: [] };
         let prefetchCenter = -1;
+        // Neighbor prefetch used to run on every STACK_NEW_IMAGE. A fast wheel
+        // then queued a fresh radius-8 window per slice and fought the slice
+        // the reader was landing on. Wait until scrolling pauses.
         const prefetchAround = (index: number) => {
-          if (stackIdsRef.current.length === 0 || index === prefetchCenter) return;
-          prefetchCenter = index;
-          prefetchNeighborImageIds(stackIdsRef.current, index);
+          window.clearTimeout(prefetchTimer);
+          prefetchTimer = window.setTimeout(() => {
+            if (disposed || stackIdsRef.current.length === 0 || index === prefetchCenter) return;
+            prefetchCenter = index;
+            prefetchNeighborImageIds(stackIdsRef.current, index);
+          }, NEIGHBOR_PREFETCH_DELAY_MS);
         };
         let pixelMarked = false;
-        let detachPixel: (() => void) | null = null;
-        const armFirstPixel = (seriesUID: string) => {
-          const el = elementRef.current;
-          if (!el || pixelMarked || detachPixel) return;
-          const handler = () => {
-            el.removeEventListener(core.Enums.Events.IMAGE_RENDERED, handler as EventListener);
-            detachPixel = null;
-            if (pixelMarked || disposed) return;
-            pixelMarked = true;
-            markViewerFirstPixel(activeNav, seriesUID);
-            markViewerPixels(instanceId);
-            setPainted(true);
-            setStatus((prev) => (prev.startsWith("Error") ? prev : "Loading stack…"));
-          };
-          detachPixel = () => {
-            el.removeEventListener(core.Enums.Events.IMAGE_RENDERED, handler as EventListener);
-            detachPixel = null;
-          };
-          el.addEventListener(core.Enums.Events.IMAGE_RENDERED, handler as EventListener);
+        // Mark first pixel only after setStack resolves. IMAGE_RENDERED also
+        // fires for an empty enable/resize, and treating that as paint hid
+        // the center status and left a black viewport labeled "Loading stack…".
+        const noteFirstPixel = (seriesUID: string) => {
+          if (pixelMarked || disposed) return;
+          const vp = viewportRef.current;
+          const imageId = vp?.getCurrentImageId?.() ?? "";
+          if (vp?.getCurrentImageId && !imageId) return;
+          pixelMarked = true;
+          markViewerFirstPixel(activeNav, seriesUID);
+          markViewerPixels(instanceId);
+          setPainted(true);
+          setStatus((prev) => (prev.startsWith("Error") ? prev : "Loading stack…"));
         };
         const finishStack = (seriesUID: string, ids: string[], openIndex: number) => {
           stackIdsRef.current = ids;
@@ -1043,20 +1054,30 @@ export default function CornerstoneViewer({
             box.full = value;
             return value;
           });
+          void fullReady.catch(() => undefined);
           const openingId = await job.opening;
-          if (disposed || signal.aborted) return null;
-          armFirstPixel(seriesUID);
-          if (box.full) {
-            await loadStack(box.full.imageIds, box.full.openIndex);
-            if (disposed || signal.aborted) return null;
-            finishStack(seriesUID, box.full.imageIds, box.full.openIndex);
-            return box.full.imageIds;
+          if (disposed || signal.aborted) {
+            job.releaseMetadata();
+            return null;
           }
-          await loadStack([openingId], 0);
-          if (disposed || signal.aborted) return null;
+          try {
+            if (box.full) {
+              await loadStack(box.full.imageIds, box.full.openIndex);
+              if (disposed || signal.aborted) return null;
+              noteFirstPixel(seriesUID);
+              finishStack(seriesUID, box.full.imageIds, box.full.openIndex);
+              return box.full.imageIds;
+            }
+            await loadStack([openingId], 0);
+            if (disposed || signal.aborted) return null;
+            noteFirstPixel(seriesUID);
+          } finally {
+            // setStack has requested the opening frame. The series metadata
+            // document is allowed to start now, and not before.
+            job.releaseMetadata();
+          }
           const full = await fullReady;
           if (disposed || signal.aborted) return null;
-          armFirstPixel(seriesUID);
           await loadStack(full.imageIds, full.openIndex);
           if (disposed || signal.aborted) return null;
           finishStack(seriesUID, full.imageIds, full.openIndex);
@@ -1085,9 +1106,9 @@ export default function CornerstoneViewer({
           imageIds = await buildImageIds(initialSource);
           if (disposed || !elementRef.current) return;
           const openAt = stackOpenIndex(imageIds.length);
-          armFirstPixel(seriesUidOf(initialSource));
           await loadStack(imageIds, openAt);
           if (disposed || !elementRef.current) return;
+          noteFirstPixel(seriesUidOf(initialSource));
           finishStack(seriesUidOf(initialSource), imageIds, openAt);
         }
         viewportRef.current = viewport;
@@ -1676,8 +1697,8 @@ export default function CornerstoneViewer({
           loadAbort.current = controller;
           stackIdsRef.current = [];
           prefetchCenter = -1;
+          window.clearTimeout(prefetchTimer);
           pixelMarked = false;
-          detachPixel?.();
           setStacking(true);
           setStatus("Opening slice…");
           const src = caseSeriesToSource(target);
@@ -1702,9 +1723,9 @@ export default function CornerstoneViewer({
               ids = await buildImageIds(src);
               if (token !== switchSeq || disposed || controller.signal.aborted) return;
               const openAt = stackOpenIndex(ids.length);
-              armFirstPixel(seriesUID);
               await loadStack(ids, openAt);
               if (token !== switchSeq || disposed || controller.signal.aborted) return;
+              noteFirstPixel(seriesUID);
               finishStack(seriesUID, ids, openAt);
             }
             if (!ids) return;
@@ -2432,6 +2453,7 @@ export default function CornerstoneViewer({
       enterMprRef.current = async () => {};
       exitMprRef.current = async () => {};
       window.clearTimeout(readoutTimerRef.current);
+      window.clearTimeout(prefetchTimer);
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
       resizeObserver?.disconnect();
       detachListeners();
@@ -2499,6 +2521,8 @@ export default function CornerstoneViewer({
       const node = e.target as Node;
       if (presetMenuRef.current?.contains(node)) return;
       if (measureMenuRef.current?.contains(node)) return;
+      const element = node instanceof Element ? node : node.parentElement;
+      if (element?.closest("[data-viewer-menu]")) return;
       setPresetOpen(false);
       setMeasureOpen(false);
     };
@@ -2603,12 +2627,14 @@ export default function CornerstoneViewer({
           aria-label="DICOM viewer"
           aria-hidden={mprLive || undefined}
           role="img"
+          data-viewer-tool={activeTool}
         />
         {(viewMode === "mpr" || mprLive) && (
           <MprLayout
             axialRef={axialRef}
             coronalRef={coronalRef}
             sagittalRef={sagittalRef}
+            tool={activeTool}
             live={mprLive}
             loading={mprLoading}
             notice={mprNotice}
@@ -2661,6 +2687,91 @@ export default function CornerstoneViewer({
         </p>
       )}
     </div>
+  );
+}
+
+function menuHost(): HTMLElement {
+  const fullscreen = document.fullscreenElement;
+  return fullscreen instanceof HTMLElement ? fullscreen : document.body;
+}
+
+/**
+ * Toolbar menus open upward over the image. The bar scrolls horizontally, and
+ * `overflow-x: auto` clips anything that paints outside it, so an absolute
+ * menu survives only as a sliver above the toolbar. Portal to the document
+ * (or the fullscreen element, which hides body-level nodes).
+ */
+function FloatingMenu({
+  open,
+  anchorRef,
+  label,
+  side,
+  children,
+}: {
+  open: boolean;
+  anchorRef: MutableRefObject<HTMLDivElement | null>;
+  label: string;
+  side: "above" | "right";
+  children: ReactNode;
+}) {
+  const [box, setBox] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    maxHeight: number;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setBox(null);
+      return;
+    }
+    const place = () => {
+      const anchor = anchorRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const host = menuHost();
+      const hostRect = host === document.body ? null : host.getBoundingClientRect();
+      const originTop = hostRect?.top ?? 0;
+      const originLeft = hostRect?.left ?? 0;
+      const viewportHeight = hostRect?.height ?? window.innerHeight;
+      const gap = 6;
+      if (side === "right") {
+        setBox({
+          left: Math.max(8, rect.right - originLeft + gap),
+          top: Math.max(8, rect.top - originTop),
+          maxHeight: Math.max(120, viewportHeight - (rect.top - originTop) - 16),
+        });
+        return;
+      }
+      const roomAbove = rect.top - originTop - gap - 8;
+      setBox({
+        left: Math.max(8, rect.left - originLeft),
+        bottom: viewportHeight - (rect.top - originTop) + gap,
+        maxHeight: Math.max(120, roomAbove),
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    document.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      document.removeEventListener("scroll", place, true);
+    };
+  }, [open, anchorRef, side]);
+
+  if (!open || !box || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      role="menu"
+      aria-label={label}
+      data-viewer-menu=""
+      style={{ left: box.left, top: box.top, bottom: box.bottom, maxHeight: box.maxHeight }}
+      className="fixed z-[80] w-48 overflow-y-auto overscroll-contain rounded-xl border border-[#1F1F1F] bg-[#181818] p-1 text-white shadow-lg ring-1 ring-white/15"
+    >
+      {children}
+    </div>,
+    menuHost()
   );
 }
 
@@ -2734,13 +2845,6 @@ function ViewerToolbar({
     return tool.label;
   };
 
-  const menuClass = cn(
-    "absolute z-30 w-48 animate-fade-up overflow-hidden rounded-xl border border-[#1F1F1F] bg-[#181818] p-1 text-white shadow-lg ring-1 ring-white/15",
-    vertical
-      ? "left-full top-0 ml-1.5 origin-top-left"
-      : "bottom-full left-0 mb-1.5 origin-bottom-left"
-  );
-
   const nav = NAV_TOOLS.map((tool) => (
     <ToolButton
       key={tool.name}
@@ -2786,23 +2890,26 @@ function ViewerToolbar({
           aria-hidden="true"
         />
       </button>
-      {measureOpen && (
-        <div role="menu" aria-label="Measurement tools" className={menuClass}>
-          {MEASURE_TOOLS.map((tool) => {
-            const blocked = measureBlocked(tool);
-            return (
-              <PresetItem
-                key={tool.name}
-                label={tool.label}
-                hint={!measurementsEnabled ? "stack view" : blocked ? "no spacing" : tool.short}
-                active={activeTool === tool.name}
-                disabled={!ready || blocked}
-                onClick={() => onSelectTool(tool.name)}
-              />
-            );
-          })}
-        </div>
-      )}
+      <FloatingMenu
+        open={measureOpen}
+        anchorRef={measureMenuRef}
+        label="Measurement tools"
+        side={vertical ? "right" : "above"}
+      >
+        {MEASURE_TOOLS.map((tool) => {
+          const blocked = measureBlocked(tool);
+          return (
+            <PresetItem
+              key={tool.name}
+              label={tool.label}
+              hint={!measurementsEnabled ? "stack view" : blocked ? "no spacing" : tool.short}
+              active={activeTool === tool.name}
+              disabled={!ready || blocked}
+              onClick={() => onSelectTool(tool.name)}
+            />
+          );
+        })}
+      </FloatingMenu>
     </div>
   );
 
@@ -2832,26 +2939,29 @@ function ViewerToolbar({
           <span className="max-w-[4.5rem] truncate leading-none max-lg:sr-only">{activePresetLabel}</span>
         )}
       </button>
-      {presetOpen && (
-        <div role="menu" aria-label="Window/Level presets" className={menuClass}>
+      <FloatingMenu
+        open={presetOpen}
+        anchorRef={presetMenuRef}
+        label="Window/Level presets"
+        side={vertical ? "right" : "above"}
+      >
+        <PresetItem
+          label="Full dynamic"
+          hint="series default"
+          active={activePreset === FULL_DYNAMIC_ID}
+          onClick={() => onPreset(null)}
+        />
+        <span className="my-1 block h-px bg-white/15" />
+        {presets.map((p) => (
           <PresetItem
-            label="Full dynamic"
-            hint="series default"
-            active={activePreset === FULL_DYNAMIC_ID}
-            onClick={() => onPreset(null)}
+            key={p.id}
+            label={p.label}
+            hint={`W ${p.ww}  L ${p.wc}`}
+            active={activePreset === p.id}
+            onClick={() => onPreset(p)}
           />
-          <span className="my-1 block h-px bg-white/15" />
-          {presets.map((p) => (
-            <PresetItem
-              key={p.id}
-              label={p.label}
-              hint={`W ${p.ww}  L ${p.wc}`}
-              active={activePreset === p.id}
-              onClick={() => onPreset(p)}
-            />
-          ))}
-        </div>
-      )}
+        ))}
+      </FloatingMenu>
     </div>
   );
 
