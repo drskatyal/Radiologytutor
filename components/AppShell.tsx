@@ -15,7 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { cn } from "./ui/cn";
 import { Button, Skeleton, ToastProvider } from "./ui";
-import { SignOutButton } from "./auth/AuthButtons";
+import { DemoEntryButton, DemoRoleEntry, SignOutButton } from "./auth/AuthButtons";
 import { BrandMark, Wordmark as BrandWordmark } from "@/components/brand/BrandMark";
 import { CookieNotice } from "@/components/marketing/CookieNotice";
 import { SiteFooter } from "@/components/marketing/SiteFooter";
@@ -137,15 +137,31 @@ function MenuToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
 function AuthCluster({
   me,
   loading,
+  demoEnabled,
   onNavigate,
 }: {
   me: MeUser | null;
   loading: boolean;
+  demoEnabled: boolean;
   onNavigate?: () => void;
 }) {
   if (loading) return <Skeleton className="h-8 w-24 rounded-lg" />;
 
   if (!me?.email) {
+    if (demoEnabled) {
+      return (
+        <div className="flex flex-wrap items-center gap-2">
+          <DemoRoleEntry teacherLabel="Teacher" studentLabel="Student" size="sm" />
+          <Link
+            href="/sign-in"
+            onClick={onNavigate}
+            className="rounded-lg px-2 py-2 text-sm font-semibold text-secondary transition-colors duration-300 ease-draw hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            Sign in
+          </Link>
+        </div>
+      );
+    }
     return (
       <div className="flex items-center gap-2">
         <Link
@@ -182,7 +198,14 @@ function AuthCluster({
   );
 }
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  demoEnabled = false,
+}: {
+  children: React.ReactNode;
+  /** Server-passed. Demo entry is hidden when this deployment has demo auth off. */
+  demoEnabled?: boolean;
+}) {
   const pathname = usePathname() ?? "/";
   const [me, setMe] = useState<MeUser | null>(null);
   const [meLoading, setMeLoading] = useState(true);
@@ -289,7 +312,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 })}
               </nav>
               <div className="hidden md:block">
-                <AuthCluster me={me} loading={meLoading} />
+                <AuthCluster me={me} loading={meLoading} demoEnabled={demoEnabled} />
               </div>
               <MenuToggle open={menuOpen} onClick={() => setMenuOpen((value) => !value)} />
             </div>
@@ -344,7 +367,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   transitionDelay: menuOpen && !reduceMotion ? `${Math.min(flatNav.length * 60, 340)}ms` : "0ms",
                 }}
               >
-                <AuthCluster me={me} loading={meLoading} onNavigate={() => setMenuOpen(false)} />
+                <AuthCluster
+                  me={me}
+                  loading={meLoading}
+                  demoEnabled={demoEnabled}
+                  onNavigate={() => setMenuOpen(false)}
+                />
               </div>
             </nav>
           </div>
@@ -354,7 +382,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <main id="main" className="min-w-0 flex-1">
             {children}
           </main>
-          {!hideChrome && <SiteFooter />}
+          {!hideChrome && (
+            <SiteFooter
+              teaching={
+                demoEnabled && (meLoading || !me?.email) ? (
+                  meLoading ? (
+                    <span className="text-sm font-semibold text-muted">Start teaching</span>
+                  ) : (
+                    <DemoEntryButton
+                      role="author"
+                      variant="ghost"
+                      size="sm"
+                      wrapClassName="self-center"
+                      className="h-auto px-0 py-0 text-sm text-secondary hover:bg-transparent hover:text-primary"
+                    >
+                      Start teaching
+                    </DemoEntryButton>
+                  )
+                ) : undefined
+              }
+            />
+          )}
         </div>
         {!readingRoom && <CookieNotice />}
       </div>
