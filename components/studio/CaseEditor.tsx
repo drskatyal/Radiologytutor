@@ -332,7 +332,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
             </Button>
             {findings.length > 0 && (
               <Button variant="ghost" size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openPreview}>
-                Preview as student
+                Test as student
               </Button>
             )}
             <Button
@@ -363,7 +363,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
               <>
                 Click <span className="font-medium text-primary">Edit</span> on a finding to fix its text, drag to
                 reorder the teaching sequence, then{" "}
-                <span className="font-medium text-primary">Preview as student</span> to see the replay. Every change
+                <span className="font-medium text-primary">Test as student</span> to open the microphone on this study. Every change
                 saves automatically.
               </>
             )}

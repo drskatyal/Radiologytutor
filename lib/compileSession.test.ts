@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { STRUCTURE_FINDING_SYSTEM, STRUCTURE_SESSION_SYSTEM } from "./teachingPrompt.ts";
 import { markerNearTime, segmentMidMs, sliceNearTime } from "./captureSession.ts";
+import { AGENTIC_VIDEO_MIN_MS } from "./compileMedia.ts";
 import {
   compileSessionRequest,
   compileStructuredSession,
@@ -41,6 +42,17 @@ function modelJson() {
         label: "Left lower lobe nodule",
         description: "Solid nodule on the lung window.",
         teachingPoints: ["Check the prior."],
+        whatToNotice: "A round opacity on lung windows.",
+        pearl: "Check the prior.",
+        mimics: ["Vessel"],
+        clinicalImportance: 1,
+        whyClinicallyFirst: "It could be cancer.",
+        reportLine: "Solid left lower lobe nodule.",
+        landmark: "left lower lobe",
+        seriesInstanceUID: "1.2.3.evil",
+        sliceIndex: 99,
+        windowWidth: 1,
+        windowCenter: 1,
         tStartMs: 400,
         tEndMs: 1800,
         suggestedMarker: { x_pct: 0.99, y_pct: 0.01, shape: "circle" },
@@ -146,6 +158,12 @@ test("compile anchors markers and slices from the track clock and rebuilds the t
   assert.equal(nodule.suggestedSliceIndex, sliceNearTime(track, mid));
   assert.notEqual(nodule.suggestedMarker?.x_pct, 0.99);
   assert.notEqual(nodule.suggestedSliceIndex, 99);
+  assert.equal(nodule.whatToNotice, "A round opacity on lung windows.");
+  assert.equal(nodule.pearl, "Check the prior.");
+  assert.equal(nodule.clinicalImportance, 1);
+  assert.equal(nodule.whyClinicallyFirst, "It could be cancer.");
+  assert.equal("seriesInstanceUID" in nodule, false);
+  assert.equal("windowWidth" in nodule, false);
 
   const acts = nodule.teachingGuide?.beats.map((beat) => beat.act);
   assert.deepEqual(acts, ["orient", "search", "lean-in", "commit", "pearl"]);
@@ -163,6 +181,43 @@ test("compile anchors markers and slices from the track clock and rebuilds the t
   assert.deepEqual(effusion.suggestedMarker, markerNearTime(track, mid2));
   assert.equal(effusion.suggestedSliceIndex, sliceNearTime(track, mid2));
   assert.equal(effusion.suggestedSliceIndex, 4);
+  assert.equal(session.liveTeachingPack?.findings[0]?.drive.sliceIndex, nodule.suggestedSliceIndex);
+  assert.equal(JSON.stringify(session.liveTeachingPack).includes("1.2.3.evil"), false);
+  assert.equal(session.liveTeachingPack?.findings[0]?.drive.sliceIndex === 99, false);
+  assert.equal(session.liveTeachingPack?.findings[0]?.whatToNotice, "A round opacity on lung windows.");
+});
+
+test("long viewer recordings use agentic video and skip the still strip", () => {
+  const longTake = compileSessionRequest({
+    audioBase64: "AUDIODATA",
+    audioMime: "audio/webm",
+    durationMs: AGENTIC_VIDEO_MIN_MS,
+    track,
+    frames,
+    video: { base64: "VIDEO", mimeType: "video/webm" },
+  });
+  const video = longTake.parts.find((part) => part.inlineData?.mimeType === "video/webm");
+  assert.equal(video?.mediaProcessing, "AGENTIC");
+  assert.equal(video?.inlineData?.data, "VIDEO");
+  assert.equal(
+    longTake.parts.some((part) => part.inlineData?.mimeType.startsWith("image/")),
+    false
+  );
+
+  const shortTake = compileSessionRequest({
+    audioBase64: "AUDIODATA",
+    audioMime: "audio/webm",
+    durationMs: 30_000,
+    track,
+    frames,
+    video: { base64: "VIDEO", mimeType: "video/webm" },
+  });
+  const shortVideo = shortTake.parts.find((part) => part.inlineData?.mimeType === "video/webm");
+  assert.equal(shortVideo?.mediaProcessing, "STATIC");
+  assert.equal(
+    shortTake.parts.some((part) => part.inlineData?.mimeType === "image/jpeg"),
+    true
+  );
 });
 
 test("compile ignores model coordinates when the take has no viewer track", async () => {

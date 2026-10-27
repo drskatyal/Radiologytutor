@@ -28,7 +28,7 @@ browser  →  Cloud Run (Next.js, min instances ≥ 1, project radlearn-app, eur
 6. Upstream Accept on frames is the Cornerstone wadors value (`multipart/related; type=application/octet-stream; transfer-syntax=*`) unless the client already sent `multipart/related`. That skips Healthcare's transcode. The policy lives in `lib/dicomwebProxy.ts` (the same helper Teach uses so a prefetch 400 cannot be cached). Rendered thumbnails pass through jpeg/png when the client asked for one, otherwise `image/jpeg`.
 7. Successful frame responses are `Cache-Control: private, immutable` plus `Vary: Accept`. **4xx and 5xx are not cached.** A shared cache must not store these bytes.
 8. Cornerstone decodes in up to 4 web workers. The retrieval pool allows 16 interaction requests (the library default is 6). Prefetch (`components/student/prefetch.ts`) warms the slice the stack opens on and a short window around each finding (cap 18, concurrency 3) with that same Accept. It does not pull the first 32 slices of the series.
-9. Voice is a different path and does not touch the DICOM store. `/api/transcribe` and `/api/tutor` call Gemini with `GEMINI_API_KEY` and `GEMINI_MODEL=gemini-3.8-flash`. `/api/tts` uses ElevenLabs when the teacher has a clone, otherwise Gemini TTS. If that exceeds `VOICE_LATENCY_BUDGET_MS`, `/api/voice/realtime` mints a short-lived token and the browser opens Gemini Live itself. The key never goes to the client. TTS and Live stay on the tip model ids (`gemini-2.5-flash-preview-tts`, `gemini-live-2.5-flash-native-audio`).
+9. Voice is a different path and does not touch the DICOM store. Opening the microphone on a case calls `POST /api/voice/realtime` (`requireSession`), then the browser opens Gemini Live (`GEMINI_LIVE_MODEL`, default `gemini-3.8-live`). The system instruction is the LiveTeachingPack prose. Drive anchors stay on tool calls, including `set_series`. Flash (`GEMINI_MODEL=gemini-3.8-flash`) compiles the teacher recording offline and never drives the student viewer. The key never goes to the client. TTS for authored guide playback stays on `gemini-2.5-flash-preview-tts`.
 
 Upload (author), still one gate:
 
@@ -149,7 +149,7 @@ Project, region, and model below are the deploy defaults. Secret **values** are 
 | `GEMINI_TIMEOUT_MS` | `45000` | Plain env |
 | `GEMINI_TTS_MODEL` | `gemini-2.5-flash-preview-tts` | Plain env. Tip id, unchanged |
 | `GEMINI_TTS_VOICE` | `Kore` | Plain env |
-| `GEMINI_LIVE_MODEL` | `gemini-live-2.5-flash-native-audio` | Plain env. Tip id, unchanged |
+| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Plain env. Student mic session |
 | `VOICE_LATENCY_BUDGET_MS` | `1200` | Plain env |
 | `ELEVENLABS_API_KEY` | secret, optional | Live tutor clone. Gemini TTS covers the gap |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | Plain env |

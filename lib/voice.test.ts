@@ -17,10 +17,15 @@ test("voiceStackStatus reports providers without throwing when keys absent", () 
   assert.ok(s.latencyBudgetMs >= 500);
 });
 
-test("geminiLiveModelId is a non-empty Live model string", () => {
-  const id = geminiLiveModelId();
-  assert.match(id, /gemini/i);
-  assert.match(id, /live|flash|native|audio/i);
+test("geminiLiveModelId defaults to gemini-3.8-live", () => {
+  const previous = process.env.GEMINI_LIVE_MODEL;
+  delete process.env.GEMINI_LIVE_MODEL;
+  try {
+    assert.equal(geminiLiveModelId(), "gemini-3.8-live");
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_LIVE_MODEL;
+    else process.env.GEMINI_LIVE_MODEL = previous;
+  }
 });
 
 test("VOICE_LATENCY_BUDGET_MS is a positive soft budget", () => {
@@ -57,6 +62,7 @@ test("getRealtimeVoiceInfo exposes mint path + ws URL", () => {
   assert.equal(info.proxyPath, "/api/voice/realtime");
   assert.ok(info.preferAfterMs >= 500);
   assert.match(info.wsUrl, /^wss:\/\//);
-  assert.equal(info.apiVersion, "v1alpha");
+  assert.equal(info.apiVersion, "v1beta");
+  assert.match(info.wsUrl, /BidiGenerateContentConstrained/);
   assert.ok(info.model.length > 0);
 });

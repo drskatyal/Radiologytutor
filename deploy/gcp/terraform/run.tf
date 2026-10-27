@@ -14,7 +14,7 @@ locals {
     GEMINI_MODEL           = var.gemini_model
     GEMINI_TTS_MODEL       = "gemini-2.5-flash-preview-tts"
     GEMINI_TTS_VOICE       = "Kore"
-    GEMINI_LIVE_MODEL      = "gemini-live-2.5-flash-native-audio"
+    GEMINI_LIVE_MODEL      = "gemini-3.8-live"
     GEMINI_TIMEOUT_MS      = "45000"
     VOICE_LATENCY_BUDGET_MS = "1200"
     ELEVENLABS_TTS_MODEL   = "eleven_multilingual_v2"

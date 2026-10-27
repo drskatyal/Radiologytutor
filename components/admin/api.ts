@@ -230,6 +230,7 @@ export interface UpdateCaseInput extends CaseDetailsInput {
   system?: BodySystem | null;
   tags?: string[];
   authorId?: string | null;
+  liveTeachingPack?: Case["liveTeachingPack"];
 }
 
 export async function updateCase(

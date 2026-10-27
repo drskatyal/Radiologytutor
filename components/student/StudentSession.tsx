@@ -18,8 +18,6 @@ import {
   MessageCircle,
   PanelRightClose,
   PanelRightOpen,
-  Pause,
-  Play,
 } from "lucide-react";
 import { Badge, Button, IconButton, Kbd, MicButton, Tabs } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
@@ -32,7 +30,6 @@ import {
   examinerVisibleTurns,
   findingStepLabel,
 } from "@/lib/examLocate";
-import { spaceGesture } from "@/lib/speechPipeline";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
@@ -49,7 +46,7 @@ type PanelTab = "lesson" | "ask";
 type Intent = "teach" | "exam";
 
 const ORB_TAGLINE: Record<OrbState, string> = {
-  idle: "Ready — hold mic or Space",
+  idle: "Open the microphone to start",
   listening: "Listening…",
   thinking: "Thinking…",
   searching: "Searching sources…",
@@ -82,7 +79,7 @@ export default function StudentSession({
   // Teach is the product: autonomous attending. Exam = viva.
   const [mode, setMode] = useState<SessionMode>("guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
-  const [railOpen, setRailOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(true);
   const [keysOpen, setKeysOpen] = useState(false);
   const s = useStudentSession(caseData, mode, series, { courseId });
   const intent = intentFromMode(mode);
@@ -148,6 +145,7 @@ export default function StudentSession({
     busy: s.busy,
     speaking: s.phase === "speaking",
     recording: s.micState === "recording",
+    liveOpen: s.liveStatus !== "closed",
     micSupported: s.micSupported,
     start: s.onMicStart,
     stop: s.onMicStop,
@@ -163,6 +161,7 @@ export default function StudentSession({
     busy: s.busy,
     speaking: s.phase === "speaking",
     recording: s.micState === "recording",
+    liveOpen: s.liveStatus !== "closed",
     micSupported: s.micSupported,
     start: s.onMicStart,
     stop: s.onMicStop,
@@ -186,27 +185,18 @@ export default function StudentSession({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingRef.current || isTextTarget(e.target)) return;
-      if (e.code === "Space" && !e.repeat) {
+        if (e.code === "Space" && !e.repeat) {
         const keys = hotkeyRef.current;
-        const gesture = spaceGesture({
-          code: "Space",
-          repeat: false,
-          typing: false,
-          busy: keys.busy,
-          speaking: keys.speaking,
-          recording: keys.recording,
-          awaitingAnswer: keys.awaitingAnswer,
-        });
-        // Capture Space when a mic can take the answer, or when the attending
-        // is speaking and the learner needs the floor even without a mic.
-        if (!keys.micSupported && gesture !== "barge") return;
         e.preventDefault();
-        if (gesture === "ignore") return;
-        if (gesture === "barge") keys.bargeIn();
-        if (keys.micSupported && !heldRef.current) {
-          heldRef.current = true;
-          void keys.start();
+        if (!keys.micSupported) return;
+        // The session stays open until the mic control hangs up. Releasing
+        // Space must not end it. A second press while the attending is
+        // speaking takes the floor.
+        if (keys.liveOpen) {
+          if (keys.speaking) keys.bargeIn();
+          return;
         }
+        void keys.start();
         return;
       }
       if (e.key === "?" ) {
@@ -238,10 +228,7 @@ export default function StudentSession({
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === "Space" && heldRef.current) {
-        heldRef.current = false;
-        void hotkeyRef.current.stop();
-      }
+      if (e.code === "Space") heldRef.current = false;
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -268,16 +255,14 @@ export default function StudentSession({
     () => examinerCaptionTurn(visibleTurns, 0),
     [visibleTurns]
   );
-  const waitingForTeach =
-    intent === "teach" &&
-    s.ready &&
-    !s.locateHint &&
-    !lastAssistant?.text &&
-    (s.phase === "thinking" || s.phase === "idle");
   const captionText =
     s.locateHint ||
     lastAssistant?.text ||
-    (waitingForTeach ? "Attending is seating the first finding…" : "");
+    (s.liveStatus === "connecting"
+      ? "Connecting the attending…"
+      : s.liveStatus === "closed" && s.ready
+        ? "Scroll freely. Open the microphone to start."
+        : "");
   const stepLabel = findingStepLabel(s.activeIndex, s.orderedFindings.length);
 
   const compareSeries =
@@ -527,27 +512,6 @@ export default function StudentSession({
           </IconButton>
         </div>
 
-        <div className="border-b border-subtle px-3 py-2.5">
-          <Tabs
-            items={[
-              { value: "guided", label: "Teach" },
-              { value: "reporting", label: "Report" },
-              { value: "socratic", label: "Socratic" },
-              { value: "free", label: "Free" },
-              { value: "viva", label: "Viva" },
-            ]}
-            value={mode}
-            onValueChange={(v) => {
-              const next = v as SessionMode;
-              setMode(next);
-              setPanel("ask");
-              if (next === "reporting" || next === "guided" || next === "viva") {
-                setRailOpen(true);
-              }
-            }}
-          />
-        </div>
-
         <div className="border-b border-subtle px-3 py-2">
           <Tabs
             variant="underline"
@@ -684,7 +648,7 @@ export default function StudentSession({
                     : "text-secondary hover:text-primary"
                 )}
               >
-                Teach
+                Teach me the case
               </button>
               <button
                 type="button"
@@ -698,7 +662,7 @@ export default function StudentSession({
                     : "text-secondary hover:text-primary"
                 )}
               >
-                Exam
+                Examiner
               </button>
             </div>
 
@@ -720,36 +684,13 @@ export default function StudentSession({
                 onStop={s.onMicStop}
                 disabled={!s.micSupported || (s.busy && s.micState === "idle")}
                 label={
-                  s.micState === "recording"
-                    ? "Release to send"
-                    : s.micState === "processing"
-                      ? "…"
-                      : "Hold to speak"
+                  s.liveStatus === "connecting"
+                    ? "Connecting…"
+                    : s.liveStatus === "open"
+                      ? "End session"
+                      : "Open microphone"
                 }
               />
-              {intent === "teach" && !s.tourActive && s.ready && (
-                <Button
-                  size="sm"
-                  leadingIcon={<Play className="h-3.5 w-3.5" />}
-                  onClick={s.resumeTour}
-                  disabled={s.busy}
-                >
-                  Continue
-                </Button>
-              )}
-              {intent === "teach" && s.tourActive && (s.phase === "speaking" || s.checkIn) && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  leadingIcon={<Pause className="h-3.5 w-3.5" />}
-                  onClick={() => {
-                    s.pauseTour();
-                    s.onStopSpeaking();
-                  }}
-                >
-                  Pause
-                </Button>
-              )}
               {s.examMode && hasFindings && (
                 <>
                   <Button

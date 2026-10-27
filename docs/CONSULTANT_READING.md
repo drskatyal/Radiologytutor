@@ -56,7 +56,7 @@ Teach mode follows the **cleaned guide** (scroll → window → zoom → point �
                          ┌────────────────────┴────────────────────┐
                          ▼                                         ▼
                   ElevenLabs clone                          Gemini Live
-                  (teacher voiceId)                         (latency fallback)
+                  (authored guide voice)                    (student microphone)
 ```
 
 | Concern | Choice | Env |
@@ -64,7 +64,7 @@ Teach mode follows the **cleaned guide** (scroll → window → zoom → point �
 | Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.8-flash`**) | `GEMINI_API_KEY` |
 | Tutor voice | **ElevenLabs** clone when enrolled | `ELEVENLABS_API_KEY` |
 | TTS fallback | Gemini TTS | `GEMINI_TTS_*` |
-| High-latency discussion | **Gemini Live** ephemeral token (`POST /api/voice/realtime`) | same Gemini key |
+| Student session | **Gemini Live** `gemini-3.8-live` (`POST /api/voice/realtime`, then the constrained socket). Loaded from the LiveTeachingPack only. | `GEMINI_LIVE_MODEL` |
 | Soft budget | `VOICE_LATENCY_BUDGET_MS` (default 1200) | |
 
 Cloned / synthesized voice is correct here: the student is talking to an AI
@@ -89,5 +89,5 @@ teacher modeled on the consultant, not listening to a frozen recording.
 
 1. Optional ASR of the teacher’s mic into teaching pearls (when structured text is thin)
 2. Richer digests (search pattern: lung bases → apices, bone→soft tissue, …)
-3. Student Live duplex mic when TTS budget exceeded
+3. Student Live is the microphone session (`gemini-3.8-live`), not a TTS fallback
 4. Authored zoom/pan on static landings (today zoom lives mainly in track digests)
