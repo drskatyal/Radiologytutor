@@ -63,10 +63,7 @@ export function TeachStage({ compact = false }: { compact?: boolean }) {
               Lung windows
             </p>
             <p className="mt-0.5 text-sm tabular-nums text-secondary">
-              {beat.slice}/65
-              <span className="px-1.5">•</span>
-              W 1500
-              <span className="ml-2">L −600</span>
+              {beat.slice}/65 • W 1500 L −600
             </p>
           </div>
           <span className="shrink-0 rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
