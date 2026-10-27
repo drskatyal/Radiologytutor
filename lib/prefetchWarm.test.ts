@@ -33,40 +33,34 @@ test("LIDC findings focus the warmer on 34, 49, and 64 — not the apex", () => 
   );
 });
 
-test("a 65-slice chest warms the open slice and the nodule, not the first 32", () => {
-  const stack = seriesOf(65);
+test("a 1000-slice series warms only the active open window, not other series", () => {
+  const active = seriesOf(1000, "1.2.840.active");
+  const other = seriesOf(1000, "1.2.840.other");
   const focus = collectFocusSlices([
-    { order: 1, seriesInstanceUID: stack.seriesInstanceUID, sliceIndex: 34 },
-    { order: 2, seriesInstanceUID: stack.seriesInstanceUID, sliceIndex: 49 },
-    { order: 3, seriesInstanceUID: stack.seriesInstanceUID, sliceIndex: 64 },
+    { order: 1, seriesInstanceUID: active.seriesInstanceUID, sliceIndex: 34 },
+    { order: 2, seriesInstanceUID: other.seriesInstanceUID, sliceIndex: 10 },
   ]);
-  const targets = selectWarmTargets([stack], focus);
+  const targets = selectWarmTargets([active, other], focus);
   const indexes = targets.map((target) =>
     Number(target.sopInstanceUID.slice(target.sopInstanceUID.lastIndexOf(".") + 1))
   );
 
-  assert.ok(indexes.includes(32), "viewport opens at the middle");
-  assert.ok(indexes.includes(34), "finding 1");
-  assert.ok(indexes.includes(49), "finding 2");
-  assert.ok(indexes.includes(64), "finding 3");
-  assert.ok(!indexes.includes(0), "apex is not on the teach path");
+  assert.ok(indexes.includes(500), "viewport opens at the middle");
+  assert.ok(indexes.every((index) => index >= 492 && index <= 508));
+  assert.ok(!indexes.includes(0), "apex is not prefetched");
+  assert.ok(!indexes.includes(34), "a distant finding is not prefetched");
+  assert.ok(targets.every((target) => target.seriesInstanceUID === active.seriesInstanceUID));
   assert.ok(targets.length <= WARM_CAP);
-  assert.ok(targets.length < 32);
+  assert.equal(targets.length, 17);
   assert.ok(WARM_CONCURRENCY <= 4);
 });
 
-test("warm targets skip empty SOPs and clamp a slice past the end of the stack", () => {
+test("warm targets skip an empty SOP inside the open window", () => {
   const stack = seriesOf(10);
   stack.instances[5] = { sopInstanceUID: "  " };
-  const targets = selectWarmTargets(
-    [stack],
-    [{ seriesInstanceUID: stack.seriesInstanceUID, sliceIndex: 99 }],
-    { radius: 0, cap: 8 }
-  );
+  const targets = selectWarmTargets([stack], [], { radius: 1, cap: 8 });
   const sops = targets.map((target) => target.sopInstanceUID);
-  assert.ok(sops.includes("1.2.840.sop.9"));
-  assert.ok(!sops.includes("1.2.840.sop.5"));
-  assert.equal(new Set(sops).size, sops.length);
+  assert.deepEqual(sops, ["1.2.840.sop.4", "1.2.840.sop.6"]);
 });
 
 test("frame URL matches the viewer imageId and the loader Accept", () => {

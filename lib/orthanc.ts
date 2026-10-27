@@ -216,24 +216,17 @@ export async function orthancSeriesMeta(orthancSeriesId: string): Promise<Series
   if (imagingBackend() === "healthcare") return healthcareSeriesMeta(orthancSeriesId);
   const series = await orthancGet<OrthancSeriesRecord>(`/series/${orthancSeriesId}`);
   const tags = series.MainDicomTags;
-  const firstInstanceOrthancId = series.Instances[0];
-  let firstInstanceUID: string | undefined;
-  if (firstInstanceOrthancId) {
-    try {
-      const inst = await orthancGet<OrthancInstanceRecord>(`/instances/${firstInstanceOrthancId}`);
-      firstInstanceUID = inst.MainDicomTags.SOPInstanceUID;
-    } catch {
-      // Cover is best-effort; missing first-instance UID just means no thumbnail.
-    }
-  }
+  // Instances.length is the archive's count for this series. Do not also
+  // GET the first instance here — that round trip existed only to feed a
+  // thumbnail, and the rail fetches a cover after the viewport has painted.
+  const instanceCount = series.Instances.length;
   return {
     seriesInstanceUID: tags.SeriesInstanceUID,
     orthancSeriesId,
     modality: tags.Modality,
     seriesDescription: tags.SeriesDescription,
     seriesNumber: tags.SeriesNumber ? Number(tags.SeriesNumber) : undefined,
-    instanceCount: series.Instances.length,
-    firstInstanceUID,
+    ...(instanceCount > 0 ? { instanceCount } : {}),
   };
 }
 

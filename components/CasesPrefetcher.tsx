@@ -1,9 +1,8 @@
 "use client";
 
-// Warm the cache as soon as the case list renders: on idle, hit each case's
-// prefetch manifest in parallel batches of 4 (Promise.allSettled) so opening a
-// case is instant and multi-series work stays off the list render. Finding-first
-// warming of actual frames happens in components/student/prefetch.ts (≤30s).
+// On idle, fetch each case's prefetch manifest (series order only — no frame
+// bodies) in batches of 4. Pixel prefetch of the active series happens in the
+// viewer after the first frame, not from this list warmer.
 
 import { useEffect } from "react";
 

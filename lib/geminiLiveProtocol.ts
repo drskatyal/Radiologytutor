@@ -91,6 +91,30 @@ function stripThinking(record: Record<string, unknown>): void {
   delete record.enableAffectiveDialog;
 }
 
+/**
+ * Live is mic audio and speakable text. A viewport recording is a Process-time
+ * compile input and must not ride along in setup, even if a caller stuffed
+ * inline video into `extra`.
+ */
+function stripLiveMedia(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripLiveMedia).filter((item) => item !== undefined);
+  }
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const mime = record.mimeType ?? record.mime_type;
+  if (typeof mime === "string" && mime.toLowerCase().startsWith("video/")) return undefined;
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (key === "inlineData" || key === "inline_data" || key === "fileData" || key === "file_data" || key === "video") {
+      continue;
+    }
+    const cleaned = stripLiveMedia(item);
+    if (cleaned !== undefined) next[key] = cleaned;
+  }
+  return next;
+}
+
 /** Pack tools for Live, including set_series and web_search. Async calls are explicit. */
 export function liveFunctionDeclarations(
   tools: readonly LiveToolDeclaration[] = livePackTools([])
@@ -112,7 +136,7 @@ export function buildLiveSetup(input: {
   tools?: readonly LiveToolDeclaration[];
   extra?: Record<string, unknown>;
 }): { setup: Record<string, unknown> } {
-  const extra = { ...(input.extra ?? {}) };
+  const extra = stripLiveMedia({ ...(input.extra ?? {}) }) as Record<string, unknown>;
   stripThinking(extra);
   const generation =
     extra.generationConfig && typeof extra.generationConfig === "object"

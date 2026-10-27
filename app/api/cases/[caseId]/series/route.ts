@@ -1,11 +1,11 @@
 // GET /api/cases/[caseId]/series -> the case's series rail (CaseSeries[]).
 //
-// Resolves every series the case can show (across its studies) from Orthanc via
-// lib/orthanc.ts, ordered finding-first. Returns `{ series: [], hasImaging }`.
-// When imaging can't be resolved (Orthanc off / study missing) `series` is
-// empty and `hasImaging` is false, so the client falls back to the bundled
-// single-series sample. Used by the author capture surface to show the same
-// SeriesNavigator the student sees (the student page resolves this server-side).
+// Background rail enrichment. The case page does not wait on this: it renders
+// from study/series UIDs already on the case, and the client merges this
+// response (descriptions, positive DICOMweb counts) without moving the series
+// already on screen. Returns `{ series: [], hasImaging }`. Empty means imaging
+// could not be listed, and the client may fall back to the bundled sample
+// only when the case itself has no series UIDs.
 
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";

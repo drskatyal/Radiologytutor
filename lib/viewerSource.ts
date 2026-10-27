@@ -47,8 +47,12 @@ export interface CaseSeries {
   modality?: string;
   description?: string;
   seriesNumber?: number;
-  /** Number of instances (slices/frames) in the series. */
-  instanceCount: number;
+  /**
+   * Number of instances in the series when DICOMweb (or the archive) has
+   * reported a positive count. Missing or zero is unknown — the rail must
+   * not render "0 images" from a stale tag.
+   */
+  instanceCount?: number;
   /** SOP Instance UID of a cover/first frame — enough for a thumbnail. */
   thumbnailInstanceUID?: string;
   /** WADO-RS root the viewer/thumbnail fetch through (our same-origin proxy). */

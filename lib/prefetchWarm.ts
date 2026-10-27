@@ -1,23 +1,22 @@
 // Which frames to warm when a case opens.
 //
-// The viewer opens at the middle of the stack (stackOpenIndex) and Teach
-// lands on each finding's sliceIndex. Warming instances[0..31] requested the
-// lung apices, saturated the connection pool, and — with Accept:
-// application/octet-stream — made Orthanc answer 400 once per slice. Those
-// 400s showed up in the console while the tour, which never visited those
-// slices, still played.
+// Only the active series, and only the slice the stack opens on plus a few
+// neighbors. Other series stay metadata-only until the reader selects them.
+// Warming every finding, or instances[0..31], requested the wrong end of a
+// chest CT and saturated the pool before the first frame.
 
 import { WADORS_FRAME_ACCEPT } from "./dicomwebProxy";
 import { stackOpenIndex } from "./stackIndex";
+import { ACTIVE_PREFETCH_RADIUS, neighborIndexes } from "./viewerLoad";
 
 export { WADORS_FRAME_ACCEPT };
 
-/** How many frame fetches may be in flight. Keeps Orthanc off a 32-wide stampede. */
+/** How many frame fetches may be in flight. Keeps the archive off a stampede. */
 export const WARM_CONCURRENCY = 3;
-/** Neighbors on each side of the open slice and each finding, for the cine. */
-export const WARM_RADIUS = 2;
-/** Hard cap across every series in the case. A full CT is not warmed. */
-export const WARM_CAP = 18;
+/** Neighbors on each side of the slice the active series opens on. */
+export const WARM_RADIUS = ACTIVE_PREFETCH_RADIUS;
+/** Hard cap. One active series, not every series in the study. */
+export const WARM_CAP = ACTIVE_PREFETCH_RADIUS * 2 + 1;
 
 export interface WarmInstance {
   sopInstanceUID: string;
@@ -67,50 +66,40 @@ export function collectFocusSlices(
 }
 
 /**
- * Frames to fetch, best first: the slice the viewport opens on, then each
- * finding, each with a small neighbor window. Deduped, clamped, capped.
+ * Frames to fetch for the active series only: the slice the viewport opens
+ * on, plus ± radius neighbors. Other series are not warmed. Findings outside
+ * that window load when the reader scrolls there.
  */
 export function selectWarmTargets(
   series: readonly WarmSeries[],
-  focus: readonly WarmFocus[],
-  opts?: { radius?: number; cap?: number }
+  _focus: readonly WarmFocus[],
+  opts?: { radius?: number; cap?: number; seriesInstanceUID?: string }
 ): WarmTarget[] {
   const radius = Math.max(0, opts?.radius ?? WARM_RADIUS);
   const cap = Math.max(0, opts?.cap ?? WARM_CAP);
+  void _focus;
+  const wanted = opts?.seriesInstanceUID ?? series[0]?.seriesInstanceUID;
+  const entry = series.find((item) => item.seriesInstanceUID === wanted) ?? series[0];
+  if (!entry || entry.instances.length === 0) return [];
+  if (!entry.studyInstanceUID || !entry.seriesInstanceUID) return [];
+
+  const center = stackOpenIndex(entry.instances.length);
+  const indexes = [center, ...neighborIndexes(entry.instances.length, center, radius)];
   const out: WarmTarget[] = [];
   const seen = new Set<string>();
-
-  const push = (entry: WarmSeries, index: number) => {
-    if (out.length >= cap) return;
-    if (!entry.studyInstanceUID || !entry.seriesInstanceUID) return;
-    if (index < 0 || index >= entry.instances.length) return;
+  for (const index of indexes) {
+    if (out.length >= cap) break;
+    if (index < 0 || index >= entry.instances.length) continue;
     const sop = entry.instances[index]?.sopInstanceUID?.trim();
-    if (!sop) return;
+    if (!sop) continue;
     const key = `${entry.studyInstanceUID}/${entry.seriesInstanceUID}/${sop}`;
-    if (seen.has(key)) return;
+    if (seen.has(key)) continue;
     seen.add(key);
     out.push({
       studyInstanceUID: entry.studyInstanceUID,
       seriesInstanceUID: entry.seriesInstanceUID,
       sopInstanceUID: sop,
     });
-  };
-
-  for (const entry of series) {
-    if (out.length >= cap || entry.instances.length === 0) continue;
-    const foci = focus
-      .filter((item) => item.seriesInstanceUID === entry.seriesInstanceUID)
-      .map((item) => item.sliceIndex);
-    const centers = [stackOpenIndex(entry.instances.length), ...foci];
-    for (const center of centers) {
-      if (out.length >= cap) break;
-      const clamped = Math.max(0, Math.min(entry.instances.length - 1, Math.round(center)));
-      push(entry, clamped);
-      for (let distance = 1; distance <= radius; distance++) {
-        push(entry, clamped - distance);
-        push(entry, clamped + distance);
-      }
-    }
   }
   return out;
 }
