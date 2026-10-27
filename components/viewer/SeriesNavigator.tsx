@@ -13,7 +13,7 @@
 // stand up a second Cornerstone canvas per series. Covers are withheld until
 // the caller says the main image is up (`thumbPending`).
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ImageOff, Layers, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
@@ -72,6 +72,7 @@ export function SeriesNavigator({
   onSelect,
   loading = false,
   className,
+  headerAccessory,
 }: {
   series: RailEntry[];
   /** Index of the series currently in the viewport. */
@@ -81,6 +82,8 @@ export function SeriesNavigator({
   /** Show a skeleton rail while series resolve. */
   loading?: boolean;
   className?: string;
+  /** Collapse control, kept in the header row so it does not cover thumbnails. */
+  headerAccessory?: ReactNode;
 }) {
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -105,16 +108,21 @@ export function SeriesNavigator({
         className
       )}
     >
-      <div className="flex items-center gap-2 border-b border-subtle px-3 py-2.5">
-        <Layers className="h-4 w-4 text-muted" aria-hidden="true" />
+      <div className="flex items-center gap-2 border-b border-subtle px-3 py-1.5">
+        <Layers className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
         <h2 className="text-xs font-semibold uppercase tracking-wide text-secondary">
           Series
         </h2>
-        {!loading && series.length > 0 && (
-          <span className="ml-auto rounded-full bg-elevated px-2 py-0.5 text-[11px] tabular-nums text-muted">
-            {series.length}
-          </span>
-        )}
+        {(!loading && series.length > 0) || headerAccessory ? (
+          <div className="ml-auto flex items-center gap-1.5">
+            {!loading && series.length > 0 && (
+              <span className="rounded-full bg-elevated px-2 py-0.5 text-[11px] tabular-nums text-muted">
+                {series.length}
+              </span>
+            )}
+            {headerAccessory}
+          </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">

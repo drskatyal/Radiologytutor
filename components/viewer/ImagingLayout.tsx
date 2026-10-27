@@ -4,20 +4,35 @@
 // and click-the-finding exams.
 //
 // The series rail is a vertical PACS list (description, modality, count).
-// Fullscreen lifts just this stage — image plus rail — over the app chrome.
-// Escape or Exit puts the chrome back. In fullscreen the rail floats on the
-// left so the pixels can fill the screen, and it can collapse.
+// One chevron collapses it to a narrow strip so the viewport can use the
+// width, and expands it again. The choice is kept in localStorage for this
+// browser. Fullscreen lifts just this stage — image plus rail — over the
+// app chrome. Escape or Exit puts the chrome back. In fullscreen the rail
+// floats on the left.
+//
+// Collapsing is presentation only. The Cornerstone viewport stays mounted,
+// so Gemini Live set_series / show_finding still switch series while the
+// list is closed.
 
 import {
   useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
 } from "react";
-import { Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ChevronLeft, ChevronRight, Maximize2, Minimize2 } from "lucide-react";
 import { Button, IconButton } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import {
+  SERIES_RAIL_STORAGE_KEY,
+  SERIES_RAIL_TOGGLE_KEY,
+  readSeriesRailOpen,
+  seriesRailToggleLabel,
+  writeSeriesRailOpen,
+} from "@/lib/seriesRailPreference";
 import type { CaseSeries } from "@/lib/viewerSource";
 import type { RailInstanceSource } from "@/lib/seriesRail";
 import { SeriesNavigator } from "./SeriesNavigator";
@@ -58,13 +73,44 @@ export function ImagingLayout({
   children: ReactNode | ((expanded: boolean) => ReactNode);
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const openBtnRef = useRef<HTMLButtonElement>(null);
+  const closedBtnRef = useRef<HTMLButtonElement>(null);
+  const focusToggle = useRef(false);
+  const paneOpenRef = useRef(true);
+  const railId = useId();
   const [native, setNative] = useState(false);
   const [fallback, setFallback] = useState(false);
   const [paneOpen, setPaneOpen] = useState(true);
   const expanded = native || fallback;
   const railSeries = useLazySeriesRail(series, mainImageReady, listedSeries);
   const showPane = seriesLoading || railSeries.length > 1;
-  const overlayPane = expanded || pane === "overlay";
+  paneOpenRef.current = paneOpen;
+  const railFloats = expanded || pane === "overlay";
+  const toggleLabel = seriesRailToggleLabel({
+    open: paneOpen,
+    series: railSeries,
+    activeIndex,
+  });
+
+  useLayoutEffect(() => {
+    setPaneOpen(readSeriesRailOpen(window.localStorage));
+  }, []);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key != null && event.key !== SERIES_RAIL_STORAGE_KEY) return;
+      setPaneOpen(readSeriesRailOpen(window.localStorage));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!focusToggle.current) return;
+    focusToggle.current = false;
+    const node = paneOpen ? openBtnRef.current : closedBtnRef.current;
+    node?.focus();
+  }, [paneOpen]);
 
   useEffect(() => {
     const onChange = () => {
@@ -120,6 +166,14 @@ export function ImagingLayout({
     else void enter();
   }, [enter, exit, expanded]);
 
+  const togglePane = useCallback((fromControl: boolean) => {
+    if (fromControl) focusToggle.current = true;
+    const next = !paneOpenRef.current;
+    paneOpenRef.current = next;
+    writeSeriesRailOpen(window.localStorage, next);
+    setPaneOpen(next);
+  }, []);
+
   useEffect(() => {
     const isText = (el: EventTarget | null) => {
       const node = el as HTMLElement | null;
@@ -134,6 +188,13 @@ export function ImagingLayout({
         void exit();
         return;
       }
+      if (e.key === SERIES_RAIL_TOGGLE_KEY && !e.repeat && showPane) {
+        if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+        if (isText(e.target)) return;
+        e.preventDefault();
+        togglePane(false);
+        return;
+      }
       if (e.key.toLowerCase() !== "f" || e.repeat) return;
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       if (isText(e.target)) return;
@@ -142,9 +203,10 @@ export function ImagingLayout({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [expanded, exit, toggle]);
+  }, [expanded, exit, showPane, toggle, togglePane]);
 
   const body = typeof children === "function" ? children(expanded) : children;
+  const railOpen = showPane && paneOpen;
 
   return (
     <div
@@ -158,27 +220,82 @@ export function ImagingLayout({
         className
       )}
     >
-      {showPane && paneOpen && (
+      {showPane && (
         <div
+          data-series-rail={paneOpen ? "open" : "closed"}
           className={cn(
-            "flex w-60 min-h-0 flex-col overflow-hidden border-r border-subtle bg-surface",
-            overlayPane
-              ? "absolute inset-y-0 left-0 z-20 max-w-[calc(100%-9rem)] shadow-lg"
-              : "max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-20 max-md:max-w-[calc(100%-9rem)] max-md:shadow-lg md:relative md:w-60 md:shrink-0"
+            "z-30 flex min-h-0 flex-col self-stretch",
+            railFloats
+              ? "absolute inset-y-0 left-0"
+              : "max-md:absolute max-md:inset-y-0 max-md:left-0 md:relative md:shrink-0",
+            paneOpen
+              ? railFloats
+                ? "w-60 max-w-[calc(100%-9rem)]"
+                : "w-60 max-md:max-w-[calc(100%-9rem)]"
+              : "w-9",
+            paneOpen && (railFloats ? "shadow-lg" : "max-md:shadow-lg")
           )}
         >
           {/* Docked rail: absolute inset matches the image height so a long
-              MRI list scrolls instead of stretching the page. */}
-          <SeriesNavigator
-            series={railSeries}
-            activeIndex={activeIndex}
-            onSelect={(index) => onSelectSeries?.(index)}
-            loading={seriesLoading && series.length === 0}
+              MRI list scrolls instead of stretching the page. Hidden, not
+              unmounted, so middle-slice covers stay warm while collapsed. */}
+          <div
+            id={railId}
+            hidden={!railOpen}
             className={cn(
-              "h-full min-h-0",
-              !overlayPane && "md:absolute md:inset-0"
+              "relative min-h-0 min-w-0 flex-1 overflow-hidden border-r border-subtle bg-surface",
+              !railOpen && "hidden"
             )}
-          />
+          >
+            <SeriesNavigator
+              series={railSeries}
+              activeIndex={activeIndex}
+              onSelect={(index) => onSelectSeries?.(index)}
+              loading={seriesLoading && series.length === 0}
+              className={cn("h-full min-h-0", !railFloats && "md:absolute md:inset-0")}
+              headerAccessory={
+                paneOpen ? (
+                  <IconButton
+                    ref={openBtnRef}
+                    aria-label="Collapse series list"
+                    aria-expanded={true}
+                    aria-controls={railId}
+                    aria-keyshortcuts={SERIES_RAIL_TOGGLE_KEY}
+                    title="Collapse series list ([)"
+                    size="md"
+                    onClick={() => togglePane(true)}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </IconButton>
+                ) : null
+              }
+            />
+          </div>
+          {!paneOpen && (
+            <IconButton
+              ref={closedBtnRef}
+              aria-label={toggleLabel}
+              aria-expanded={false}
+              aria-controls={railId}
+              aria-keyshortcuts={SERIES_RAIL_TOGGLE_KEY}
+              title={`${toggleLabel} ([)`}
+              size="md"
+              variant="ghost"
+              onClick={() => togglePane(true)}
+              className={cn(
+                "h-auto min-h-0 w-9 flex-1 flex-col gap-1 rounded-none bg-[#181818] text-white",
+                "ring-1 ring-inset ring-white/15 hover:bg-[#1F1F1F] hover:text-white",
+                "focus-visible:ring-offset-0 active:scale-100"
+              )}
+            >
+              <ChevronRight className="h-4 w-4 shrink-0" />
+              {railSeries.length > 0 && (
+                <span className="text-xs font-medium tabular-nums leading-none text-white/80">
+                  {railSeries.length}
+                </span>
+              )}
+            </IconButton>
+          )}
         </div>
       )}
 
@@ -186,25 +303,6 @@ export function ImagingLayout({
         {body}
         <div className="pointer-events-none absolute right-2 top-2 z-40 flex items-center gap-1">
           <div className="pointer-events-auto flex items-center gap-1 rounded-lg bg-black/75 p-1 shadow-lg ring-1 ring-white/20">
-            {showPane && (
-              <IconButton
-                aria-label={
-                  paneOpen
-                    ? "Hide series list"
-                    : `Show series list${series.length ? `, ${series.length} series` : ""}`
-                }
-                aria-expanded={paneOpen}
-                size="sm"
-                variant="secondary"
-                onClick={() => setPaneOpen((open) => !open)}
-              >
-                {paneOpen ? (
-                  <PanelLeftClose className="h-4 w-4" />
-                ) : (
-                  <PanelLeftOpen className="h-4 w-4" />
-                )}
-              </IconButton>
-            )}
             <Button
               size="sm"
               variant="secondary"
