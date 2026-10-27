@@ -6,12 +6,13 @@
 // pixel data) so WADO-RS works end to end.
 //
 // ACCESS (CLAUDE.md §4a — everything is scoped by orgId):
-//   This route hands out patient pixels. It is READ-ONLY and requires a
-//   session; study-addressed paths are additionally checked against the
-//   caller's org, so one tenant can never pull another tenant's imaging.
-//   Ingest deliberately does NOT live here — it belongs to /api/upload, which
-//   runs the de-id gate in `orthancIngestInstance`. Proxying STOW-RS would
-//   route around that gate, so no write verb is exported.
+//   This route hands out patient pixels. It is READ-ONLY. A signed-in session
+//   may read studies its org owns. A case-share cookie (set by visiting
+//   `/s/[token]`) may read only the study UIDs that one case names — no
+//   account required, and no archive-wide search. Ingest deliberately does
+//   NOT live here — it belongs to /api/upload, which runs the de-id gate in
+//   `orthancIngestInstance`. Proxying STOW-RS would route around that gate,
+//   so no write verb is exported.
 //
 // Caching:
 //   1. Browser Cache-Control on successful frames (immutable) + short TTL on
@@ -24,7 +25,8 @@
 
 import { NextRequest } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
-import { getStudyByUID } from "@/lib/cases";
+import { getStudyByUID, resolveShareAccess } from "@/lib/cases";
+import { SHARE_COOKIE, isShareToken, shareGrantsStudy } from "@/lib/caseShare";
 import { responseCacheControl, upstreamAccept, varyHeaderForDicomwebPath } from "@/lib/dicomwebProxy";
 import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "@/lib/orthanc";
 import { getObject, putObject, r2Configured, type GetObjectResult } from "@/lib/r2";
@@ -59,6 +61,32 @@ function frameCacheKey(path: string): string | null {
  */
 const OWNERSHIP_TTL_MS = 60_000;
 const ownershipMemo = new Map<string, { owned: boolean; at: number }>();
+
+const SHARE_TTL_MS = 60_000;
+const shareMemo = new Map<string, { studyUids: string[] | null; orgId: string; at: number }>();
+
+/** Live share → org + study allowlist. Null study list means the token is dead. */
+async function shareAllows(token: string, studyUid: string): Promise<string | null> {
+  if (!isShareToken(token)) return null;
+  const now = Date.now();
+  let hit = shareMemo.get(token);
+  if (!hit || now - hit.at >= SHARE_TTL_MS) {
+    const access = await resolveShareAccess(token);
+    hit = {
+      orgId: access?.orgId ?? "",
+      studyUids: access ? access.studyUids : null,
+      at: now,
+    };
+    shareMemo.set(token, hit);
+    if (shareMemo.size > 5_000) {
+      for (const [key, value] of shareMemo) {
+        if (now - value.at >= SHARE_TTL_MS) shareMemo.delete(key);
+      }
+    }
+  }
+  if (!hit.studyUids || !shareGrantsStudy(hit.studyUids, studyUid)) return null;
+  return hit.orgId || null;
+}
 
 async function orgOwnsStudy(orgId: string, studyUid: string): Promise<boolean> {
   const key = `${orgId}\u0000${studyUid}`;
@@ -96,21 +124,27 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
     );
   }
 
-  // Imaging is never anonymous.
-  const session = await getSession();
-  if (!session) return new Response("Unauthorized", { status: 401 });
-
   const segments = ctx.params.path;
   const studyUid = studyUidFromPath(segments);
 
-  // A study-addressed request must name a study this org actually holds.
+  // A study-addressed request must name a study the caller may see.
   // An unaddressed request (bare QIDO `studies` search) would enumerate the
   // whole archive across tenants, so it is refused outright — callers list
   // studies through /api/admin/studies, which is org-scoped.
   if (!studyUid) {
     return new Response("A StudyInstanceUID is required.", { status: 400 });
   }
-  const orgId = await activeOrgId();
+
+  // Share cookie first, and only for the studies that case names. A leftover
+  // cookie must not block a signed-in reader of a different study.
+  const shareToken = req.cookies.get(SHARE_COOKIE)?.value;
+  const shareOrg = shareToken ? await shareAllows(shareToken, studyUid) : null;
+  let orgId = shareOrg;
+  if (!orgId) {
+    const session = await getSession();
+    if (!session) return new Response("Unauthorized", { status: 401 });
+    orgId = await activeOrgId();
+  }
   if (!(await orgOwnsStudy(orgId, studyUid))) {
     return new Response("Not found", { status: 404 });
   }

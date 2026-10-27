@@ -60,6 +60,7 @@ import type {
   Certificate,
   Assessment,
   Attempt,
+  CaseShare,
   MembershipRole,
   User,
   UserRole,
@@ -74,6 +75,12 @@ import { deidAllowsPublish, type DeidReport } from "./deid";
 import { resolveLiveTeachingPack } from "./liveTeachingPack";
 import { assertCloudRunMongo } from "./durableStore";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+import {
+  activeShare,
+  generateShareToken,
+  isShareToken,
+  studyUidsForCase,
+} from "./caseShare";
 import { sortRelatedCourses } from "./relatedCourses";
 import {
   isPlaceholderCatalogCase,
@@ -222,7 +229,8 @@ type CollectionName =
   | "certificates"
   | "deidReports"
   | "assessments"
-  | "attempts";
+  | "attempts"
+  | "caseShares";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -486,6 +494,7 @@ const certificatesStore = collection<Certificate>("certificates");
 const assessmentsStore = collection<Assessment>("assessments");
 const attemptsStore = collection<Attempt>("attempts");
 const deidReportsStore = collection<StoredDeidReport>("deidReports");
+const caseSharesStore = collection<CaseShare>("caseShares");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
 export const DEMO_USER_ID = "user_demo";
@@ -826,7 +835,111 @@ export async function getDeidReport(
 export async function deleteCaseForOrg(orgId: string, caseId: string): Promise<boolean> {
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return false;
+  await revokeCaseShares(orgId, caseId);
   return casesStore.remove(caseId);
+}
+
+// ============================================================================
+// Case shares — unguessable viewer links (one live token per case)
+// ============================================================================
+
+/** Live share for a token, or null when missing or revoked. */
+export async function getCaseShare(token: string): Promise<CaseShare | null> {
+  if (!isShareToken(token)) return null;
+  const row = await caseSharesStore.get(token);
+  if (!row || row.revokedAt) return null;
+  if (row.orgId == null || row.caseId == null) return null;
+  return row;
+}
+
+export async function listCaseShares(orgId: string, caseId: string): Promise<CaseShare[]> {
+  const rows = await caseSharesStore.find({ orgId, caseId });
+  return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Newest live share for each case in the org. */
+export async function listActiveSharesForOrg(orgId: string): Promise<CaseShare[]> {
+  const rows = await caseSharesStore.find({ orgId });
+  const byCase = new Map<string, CaseShare>();
+  for (const row of rows) {
+    if (row.revokedAt) continue;
+    const prev = byCase.get(row.caseId);
+    if (!prev || row.createdAt > prev.createdAt) byCase.set(row.caseId, row);
+  }
+  return [...byCase.values()];
+}
+
+/**
+ * Return the live share, or mint one. Idempotent so "Copy link" does not
+ * rotate a link the teacher already handed out.
+ */
+export async function createCaseShare(
+  orgId: string,
+  caseId: string,
+  createdBy: string
+): Promise<CaseShare> {
+  const existing = activeShare(await listCaseShares(orgId, caseId));
+  if (existing) return existing;
+  const row: CaseShare = {
+    id: generateShareToken(),
+    orgId,
+    caseId,
+    createdBy,
+    createdAt: nowIso(),
+  };
+  await caseSharesStore.put(row);
+  return row;
+}
+
+/** Kill every live link for the case and mint a new token. */
+export async function rotateCaseShare(
+  orgId: string,
+  caseId: string,
+  createdBy: string
+): Promise<CaseShare> {
+  await revokeCaseShares(orgId, caseId);
+  const row: CaseShare = {
+    id: generateShareToken(),
+    orgId,
+    caseId,
+    createdBy,
+    createdAt: nowIso(),
+  };
+  await caseSharesStore.put(row);
+  return row;
+}
+
+/** Mark live shares revoked. Returns how many were live. */
+export async function revokeCaseShares(orgId: string, caseId: string): Promise<number> {
+  const rows = await listCaseShares(orgId, caseId);
+  const now = nowIso();
+  let count = 0;
+  for (const row of rows) {
+    if (row.revokedAt) continue;
+    await caseSharesStore.put({ ...row, revokedAt: now });
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * What a live token may read: the case's org and the study UIDs it names.
+ * A token never authorizes a study that case does not reference.
+ */
+export async function resolveShareAccess(token: string): Promise<{
+  orgId: string;
+  caseId: string;
+  studyUids: string[];
+} | null> {
+  const share = await getCaseShare(token);
+  if (!share) return null;
+  const caseData = await getCaseForOrg(share.orgId, share.caseId);
+  if (!caseData) return null;
+  return {
+    orgId: share.orgId,
+    caseId: share.caseId,
+    studyUids: studyUidsForCase(caseData),
+  };
 }
 
 // ============================================================================

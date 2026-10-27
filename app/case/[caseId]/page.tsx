@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
-import { getAuthor, getCaseForOrg } from "@/lib/cases";
+import { getAuthor, getCaseForOrg, listCaseShares } from "@/lib/cases";
 import { seriesHintFromCase } from "@/lib/viewerLoad";
 import {
   BUNDLED_CASE,
@@ -11,6 +11,15 @@ import {
 import StudentSession from "@/components/student/StudentSession";
 import { studentIntentFromQuery } from "@/lib/teacherCapture";
 import { RecordCaseOpen } from "@/components/learning/RecordCaseOpen";
+import { CaseViewer } from "@/components/library/CaseViewer";
+import {
+  activeShare,
+  caseHasTeachingPack,
+  caseOpenMode,
+  sharePath,
+  studyUidsForCase,
+  viewerChrome,
+} from "@/lib/caseShare";
 
 export const dynamic = "force-dynamic";
 
@@ -28,17 +37,51 @@ export default async function CasePage({
   const caseData = await getCaseForOrg(orgId, params.caseId);
   if (!caseData) notFound();
 
+  const openMode = caseOpenMode(searchParams?.mode);
+  const needsAuthorCheck = openMode === "view" || caseData.status !== "published";
+  const session = needsAuthorCheck ? await getSession() : null;
+  const canAuthor = session
+    ? canAccessOrgResource({
+        platformRole: session.user.platformRole,
+        membershipRole: session.user.membershipRole,
+        need: "author",
+      })
+    : false;
+
   // Drafts: authors/admins only. Published cases are open for learning.
-  if (caseData.status !== "published") {
-    const session = await getSession();
-    const canAuthor = session
-      ? canAccessOrgResource({
-          platformRole: session.user.platformRole,
-          membershipRole: session.user.membershipRole,
-          need: "author",
-        })
-      : false;
-    if (!canAuthor) notFound();
+  if (caseData.status !== "published" && !canAuthor) notFound();
+
+  // Viewer-only. The tutor mounts only for teach / exam. Series hints are the
+  // same fast path as teach: HTML does not wait on the archive.
+  if (openMode === "view") {
+    const series = seriesHintFromCase(
+      {
+        modality: caseData.modality,
+        findings: caseData.findings,
+        studyRefs: caseData.studyRefs,
+      },
+      WADO_RS_ROOT
+    );
+    const chrome = viewerChrome({
+      hasPack: caseHasTeachingPack(caseData),
+      canManageShare: canAuthor,
+      sharedLink: false,
+    });
+    const share = canAuthor ? activeShare(await listCaseShares(orgId, params.caseId)) : null;
+    return (
+      <CaseViewer
+        caseId={caseData.caseId}
+        title={caseData.title}
+        modality={caseData.modality}
+        source={series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE}
+        series={series}
+        showTeach={chrome.showTeach}
+        showShare={chrome.showShare}
+        sharePath={share ? sharePath(share.id) : null}
+        sharedLink={false}
+        namedStudy={studyUidsForCase(caseData).length > 0}
+      />
+    );
   }
 
   // Series UIDs already on the case. Descriptions and counts arrive in the

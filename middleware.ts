@@ -24,9 +24,13 @@
 // ============================================================================
 
 import { NextResponse, type NextRequest } from "next/server";
+import { shareCookieOptions, tokenFromSharePath, SHARE_COOKIE } from "@/lib/caseShare";
 
 export const config = {
   matcher: [
+    // `:path*` is the matcher token Next statically compiles. A custom
+    // name such as `:token` is ignored, and the cookie never gets set.
+    "/s/:path*",
     "/api/tutor",
     "/api/tour-check-in",
     "/api/transcribe",
@@ -124,6 +128,25 @@ function budgetFor(pathname: string): Budget {
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  // Visiting a share link plants the capability cookie before the viewer
+  // asks /api/dicomweb for pixels. The token is checked in the data layer;
+  // a malformed path does not get a cookie. This branch is not rate-limited.
+  const shareToken = tokenFromSharePath(pathname);
+  if (shareToken) {
+    const res = NextResponse.next();
+    const options = shareCookieOptions();
+    // Raw Set-Cookie. Next's matcher only compiles `:path` / `:path*`, so the
+    // route above is `/s/:path*` and the token is checked here.
+    const secure = options.secure ? "; Secure" : "";
+    res.headers.append(
+      "set-cookie",
+      `${SHARE_COOKIE}=${shareToken}; Path=${options.path}; HttpOnly; SameSite=Lax; Max-Age=${options.maxAge}${secure}`
+    );
+    return res;
+  }
+  if (pathname.startsWith("/s/")) return NextResponse.next();
+
   const budget = budgetFor(pathname);
 
   // 1. Body-size cap — reject before the handler reads (and before we pay to
