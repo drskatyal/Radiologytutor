@@ -10,7 +10,7 @@ import {
   listEnrollmentsForUser,
   listProgressForUser,
 } from "@/lib/cases";
-import { activeOrgId, getSession } from "@/lib/auth";
+import { activeOrgId, demoAuthEnabled, getSession } from "@/lib/auth";
 import { Breadcrumbs, Button, PageContainer, Skeleton } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { Catalog } from "@/components/catalog/Catalog";
@@ -94,11 +94,8 @@ export default async function LibraryPage() {
           <Suspense fallback={<Skeleton className="h-64 w-full rounded-2xl" />}>
             <Catalog
               initial={initial}
-              teachHref={
-                sessionCanTeach(session)
-                  ? "/studio"
-                  : "/sign-up"
-              }
+              demoEntry={!session && demoAuthEnabled()}
+              teachHref={sessionCanTeach(session) ? "/studio" : "/sign-up"}
               uploadHref={sessionCanTeach(session) ? "/studio/new" : "/sign-up"}
             />
           </Suspense>

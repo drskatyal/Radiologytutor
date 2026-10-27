@@ -6,12 +6,8 @@ import { useRouter } from "next/navigation";
 import { Button, Field, Input, useToast } from "@/components/ui";
 import { DemoSignInButton, GoogleSignInButton } from "./AuthButtons";
 import { dashboardPath } from "@/lib/dashboardPath";
+import { safeNext } from "@/lib/demoEntry";
 import type { MembershipRole, PlatformRole } from "@/lib/types";
-
-function safeNext(next?: string): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//")) return "";
-  return next;
-}
 
 export function AuthForm({
   mode,

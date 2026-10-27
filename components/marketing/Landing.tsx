@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { LandingDemoEntry } from "@/components/auth/AuthButtons";
 import { TeachMotif } from "@/components/brand/TeachMotif";
 import { Button } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
@@ -194,7 +195,23 @@ const STEPS = [
   },
 ];
 
-export function Landing({ teachHref }: { teachHref: string }) {
+function TeachEntry({ demoEntry, teachHref }: { demoEntry: boolean; teachHref: string }) {
+  if (demoEntry) return <LandingDemoEntry />;
+  return (
+    <Link href={teachHref}>
+      <Button>Start teaching</Button>
+    </Link>
+  );
+}
+
+export function Landing({
+  teachHref,
+  demoEntry = false,
+}: {
+  teachHref: string;
+  /** Signed out, and this deployment has demo auth on. Passed from the server. */
+  demoEntry?: boolean;
+}) {
   return (
     <div className="relative">
       <section className="relative mx-auto grid max-w-7xl items-center gap-12 px-4 py-16 sm:px-8 md:grid-cols-12 md:py-24">
@@ -209,9 +226,7 @@ export function Landing({ teachHref }: { teachHref: string }) {
             Registrars replay that path with an AI tutor that stays on the finding.
           </p>
           <div className="mt-8">
-            <Link href={teachHref}>
-              <Button>Start teaching</Button>
-            </Link>
+            <TeachEntry demoEntry={demoEntry} teachHref={teachHref} />
           </div>
           <p className="mt-4 max-w-[680px] text-sm text-secondary text-pretty">
             For consultants and registrars who teach at the workstation.
@@ -326,12 +341,12 @@ export function Landing({ teachHref }: { teachHref: string }) {
             <span className="block">Registrars replay it on the study.</span>
           </h2>
           <p className="mt-6 max-w-[65ch] text-base text-secondary text-pretty">
-            Create a teacher account. No card is required. You can stop using RadLearn whenever you choose.
+            {demoEntry
+              ? "Enter as a teacher and record on a study you are allowed to use. Email sign-in stays available."
+              : "Create a teacher account. No card is required. You can stop using RadLearn whenever you choose."}
           </p>
           <div className="mt-8">
-            <Link href={teachHref}>
-              <Button>Start teaching</Button>
-            </Link>
+            <TeachEntry demoEntry={demoEntry} teachHref={teachHref} />
           </div>
         </Reveal>
       </section>

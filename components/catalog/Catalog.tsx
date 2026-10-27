@@ -22,6 +22,7 @@ import {
 } from "@phosphor-icons/react";
 import { TeachMotif } from "@/components/brand/TeachMotif";
 import { TeachStage } from "@/components/marketing/TeachStage";
+import { DemoEntryButton } from "@/components/auth/AuthButtons";
 import {
   Badge,
   Button,
@@ -66,10 +67,13 @@ export function Catalog({
   initial,
   teachHref = "/sign-up",
   uploadHref = "/sign-up",
+  demoEntry = false,
 }: {
   initial: CatalogResponse;
   teachHref?: string;
   uploadHref?: string;
+  /** Signed out, and demo auth is on. Passed from the server — never assumed here. */
+  demoEntry?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -178,7 +182,7 @@ export function Catalog({
 
   if (libraryBare && !loading && !error) {
     return (
-      <LibraryStart teachHref={teachHref} uploadHref={uploadHref} />
+      <LibraryStart teachHref={teachHref} uploadHref={uploadHref} demoEntry={demoEntry} />
     );
   }
 
@@ -342,9 +346,9 @@ export function Catalog({
                     Clear filters
                   </Button>
                 ) : (
-                  <Link href={teachHref}>
-                    <Button>Record your first teach</Button>
-                  </Link>
+                  <TeacherEntry demoEntry={demoEntry} href={teachHref}>
+                    Record your first teach
+                  </TeacherEntry>
                 )
               }
             />
@@ -395,7 +399,42 @@ function FilterSelect({
   );
 }
 
-function LibraryStart({ teachHref, uploadHref }: { teachHref: string; uploadHref: string }) {
+function TeacherEntry({
+  demoEntry,
+  href,
+  next,
+  variant = "primary",
+  children,
+}: {
+  demoEntry: boolean;
+  href: string;
+  next?: string;
+  variant?: "primary" | "secondary";
+  children: React.ReactNode;
+}) {
+  if (demoEntry) {
+    return (
+      <DemoEntryButton role="author" next={next} variant={variant}>
+        {children}
+      </DemoEntryButton>
+    );
+  }
+  return (
+    <Link href={href}>
+      <Button variant={variant}>{children}</Button>
+    </Link>
+  );
+}
+
+function LibraryStart({
+  teachHref,
+  uploadHref,
+  demoEntry,
+}: {
+  teachHref: string;
+  uploadHref: string;
+  demoEntry: boolean;
+}) {
   return (
     <section className="grid items-center gap-8 py-8 md:grid-cols-2" aria-label="Empty library">
       <TeachStage compact />
@@ -405,9 +444,9 @@ function LibraryStart({ teachHref, uploadHref }: { teachHref: string; uploadHref
           title="Upload a study"
           description="Start with a DICOM study you are allowed to teach from. It stays private until you publish the teach."
           action={
-            <Link href={uploadHref}>
-              <Button variant="secondary">Upload a study</Button>
-            </Link>
+            <TeacherEntry demoEntry={demoEntry} href={uploadHref} next="/studio/new" variant="secondary">
+              Upload a study
+            </TeacherEntry>
           }
         />
         <EmptyState
@@ -415,9 +454,9 @@ function LibraryStart({ teachHref, uploadHref }: { teachHref: string; uploadHref
           title="Record your first teach"
           description="Scroll, window, and narrate the finding. Registrars replay that path with the tutor on the same study."
           action={
-            <Link href={teachHref}>
-              <Button>Start teaching</Button>
-            </Link>
+            <TeacherEntry demoEntry={demoEntry} href={teachHref}>
+              Start teaching
+            </TeacherEntry>
           }
         />
       </div>

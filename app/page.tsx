@@ -1,4 +1,4 @@
-import { getSession } from "@/lib/auth";
+import { demoAuthEnabled, getSession } from "@/lib/auth";
 import { Landing } from "@/components/marketing/Landing";
 import { LANDING_FAQ } from "@/components/marketing/faq";
 
@@ -30,6 +30,7 @@ function canTeach(session: Awaited<ReturnType<typeof getSession>>): boolean {
 export default async function HomePage() {
   const session = await getSession();
   const teachHref = canTeach(session) ? "/studio" : "/sign-up";
+  const demoEntry = !session && demoAuthEnabled();
   const faqSchema = {
     "@context": "https://schema.org",
     "@type": "FAQPage",
@@ -43,7 +44,7 @@ export default async function HomePage() {
   return (
     <>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }} />
-      <Landing teachHref={teachHref} />
+      <Landing teachHref={teachHref} demoEntry={demoEntry} />
     </>
   );
 }

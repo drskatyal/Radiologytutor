@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Wordmark } from "@/components/brand/BrandMark";
 
-export function SiteFooter() {
+export function SiteFooter({ teaching }: { teaching?: React.ReactNode }) {
   return (
     <footer className="bg-surface">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-12 sm:flex-row sm:items-end sm:justify-between sm:px-8">
@@ -15,9 +15,11 @@ export function SiteFooter() {
           <Link href="/library" className="text-secondary transition-colors duration-300 ease-draw hover:text-primary">
             Library
           </Link>
-          <Link href="/sign-up" className="text-secondary transition-colors duration-300 ease-draw hover:text-primary">
-            Start teaching
-          </Link>
+          {teaching ?? (
+            <Link href="/sign-up" className="text-secondary transition-colors duration-300 ease-draw hover:text-primary">
+              Start teaching
+            </Link>
+          )}
           <Link href="/privacy" className="text-secondary transition-colors duration-300 ease-draw hover:text-primary">
             Privacy
           </Link>
