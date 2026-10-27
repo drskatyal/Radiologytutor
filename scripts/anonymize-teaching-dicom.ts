@@ -8,15 +8,17 @@
 //   npx tsx scripts/anonymize-teaching-dicom.ts public/dicom/emri_small.dcm public/dicom/teach_anon_mr.dcm
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { blankBlockingIdentityTags } from "../lib/anonymizeTeachingDicom.ts";
-import { evaluateDeid, inspectDicomBytes } from "../lib/deid.ts";
+import { blankBlockingIdentityTags } from "../lib/anonymizeTeachingDicom";
+import { evaluateDeid, inspectDicomBytes } from "../lib/deid";
 
 const input = process.argv[2] ?? "public/dicom/emri_small.dcm";
 const output = process.argv[3] ?? "public/dicom/teach_anon_mr.dcm";
 
 const src = new Uint8Array(readFileSync(input));
 const { bytes, removed } = blankBlockingIdentityTags(src);
-const report = inspectDicomBytes(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+const packed = new ArrayBuffer(bytes.byteLength);
+new Uint8Array(packed).set(bytes);
+const report = inspectDicomBytes(packed);
 const verdict = evaluateDeid(report);
 if (!verdict.pass) {
   console.error("blanked file still fails the de-id gate", verdict.blocking);

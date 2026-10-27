@@ -103,7 +103,7 @@ describe("studio upload ingest", { concurrency: false }, () => {
     process.env.DICOMWEB_BACKEND = "orthanc";
     process.env.ORTHANC_URL = `http://127.0.0.1:${port}`;
     try {
-      const { ingestUpload } = await import("../app/api/upload/route.ts");
+      const { ingestUpload } = await import("./uploadIngest.ts");
       const teach = readFileSync(TEACH);
       const raw = readFileSync(RAW);
 
