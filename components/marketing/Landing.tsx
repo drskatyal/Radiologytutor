@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { TeachMotif } from "@/components/brand/TeachMotif";
 import { Button } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { LANDING_FAQ } from "./faq";
+import { TeachStage } from "./TeachStage";
 
 const EASE = "ease-draw";
 
-const NOISE =
-  "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")";
+const MOTIFS = ["stack", "voice", "publish", "compare"] as const;
 
 function Reveal({ children, className }: { children: React.ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -39,7 +40,7 @@ function Reveal({ children, className }: { children: React.ReactNode; className?
     <div
       ref={ref}
       className={cn(
-        "reveal transition-[transform_opacity] duration-700",
+        "reveal transition-[opacity,transform] duration-700",
         EASE,
         shown ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0 motion-reduce:translate-y-0",
         className
@@ -116,7 +117,7 @@ function TaglineReveal() {
             className={cn(
               "transition-colors duration-500",
               EASE,
-              index < count ? "text-primary" : "text-white/30"
+              index < count ? "text-primary" : "text-primary/30"
             )}
           >
             {word}
@@ -125,32 +126,6 @@ function TaglineReveal() {
         </span>
       ))}
     </h2>
-  );
-}
-
-function HeroStudy() {
-  return (
-    <div className="relative w-full max-w-xl" aria-hidden="true">
-      <div className="rounded-2xl bg-surface p-2">
-        <div className="relative aspect-[4/5] overflow-hidden rounded-lg bg-imaging sm:aspect-[5/4]">
-          <svg viewBox="0 0 320 260" className="h-full w-full text-primary/80" fill="none">
-            <circle cx="168" cy="124" r="78" stroke="currentColor" strokeWidth="1" />
-            <circle cx="168" cy="124" r="46" stroke="currentColor" strokeWidth="1" opacity="0.55" />
-            <path d="M168 28v28M168 204v28M52 124h28M256 124h28" stroke="currentColor" strokeWidth="1" />
-            <path d="M168 108v32M152 124h32" stroke="currentColor" strokeWidth="1.25" />
-            <circle cx="196" cy="146" r="7" stroke="#ffffff" strokeWidth="1.5" />
-          </svg>
-          <div className="absolute left-4 top-4 flex gap-2 text-xs text-secondary">
-            <span className="rounded-md bg-surface px-2 py-1">Lung</span>
-            <span className="rounded-md bg-surface px-2 py-1 tabular-nums">W 1500</span>
-            <span className="rounded-md bg-surface px-2 py-1 tabular-nums">L −600</span>
-          </div>
-          <p className="absolute bottom-4 left-4 right-4 text-sm text-secondary text-pretty">
-            Slice 34 of 65. The tutor is on the finding you recorded.
-          </p>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -173,6 +148,37 @@ const BENEFITS = [
   },
 ];
 
+const REPLAY = [
+  { label: "Carina", slice: "34" },
+  { label: "Nodule", slice: "41", active: true },
+  { label: "Mediastinum", slice: "52" },
+];
+
+function ReplayFrames() {
+  return (
+    <ol className="mt-8 grid gap-4 sm:grid-cols-3">
+      {REPLAY.map((frame) => (
+        <li
+          key={frame.label}
+          className={cn(
+            "rounded-2xl border bg-surface p-2",
+            frame.active ? "border-accent" : "border-subtle"
+          )}
+        >
+          <div className="relative flex aspect-[4/3] items-end overflow-hidden rounded-lg bg-imaging p-3">
+            <svg viewBox="0 0 160 120" className="absolute inset-0 h-full w-full" aria-hidden="true">
+              <ellipse cx="80" cy="62" rx="52" ry="36" fill="#3A3A3A" />
+              <ellipse cx="88" cy="56" rx="22" ry="14" fill="#5A5A5A" />
+            </svg>
+            <span className="relative rounded-md bg-white px-2 py-1 text-xs font-semibold text-primary">{frame.label}</span>
+          </div>
+          <p className="px-2 py-2 text-sm font-semibold tabular-nums text-secondary">Slice {frame.slice}</p>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 const STEPS = [
   {
     title: "Upload a study",
@@ -191,15 +197,10 @@ const STEPS = [
 export function Landing({ teachHref }: { teachHref: string }) {
   return (
     <div className="relative">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed inset-0 z-10 opacity-[0.05]"
-        style={{ backgroundImage: NOISE }}
-      />
-
       <section className="relative mx-auto grid max-w-7xl items-center gap-12 px-4 py-16 sm:px-8 md:grid-cols-12 md:py-24">
         <div className="md:col-span-7">
-          <h1 className="hero-text max-w-[680px] text-4xl font-semibold tracking-tight text-balance sm:text-5xl md:text-6xl">
+          <p className="text-sm font-semibold text-accent">Radiology teaching, on the study</p>
+          <h1 className="hero-text mt-4 max-w-[680px] text-4xl font-semibold tracking-tight text-balance sm:text-5xl md:text-6xl">
             <span className="block">Teach a case once.</span>
             <span className="block">The tutor replays it on the study.</span>
           </h1>
@@ -217,7 +218,7 @@ export function Landing({ teachHref }: { teachHref: string }) {
           </p>
         </div>
         <div className="md:col-span-5 md:col-start-8">
-          <HeroStudy />
+          <TeachStage />
         </div>
       </section>
 
@@ -242,14 +243,12 @@ export function Landing({ teachHref }: { teachHref: string }) {
             <li key={benefit.title}>
               <Reveal>
                 <div className="grid items-end gap-6 md:grid-cols-2">
-                  <p
-                    className={cn(
-                      "text-5xl font-semibold tabular-nums text-white/30",
-                      index % 2 === 1 && "md:order-2 md:text-right"
-                    )}
-                  >
-                    0{index + 1}
-                  </p>
+                  <div className={cn("flex items-end gap-4", index % 2 === 1 && "md:order-2 md:justify-end")}>
+                    <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent/10 text-accent">
+                      <TeachMotif kind={MOTIFS[index] ?? "stack"} />
+                    </span>
+                    <p className="text-5xl font-semibold tabular-nums text-accent">0{index + 1}</p>
+                  </div>
                   <div className={index % 2 === 1 ? "md:order-1" : undefined}>
                     <h3 className="max-w-[680px] text-2xl font-semibold tracking-tight text-balance">
                       {benefit.title}
@@ -263,8 +262,10 @@ export function Landing({ teachHref }: { teachHref: string }) {
         </ol>
       </section>
 
-      <section className="relative mx-auto max-w-7xl px-4 py-20 sm:px-8 md:py-24">
-        <TaglineReveal />
+      <section className="relative bg-surface">
+        <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 md:py-24">
+          <TaglineReveal />
+        </div>
       </section>
 
       <section className="relative mx-auto max-w-7xl px-4 py-16 sm:px-8 md:py-24">
@@ -273,7 +274,7 @@ export function Landing({ teachHref }: { teachHref: string }) {
           <ol className="mt-12 flex flex-col gap-10">
             {STEPS.map((step, index) => (
               <li key={step.title} className="grid grid-cols-[auto_1fr] gap-6">
-                <span className="text-3xl font-semibold tabular-nums text-white/40">0{index + 1}</span>
+                <span className="text-3xl font-semibold tabular-nums text-accent">0{index + 1}</span>
                 <div className="max-w-[65ch]">
                   <h3 className="text-xl font-semibold text-balance">{step.title}</h3>
                   <p className="mt-2 text-base text-secondary text-pretty">{step.body}</p>
@@ -287,7 +288,7 @@ export function Landing({ teachHref }: { teachHref: string }) {
       <section className="relative mx-auto max-w-7xl px-4 py-16 sm:px-8 md:py-24">
         <Reveal>
           <div className="grid gap-8 md:grid-cols-12">
-            <p className="text-sm font-semibold text-secondary md:col-span-4">A chest teach, replayed</p>
+            <p className="text-sm font-semibold text-accent md:col-span-4">A chest teach, replayed</p>
             <div className="md:col-span-8">
               <h2 className="max-w-[680px] text-3xl font-semibold tracking-tight text-balance">
                 Lung windows from the carina, then the nodule, then the mediastinum.
@@ -296,6 +297,7 @@ export function Landing({ teachHref }: { teachHref: string }) {
                 You record that sequence once. The tutor drives the same slices, sets the same
                 window, and answers from the case you authored.
               </p>
+              <ReplayFrames />
             </div>
           </div>
         </Reveal>

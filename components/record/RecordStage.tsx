@@ -233,7 +233,7 @@ function StageSkeleton({ label }: { label: string }) {
   return (
     <div className={cn("absolute inset-0 flex items-center justify-center bg-imaging")}>
       <Skeleton className="absolute inset-0 rounded-none bg-elevated/30" />
-      <div className="relative flex items-center gap-2.5 text-sm text-secondary">
+      <div className="relative flex items-center gap-2 text-sm text-white">
         <Spinner size="sm" label={label} />
         {label}
       </div>

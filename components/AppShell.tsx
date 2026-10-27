@@ -254,13 +254,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className={cn("flex min-h-dvh flex-col bg-canvas", readingRoom && "bg-imaging")}>
         {!hideChrome && (
           <header className="pointer-events-none fixed inset-x-0 top-4 z-40 px-4">
-            <div className="pointer-events-auto mx-auto flex w-fit max-w-full items-center gap-2 rounded-2xl bg-surface/80 p-2 backdrop-blur-md">
+            <div className="pointer-events-auto mx-auto flex w-fit max-w-full items-center gap-2 rounded-2xl border border-subtle bg-surface/90 p-2 shadow-md backdrop-blur-md">
               <Link
                 href="/"
-                className="flex items-center gap-2 rounded-lg px-2 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                className="group flex items-center gap-2 rounded-lg px-2 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 aria-label="RadLearn home"
               >
-                <BrandMark size="sm" />
+                <BrandMark
+                  size="sm"
+                  className="transition-transform duration-500 ease-draw group-hover:-translate-y-0.5"
+                />
                 <Wordmark />
               </Link>
               <nav aria-label="Primary" className="hidden items-center gap-1 md:flex">
@@ -276,7 +279,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition-colors duration-300",
                         EASE,
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                        active ? "bg-overlay text-primary" : "text-secondary hover:bg-overlay hover:text-primary"
+                        active ? "bg-accent/10 text-accent" : "text-secondary hover:bg-overlay hover:text-primary"
                       )}
                     >
                       <ItemIcon className="h-4 w-4" weight="regular" aria-hidden="true" />

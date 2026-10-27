@@ -5,37 +5,36 @@
 /* ──────────────────────────────────────────────────────────────────────────
    RadLearn — design tokens.
 
-   Dark surfaces are the approved neutral ladder only. The action color is
-   white on black. Imaging stays pure black. No background gradients.
+   Daylight teaching product: warm paper, white surfaces, cobalt signal.
+   Imaging viewports stay pure black. Backgrounds are flat. No gold.
    ────────────────────────────────────────────────────────────────────────── */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* #000000 · #181818 · #1F1F1F · #272727 · #313131 */
-  --canvas: 0 0 0;
-  --surface: 24 24 24;
-  --elevated: 31 31 31;
-  --overlay: 39 39 39;
+  /* Paper, white, warm hover. Not a black void. */
+  --canvas: 247 245 241; /* #F7F5F1 */
+  --surface: 255 255 255;
+  --elevated: 255 255 255;
+  --overlay: 236 232 224; /* #ECE8E0 */
 
-  /* Text from the hero gradient endpoints: #FFFFFF and #9B9B9B. */
-  --text-primary: 255 255 255;
-  --text-secondary: 155 155 155;
-  --text-muted: 155 155 155;
+  --text-primary: 18 18 18; /* #121212 */
+  --text-secondary: 90 86 80; /* #5A5650 */
+  --text-muted: 92 88 82; /* #5C5852 */
 
-  --border-subtle: 49 49 49;
-  --border-strong: 49 49 49;
+  --border-subtle: 226 221 212; /* #E2DDD4 */
+  --border-strong: 186 180 170; /* #BAB4AA */
 
-  /* One accent: white. No second brand color. */
-  --accent: 255 255 255;
-  --accent-foreground: 0 0 0;
-  --accent-muted: 39 39 39;
-  --accent-bright: 255 255 255;
+  /* Signal cobalt. High contrast on paper and on the black viewport. */
+  --accent: 28 58 214; /* #1C3AD6 */
+  --accent-foreground: 255 255 255;
+  --accent-muted: 226 231 252; /* #E2E7FC */
+  --accent-bright: 47 84 255;
 
-  /* Semantic — legible on charcoal. */
-  --success: 110 176 122; /* #6eb07a */
-  --warning: 212 168 75; /* align with accent */
-  --danger: 196 92 84; /* #c45c54 */
-  --info: 122 148 176; /* #7a94b0 — cool steel, not electric */
+  /* Semantic, darkened so they hold on paper. */
+  --success: 20 122 72;
+  --warning: 140 84 12;
+  --danger: 176 42 36;
+  --info: 28 58 214;
 
   --radius: 0.5rem;
 
@@ -71,7 +70,7 @@
   body {
     @apply bg-canvas text-primary font-sans antialiased;
     text-rendering: optimizeLegibility;
-    background-color: #000000;
+    background-color: #f7f5f1;
   }
 
   h1,
@@ -101,7 +100,7 @@
 
   /* Hero heading only. Text gradient, never a background fill. */
   .hero-text {
-    background-image: linear-gradient(90deg, #ffffff, #9b9b9b);
+    background-image: linear-gradient(90deg, #000000, #666666);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -164,9 +163,9 @@
     @apply animate-fade-in;
   }
 
-  /* Subtle top edge — no neon. */
+  /* Subtle top edge on paper. */
   .surface-hairline {
-    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.035);
+    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.8);
   }
 
   /* Active surface ring — hairline accent, no bloom. */

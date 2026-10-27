@@ -255,9 +255,9 @@ function StageMessage({
   return (
     <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-imaging px-6 text-center">
       {spinner && <Spinner />}
-      {icon && <ImageOff className="h-5 w-5 text-muted" aria-hidden="true" />}
-      <p className="text-sm text-secondary">{label}</p>
-      {detail && <p className="max-w-sm text-xs text-muted">{detail}</p>}
+      {icon && <ImageOff className="h-5 w-5 text-white/80" aria-hidden="true" />}
+      <p className="text-sm text-white">{label}</p>
+      {detail && <p className="max-w-sm text-xs text-white/80">{detail}</p>}
     </div>
   );
 }
