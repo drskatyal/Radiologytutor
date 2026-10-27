@@ -6,7 +6,7 @@ import { DashboardHub } from "@/components/dashboard/DashboardHub";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Your home · FlowRad Learn",
+  title: "Your home · RadLearn",
 };
 
 /**

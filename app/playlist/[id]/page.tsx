@@ -6,13 +6,14 @@ import { activeOrgId } from "@/lib/auth";
 import { Badge, Breadcrumbs, Button, EmptyState, PageContainer } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { CourseCases } from "@/components/catalog/CourseCases";
+import { isPlaceholderPlaylist } from "@/lib/catalogPlaceholders";
 
 export const dynamic = "force-dynamic";
 
 export default async function PlaylistPage({ params }: { params: { id: string } }) {
   const orgId = await activeOrgId();
   const playlist = await getPlaylist(orgId, params.id);
-  if (!playlist) notFound();
+  if (!playlist || isPlaceholderPlaylist(playlist)) notFound();
 
   const cases = await getCasesByIds(orgId, playlist.caseIds);
   const firstCaseId = cases[0]?.caseId;

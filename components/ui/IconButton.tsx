@@ -4,9 +4,9 @@ import { cn } from "./cn";
 import { Spinner } from "./Spinner";
 
 const iconButtonVariants = cva(
-  "inline-flex items-center justify-center rounded-lg transition-[transform,background-color,box-shadow,border-color,color] duration-150 ease-out " +
+  "inline-flex items-center justify-center rounded-lg transition-[transform_background-color_border-color_color_opacity] duration-500 ease-draw " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas " +
-    "active:scale-90 disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
+    "active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
   {
     variants: {
       variant: {

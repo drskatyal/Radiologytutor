@@ -19,22 +19,31 @@ import type { CatalogResponse } from "@/components/catalog/types";
 import type { MyLearningCourse } from "@/components/catalog/MyLearning";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
 import { DashboardError } from "@/components/home/DashboardError";
+import { isPlaceholderCourse, toLearnerCatalog } from "@/lib/catalogPlaceholders";
+import type { AppSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Library · FlowRad Learn",
+  title: "Library · RadLearn",
 };
 
-/** The Learn catalog — courses, teachers, and cases, one click apart. */
+function sessionCanTeach(session: AppSession | null): boolean {
+  if (!session) return false;
+  if (session.user.platformRole === "super_admin") return true;
+  const role = session.user.membershipRole;
+  return role === "author" || role === "admin" || role === "owner";
+}
+
+/** The Learn catalog. Placeholder seed courses and authors are omitted. */
 export default async function LibraryPage() {
   const orgId = await activeOrgId();
+  const session = await getSession();
   let initial: CatalogResponse | null = null;
   let loadError: string | null = null;
   let enrolledCourses: MyLearningCourse[] = [];
 
   try {
-    const session = await getSession();
     const [cases, facets, authors, courses, playlists] = await Promise.all([
       listCatalogCases(orgId, { status: "published" }),
       getCatalogFacets(orgId),
@@ -42,7 +51,7 @@ export default async function LibraryPage() {
       listCourses(orgId, { status: "published" }),
       listPlaylists(orgId),
     ]);
-    initial = { cases, facets, authors, courses, playlists };
+    initial = toLearnerCatalog({ cases, facets, authors, courses, playlists });
 
     if (session) {
       const [enrollments, progressList] = await Promise.all([
@@ -53,7 +62,7 @@ export default async function LibraryPage() {
       const progressByCourse = new Map(progressList.map((p) => [p.courseId, p]));
       const resolved = await Promise.all(active.map((e) => getCourse(orgId, e.courseId)));
       enrolledCourses = resolved
-        .filter((c): c is NonNullable<typeof c> => Boolean(c))
+        .filter((c): c is NonNullable<typeof c> => c != null && !isPlaceholderCourse(c))
         .map((course) => ({
           ...course,
           percentComplete: progressByCourse.get(course.id)?.percentComplete,
@@ -68,7 +77,7 @@ export default async function LibraryPage() {
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Library" }]} />}
         title="Library"
-        description="Courses, teachers, and narrated DICOM cases."
+        description="Published teaches. Nothing appears here until a teacher records it and publishes."
         actions={
           <Link href="/learning">
             <Button size="sm" variant="secondary">
@@ -82,8 +91,16 @@ export default async function LibraryPage() {
       ) : (
         <PageContainer>
           <MyLearning courses={enrolledCourses} />
-          <Suspense fallback={<Skeleton className="h-64 w-full" />}>
-            <Catalog initial={initial} />
+          <Suspense fallback={<Skeleton className="h-64 w-full rounded-2xl" />}>
+            <Catalog
+              initial={initial}
+              teachHref={
+                sessionCanTeach(session)
+                  ? "/studio"
+                  : "/sign-up"
+              }
+              uploadHref={sessionCanTeach(session) ? "/studio/new" : "/sign-up"}
+            />
           </Suspense>
         </PageContainer>
       )}

@@ -10,13 +10,14 @@ import { Badge, Breadcrumbs, EmptyState, PageContainer, SectionHeading, Verified
 import { PageHeader } from "@/components/AppShell";
 import { CaseCardGrid } from "@/components/catalog/CaseCard";
 import { CoursesRail } from "@/components/catalog/Rails";
+import { isPlaceholderAuthor } from "@/lib/catalogPlaceholders";
 
 export const dynamic = "force-dynamic";
 
 export default async function AuthorPage({ params }: { params: { id: string } }) {
   const orgId = await activeOrgId();
   const author = await getAuthor(orgId, params.id);
-  if (!author) notFound();
+  if (!author || isPlaceholderAuthor(author)) notFound();
 
   const [cases, allCourses] = await Promise.all([
     listCatalogCases(orgId, { authorId: author.id, status: "published" }),
