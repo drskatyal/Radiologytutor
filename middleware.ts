@@ -5,9 +5,12 @@
 //
 //   1. RATE LIMITING. The AI, TTS and token-mint routes each spend real money
 //      per call. Without a limiter one caller can drain the account.
+//      /api/upload is deliberately not counted: a teaching study is hundreds
+//      of DICOM instances in one sitting, and a counter 429s a normal upload.
 //   2. BODY-SIZE CAPS. Voice routes accept base64 audio and TTS accepts free
 //      text; both were unbounded, so a single request could pin a serverless
-//      invocation and bill for a huge upstream call.
+//      invocation and bill for a huge upstream call. Upload keeps a per-request
+//      sanity cap for the same reason, with no request-rate limit.
 //
 // Deliberately simple: a fixed-window counter in module memory. That is correct
 // for a single long-lived server (the Fly/Railway deployment) and degrades to
@@ -39,9 +42,12 @@ export const config = {
   ],
 };
 
-/** Per-route budget: `limit` requests per `windowMs`, and a max request body. */
+/**
+ * Per-route budget. `limit` requests per `windowMs`, plus a max request body.
+ * Omit `limit` to apply only the body-size cap (no request counter).
+ */
 interface Budget {
-  limit: number;
+  limit?: number;
   windowMs: number;
   maxBodyBytes: number;
 }
@@ -68,8 +74,9 @@ const BUDGETS: Record<string, Budget> = {
   "/api/voice/realtime": { limit: 10, windowMs: MINUTE, maxBodyBytes: 4 * 1024 },
   // Credential-adjacent: keep the attempt rate low.
   "/api/auth/demo": { limit: 10, windowMs: 5 * MINUTE, maxBodyBytes: 4 * 1024 },
-  // DICOM upload is large by nature; the cap is a sanity bound, not a quota.
-  "/api/upload": { limit: 20, windowMs: 5 * MINUTE, maxBodyBytes: 512 * MB },
+  // Teaching-study upload: hundreds of files, quickly. Body size is a sanity
+  // cap only — this route is not rate limited.
+  "/api/upload": { windowMs: 5 * MINUTE, maxBodyBytes: 512 * MB },
 };
 
 const DEFAULT_BUDGET: Budget = { limit: 60, windowMs: MINUTE, maxBodyBytes: MB };
@@ -123,7 +130,12 @@ export function middleware(req: NextRequest) {
     );
   }
 
-  // 2. Fixed-window rate limit.
+  // 2. Fixed-window rate limit. Routes with no `limit` (DICOM upload) skip
+  //    the counter entirely so a multi-file study cannot 429.
+  if (budget.limit == null) {
+    return NextResponse.next();
+  }
+
   const now = Date.now();
   sweep(now);
   const key = `${pathname} ${callerKey(req)}`;
