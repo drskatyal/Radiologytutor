@@ -123,7 +123,7 @@ export function TeachersRail({
   courseCountByAuthor = {},
   showHeading = true,
   title = "Teachers",
-  description = "Verified radiologists and educators on FlowRad.",
+  description = "Radiologists who have published a teach.",
   aside,
 }: {
   id?: string;

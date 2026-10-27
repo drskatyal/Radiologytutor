@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleAlert } from "lucide-react";
+import { WarningCircle } from "@phosphor-icons/react";
 import { Button, EmptyState, PageContainer } from "@/components/ui";
 
 /** Shown when a server-rendered catalog/home load fails. A tiny client
@@ -15,7 +15,7 @@ export function DashboardError({
   return (
     <PageContainer>
       <EmptyState
-        icon={<CircleAlert aria-hidden="true" />}
+        icon={<WarningCircle aria-hidden="true" weight="regular" />}
         title={title}
         description={message}
         action={

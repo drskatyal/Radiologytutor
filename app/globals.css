@@ -3,38 +3,33 @@
 @tailwind utilities;
 
 /* ──────────────────────────────────────────────────────────────────────────
-   FlowRad Learn — design tokens.
+   RadLearn — design tokens.
 
-   Clinical reading-room palette: warm charcoal surfaces (not neon-slate), one
-   restrained film-marker accent, no glow washes. Imaging stays pure black.
-
-   Two token vocabularies share the same variables (FlowRad semantic + shadcn).
+   Dark surfaces are the approved neutral ladder only. The action color is
+   white on black. Imaging stays pure black. No background gradients.
    ────────────────────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
 
-  /* Surfaces — warm charcoal ladder, film-adjacent, not electric blue-black. */
-  --canvas: 14 13 12; /* #0e0d0c */
-  --surface: 22 21 19; /* #161513 */
-  --elevated: 32 30 27; /* #201e1b */
-  --overlay: 42 39 35; /* #2a2723 */
+  /* #000000 · #181818 · #1F1F1F · #272727 · #313131 */
+  --canvas: 0 0 0;
+  --surface: 24 24 24;
+  --elevated: 31 31 31;
+  --overlay: 39 39 39;
 
-  /* Text — paper-on-film contrast, calm steps down. */
-  --text-primary: 242 237 230; /* #f2ede6 */
-  --text-secondary: 168 160 148; /* #a8a094 */
-  /* Was #6e675e (~3.5:1 on canvas). #8f877c clears WCAG AA for body text
-     on canvas and elevated without collapsing into --text-secondary. */
-  --text-muted: 143 135 124; /* #8f877c */
+  /* Text from the hero gradient endpoints: #FFFFFF and #9B9B9B. */
+  --text-primary: 255 255 255;
+  --text-secondary: 155 155 155;
+  --text-muted: 155 155 155;
 
-  /* Borders — soft warm hairlines. */
-  --border-subtle: 48 44 39; /* #302c27 */
-  --border-strong: 72 66 58; /* #48423a */
+  --border-subtle: 49 49 49;
+  --border-strong: 49 49 49;
 
-  /* Accent — film annotation amber (PACS-familiar), not neon cyan. */
-  --accent: 212 168 75; /* #d4a84b */
-  --accent-foreground: 20 16 8; /* ink on amber */
-  --accent-muted: 58 46 24; /* quiet amber wash */
-  --accent-bright: 232 196 110; /* highlight without glow */
+  /* One accent: white. No second brand color. */
+  --accent: 255 255 255;
+  --accent-foreground: 0 0 0;
+  --accent-muted: 39 39 39;
+  --accent-bright: 255 255 255;
 
   /* Semantic — legible on charcoal. */
   --success: 110 176 122; /* #6eb07a */
@@ -69,17 +64,14 @@
     @apply border-subtle;
   }
 
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     @apply bg-canvas text-primary font-sans antialiased;
-    font-feature-settings: "ss01", "cv11";
     text-rendering: optimizeLegibility;
-    /* Quiet depth — no accent glow wash. */
-    background-image: linear-gradient(
-      180deg,
-      rgb(var(--surface)) 0%,
-      rgb(var(--canvas)) 28rem
-    );
-    background-attachment: fixed;
+    background-color: #000000;
   }
 
   h1,
@@ -87,8 +79,11 @@
   h3,
   h4 {
     @apply text-primary font-semibold tracking-tight;
-    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
     text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
   }
 
   :focus-visible {
@@ -101,7 +96,15 @@
   }
 
   .font-display {
-    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /* Hero heading only. Text gradient, never a background fill. */
+  .hero-text {
+    background-image: linear-gradient(90deg, #ffffff, #9b9b9b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
 
   ::selection {
@@ -132,13 +135,23 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
     *,
     *::before,
     *::after {
-      animation-duration: 0.001ms !important;
+      animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
-      transition-duration: 0.001ms !important;
       scroll-behavior: auto !important;
+      transition-property: opacity, color, background-color, border-color, box-shadow !important;
+    }
+  }
+
+  @media (scripting: none) {
+    .reveal {
+      opacity: 1 !important;
+      transform: none !important;
     }
   }
 }

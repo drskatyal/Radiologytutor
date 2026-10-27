@@ -6,7 +6,7 @@
 import { AdminConsole } from "@/components/admin/AdminConsole";
 
 export const metadata = {
-  title: "Admin · FlowRad Learn",
+  title: "Admin · RadLearn",
 };
 
 export default function AdminPage() {

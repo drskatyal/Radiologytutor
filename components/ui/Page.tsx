@@ -15,9 +15,9 @@ export interface PageContainerProps
 }
 
 const WIDTHS = {
-  narrow: "max-w-4xl",
-  default: "max-w-6xl",
-  wide: "max-w-[1500px]",
+  narrow: "max-w-3xl",
+  default: "max-w-7xl",
+  wide: "max-w-7xl",
 } as const;
 
 export function PageContainer({
@@ -28,7 +28,7 @@ export function PageContainer({
 }: PageContainerProps) {
   return (
     <div
-      className={cn("mx-auto px-6 py-8 sm:px-8", WIDTHS[width], className)}
+      className={cn("mx-auto px-4 py-8 sm:px-8", WIDTHS[width], className)}
       {...props}
     >
       {children}
@@ -65,7 +65,7 @@ export function SectionHeading({
       {...props}
     >
       <div className="min-w-0">
-        <h2 className="flex items-center gap-2 font-display text-lg font-semibold tracking-tight text-primary [&_svg]:h-[18px] [&_svg]:w-[18px] [&_svg]:text-accent">
+        <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight text-primary text-balance [&_svg]:h-5 [&_svg]:w-5">
           {icon}
           {title}
         </h2>

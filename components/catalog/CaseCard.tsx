@@ -37,7 +37,7 @@ export function CaseCard({ data, author, index }: CaseCardProps) {
         className="h-16 w-[5.5rem] sm:h-[4.5rem] sm:w-28"
       />
       <div className="min-w-0">
-        <h3 className="font-display text-[0.95rem] font-semibold tracking-tight text-primary sm:text-base">
+        <h3 className="text-sm font-semibold tracking-tight text-primary text-balance sm:text-base">
           {typeof index === "number" && (
             <span className="mr-1.5 tabular-nums text-muted">{index}.</span>
           )}

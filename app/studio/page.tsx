@@ -1,7 +1,7 @@
 import { StudioHome } from "@/components/studio/StudioHome";
 
 export const metadata = {
-  title: "Studio · FlowRad Learn",
+  title: "Studio · RadLearn",
 };
 
 export default function StudioIndexPage() {

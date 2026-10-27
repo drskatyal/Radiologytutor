@@ -26,11 +26,12 @@ import { PageHeader } from "@/components/AppShell";
 import { ContinueLearning } from "@/components/learning/ContinueLearning";
 import { CourseProgressBar } from "@/components/catalog/CourseProgressBar";
 import type { Course, Progress } from "@/lib/types";
+import { isPlaceholderCourse } from "@/lib/catalogPlaceholders";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "My learning · FlowRad Learn",
+  title: "My learning · RadLearn",
 };
 
 export default async function LearningPage() {
@@ -74,7 +75,7 @@ export default async function LearningPage() {
   );
   const enrolledCourses = (
     await Promise.all(activeEnrollments.map((e) => getCourse(orgId, e.courseId)))
-  ).filter((c): c is Course => Boolean(c));
+  ).filter((c): c is Course => c != null && !isPlaceholderCourse(c));
 
   const progressByCourse = new Map(progressList.map((p) => [p.courseId, p]));
   const continueItems = enrolledCourses
@@ -88,7 +89,7 @@ export default async function LearningPage() {
 
   const wishlistCourses = (
     await Promise.all(wishlist.map((w) => getCourse(orgId, w.courseId)))
-  ).filter((c): c is Course => Boolean(c));
+  ).filter((c): c is Course => c != null && !isPlaceholderCourse(c));
 
   return (
     <>

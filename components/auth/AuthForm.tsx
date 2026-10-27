@@ -30,12 +30,30 @@ export function AuthForm({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const dest = safeNext(next);
+
+  function validate(): boolean {
+    const nextNameError =
+      mode === "sign-up" && !name.trim() ? "Enter your name." : null;
+    const nextEmailError = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+      ? null
+      : "Enter a valid email address.";
+    const nextPasswordError =
+      password.length >= 8 ? null : "Use at least 8 characters.";
+    setNameError(nextNameError);
+    setEmailError(nextEmailError);
+    setPasswordError(nextPasswordError);
+    return !nextNameError && !nextEmailError && !nextPasswordError;
+  }
 
   async function onEmail(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
+    if (!validate()) return;
     setBusy(true);
     try {
       const path =
@@ -88,13 +106,13 @@ export function AuthForm({
 
   return (
     <div className="mx-auto w-full max-w-sm">
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-primary">
+      <h1 className="text-2xl font-semibold tracking-tight text-primary text-balance">
         {mode === "sign-up" ? "Create your account" : "Sign in"}
       </h1>
-      <p className="mt-1.5 text-sm text-secondary">
+      <p className="mt-2 text-sm text-secondary text-pretty">
         {mode === "sign-up"
-          ? "Join FlowRad to teach cases or follow a reading-room session."
-          : "Welcome back to the reading room."}
+          ? "Create a teacher account to record a case. No card is required."
+          : "Sign in to teach, or to continue a case."}
       </p>
 
       {googleEnabled && (
@@ -118,30 +136,37 @@ export function AuthForm({
 
       <form onSubmit={onEmail} className="flex flex-col gap-3">
         {mode === "sign-up" && (
-          <Field label="Name">
+          <Field label="Name" required error={nameError ?? undefined}>
             {(p) => (
               <Input
                 {...p}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (nameError) setNameError(null);
+                }}
                 autoComplete="name"
+                required
               />
             )}
           </Field>
         )}
-        <Field label="Email" required>
+        <Field label="Email" required error={emailError ?? undefined}>
           {(p) => (
             <Input
               {...p}
               type="email"
               required
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (emailError) setEmailError(null);
+              }}
               autoComplete="email"
             />
           )}
         </Field>
-        <Field label="Password" required>
+        <Field label="Password" required error={passwordError ?? undefined}>
           {(p) => (
             <Input
               {...p}
@@ -149,7 +174,10 @@ export function AuthForm({
               required
               minLength={8}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                if (passwordError) setPasswordError(null);
+              }}
               autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
             />
           )}

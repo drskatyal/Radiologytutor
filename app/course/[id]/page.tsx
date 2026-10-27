@@ -25,13 +25,14 @@ import { CourseReviews } from "@/components/catalog/CourseReviews";
 import { CourseCertificateCTA } from "@/components/catalog/CourseCertificateCTA";
 import { CourseAssessment } from "@/components/catalog/CourseAssessment";
 import { RelatedCourses } from "@/components/catalog/RelatedCourses";
+import { isPlaceholderCourse } from "@/lib/catalogPlaceholders";
 
 export const dynamic = "force-dynamic";
 
 export default async function CoursePage({ params }: { params: { id: string } }) {
   const orgId = await activeOrgId();
   const course = await getCourse(orgId, params.id);
-  if (!course) notFound();
+  if (!course || isPlaceholderCourse(course)) notFound();
 
   const session = await getSession();
   const assessment = await getPublicAssessmentForCourse(orgId, course.id);

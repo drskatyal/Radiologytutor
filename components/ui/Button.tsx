@@ -11,26 +11,22 @@ import { Spinner } from "./Spinner";
  * existing call site keeps working.
  */
 const buttonVariants = cva(
-  "group/btn relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg font-medium " +
-    "transition-[transform,background-color,box-shadow,border-color,color] duration-150 ease-out select-none " +
+  "group/btn relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold " +
+    "transition-[transform_background-color_border-color_color_opacity] duration-500 ease-draw select-none " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas " +
-    "active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
+    "hover:opacity-90 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
   {
     variants: {
       variant: {
-        primary:
-          "bg-accent text-accent-foreground shadow-sm hover:brightness-[1.05] active:brightness-100",
-        secondary:
-          "border border-strong bg-elevated text-primary shadow-sm hover:border-accent/40 hover:bg-overlay active:bg-elevated",
-        ghost:
-          "text-secondary hover:bg-overlay hover:text-primary active:bg-overlay/70",
-        danger:
-          "bg-danger text-white shadow-sm hover:brightness-[1.07] active:brightness-100",
+        primary: "bg-accent text-accent-foreground",
+        secondary: "border border-strong bg-elevated text-primary hover:bg-overlay",
+        ghost: "text-secondary hover:bg-overlay hover:text-primary",
+        danger: "bg-danger text-white",
       },
       size: {
-        sm: "h-8 px-3 text-xs",
-        md: "h-10 px-4 text-sm",
-        lg: "h-11 px-5 text-sm",
+        sm: "px-3 py-2 text-sm",
+        md: "px-3 py-2 text-base",
+        lg: "px-3 py-2 text-base",
       },
     },
     defaultVariants: { variant: "primary", size: "md" },
@@ -92,7 +88,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           </span>
         )}
         {!loading && trailingIcon && (
-          <span className="shrink-0 transition-transform duration-150 group-hover/btn:translate-x-0.5 [&_svg]:h-4 [&_svg]:w-4">
+          <span className="shrink-0 transition-transform duration-300 ease-draw group-hover/btn:translate-x-0.5 [&_svg]:h-4 [&_svg]:w-4">
             {trailingIcon}
           </span>
         )}

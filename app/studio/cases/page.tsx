@@ -3,7 +3,7 @@ import { MyCasesList } from "@/components/studio/MyCasesList";
 import { getSession } from "@/lib/auth";
 
 export const metadata = {
-  title: "My cases · Studio · FlowRad Learn",
+  title: "My cases · Studio · RadLearn",
 };
 
 export const dynamic = "force-dynamic";
