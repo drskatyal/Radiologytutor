@@ -209,6 +209,7 @@ export function LocateStage({
             series={state.payload.series}
             activeIndex={activeSeriesIndex}
             onSelectSeries={setActiveSeriesIndex}
+            mainImageReady={viewerReady}
             className="h-full"
           >
             <CornerstoneViewer

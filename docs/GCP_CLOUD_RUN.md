@@ -145,11 +145,11 @@ Project, region, and model below are the deploy defaults. Secret **values** are 
 | `HEALTHCARE_DICOMWEB_URL` | optional full root | Overrides the four ids. No trailing slash |
 | `GOOGLE_ACCESS_TOKEN` | unset | Metadata server on Cloud Run |
 | `GEMINI_API_KEY` | secret `GEMINI_API_KEY` | STT, tutor, structure, grade, Gemini TTS, Live mint |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | Plain env. Stable GA. Code default matches |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Plain env. Stable GA. Code default matches. `deploy-app.sh` keeps a live value when the shell variable is unset |
 | `GEMINI_TIMEOUT_MS` | `45000` | Plain env |
 | `GEMINI_TTS_MODEL` | `gemini-2.5-flash-preview-tts` | Plain env. Tip id, unchanged |
 | `GEMINI_TTS_VOICE` | `Kore` | Plain env |
-| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Plain env. Student mic session |
+| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Plain env. Student mic session. The script refuses `gemini-live-2.5-flash-native-audio` unless `ALLOW_STALE_GEMINI_LIVE_MODEL=1` |
 | `VOICE_LATENCY_BUDGET_MS` | `1200` | Plain env |
 | `ELEVENLABS_API_KEY` | secret, optional | Live tutor clone. Gemini TTS covers the gap |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | Plain env |
@@ -158,13 +158,16 @@ Project, region, and model below are the deploy defaults. Secret **values** are 
 | `BETTER_AUTH_SECRET` | secret | Required in production |
 | `BETTER_AUTH_URL` | the Cloud Run URL | `deploy-app.sh` sets it from the service URL when you leave it empty |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | secrets, optional | Redirect: `{BETTER_AUTH_URL}/api/auth/callback/google` |
-| `DEMO_AUTH_ENABLED` | `0` | Plain env |
+| `DEMO_AUTH_ENABLED` | `1` | Plain env. Teacher/Student buttons on the public service. Unset in the shell keeps the live value; it is not forced back to `0` |
+| `DEMO_AUTH_MAX_ROLE` | `author` | Plain env. Teacher demo can open the author role. Same preserve rule as `DEMO_AUTH_ENABLED` |
 | `R2_*` | optional | Unset: no object cache, reads go to the DICOM store. GCS: `R2_ENDPOINT=https://storage.googleapis.com`, `R2_BUCKET`, HMAC in `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`. Leave `R2_PUBLIC_BASE_URL` unset |
 | `FRAME_CACHE_WAIT_MS` | `25` | `0` skips the cache read |
 | `DATA_DIR` | unset | Do not rely on the container filesystem |
 | `VPC_EGRESS` | `all-traffic` | `private-ranges-only` after Atlas PSC |
 
 `deploy/gcp/env.example` lists the shell variables for the scripts. `deploy/gcp/terraform/terraform.tfvars.example` lists the Terraform ones. Both default to project `radlearn-app` and region `europe-west2`.
+
+`deploy/gcp/deploy-app.sh` merges env with `--update-env-vars`. For each plain variable it sends, an exported shell value wins, otherwise the value already on the Cloud Run service is kept, otherwise the default in the table above is used. That is what stops a redeploy from turning `DEMO_AUTH_ENABLED` off or rolling `GEMINI_LIVE_MODEL` back to `gemini-live-2.5-flash-native-audio`. Comment a line out of `env.local` when you want the live service to keep its own value. Variables the script does not mention (and secret refs) are left on the service.
 
 ## Deploy
 

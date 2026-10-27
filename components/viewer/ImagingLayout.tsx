@@ -19,13 +19,17 @@ import { Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen } from "lucide-reac
 import { Button, IconButton } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseSeries } from "@/lib/viewerSource";
+import type { RailInstanceSource } from "@/lib/seriesRail";
 import { SeriesNavigator } from "./SeriesNavigator";
+import { useLazySeriesRail } from "./useLazySeriesRail";
 
 export function ImagingLayout({
   series = [],
   activeIndex = 0,
   onSelectSeries,
   seriesLoading = false,
+  mainImageReady,
+  listedSeries,
   pane = "dock",
   fill = false,
   className,
@@ -35,6 +39,14 @@ export function ImagingLayout({
   activeIndex?: number;
   onSelectSeries?: (index: number) => void;
   seriesLoading?: boolean;
+  /**
+   * True once the main viewport has its first image. Thumbnails and any
+   * per-series instance lookup wait for this so they cannot delay first pixels.
+   * Omit on a surface that is not a live viewport.
+   */
+  mainImageReady?: boolean;
+  /** Instance lists already in hand (prefetch manifest). Counts, no extra QIDO. */
+  listedSeries?: readonly RailInstanceSource[] | null;
   /**
    * `dock` pins the rail beside the image from the md breakpoint up.
    * `overlay` always floats it (narrow exam cards). Fullscreen always floats.
@@ -50,7 +62,8 @@ export function ImagingLayout({
   const [fallback, setFallback] = useState(false);
   const [paneOpen, setPaneOpen] = useState(true);
   const expanded = native || fallback;
-  const showPane = seriesLoading || series.length > 1;
+  const railSeries = useLazySeriesRail(series, mainImageReady, listedSeries);
+  const showPane = seriesLoading || railSeries.length > 1;
   const overlayPane = expanded || pane === "overlay";
 
   useEffect(() => {
@@ -157,7 +170,7 @@ export function ImagingLayout({
           {/* Docked rail: absolute inset matches the image height so a long
               MRI list scrolls instead of stretching the page. */}
           <SeriesNavigator
-            series={series}
+            series={railSeries}
             activeIndex={activeIndex}
             onSelect={(index) => onSelectSeries?.(index)}
             loading={seriesLoading && series.length === 0}

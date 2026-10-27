@@ -108,6 +108,7 @@ export function RecordStage({
       activeIndex={activeSeriesIndex ?? 0}
       onSelectSeries={(index) => onSeriesChange?.(index)}
       seriesLoading={seriesLoading}
+      mainImageReady={ready}
     >
       {(expanded) => (
         <div
