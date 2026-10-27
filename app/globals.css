@@ -65,12 +65,23 @@
 
   html {
     scroll-behavior: smooth;
+    /* Clip the viewport, not just the body. A wide toolbar's scroll width was
+       expanding the document on the record stage and showing a page scrollbar. */
+    overflow-x: clip;
   }
 
   body {
     @apply bg-canvas text-primary font-sans antialiased;
     text-rendering: optimizeLegibility;
     background-color: #f7f5f1;
+    overflow-x: clip;
+  }
+
+  /* Cornerstone mounts a canvas inside the viewer div. touch-action is not
+     inherited, so the canvas must opt out of page pan/zoom itself. */
+  .touch-none,
+  .touch-none canvas {
+    touch-action: none;
   }
 
   h1,

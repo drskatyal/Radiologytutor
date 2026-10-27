@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  SERIES_RAIL_NARROW_STORAGE_KEY,
   SERIES_RAIL_STORAGE_KEY,
   parseSeriesRailOpen,
   readSeriesRailOpen,
+  readSeriesRailOpenForViewport,
+  seriesRailStorageKey,
   seriesRailToggleLabel,
   writeSeriesRailOpen,
+  writeSeriesRailOpenForViewport,
   type SeriesRailStorage,
 } from "./seriesRailPreference.ts";
 
@@ -58,6 +62,31 @@ test("a storage that throws does not break the rail toggle", () => {
   assert.equal(readSeriesRailOpen(storage), true);
   assert.doesNotThrow(() => writeSeriesRailOpen(storage, false));
   assert.doesNotThrow(() => writeSeriesRailOpen(undefined, false));
+});
+
+test("a narrow viewport starts with the series rail collapsed", () => {
+  assert.equal(readSeriesRailOpenForViewport(null, true), false);
+  assert.equal(readSeriesRailOpenForViewport(memoryStorage(), true), false);
+  assert.equal(readSeriesRailOpenForViewport(memoryStorage(), false), true);
+  // A desktop "open" flag must not force the phone rail over the image.
+  const wideOpen = memoryStorage({ [SERIES_RAIL_STORAGE_KEY]: "1" });
+  assert.equal(readSeriesRailOpenForViewport(wideOpen, true), false);
+  assert.equal(readSeriesRailOpenForViewport(wideOpen, false), true);
+});
+
+test("the narrow rail preference is its own key", () => {
+  const storage = memoryStorage();
+  assert.equal(seriesRailStorageKey(true), SERIES_RAIL_NARROW_STORAGE_KEY);
+  writeSeriesRailOpenForViewport(storage, true, true);
+  assert.equal(storage.map.get(SERIES_RAIL_NARROW_STORAGE_KEY), "1");
+  assert.equal(readSeriesRailOpenForViewport(storage, true), true);
+  assert.equal(readSeriesRailOpenForViewport(storage, false), true);
+  writeSeriesRailOpenForViewport(storage, true, false);
+  assert.equal(readSeriesRailOpenForViewport(storage, true), false);
+  writeSeriesRailOpenForViewport(storage, false, false);
+  assert.equal(storage.map.get(SERIES_RAIL_STORAGE_KEY), "0");
+  assert.equal(readSeriesRailOpenForViewport(storage, false), false);
+  assert.equal(readSeriesRailOpenForViewport(storage, true), false);
 });
 
 test("the expand label names the series currently in the viewport", () => {
