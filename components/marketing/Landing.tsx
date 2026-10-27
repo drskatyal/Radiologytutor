@@ -6,7 +6,7 @@ import { TeachMotif } from "@/components/brand/TeachMotif";
 import { Button } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { LANDING_FAQ } from "./faq";
-import { TeachStage } from "./TeachStage";
+import { TEACH_BEATS, TeachStage } from "./TeachStage";
 
 const EASE = "ease-draw";
 
@@ -148,29 +148,29 @@ const BENEFITS = [
   },
 ];
 
-const REPLAY = [
-  { label: "Carina", slice: "34" },
-  { label: "Nodule", slice: "41", active: true },
-  { label: "Mediastinum", slice: "52" },
-];
-
 function ReplayFrames() {
   return (
     <ol className="mt-8 grid gap-4 sm:grid-cols-3">
-      {REPLAY.map((frame) => (
+      {TEACH_BEATS.map((frame) => (
         <li
-          key={frame.label}
+          key={frame.id}
           className={cn(
             "rounded-2xl border bg-surface p-2",
-            frame.active ? "border-accent" : "border-subtle"
+            frame.id === "nodule" ? "border-accent" : "border-subtle"
           )}
         >
-          <div className="relative flex aspect-[4/3] items-end overflow-hidden rounded-lg bg-imaging p-3">
-            <svg viewBox="0 0 160 120" className="absolute inset-0 h-full w-full" aria-hidden="true">
-              <ellipse cx="80" cy="62" rx="52" ry="36" fill="#3A3A3A" />
-              <ellipse cx="88" cy="56" rx="22" ry="14" fill="#5A5A5A" />
-            </svg>
-            <span className="relative rounded-md bg-white px-2 py-1 text-xs font-semibold text-primary">{frame.label}</span>
+          <div className="relative aspect-[4/3] overflow-hidden rounded-lg bg-imaging">
+            <img
+              src={frame.src}
+              alt=""
+              width={1280}
+              height={720}
+              draggable={false}
+              className={cn("absolute inset-0 h-full w-full object-cover", frame.imageClass)}
+            />
+            <span className="absolute bottom-3 left-3 rounded-md bg-white px-2 py-1 text-xs font-semibold text-primary">
+              {frame.label}
+            </span>
           </div>
           <p className="px-2 py-2 text-sm font-semibold tabular-nums text-secondary">Slice {frame.slice}</p>
         </li>
