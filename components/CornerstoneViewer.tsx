@@ -13,9 +13,13 @@
 //     /cornerstone, /record and the author capture surface. The bar is outside
 //     the square so it never covers anatomy and never sits under the annotate
 //     hit-layer.
-//   • Edge chrome: student session. The image fills the pane and the same
-//     grouped bar sits along its bottom edge — still off the pixels — so a
-//     compare layout can give every pane matching chrome.
+//   • Edge chrome: student and teach sessions, and the studio stage when the
+//     pane fills its parent. The image fills the pane and the same grouped bar
+//     sits along its bottom edge — still off the pixels — so a compare layout
+//     can give every pane matching chrome.
+// Both bars, and the preset / measurement menus, are imaging-dark (#181818,
+// #1F1F1F hairline, white labels). Paper surface tokens wash out against the
+// black viewport. Active tools use cobalt with white text.
 //   • Off: pass `showToolbar={false}` (or `chrome="off"`). The caller still
 //     drives the viewport via the imperative handle. A corner readout (slice,
 //     window/level) stays — that is viewport state, not a tool.
@@ -2160,9 +2164,12 @@ function ViewerToolbar({
       ? `${tool.label} — this study has no pixel spacing for measurements`
       : tool.label;
 
-  const menuClass = vertical
-    ? "absolute left-full top-0 z-30 ml-1.5 w-48 origin-top-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated p-1 shadow-lg"
-    : "absolute bottom-full left-0 z-30 mb-1.5 w-48 origin-bottom-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated p-1 shadow-lg";
+  const menuClass = cn(
+    "absolute z-30 w-48 animate-fade-up overflow-hidden rounded-xl border border-[#1F1F1F] bg-[#181818] p-1 text-white shadow-lg ring-1 ring-white/15",
+    vertical
+      ? "left-full top-0 ml-1.5 origin-top-left"
+      : "bottom-full left-0 mb-1.5 origin-bottom-left"
+  );
 
   const nav = NAV_TOOLS.map((tool) => (
     <ToolButton
@@ -2196,12 +2203,12 @@ function ViewerToolbar({
         aria-label="More measurement tools"
         onClick={onToggleMeasure}
         className={cn(
-          "flex items-center justify-center rounded-lg text-secondary transition-colors",
-          "hover:bg-overlay hover:text-primary",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+          "flex items-center justify-center rounded-lg text-white/85 transition-colors",
+          "hover:bg-white/10 hover:text-white",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
           "disabled:cursor-not-allowed disabled:opacity-40",
           vertical ? "h-8 w-9" : "h-12 w-8",
-          measureOpen && "bg-overlay text-primary"
+          measureOpen && "bg-white/10 text-white"
         )}
       >
         <ChevronDown
@@ -2241,12 +2248,14 @@ function ViewerToolbar({
         onClick={onTogglePreset}
         className={cn(
           "flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
           "disabled:cursor-not-allowed disabled:opacity-40",
           vertical ? "h-9 w-9" : "h-12 min-w-12 flex-col px-2 text-xs",
-          presetOpen || activePreset
-            ? "bg-accent/15 text-accent"
-            : "text-secondary hover:bg-overlay hover:text-primary"
+          activePreset
+            ? "bg-accent text-white"
+            : presetOpen
+              ? "bg-white/10 text-white"
+              : "text-white/85 hover:bg-white/10 hover:text-white"
         )}
       >
         <ToolIcon name="Preset" />
@@ -2262,7 +2271,7 @@ function ViewerToolbar({
             active={activePreset === FULL_DYNAMIC_ID}
             onClick={() => onPreset(null)}
           />
-          <span className="my-1 block h-px bg-strong/50" />
+          <span className="my-1 block h-px bg-white/15" />
           {presets.map((p) => (
             <PresetItem
               key={p.id}
@@ -2314,31 +2323,31 @@ function ViewerToolbar({
       aria-label="Viewer tools"
       aria-orientation="horizontal"
       className={cn(
-        "flex flex-wrap items-end gap-x-3 gap-y-2 border border-subtle bg-surface px-2 py-2",
+        "flex flex-wrap items-end gap-x-3 gap-y-2 border border-[#1F1F1F] bg-[#181818] px-2 py-2 text-white",
         compact ? "rounded-none border-x-0 border-b-0" : "rounded-xl"
       )}
     >
       <div className="flex flex-col gap-1">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-secondary">Navigate</span>
+          <span className="px-1 text-xs font-medium text-white/70">Navigate</span>
         )}
         <div className="flex items-center gap-0.5">{nav}</div>
       </div>
       <div className="flex flex-col gap-1">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-secondary">Measure</span>
+          <span className="px-1 text-xs font-medium text-white/70">Measure</span>
         )}
         {measureSplit}
       </div>
       <div className="flex flex-col gap-1">
         {compact ? null : (
-          <span className="px-1 text-xs font-medium text-secondary">Display</span>
+          <span className="px-1 text-xs font-medium text-white/70">Display</span>
         )}
         <div className="flex items-center gap-0.5">{display}</div>
       </div>
       {compact ? null : (
-        <p className="mb-1 ml-auto hidden text-xs text-secondary sm:block">
-          Left button: <span className="font-medium text-primary">{activeToolLabel}</span>
+        <p className="mb-1 ml-auto hidden text-xs text-white/70 sm:block">
+          Left button: <span className="font-medium text-white">{activeToolLabel}</span>
         </p>
       )}
     </div>
@@ -2371,14 +2380,14 @@ function ToolButton({
       onClick={onClick}
       className={cn(
         "transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
         "disabled:cursor-not-allowed disabled:opacity-40",
         caption
           ? "flex h-12 min-w-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1.5"
           : "flex h-9 w-9 items-center justify-center rounded-lg",
         active
-          ? "bg-accent text-accent-foreground shadow-sm"
-          : "text-secondary hover:bg-overlay hover:text-primary"
+          ? "bg-accent text-white"
+          : "text-white/85 hover:bg-white/10 hover:text-white"
       )}
     >
       {children}
@@ -2413,13 +2422,13 @@ function PresetItem({
       onClick={onClick}
       className={cn(
         "flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
         "disabled:cursor-not-allowed disabled:opacity-40",
-        active ? "bg-accent/15 text-accent" : "text-secondary hover:bg-surface hover:text-primary"
+        active ? "bg-accent text-white" : "text-white/90 hover:bg-white/10 hover:text-white"
       )}
     >
       <span className="font-medium">{label}</span>
-      <span className="tabular-nums text-secondary">{hint}</span>
+      <span className={cn("tabular-nums", active ? "text-white/80" : "text-white/65")}>{hint}</span>
     </button>
   );
 }
