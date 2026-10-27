@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import { Manrope } from "next/font/google";
 import { AppShell } from "@/components/AppShell";
+import { demoAuthEnabled } from "@/lib/auth";
 import "./globals.css";
+
+export const dynamic = "force-dynamic";
 
 const sans = Manrope({
   subsets: ["latin"],
@@ -30,7 +33,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={sans.variable}>
       <body className="font-sans">
-        <AppShell>{children}</AppShell>
+        <AppShell demoEnabled={demoAuthEnabled()}>{children}</AppShell>
       </body>
     </html>
   );
