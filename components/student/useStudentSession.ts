@@ -594,8 +594,9 @@ export function useStudentSession(
       locateMissesRef.current = 0;
 
       // Multi-series: if this finding is anchored to a specific series, switch
-      // the viewport (and the navigator, via onSeriesChange) to it before we
-      // drive the view.
+      // the viewport to it before we drive the view. showSeries reads the
+      // loaded stack, not the rail DOM, so a collapsed list still switches.
+      // onSeriesChange keeps the highlight ready for when the rail opens.
       if (
         finding.seriesInstanceUID &&
         controls.current.seriesUIDs.includes(finding.seriesInstanceUID) &&
@@ -786,6 +787,7 @@ export function useStudentSession(
           break;
         }
         case "set_series": {
+          // Collapsed rail is presentation. This uses the loaded series list.
           const uid = action.seriesInstanceUID;
           if (!uid || !seriesAllowRef.current.has(uid)) break;
           if (!controls.current?.seriesUIDs.includes(uid)) break;
@@ -1596,6 +1598,7 @@ export function useStudentSession(
       }
 
       if (decision.seriesInstanceUID) {
+        // The series rail may be collapsed. That preference is not a gate.
         if (!viewer.seriesUIDs.includes(decision.seriesInstanceUID)) {
           return reply({
             ok: false,

@@ -1,6 +1,7 @@
 "use client";
 
 import { Modal, Kbd } from "@/components/ui";
+import { SERIES_RAIL_TOGGLE_KEY } from "@/lib/seriesRailPreference";
 
 const ROWS: { keys: string[]; does: string }[] = [
   { keys: ["Space"], does: "Interrupt the attending, then hold to answer" },
@@ -15,6 +16,7 @@ const ROWS: { keys: string[]; does: string }[] = [
   { keys: ["P"], does: "Previous finding" },
   { keys: ["T"], does: "Toggle tutor rail" },
   { keys: ["F"], does: "Fullscreen the viewer" },
+  { keys: [SERIES_RAIL_TOGGLE_KEY], does: "Collapse or expand the series list" },
   { keys: ["Esc"], does: "Exit fullscreen, or close the rail" },
 ];
 
