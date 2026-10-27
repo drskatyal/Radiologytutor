@@ -12,14 +12,17 @@ import { cn } from "@/components/ui/cn";
 function Plane({
   label,
   nodeRef,
+  tool,
 }: {
   label: string;
   nodeRef: RefObject<HTMLDivElement>;
+  tool: string;
 }) {
   return (
     <div className="relative min-h-0 min-w-0 bg-imaging">
       <div
         ref={nodeRef}
+        data-viewer-tool={tool}
         className="absolute inset-0"
         role="img"
         aria-label={`${label} plane`}
@@ -36,6 +39,7 @@ export function MprLayout({
   axialRef,
   coronalRef,
   sagittalRef,
+  tool,
   live,
   loading,
   notice,
@@ -44,6 +48,8 @@ export function MprLayout({
   axialRef: RefObject<HTMLDivElement>;
   coronalRef: RefObject<HTMLDivElement>;
   sagittalRef: RefObject<HTMLDivElement>;
+  /** Active left-button tool. Scroll and window/level drop the library crosshair. */
+  tool: string;
   /** False while the volume is still mounting — the grid keeps its size so the viewports can render. */
   live: boolean;
   loading: boolean;
@@ -66,10 +72,10 @@ export function MprLayout({
           !live && "invisible"
         )}
       >
-        <Plane label="Axial" nodeRef={axialRef} />
+        <Plane label="Axial" nodeRef={axialRef} tool={tool} />
         <div className="grid min-h-0 grid-cols-2 gap-px">
-          <Plane label="Coronal" nodeRef={coronalRef} />
-          <Plane label="Sagittal" nodeRef={sagittalRef} />
+          <Plane label="Coronal" nodeRef={coronalRef} tool={tool} />
+          <Plane label="Sagittal" nodeRef={sagittalRef} tool={tool} />
         </div>
       </div>
       {loading && (

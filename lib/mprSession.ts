@@ -16,6 +16,7 @@ import {
   type MprSessionHandle,
   type PlaneSample,
 } from "./mpr";
+import { tuneStackScrollTool } from "./scrollSensitivity";
 import { voiToWwWc, wwWcToVoi } from "./viewportVoi";
 
 type Camera = {
@@ -281,6 +282,11 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
   group.setToolActive(StackScrollTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Wheel }],
   });
+  tuneStackScrollTool(
+    (group as { getToolInstance?: (name: string) => unknown }).getToolInstance?.(
+      StackScrollTool.toolName
+    )
+  );
   group.setToolActive(ZoomTool.toolName, {
     bindings: [{ mouseButton: MouseBindings.Secondary }],
   });

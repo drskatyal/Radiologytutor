@@ -84,6 +84,22 @@
     touch-action: none;
   }
 
+  /* Cornerstone's active-tool cursor is an SVG whose pointer is a green "+".
+     Scroll, window/level, pan, and zoom should be the system arrow. The
+     library writes an inline cursor on the enabled element, so this has to
+     win. Measurement tools keep their own cursors. MPR crosshair reference
+     lines are canvas drawings and are not affected. */
+  [data-viewer-tool="StackScroll"],
+  [data-viewer-tool="StackScroll"] canvas,
+  [data-viewer-tool="WindowLevel"],
+  [data-viewer-tool="WindowLevel"] canvas,
+  [data-viewer-tool="Pan"],
+  [data-viewer-tool="Pan"] canvas,
+  [data-viewer-tool="Zoom"],
+  [data-viewer-tool="Zoom"] canvas {
+    cursor: default !important;
+  }
+
   h1,
   h2,
   h3,
