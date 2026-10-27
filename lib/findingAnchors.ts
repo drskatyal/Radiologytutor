@@ -57,11 +57,20 @@ export function primaryAnchor(finding: Finding): FindingAnchor {
   };
 }
 
+function anchorHasLanding(anchor: FindingAnchor): boolean {
+  return Boolean(
+    anchor.marker ||
+      anchor.seriesInstanceUID?.trim() ||
+      anchor.sliceIndex != null ||
+      (anchor.windowWidth != null && anchor.windowCenter != null)
+  );
+}
+
 export function secondaryAnchor(finding: Finding): FindingAnchor | null {
   const listed = (finding.anchors ?? []).find(
     (a) => a.viewportRole === "secondary" || a.viewportRole === "compare"
   );
-  if (listed?.marker) return listed;
+  if (listed && anchorHasLanding(listed)) return listed;
   return null;
 }
 

@@ -7,6 +7,7 @@ import {
   livePackInstruction,
   livePackTools,
   liveSessionKick,
+  findingsFromCompiledTake,
   materializeLiveTeachingPack,
   nextFindingId,
   resolveLiveTeachingPack,
@@ -273,4 +274,92 @@ test("examiner prompt withholds the diagnosis and teach-me requires a drive tool
   assert.equal(exam.includes("Right upper lobe carcinoma"), false);
   assert.match(liveSessionKick("teach_me"), /findingOrder/);
   assert.match(liveSessionKick("examiner"), /do not name the diagnosis/i);
+});
+
+test("a compiled take places drive anchors from the viewer log only", () => {
+  const recorded: RecordedTrack = {
+    durationMs: 2000,
+    start: { sliceIndex: 0, ww: 400, wc: 40 },
+    events: [
+      { t: 100, type: "cursor", x: 0.22, y: 0.33 },
+      { t: 400, type: "slice", index: 3 },
+      { t: 500, type: "voi", ww: 1500, wc: -600 },
+      {
+        t: 550,
+        type: "compare",
+        open: true,
+        seriesInstanceUID: "1.2.compare",
+        sliceIndex: 8,
+        ww: 1500,
+        wc: -600,
+        x: 0.11,
+        y: 0.22,
+      },
+      { t: 1500, type: "slice", index: 9 },
+    ],
+  };
+  const findings = findingsFromCompiledTake({
+    captureSessionId: "cap_1",
+    track: recorded,
+    seriesInstanceUID: "1.2.primary",
+    drafted: [
+      {
+        label: "Later",
+        clinicalImportance: 2,
+        tStartMs: 1200,
+        tEndMs: 1900,
+        whatToNotice: "Second",
+      },
+      {
+        label: "Must not miss",
+        clinicalImportance: 1,
+        tStartMs: 200,
+        tEndMs: 1000,
+        whatToNotice: "First",
+      },
+    ],
+  });
+  assert.equal(findings[0]?.label, "Must not miss");
+  assert.equal(findings[0]?.order, 1);
+  assert.equal(findings[0]?.sliceIndex, 3);
+  assert.equal(findings[0]?.marker?.x_pct, 0.22);
+  assert.equal(findings[0]?.seriesInstanceUID, "1.2.primary");
+  assert.equal(findings[0]?.windowWidth, 1500);
+  const compare = findings[0]?.anchors?.find((anchor) => anchor.viewportRole === "secondary");
+  assert.equal(compare?.seriesInstanceUID, "1.2.compare");
+  assert.equal(compare?.sliceIndex, 8);
+  assert.equal(compare?.marker?.x_pct, 0.11);
+
+  const bare = findingsFromCompiledTake({
+    captureSessionId: "cap_bare",
+    track: {
+      durationMs: 1000,
+      start: { sliceIndex: 1 },
+      events: [{ t: 200, type: "slice", index: 4 }],
+    },
+    drafted: [{ label: "No pointer", tStartMs: 0, tEndMs: 1000, whatToNotice: "Look" }],
+  });
+  assert.equal(bare[0]?.marker, undefined);
+  assert.equal(bare[0]?.sliceIndex, 4);
+
+  const pack = materializeLiveTeachingPack({
+    caseId: "c1",
+    modality: "CT",
+    findings,
+    prose: findings.map((item) => ({
+      id: item.id,
+      label: item.label,
+      whatToNotice: item.description,
+      clinicalImportance: item.order,
+    })),
+    studySeriesUIDs: ["1.2.primary"],
+  });
+  assert.equal(pack.findingOrder[0], findings[0]?.id);
+  assert.equal(pack.findings[0]?.drive.sliceIndex, 3);
+  assert.equal(pack.findings[0]?.drive.marker?.x_pct, 0.22);
+  assert.equal(pack.findings[0]?.drive.compare?.seriesInstanceUID, "1.2.compare");
+  assert.equal(pack.findings[0]?.drive.compare?.marker?.y_pct, 0.22);
+  assert.equal(JSON.stringify(pack).includes("0.99"), false);
+  assert.equal(pack.authoredSeriesInstanceUIDs.includes("1.2.compare"), true);
+  assert.equal(pack.authoredSeriesInstanceUIDs.includes("1.2.primary"), true);
 });

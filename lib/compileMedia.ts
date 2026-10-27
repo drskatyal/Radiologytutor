@@ -82,6 +82,9 @@ export function trackClockSummary(track: RecordedTrack | null | undefined): stri
       case "annotation":
         lines.push(`t=${event.t}ms annotation`);
         break;
+      case "compare":
+        lines.push(`t=${event.t}ms compare`);
+        break;
       default:
         break;
     }
