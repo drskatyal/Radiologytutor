@@ -28,16 +28,33 @@ export interface RecorderHandle {
   pushCursor: (x: number, y: number) => void;
 }
 
+export interface RecorderVideo {
+  blob: Blob;
+  mimeType: string;
+  /** ms on the viewer clock when the first video frame was accepted. */
+  offsetMs: number;
+}
+
 export interface RecorderResult {
   track: RecordedTrack;
   /** Recorded audio as base64 (no data: prefix) + its mime, for upload. */
   audio: { base64: string; mimeType: string } | null;
+  /** Viewport-only video. Null when the canvas could not be captured. */
+  video: RecorderVideo | null;
+  /** ms on the viewer clock when the microphone actually started. */
+  micOffsetMs: number;
 }
 
 function pickMime(): string {
   if (typeof MediaRecorder === "undefined") return "audio/webm";
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
   return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || "audio/webm";
+}
+
+function pickVideoMime(): string {
+  if (typeof MediaRecorder === "undefined") return "video/webm";
+  const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
 }
 
 const CURSOR_THROTTLE_MS = 40;
@@ -66,6 +83,11 @@ export class TrackRecorder {
   private micHold = false;
   private mic: "pending" | "live" | "unavailable" = "unavailable";
   private onMic: ((state: "live" | "unavailable") => void) | null = null;
+  private videoRec: MediaRecorder | null = null;
+  private videoChunks: Blob[] = [];
+  private videoStream: MediaStream | null = null;
+  private videoOffsetMs = 0;
+  private micOffsetMs = 0;
 
   /** Whether mic capture is even possible in this environment. */
   static get supported(): boolean {
@@ -111,12 +133,21 @@ export class TrackRecorder {
    */
   async start(
     priming: RecordedTrack["start"],
-    hooks?: { onMic?: (state: "live" | "unavailable") => void }
+    hooks?: {
+      onMic?: (state: "live" | "unavailable") => void;
+      /** Cornerstone canvas stream. Page chrome is never captured. */
+      videoStream?: MediaStream | null;
+    }
   ): Promise<void> {
     this.events = [];
     this.chunks = [];
     this.rec = null;
     this.stream = null;
+    this.videoRec = null;
+    this.videoChunks = [];
+    this.videoStream = null;
+    this.videoOffsetMs = 0;
+    this.micOffsetMs = 0;
     this.start_ = priming;
     this.t0 = performance.now();
     this.clockStarted = true;
@@ -125,6 +156,9 @@ export class TrackRecorder {
     this.micHold = true;
     this.mic = "pending";
     this.onMic = hooks?.onMic ?? null;
+    if (hooks?.videoStream && hooks.videoStream.getVideoTracks().length > 0) {
+      this.startVideo(hooks.videoStream);
+    }
 
     this.micAttempt = this.openMic();
     // Yield once so a mic that rejects on the next microtask is known before
@@ -150,6 +184,7 @@ export class TrackRecorder {
       this.stream = stream;
       const mimeType = pickMime();
       const rec = new MediaRecorder(stream, { mimeType });
+      this.micOffsetMs = this.elapsedMs();
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) this.chunks.push(e.data);
       };
@@ -213,7 +248,7 @@ export class TrackRecorder {
         }
       });
 
-    const audio = await finishAudio();
+    const [audio, video] = await Promise.all([finishAudio(), this.finishVideo()]);
 
     const track: RecordedTrack = {
       durationMs,
@@ -221,7 +256,53 @@ export class TrackRecorder {
       // Defensive: keep events ordered by timestamp (insertion order already is).
       events: this.events.slice().sort((a, b) => a.t - b.t),
     };
-    return { track, audio };
+    return { track, audio, video, micOffsetMs: this.micOffsetMs };
+  }
+
+  /** Viewport canvas only. Starts on the same t0 as the viewer log. */
+  private startVideo(stream: MediaStream): void {
+    try {
+      const mimeType = pickVideoMime();
+      const rec = new MediaRecorder(stream, { mimeType });
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) this.videoChunks.push(e.data);
+      };
+      this.videoOffsetMs = this.elapsedMs();
+      rec.start(1000);
+      this.videoRec = rec;
+      this.videoStream = stream;
+    } catch {
+      stream.getTracks().forEach((t) => t.stop());
+      this.videoRec = null;
+      this.videoStream = null;
+    }
+  }
+
+  private finishVideo(): Promise<RecorderVideo | null> {
+    return new Promise((resolve) => {
+      const rec = this.videoRec;
+      if (!rec) {
+        this.videoStream?.getTracks().forEach((t) => t.stop());
+        this.videoStream = null;
+        return resolve(null);
+      }
+      rec.onstop = () => {
+        this.videoStream?.getTracks().forEach((t) => t.stop());
+        this.videoStream = null;
+        const blob = new Blob(this.videoChunks, { type: rec.mimeType || "video/webm" });
+        if (!blob.size) return resolve(null);
+        resolve({
+          blob,
+          mimeType: (rec.mimeType || "video/webm").split(";")[0],
+          offsetMs: this.videoOffsetMs,
+        });
+      };
+      try {
+        rec.stop();
+      } catch {
+        resolve(null);
+      }
+    });
   }
 }
 

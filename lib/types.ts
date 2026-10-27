@@ -105,7 +105,8 @@ export interface FindingAnchor {
   sopInstanceUID?: string;
   /** 0-based stack index within the series (Cornerstone imageId index). */
   sliceIndex?: number;
-  marker: Marker;
+  /** Present when the log sampled a pointer. A compare pane can land without one. */
+  marker?: Marker;
   /**
    * Display VOI at the moment this landing was authored (DICOM WW/WC semantics).
    * Required so students in bone window still see a lung-window nodule when the
@@ -201,7 +202,24 @@ export type RecordedEvent =
   // replay the navigator + stack switch to it. Absent in older single-series
   // recordings — they simply never emit it and stay on their one series.
   | { t: number; type: "series"; seriesInstanceUID: string }
-  | ({ t: number; type: "annotation" } & RecordedAnnotation);
+  | ({ t: number; type: "annotation" } & RecordedAnnotation)
+  /**
+   * Compare pane at this instant. `open: false` closes it. Slice, window,
+   * series, and pointer are whatever the teacher had on that pane — never
+   * filled in later by the model.
+   */
+  | {
+      t: number;
+      type: "compare";
+      open: boolean;
+      seriesInstanceUID?: string;
+      sliceIndex?: number;
+      ww?: number;
+      wc?: number;
+      /** Normalized [0,1] pointer on the compare pane, when one was sampled. */
+      x?: number;
+      y?: number;
+    };
 
 /** Event shape before the recorder stamps it with a timestamp. */
 export type ViewerEvent =
@@ -211,7 +229,17 @@ export type ViewerEvent =
   | { type: "invert"; value: boolean }
   | { type: "cursor"; x: number; y: number }
   | { type: "series"; seriesInstanceUID: string }
-  | ({ type: "annotation" } & RecordedAnnotation);
+  | ({ type: "annotation" } & RecordedAnnotation)
+  | {
+      type: "compare";
+      open: boolean;
+      seriesInstanceUID?: string;
+      sliceIndex?: number;
+      ww?: number;
+      wc?: number;
+      x?: number;
+      y?: number;
+    };
 
 /** One viewer move inside a cleaned teach script. */
 export type TeachViewerAction =

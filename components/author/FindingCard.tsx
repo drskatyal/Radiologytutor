@@ -554,6 +554,17 @@ export function FindingCard({
 
 /** Read-only summary of the finding's marker + viewer/keyframe state. */
 function ViewerSummary({ finding }: { finding: Finding }) {
+  if (
+    !finding.marker ||
+    !Number.isFinite(finding.marker.x_pct) ||
+    !Number.isFinite(finding.marker.y_pct)
+  ) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-subtle bg-surface/60 px-3 py-2">
+        <span className="text-[11px] text-muted">No pointer in this take</span>
+      </div>
+    );
+  }
   const mx = Math.round(finding.marker.x_pct * 100);
   const my = Math.round(finding.marker.y_pct * 100);
   const kf = finding.keyframes?.length ?? (finding.state ? 1 : 0);

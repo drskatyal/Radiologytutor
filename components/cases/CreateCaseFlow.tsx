@@ -1,11 +1,8 @@
 "use client";
 
-// CreateCaseFlow — the ONE create-a-case pathway (steps 1-2 of the 4-step
-// arc: Details -> Upload DICOM -> Record findings -> Publish). A full-page
-// routed flow (not a modal) so the Stepper stays visible the whole journey:
-// on "Create & record findings" we persist the case and hand off to
-// /studio/cases/[caseId]/record, which renders the SAME Stepper advanced to
-// step 3, with Publish as step 4 on that same surface.
+// CreateCaseFlow — upload a study, then land in the DICOM viewer.
+// Case details stay available, but they are not the gate. "Open in viewer"
+// persists a draft and routes to /studio/cases/[caseId]/record.
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -47,12 +44,12 @@ export function CreateCaseFlow() {
   const { toast } = useToast();
   const router = useRouter();
 
-  const [step, setStep] = useState<CaseFlowStepId>("details");
+  const [step, setStep] = useState<CaseFlowStepId>("upload");
   const [details, setDetails] = useState<CaseDetailsValue>(EMPTY_CASE_DETAILS);
   const [titleAttempted, setTitleAttempted] = useState(false);
 
   const [patientMode, setPatientMode] = useState<"new" | "existing">("new");
-  const [patientName, setPatientName] = useState("");
+  const [patientName, setPatientName] = useState("Teaching case");
   const [patientId, setPatientId] = useState("");
   const [studies, setStudies] = useState<StagedStudy[]>([]);
   const [imagingOk, setImagingOk] = useState<boolean | null>(null);
@@ -134,12 +131,7 @@ export function CreateCaseFlow() {
 
   async function createAndRecord() {
     if (saving) return;
-    if (!detailsValid) {
-      setTitleAttempted(true);
-      setStep("details");
-      return;
-    }
-    if (!patientValid) {
+    if (!patientValid && patientMode === "existing") {
       toast({
         variant: "warning",
         title: "Add a patient label",
@@ -150,7 +142,7 @@ export function CreateCaseFlow() {
     setSaving(true);
     try {
       const input: CreateCaseInput = {
-        title: details.title.trim(),
+        title: details.title.trim() || studies[0]?.description || "Teaching case",
         modality: details.modality,
         specialty: details.specialty || undefined,
         status: "draft",
@@ -172,7 +164,9 @@ export function CreateCaseFlow() {
           : undefined,
         discussion: details.discussion || undefined,
         references: details.references.filter(Boolean).length ? details.references.filter(Boolean) : undefined,
-        ...(patientMode === "existing" ? { patientId } : { patientName: patientName.trim() }),
+        ...(patientMode === "existing"
+          ? { patientId }
+          : { patientName: patientName.trim() || "Teaching case" }),
         studies: studies.length ? toStudyPayload(studies) : undefined,
       };
       const created = await createCase(input);
@@ -201,9 +195,9 @@ export function CreateCaseFlow() {
       </>
     ) : (
       <>
-        Upload an anonymized study; pick the series learners will read. Imaging is optional now — you can link it
-        later. <span className="font-medium text-primary">Next:</span> the recording studio opens on this case so
-        you can capture each finding by voice.
+        Upload an anonymized study and pick the series.{" "}
+        <span className="font-medium text-primary">Next:</span> the viewer opens on this case so you can review it
+        and start recording. Case details can wait.
       </>
     );
 
@@ -212,9 +206,15 @@ export function CreateCaseFlow() {
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Studio", href: "/studio" }, { label: "New case" }]} />}
         title="New teaching case"
-        description="Build the case the way you teach it — stem, diagnosis, pedagogy — then attach the study and record."
+        description="Upload a study and open it in the viewer. Scroll and window, then start recording."
       >
-        <Stepper steps={CASE_FLOW_STEPS} currentId={step} />
+        <Stepper
+          steps={CASE_FLOW_STEPS}
+          currentId={step}
+          onStepClick={(id) => {
+            if (id === "details" || id === "upload") setStep(id as CaseFlowStepId);
+          }}
+        />
       </PageHeader>
 
       <PageContainer width="narrow" className="pb-28">
@@ -266,12 +266,21 @@ export function CreateCaseFlow() {
             </>
           ) : (
             <>
-              <Button variant="ghost" onClick={goBack} disabled={saving} leadingIcon={<ArrowLeft className="h-4 w-4" />}>
-                Back
+              <Button variant="ghost" onClick={cancel} disabled={saving}>
+                Cancel
               </Button>
-              <Button onClick={createAndRecord} loading={saving} disabled={!patientValid}>
-                Create &amp; record findings
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setStep("details")}
+                  disabled={saving}
+                >
+                  Case details
+                </Button>
+                <Button onClick={createAndRecord} loading={saving} disabled={patientMode === "existing" && !patientId}>
+                  Open in viewer
+                </Button>
+              </div>
             </>
           )}
         </div>
@@ -473,15 +482,7 @@ function UploadStep({
           <Info className="h-4 w-4" aria-hidden="true" />
         </span>
         <p className="text-xs leading-relaxed text-secondary">
-          Next, the recording studio opens on this case&apos;s series. Hold{" "}
-          <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
-            Alt
-          </kbd>
-          {" + "}
-          <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
-            X
-          </kbd>{" "}
-          (or the Record button) to capture each finding by voice, then review and publish.
+          Next, this study opens in the viewer. Scroll and window it, then press Start recording.
         </p>
       </div>
     </div>

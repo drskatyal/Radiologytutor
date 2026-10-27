@@ -4,10 +4,9 @@
 //
 // The radiologist scrolls/windows/clicks while holding one take. We record the
 // viewer event log, viewport stills, and the microphone when it opens, on one
-// clock. On stop, Gemini Flash compiles structured findings from the voice and
-// the stills; marker and slice landings come from the track, and
-// mergeCaptureDemonstration stores the teach script. With no microphone the
-// same stop still keeps the viewer track, and Save builds a notes-voiced
+// clock. Finish shows that recording for review and does not compile.
+// Process and teach case sends it to Gemini. With no microphone the same
+// stop still keeps the viewer track, and Save builds a notes-voiced
 // teaching guide from that track and the typed label, description, and points.
 
 import { useEffect, useRef, useState } from "react";
@@ -26,7 +25,7 @@ import {
 } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { Finding, RecordedTrack, StructuredSessionFinding } from "@/lib/types";
-import { COMPILING_FROM_RECORDING, type CompileFrame } from "@/lib/compileMedia";
+import { type CompileFrame } from "@/lib/compileMedia";
 import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import {
   AiUnavailableError,
@@ -34,11 +33,20 @@ import {
   markerFromTrack,
   structureSession,
   uploadAudio,
+  uploadTeachingVideo,
   addFinding,
   saveCaptureSession,
+  commitLiveTeachingPack,
 } from "@/components/author/lib";
 import { updateCase } from "@/components/admin/api";
 import { materializeLiveTeachingPack, type LiveProse } from "@/lib/liveTeachingPack";
+import {
+  compileProgressPlan,
+  phaseAfterFinish,
+  TEACHER_PROCESSING_LABEL,
+  useAgenticViewportVideo,
+} from "@/lib/teacherCapture";
+import type { TeacherReview } from "@/components/author/TakeReview";
 import { mergeCaptureDemonstration } from "@/lib/harness/mergeCapture";
 import { displaySliceNumber, withDisplaySnapshot } from "@/lib/findingDisplayState";
 import {
@@ -66,6 +74,20 @@ export function speakOnceMicState(
   return "idle";
 }
 
+export type TeacherCapturePhase = "idle" | "recording" | "review" | "processing" | "ready";
+
+export interface TeacherCompileProgress {
+  index: number;
+  total: number;
+  label: string;
+}
+
+export type TeacherCaptureApi = {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+  process: () => Promise<void>;
+};
+
 export function ContinuousCapture({
   caseId,
   rr,
@@ -76,7 +98,13 @@ export function ContinuousCapture({
   clinicalQuestion,
   diagnosis,
   studySeriesUIDs,
+  study,
+  adoptExternalTakes = false,
   onCaseUpdated,
+  onPhaseChange,
+  onProgress,
+  onReview,
+  onApi,
 }: {
   caseId: string;
   rr: RR;
@@ -87,7 +115,26 @@ export function ContinuousCapture({
   clinicalQuestion?: string;
   diagnosis?: string;
   studySeriesUIDs?: string[];
+  /** Case stem sent with the compile call. Not a source of coordinates. */
+  study?: {
+    title?: string;
+    modality?: string;
+    specialty?: string;
+    clinicalHistory?: string;
+    patientAge?: string;
+    patientSex?: string;
+  };
+  /**
+   * When true, a take started outside this panel (Alt+X, the studio transport)
+   * is compiled on stop. Re-recording one finding leaves this off.
+   */
+  adoptExternalTakes?: boolean;
   onCaseUpdated: (c: Awaited<ReturnType<typeof addFinding>>) => void;
+  onPhaseChange?: (phase: TeacherCapturePhase) => void;
+  onProgress?: (progress: TeacherCompileProgress | null) => void;
+  /** Viewport recording + log for the studio review player. Null clears it. */
+  onReview?: (review: TeacherReview | null) => void;
+  onApi?: (api: TeacherCaptureApi | null) => void;
 }) {
   const { toast } = useToast();
   const [settling, setSettling] = useState(false);
@@ -107,21 +154,35 @@ export function ContinuousCapture({
   // the Alt+X hotkey call rr.stopRecording() without going through stop(), so
   // the button state is derived from the recorder and this flag adopts the take.
   const speakSession = useRef(false);
+  const held = useRef<{
+    track: RecordedTrack;
+    audio: { base64: string; mimeType: string };
+    frames: CompileFrame[];
+    videoBlob: Blob | null;
+  } | null>(null);
 
   async function start() {
     setNotice("");
     setProposals([]);
     setTranscript("");
     setLastTake(null);
+    held.current = null;
+    onReview?.(null);
+    onProgress?.(null);
     speakSession.current = true;
+    onPhaseChange?.("recording");
     try {
       const started = await rr.startRecording();
       if (!started) {
-        speakSession.current = false;
+        if (!recording) {
+          speakSession.current = false;
+          onPhaseChange?.("idle");
+        }
         setNotice("The viewer isn't ready yet — wait for the study, then start again.");
       }
     } catch {
       speakSession.current = false;
+      onPhaseChange?.("idle");
       toast({
         variant: "warning",
         title: "Couldn't start capture",
@@ -147,53 +208,186 @@ export function ContinuousCapture({
     setNotice("");
   }
 
+  function publishReview(
+    track: RecordedTrack,
+    playback: {
+      videoUrl?: string | null;
+      audioUrl?: string | null;
+      videoOffsetMs?: number;
+      audioOffsetMs?: number;
+    } | null
+  ) {
+    onReview?.({
+      videoUrl: playback?.videoUrl ?? null,
+      audioUrl: playback?.audioUrl ?? null,
+      videoOffsetMs: playback?.videoOffsetMs ?? 0,
+      audioOffsetMs: playback?.audioOffsetMs ?? 0,
+      track,
+    });
+  }
+
   async function finishStoppedTake(
     captured: {
       track: RecordedTrack;
       audio: { base64: string; mimeType: string } | null;
       frames?: CompileFrame[];
+      videoBlob?: Blob | null;
+      playback?: {
+        videoUrl?: string | null;
+        audioUrl?: string | null;
+        videoOffsetMs?: number;
+        audioOffsetMs?: number;
+      } | null;
     } | null
   ) {
-    if (!captured?.track) {
-      setNotice("Nothing captured — scroll the study, then stop.");
+    const outcome = phaseAfterFinish({
+      hasTrack: Boolean(captured?.track),
+      hasAudio: Boolean(captured?.audio),
+    });
+    if (outcome === "empty" || !captured?.track) {
+      onPhaseChange?.("idle");
+      onReview?.(null);
+      setNotice("Nothing captured — scroll the study, then finish.");
       return;
     }
     const { track, audio, frames } = captured;
     setLastTake({ track, audio });
-    if (!audio) {
+    if (outcome === "notes" || !audio) {
+      held.current = null;
+      onPhaseChange?.("idle");
+      if (captured.playback?.videoUrl || captured.videoBlob) {
+        publishReview(track, captured.playback ?? null);
+      } else {
+        onReview?.(null);
+      }
       openNotesDraft(track);
       return;
     }
+    held.current = {
+      track,
+      audio,
+      frames: frames ?? [],
+      videoBlob: captured.videoBlob ?? null,
+    };
+    publishReview(track, captured.playback ?? null);
+    onPhaseChange?.("review");
+    setNotice("Recording ready. Replay it, then process and teach the case.");
+  }
+
+  async function processTake() {
+    const take = held.current;
+    if (!take || structuring) return;
+    const agentic = Boolean(take.videoBlob) && useAgenticViewportVideo(take.track.durationMs);
+    const steps = compileProgressPlan(agentic);
+    const report = (index: number) =>
+      onProgress?.({ index, total: steps.length, label: steps[index] ?? steps[steps.length - 1] });
     setStructuring(true);
+    onPhaseChange?.("processing");
+    report(0);
+    const sessionId = `cap_${Date.now().toString(36)}`;
     try {
+      let audioUrl: string | undefined;
+      try {
+        audioUrl = await uploadAudio(take.audio.base64, take.audio.mimeType);
+      } catch {
+        audioUrl = undefined;
+      }
+      const persisted = await saveCaptureSession(caseId, {
+        id: sessionId,
+        durationMs: take.track.durationMs,
+        track: audioUrl ? { ...take.track, audioUrl } : take.track,
+        ...(audioUrl ? { audioUrl } : {}),
+        createdAt: new Date().toISOString(),
+      });
+      onCaseUpdated(persisted);
+
+      report(1);
+      let video: { fileUri: string; mimeType: string } | undefined;
+      if (agentic && take.videoBlob) {
+        try {
+          video = await uploadTeachingVideo(take.videoBlob);
+        } catch (err) {
+          if (err instanceof AiUnavailableError) throw err;
+          video = undefined;
+          toast({
+            variant: "warning",
+            title: "Viewport video wasn't uploaded",
+            description: "Compiling from the viewer log and stills instead.",
+          });
+        }
+      }
+
+      report(2);
       const result = await structureSession({
-        audioBase64: audio.base64,
-        audioMime: audio.mimeType,
-        durationMs: track.durationMs,
-        track,
-        frames,
+        audioBase64: take.audio.base64,
+        audioMime: take.audio.mimeType,
+        durationMs: take.track.durationMs,
+        track: take.track,
+        frames: video ? undefined : take.frames,
+        video,
+        study,
+        caseId,
+        modality: modality || study?.modality,
+        clinicalQuestion,
+        diagnosis,
+        studySeriesUIDs,
       });
       if (!result) {
+        onPhaseChange?.("review");
         setNotice(
-          "AI structuring is off (no Gemini key). You can still save a single walk-through from the panel below."
+          "AI structuring is off (no Gemini key). The recording is saved. You can still type a walk-through below."
         );
         return;
       }
       setTranscript(result.transcript);
-      setProposals(result.findings);
-      const stills = frames?.length ?? 0;
+      if (!result.findings.length) {
+        onPhaseChange?.("review");
+        setNotice("No findings detected in the recording — try naming each lesion as you scroll.");
+        return;
+      }
+      report(3);
+      const updated = await commitLiveTeachingPack(caseId, {
+        captureSessionId: sessionId,
+        transcript: result.transcript,
+        seriesInstanceUID,
+        studyInstanceUID,
+        findings: result.findings.map((finding) => ({
+          label: finding.label,
+          description: finding.description,
+          teachingPoints: finding.teachingPoints,
+          whatToNotice: finding.whatToNotice,
+          pearl: finding.pearl,
+          mimics: finding.mimics,
+          clinicalImportance: finding.clinicalImportance,
+          whyClinicallyFirst: finding.whyClinicallyFirst,
+          reportLine: finding.reportLine,
+          landmark: finding.landmark,
+          tStartMs: finding.tStartMs,
+          tEndMs: finding.tEndMs,
+        })),
+      });
+      onCaseUpdated(updated);
+      setProposals([]);
+      onProgress?.(null);
+      onPhaseChange?.("ready");
+      const count = updated.liveTeachingPack?.findings.length ?? result.findings.length;
       setNotice(
-        result.findings.length
-          ? `Compiled ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"} from the recording${stills ? ` and ${stills} viewport still${stills === 1 ? "" : "s"}` : ""} — review fields, then save all.`
-          : "No findings detected in the recording — try naming each lesion as you scroll."
+        `Teaching pack ready — ${count} finding${count === 1 ? "" : "s"} ordered by clinical importance.`
       );
+      toast({
+        variant: "success",
+        title: "Teaching pack ready",
+        description: "Test as student, then add the case to your library.",
+      });
     } catch (e) {
+      onPhaseChange?.("review");
+      onProgress?.(null);
       if (e instanceof AiUnavailableError) {
         setNotice(e.message);
       } else {
         toast({
           variant: "danger",
-          title: "Couldn't structure session",
+          title: "Couldn't compile the teaching pack",
           description: e instanceof Error ? e.message : undefined,
         });
       }
@@ -204,15 +398,44 @@ export function ContinuousCapture({
 
   const finishRef = useRef(finishStoppedTake);
   finishRef.current = finishStoppedTake;
+  const processRef = useRef(processTake);
+  processRef.current = processTake;
+  const apiRef = useRef({
+    start,
+    stop: async () => {},
+    process: async () => {},
+  });
+  apiRef.current.start = start;
+  apiRef.current.process = () => processRef.current();
+
+  useEffect(() => {
+    onApi?.({
+      start: () => apiRef.current.start(),
+      stop: () => apiRef.current.stop(),
+      process: () => apiRef.current.process(),
+    });
+    return () => onApi?.(null);
+  }, [onApi]);
+
+  useEffect(() => {
+    if (adoptExternalTakes && recording) speakSession.current = true;
+  }, [adoptExternalTakes, recording]);
 
   useEffect(() => {
     if (recording || !speakSession.current) return;
     speakSession.current = false;
+    const playback = rr.playback;
     const captured = rr.track
-      ? { track: rr.track, audio: rr.audio, frames: rr.frames }
+      ? {
+          track: rr.track,
+          audio: rr.audio,
+          frames: rr.frames,
+          videoBlob: playback?.videoBlob ?? null,
+          playback,
+        }
       : null;
     void finishRef.current(captured);
-  }, [recording, rr.track, rr.audio, rr.frames]);
+  }, [recording, rr.track, rr.audio, rr.frames, rr.playback]);
 
   async function stop() {
     setSettling(true);
@@ -228,6 +451,7 @@ export function ContinuousCapture({
       setSettling(false);
     }
   }
+  apiRef.current.stop = stop;
 
   function patchProposal(i: number, patch: Partial<StructuredSessionFinding>) {
     setProposals((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
@@ -471,10 +695,11 @@ export function ContinuousCapture({
       </div>
 
       <p className="mb-3 text-xs leading-relaxed text-muted">
-        Scroll the study and narrate every finding in one take. With a microphone
-        we compile the teaching script from your voice, viewport stills, and the
-        viewer log. Without a microphone the viewer track still records, and Save
-        teaches from the notes you type.
+        Scroll the study and narrate every finding in one take. Finish recording
+        shows the viewport video and the viewer log so you can replay them.
+        Process and teach case compiles the pack. Viewport stills and the
+        microphone share one clock. Without a microphone the track still
+        records and Save teaches from notes.
       </p>
 
       <div className="rounded-xl border border-subtle bg-surface/80 px-3 py-3">
@@ -486,13 +711,13 @@ export function ContinuousCapture({
           label={
             recording
               ? rr.micCapture === "live"
-                ? "Capturing — keep scrolling & speaking…"
+                ? "Capturing — keep scrolling and speaking…"
                 : rr.micCapture === "unavailable"
                   ? "Capturing the viewer — no microphone"
                   : "Capturing the viewer…"
-              : structuring
-                ? COMPILING_FROM_RECORDING
-                : "Start continuous capture"
+              : structuring || settling
+                ? TEACHER_PROCESSING_LABEL
+                : "Start recording"
           }
         />
       </div>
@@ -504,9 +729,9 @@ export function ContinuousCapture({
       )}
 
       {structuring && (
-        <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
-          <Spinner size="sm" />
-          {COMPILING_FROM_RECORDING}
+        <div className="mt-3 flex items-center gap-2 text-sm text-secondary" role="status">
+          <Spinner size="sm" label={TEACHER_PROCESSING_LABEL} />
+          {TEACHER_PROCESSING_LABEL}
         </div>
       )}
 

@@ -261,6 +261,11 @@ export interface CornerstoneControls {
    * null when the bitmap is blank and the cached pixels cannot be windowed.
    */
   captureViewportStill?: () => { mimeType: string; base64: string } | null;
+  /**
+   * MediaStream of the Cornerstone canvas inside this viewport. Never the
+   * page, the sidebar, or another panel. Null when the canvas cannot stream.
+   */
+  captureViewportStream?: () => MediaStream | null;
 }
 
 type CachedSlice = {
@@ -316,6 +321,18 @@ function grabViewportStill(
     invert,
   };
   return jpegStillFromGrayscale(frame);
+}
+
+/** Viewport canvas only. WebGL may still yield blank frames if the buffer is cleared. */
+function openViewportStream(host: HTMLElement | null, fps = 12): MediaStream | null {
+  const canvas = host ? largestCanvas(Array.from(host.querySelectorAll("canvas"))) : null;
+  if (!canvas || typeof canvas.captureStream !== "function") return null;
+  try {
+    const stream = canvas.captureStream(fps);
+    return stream.getVideoTracks().length ? stream : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1684,6 +1701,7 @@ export default function CornerstoneViewer({
             return annotationApplied;
           },
           captureViewportStill: () => grabViewportStill(elementRef.current, viewportRef.current),
+          captureViewportStream: () => openViewportStream(elementRef.current),
         };
         if (controls) controls.current = handle;
         onReady?.(handle);

@@ -191,6 +191,59 @@ export async function addFinding(
   return jsonOrThrow(res);
 }
 
+/** Write the LiveTeachingPack. The server rebuilds anchors from the stored track. */
+export async function commitLiveTeachingPack(
+  caseId: string,
+  body: {
+    captureSessionId: string;
+    transcript?: string;
+    seriesInstanceUID?: string;
+    studyInstanceUID?: string;
+    findings: Array<{
+      label: string;
+      description?: string;
+      teachingPoints?: string[];
+      whatToNotice?: string;
+      pearl?: string;
+      mimics?: string[];
+      clinicalImportance?: number;
+      whyClinicallyFirst?: string;
+      reportLine?: string;
+      landmark?: string;
+      tStartMs: number;
+      tEndMs: number;
+    }>;
+  }
+): Promise<CaseData> {
+  const res = await fetch(`/api/cases/${caseId}/live-teaching-pack`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
+/** Viewport recording → Gemini Files API. The key stays on the server. */
+export async function uploadTeachingVideo(
+  blob: Blob
+): Promise<{ fileUri: string; mimeType: string }> {
+  const body = new FormData();
+  body.set("video", blob, "viewport.webm");
+  const res = await fetch("/api/gemini/files", { method: "POST", body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (looksLikeMissingKey(res.status, data?.error)) throw new AiUnavailableError();
+    throw new Error(data?.error || "Couldn't upload the viewport recording");
+  }
+  if (typeof data?.fileUri !== "string" || !data.fileUri) {
+    throw new Error("Viewport upload did not return a file");
+  }
+  return {
+    fileUri: data.fileUri,
+    mimeType: typeof data.mimeType === "string" ? data.mimeType : "video/webm",
+  };
+}
+
 /** Persist a continuous-capture demonstration (parent track + transcript). */
 export async function saveCaptureSession(
   caseId: string,
@@ -287,7 +340,7 @@ export async function structureFindingFromAudio(
   }
 }
 
-/** Continuous take → transcript + ordered findings with time ranges. */
+/** Continuous take → transcript + findings ranked by clinical importance. */
 export async function structureSession(input: {
   audioBase64?: string;
   audioMime?: string;
@@ -295,6 +348,21 @@ export async function structureSession(input: {
   durationMs: number;
   track?: RecordedTrack;
   frames?: CompileFrame[];
+  study?: {
+    title?: string;
+    modality?: string;
+    specialty?: string;
+    clinicalHistory?: string;
+    patientAge?: string;
+    patientSex?: string;
+  };
+  caseId?: string;
+  modality?: string;
+  clinicalQuestion?: string;
+  diagnosis?: string;
+  studySeriesUIDs?: string[];
+  /** Files API reference for a long viewport recording. */
+  video?: { fileUri: string; mimeType: string };
 }): Promise<StructuredSession | null> {
   try {
     const { frames: rawFrames, ...rest } = input;

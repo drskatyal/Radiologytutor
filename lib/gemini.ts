@@ -32,11 +32,15 @@ export interface GeminiPart {
   text?: string;
   /** Inline audio/image/video bytes (base64). */
   inlineData?: { mimeType: string; data: string };
+  /** Files API reference. Used for a long viewport recording. */
+  fileData?: { fileUri: string; mimeType: string };
   /**
    * Video only. AGENTIC lets Flash walk a long viewer recording without
    * tokenizing every frame. STATIC is the fixed-rate pass for a short take.
    */
   mediaProcessing?: "AGENTIC" | "STATIC";
+  /** DICOM viewport video stays low unless overlay text must be read. */
+  mediaResolution?: "MEDIA_RESOLUTION_LOW" | "MEDIA_RESOLUTION_MEDIUM" | "MEDIA_RESOLUTION_HIGH";
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -80,12 +84,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function callGemini(
   model: string,
   key: string,
-  body: unknown
+  body: unknown,
+  timeoutMs = REQUEST_TIMEOUT_MS
 ): Promise<Response> {
   let lastStatus = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
         method: "POST",
@@ -113,7 +118,7 @@ async function callGemini(
       if (attempt === MAX_ATTEMPTS) {
         throw new Error(
           aborted
-            ? `Gemini request timed out after ${REQUEST_TIMEOUT_MS}ms`
+            ? `Gemini request timed out after ${timeoutMs}ms`
             : `Gemini request failed: network error`
         );
       }
@@ -180,6 +185,8 @@ interface GenerateOptions {
   tools?: FunctionDeclaration[];
   /** Enable Gemini's built-in Google Search grounding tool (web-grounded). */
   googleSearch?: boolean;
+  /** Override the default deadline. Agentic video needs longer than a text call. */
+  timeoutMs?: number;
 }
 
 /** A web source surfaced by Google Search grounding. */
@@ -244,7 +251,7 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
     body.toolConfig = { includeServerSideToolInvocations: true };
   }
 
-  const res = await callGemini(MODEL, key, body);
+  const res = await callGemini(MODEL, key, body, opts.timeoutMs);
   const data = await res.json();
   const candidate = data?.candidates?.[0];
   const parts: GeminiPart[] = candidate?.content?.parts ?? [];

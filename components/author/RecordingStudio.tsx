@@ -2,15 +2,13 @@
 
 // RecordingStudio — the full-page PACS authoring surface.
 //
-// Primary loop (fast, 3–5 min per case):
-//   navigate the study → CLICK the finding → popover opens → dictate with mic →
-//   Gemini structures {label, description, teachingPoints} into the fields →
-//   save with a real normalized marker + series anchor.
+// Primary loop:
+//   land in the viewer → Start recording → Finish recording (review the
+//   viewport take) → Process and teach case → Test as student →
+//   Add to library.
 //
-// Secondary loop (optional demo recording):
-//   Hold Alt+X / Record to capture a narrated walk-through (cursor + viewer
-//   events). A click-to-annotate save with no microphone still stores a
-//   teach script from the landing (slice, window, zoom, marker) and the notes.
+// Click-to-annotate stays available, off until the teacher turns it on, so a
+// review pass does not drop a marker on the first click.
 //
 // WHILE RECORDING a pulsing frame marks the viewer live. Captured findings
 // list with replay / re-record / edit / delete. Then publish.
@@ -21,7 +19,6 @@ import {
   ArrowLeft,
   Check,
   Circle,
-  Crosshair,
   Mic,
   Play,
   Plus,
@@ -71,7 +68,14 @@ import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
 import { AnnotatePopover } from "@/components/author/AnnotatePopover";
 import { LandmarkField } from "@/components/author/LandmarkField";
-import { ContinuousCapture } from "@/components/author/ContinuousCapture";
+import {
+  ContinuousCapture,
+  type TeacherCaptureApi,
+  type TeacherCapturePhase,
+  type TeacherCompileProgress,
+} from "@/components/author/ContinuousCapture";
+import { TakeReview, type TeacherReview } from "@/components/author/TakeReview";
+import { studentCaseHref, TEACHER_PROCESSING_LABEL } from "@/lib/teacherCapture";
 import { SequenceBoard } from "@/components/author/SequenceBoard";
 import {
   addFinding,
@@ -141,7 +145,7 @@ export function RecordingStudio({
   const [annotateSaving, setAnnotateSaving] = useState(false);
   const [annotateNotice, setAnnotateNotice] = useState("");
   const [annotateTranscript, setAnnotateTranscript] = useState("");
-  const [annotateMode, setAnnotateMode] = useState(true);
+  const [annotateMode, setAnnotateMode] = useState(false);
   const [annotateSliceIndex, setAnnotateSliceIndex] = useState<number | undefined>();
 
   // Capture / structuring state for the OPTIONAL walk-through recording path.
@@ -160,7 +164,14 @@ export function RecordingStudio({
   const [deleting, setDeleting] = useState(false);
 
   const [publishing, setPublishing] = useState(false);
-  const [captureTab, setCaptureTab] = useState<"sequence" | "speak" | "walk">("sequence");
+  const [captureTab, setCaptureTab] = useState<"sequence" | "speak" | "walk">("speak");
+  const captureApi = useRef<TeacherCaptureApi | null>(null);
+  const [teacherPhase, setTeacherPhase] = useState<TeacherCapturePhase>("idle");
+  const [compileProgress, setCompileProgress] = useState<TeacherCompileProgress | null>(null);
+  const [review, setReview] = useState<TeacherReview | null>(null);
+  const onCaptureApi = useCallback((api: TeacherCaptureApi | null) => {
+    captureApi.current = api;
+  }, []);
   const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
 
@@ -523,7 +534,16 @@ export function RecordingStudio({
     closeAnnotate();
     setAnnotateMode(false);
     setNotice("");
-    await rr.startRecording();
+    setCaptureTab("speak");
+    if (!captureApi.current) {
+      toast({
+        variant: "warning",
+        title: "Viewer isn't ready",
+        description: "Wait for the study to open, then start recording.",
+      });
+      return;
+    }
+    await captureApi.current.start();
     const perms = (navigator as Navigator & { permissions?: Permissions }).permissions;
     perms
       ?.query({ name: "microphone" as PermissionName })
@@ -531,6 +551,10 @@ export function RecordingStudio({
         setMic(s.state === "denied" ? "denied" : s.state === "granted" ? "granted" : mic)
       )
       .catch(() => {});
+  }
+
+  function openStudentTest() {
+    router.push(studentCaseHref(caseData.caseId, "teach"));
   }
 
   async function structureFromRecording() {
@@ -780,16 +804,16 @@ export function RecordingStudio({
       setCaseData((c) => ({ ...c, status: updated.status }));
       toast({
         variant: "success",
-        title: "Case published",
-        description: `"${updated.title}" is live for students.`,
+        title: "Added to your library",
+        description: `"${updated.title}" is the case students open.`,
       });
-      router.push(`/studio/cases/${encodeURIComponent(caseData.caseId)}`);
     } catch (e) {
       toast({
         variant: "danger",
         title: "Couldn't publish",
         description: e instanceof Error ? e.message : undefined,
       });
+    } finally {
       setPublishing(false);
     }
   }
@@ -797,6 +821,19 @@ export function RecordingStudio({
   const published = caseData.status === "published";
   const stepperStage = published ? "publish" : findings.length > 0 ? "publish" : "record";
   const readiness = casePublishReadiness(findings);
+  const showStudentTest =
+    !!caseData.liveTeachingPack && (teacherPhase === "idle" || teacherPhase === "ready");
+  const processingTake = teacherPhase === "processing";
+  const reviewingTake = teacherPhase === "review";
+  const packReady = !!caseData.liveTeachingPack && showStudentTest;
+  const canDeploy =
+    !published &&
+    (packReady ||
+      (!caseData.liveTeachingPack &&
+        readiness.ready &&
+        teacherPhase !== "recording" &&
+        teacherPhase !== "review" &&
+        teacherPhase !== "processing"));
 
   return (
     <div className="animate-fade-in">
@@ -821,12 +858,17 @@ export function RecordingStudio({
             <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
             <span className="text-xs text-muted">·</span>
             <span className="text-xs text-muted">
-              Click → dictate → save · {readiness.examReady}/{readiness.total} exam-ready
+              Review the study, then record. {readiness.examReady}/{readiness.total} exam-ready
             </span>
           </span>
         }
         actions={
           <div className="flex items-center gap-2">
+            {showStudentTest && (
+              <Button size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openStudentTest}>
+                Test as student
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -849,13 +891,18 @@ export function RecordingStudio({
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={publish}
               loading={publishing}
-              disabled={published || !readiness.ready}
+              disabled={!canDeploy}
               title={
-                readiness.blockers[0] ??
-                undefined
+                published
+                  ? "In your library"
+                  : packReady
+                    ? "Deploy case"
+                    : caseData.liveTeachingPack
+                      ? "Finish processing before adding this case to the library."
+                      : readiness.blockers[0]
               }
             >
-              {published ? "Published" : "Review & publish"}
+              {published ? "In library" : caseData.liveTeachingPack ? "Add to library" : "Review & publish"}
             </Button>
           </div>
         }
@@ -925,34 +972,37 @@ export function RecordingStudio({
 
           {/* Transport controls */}
           <Card padded={false} className="mt-4 p-4">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant={annotateMode && !recording ? "primary" : "secondary"}
-                leadingIcon={<Crosshair className="h-3.5 w-3.5" />}
-                onClick={() => {
-                  if (recording) return;
-                  closeAnnotate();
-                  setAnnotateMode(true);
-                }}
-                disabled={recording || rr.phase === "replaying"}
-              >
-                Click to annotate
-              </Button>
-              <span className="text-xs text-secondary">Primary path — place a marker, then dictate</span>
-            </div>
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
                 <Button
                   variant="danger"
                   leadingIcon={<Square className="h-4 w-4" />}
                   onClick={() => {
-                    rr.stopRecording();
-                    setAnnotateMode(true);
+                    void captureApi.current?.stop();
                   }}
                 >
-                  Stop recording
+                  Finish recording
                 </Button>
+              ) : reviewingTake ? (
+                <>
+                  <Button
+                    leadingIcon={<Sparkles className="h-4 w-4" />}
+                    onClick={() => {
+                      void captureApi.current?.process();
+                    }}
+                    disabled={processingTake}
+                  >
+                    Process and teach case
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    leadingIcon={<Circle className="h-3.5 w-3.5 fill-current" />}
+                    onClick={() => void beginRecording()}
+                    disabled={!ready || processingTake}
+                  >
+                    Record again
+                  </Button>
+                </>
               ) : rr.phase === "replaying" ? (
                 <Button
                   variant="secondary"
@@ -963,12 +1013,11 @@ export function RecordingStudio({
                 </Button>
               ) : (
                 <Button
-                  variant="secondary"
                   leadingIcon={<Circle className="h-3.5 w-3.5 fill-current" />}
-                  onClick={beginRecording}
-                  disabled={!ready || mic === "unsupported"}
+                  onClick={() => void beginRecording()}
+                  disabled={!ready || processingTake}
                 >
-                  {hasTrack ? "Re-record walk-through" : "Record walk-through"}
+                  Start recording
                 </Button>
               )}
 
@@ -980,14 +1029,28 @@ export function RecordingStudio({
               >
                 Replay
               </Button>
+              {showStudentTest && (
+                <Button variant="secondary" onClick={openStudentTest}>
+                  Test as student
+                </Button>
+              )}
               <Button
-                variant="ghost"
-                leadingIcon={<Sparkles className="h-4 w-4" />}
-                onClick={structureFromRecording}
-                loading={structuring}
-                disabled={!rr.audio || rr.phase !== "idle"}
+                size="sm"
+                variant={annotateMode && !recording ? "secondary" : "ghost"}
+                onClick={() => {
+                  if (recording) return;
+                  if (annotateMode) {
+                    closeAnnotate();
+                    setAnnotateMode(false);
+                    return;
+                  }
+                  closeAnnotate();
+                  setAnnotateMode(true);
+                  setCaptureTab("sequence");
+                }}
+                disabled={recording || rr.phase === "replaying" || processingTake}
               >
-                Structure from voice
+                {annotateMode ? "Done annotating" : "Click to annotate"}
               </Button>
 
               {hasTrack && (
@@ -1001,10 +1064,47 @@ export function RecordingStudio({
             </div>
 
             {/* Hotkey hint */}
-            {rr.phase === "idle" && !micBlocked && (
+            {processingTake && (
+              <div
+                className="mt-3 rounded-lg border border-subtle bg-surface px-3 py-2 text-sm text-secondary"
+                role="status"
+                aria-live="polite"
+              >
+                <div className="flex items-center gap-2">
+                  <Spinner size="sm" label={compileProgress?.label ?? TEACHER_PROCESSING_LABEL} />
+                  <span>{compileProgress?.label ?? TEACHER_PROCESSING_LABEL}</span>
+                </div>
+                {compileProgress && (
+                  <ol className="mt-2 flex flex-col gap-1">
+                    {Array.from({ length: compileProgress.total }, (_, index) => (
+                      <li
+                        key={index}
+                        className={
+                          index < compileProgress.index
+                            ? "text-xs text-success"
+                            : index === compileProgress.index
+                              ? "text-xs font-medium text-primary"
+                              : "text-xs text-muted"
+                        }
+                      >
+                        Step {index + 1}.{" "}
+                        {index === compileProgress.index
+                          ? compileProgress.label
+                          : index < compileProgress.index
+                            ? "Done"
+                            : "Waiting"}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            )}
+            {review && teacherPhase !== "recording" && <TakeReview review={review} />}
+            {rr.phase === "idle" && !micBlocked && !processingTake && !reviewingTake && (
               <p className="mt-3 text-xs text-muted">
-                <span className="font-medium text-secondary">Fast path:</span> click the
-                finding, dictate, save. Optional: hold{" "}
+                Scroll and window the study first. Start recording captures the
+                microphone, viewport stills, and the viewer log — window, series,
+                zoom, and pointer. Hold{" "}
                 <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                   Alt
                 </kbd>
@@ -1012,7 +1112,7 @@ export function RecordingStudio({
                 <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                   X
                 </kbd>{" "}
-                to record a narrated walk-through students can retrace.
+                to record from the keyboard.
               </p>
             )}
             {micBlocked && (
@@ -1090,7 +1190,7 @@ export function RecordingStudio({
             </Card>
           )}
 
-          {captureTab === "speak" && (
+          <div className={captureTab === "speak" ? undefined : "hidden"}>
           <ContinuousCapture
             caseId={caseData.caseId}
             rr={rr}
@@ -1103,9 +1203,26 @@ export function RecordingStudio({
             clinicalQuestion={caseData.clinicalHistory}
             diagnosis={caseData.primaryDiagnosis}
             studySeriesUIDs={(caseData.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? [])}
+            study={{
+              title: caseData.title,
+              modality: caseData.modality,
+              specialty: caseData.specialty,
+              clinicalHistory: caseData.clinicalHistory,
+              patientAge: caseData.patientAge,
+              patientSex: caseData.patientSex,
+            }}
+            adoptExternalTakes={!editingFindingId}
             onCaseUpdated={setCaseData}
+            onPhaseChange={(phase) => {
+              setTeacherPhase(phase);
+              if (phase === "recording") setReview(null);
+              if (phase !== "processing") setCompileProgress(null);
+            }}
+            onProgress={setCompileProgress}
+            onReview={setReview}
+            onApi={onCaptureApi}
           />
-          )}
+          </div>
 
           {captureTab === "walk" && (
           <Card padded={false} className="p-4">
@@ -1183,6 +1300,16 @@ export function RecordingStudio({
                   {COMPILING_FROM_RECORDING}
                 </div>
               )}
+
+              <Button
+                variant="secondary"
+                leadingIcon={<Sparkles className="h-4 w-4" />}
+                onClick={() => void structureFromRecording()}
+                loading={structuring}
+                disabled={!rr.audio || rr.phase !== "idle"}
+              >
+                Structure this take
+              </Button>
 
               <Button
                 onClick={saveFinding}

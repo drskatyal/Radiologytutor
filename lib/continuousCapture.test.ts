@@ -194,9 +194,9 @@ before(async () => {
       const button = [...container.querySelectorAll("button")].find((el) => {
         const text = el.textContent ?? "";
         return (
-          text.includes("Start continuous capture") ||
+          text.includes("Start recording") ||
           text.includes("Capturing the viewer") ||
-          text.includes("Compiling from recording")
+          text.includes("Processing")
         );
       });
       assert.ok(button instanceof window.HTMLButtonElement, "speak-once mic control");
@@ -216,10 +216,10 @@ after(() => {
 
 function assertSpeakOnceIdle(root: ParentNode) {
   const button = [...root.querySelectorAll("button")].find((el) =>
-    (el.textContent ?? "").includes("Start continuous capture")
+    (el.textContent ?? "").includes("Start recording")
   );
   assert.ok(button instanceof HTMLButtonElement, "idle speak-once control");
-  assert.equal(button.getAttribute("aria-label"), "Start continuous capture");
+  assert.equal(button.getAttribute("aria-label"), "Start recording");
   assert.equal(button.getAttribute("aria-pressed"), "false");
   assert.equal(button.querySelector(".lucide-square"), null);
   assert.ok(button.querySelector(".lucide-mic"), "idle control shows the mic disc");

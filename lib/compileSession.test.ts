@@ -259,6 +259,109 @@ test("compile partitions missing times and still lands them on the track", async
   assert.ok(session.findings[0]?.teachingGuide?.beats.length);
 });
 
+test("a long viewport recording uses agentic video and drops dense stills", async () => {
+  let timeout: number | undefined;
+  const generate: CompileGenerate = async (opts) => {
+    timeout = opts.timeoutMs;
+    const video = opts.contents[0]?.parts[0];
+    assert.equal(video?.mediaProcessing, "AGENTIC");
+    assert.equal(video?.mediaResolution, "MEDIA_RESOLUTION_LOW");
+    assert.equal(
+      video?.fileData?.fileUri,
+      "https://generativelanguage.googleapis.com/v1beta/files/viewport"
+    );
+    const types = opts.contents[0]?.parts.flatMap((part) =>
+      part.inlineData ? [part.inlineData.mimeType] : []
+    );
+    assert.deepEqual(types, ["audio/webm"]);
+    const text = opts.contents[0]?.parts.map((part) => part.text ?? "").join("\n");
+    assert.match(text, /Do not include coordinates or slice indices/);
+    assert.doesNotMatch(text, /0\.55/);
+    assert.match(text, /t=800ms pointer/);
+    return { text: modelJson() };
+  };
+  const session = await compileStructuredSession(
+    {
+      audioBase64: "AUDIODATA",
+      audioMime: "audio/webm",
+      durationMs: 6 * 60 * 1000,
+      track,
+      frames,
+      video: {
+        fileUri: "https://generativelanguage.googleapis.com/v1beta/files/viewport",
+        mimeType: "video/webm",
+      },
+    },
+    generate
+  );
+  assert.equal(timeout, 180_000);
+  assert.equal(session.findings[0]?.suggestedMarker?.x_pct, 0.55);
+  assert.equal(session.findings[0]?.whatToNotice, "A round opacity on lung windows.");
+});
+
+test("a short clip keeps stills even if a file uri was passed", () => {
+  const request = compileSessionRequest({
+    audioBase64: "AUDIODATA",
+    audioMime: "audio/webm",
+    durationMs: 30_000,
+    track,
+    frames,
+    video: {
+      fileUri: "https://generativelanguage.googleapis.com/v1beta/files/short",
+      mimeType: "video/webm",
+    },
+  });
+  assert.equal(request.agenticVideo, false);
+  assert.equal(request.parts.some((part) => part.fileData), false);
+  assert.equal(
+    request.parts.some((part) => part.inlineData?.mimeType === "image/jpeg"),
+    true
+  );
+});
+
+test("compile reorders findings by clinical importance and still uses the log", async () => {
+  const generate: CompileGenerate = async () => ({
+    text: JSON.stringify({
+      transcript: "Effusion first in speech, nodule matters more.",
+      findings: [
+        {
+          label: "Right pleural effusion",
+          whatToNotice: "Dependent opacity.",
+          pearl: "Blunting.",
+          mimics: [],
+          clinicalImportance: 2,
+          tStartMs: 200,
+          tEndMs: 1000,
+          suggestedSliceIndex: 99,
+        },
+        {
+          label: "Left lower lobe nodule",
+          whatToNotice: "Round opacity.",
+          pearl: "Check the prior.",
+          mimics: ["vessel"],
+          clinicalImportance: 1,
+          tStartMs: 2200,
+          tEndMs: 3600,
+          suggestedMarker: { x_pct: 0.01, y_pct: 0.02, shape: "circle" },
+        },
+      ],
+    }),
+  });
+  const session = await compileStructuredSession(
+    { audioBase64: "AUDIODATA", durationMs: track.durationMs, track },
+    generate
+  );
+  assert.deepEqual(
+    session.findings.map((finding) => finding.label),
+    ["Left lower lobe nodule", "Right pleural effusion"]
+  );
+  assert.equal(session.findings[0]?.clinicalImportance, 1);
+  assert.equal(session.findings[0]?.suggestedSliceIndex, sliceNearTime(track, segmentMidMs(2200, 3600)));
+  assert.notEqual(session.findings[0]?.suggestedMarker?.x_pct, 0.01);
+  assert.equal(session.findings[0]?.pearl, "Check the prior.");
+  assert.deepEqual(session.findings[0]?.mimics, ["vessel"]);
+});
+
 test("compile refuses a body with neither audio nor transcript", async () => {
   await assert.rejects(
     () => compileStructuredSession({ durationMs: 1000, track }, async () => ({ text: "{}" })),
