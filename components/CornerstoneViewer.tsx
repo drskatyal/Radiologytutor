@@ -642,8 +642,10 @@ export default function CornerstoneViewer({
       beginViewerNavigation(instanceId);
       let activeNav = markViewerNavigation(seriesUidOf(initialSource));
       setStatus("Opening slice…");
+      setReady(false);
       setPainted(false);
       setStacking(true);
+      setReadout(null);
       const earlyJob =
         initialSource.kind === "wadors"
           ? startProgressiveWadorsLoad({
@@ -1899,6 +1901,7 @@ export default function CornerstoneViewer({
       } catch (err) {
         if (disposed || (err as Error)?.name === "AbortError") return;
         console.error("CornerstoneViewer error", err);
+        setStacking(false);
         setStatus(`Error: ${(err as Error).message}`);
       }
     })();
