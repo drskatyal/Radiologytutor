@@ -7,15 +7,15 @@ import { describe, test } from "node:test";
 import { parseDicom } from "dicom-parser";
 import AdmZip from "adm-zip";
 import { BLOCKING_TAG_HEX, blankBlockingIdentityTags } from "./anonymizeTeachingDicom.ts";
-import { BLOCKING_PHI_TAGS, evaluateDeid, inspectDicomBytes } from "./deid.ts";
+import { BLOCKING_PHI_TAGS, DeidFailError, evaluateDeid, inspectDicomBytes } from "./deid.ts";
 import { readDicomUids } from "./healthcareDicom.ts";
+import { TEACHING_DEID_FAILURE, remapTeachingUid } from "./teachingDeidentify.ts";
 
 // cases.ts captures DATA_DIR at import. Set it before the upload route loads.
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "flowrad-teach-upload-"));
 
 const RAW = join(process.cwd(), "public/dicom/emri_small.dcm");
 const TEACH = join(process.cwd(), "public/dicom/teach_anon_mr.dcm");
-const DEID_REASON = "this file still has patient identifiers — de-identify the study before upload";
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -93,7 +93,7 @@ describe("studio upload ingest", { concurrency: false }, () => {
     assert.equal(res.status, 401);
   });
 
-  test("teach_anon_mr.dcm and a zip of it store; emri_small.dcm does not", async () => {
+  test("a study with PatientBirthDate is stored after automatic de-id", async () => {
     const saved = {
       DICOMWEB_BACKEND: process.env.DICOMWEB_BACKEND,
       ORTHANC_URL: process.env.ORTHANC_URL,
@@ -104,39 +104,75 @@ describe("studio upload ingest", { concurrency: false }, () => {
     process.env.ORTHANC_URL = `http://127.0.0.1:${port}`;
     try {
       const { ingestUpload } = await import("./uploadIngest.ts");
-      const teach = readFileSync(TEACH);
+      const { orthancIngestInstance } = await import("./orthanc.ts");
       const raw = readFileSync(RAW);
+      const teach = readFileSync(TEACH);
+      const rawUids = readDicomUids(asArrayBuffer(new Uint8Array(raw)));
+      assert.ok(rawUids);
 
-      const stored = await ingestUpload("org_test", formWith("teach_anon_mr.dcm", teach));
+      await assert.rejects(
+        () => orthancIngestInstance(asArrayBuffer(new Uint8Array(raw))),
+        DeidFailError
+      );
+      assert.equal(store.stowed, 0);
+
+      const stored = await ingestUpload("org_test", formWith("emri_small.dcm", raw));
       assert.equal(stored.status, 200);
       if (stored.status !== 200) return;
       assert.equal(stored.body.stored, 1);
       assert.equal(stored.body.failed.length, 0);
+      assert.equal(stored.body.deidentified, 1);
+      assert.equal(stored.body.duplicates, 0);
       assert.equal(stored.body.series.length, 1);
-      const uids = readDicomUids(asArrayBuffer(teach));
-      assert.ok(uids);
-      assert.equal(stored.body.series[0].studyInstanceUID, uids.study);
-      assert.equal(stored.body.series[0].seriesInstanceUID, uids.series);
+      assert.equal(stored.body.series[0].studyInstanceUID, remapTeachingUid(rawUids.study));
+      assert.equal(stored.body.series[0].seriesInstanceUID, remapTeachingUid(rawUids.series));
       assert.equal(stored.body.series[0].modality, "MR");
       assert.equal(stored.body.series[0].instances, 1);
       assert.equal(store.stowed, 1);
+      const stowed = new Uint8Array(store.bodies[0]);
+      assert.equal(evaluateDeid(inspectDicomBytes(asArrayBuffer(stowed))).pass, true);
+      assert.equal(parseDicom(stowed).string("x00100030"), undefined);
+      assert.deepEqual(pixelBytes(stowed), pixelBytes(new Uint8Array(raw)));
 
       const zip = new AdmZip();
-      zip.addFile("nested/teach_anon_mr.dcm", teach);
+      zip.addFile("nested/IM-0001-0026.dcm", raw);
+      zip.addFile("readme.jpg", Buffer.from("not-dicom"));
       const zipped = await ingestUpload("org_test", formWith("study.zip", zip.toBuffer()));
       assert.equal(zipped.status, 200);
       if (zipped.status !== 200) return;
-      assert.equal(zipped.body.stored, 1);
+      assert.equal(zipped.body.stored, 0);
+      assert.equal(zipped.body.duplicates, 1);
       assert.equal(zipped.body.failed.length, 0);
-      assert.equal(store.stowed, 2);
+      assert.ok(zipped.body.skipped.some((s) => s.reason === "not a DICOM file"));
+      assert.equal(store.stowed, 1);
 
-      const rejected = await ingestUpload("org_test", formWith("emri_small.dcm", raw));
+      const copies = new FormData();
+      copies.append("files", new File([new Uint8Array(raw)], "IM-0001-0026.dcm"));
+      copies.append("files", new File([new Uint8Array(raw)], "IM-0001-0026(1).dcm"));
+      const dup = await ingestUpload("org_test", copies);
+      assert.equal(dup.status, 200);
+      if (dup.status !== 200) return;
+      assert.equal(dup.body.failed.length, 0);
+      assert.equal(dup.body.stored, 0);
+      assert.equal(dup.body.duplicates, 2);
+      assert.equal(store.stowed, 1);
+
+      const anon = await ingestUpload("org_test", formWith("teach_anon_mr.dcm", teach));
+      assert.equal(anon.status, 200);
+      if (anon.status !== 200) return;
+      assert.equal(anon.body.failed.length, 0);
+      assert.equal(anon.body.stored, 0);
+      assert.equal(anon.body.duplicates, 1);
+
+      const junk = Buffer.alloc(200);
+      junk.write("DICM", 128);
+      const rejected = await ingestUpload("org_test", formWith("IM-0001-0099.dcm", junk));
       assert.equal(rejected.status, 200);
       if (rejected.status !== 200) return;
       assert.equal(rejected.body.stored, 0);
       assert.equal(rejected.body.failed.length, 1);
-      assert.equal(rejected.body.failed[0].reason, DEID_REASON);
-      assert.equal(store.stowed, 2);
+      assert.equal(rejected.body.failed[0].reason, TEACHING_DEID_FAILURE);
+      assert.equal(store.stowed, 1);
     } finally {
       await new Promise<void>((resolve, reject) => {
         store.server.close((err) => (err ? reject(err) : resolve()));
@@ -155,13 +191,14 @@ function formWith(name: string, bytes: Buffer): FormData {
   return form;
 }
 
-function createStubArchive(): { server: Server; stowed: number } {
+function createStubArchive(): { server: Server; stowed: number; bodies: Buffer[] } {
   const state: {
     stowed: number;
+    bodies: Buffer[];
     study?: string;
     series?: string;
     sop?: string;
-  } = { stowed: 0 };
+  } = { stowed: 0, bodies: [] };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk as Buffer));
@@ -175,7 +212,13 @@ function createStubArchive(): { server: Server; stowed: number } {
           res.end("not dicom");
           return;
         }
+        if (state.sop === uids.sop) {
+          res.writeHead(409);
+          res.end("already exists");
+          return;
+        }
         state.stowed += 1;
+        state.bodies.push(body);
         state.study = uids.study;
         state.series = uids.series;
         state.sop = uids.sop;
@@ -231,6 +274,7 @@ function createStubArchive(): { server: Server; stowed: number } {
     get stowed() {
       return state.stowed;
     },
+    bodies: state.bodies,
   };
 }
 

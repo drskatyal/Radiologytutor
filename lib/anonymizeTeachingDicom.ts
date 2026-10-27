@@ -5,8 +5,8 @@
 // Little Endian Part-10 file (zero-length, value removed). Pixel bytes are
 // copied through. This is the generator for public/dicom/teach_anon_mr.dcm.
 //
-// It is NOT called from /api/upload. A teacher upload with a real PatientName,
-// PatientID, or birth date still fails lib/deid.ts before STOW.
+// Teacher uploads do not call this. They go through lib/teachingDeidentify.ts,
+// which blanks the same identity tags and remaps UIDs before the ingest gate.
 // ============================================================================
 
 import { BLOCKING_PHI_TAGS } from "./deid";

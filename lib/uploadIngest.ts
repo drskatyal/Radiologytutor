@@ -1,18 +1,17 @@
-// Classify, de-id, and STOW one upload batch.
+// Classify, de-identify, and STOW one upload batch.
 //
-// POST /api/upload calls this only after requireAuthorOrg. The header gate in
-// orthancIngestInstance still refuses residual PatientName/ID/DOB. Pixel OCR
-// is not claimed.
-//
-// Prove file: public/dicom/teach_anon_mr.dcm (identity tags blanked).
-// public/dicom/emri_small.dcm still carries PatientBirthDate 20000101 and is
-// refused on purpose.
+// POST /api/upload calls this only after requireAuthorOrg. Each DICOM instance
+// is rewritten by lib/teachingDeidentify.ts (identity tags blanked, UIDs
+// remapped) before orthancIngestInstance. The gate still refuses residual
+// PatientName/ID/DOB, so a rewrite that leaves PHI does not reach the archive.
+// Pixel OCR is not claimed. Curated public imports do not use this module.
 
 import AdmZip from "adm-zip";
 import { upsertDeidReport } from "./cases";
 import { DeidFailError, type DeidReport } from "./deid";
-import { looksLikeDicomUid } from "./healthcareDicom";
+import { looksLikeDicomUid, readDicomUids } from "./healthcareDicom";
 import { imagingStudySummary, orthancIngestInstance, orthancSeriesMeta } from "./orthanc";
+import { TeachingDeidError, deidentifyTeachingInstance } from "./teachingDeidentify";
 
 /** Cover-ready metadata for one uploaded series (mirrors UploadedSeries). */
 export interface UploadSeriesOut {
@@ -34,6 +33,10 @@ export interface UploadSkipped {
 
 export interface UploadIngestOk {
   stored: number;
+  /** Instances already stored (same remapped SOP) and not counted again. */
+  duplicates: number;
+  /** Instances whose identity tags were blanked before STOW. */
+  deidentified: number;
   series: UploadSeriesOut[];
   failed: UploadSkipped[];
   skipped: UploadSkipped[];
@@ -77,8 +80,9 @@ function classify(name: string, bytes: ArrayBuffer): { skip?: string } {
 
 /** Turn an archive error into something a radiologist can act on. */
 function friendlyStoreError(e: unknown): string {
+  if (e instanceof TeachingDeidError) return e.userMessage;
   if (e instanceof DeidFailError || (e instanceof Error && e.message.startsWith("DEID_FAIL"))) {
-    return "this file still has patient identifiers — de-identify the study before upload";
+    return "patient identifiers were still present after automatic de-identification";
   }
   const msg = e instanceof Error ? e.message : String(e);
   if (/-> 401\b|-> 403\b/.test(msg)) return "imaging archive rejected the server credential";
@@ -116,7 +120,7 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
           ) as ArrayBuffer;
           const { skip } = classify(entryName, buf);
           if (skip) skipped.push({ name: `${name} › ${entryName}`, reason: skip });
-          else candidates.push({ name: entryName, bytes: buf });
+          else candidates.push({ name: `${name} › ${entryName}`, bytes: buf });
         }
       } catch {
         skipped.push({ name, reason: "couldn't open zip archive" });
@@ -132,19 +136,46 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
 
   const seriesMap = new Map<string, { studyId: string; count: number }>();
   const deidByStudy = new Map<string, DeidReport>();
+  const seenSop = new Set<string>();
   let stored = 0;
+  let duplicates = 0;
+  let deidentified = 0;
   const failed: UploadSkipped[] = [];
 
   for (const c of candidates) {
+    let bytes = c.bytes;
     try {
-      const res = await orthancIngestInstance(c.bytes);
+      const cleaned = deidentifyTeachingInstance(new Uint8Array(c.bytes));
+      if (cleaned.removed.length > 0) deidentified++;
+      bytes = toArrayBuffer(cleaned.bytes);
+    } catch (e) {
+      failed.push({ name: c.name, reason: friendlyStoreError(e) });
+      continue;
+    }
+
+    const uids = readDicomUids(bytes);
+    if (uids && seenSop.has(uids.sop)) {
+      duplicates++;
+      continue;
+    }
+
+    try {
+      const res = await orthancIngestInstance(bytes);
+      if (uids) seenSop.add(uids.sop);
+      if (!deidByStudy.has(res.ParentStudy)) {
+        deidByStudy.set(res.ParentStudy, res.deidReport);
+      }
+      if (res.Status === "AlreadyStored") {
+        duplicates++;
+        if (!seriesMap.has(res.ParentSeries)) {
+          seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 0 });
+        }
+        continue;
+      }
       stored++;
       const existing = seriesMap.get(res.ParentSeries);
       if (existing) existing.count++;
       else seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 1 });
-      if (!deidByStudy.has(res.ParentStudy)) {
-        deidByStudy.set(res.ParentStudy, res.deidReport);
-      }
     } catch (e) {
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
     }
@@ -212,5 +243,9 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
     }
   }
 
-  return { status: 200, body: { stored, series, failed, skipped } };
+  return { status: 200, body: { stored, duplicates, deidentified, series, failed, skipped } };
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }

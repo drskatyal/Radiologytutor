@@ -240,6 +240,14 @@ export async function healthcareStoreInstance(bytes: ArrayBuffer): Promise<Healt
     body: Buffer.from(bytes),
     cache: "no-store",
   });
+  if (res.status === 409) {
+    return {
+      ID: uids.sop,
+      ParentStudy: uids.study,
+      ParentSeries: uids.series,
+      Status: "AlreadyStored",
+    };
+  }
   if (!res.ok) throw new Error(`Healthcare STOW -> ${res.status}`);
   return {
     ID: uids.sop,

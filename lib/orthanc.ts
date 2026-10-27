@@ -33,6 +33,7 @@ import {
   healthcareStoreInstance,
   healthcareStudySeriesMeta,
   healthcareStudySummary,
+  readDicomUids,
 } from "./healthcareDicom";
 
 export { dicomWebRoot, imagingBackend, upstreamAccept };
@@ -85,8 +86,21 @@ export async function orthancStoreInstance(bytes: ArrayBuffer): Promise<OrthancS
     },
     body: bytes,
   });
+  if (res.status === 409) return alreadyStoredResult(bytes);
   if (!res.ok) throw new Error(`Orthanc store -> ${res.status}`);
   return (await res.json()) as OrthancStoreResult;
+}
+
+/** A second copy of an instance already in the archive. UIDs come from the file. */
+function alreadyStoredResult(bytes: ArrayBuffer): OrthancStoreResult {
+  const uids = readDicomUids(bytes);
+  if (!uids) throw new Error("Orthanc store -> 409");
+  return {
+    ID: uids.sop,
+    ParentStudy: uids.study,
+    ParentSeries: uids.series,
+    Status: "AlreadyStored",
+  };
 }
 
 /** Resolve a study's DICOM StudyInstanceUID + description from its archive id. */
@@ -150,9 +164,9 @@ export async function orthancSeriesUID(orthancSeriesId: string): Promise<string>
 //
 // All DICOM ingest funnels through `orthancIngestInstance`. We inspect headers
 // and refuse instances with residual identity tags (PatientName/ID/DOB, …).
-// We do NOT rewrite pixels here and we do NOT claim OCR ran. Callers never
-// change when a byte-level scrubber slots in later — it belongs in this
-// function, before orthancStoreInstance.
+// Teacher uploads rewrite those tags first in lib/teachingDeidentify.ts.
+// This function does not rewrite, so curated imports keep their UIDs and
+// cannot skip the gate. We do NOT claim pixel OCR ran.
 // ============================================================================
 
 export interface OrthancIngestResult extends OrthancStoreResult {

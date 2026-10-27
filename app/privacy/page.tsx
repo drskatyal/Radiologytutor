@@ -21,7 +21,9 @@ export default function PrivacyPage() {
         </p>
         <p>
           Studies you upload are used to teach on the viewer. Upload only imaging you are allowed to
-          use. Do not upload studies that still contain patient identifiers.
+          use. When a teacher uploads a study, patient names, IDs, and dates of birth are removed
+          from the DICOM headers before the images are stored. Text burned into the pixels is not
+          detected.
         </p>
         <p>
           Narration you record is stored so the tutor can replay the teach. It is not sold, and it
