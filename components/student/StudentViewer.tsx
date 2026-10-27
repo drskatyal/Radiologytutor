@@ -11,6 +11,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useRef, type MouseEvent, type MutableRefObject } from "react";
 import { Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import type { OpenSlice } from "@/lib/viewerLoad";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { FindingMeasurement, Marker } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
@@ -46,6 +47,7 @@ export function StudentViewer({
   series,
   activeSeriesIndex,
   onSeriesChange,
+  openSlice = null,
   modality,
   controls,
   overlay,
@@ -64,6 +66,8 @@ export function StudentViewer({
   series?: CaseSeries[];
   activeSeriesIndex?: number;
   onSeriesChange?: (seriesInstanceUID: string) => void;
+  /** First landing for the primary pane. Compare stays at mid-stack. */
+  openSlice?: OpenSlice | null;
   modality?: string;
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
@@ -102,6 +106,7 @@ export function StudentViewer({
         series={series}
         activeSeriesIndex={activeSeriesIndex}
         onSeriesChange={onSeriesChange}
+        openSlice={openSlice}
         modality={modality}
         controls={controls}
         overlay={overlay}
@@ -146,6 +151,7 @@ function ImagingPane({
   series,
   activeSeriesIndex,
   onSeriesChange,
+  openSlice = null,
   modality,
   controls,
   overlay,
@@ -165,6 +171,7 @@ function ImagingPane({
   series?: CaseSeries[];
   activeSeriesIndex?: number;
   onSeriesChange?: (seriesInstanceUID: string) => void;
+  openSlice?: OpenSlice | null;
   modality?: string;
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
@@ -199,6 +206,7 @@ function ImagingPane({
         series={series}
         activeSeriesIndex={activeSeriesIndex}
         onSeriesChange={onSeriesChange}
+        openSlice={openSlice}
         modality={modality}
         controls={controls}
         showToolbar={false}

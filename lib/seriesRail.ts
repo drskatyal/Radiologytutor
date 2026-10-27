@@ -176,7 +176,8 @@ export function presentSeriesRail(args: {
     const stats = args.fetched[uid] ?? args.known[uid];
     const bundled = isBundledSeries(series);
     const failed = args.failed.has(uid);
-    const serverCount = series.instanceCount > 0 ? series.instanceCount : 0;
+    const rawCount = series.instanceCount;
+    const serverCount = rawCount != null && rawCount > 0 ? rawCount : 0;
     const count = stats?.instanceCount ?? serverCount;
     // Stay pending through the gap before the lookup's setState lands, so the
     // row never flashes "0 images" on the frame the viewport becomes ready.

@@ -40,7 +40,22 @@ import {
   type ReactNode,
 } from "react";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
+import {
+  prefetchNeighborImageIds,
+  startProgressiveWadorsLoad,
+} from "../lib/progressiveStack";
 import { stackOpenIndex } from "../lib/stackIndex";
+import type { OpenSlice } from "../lib/viewerLoad";
+import {
+  beginViewerNavigation,
+  markViewerPixels,
+  publishSeriesImageCount,
+} from "../lib/viewerSession";
+import {
+  markViewerFirstPixel,
+  markViewerNavigation,
+  markViewerSeriesReady,
+} from "../lib/viewerTiming";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
@@ -481,6 +496,7 @@ export default function CornerstoneViewer({
   className,
   instanceId = "primary",
   imageOverlay,
+  openSlice = null,
 }: {
   source?: ViewerSource;
   /**
@@ -523,6 +539,11 @@ export default function CornerstoneViewer({
    * goes fullscreen and the image is no longer a square.
    */
   imageOverlay?: ReactNode;
+  /**
+   * Slice to show first. The last teacher landing on this series, when the
+   * case stored one. Otherwise the stack opens at the middle.
+   */
+  openSlice?: OpenSlice | null;
 }) {
   const chrome = resolveChrome(showToolbar, chromeProp);
   const docked = chrome === "dock";
@@ -566,6 +587,12 @@ export default function CornerstoneViewer({
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState("WindowLevel");
   const [ready, setReady] = useState(false);
+  /** True once any frame has been drawn. The loading chip moves off the anatomy. */
+  const [painted, setPainted] = useState(false);
+  /** Full active stack is still registering after a series change. */
+  const [stacking, setStacking] = useState(false);
+  const openSliceRef = useRef(openSlice);
+  openSliceRef.current = openSlice;
   const [inverted, setInverted] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [presetOpen, setPresetOpen] = useState(false);
@@ -604,11 +631,31 @@ export default function CornerstoneViewer({
     // WebGL context pool; opening compare then loses the primary context and
     // the canvas clears to black when the split closes.
     const renderingEngineId = SHARED_RENDERING_ENGINE_ID;
+    const loadAbort = { current: new AbortController() };
+    const seriesUidOf = (src: ViewerSource) =>
+      src.kind === "wadors" ? src.SeriesInstanceUID : "wadouri";
 
     (async () => {
       if (started.current || !elementRef.current) return;
       started.current = true;
       viewportEngineRegistry.acquire(instanceId);
+      beginViewerNavigation(instanceId);
+      let activeNav = markViewerNavigation(seriesUidOf(initialSource));
+      setStatus("Opening slice…");
+      setReady(false);
+      setPainted(false);
+      setStacking(true);
+      setReadout(null);
+      const earlyJob =
+        initialSource.kind === "wadors"
+          ? startProgressiveWadorsLoad({
+              wadoRsRoot: initialSource.wadoRsRoot,
+              studyInstanceUID: initialSource.StudyInstanceUID,
+              seriesInstanceUID: initialSource.SeriesInstanceUID,
+              open: openSliceRef.current,
+              signal: loadAbort.current.signal,
+            })
+          : null;
 
       try {
         const core = await import("@cornerstonejs/core");
@@ -631,13 +678,10 @@ export default function CornerstoneViewer({
         const pool = retrieval?.maxNumRequests;
         if (pool) {
           pool.interaction = 16;
-          pool.thumbnail = 8;
-          pool.prefetch = 8;
+          // Thumbnails and neighbor prefetch must not crowd out the opening frame.
+          pool.thumbnail = 2;
+          pool.prefetch = 4;
         }
-
-        setStatus("Loading series…");
-        const imageIds = await buildImageIds(initialSource);
-        if (disposed || !elementRef.current) return;
 
         const engine = await obtainSharedEngine(core as unknown as EngineHost);
         if (disposed || !elementRef.current) {
@@ -828,8 +872,12 @@ export default function CornerstoneViewer({
           }, 80 - elapsed);
         };
 
-        const loadStack = async (ids: string[]): Promise<void> => {
-          await viewport.setStack(ids, stackOpenIndex(ids.length));
+        const loadStack = async (ids: string[], index?: number): Promise<void> => {
+          const openAt =
+            index == null
+              ? stackOpenIndex(ids.length)
+              : Math.max(0, Math.min(ids.length - 1, Math.round(index)));
+          await viewport.setStack(ids, openAt);
           viewport.render();
 
           const sampleIds = ids.slice(0, Math.min(ids.length, 4));
@@ -859,8 +907,100 @@ export default function CornerstoneViewer({
           );
         };
 
-        await loadStack(imageIds);
-        if (disposed || !elementRef.current) return;
+        const stackIdsRef: { current: string[] } = { current: [] };
+        let prefetchCenter = -1;
+        const prefetchAround = (index: number) => {
+          if (stackIdsRef.current.length === 0 || index === prefetchCenter) return;
+          prefetchCenter = index;
+          prefetchNeighborImageIds(stackIdsRef.current, index);
+        };
+        let pixelMarked = false;
+        let detachPixel: (() => void) | null = null;
+        const armFirstPixel = (seriesUID: string) => {
+          const el = elementRef.current;
+          if (!el || pixelMarked || detachPixel) return;
+          const handler = () => {
+            el.removeEventListener(core.Enums.Events.IMAGE_RENDERED, handler as EventListener);
+            detachPixel = null;
+            if (pixelMarked || disposed) return;
+            pixelMarked = true;
+            markViewerFirstPixel(activeNav, seriesUID);
+            markViewerPixels(instanceId);
+            setPainted(true);
+            setStatus((prev) => (prev.startsWith("Error") ? prev : "Loading stack…"));
+          };
+          detachPixel = () => {
+            el.removeEventListener(core.Enums.Events.IMAGE_RENDERED, handler as EventListener);
+            detachPixel = null;
+          };
+          el.addEventListener(core.Enums.Events.IMAGE_RENDERED, handler as EventListener);
+        };
+        const finishStack = (seriesUID: string, ids: string[], openIndex: number) => {
+          stackIdsRef.current = ids;
+          prefetchCenter = -1;
+          publishSeriesImageCount(seriesUID, ids.length);
+          markViewerSeriesReady(activeNav, seriesUID, ids.length);
+          prefetchAround(openIndex);
+          setStacking(false);
+          setStatus(`${ids.length} image${ids.length === 1 ? "" : "s"} loaded`);
+        };
+        const loadPrepared = async (
+          job: ReturnType<typeof startProgressiveWadorsLoad>,
+          seriesUID: string,
+          signal: AbortSignal
+        ): Promise<string[] | null> => {
+          const box: { full: { imageIds: string[]; openIndex: number } | null } = { full: null };
+          const fullReady = job.full.then((value) => {
+            box.full = value;
+            return value;
+          });
+          const openingId = await job.opening;
+          if (disposed || signal.aborted) return null;
+          armFirstPixel(seriesUID);
+          if (box.full) {
+            await loadStack(box.full.imageIds, box.full.openIndex);
+            if (disposed || signal.aborted) return null;
+            finishStack(seriesUID, box.full.imageIds, box.full.openIndex);
+            return box.full.imageIds;
+          }
+          await loadStack([openingId], 0);
+          if (disposed || signal.aborted) return null;
+          const full = await fullReady;
+          if (disposed || signal.aborted) return null;
+          armFirstPixel(seriesUID);
+          await loadStack(full.imageIds, full.openIndex);
+          if (disposed || signal.aborted) return null;
+          finishStack(seriesUID, full.imageIds, full.openIndex);
+          return full.imageIds;
+        };
+
+        let imageIds: string[] = [];
+        if (initialSource.kind === "wadors") {
+          const job =
+            earlyJob ??
+            startProgressiveWadorsLoad({
+              wadoRsRoot: initialSource.wadoRsRoot,
+              studyInstanceUID: initialSource.StudyInstanceUID,
+              seriesInstanceUID: initialSource.SeriesInstanceUID,
+              open: openSliceRef.current,
+              signal: loadAbort.current.signal,
+            });
+          const ids = await loadPrepared(
+            job,
+            initialSource.SeriesInstanceUID,
+            loadAbort.current.signal
+          );
+          if (!ids || disposed || !elementRef.current) return;
+          imageIds = ids;
+        } else {
+          imageIds = await buildImageIds(initialSource);
+          if (disposed || !elementRef.current) return;
+          const openAt = stackOpenIndex(imageIds.length);
+          armFirstPixel(seriesUidOf(initialSource));
+          await loadStack(imageIds, openAt);
+          if (disposed || !elementRef.current) return;
+          finishStack(seriesUidOf(initialSource), imageIds, openAt);
+        }
         viewportRef.current = viewport;
         publishReadout();
         // Record which series is loaded so switches no-op on the active one.
@@ -955,7 +1095,9 @@ export default function CornerstoneViewer({
           const vp = viewportRef.current;
           if (!vp) return;
           rememberPresentation();
-          emit({ type: "slice", index: vp.getCurrentImageIdIndex() });
+          const index = vp.getCurrentImageIdIndex();
+          emit({ type: "slice", index });
+          prefetchAround(index);
           scheduleReadout();
           // STACK_NEW_IMAGE runs after Cornerstone writes the image window,
           // and a per-image default can write again before this stack yields.
@@ -1115,14 +1257,50 @@ export default function CornerstoneViewer({
           // Keep the navigator highlight in sync for BOTH user + replay switches.
           onSeriesChangeRef.current?.(target.seriesInstanceUID);
           cancelTweenRef.current();
+          // Drop the previous series' in-flight metadata. Neighbor prefetch
+          // stays off until this series' full imageId list is registered.
+          loadAbort.current.abort();
+          const controller = new AbortController();
+          loadAbort.current = controller;
+          stackIdsRef.current = [];
+          prefetchCenter = -1;
+          pixelMarked = false;
+          detachPixel?.();
+          setStacking(true);
+          setStatus("Opening slice…");
+          const src = caseSeriesToSource(target);
+          const seriesUID = seriesUidOf(src);
+          activeNav = markViewerNavigation(seriesUID);
+          beginViewerNavigation(instanceId);
           try {
-            const ids = await buildImageIds(caseSeriesToSource(target));
-            // A newer switch superseded us, or we've been torn down — bail.
-            if (token !== switchSeq || disposed) return;
-            await loadStack(ids);
+            if (src.kind === "wadors") {
+              // Mid-stack of the selected series. Other series stay metadata-only
+              // until this click; a teacher landing applies only on first open.
+              const job = startProgressiveWadorsLoad({
+                wadoRsRoot: src.wadoRsRoot,
+                studyInstanceUID: src.StudyInstanceUID,
+                seriesInstanceUID: src.SeriesInstanceUID,
+                open: null,
+                signal: controller.signal,
+              });
+              const ids = await loadPrepared(job, seriesUID, controller.signal);
+              if (!ids || token !== switchSeq || disposed) return;
+            } else {
+              const ids = await buildImageIds(src);
+              if (token !== switchSeq || disposed || controller.signal.aborted) return;
+              const openAt = stackOpenIndex(ids.length);
+              armFirstPixel(seriesUID);
+              await loadStack(ids, openAt);
+              if (token !== switchSeq || disposed || controller.signal.aborted) return;
+              finishStack(seriesUID, ids, openAt);
+            }
             applyPinnedVoi();
           } catch (err) {
+            if (disposed || controller.signal.aborted || (err as Error)?.name === "AbortError") {
+              return;
+            }
             console.error("CornerstoneViewer switchSeries error", err);
+            setStatus(`Error: ${(err as Error).message}`);
           }
         };
         switchSeriesRef.current = switchSeries;
@@ -1721,13 +1899,16 @@ export default function CornerstoneViewer({
         setReady(true);
         setStatus(`${imageIds.length} images loaded`);
       } catch (err) {
+        if (disposed || (err as Error)?.name === "AbortError") return;
         console.error("CornerstoneViewer error", err);
+        setStacking(false);
         setStatus(`Error: ${(err as Error).message}`);
       }
     })();
 
     return () => {
       disposed = true;
+      loadAbort.current.abort();
       cancelTweenRef.current();
       window.clearTimeout(readoutTimerRef.current);
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
@@ -1890,12 +2071,17 @@ export default function CornerstoneViewer({
             )}
           </p>
         )}
-        {!ready && (
+        {!ready && !painted && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
               {status}
             </span>
           </div>
+        )}
+        {((!ready && painted) || (ready && stacking)) && (
+          <p className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-md bg-black/80 px-2 py-1 text-xs text-white ring-1 ring-white/15">
+            {status}
+          </p>
         )}
         {imageOverlay}
       </div>

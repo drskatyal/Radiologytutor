@@ -19,8 +19,11 @@ export interface SeriesMeta {
   modality?: string;
   seriesDescription?: string;
   seriesNumber?: number;
-  /** Number of instances (slices) in the series. */
-  instanceCount: number;
+  /**
+   * Positive instance count from the archive. Omit when the QIDO tag is
+   * missing or zero — that tag is not a reliable empty-series signal.
+   */
+  instanceCount?: number;
   /** SOP Instance UID of the first slice — enough for a cover thumbnail. */
   firstInstanceUID?: string;
 }

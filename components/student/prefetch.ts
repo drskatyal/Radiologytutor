@@ -2,11 +2,12 @@
 
 // Client-side cache warming for the student session (CLAUDE.md §4a).
 //
-// The manifest lists every instance, but we only fetch the slice the stack
-// opens on and a short window around each finding (lib/prefetchWarm.ts).
-// A prefix of the series is the wrong end of a chest CT, and firing those
-// frames with Accept: application/octet-stream makes Orthanc return 400 —
-// one console error per slice — while Teach is scrolling the middle.
+// The manifest no longer lists instances (that listing blocked first pixel).
+// When a caller does pass instance refs, only the active series' opening
+// window is fetched. The viewer prefetches ±N after it has asked for the
+// opening frame. A prefix of the series is the wrong end of a chest CT, and
+// firing those frames with Accept: application/octet-stream makes the archive
+// return 400 — one console error per slice.
 //
 // Accept matches the Cornerstone wadors loader so a 200 is the body the
 // viewer will reuse. Concurrency stays small so the warmer cannot stampede

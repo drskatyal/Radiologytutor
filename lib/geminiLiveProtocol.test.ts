@@ -69,6 +69,31 @@ test("live setup targets audio, search, and non-blocking tools without thinking"
   assert.equal(generation.temperature, 0.4);
 });
 
+test("live setup drops viewport video even if a caller attaches it", () => {
+  const message = buildLiveSetup({
+    model: "gemini-3.8-live",
+    systemInstruction: "Teach on the study.",
+    extra: {
+      video: { mimeType: "video/webm", data: "AAAA" },
+      contents: [
+        {
+          parts: [
+            { text: "look" },
+            { inlineData: { mimeType: "video/webm", data: "AAAA" } },
+            { fileData: { mimeType: "video/webm", fileUri: "https://example.invalid/v" } },
+          ],
+        },
+      ],
+    },
+  });
+  const encoded = JSON.stringify(message);
+  assert.equal(encoded.includes("video/webm"), false);
+  assert.equal(encoded.includes("inlineData"), false);
+  assert.equal(encoded.includes("fileData"), false);
+  assert.equal(encoded.includes("AAAA"), false);
+  assert.match(encoded, /Teach on the study/);
+});
+
 test("mint constraints lock the model and audio and omit thinking", () => {
   const constraints = liveMintConstraints("gemini-3.8-live");
   assert.equal(constraints.model, "models/gemini-3.8-live");

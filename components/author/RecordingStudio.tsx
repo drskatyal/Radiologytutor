@@ -46,12 +46,9 @@ import {
   type MicState,
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
-import {
-  BUNDLED_CASE,
-  BUNDLED_CASE_SERIES,
-  caseSeriesToSource,
-  type CaseSeries,
-} from "@/lib/viewerSource";
+import { BUNDLED_CASE, caseSeriesToSource, type CaseSeries } from "@/lib/viewerSource";
+import { lastTeacherSlice } from "@/lib/viewerLoad";
+import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import type {
   CaseData,
   Finding,
@@ -123,11 +120,12 @@ export function RecordingStudio({
   const { toast } = useToast();
 
   const [caseData, setCaseData] = useState<CaseData>(initialCase);
-  const series = useMemo<CaseSeries[]>(
-    () => (initialSeries.length > 0 ? initialSeries : BUNDLED_CASE_SERIES),
-    [initialSeries]
-  );
-  const usingSample = initialSeries.length === 0;
+  const resolved = useResolvedSeries(initialCase.caseId, initialSeries);
+  const series = resolved.series;
+  // The sample is only the fallback after the archive list settles with no
+  // real study. Hints from the case document stay a live study immediately.
+  const usingSample = resolved.settled && !resolved.imagingLive;
+  const mountViewer = series.length > 0 && (initialSeries.length > 0 || resolved.settled);
 
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
@@ -183,6 +181,10 @@ export function RecordingStudio({
   const initialSource = useMemo(
     () => (series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE),
     [series]
+  );
+  const openSlice = useMemo(
+    () => lastTeacherSlice(findings, series[0]?.seriesInstanceUID) ?? null,
+    [findings, series]
   );
 
   // Probe mic on mount so we can guide rather than fail silently.
@@ -925,11 +927,14 @@ export function RecordingStudio({
             )}
           >
             <div className="overflow-hidden rounded-xl">
+              {mountViewer ? (
               <RecordStage
                 source={initialSource}
                 series={series}
                 activeSeriesIndex={activeSeriesIndex}
                 onSeriesChange={setActiveSeriesIndex}
+                seriesLoading={resolved.loading && series.length === 0}
+                openSlice={openSlice}
                 modality={caseData.modality}
                 controls={controls}
                 overlay={overlay}
@@ -967,6 +972,13 @@ export function RecordingStudio({
                   ) : null
                 }
               />
+              ) : (
+                <div className="flex aspect-square w-full items-center justify-center bg-imaging">
+                  <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
+                    Loading study…
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 

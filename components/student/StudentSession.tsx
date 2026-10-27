@@ -24,6 +24,8 @@ import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import { caseSeriesToSource } from "@/lib/viewerSource";
+import { lastTeacherSlice } from "@/lib/viewerLoad";
+import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import type { PrefetchManifest } from "@/lib/prefetch";
 import {
   examinerCaptionTurn,
@@ -84,7 +86,21 @@ export default function StudentSession({
   const [panel, setPanel] = useState<PanelTab>("ask");
   const [railOpen, setRailOpen] = useState(true);
   const [keysOpen, setKeysOpen] = useState(false);
-  const s = useStudentSession(caseData, mode, series, { courseId });
+  const hinted = series;
+  const resolved = useResolvedSeries(caseData.caseId, hinted);
+  const rail = resolved.series;
+  const imagingLive =
+    resolved.imagingLive || (imagingResolved && hinted.some((item) => item.studyInstanceUID));
+  const showViewer = rail.length > 0 && (hinted.length > 0 || resolved.settled);
+  const liveSource = useMemo(
+    () => (rail[0] ? caseSeriesToSource(rail[0]) : source),
+    [rail, source]
+  );
+  const openSlice = useMemo(
+    () => lastTeacherSlice(caseData.findings, rail[0]?.seriesInstanceUID) ?? null,
+    [caseData.findings, rail]
+  );
+  const s = useStudentSession(caseData, mode, rail, { courseId });
   const intent = intentFromMode(mode);
 
   const openAsk = useCallback(() => {
@@ -123,10 +139,10 @@ export default function StudentSession({
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
   const onSeriesChange = useCallback(
     (uid: string) => {
-      const idx = series.findIndex((x) => x.seriesInstanceUID === uid);
+      const idx = rail.findIndex((x) => x.seriesInstanceUID === uid);
       if (idx >= 0) setActiveSeriesIndex(idx);
     },
-    [series]
+    [rail]
   );
 
   const typingRef = useRef(false);
@@ -268,8 +284,8 @@ export default function StudentSession({
   const stepLabel = findingStepLabel(s.activeIndex, s.orderedFindings.length);
 
   const compareSeries =
-    s.compareOpen && series[s.secondarySeriesIndex]
-      ? series[s.secondarySeriesIndex]
+    s.compareOpen && rail[s.secondarySeriesIndex]
+      ? rail[s.secondarySeriesIndex]
       : null;
   // A fresh object every render reloads the compare stack at the mid-slice
   // default (33/65 soft-tissue on LIDC) and drops the secondary landing.
@@ -398,21 +414,24 @@ export default function StudentSession({
         >
           <ImagingLayout
             fill
-            series={series}
+            series={rail}
+            seriesLoading={resolved.loading && rail.length === 0}
             listedSeries={manifest?.series}
             mainImageReady={s.ready}
             activeIndex={activeSeriesIndex}
             onSelectSeries={(index) => {
-              const uid = series[index]?.seriesInstanceUID;
+              const uid = rail[index]?.seriesInstanceUID;
               if (uid) onSeriesChange(uid);
             }}
             className="absolute inset-0"
           >
+            {showViewer ? (
             <StudentViewer
-          source={source}
-          series={series}
+          source={liveSource}
+          series={rail}
           activeSeriesIndex={activeSeriesIndex}
           onSeriesChange={onSeriesChange}
+          openSlice={openSlice}
           modality={caseData.modality}
           controls={s.controls}
           overlay={s.overlay}
@@ -420,27 +439,27 @@ export default function StudentSession({
           marker={s.marker}
           markerVisible={
             s.markerVisible &&
-            imagingResolved &&
+            imagingLive &&
             (!s.examMode || activeRevealed)
           }
           measurements={s.measurements}
           measurementsVisible={
             s.measurementsVisible &&
-            imagingResolved &&
+            imagingLive &&
             (!s.examMode || activeRevealed)
           }
           replaying={s.replaying || s.pointing}
           ready={s.ready}
-          locateMode={s.locateMode && imagingResolved}
+          locateMode={s.locateMode && imagingLive}
           onLocateClick={s.onLocateClick}
           secondary={
             s.compareOpen
               ? {
-                  source: compareSource ?? source,
-                  series: series.length > 0 ? series : undefined,
+                  source: compareSource ?? liveSource,
+                  series: rail.length > 0 ? rail : undefined,
                   activeSeriesIndex: s.secondarySeriesIndex,
                   onSeriesChange: (uid) => {
-                    const idx = series.findIndex((x) => x.seriesInstanceUID === uid);
+                    const idx = rail.findIndex((x) => x.seriesInstanceUID === uid);
                     if (idx >= 0) s.setSecondarySeriesIndex(idx);
                   },
                   controls: s.secondaryControls,
@@ -449,7 +468,7 @@ export default function StudentSession({
                   marker: s.secondaryMarker,
                   markerVisible:
                     s.secondaryMarkerVisible &&
-                    imagingResolved &&
+                    imagingLive &&
                     (!s.examMode || activeRevealed),
                   ready: s.secondaryReady,
                   instanceId: "compare",
@@ -458,6 +477,13 @@ export default function StudentSession({
               : null
           }
             />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
+                  Loading study…
+                </span>
+              </div>
+            )}
           </ImagingLayout>
         </div>
 
@@ -509,7 +535,7 @@ export default function StudentSession({
         <div className={cn("min-h-0 flex-1 flex-col", panel === "lesson" ? "flex" : "hidden")}>
           <FindingCards
             findings={s.orderedFindings}
-            series={series}
+            series={rail}
             caseModality={caseData.modality}
             activeIndex={s.activeIndex}
             replaying={s.replaying || s.pointing}

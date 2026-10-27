@@ -2,15 +2,10 @@ import { notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { getAuthor, getCaseForOrg } from "@/lib/cases";
-import {
-  buildPrefetchManifest,
-  resolveCaseSeries,
-} from "@/lib/prefetch";
+import { seriesHintFromCase } from "@/lib/viewerLoad";
 import {
   BUNDLED_CASE,
-  BUNDLED_CASE_SERIES,
   caseSeriesToSource,
-  type CaseSeries,
   type ViewerSource,
 } from "@/lib/viewerSource";
 import StudentSession from "@/components/student/StudentSession";
@@ -46,18 +41,20 @@ export default async function CasePage({
     if (!canAuthor) notFound();
   }
 
-  const [manifest, resolved, author] = await Promise.all([
-    buildPrefetchManifest(params.caseId, orgId),
-    resolveCaseSeries(params.caseId, orgId, WADO_RS_ROOT),
-    caseData.authorId
-      ? getAuthor(orgId, caseData.authorId)
-      : Promise.resolve(null),
-  ]);
+  // Series UIDs already on the case. Descriptions and counts arrive in the
+  // client from /api/cases/:id/series so HTML does not wait on every series.
+  const series = seriesHintFromCase(
+    {
+      modality: caseData.modality,
+      findings: caseData.findings,
+      studyRefs: caseData.studyRefs,
+    },
+    WADO_RS_ROOT
+  );
+  const author = caseData.authorId ? await getAuthor(orgId, caseData.authorId) : null;
 
-  const series: CaseSeries[] =
-    resolved && resolved.length > 0 ? resolved : BUNDLED_CASE_SERIES;
   const source: ViewerSource = series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE;
-  const imagingResolved = !!resolved && resolved.length > 0;
+  const imagingResolved = series.length > 0;
   const courseId = searchParams?.course?.trim() || null;
   const tutorVoice =
     author?.voice?.status === "ready" && author.voice.voiceId
@@ -73,7 +70,7 @@ export default async function CasePage({
         caseData={caseData}
         source={source}
         series={series}
-        manifest={manifest}
+        manifest={null}
         imagingResolved={imagingResolved}
         tutorVoice={tutorVoice}
         courseId={courseId}

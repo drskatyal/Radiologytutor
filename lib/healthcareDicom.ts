@@ -93,17 +93,19 @@ export async function healthcareQido(pathAndQuery: string): Promise<DicomJson[]>
 }
 
 function seriesMetaFrom(row: DicomJson, seriesUid: string, firstInstanceUID?: string): SeriesMeta {
+  const tagged = dicomJsonNumber(row, "00201209");
+  const instanceCount = tagged != null && tagged > 0 ? Math.round(tagged) : undefined;
   return {
     seriesInstanceUID: dicomJsonString(row, "0020000E") || seriesUid,
     orthancSeriesId: seriesUid,
     modality: dicomJsonString(row, "00080060"),
     seriesDescription: dicomJsonString(row, "0008103E"),
     seriesNumber: dicomJsonNumber(row, "00200011"),
-    // Healthcare QIDO does not return NumberOfSeriesRelatedInstances (0020,1209),
-    // even when includefield asks for it. Missing means 0 here. The series rail
-    // does not trust this field — it counts the instance list (lib/seriesRail.ts).
-    instanceCount: dicomJsonNumber(row, "00201209") ?? 0,
-    firstInstanceUID,
+    // Healthcare QIDO often omits NumberOfSeriesRelatedInstances (0020,1209).
+    // A missing tag is unknown, not an empty series. The rail counts the
+    // instance list after the main image is up (lib/seriesRail.ts).
+    ...(instanceCount != null ? { instanceCount } : {}),
+    ...(firstInstanceUID ? { firstInstanceUID } : {}),
   };
 }
 
@@ -153,22 +155,15 @@ export async function healthcareStudySeriesMeta(studyUid: string): Promise<Serie
       limit: "500",
     })}`
   );
-  const metas = await Promise.all(
-    rows.map(async (row): Promise<SeriesMeta | null> => {
-      const seriesUid = dicomJsonString(row, "0020000E");
-      if (!seriesUid) return null;
-      let firstInstanceUID: string | undefined;
-      try {
-        const first = await healthcareQido(
-          `studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUid)}/instances?limit=1`
-        );
-        firstInstanceUID = dicomJsonString(first[0], "00080018");
-      } catch {
-        firstInstanceUID = undefined;
-      }
-      return seriesMetaFrom(row, seriesUid, firstInstanceUID);
-    })
-  );
+  // Series-level QIDO only. A per-series instance query (thumbnail SOP,
+  // NumberOfSeriesRelatedInstances) used to run here and held the viewer
+  // until every series answered. Covers load lazily in the rail, after the
+  // first frame. Instance counts that the tag omits stay unknown.
+  const metas = rows.map((row): SeriesMeta | null => {
+    const seriesUid = dicomJsonString(row, "0020000E");
+    if (!seriesUid) return null;
+    return seriesMetaFrom(row, seriesUid);
+  });
   return metas
     .filter((m): m is SeriesMeta => m != null)
     .sort((a, b) => (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0));

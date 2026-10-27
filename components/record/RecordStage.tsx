@@ -16,6 +16,7 @@ import dynamic from "next/dynamic";
 import { useRef, type MutableRefObject, type ReactNode } from "react";
 import { Badge, Skeleton, Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import type { OpenSlice } from "@/lib/viewerLoad";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { ReplayOverlay, type ReplayOverlayHandle } from "@/components/ReplayOverlay";
@@ -34,6 +35,7 @@ export function RecordStage({
   activeSeriesIndex,
   onSeriesChange,
   seriesLoading,
+  openSlice = null,
   modality,
   controls,
   overlay,
@@ -56,6 +58,8 @@ export function RecordStage({
   onSeriesChange?: (index: number) => void;
   /** Active-series change FROM the viewer (user/replay) → keep nav in sync. */
   seriesLoading?: boolean;
+  /** Last teacher slice on the series the stage opens. */
+  openSlice?: OpenSlice | null;
   modality?: string;
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
@@ -123,6 +127,7 @@ export function RecordStage({
               const idx = series?.findIndex((x) => x.seriesInstanceUID === uid);
               if (idx != null && idx >= 0) onSeriesChange?.(idx);
             }}
+            openSlice={openSlice}
             modality={modality}
             controls={controls}
             onReady={onReady}
