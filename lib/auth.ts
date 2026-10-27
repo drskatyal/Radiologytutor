@@ -132,6 +132,8 @@ export const auth = betterAuth({
     user: {
       create: {
         after: async (user) => {
+          // Email and Google sign-up both land here. No intent means teacher:
+          // a personal org with an author membership. Student is opt-in only.
           await provisionAuthUser({
             authProviderId: user.id,
             email: user.email,
