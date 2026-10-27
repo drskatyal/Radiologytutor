@@ -12,13 +12,26 @@
 export const WADORS_FRAME_ACCEPT =
   "multipart/related; type=application/octet-stream; transfer-syntax=*";
 
-/** Pixel / rendered frame paths are content-addressed by SOP UID — cache hard. */
+/**
+ * Pixel / rendered frame paths are content-addressed by SOP UID — cache hard.
+ * One instance's metadata is too. Series-level metadata and QIDO instance
+ * lists can grow, so they get a short private TTL the browser can reuse
+ * while the reader is still in the study.
+ */
 export function cacheControlForDicomwebPath(path: string): string | null {
-  if (/\/frames\/\d+/i.test(path) || /\/rendered$/i.test(path)) {
+  const clean = path.split("?")[0] ?? path;
+  if (/\/frames\/\d+/i.test(clean) || /\/rendered$/i.test(clean)) {
     return "private, max-age=86400, stale-while-revalidate=604800, immutable";
   }
-  if (/\/metadata$/i.test(path) || /\/series(\/|$)/i.test(path)) {
-    return "private, max-age=60, stale-while-revalidate=300";
+  if (/\/instances\/[^/]+\/metadata$/i.test(clean)) {
+    return "private, max-age=86400, immutable";
+  }
+  if (
+    /\/metadata$/i.test(clean) ||
+    /\/instances$/i.test(clean) ||
+    /\/series(\/|$)/i.test(clean)
+  ) {
+    return "private, max-age=300, stale-while-revalidate=3600";
   }
   return null;
 }

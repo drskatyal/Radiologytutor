@@ -11,6 +11,16 @@ import {
 const FRAME =
   "studies/1.2.3/series/4.5.6/instances/7.8.9/frames/1";
 
+test("instance metadata and frames stay reusable for the session", () => {
+  const meta = "studies/1.2.3/series/4.5.6/instances/7.8.9/metadata";
+  assert.match(responseCacheControl(meta, 200) ?? "", /immutable/);
+  assert.match(responseCacheControl(FRAME, 200) ?? "", /max-age=86400/);
+  assert.match(
+    responseCacheControl("studies/1.2.3/series/4.5.6/instances", 200) ?? "",
+    /max-age=/
+  );
+});
+
 test("frame cache headers are success-only so a 400 cannot stick", () => {
   assert.match(responseCacheControl(FRAME, 200) ?? "", /immutable/);
   assert.equal(responseCacheControl(FRAME, 400), null);
