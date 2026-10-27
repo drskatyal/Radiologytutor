@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   examFallbackStem,
   formatFindingsContext,
+  formatSeriesCatalog,
   teachingSystemPrompt,
 } from "./teachingPrompt.ts";
 import type { Finding } from "./types.ts";
@@ -155,4 +156,28 @@ test("socratic and viva prompts state the hint ladder for this turn", () => {
   assert.match(viva, /this turn is level 2/i);
   assert.match(viva, /show me/i);
   assert.match(viva, /do not say the diagnosis/i);
+});
+
+test("series catalog is the only set_series allowlist the prompt names", () => {
+  const catalog = formatSeriesCatalog([
+    {
+      seriesInstanceUID: "1.2.840.flair",
+      modality: "MR",
+      description: "Ax FLAIR",
+      instanceCount: 40,
+    },
+  ]);
+  assert.match(catalog, /uid=1\.2\.840\.flair/);
+  assert.match(catalog, /Ax FLAIR/);
+  assert.match(catalog, /Never invent a SeriesInstanceUID/);
+  const prompt = teachingSystemPrompt({
+    caseTitle: "Brain MRI",
+    modality: "MR",
+    mode: "guided",
+    findingsContext: formatFindingsContext(findings),
+    seriesCatalog: catalog,
+  });
+  assert.match(prompt, /set_series/);
+  assert.match(prompt, /uid=1\.2\.840\.flair/);
+  assert.match(prompt, /drive\.series/);
 });

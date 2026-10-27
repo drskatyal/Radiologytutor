@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Crosshair, ImageOff, Target } from "lucide-react";
 import { Button, Spinner } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
+import { ImagingLayout } from "@/components/viewer/ImagingLayout";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
@@ -66,6 +67,7 @@ export function LocateStage({
    * a hit layer over the canvas for exactly one click.
    */
   const [marking, setMarking] = useState(false);
+  const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
   const controls = useRef<CornerstoneControls | null>(null);
   const hitRef = useRef<HTMLButtonElement>(null);
 
@@ -75,6 +77,7 @@ export function LocateStage({
     setState({ status: "loading" });
     setViewerReady(false);
     setMarking(false);
+    setActiveSeriesIndex(0);
     controls.current = null;
 
     const params = new URLSearchParams({ courseId, questionId });
@@ -90,6 +93,11 @@ export function LocateStage({
           setState({ status: "no-imaging" });
           return;
         }
+        const uid = payload.view?.seriesInstanceUID;
+        const idx = uid
+          ? payload.series.findIndex((item) => item.seriesInstanceUID === uid)
+          : -1;
+        if (idx >= 0) setActiveSeriesIndex(idx);
         setState({ status: "ready", payload });
       })
       .catch((err: unknown) => {
@@ -195,15 +203,30 @@ export function LocateStage({
         )}
 
         {state.status === "ready" && state.payload.source && (
-          <>
+          <ImagingLayout
+            fill
+            pane="overlay"
+            series={state.payload.series}
+            activeIndex={activeSeriesIndex}
+            onSelectSeries={setActiveSeriesIndex}
+            className="h-full"
+          >
             <CornerstoneViewer
               source={state.payload.source}
               series={state.payload.series}
+              activeSeriesIndex={activeSeriesIndex}
+              onSeriesChange={(uid) => {
+                const idx = state.payload.series.findIndex(
+                  (item) => item.seriesInstanceUID === uid
+                );
+                if (idx >= 0) setActiveSeriesIndex(idx);
+              }}
               modality={state.payload.modality}
               controls={controls}
               onReady={handleReady}
               instanceId={`locate-${questionId}`}
               showToolbar={false}
+              className="h-full w-full"
             />
 
             {!viewerReady && <StageMessage spinner label="Preparing series…" />}
@@ -233,7 +256,7 @@ export function LocateStage({
                 <Target className="h-3 w-3" />
               </span>
             )}
-          </>
+          </ImagingLayout>
         )}
       </div>
     </div>

@@ -14,7 +14,8 @@ const ROWS: { keys: string[]; does: string }[] = [
   { keys: ["N"], does: "Next finding" },
   { keys: ["P"], does: "Previous finding" },
   { keys: ["T"], does: "Toggle tutor rail" },
-  { keys: ["Esc"], does: "Close rail or this overlay" },
+  { keys: ["F"], does: "Fullscreen the viewer" },
+  { keys: ["Esc"], does: "Exit fullscreen, or close the rail" },
 ];
 
 export function HotkeysOverlay({

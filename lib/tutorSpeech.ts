@@ -112,6 +112,7 @@ const CUE_FOR_TOOL: Record<string, string> = {
   point_to: "Follow the pointer.",
   draw_annotation: "Follow the pointer.",
   scroll_to: "Watch the stack.",
+  set_series: "Look at this series.",
   show_finding: "Look at this slice.",
   play_guide: "Look at this slice.",
   next_in_tour: "Look at this slice.",
@@ -903,6 +904,7 @@ const SEAT_ACTION = new Set([
   "prev_in_tour",
   "scroll_to",
   "zoom_to",
+  "set_series",
 ]);
 
 /** Level 3 with no viewer drive still seats the finding the student is on. */
