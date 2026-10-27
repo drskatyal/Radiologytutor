@@ -27,7 +27,9 @@
 // runs on MongoDB instead — no caller changes. Cloud Run sets `K_SERVICE`;
 // that runtime refuses the JSON fallback (`assertCloudRunMongo`) because the
 // container disk is not durable. Either store seeds itself from the committed
-// `/seed` cases the first time it is empty, so demos always have sample data.
+// `/seed` cases the first time it is empty. Placeholder courses, playlists,
+// assessments, and the demo author profile are not copied (see
+// catalogPlaceholders). The LIDC teach case still seeds so it can be recorded.
 // ============================================================================
 
 import { promises as fs } from "fs";
@@ -66,6 +68,11 @@ import { deidAllowsPublish, type DeidReport } from "./deid";
 import { assertCloudRunMongo } from "./durableStore";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 import { sortRelatedCourses } from "./relatedCourses";
+import {
+  isPlaceholderCatalogCase,
+  isPlaceholderCourse,
+  isPlaceholderSeedFile,
+} from "./catalogPlaceholders";
 
 /** Persisted de-id report — keyed by studyInstanceUID. */
 export type StoredDeidReport = DeidReport & {
@@ -186,9 +193,8 @@ async function seedIfEmpty(): Promise<void> {
 async function copyJsonFiles(src: string, dst: string): Promise<void> {
   const files = await fs.readdir(src).catch(() => [] as string[]);
   for (const f of files) {
-    if (f.endsWith(".json")) {
-      await fs.copyFile(path.join(src, f), path.join(dst, f));
-    }
+    if (!f.endsWith(".json") || isPlaceholderSeedFile(f)) continue;
+    await fs.copyFile(path.join(src, f), path.join(dst, f));
   }
 }
 
@@ -221,7 +227,7 @@ async function readSeedRecords<T extends { id: string }>(name: CollectionName): 
   const files = await fs.readdir(dir).catch(() => [] as string[]);
   const records: T[] = [];
   for (const f of files) {
-    if (!f.endsWith(".json")) continue;
+    if (!f.endsWith(".json") || isPlaceholderSeedFile(f)) continue;
     try {
       const raw = await fs.readFile(path.join(dir, f), "utf-8");
       const parsed = JSON.parse(raw) as Partial<T> & { id?: string; caseId?: string };
@@ -1096,6 +1102,7 @@ export async function listCatalogCases(
   const q = filter.q?.trim().toLowerCase();
 
   const matched = all.filter((c) => {
+    if (isPlaceholderCatalogCase(c)) return false;
     if (filter.status && c.status !== filter.status) return false;
     if (filter.system && c.system !== filter.system) return false;
     if (filter.difficulty && c.difficulty !== filter.difficulty) return false;
@@ -1145,6 +1152,7 @@ export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
   const modalities = new Set<string>();
   const specialties = new Set<string>();
   for (const c of all) {
+    if (isPlaceholderCatalogCase(c)) continue;
     if (c.system) systems.add(c.system);
     if (c.difficulty) difficulties.add(c.difficulty);
     if (c.modality) modalities.add(c.modality);
@@ -1278,7 +1286,9 @@ export async function listRelatedCourses(
     status: "published",
     excludeId: course.id,
   });
-  return sortRelatedCourses(course, candidates).slice(0, limit);
+  return sortRelatedCourses(course, candidates)
+    .filter((item) => !isPlaceholderCourse(item))
+    .slice(0, limit);
 }
 
 export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {
@@ -1786,6 +1796,9 @@ export async function listReviewsForCourse(
   orgId: string,
   courseId: string
 ): Promise<CourseReviewsSummary> {
+  if (isPlaceholderCourse({ id: courseId })) {
+    return { reviews: [], average: 0, count: 0 };
+  }
   const reviews = (await reviewsStore.find({ orgId, courseId })).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt)
   );

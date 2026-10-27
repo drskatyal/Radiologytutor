@@ -436,7 +436,7 @@ async function obtainSharedEngine(core: EngineHost): Promise<SharedEngine> {
   }
   await engineCreate;
   const engine = liveSharedEngine(core);
-  if (!engine) throw new Error("FlowRad rendering engine was not created");
+  if (!engine) throw new Error("RadLearn rendering engine was not created");
   return engine;
 }
 

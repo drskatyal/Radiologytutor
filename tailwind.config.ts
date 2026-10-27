@@ -2,10 +2,10 @@ import type { Config } from "tailwindcss";
 import animate from "tailwindcss-animate";
 
 /**
- * FlowRad Learn design tokens.
+ * RadLearn design tokens.
  *
- * Clinical reading-room: warm charcoal, film-marker amber accent, no glow
- * washes. Imaging surfaces stay pure black (`bg-imaging`).
+ * Neutral dark surfaces from the design scale. Imaging stays pure black
+ * (`bg-imaging`). `ease-draw` is cubic-bezier(0.22, 1, 0.36, 1).
  */
 const config: Config = {
   darkMode: "class",
@@ -56,13 +56,7 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: [
-          "var(--font-display)",
-          "ui-serif",
-          "Georgia",
-          "Times New Roman",
-          "serif",
-        ],
+        display: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
       letterSpacing: {
         tightest: "-0.02em",
@@ -80,13 +74,9 @@ const config: Config = {
         focus: "0 0 0 3px rgb(var(--accent) / 0.3)",
         glow: "0 0 0 1px rgb(var(--accent) / 0.4)",
       },
-      backgroundImage: {
-        "accent-sheen":
-          "linear-gradient(180deg, rgb(var(--accent-bright)), rgb(var(--accent)))",
-        "surface-fade":
-          "linear-gradient(180deg, rgb(var(--elevated)), rgb(var(--surface)))",
-        "grid-faint":
-          "linear-gradient(rgb(var(--border-subtle) / 0.45) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--border-subtle) / 0.45) 1px, transparent 1px)",
+      backgroundImage: {},
+      transitionTimingFunction: {
+        draw: "cubic-bezier(0.22, 1, 0.36, 1)",
       },
       keyframes: {
         "marker-pulse": {
@@ -132,11 +122,11 @@ const config: Config = {
       },
       animation: {
         "marker-pulse": "marker-pulse 1.6s infinite",
-        "fade-in": "fade-in 0.4s ease-out",
-        "fade-up": "fade-up 0.25s ease-out",
+        "fade-in": "fade-in 0.5s cubic-bezier(0.22, 1, 0.36, 1)",
+        "fade-up": "fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1)",
         "mic-pulse": "mic-pulse 1.5s infinite",
-        "overlay-in": "overlay-in 0.15s ease-out",
-        "modal-in": "modal-in 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+        "overlay-in": "overlay-in 0.3s cubic-bezier(0.22, 1, 0.36, 1)",
+        "modal-in": "modal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1)",
         shimmer: "shimmer 1.6s infinite",
       },
     },
