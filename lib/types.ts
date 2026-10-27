@@ -917,6 +917,20 @@ export interface Case extends CaseData {
   updatedAt: string;
 }
 
+/**
+ * Unguessable viewer link for one case. The token is the record id.
+ * Possession of a live token is read access to that case's studies.
+ * `revokedAt` kills the link; the row stays so a rotated token cannot be reused.
+ */
+export interface CaseShare {
+  id: string;
+  orgId: string;
+  caseId: string;
+  createdBy: string;
+  createdAt: string;
+  revokedAt?: string;
+}
+
 // ============================================================================
 // Library entities (CLAUDE.md §2):  Author · Course · Playlist
 //

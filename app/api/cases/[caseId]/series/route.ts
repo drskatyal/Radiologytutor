@@ -10,7 +10,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
-import { getCaseForOrg } from "@/lib/cases";
+import { SHARE_COOKIE } from "@/lib/caseShare";
+import { getCaseForOrg, resolveShareAccess } from "@/lib/cases";
 import { resolveCaseSeries } from "@/lib/prefetch";
 
 export const runtime = "nodejs";
@@ -18,14 +19,18 @@ export const dynamic = "force-dynamic";
 
 const WADO_RS_ROOT = "/api/dicomweb";
 
-export async function GET(_req: NextRequest, { params }: { params: { caseId: string } }) {
-  const orgId = await activeOrgId();
+export async function GET(req: NextRequest, { params }: { params: { caseId: string } }) {
+  const shareToken = req.cookies.get(SHARE_COOKIE)?.value;
+  const shared = shareToken ? await resolveShareAccess(shareToken) : null;
+  const viaShare = shared?.caseId === params.caseId ? shared : null;
+
+  const orgId = viaShare?.orgId ?? (await activeOrgId());
   const c = await getCaseForOrg(orgId, params.caseId);
   if (!c) {
     return NextResponse.json({ error: "Case not found" }, { status: 404 });
   }
 
-  if (c.status !== "published") {
+  if (c.status !== "published" && !viaShare) {
     const session = await getSession();
     const canSeeDraft =
       session &&

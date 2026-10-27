@@ -10,9 +10,11 @@ import {
   listEnrollmentsForUser,
   listProgressForUser,
   listCasesForOrg,
+  listActiveSharesForOrg,
 } from "@/lib/cases";
 import { activeOrgId, demoAuthEnabled, getSession } from "@/lib/auth";
-import { Breadcrumbs, Button, PageContainer, Skeleton } from "@/components/ui";
+import { canAccessOrgResource } from "@/lib/authRoles";
+import { Breadcrumbs, Button, PageContainer, SectionHeading, Skeleton } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { Catalog } from "@/components/catalog/Catalog";
 import { MyLearning } from "@/components/catalog/MyLearning";
@@ -21,7 +23,8 @@ import type { MyLearningCourse } from "@/components/catalog/MyLearning";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
 import { DashboardError } from "@/components/home/DashboardError";
 import { isPlaceholderCourse, toLearnerCatalog } from "@/lib/catalogPlaceholders";
-import { selectLearnerStudy } from "@/lib/learnerEntry";
+import { caseHasTeachingPack, sharePath, studyUidsForCase } from "@/lib/caseShare";
+import { CaseLocker, type LockerCase } from "@/components/library/CaseLocker";
 import type { AppSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -37,15 +40,41 @@ function sessionCanTeach(session: AppSession | null): boolean {
   return role === "author" || role === "admin" || role === "owner";
 }
 
-/** The Learn catalog. Placeholder seed courses and authors are omitted. */
+/**
+ * Case locker. Courses stay on this page for the teach catalog, under the
+ * studies you can open and share without starting the tutor.
+ */
 export default async function LibraryPage() {
   const orgId = await activeOrgId();
   const session = await getSession();
-  let initial: CatalogResponse | null = null;
-  let loadError: string | null = null;
-  let enrolledCourses: MyLearningCourse[] = [];
-  let studyCase: { caseId: string; title?: string } | null = null;
+  const canManage = sessionCanTeach(session);
 
+  let rows: LockerCase[] = [];
+  let lockerError: string | null = null;
+  try {
+    const cases = await listCasesForOrg(orgId, canManage ? {} : { status: "published" });
+    const shares = canManage ? await listActiveSharesForOrg(orgId) : [];
+    const shareByCase = new Map(shares.map((share) => [share.caseId, share]));
+    rows = cases.map((item) => {
+      const live = shareByCase.get(item.caseId);
+      return {
+        caseId: item.caseId,
+        title: item.title,
+        modality: item.modality,
+        status: item.status,
+        updatedAt: item.updatedAt,
+        studyCount: studyUidsForCase(item).length,
+        hasPack: caseHasTeachingPack(item),
+        sharePath: live ? sharePath(live.id) : null,
+      };
+    });
+  } catch (err) {
+    lockerError = err instanceof Error ? err.message : "Something went wrong.";
+  }
+
+  let initial: CatalogResponse | null = null;
+  let catalogError: string | null = null;
+  let enrolledCourses: MyLearningCourse[] = [];
   try {
     const [cases, facets, authors, courses, playlists] = await Promise.all([
       listCatalogCases(orgId, { status: "published" }),
@@ -55,26 +84,24 @@ export default async function LibraryPage() {
       listPlaylists(orgId),
     ]);
     initial = toLearnerCatalog({ cases, facets, authors, courses, playlists });
-    const study = selectLearnerStudy(await listCasesForOrg(orgId, { status: "published" }));
-    studyCase = study ? { caseId: study.caseId, title: study.title } : null;
 
     if (session) {
       const [enrollments, progressList] = await Promise.all([
         listEnrollmentsForUser(session.user.id),
         listProgressForUser(session.user.id),
       ]);
-      const active = enrollments.filter((e) => e.status === "active" && e.orgId === orgId);
-      const progressByCourse = new Map(progressList.map((p) => [p.courseId, p]));
-      const resolved = await Promise.all(active.map((e) => getCourse(orgId, e.courseId)));
+      const active = enrollments.filter((entry) => entry.status === "active" && entry.orgId === orgId);
+      const progressByCourse = new Map(progressList.map((entry) => [entry.courseId, entry]));
+      const resolved = await Promise.all(active.map((entry) => getCourse(orgId, entry.courseId)));
       enrolledCourses = resolved
-        .filter((c): c is NonNullable<typeof c> => c != null && !isPlaceholderCourse(c))
+        .filter((course): course is NonNullable<typeof course> => course != null && !isPlaceholderCourse(course))
         .map((course) => ({
           ...course,
           percentComplete: progressByCourse.get(course.id)?.percentComplete,
         }));
     }
-  } catch (e) {
-    loadError = e instanceof Error ? e.message : "Something went wrong.";
+  } catch (err) {
+    catalogError = err instanceof Error ? err.message : "Something went wrong.";
   }
 
   return (
@@ -82,45 +109,61 @@ export default async function LibraryPage() {
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Library" }]} />}
         title="Library"
-        description="Published teaches. Nothing appears here until a teacher records it and publishes."
+        description="A case locker. Open a study in the viewer, or copy a link someone can open without an account. Teaching stays a separate step."
         actions={
-          <Link href="/learning">
-            <Button size="sm" variant="secondary">
-              My learning
-            </Button>
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            {canManage ? (
+              <Link href="/studio/new">
+                <Button size="sm">Add a case</Button>
+              </Link>
+            ) : null}
+            <Link href="/learning">
+              <Button size="sm" variant="secondary">
+                My learning
+              </Button>
+            </Link>
+          </div>
         }
       />
-      {loadError || !initial ? (
-        <DashboardError title="Couldn't load the library" message={loadError ?? "Something went wrong."} />
+
+      {lockerError ? (
+        <DashboardError title="Couldn't load the library" message={lockerError} />
       ) : (
-        <PageContainer>
-          {studyCase && (
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface px-4 py-3">
-              <div>
-                <p className="text-sm font-medium text-primary">Open a study</p>
-                <p className="text-sm text-secondary">
-                  {studyCase.title || "A published case"}. Scroll the images, then open the microphone to start.
-                </p>
-              </div>
-              <Link href={`/case/${studyCase.caseId}`}>
-                <Button size="sm">Start</Button>
-              </Link>
-            </div>
-          )}
-          <MyLearning courses={enrolledCourses} />
-          <Suspense fallback={<Skeleton className="h-64 w-full rounded-2xl" />}>
-            <Catalog
-              initial={initial}
-              demoEntry={!session && demoAuthEnabled()}
-              teachHref={sessionCanTeach(session) ? "/studio" : "/sign-up"}
-              uploadHref={sessionCanTeach(session) ? "/studio/new" : "/sign-up"}
-            />
-          </Suspense>
-        </PageContainer>
+        <CaseLocker
+          cases={rows}
+          canManageShare={canManage}
+          addCaseHref={canManage ? "/studio/new" : undefined}
+        />
       )}
 
-      {initial && <CasesPrefetcher caseIds={initial.cases.map((c) => c.caseId)} />}
+      <PageContainer className="pb-16">
+        <section id="courses" className="mt-4 flex flex-col gap-6 border-t border-subtle pt-10">
+          <SectionHeading
+            title="Courses"
+            description="Recorded teaches and curricula."
+          />
+          {catalogError || !initial ? (
+            <DashboardError
+              title="Couldn't load courses"
+              message={catalogError ?? "Something went wrong."}
+            />
+          ) : (
+            <>
+              <MyLearning courses={enrolledCourses} />
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-2xl" />}>
+                <Catalog
+                  initial={initial}
+                  demoEntry={!session && demoAuthEnabled()}
+                  teachHref={canManage ? "/studio" : "/sign-up"}
+                  uploadHref={canManage ? "/studio/new" : "/sign-up"}
+                />
+              </Suspense>
+            </>
+          )}
+        </section>
+      </PageContainer>
+
+      {rows.length > 0 ? <CasesPrefetcher caseIds={rows.map((item) => item.caseId)} /> : null}
     </>
   );
 }

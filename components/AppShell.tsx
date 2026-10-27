@@ -256,7 +256,7 @@ export function AppShell({
     };
   }, [menuOpen]);
 
-  const readingRoom = pathname.startsWith("/case/");
+  const readingRoom = pathname.startsWith("/case/") || pathname.startsWith("/s/");
   const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
   const hideChrome = readingRoom || authScreen;
   const showDeveloper = process.env.NODE_ENV === "development";
