@@ -113,7 +113,20 @@ import {
   presetsForModality,
   type WindowPreset,
 } from "../lib/windowPresets";
+import { Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import { LayoutToggle, MprLayout } from "./MprLayout";
+import {
+  assessMpr,
+  modalityForMpr,
+  mprLoadFailureMessage,
+  mprVolumeKey,
+  nextMprAction,
+  planesFromMetadata,
+  type MprMode,
+  type MprSessionHandle,
+  type PlaneSample,
+} from "../lib/mpr";
 import {
   Blend,
   ChevronDown,
@@ -501,6 +514,7 @@ export default function CornerstoneViewer({
   instanceId = "primary",
   imageOverlay,
   openSlice = null,
+  onViewModeChange,
 }: {
   source?: ViewerSource;
   /**
@@ -548,6 +562,8 @@ export default function CornerstoneViewer({
    * case stored one. Otherwise the stack opens at the middle.
    */
   openSlice?: OpenSlice | null;
+  /** Stack markers and lasers are in image fractions. Callers hide them in MPR. */
+  onViewModeChange?: (mode: MprMode) => void;
 }) {
   const chrome = resolveChrome(showToolbar, chromeProp);
   const docked = chrome === "dock";
@@ -606,6 +622,7 @@ export default function CornerstoneViewer({
     count: number;
     ww?: number;
     wc?: number;
+    plane?: string;
   } | null>(null);
   const readoutTimerRef = useRef(0);
   // Whether the annotation tools are enabled. Default ENABLED — we only flip to
@@ -613,7 +630,21 @@ export default function CornerstoneViewer({
   // bundled sample). This avoids the false-negative that killed the tools on
   // real wadors/uploaded studies before their plane metadata had resolved.
   const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
+  const [viewMode, setViewMode] = useState<MprMode>("stack");
+  const [mprLive, setMprLive] = useState(false);
+  const [mprLoading, setMprLoading] = useState(false);
+  const [mprNotice, setMprNotice] = useState<string | null>(null);
   const destroyToolGroupRef = useRef<(id: string) => void>(() => {});
+  const viewModeRef = useRef<MprMode>("stack");
+  viewModeRef.current = viewMode;
+  const modalityRef = useRef(modality);
+  modalityRef.current = modality;
+  const mprSessionRef = useRef<MprSessionHandle | null>(null);
+  const enterMprRef = useRef<() => Promise<void>>(async () => {});
+  const exitMprRef = useRef<() => Promise<void>>(async () => {});
+  const axialRef = useRef<HTMLDivElement>(null);
+  const coronalRef = useRef<HTMLDivElement>(null);
+  const sagittalRef = useRef<HTMLDivElement>(null);
 
   const presets = presetsForModality(modality);
 
@@ -700,6 +731,7 @@ export default function CornerstoneViewer({
         });
 
         const viewport = engine.getViewport(viewportId) as unknown as DrivableViewport;
+        viewportRef.current = viewport;
 
         const {
           addTool,
@@ -792,6 +824,7 @@ export default function CornerstoneViewer({
           }
           tg.setToolActive(name, { bindings: [primary] });
           leftTool = name;
+          mprSessionRef.current?.setLeftTool(name);
           setActiveTool(name);
         };
         setLeftTool("WindowLevel");
@@ -842,7 +875,35 @@ export default function CornerstoneViewer({
             lastGood = next;
           }
         };
+        // Stack snapshot while its viewport is disabled for MPR (one less
+        // WebGL context). Null in stack mode.
+        let mprHeld: {
+          imageIds: string[];
+          index: number;
+          zoom: number;
+          pan: [number, number];
+          invert: boolean;
+          fit: boolean;
+        } | null = null;
+        let heldVoi: Voi | null = null;
         const publishReadout = () => {
+          if (mprHeld) {
+            const ww = heldVoi ? Math.round(heldVoi.ww) : undefined;
+            const wc = heldVoi ? Math.round(heldVoi.wc) : undefined;
+            const slice = displaySliceNumber(mprHeld.index);
+            const count = mprHeld.imageIds.length;
+            setReadout((prev) =>
+              prev &&
+              prev.slice === slice &&
+              prev.count === count &&
+              prev.ww === ww &&
+              prev.wc === wc &&
+              prev.plane === "Axial"
+                ? prev
+                : { slice, count, ww, wc, plane: "Axial" }
+            );
+            return;
+          }
           const vp = viewportRef.current;
           if (!vp) return;
           const v = voiToWwWc(vp.getProperties().voiRange);
@@ -855,7 +916,8 @@ export default function CornerstoneViewer({
             prev.slice === slice &&
             prev.count === count &&
             prev.ww === ww &&
-            prev.wc === wc
+            prev.wc === wc &&
+            prev.plane == null
               ? prev
               : { slice, count, ww, wc }
           );
@@ -877,12 +939,16 @@ export default function CornerstoneViewer({
         };
 
         const loadStack = async (ids: string[], index?: number): Promise<void> => {
+          // Null while MPR has suspended the stack. Do not paint onto the
+          // disabled viewport; the volume session owns those image ids.
+          const vp = viewportRef.current;
+          if (!vp) return;
           const openAt =
             index == null
               ? stackOpenIndex(ids.length)
               : Math.max(0, Math.min(ids.length - 1, Math.round(index)));
-          await viewport.setStack(ids, openAt);
-          viewport.render();
+          await vp.setStack(ids, openAt);
+          vp.render();
 
           const sampleIds = ids.slice(0, Math.min(ids.length, 4));
           const evaluateAnnotatable = () => {
@@ -1044,36 +1110,49 @@ export default function CornerstoneViewer({
         let layoutGen = 0;
 
         const writeVoi = (ww: number, wc: number): boolean => {
-          const vp = viewportRef.current;
           const wanted = finiteVoi(ww, wc);
-          if (!vp || !wanted) return false;
-          const props = vp.getProperties();
-          const steps = voiWriteSteps(props.voiRange, wanted.ww, wanted.wc, {
-            locked: props.isComputedVOI === false,
-          });
-          if (steps.length > 0) {
-            beginSuppress();
-            try {
-              for (const voiRange of steps) vp.setProperties({ voiRange });
-              vp.render();
-            } catch {
-              return false;
-            } finally {
-              endSuppress();
+          if (!wanted) return false;
+          const vp = viewportRef.current;
+          let wrote = false;
+          if (vp) {
+            const props = vp.getProperties();
+            const steps = voiWriteSteps(props.voiRange, wanted.ww, wanted.wc, {
+              locked: props.isComputedVOI === false,
+            });
+            if (steps.length > 0) {
+              beginSuppress();
+              try {
+                for (const voiRange of steps) vp.setProperties({ voiRange });
+                vp.render();
+              } catch {
+                return false;
+              } finally {
+                endSuppress();
+              }
             }
+            const live = voiToWwWc(vp.getProperties().voiRange);
+            wrote =
+              live != null &&
+              Math.abs(live.ww - wanted.ww) <= 1 &&
+              Math.abs(live.wc - wanted.wc) <= 1;
+          }
+          if (mprSessionRef.current) {
+            mprSessionRef.current.setVoi(wanted.ww, wanted.wc);
+            heldVoi = wanted;
+            wrote = true;
+          } else if (mprHeld) {
+            heldVoi = wanted;
+            wrote = true;
           }
           publishReadout();
-          const live = voiToWwWc(vp.getProperties().voiRange);
-          return (
-            live != null &&
-            Math.abs(live.ww - wanted.ww) <= 1 &&
-            Math.abs(live.wc - wanted.wc) <= 1
-          );
+          return wrote;
         };
 
         const pinVoi = (ww: number, wc: number) => {
           const next = finiteVoi(ww, wc);
-          if (next) pinnedVoi = next;
+          if (!next) return;
+          pinnedVoi = next;
+          if (mprHeld) heldVoi = next;
         };
 
         const applyPinnedVoi = () => {
@@ -1094,6 +1173,10 @@ export default function CornerstoneViewer({
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
         const THROTTLE = 50;
+        // While a stack is being put back, the image's own window fires
+        // VOI_MODIFIED. That is not a user drag and must not replace the
+        // window the user set on the MPR planes.
+        let pinLocked = false;
 
         const emitSlice = () => {
           const vp = viewportRef.current;
@@ -1116,7 +1199,7 @@ export default function CornerstoneViewer({
           const v = voiToWwWc(vp.getProperties().voiRange);
           // A drag on the window tool replaces the teach window. Programmatic
           // writes are suppressed and must not pin a mid-tween value.
-          if (v && !suppressed()) pinnedVoi = { ww: v.ww, wc: v.wc };
+          if (v && !suppressed() && !pinLocked) pinnedVoi = { ww: v.ww, wc: v.wc };
           const now = performance.now();
           if (now - lastVoiEmit < THROTTLE) return;
           lastVoiEmit = now;
@@ -1247,6 +1330,312 @@ export default function CornerstoneViewer({
         // only a USER switch emits a `series` record event (a programmatic one
         // would echo into the recording). Switches are serialized so a fast
         // clicker never interleaves stacks.
+        const readMeta = (type: string, imageId: string) => core.metaData.get(type, imageId);
+        const assessIds = (ids: string[]) => {
+          const { planes, dicomModality } = planesFromMetadata(readMeta, ids);
+          const seriesModality =
+            seriesRef.current?.[loadedSeriesIndexRef.current]?.modality;
+          return assessMpr(planes, {
+            modality: modalityForMpr(dicomModality, seriesModality, modalityRef.current),
+          });
+        };
+        // WADO-RS registers plane metadata up front, so this is a no-op and
+        // does not touch stack time-to-first-pixel. wadouri only parses a
+        // frame once it has been fetched; reconstruction needs every slice's
+        // position, so those missing frames are read here, on entering MPR.
+        const warmPlaneMetadata = async (ids: string[]) => {
+          const missing = ids.filter((id) => {
+            try {
+              return !core.metaData.get("imagePlaneModule", id);
+            } catch {
+              return true;
+            }
+          });
+          if (!missing.length) return;
+          let cursor = 0;
+          const width = Math.min(4, missing.length);
+          await Promise.all(
+            Array.from({ length: width }, async () => {
+              while (cursor < missing.length) {
+                const id = missing[cursor++];
+                try {
+                  await core.imageLoader.loadAndCacheImage(id, {
+                    priority: -5,
+                    requestType: "prefetch",
+                  });
+                } catch {
+                  /* assessment explains a slice we still cannot place */
+                }
+              }
+            })
+          );
+        };
+        const currentIds = () =>
+          mprHeld?.imageIds?.length
+            ? mprHeld.imageIds
+            : viewportRef.current?.getImageIds() ?? [];
+
+        const suspendStack = () => {
+          const vp = viewportRef.current;
+          if (!vp || mprHeld) return;
+          let zoom = 1;
+          let pan: [number, number] = [0, 0];
+          try {
+            zoom = vp.getZoom();
+            pan = vp.getPan();
+          } catch {
+            /* keep the fit camera */
+          }
+          const voi = voiToWwWc(vp.getProperties().voiRange);
+          mprHeld = {
+            imageIds: vp.getImageIds().slice(),
+            index: vp.getCurrentImageIdIndex(),
+            zoom,
+            pan,
+            invert: Boolean(vp.getProperties().invert),
+            fit: false,
+          };
+          if (!heldVoi && voi) heldVoi = pinnedVoi ?? voi;
+          try {
+            tg.removeViewports(renderingEngineId, viewportId);
+          } catch {
+            /* already detached */
+          }
+          try {
+            engine.disableElement(viewportId);
+          } catch {
+            /* already disabled */
+          }
+          viewportRef.current = null;
+        };
+
+        const resumeStack = async () => {
+          const snap = mprHeld;
+          if (!snap || !elementRef.current) return;
+          mprHeld = null;
+          engine.enableElement({
+            viewportId,
+            type: core.Enums.ViewportType.STACK,
+            element: elementRef.current,
+          });
+          const vp = engine.getViewport(viewportId) as unknown as DrivableViewport;
+          tg.addViewport(viewportId, renderingEngineId);
+          viewportRef.current = vp;
+          const index = Math.max(0, Math.min(snap.imageIds.length - 1, snap.index));
+          const window = pinnedVoi ?? heldVoi;
+          if (window) pinVoi(window.ww, window.wc);
+          // setStack writes the DICOM window and emits VOI_MODIFIED before
+          // this await returns. Hold the pin across that, then write it last.
+          pinLocked = true;
+          try {
+            await vp.setStack(snap.imageIds, index);
+            applyPinnedVoi();
+          } finally {
+            requestAnimationFrame(() => {
+              applyPinnedVoi();
+              pinLocked = false;
+            });
+          }
+          if (snap.fit) vp.resetCamera();
+          else {
+            if (Number.isFinite(snap.zoom)) vp.setZoom(snap.zoom);
+            if (snap.pan) vp.setPan(snap.pan);
+          }
+          vp.setProperties({ invert: snap.invert });
+          vp.render();
+          setInverted(snap.invert);
+          publishReadout();
+        };
+
+        let mprEpoch = 0;
+        const destroyMprSession = () => {
+          const session = mprSessionRef.current;
+          mprSessionRef.current = null;
+          session?.destroy();
+        };
+
+        const mountMpr = async () => {
+          const token = ++mprEpoch;
+          const ids = currentIds();
+          if (!ids.length || disposed || viewModeRef.current !== "mpr") return;
+          await warmPlaneMetadata(ids);
+          if (token !== mprEpoch || disposed || viewModeRef.current !== "mpr") return;
+          const verdict = assessIds(ids);
+          if (!verdict.ok) {
+            setMprNotice(verdict.message);
+            setMprLive(false);
+            setMprLoading(false);
+            return;
+          }
+          const axial = axialRef.current;
+          const coronal = coronalRef.current;
+          const sagittal = sagittalRef.current;
+          if (!axial || !coronal || !sagittal) return;
+          setMprNotice(null);
+          setMprLoading(true);
+          const index =
+            viewportRef.current?.getCurrentImageIdIndex() ??
+            mprHeld?.index ??
+            stackOpenIndex(ids.length);
+          const imageId = ids[Math.max(0, Math.min(ids.length - 1, index))];
+          const { mountMprSession } = await import("../lib/mprSession");
+          if (token !== mprEpoch || disposed || viewModeRef.current !== "mpr") {
+            if (!disposed) setMprLoading(false);
+            return;
+          }
+          let session: MprSessionHandle | null = null;
+          try {
+            suspendStack();
+            session = await mountMprSession({
+              renderingEngineId,
+              instanceId,
+              elements: { axial, coronal, sagittal },
+              imageIds: mprHeld?.imageIds ?? ids,
+              initialImageId: imageId,
+              voi: pinnedVoi ?? heldVoi,
+              invert: mprHeld?.invert,
+              leftTool: leftTool ?? "WindowLevel",
+              onAxialImage: (nextId) => {
+                if (!mprHeld || suppressed()) return;
+                const idx = mprHeld.imageIds.indexOf(nextId);
+                if (idx < 0 || idx === mprHeld.index) return;
+                mprHeld.index = idx;
+                mprHeld.fit = false;
+                emit({ type: "slice", index: idx });
+                scheduleReadout();
+              },
+              onVoi: (ww, wc) => {
+                if (!mprHeld || suppressed()) return;
+                heldVoi = { ww, wc };
+                pinnedVoi = { ww, wc };
+                scheduleReadout();
+                const now = performance.now();
+                if (now - lastVoiEmit < THROTTLE) return;
+                lastVoiEmit = now;
+                emit({ type: "voi", ww, wc });
+              },
+              readPlane: (id) => {
+                try {
+                  const plane = core.metaData.get("imagePlaneModule", id);
+                  return plane && typeof plane === "object" ? (plane as PlaneSample) : null;
+                } catch {
+                  return null;
+                }
+              },
+            });
+          } catch (err) {
+            console.error("CornerstoneViewer MPR", err);
+            session?.destroy();
+            if (mprHeld) await resumeStack();
+            if (!disposed) {
+              setMprNotice(mprLoadFailureMessage());
+              setMprLive(false);
+              setMprLoading(false);
+            }
+            return;
+          }
+          if (token !== mprEpoch || disposed || viewModeRef.current !== "mpr") {
+            session.destroy();
+            if (mprHeld) await resumeStack();
+            if (!disposed) setMprLoading(false);
+            return;
+          }
+          mprSessionRef.current = session;
+          setMprLive(true);
+          setMprLoading(false);
+          publishReadout();
+          // The grid was visibility:hidden while the viewports attached.
+          // Resize once it is shown so the canvases match the laid-out planes.
+          requestAnimationFrame(() => session.resize());
+        };
+
+        const syncMpr = async () => {
+          if (disposed || viewModeRef.current !== "mpr") return;
+          const ids = currentIds();
+          await warmPlaneMetadata(ids);
+          if (disposed || viewModeRef.current !== "mpr") return;
+          const verdict = assessIds(ids);
+          const session = mprSessionRef.current;
+          const action = nextMprAction({
+            mode: "mpr",
+            session: Boolean(session),
+            canReconstruct: verdict.ok,
+            volumeKey: verdict.ok ? mprVolumeKey(ids) : null,
+            loadedKey: session?.volumeKey ?? null,
+          });
+          if (action === "fallback") {
+            mprEpoch += 1;
+            destroyMprSession();
+            setMprLive(false);
+            setMprLoading(false);
+            setMprNotice(verdict.ok ? mprLoadFailureMessage() : verdict.message);
+            if (mprHeld) await resumeStack();
+            return;
+          }
+          if (action === "replace" && session) {
+            setMprNotice(null);
+            const index = mprHeld?.index ?? stackOpenIndex(ids.length);
+            const imageId = ids[Math.max(0, Math.min(ids.length - 1, index))];
+            try {
+              await session.replace(ids, imageId, pinnedVoi ?? heldVoi);
+              publishReadout();
+            } catch (err) {
+              console.error("CornerstoneViewer MPR series", err);
+              mprEpoch += 1;
+              destroyMprSession();
+              setMprLive(false);
+              setMprNotice(mprLoadFailureMessage());
+              if (mprHeld) await resumeStack();
+            }
+            return;
+          }
+          if (action === "mount") await mountMpr();
+        };
+
+        enterMprRef.current = async () => {
+          if (mprSessionRef.current) return;
+          await mountMpr();
+        };
+        exitMprRef.current = async () => {
+          mprEpoch += 1;
+          destroyMprSession();
+          if (!disposed) {
+            setMprLive(false);
+            setMprLoading(false);
+            if (viewModeRef.current === "stack") setMprNotice(null);
+          }
+          if (mprHeld && elementRef.current?.isConnected) {
+            try {
+              await resumeStack();
+              // The stack canvas is measured while it is still hidden. Resize
+              // again after it is shown so the image fills the pane instead of
+              // keeping an MPR cell's aspect ratio.
+              const fit = () => {
+                const host = elementRef.current;
+                if (!host) return;
+                host.querySelectorAll("canvas").forEach((node) => {
+                  const canvas = node as HTMLCanvasElement;
+                  canvas.style.aspectRatio = "auto";
+                  canvas.style.width = "100%";
+                  canvas.style.height = "100%";
+                });
+                try {
+                  engine.resize(true, true);
+                } catch {
+                  /* engine already destroyed */
+                }
+                viewportRef.current?.render();
+              };
+              requestAnimationFrame(() => {
+                fit();
+                requestAnimationFrame(fit);
+              });
+            } catch (err) {
+              console.error("CornerstoneViewer MPR resume", err);
+            }
+          }
+        };
+
         let switchSeq = 0;
         const switchSeries = async (index: number, emitEvent = true): Promise<void> => {
           const list = seriesRef.current;
@@ -1277,6 +1666,7 @@ export default function CornerstoneViewer({
           activeNav = markViewerNavigation(seriesUID);
           beginViewerNavigation(instanceId);
           try {
+            let ids: string[] | null = null;
             if (src.kind === "wadors") {
               // Mid-stack of the selected series. Other series stay metadata-only
               // until this click; a teacher landing applies only on first open.
@@ -1287,16 +1677,28 @@ export default function CornerstoneViewer({
                 open: null,
                 signal: controller.signal,
               });
-              const ids = await loadPrepared(job, seriesUID, controller.signal);
+              ids = await loadPrepared(job, seriesUID, controller.signal);
               if (!ids || token !== switchSeq || disposed) return;
             } else {
-              const ids = await buildImageIds(src);
+              ids = await buildImageIds(src);
               if (token !== switchSeq || disposed || controller.signal.aborted) return;
               const openAt = stackOpenIndex(ids.length);
               armFirstPixel(seriesUID);
               await loadStack(ids, openAt);
               if (token !== switchSeq || disposed || controller.signal.aborted) return;
               finishStack(seriesUID, ids, openAt);
+            }
+            if (!ids) return;
+            // MPR is on: the new series' image ids drive the volume. A teacher
+            // landing is not applied on a rail switch (open: null above).
+            if (viewModeRef.current === "mpr") {
+              if (mprHeld) {
+                mprHeld.imageIds = ids.slice();
+                mprHeld.index = stackOpenIndex(ids.length);
+                mprHeld.fit = true;
+              }
+              await syncMpr();
+              if (mprSessionRef.current) return;
             }
             applyPinnedVoi();
           } catch (err) {
@@ -1312,6 +1714,22 @@ export default function CornerstoneViewer({
         resetRef.current = () => {
           cancelTweenRef.current();
           releasePinnedVoi();
+          heldVoi = null;
+          if (mprSessionRef.current) {
+            mprSessionRef.current.resetView();
+            if (mprHeld) {
+              mprHeld.zoom = 1;
+              mprHeld.pan = [0, 0];
+              mprHeld.fit = true;
+              mprHeld.invert = false;
+            }
+            setInverted(false);
+            setActivePreset(null);
+            publishReadout();
+            return;
+          }
+          const vp = viewportRef.current;
+          if (!vp) return;
           const host = elementRef.current;
           // Fit against the pane's current size. A stale half-width buffer
           // (left over from compare) makes resetCamera miss the anatomy.
@@ -1322,10 +1740,10 @@ export default function CornerstoneViewer({
               /* resetCamera below still runs */
             }
           }
-          viewport.resetCamera();
-          viewport.resetProperties?.();
-          viewport.render();
-          setInverted(viewport.getProperties().invert ?? false);
+          vp.resetCamera();
+          vp.resetProperties?.();
+          vp.render();
+          setInverted(vp.getProperties().invert ?? false);
           setActivePreset(null);
           rememberPresentation();
         };
@@ -1334,6 +1752,7 @@ export default function CornerstoneViewer({
           try {
             annotation.state.removeAllAnnotations();
             viewportRef.current?.render();
+            mprSessionRef.current?.restoreCrosshairs();
           } catch {
             /* tool state already gone */
           }
@@ -1438,10 +1857,15 @@ export default function CornerstoneViewer({
           }
         };
         invertRef.current = (value?: boolean) => {
-          const cur = viewport.getProperties().invert ?? false;
+          const vp = viewportRef.current;
+          const cur = vp?.getProperties().invert ?? mprHeld?.invert ?? false;
           const next = value ?? !cur;
-          viewport.setProperties({ invert: next });
-          viewport.render();
+          if (vp) {
+            vp.setProperties({ invert: next });
+            vp.render();
+          }
+          if (mprHeld) mprHeld.invert = next;
+          mprSessionRef.current?.setInvert(next);
           setInverted(next);
           // A user-driven toggle is part of the record stream; a programmatic
           // set (replay) is not (it would echo back into the recording).
@@ -1452,21 +1876,27 @@ export default function CornerstoneViewer({
         // Slice and series are chained so a fast script doesn't race the decoder.
         // Annotation strokes are placed back on the viewport (native tool).
         const applyEvent = (e: RecordedEvent) => {
-          const vp = viewportRef.current;
-          if (!vp) return;
+          if (!viewportRef.current && !mprHeld) return;
           cancelTweenRef.current();
           beginSuppress();
           chain(async () => {
             const live = viewportRef.current;
-            if (!live) return;
+            if (!live && !mprHeld) return;
             switch (e.type) {
               case "slice": {
-                const ids = live.getImageIds();
-                const idx = Math.max(0, Math.min(ids.length - 1, e.index));
-                if (idx !== live.getCurrentImageIdIndex()) {
+                const ids = mprHeld?.imageIds ?? live?.getImageIds() ?? [];
+                const idx = Math.max(0, Math.min(Math.max(ids.length - 1, 0), e.index));
+                if (live && !mprHeld && idx !== live.getCurrentImageIdIndex()) {
                   await live.setImageIdIndex(idx);
                 }
-                live.render();
+                if (mprHeld) {
+                  mprHeld.index = idx;
+                  mprHeld.fit = false;
+                  const imageId = ids[idx];
+                  if (imageId) mprSessionRef.current?.jumpToImageId(imageId);
+                  scheduleReadout();
+                }
+                live?.render();
                 applyPinnedVoi();
                 break;
               }
@@ -1475,13 +1905,22 @@ export default function CornerstoneViewer({
                 writeVoi(e.ww, e.wc);
                 break;
               case "camera":
-                live.setZoom(e.zoom);
-                live.setPan(e.pan);
-                live.render();
+                if (mprHeld) {
+                  mprHeld.zoom = e.zoom;
+                  mprHeld.pan = e.pan;
+                  mprHeld.fit = false;
+                }
+                if (live && !mprHeld) {
+                  live.setZoom(e.zoom);
+                  live.setPan(e.pan);
+                  live.render();
+                }
                 break;
               case "invert":
-                live.setProperties({ invert: e.value });
-                live.render();
+                if (mprHeld) mprHeld.invert = e.value;
+                live?.setProperties({ invert: e.value });
+                live?.render();
+                mprSessionRef.current?.setInvert(e.value);
                 setInverted(e.value);
                 break;
               case "series": {
@@ -1510,6 +1949,18 @@ export default function CornerstoneViewer({
           zoom?: number;
           pan?: [number, number];
         } => {
+          if (mprHeld) {
+            const idx = mprHeld.index;
+            const imageId = mprHeld.imageIds[idx];
+            const voi = heldVoi ?? pinnedVoi;
+            return {
+              sliceIndex: idx,
+              ww: voi?.ww,
+              wc: voi?.wc,
+              sopInstanceUID: sopUidFromImageId(imageId),
+              ...(mprHeld.fit ? {} : { zoom: mprHeld.zoom, pan: mprHeld.pan }),
+            };
+          }
           const vp = viewportRef.current;
           if (!vp) return { sliceIndex: 0 };
           const v = voiToWwWc(vp.getProperties().voiRange);
@@ -1541,10 +1992,15 @@ export default function CornerstoneViewer({
         ): Promise<void> => {
           pinVoi(ww, wc);
           const vp = viewportRef.current;
-          if (!vp) return Promise.resolve();
+          const session = mprSessionRef.current;
+          if (!vp && !session) return Promise.resolve();
           settleWindow?.();
           settleWindow = null;
-          const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
+          const from =
+            (vp ? voiToWwWc(vp.getProperties().voiRange) : null) ??
+            heldVoi ??
+            pinnedVoi ??
+            { ww, wc };
           const ms = durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
           cancelTweenRef.current = () => {};
@@ -1577,13 +2033,15 @@ export default function CornerstoneViewer({
             const cancelRaf = tween(
               ms,
               (eased) => {
-                vp.setProperties({
-                  voiRange: wwWcToVoi(
-                    lerp(from.ww, ww, eased),
-                    lerp(from.wc, wc, eased)
-                  ),
-                });
-                vp.render();
+                const nextWw = lerp(from.ww, ww, eased);
+                const nextWc = lerp(from.wc, wc, eased);
+                const range = wwWcToVoi(nextWw, nextWc);
+                if (vp) {
+                  vp.setProperties({ voiRange: range });
+                  vp.render();
+                }
+                mprSessionRef.current?.setVoi(nextWw, nextWc);
+                if (mprHeld) heldVoi = { ww: nextWw, wc: nextWc };
               },
               done
             );
@@ -1617,7 +2075,7 @@ export default function CornerstoneViewer({
           durationMs = 700
         ): Promise<void> => {
           const vp = viewportRef.current;
-          if (!vp) return;
+          if (!vp && !mprHeld) return;
           cancelTweenRef.current();
           if (
             state.windowWidth != null &&
@@ -1629,25 +2087,53 @@ export default function CornerstoneViewer({
           }
 
           // Slice change snaps (a new slice must be decoded) before the tween.
+          // In MPR the index is the authored stack image. The focal point comes
+          // from that image's plane, and only when the plane is present.
           if (state.sliceIndex != null || state.sliceFraction != null) {
-            const ids = vp.getImageIds();
+            const ids = mprHeld?.imageIds ?? vp?.getImageIds() ?? [];
             const idx =
-              state.sliceIndex != null
-                ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
-                : Math.max(
-                    0,
-                    Math.min(
-                      ids.length - 1,
-                      Math.round((state.sliceFraction as number) * (ids.length - 1))
-                    )
-                  );
-            if (idx !== vp.getCurrentImageIdIndex()) {
+              ids.length === 0
+                ? 0
+                : state.sliceIndex != null
+                  ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
+                  : Math.max(
+                      0,
+                      Math.min(
+                        ids.length - 1,
+                        Math.round((state.sliceFraction as number) * (ids.length - 1))
+                      )
+                    );
+            if (vp && idx !== vp.getCurrentImageIdIndex()) {
               await vp.setImageIdIndex(idx);
               // The new image brings its DICOM window. The pin (this state's
               // window, or the teach window already on screen) has to win
               // before the camera tween samples VOI.
               applyPinnedVoi();
             }
+            if (mprHeld && ids.length) {
+              const previous = mprHeld.index;
+              mprHeld.index = idx;
+              mprHeld.fit = false;
+              const imageId = ids[idx];
+              if (imageId) mprSessionRef.current?.jumpToImageId(imageId);
+              if (previous !== idx && !suppressed()) emit({ type: "slice", index: idx });
+              scheduleReadout();
+            }
+          }
+
+          if (!vp) {
+            if (state.zoom != null && mprHeld) {
+              mprHeld.zoom = state.zoom;
+              mprHeld.fit = false;
+            }
+            if (state.pan && mprHeld) {
+              mprHeld.pan = state.pan;
+              mprHeld.fit = false;
+            }
+            const toWw = state.windowWidth ?? heldVoi?.ww ?? pinnedVoi?.ww;
+            const toWc = state.windowCenter ?? heldVoi?.wc ?? pinnedVoi?.wc;
+            if (toWw != null && toWc != null) return setWindow(toWw, toWc);
+            return;
           }
 
           const fromVoi = voiToWwWc(vp.getProperties().voiRange);
@@ -1755,6 +2241,9 @@ export default function CornerstoneViewer({
         const applyLayoutRestore = (force: boolean) => {
           const vp = viewportRef.current;
           const host = elementRef.current;
+          if (mprSessionRef.current) {
+            mprSessionRef.current.resize();
+          }
           if (!vp || !host || restoring) return;
           const width = host.clientWidth;
           const height = host.clientHeight;
@@ -1889,8 +2378,13 @@ export default function CornerstoneViewer({
           get annotationApplied() {
             return annotationApplied;
           },
-          captureViewportStill: () => grabViewportStill(elementRef.current, viewportRef.current),
-          captureViewportStream: () => openViewportStream(elementRef.current),
+          captureViewportStill: () =>
+            grabViewportStill(
+              mprSessionRef.current ? axialRef.current : elementRef.current,
+              viewportRef.current
+            ),
+          captureViewportStream: () =>
+            openViewportStream(mprSessionRef.current ? axialRef.current : elementRef.current),
         };
         if (controls) controls.current = handle;
         onReady?.(handle);
@@ -1914,6 +2408,10 @@ export default function CornerstoneViewer({
       disposed = true;
       loadAbort.current.abort();
       cancelTweenRef.current();
+      mprSessionRef.current?.destroy();
+      mprSessionRef.current = null;
+      enterMprRef.current = async () => {};
+      exitMprRef.current = async () => {};
       window.clearTimeout(readoutTimerRef.current);
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
       resizeObserver?.disconnect();
@@ -1942,6 +2440,27 @@ export default function CornerstoneViewer({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceKey]);
+
+  // MPR mounts only after the toggle. Stack stays the default and is what
+  // teach scripts drive; a volume replaces it for the session, then comes back.
+  // Do not exit from this effect's cleanup: strict mode re-runs the effect
+  // while the first mount is still in flight, and that exit would resume the
+  // stack under the volume that the second mount just created.
+  useEffect(() => {
+    if (!ready) return;
+    if (viewMode !== "mpr") {
+      void exitMprRef.current();
+      return;
+    }
+    void enterMprRef.current();
+  }, [viewMode, ready]);
+
+  // Markers live in stack-image fractions. Report MPR only while the volume
+  // is on screen (or still mounting). A failed reconstruction keeps the stack.
+  const mprShowing = mprLive || (viewMode === "mpr" && mprLoading);
+  useEffect(() => {
+    onViewModeChange?.(mprShowing ? "mpr" : "stack");
+  }, [mprShowing, onViewModeChange]);
 
   // React to the navigator selecting a different series (user-driven switch).
   // Runs after init has wired switchSeriesRef; no-ops on the already-loaded
@@ -2021,6 +2540,9 @@ export default function CornerstoneViewer({
       onInvert={() => invertRef.current()}
       onReset={() => resetRef.current()}
       onClear={() => clearRef.current()}
+      viewMode={viewMode}
+      onViewMode={setViewMode}
+      measurementsEnabled={!mprLive}
     />
   );
 
@@ -2028,8 +2550,8 @@ export default function CornerstoneViewer({
     readout == null
       ? undefined
       : readout.ww != null && readout.wc != null
-        ? `Slice ${readout.slice} of ${readout.count}, window ${readout.ww}, level ${readout.wc}`
-        : `Slice ${readout.slice} of ${readout.count}`;
+        ? `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}, window ${readout.ww}, level ${readout.wc}`
+        : `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}`;
 
   return (
     <div
@@ -2054,18 +2576,32 @@ export default function CornerstoneViewer({
             "bg-imaging",
             docked
               ? "aspect-square w-full overflow-hidden rounded-xl border border-subtle"
-              : "absolute inset-0"
+              : "absolute inset-0",
+            mprLive && "invisible pointer-events-none"
           )}
           onContextMenu={(e) => e.preventDefault()}
           aria-label="DICOM viewer"
+          aria-hidden={mprLive || undefined}
           role="img"
         />
+        {(viewMode === "mpr" || mprLive) && (
+          <MprLayout
+            axialRef={axialRef}
+            coronalRef={coronalRef}
+            sagittalRef={sagittalRef}
+            live={mprLive}
+            loading={mprLoading}
+            notice={mprNotice}
+            framed={docked && mprLive}
+          />
+        )}
         {readout && ready && (
           <p
             className="pointer-events-none absolute left-2 top-2 z-10 rounded-md bg-black/80 px-2 py-1 text-xs font-medium leading-tight text-white shadow-md ring-1 ring-white/20"
             aria-label={readoutLabel}
           >
             <span className="block tabular-nums">
+              {readout.plane ? `${readout.plane} ` : ""}
               {readout.slice} / {readout.count}
             </span>
             {readout.ww != null && readout.wc != null && (
@@ -2087,7 +2623,7 @@ export default function CornerstoneViewer({
             {status}
           </p>
         )}
-        {imageOverlay}
+        {mprShowing ? null : imageOverlay}
       </div>
       {(docked || edge) && toolbar}
       {docked && (
@@ -2130,6 +2666,9 @@ function ViewerToolbar({
   onInvert,
   onReset,
   onClear,
+  viewMode,
+  onViewMode,
+  measurementsEnabled,
 }: {
   orientation: "horizontal" | "vertical";
   /** Student pane: one tight row, no group captions. */
@@ -2153,16 +2692,27 @@ function ViewerToolbar({
   onInvert: () => void;
   onReset: () => void;
   onClear: () => void;
+  viewMode: MprMode;
+  onViewMode: (mode: MprMode) => void;
+  /** Length and ROI stay on the stack. MPR keeps scroll, pan, zoom, and window. */
+  measurementsEnabled: boolean;
 }) {
   const vertical = orientation === "vertical";
   const activeMeasure =
     MEASURE_TOOLS.find((t) => t.name === activeTool) ?? MEASURE_TOOLS[0];
   const measureActive = MEASURE_TOOLS.some((t) => t.name === activeTool);
 
-  const toolLabel = (tool: ViewerTool) =>
-    tool.annotation && !annotationsEnabled
-      ? `${tool.label} — this study has no pixel spacing for measurements`
-      : tool.label;
+  const measureBlocked = (tool: ViewerTool) =>
+    !measurementsEnabled || (!!tool.annotation && !annotationsEnabled);
+  const toolLabel = (tool: ViewerTool) => {
+    if (!measurementsEnabled && tool.annotation) {
+      return `${tool.label} — measurements stay on the stack view`;
+    }
+    if (tool.annotation && !annotationsEnabled) {
+      return `${tool.label} — this study has no pixel spacing for measurements`;
+    }
+    return tool.label;
+  };
 
   const menuClass = cn(
     "absolute z-30 w-48 animate-fade-up overflow-hidden rounded-xl border border-[#1F1F1F] bg-[#181818] p-1 text-white shadow-lg ring-1 ring-white/15",
@@ -2190,7 +2740,7 @@ function ViewerToolbar({
         label={toolLabel(activeMeasure)}
         caption={vertical ? undefined : activeMeasure.short}
         active={measureActive}
-        disabled={!ready || (!!activeMeasure.annotation && !annotationsEnabled)}
+        disabled={!ready || measureBlocked(activeMeasure)}
         onClick={() => onSelectTool(activeMeasure.name)}
       >
         <ToolIcon name={activeMeasure.name} />
@@ -2220,12 +2770,12 @@ function ViewerToolbar({
       {measureOpen && (
         <div role="menu" aria-label="Measurement tools" className={menuClass}>
           {MEASURE_TOOLS.map((tool) => {
-            const blocked = !!tool.annotation && !annotationsEnabled;
+            const blocked = measureBlocked(tool);
             return (
               <PresetItem
                 key={tool.name}
                 label={tool.label}
-                hint={blocked ? "no spacing" : tool.short}
+                hint={!measurementsEnabled ? "stack view" : blocked ? "no spacing" : tool.short}
                 active={activeTool === tool.name}
                 disabled={!ready || blocked}
                 onClick={() => onSelectTool(tool.name)}
@@ -2327,6 +2877,12 @@ function ViewerToolbar({
         compact ? "rounded-none border-x-0 border-b-0" : "rounded-xl"
       )}
     >
+      <div className="flex flex-col gap-1">
+        {compact ? null : (
+          <span className="px-1 text-xs font-medium text-white/70">Layout</span>
+        )}
+        <LayoutToggle mode={viewMode} ready={ready} onChange={onViewMode} />
+      </div>
       <div className="flex flex-col gap-1">
         {compact ? null : (
           <span className="px-1 text-xs font-medium text-white/70">Navigate</span>
