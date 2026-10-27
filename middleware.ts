@@ -35,6 +35,7 @@ export const config = {
     "/api/grade-report",
     "/api/structure-finding",
     "/api/structure-session",
+    "/api/gemini/files",
     "/api/audio",
     "/api/voice/realtime",
     "/api/voice/search",
@@ -70,6 +71,9 @@ const BUDGETS: Record<string, Budget> = {
   // Authoring: dictation in, structured JSON out.
   "/api/structure-finding": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
   "/api/structure-session": { limit: 10, windowMs: MINUTE, maxBodyBytes: 48 * MB },
+  // Viewport video for a long teaching take. Body cap only would be too open
+  // on a billed Files API upload, so this route keeps a small request budget.
+  "/api/gemini/files": { limit: 4, windowMs: MINUTE, maxBodyBytes: 96 * MB },
   "/api/audio": { limit: 30, windowMs: MINUTE, maxBodyBytes: 48 * MB },
   // Token mint — one per session turn is plenty.
   "/api/voice/realtime": { limit: 10, windowMs: MINUTE, maxBodyBytes: 4 * 1024 },

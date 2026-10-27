@@ -12,9 +12,18 @@
  * or its findings are accepted.
  */
 
+import {
+  compareNearTime,
+  markerNearTime,
+  segmentMidMs,
+  seriesNearTime,
+  sliceNearTime,
+  sliceTrack,
+} from "./captureSession";
 import { secondaryAnchor } from "./findingAnchors";
-import { formatMeasurementBrief } from "./findingMeasurements";
-import type { Finding, Marker, TeachAct } from "./types";
+import { formatMeasurementBrief, measurementsFromTrack } from "./findingMeasurements";
+import { guideForFindingTrack } from "./teachingGuide";
+import type { Finding, FindingAnchor, Marker, RecordedTrack, TeachAct } from "./types";
 
 export type LiveMode = "examiner" | "teach_me";
 
@@ -816,4 +825,152 @@ export function liveModeSwitchLine(mode: LiveMode): string {
 
 export function liveModeFromSession(mode: string): LiveMode {
   return mode === "viva" || mode === "socratic" || mode === "examiner" ? "examiner" : "teach_me";
+}
+
+/**
+ * Prose Flash may return for one spoken range. Coordinates are not fields
+ * here — the viewer log is the only source of slice, window, series, and pointer.
+ */
+export interface CompiledTakeDraft {
+  label: string;
+  description?: string;
+  teachingPoints?: string[];
+  whatToNotice?: string;
+  pearl?: string;
+  mimics?: string[];
+  /** 1 = must not miss. Missing ranks keep speech order. */
+  clinicalImportance?: number;
+  whyClinicallyFirst?: string;
+  reportLine?: string;
+  landmark?: string;
+  tStartMs: number;
+  tEndMs: number;
+}
+
+export interface CompiledTakeCommit {
+  captureSessionId: string;
+  transcript?: string;
+  /** Open series when the log never emitted a series event. Not a model UID. */
+  seriesInstanceUID?: string;
+  studyInstanceUID?: string;
+  findings: CompiledTakeDraft[];
+}
+
+function finiteRank(value: unknown, index: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return index + 1;
+  return Math.round(n);
+}
+
+function cleanLines(values: string[] | undefined): string[] {
+  return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+/**
+ * Case findings for one compiled take. Every landing is a sample of `track`
+ * at the spoken midpoint. Draft text is label, prose, times, and rank.
+ */
+export function findingsFromCompiledTake(input: {
+  captureSessionId: string;
+  track: RecordedTrack;
+  drafted: readonly CompiledTakeDraft[];
+  seriesInstanceUID?: string;
+  studyInstanceUID?: string;
+}): Finding[] {
+  const ordered = input.drafted
+    .filter((draft) => draft.label.trim())
+    .map((draft, index) => ({ draft, index, rank: finiteRank(draft.clinicalImportance, index) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index);
+
+  return ordered.map((row, index) => {
+    const draft = row.draft;
+    const tStartMs = Number.isFinite(draft.tStartMs) ? Math.max(0, draft.tStartMs) : 0;
+    const tEndMs = Number.isFinite(draft.tEndMs) ? Math.max(tStartMs, draft.tEndMs) : tStartMs;
+    const mid = segmentMidMs(tStartMs, tEndMs);
+    const sub = sliceTrack(input.track, tStartMs, tEndMs);
+    const sampled = markerNearTime(input.track, mid);
+    const marker: Marker | undefined = sampled
+      ? { x_pct: sampled.x_pct, y_pct: sampled.y_pct, shape: "circle" }
+      : undefined;
+    const sliceIndex = sliceNearTime(input.track, mid) ?? undefined;
+    const series = seriesNearTime(input.track, mid) || input.seriesInstanceUID?.trim() || undefined;
+    let ww = input.track.start.ww;
+    let wc = input.track.start.wc;
+    for (const event of input.track.events) {
+      if (event.t > mid) break;
+      if (event.type === "voi") {
+        ww = event.ww;
+        wc = event.wc;
+      }
+    }
+    const points = cleanLines(draft.teachingPoints);
+    const whatToNotice = (draft.whatToNotice ?? draft.description ?? "").trim();
+    const pearl = (draft.pearl ?? points[0] ?? "").trim();
+    const mimics = cleanLines(draft.mimics);
+    const teachingPoints = [...new Set([pearl, ...mimics, ...points].filter(Boolean))];
+    const measurements = measurementsFromTrack(sub);
+    const compare = compareNearTime(input.track, mid);
+    const label = draft.label.trim();
+    const finding: Finding = {
+      id: `lt_${input.captureSessionId}_${index + 1}`,
+      label,
+      description: whatToNotice || label,
+      teachingPoints,
+      state: " ",
+      marker: marker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      track: sub,
+      durationMs: sub.durationMs,
+      teachingGuide: guideForFindingTrack(sub, {
+        label,
+        description: whatToNotice,
+        teachingPoints,
+        sliceIndex,
+        ww,
+        wc,
+        ...(marker ? { point: { x: marker.x_pct, y: marker.y_pct } } : {}),
+      }),
+      order: index + 1,
+      ...(input.studyInstanceUID?.trim() ? { studyInstanceUID: input.studyInstanceUID.trim() } : {}),
+      ...(series ? { seriesInstanceUID: series } : {}),
+      ...(sliceIndex != null ? { sliceIndex } : {}),
+      ...(ww != null && wc != null && Number.isFinite(ww) && Number.isFinite(wc)
+        ? { windowWidth: ww, windowCenter: wc }
+        : {}),
+      ...(measurements.length ? { measurements } : {}),
+      captureSessionId: input.captureSessionId,
+      tStartMs,
+      tEndMs,
+      ...(draft.landmark?.trim() ? { landmark: draft.landmark.trim() } : {}),
+      ...(draft.reportLine?.trim() ? { reportGold: draft.reportLine.trim() } : {}),
+    };
+    if (!marker) delete (finding as Partial<Finding>).marker;
+    if (compare) {
+      const secondary: FindingAnchor = {
+        seriesInstanceUID: compare.seriesInstanceUID ?? series,
+        ...(input.studyInstanceUID?.trim() ? { studyInstanceUID: input.studyInstanceUID.trim() } : {}),
+        sliceIndex: compare.sliceIndex,
+        windowWidth: compare.ww,
+        windowCenter: compare.wc,
+        viewportRole: "secondary",
+        ...(compare.marker
+          ? { marker: { x_pct: compare.marker.x_pct, y_pct: compare.marker.y_pct, shape: "circle" as const } }
+          : {}),
+      };
+      const anchors: FindingAnchor[] = [];
+      if (marker) {
+        anchors.push({
+          studyInstanceUID: finding.studyInstanceUID,
+          seriesInstanceUID: series,
+          sliceIndex,
+          marker,
+          windowWidth: ww,
+          windowCenter: wc,
+          viewportRole: "primary",
+        });
+      }
+      anchors.push(secondary);
+      finding.anchors = anchors;
+    }
+    return finding;
+  });
 }

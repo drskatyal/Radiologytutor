@@ -32,6 +32,11 @@
 // catalogPlaceholders). The LIDC teach case still seeds so it can be recorded.
 // ============================================================================
 
+import {
+  findingsFromCompiledTake,
+  materializeLiveTeachingPack,
+  type CompiledTakeCommit,
+} from "./liveTeachingPack";
 import { promises as fs } from "fs";
 import path from "path";
 import type { Collection as MongoNativeCollection } from "mongodb";
@@ -840,6 +845,72 @@ export async function createFinding(
   if (f.order == null) f.order = data.findings.length + 1;
   data.findings.push(f);
   data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/**
+ * Replace the case's findings and dossier with one compiled take.
+ * The track already stored on the capture session is the only source of
+ * viewer anchors. Draft text is label, description, points, times, and rank.
+ */
+export async function commitLiveTeachingPack(
+  orgId: string,
+  caseId: string,
+  input: CompiledTakeCommit
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const sessions = data.captureSessions ? [...data.captureSessions] : [];
+  const session = sessions.find((item) => item.id === input.captureSessionId);
+  if (!session?.track) throw new Error("Recording not found for this case.");
+  const transcript = (input.transcript ?? session.transcript ?? "").trim();
+  const findings = findingsFromCompiledTake({
+    captureSessionId: session.id,
+    track: session.track,
+    drafted: input.findings,
+    seriesInstanceUID: input.seriesInstanceUID,
+    studyInstanceUID: input.studyInstanceUID,
+  });
+  if (!findings.length) throw new Error("No findings to store.");
+  if (transcript) session.transcript = transcript;
+  data.captureSessions = sessions;
+  data.findings = findings;
+  const ranked = input.findings
+    .filter((draft) => draft.label.trim())
+    .map((draft, index) => ({
+      draft,
+      index,
+      rank: Number.isFinite(Number(draft.clinicalImportance)) && Number(draft.clinicalImportance) > 0
+        ? Math.round(Number(draft.clinicalImportance))
+        : index + 1,
+    }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((row) => row.draft);
+  data.liveTeachingPack = materializeLiveTeachingPack({
+    caseId,
+    modality: data.modality,
+    clinicalQuestion: data.clinicalHistory,
+    diagnosis: data.primaryDiagnosis,
+    findings,
+    prose: findings.map((finding, index) => {
+      const draft = ranked[index];
+      return {
+        id: finding.id,
+        tStartMs: finding.tStartMs,
+        label: finding.label,
+        whatToNotice: draft?.whatToNotice ?? finding.description,
+        pearl: draft?.pearl,
+        mimics: draft?.mimics,
+        clinicalImportance: finding.order,
+        whyClinicallyFirst: draft?.whyClinicallyFirst,
+        reportLine: draft?.reportLine ?? finding.reportGold,
+        landmark: draft?.landmark ?? finding.landmark,
+      };
+    }),
+    studySeriesUIDs: (data.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? []),
+  });
   data.updatedAt = nowIso();
   await casesStore.put(toStored(data));
   return data;

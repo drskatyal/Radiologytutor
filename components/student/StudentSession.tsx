@@ -65,6 +65,7 @@ export default function StudentSession({
   imagingResolved,
   tutorVoice,
   courseId,
+  initialIntent = "teach",
 }: {
   caseData: CaseData;
   source: ViewerSource;
@@ -75,9 +76,11 @@ export default function StudentSession({
   tutorVoice?: { authorName: string; cloned: boolean } | null;
   /** When opened from a course curriculum — mark complete at end of Teach tour. */
   courseId?: string | null;
+  /** Test-as-student handoff. Examiner opens the viva; Teach me stays guided. */
+  initialIntent?: "teach" | "exam";
 }) {
   // Teach is the product: autonomous attending. Exam = viva.
-  const [mode, setMode] = useState<SessionMode>("guided");
+  const [mode, setMode] = useState<SessionMode>(initialIntent === "exam" ? "viva" : "guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
   const [railOpen, setRailOpen] = useState(true);
   const [keysOpen, setKeysOpen] = useState(false);

@@ -14,6 +14,7 @@ import {
   type ViewerSource,
 } from "@/lib/viewerSource";
 import StudentSession from "@/components/student/StudentSession";
+import { studentIntentFromQuery } from "@/lib/teacherCapture";
 import { RecordCaseOpen } from "@/components/learning/RecordCaseOpen";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +27,7 @@ export default async function CasePage({
   searchParams,
 }: {
   params: { caseId: string };
-  searchParams?: { course?: string };
+  searchParams?: { course?: string; mode?: string };
 }) {
   const orgId = await activeOrgId();
   const caseData = await getCaseForOrg(orgId, params.caseId);
@@ -76,6 +77,7 @@ export default async function CasePage({
         imagingResolved={imagingResolved}
         tutorVoice={tutorVoice}
         courseId={courseId}
+        initialIntent={studentIntentFromQuery(searchParams?.mode) ?? "teach"}
       />
     </>
   );
