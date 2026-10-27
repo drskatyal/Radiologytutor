@@ -66,6 +66,7 @@ import type {
 } from "./types";
 import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
+import { resolveLiveTeachingPack } from "./liveTeachingPack";
 import { assertCloudRunMongo } from "./durableStore";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
 import { sortRelatedCourses } from "./relatedCourses";
@@ -721,6 +722,7 @@ export type UpdateCaseInput = Partial<
     | "learningObjectives"
     | "discussion"
     | "references"
+    | "liveTeachingPack"
   >
 >;
 
@@ -732,7 +734,13 @@ export async function updateCaseForOrg(
 ): Promise<Case | null> {
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return null;
-  const updated: Case = { ...current, ...patch, caseId, orgId, updatedAt: nowIso() };
+  const nextPatch = patch.liveTeachingPack
+    ? {
+        ...patch,
+        liveTeachingPack: resolveLiveTeachingPack({ ...current, ...patch, caseId }),
+      }
+    : patch;
+  const updated: Case = { ...current, ...nextPatch, caseId, orgId, updatedAt: nowIso() };
   if (updated.status === "published" && current.status !== "published") {
     await assertCasePublishable(updated);
   }

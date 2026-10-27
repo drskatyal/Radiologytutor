@@ -37,6 +37,7 @@ export const config = {
     "/api/structure-session",
     "/api/audio",
     "/api/voice/realtime",
+    "/api/voice/search",
     "/api/auth/demo",
     "/api/upload",
   ],
@@ -72,6 +73,8 @@ const BUDGETS: Record<string, Budget> = {
   "/api/audio": { limit: 30, windowMs: MINUTE, maxBodyBytes: 48 * MB },
   // Token mint — one per session turn is plenty.
   "/api/voice/realtime": { limit: 10, windowMs: MINUTE, maxBodyBytes: 4 * 1024 },
+  // Live web_search tool. Short text in, a grounded answer out.
+  "/api/voice/search": { limit: 20, windowMs: MINUTE, maxBodyBytes: 8 * 1024 },
   // Credential-adjacent: keep the attempt rate low.
   "/api/auth/demo": { limit: 10, windowMs: 5 * MINUTE, maxBodyBytes: 4 * 1024 },
   // Teaching-study upload: hundreds of files, quickly. Body size is a sanity

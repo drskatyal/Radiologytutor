@@ -21,6 +21,15 @@ export const VIEWPORT_STRIP_LIMIT = 24;
 export const COMPILE_FRAME_MAX_BASE64 = 90_000;
 export const STILL_MAX_EDGE = 480;
 export const VIEWPORT_SAMPLE_MS = 1500;
+/**
+ * Takes at least this long use agentic video understanding. Shorter recordings
+ * stay on static frames plus the sparse still strip.
+ */
+export const AGENTIC_VIDEO_MIN_MS = 5 * 60 * 1000;
+
+export function compileVideoProcessing(durationMs: number): "AGENTIC" | "STATIC" {
+  return durationMs >= AGENTIC_VIDEO_MIN_MS ? "AGENTIC" : "STATIC";
+}
 
 const MIN_STILL_CHARS = 32;
 

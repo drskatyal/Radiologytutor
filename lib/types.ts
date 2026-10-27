@@ -16,6 +16,8 @@
 // URL and we keep its `state` blob verbatim (lossless, no re-encoding needed to
 // replay). We decode it server-side only when the AI needs to know what's shown.
 
+import type { LiveTeachingPack } from "./liveTeachingPack";
+
 export type MarkerShape = "circle" | "arrow";
 
 /** One viewport tile inside Pacsbin's decoded state (for inspection / AI).
@@ -439,6 +441,12 @@ export interface CaseData {
    */
   captureSessions?: CaptureSession[];
 
+  /**
+   * What Gemini Live teaches from. Prose comes from compile; drive anchors are
+   * rebuilt from findings whenever the case is read. Optional on older cases.
+   */
+  liveTeachingPack?: LiveTeachingPack;
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -468,6 +476,17 @@ export interface StructuredSessionFinding extends StructuredFinding {
   suggestedMarker?: Marker;
   suggestedSliceIndex?: number;
   /**
+   * Flash prose for the Live teaching pack. Coordinates are not accepted here —
+   * drive anchors are filled from the recorded track and the saved finding.
+   */
+  whatToNotice?: string;
+  pearl?: string;
+  mimics?: string[];
+  /** 1 = most urgent. The pack sorts findings by this. */
+  clinicalImportance?: number;
+  whyClinicallyFirst?: string;
+  reportLine?: string;
+  /**
    * Cleaned teach script for this segment's slice of the track. Preview only —
    * mergeCapture rebuilds it onto the Finding at save time.
    */
@@ -478,6 +497,12 @@ export interface StructuredSessionFinding extends StructuredFinding {
 export interface StructuredSession {
   transcript: string;
   findings: StructuredSessionFinding[];
+  /**
+   * Flash prose plus drive anchors from the viewer log. Provisional finding
+   * ids (`seg_N`) until the take is saved. Live loads the saved pack, not this
+   * preview, and never receives the recording.
+   */
+  liveTeachingPack?: LiveTeachingPack;
 }
 
 // ============================================================================
