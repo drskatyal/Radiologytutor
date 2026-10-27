@@ -6,6 +6,8 @@
  * See docs/HARNESS.md (Grok Bot parallel: tools on a persistent computer).
  */
 
+import { parseSetSeriesArgs } from "../setSeries";
+
 /** Minimal tool schema (Gemini / OpenAPI-compatible). */
 export type HarnessToolDeclaration = {
   name: string;
@@ -30,6 +32,16 @@ export type HarnessViewerAction =
       sliceIndex: number;
       seriesInstanceUID?: string;
       findingId?: string;
+    }
+  | {
+      type: "set_series";
+      /** Authored SeriesInstanceUID. Never a model-invented value. */
+      seriesInstanceUID: string;
+      sliceIndex?: number;
+      /** Window width. Present only together with `wc`. */
+      ww?: number;
+      /** Window center. Present only together with `ww`. */
+      wc?: number;
     }
   | { type: "zoom_to"; zoom: number; panX?: number; panY?: number }
   | { type: "set_zoom"; zoom: number; panX?: number; panY?: number }
@@ -71,6 +83,24 @@ const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
     name: "prev_in_tour",
     description: "Go back to the previous finding in tour order.",
     parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "set_series",
+    description:
+      "Switch the active DICOM series (T1, T2, FLAIR, DWI, post-contrast, prior). seriesInstanceUID must be copied from the case series list or from a finding's series=, drive.series, or compare.series. Never invent a UID. Optional sliceIndex is the 0-based index on that series. Optional ww and wc are the authored window width and center. Omit sliceIndex to keep the current slice. Omit ww and wc to keep the current window.",
+    parameters: {
+      type: "object",
+      properties: {
+        seriesInstanceUID: {
+          type: "string",
+          description: "SeriesInstanceUID copied from the case series list or finding.drive / finding.compare",
+        },
+        sliceIndex: { type: "number", description: "0-based stack index on that series" },
+        ww: { type: "number", description: "Authored window width" },
+        wc: { type: "number", description: "Authored window center" },
+      },
+      required: ["seriesInstanceUID"],
+    },
   },
   {
     name: "set_window",
@@ -236,6 +266,8 @@ export function harnessActionFromCall(call?: {
         findingId,
       };
     }
+    case "set_series":
+      return parseSetSeriesArgs(call.args) ?? { type: "none" };
     case "zoom_to":
     case "set_zoom": {
       const zoom = Number(call.args.zoom);

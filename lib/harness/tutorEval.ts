@@ -34,6 +34,7 @@ import { buildPerformancePlan, splitSentences } from "../performancePlan";
 import { resolveTeachingGuide as resolveFindingGuide } from "../teachingGuide";
 import type { CaseData, Finding, TeachViewerAction } from "../types";
 import { HARNESS_VIEWER_TOOLS, type HarnessViewerAction } from "./tools";
+import { authoredSeriesAllowlist } from "../setSeries";
 
 /** WW/WC tolerance. 400/40 vs 1500/-600 fails; a 10-unit nudge passes. */
 export const VOI_TOLERANCE = 20;
@@ -1233,6 +1234,8 @@ export function applyActions(
   const effects: ViewerEffect[] = [];
   const seated: string[] = [];
   const ordered = findings.slice().sort((a, b) => a.order - b.order);
+  const seriesAllow = authoredSeriesAllowlist({ findings: ordered });
+  if (viewer.seriesInstanceUID) seriesAllow.add(viewer.seriesInstanceUID);
 
   actions.forEach((action, seq) => {
     if (action.type === "none") return;
@@ -1286,15 +1289,76 @@ export function applyActions(
     }
     if (action.type === "scroll_to") {
       if (!Number.isFinite(action.sliceIndex)) return;
+      if (action.seriesInstanceUID && !seriesAllow.has(action.seriesInstanceUID)) return;
+      let sub = 0;
+      if (action.seriesInstanceUID && viewer.seriesInstanceUID !== action.seriesInstanceUID) {
+        viewer.seriesInstanceUID = action.seriesInstanceUID;
+        effects.push({
+          type: "series",
+          seq,
+          sub,
+          source: "scroll_to",
+          seriesInstanceUID: action.seriesInstanceUID,
+          findingId: viewer.activeFindingId ?? undefined,
+        });
+        sub += 1;
+      }
       viewer.sliceIndex = action.sliceIndex;
       effects.push({
         type: "scroll",
         seq,
-        sub: 0,
+        sub,
         source: "scroll_to",
         sliceIndex: action.sliceIndex,
         findingId: viewer.activeFindingId ?? undefined,
       });
+      return;
+    }
+    if (action.type === "set_series") {
+      if (!seriesAllow.has(action.seriesInstanceUID)) return;
+      let sub = 0;
+      if (viewer.seriesInstanceUID !== action.seriesInstanceUID) {
+        viewer.seriesInstanceUID = action.seriesInstanceUID;
+        effects.push({
+          type: "series",
+          seq,
+          sub,
+          source: "set_series",
+          seriesInstanceUID: action.seriesInstanceUID,
+          findingId: viewer.activeFindingId ?? undefined,
+        });
+        sub += 1;
+      }
+      if (action.sliceIndex != null && Number.isFinite(action.sliceIndex)) {
+        viewer.sliceIndex = action.sliceIndex;
+        effects.push({
+          type: "scroll",
+          seq,
+          sub,
+          source: "set_series",
+          sliceIndex: action.sliceIndex,
+          findingId: viewer.activeFindingId ?? undefined,
+        });
+        sub += 1;
+      }
+      if (
+        action.ww != null &&
+        action.wc != null &&
+        Number.isFinite(action.ww) &&
+        Number.isFinite(action.wc)
+      ) {
+        viewer.windowWidth = action.ww;
+        viewer.windowCenter = action.wc;
+        effects.push({
+          type: "window",
+          seq,
+          sub,
+          source: "set_series",
+          windowWidth: action.ww,
+          windowCenter: action.wc,
+          findingId: viewer.activeFindingId ?? undefined,
+        });
+      }
       return;
     }
     if (action.type === "zoom_to" || action.type === "set_zoom") {
