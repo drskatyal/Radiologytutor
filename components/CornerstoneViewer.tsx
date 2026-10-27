@@ -480,6 +480,7 @@ export default function CornerstoneViewer({
   onEvent,
   className,
   instanceId = "primary",
+  imageOverlay,
 }: {
   source?: ViewerSource;
   /**
@@ -516,6 +517,12 @@ export default function CornerstoneViewer({
    * layout). Must be stable for the life of the mount. Default "primary".
    */
   instanceId?: string;
+  /**
+   * Drawn on top of the pixels and under the toolbar (replay laser, annotate
+   * hit layer, REC HUD). Keeps those controls on the image when the stage
+   * goes fullscreen and the image is no longer a square.
+   */
+  imageOverlay?: ReactNode;
 }) {
   const chrome = resolveChrome(showToolbar, chromeProp);
   const docked = chrome === "dock";
@@ -1890,6 +1897,7 @@ export default function CornerstoneViewer({
             </span>
           </div>
         )}
+        {imageOverlay}
       </div>
       {(docked || edge) && toolbar}
       {docked && (

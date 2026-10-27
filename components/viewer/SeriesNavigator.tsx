@@ -156,6 +156,7 @@ export function SeriesNavigator({
                     type="button"
                     aria-current={active ? "true" : undefined}
                     aria-label={`${title}${s.modality ? `, ${s.modality}` : ""}, ${s.instanceCount} image${s.instanceCount === 1 ? "" : "s"}`}
+                    title={title}
                     onClick={() => onSelect(i)}
                     onKeyDown={(e) => onKeyDown(e, i)}
                     className={cn(

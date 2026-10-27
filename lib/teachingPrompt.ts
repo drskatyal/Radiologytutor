@@ -5,6 +5,7 @@ import { secondaryAnchor } from "./findingAnchors";
 import { formatMeasurementBrief } from "./findingMeasurements";
 import { formatFindingReadingContext } from "./readingDigest";
 import { formatTeachingGuideLine, resolveTeachingGuide } from "./teachingGuide";
+import type { SeriesCatalogEntry } from "./setSeries";
 import type { CaseData, Finding } from "./types";
 
 export type TeachingMode = "guided" | "socratic" | "free" | "reporting" | "viva";
@@ -14,6 +15,11 @@ export interface TeachingPromptInput {
   modality: string;
   mode: TeachingMode;
   findingsContext: string;
+  /**
+   * Series the viewer can actually open. Built by `formatSeriesCatalog`.
+   * Empty when the case has no resolved series.
+   */
+  seriesCatalog?: string;
   currentFindingId?: string;
   /**
    * Socratic / viva rung for this turn. 0 look-cue, 1 location, 2 mimic,
@@ -53,6 +59,10 @@ export function formatFindingsContext(findings: Finding[]): string {
       if (f.sliceIndex != null) bits.push(`sliceIndex=${f.sliceIndex}`);
       if (f.sopInstanceUID) bits.push(`sop=${f.sopInstanceUID}`);
       if (f.seriesInstanceUID) bits.push(`series=${f.seriesInstanceUID}`);
+      const driveUid = packUid(f, "drive");
+      const compareUid = packUid(f, "compare");
+      if (driveUid) bits.push(`drive.series=${driveUid}`);
+      if (compareUid) bits.push(`compare.series=${compareUid}`);
       if (
         f.windowWidth != null &&
         f.windowCenter != null &&
@@ -101,6 +111,34 @@ export function formatFindingsContext(findings: Finding[]): string {
     .join("\n");
 }
 
+/**
+ * Series catalog for the tutor. UIDs are tool arguments only — the model
+ * copies them into set_series and must not speak them.
+ */
+export function formatSeriesCatalog(series: SeriesCatalogEntry[]): string {
+  if (series.length === 0) return "";
+  const lines = series.map((seriesItem, index) => {
+    const bits = [`uid=${seriesItem.seriesInstanceUID}`];
+    if (seriesItem.modality) bits.push(seriesItem.modality);
+    if (seriesItem.description?.trim()) bits.push(seriesItem.description.trim());
+    if (seriesItem.seriesNumber != null) bits.push(`#${seriesItem.seriesNumber}`);
+    if (seriesItem.instanceCount != null) {
+      bits.push(`${seriesItem.instanceCount} image${seriesItem.instanceCount === 1 ? "" : "s"}`);
+    }
+    return `${index + 1}. ${bits.join(" · ")}`;
+  });
+  return `Series on this case — set_series may use ONLY these uid values. Never invent a SeriesInstanceUID. Descriptions are labels, not coordinates:\n${lines.join("\n")}`;
+}
+
+function packUid(finding: Finding, key: "drive" | "compare"): string | undefined {
+  const pack = finding as Finding & {
+    drive?: { seriesInstanceUID?: string };
+    compare?: { seriesInstanceUID?: string };
+  };
+  const uid = pack[key]?.seriesInstanceUID?.trim();
+  return uid || undefined;
+}
+
 export function formatFindingsContextFromCase(data: CaseData): string {
   const findings = formatFindingsContext(data.findings);
   const diagnosis = data.primaryDiagnosis?.trim();
@@ -122,17 +160,19 @@ export function examFallbackStem(findingCount: number): string {
 export function teachingSystemPrompt(input: TeachingPromptInput): string {
   const base = `You are an attending radiologist running a teaching session on "${input.caseTitle}" (${input.modality}).
 You were armed with how THIS consultant read THIS scan (authored findings + optional reading digests from their capture). Teach interactively — discuss, quiz, explain, web-search guidelines — like a teacher in a reading room. You are NOT a tape playing their recording.
-You drive a self-hosted DICOM viewer ONLY through tools: show_finding, next_in_tour, prev_in_tour, set_window, point_to, scroll_to, zoom_to, set_invert, draw_annotation, play_guide.
-You cannot see pixels. Reason ONLY from the authored finding list. Never invent anatomy, measurements, diagnoses, slice indexes, zoom values, or click coordinates.
+You drive a self-hosted DICOM viewer ONLY through tools: show_finding, next_in_tour, prev_in_tour, set_series, set_window, point_to, scroll_to, zoom_to, set_invert, draw_annotation, play_guide.
+You cannot see pixels. Reason ONLY from the authored finding list and the series list. Never invent anatomy, measurements, diagnoses, slice indexes, zoom values, click coordinates, or a SeriesInstanceUID.
 ${input.currentFindingId ? `The student is on finding id=${input.currentFindingId}.` : "No finding is active yet."}
 
 Authored findings (tour order) — ids and coordinates are for tools only, never spoken. Lines may include read=… (stats) and guide=[scroll→ → window → zoom → hold → point → draw → say] — guide= is the consultant walk-through (where to go, which window, what to notice, what to say). Call play_guide with that finding id to perform it on the teacher's clock while you speak. scroll_to / zoom_to / set_invert / draw_annotation are for a single authored step, copying values from guide= only:
 ${input.findingsContext}
+${input.seriesCatalog ? `\n${input.seriesCatalog}\n` : ""}
 
 Speech contract:
 - Every turn speaks 1–3 short spoken sentences in the message text. Exam-room tone. No markdown, no bullets, no finding ids, no percentages. Tool calls do not replace speech: whenever a tool fires, the spoken answer is required in that same turn. A tool-only reply with an empty message is invalid.
 - When the student should LOOK, call a tool in the SAME turn as the narration. Do not name the finding in the first sentence. The FIRST sentence is a look-cue ("Look at this slice.") so speech and the laser start together; name the finding only in a later sentence, then one pearl.
-- You may call more than one tool in one turn (window, then show_finding). They play in order, one per sentence.
+- You may call more than one tool in one turn (set_series, then show_finding). They play in order, one per sentence.
+- MRI and multi-series studies: call set_series to move between sequences the way the teacher would (T1, T2, FLAIR, DWI, post-contrast, prior). Copy uid= from the series list, or series= / drive.series / compare.series from a finding. If the uid is not in that list, do not call set_series. Optional sliceIndex, ww, and wc must be copied from that finding — omit them to leave the slice and window alone.
 - Prefer show_finding (animates to the author's click AND applies authored window/level — scrolls when Δ is small, snaps when bone↔lung). Use point_to to re-emphasize.
 - When the student is on the wrong window, call set_window FIRST with the finding's voi(ww,wc), then show_finding — never invent WW/WC; only use authored voi.
 - When meas=[…] is present (length mm, ROI mean HU), you MAY cite those exact authored numbers; never invent measurements.
@@ -187,7 +227,7 @@ Speech contract:
   return (
     base +
     `\n\nMODE: TEACH (autonomous attending). You teach a radiology registrar how to REPORT this scan.
-- You drive the viewer AND speak — interleaved. Every teaching beat should call tools (play_guide / show_finding / set_window / point_to / scroll_to / zoom_to) in the SAME turn as the narration.
+- You drive the viewer AND speak — interleaved. Every teaching beat should call tools (play_guide / show_finding / set_series / set_window / point_to / scroll_to / zoom_to) in the SAME turn as the narration.
 - When the current finding has guide=[…], call play_guide once with that id so the viewer scrolls, windows, zooms, and draws like the consultant while you speak. The client also plays a stored guide on its own during the auto-tour when you are not called.
 - Opening ("Begin teaching…" / teach-now prompts): the client seats the finding (and plays its guide when one exists); you narrate and MAY play_guide / set_window / point_to / show_finding to reinforce. Do not call next_in_tour during an auto-tour beat — the client advances after you finish speaking.
 - 1–3 short spoken sentences per finding. Exam-room tone. Teach observation + report language (what goes in Findings vs Impression). Never return tools without those sentences.

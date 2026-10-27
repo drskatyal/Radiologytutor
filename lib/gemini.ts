@@ -20,6 +20,7 @@ import {
   harnessActionFromCall,
   type HarnessViewerAction,
 } from "./harness/tools";
+import { sanitizeSeriesActions } from "./setSeries";
 
 /** Orchestration / STT / tools. Gemini 3.8 Flash (stable). Override with GEMINI_MODEL. */
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
@@ -403,8 +404,15 @@ export interface TeachingPlanInput {
   mode: "guided" | "socratic" | "free" | "reporting" | "viva";
   /** Compact, ordered finding context the tutor reasons over. */
   findingsContext: string;
+  /** Series catalog (`formatSeriesCatalog`). UIDs the model may copy. */
+  seriesCatalog?: string;
   /** The finding the student is currently looking at (for "what is this?"). */
   currentFindingId?: string;
+  /**
+   * SeriesInstanceUIDs set_series / scroll_to may name. When set, any other
+   * UID is removed before the reply leaves the server.
+   */
+  seriesAllowlist?: readonly string[];
   /**
    * Authored findings used only when the model returns tools and no speech.
    * The spoken fallback copies label / description / teaching points from here.
@@ -476,10 +484,13 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     .filter((a) => a.type !== "none");
 
   // Reveal without a seat leaves the slice still and Located unchanged.
-  const actions =
+  const seated =
     input.mode === "socratic" || input.mode === "viva"
       ? seatExamReveal(called, hintLevel, input.currentFindingId ?? hinted?.id)
       : called;
+  const actions = input.seriesAllowlist
+    ? sanitizeSeriesActions(seated, new Set(input.seriesAllowlist))
+    : seated;
 
   // Tool-only replies leave Discussion blank and stall Teach on speech onEnd.
   // Fill a drive-first line from the authored finding; never invent anatomy.

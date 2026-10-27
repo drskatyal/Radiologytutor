@@ -49,6 +49,7 @@ import {
   resolveLiveTeachingPack,
   validateLiveToolCall,
 } from "@/lib/liveTeachingPack";
+import { authoredSeriesAllowlist, sanitizeSeriesActions } from "@/lib/setSeries";
 import {
   authoredGuideLines,
   guideHasMotion,
@@ -187,6 +188,23 @@ export function useStudentSession(
   const checkInResolveRef = useRef<((index: number) => void) | null>(null);
   /** Which assistant bubble the next guide line appends to. */
   const narrateTurnRef = useRef<string | null>(null);
+  /** UIDs set_series may load. Rebuilt every render from the rail + anchors. */
+  const seriesAllowRef = useRef<Set<string>>(new Set());
+  const seriesAllow = authoredSeriesAllowlist({
+    series,
+    studyRefs: caseData.studyRefs,
+    findings: caseData.findings,
+    pack: caseData.liveTeachingPack,
+  });
+  const loadedSeries = new Set(series.map((item) => item.seriesInstanceUID));
+  if (loadedSeries.size > 0) {
+    for (const uid of seriesAllow) {
+      if (!loadedSeries.has(uid)) seriesAllow.delete(uid);
+    }
+  }
+  seriesAllowRef.current = seriesAllow;
+  const seriesCatalogRef = useRef(series);
+  seriesCatalogRef.current = series;
   const checkInsRef = useRef<FindingCheckInState[]>([]);
 
   const [ready, setReady] = useState(false);
@@ -752,12 +770,42 @@ export function useStudentSession(
         case "scroll_to": {
           if (
             action.seriesInstanceUID &&
+            (!seriesAllowRef.current.has(action.seriesInstanceUID) ||
+              !controls.current?.seriesUIDs.includes(action.seriesInstanceUID))
+          ) {
+            break;
+          }
+          if (
+            action.seriesInstanceUID &&
             controls.current?.seriesUIDs.includes(action.seriesInstanceUID)
           ) {
             controls.current.showSeries(action.seriesInstanceUID);
             await controls.current.settle();
           }
           await controls.current?.showState({ sliceIndex: action.sliceIndex }, 520);
+          break;
+        }
+        case "set_series": {
+          const uid = action.seriesInstanceUID;
+          if (!uid || !seriesAllowRef.current.has(uid)) break;
+          if (!controls.current?.seriesUIDs.includes(uid)) break;
+          if (controls.current.activeSeriesUID !== uid) {
+            controls.current.showSeries(uid);
+            await controls.current.settle();
+          }
+          const view: {
+            sliceIndex?: number;
+            windowWidth?: number;
+            windowCenter?: number;
+          } = {};
+          if (action.sliceIndex != null) view.sliceIndex = action.sliceIndex;
+          if (action.ww != null && action.wc != null) {
+            view.windowWidth = action.ww;
+            view.windowCenter = action.wc;
+          }
+          if (view.sliceIndex != null || view.windowWidth != null) {
+            await controls.current.showState(view, 520);
+          }
           break;
         }
         case "zoom_to":
@@ -919,6 +967,13 @@ export function useStudentSession(
               activeIndexRef.current >= 0
                 ? orderedFindings[activeIndexRef.current]?.id
                 : undefined,
+            series: seriesCatalogRef.current.map((item) => ({
+              seriesInstanceUID: item.seriesInstanceUID,
+              modality: item.modality,
+              description: item.description,
+              seriesNumber: item.seriesNumber,
+              instanceCount: item.instanceCount,
+            })),
           }),
         });
         if (staleTutor()) return;
@@ -1056,8 +1111,11 @@ export function useStudentSession(
         setAiAvailable(true);
 
         const opening = question === "Begin the session.";
-        let actions = normalizeTutorActions(
-          data as { action?: ViewerAction; actions?: ViewerAction[] }
+        let actions = sanitizeSeriesActions(
+          normalizeTutorActions(
+            data as { action?: ViewerAction; actions?: ViewerAction[] }
+          ),
+          seriesAllowRef.current
         );
         // Opening a viva: we already seated the slice. Don't spoil the
         // marker just because the model called show_finding with the stem.

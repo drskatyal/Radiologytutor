@@ -17,7 +17,12 @@ import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCaseForOrg } from "@/lib/cases";
-import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
+import { formatFindingsContextFromCase, formatSeriesCatalog } from "@/lib/teachingPrompt";
+import {
+  authoredSeriesAllowlist,
+  parseSeriesCatalog,
+  promptSeriesCatalog,
+} from "@/lib/setSeries";
 import { spokenFindingSources } from "@/lib/tutorSpeech";
 
 export const runtime = "nodejs";
@@ -91,6 +96,15 @@ export async function POST(req: NextRequest) {
     }));
 
     const findings = spokenFindingSources(data.findings, data.primaryDiagnosis);
+    const clientSeries = parseSeriesCatalog(body.series);
+    const authored = authoredSeriesAllowlist({
+      series: clientSeries,
+      studyRefs: data.studyRefs,
+      findings: data.findings,
+      pack: data.liveTeachingPack,
+    });
+    const seriesEntries = promptSeriesCatalog(clientSeries, authored);
+    const seriesAllowlist = seriesEntries.map((entry) => entry.seriesInstanceUID);
 
     // history excludes the current question. runTeachingPlan turns that into
     // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
@@ -101,6 +115,8 @@ export async function POST(req: NextRequest) {
       modality: data.modality,
       mode,
       findingsContext: formatFindingsContextFromCase(data),
+      seriesCatalog: formatSeriesCatalog(seriesEntries),
+      seriesAllowlist,
       currentFindingId,
       findings,
     });

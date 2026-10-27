@@ -6,10 +6,11 @@
  * saved finding and its recorded track. A coordinate, slice, window, or
  * series UID that arrived in model JSON is ignored.
  *
- * `set_series` is a Live tool, not a harness tutor tool. The name and
- * arguments stay stable for the series sidepane: seriesInstanceUID plus
- * optional sliceIndex, ww, and wc. Only series UIDs authored on this pack
- * or its findings are accepted.
+ * `set_series` uses one argument list on Live and on the text tutor:
+ * seriesInstanceUID plus optional sliceIndex, ww, and wc. Live rejects a
+ * UID, slice, or window that is not on this pack. The text tutor drops a
+ * UID that is not in the same authored set (rail, study refs, findings,
+ * drive, compare, authoredSeriesInstanceUIDs).
  */
 
 import {

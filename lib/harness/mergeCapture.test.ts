@@ -29,6 +29,7 @@ test("HARNESS_VIEWER_TOOLS declares viewer drives including the teach script", (
     "prev_in_tour",
     "scroll_to",
     "set_invert",
+    "set_series",
     "set_window",
     "set_zoom",
     "show_finding",

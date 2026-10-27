@@ -36,7 +36,7 @@ const track: RecordedTrack = {
   ],
 };
 
-test("set_series keeps the sidepane argument names and stays off the harness list", () => {
+test("set_series keeps the sidepane argument names on Live and the text tutor", () => {
   const tool = LIVE_PACK_TOOLS.find((item) => item.name === "set_series");
   assert.ok(tool);
   assert.deepEqual(tool?.parameters, SET_SERIES_PARAMETERS);
@@ -55,10 +55,19 @@ test("set_series keeps the sidepane argument names and stays off the harness lis
     "web_search",
     "zoom_to",
   ]);
-  assert.equal(
-    HARNESS_VIEWER_TOOLS.some((item) => item.name === "set_series"),
-    false
-  );
+  const harness = HARNESS_VIEWER_TOOLS.find((item) => item.name === "set_series");
+  assert.ok(harness);
+  const harnessParams = harness.parameters as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  assert.deepEqual(Object.keys(harnessParams.properties ?? {}).sort(), [
+    "seriesInstanceUID",
+    "sliceIndex",
+    "wc",
+    "ww",
+  ]);
+  assert.deepEqual(harnessParams.required, ["seriesInstanceUID"]);
 });
 
 test("drive anchors come from the finding, never from model prose", () => {

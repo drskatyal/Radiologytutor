@@ -39,7 +39,7 @@ import { useStudentSession, type SessionMode } from "./useStudentSession";
 import { TutorCaption } from "./TutorCaption";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
-import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
+import { ImagingLayout } from "@/components/viewer/ImagingLayout";
 import { ReportCoach } from "./ReportCoach";
 
 type PanelTab = "lesson" | "ask";
@@ -128,7 +128,6 @@ export default function StudentSession({
     },
     [series]
   );
-  const showNavigator = series.length > 1;
 
   const typingRef = useRef(false);
   const onTypingFocus = useCallback(() => {
@@ -388,56 +387,25 @@ export default function StudentSession({
             </IconButton>
           </div>
         </div>
-        {showNavigator && (
-          <div className="flex gap-1.5 overflow-x-auto border-t border-subtle px-3 py-2 md:hidden">
-            {series.map((item, i) => {
-              const title =
-                item.description?.trim() ||
-                (item.seriesNumber != null ? `Series ${item.seriesNumber}` : `Series ${i + 1}`);
-              const active = i === activeSeriesIndex;
-              return (
-                <button
-                  key={item.seriesInstanceUID}
-                  type="button"
-                  aria-current={active ? "true" : undefined}
-                  onClick={() => onSeriesChange(item.seriesInstanceUID)}
-                  className={cn(
-                    "h-9 shrink-0 rounded-lg border px-3 text-xs font-medium",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-                    active
-                      ? "border-accent/50 bg-accent/15 text-accent"
-                      : "border-subtle bg-elevated text-secondary"
-                  )}
-                >
-                  {title}
-                </button>
-              );
-            })}
-          </div>
-        )}
       </header>
 
       <div className="relative flex min-h-0 flex-1">
-        {showNavigator && (
-          <div className="hidden min-h-0 w-44 shrink-0 flex-col border-r border-subtle md:flex">
-            <SeriesNavigator
-              series={series}
-              activeIndex={activeSeriesIndex}
-              onSelect={(i) => {
-                const uid = series[i]?.seriesInstanceUID;
-                if (uid) onSeriesChange(uid);
-              }}
-              className="h-full min-h-0 w-full"
-            />
-          </div>
-        )}
         <div
           className={cn(
             "relative min-h-0 min-w-0 flex-1 bg-imaging",
             railOpen && "md:mr-[380px]"
           )}
         >
-          <div className="absolute inset-0">
+          <ImagingLayout
+            fill
+            series={series}
+            activeIndex={activeSeriesIndex}
+            onSelectSeries={(index) => {
+              const uid = series[index]?.seriesInstanceUID;
+              if (uid) onSeriesChange(uid);
+            }}
+            className="absolute inset-0"
+          >
             <StudentViewer
           source={source}
           series={series}
@@ -488,7 +456,7 @@ export default function StudentSession({
               : null
           }
             />
-          </div>
+          </ImagingLayout>
         </div>
 
       <aside
