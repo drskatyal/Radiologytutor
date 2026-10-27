@@ -172,7 +172,7 @@ export function LocateStage({
           <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
           {marking
             ? "Click the abnormality on the image."
-            : "Wheel scrolls, right-drag zooms, left-drag windows. Then mark the finding."}
+            : "Drag scrolls the stack, pinch zooms. Window and pan are on the toolbar. Then mark the finding."}
         </p>
         {ready && (
           <Button
@@ -187,7 +187,7 @@ export function LocateStage({
         )}
       </div>
 
-      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-strong bg-imaging">
+      <div className="relative aspect-[4/3] w-full max-w-full overflow-hidden rounded-lg border border-strong bg-imaging max-lg:aspect-auto max-lg:h-[min(72dvh,36rem)]">
         {state.status === "loading" && <StageMessage spinner label="Loading study…" />}
 
         {state.status === "no-imaging" && (
@@ -226,7 +226,8 @@ export function LocateStage({
               controls={controls}
               onReady={handleReady}
               instanceId={`locate-${questionId}`}
-              showToolbar={false}
+              chrome="edge"
+              defaultTool="StackScroll"
               className="h-full w-full"
             />
 
@@ -243,7 +244,7 @@ export function LocateStage({
                 ref={hitRef}
                 type="button"
                 onClick={handleClick}
-                className="absolute inset-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
+                className="absolute inset-x-0 bottom-14 top-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
                 aria-label="Click the image where the finding is located"
               />
             )}

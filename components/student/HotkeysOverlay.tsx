@@ -6,9 +6,11 @@ import { SERIES_RAIL_TOGGLE_KEY } from "@/lib/seriesRailPreference";
 const ROWS: { keys: string[]; does: string }[] = [
   { keys: ["Space"], does: "Interrupt the attending, then hold to answer" },
   { keys: ["Wheel"], does: "Scroll the stack" },
+  { keys: ["Drag"], does: "Scroll the stack (default). One finger does the same." },
+  { keys: ["Pinch"], does: "Zoom" },
   { keys: ["Right-drag"], does: "Zoom" },
   { keys: ["Middle-drag"], does: "Pan" },
-  { keys: ["Left-drag"], does: "Use the tool selected on the image" },
+  { keys: ["W/L"], does: "Window and level — select the tool, then drag" },
   { keys: ["?"], does: "Show or hide this cheatsheet" },
   { keys: ["C"], does: "Toggle compare (second series / prior)" },
   { keys: ["R"], does: "Reveal the current finding (Exam)" },
