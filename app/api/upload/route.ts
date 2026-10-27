@@ -17,6 +17,10 @@
 // De-id: orthancIngestInstance runs lib/deid.ts (header identity gate) and
 // refuses residual PatientName/ID/DOB/etc. Pixel OCR is not claimed. Upload
 // already-anonymized teaching studies; burned-in PHI still needs a later scanner.
+//
+// Prove file: public/dicom/teach_anon_mr.dcm (identity tags blanked). The
+// bundled viewer sample public/dicom/emri_small.dcm still carries
+// PatientBirthDate 20000101 and is refused on purpose.
 
 import { NextRequest, NextResponse } from "next/server";
 import AdmZip from "adm-zip";
@@ -120,9 +124,29 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const result = await ingestUpload(orgId, form);
+  return NextResponse.json(result.body, { status: result.status });
+}
+
+export interface UploadIngestOk {
+  stored: number;
+  series: SeriesOut[];
+  failed: SkippedOut[];
+  skipped: SkippedOut[];
+}
+
+export type UploadIngestResult =
+  | { status: 400; body: { error: string } }
+  | { status: 200; body: UploadIngestOk };
+
+/**
+ * Classify, de-id gate, and STOW. `POST` calls this only after `requireAuthorOrg`.
+ * Tests call it directly so the gate can be proved without a session.
+ */
+export async function ingestUpload(orgId: string, form: FormData): Promise<UploadIngestResult> {
   const uploaded = form.getAll("files").filter((f): f is File => f instanceof File);
   if (uploaded.length === 0) {
-    return NextResponse.json({ error: "No files were uploaded." }, { status: 400 });
+    return { status: 400, body: { error: "No files were uploaded." } };
   }
 
   const skipped: SkippedOut[] = [];
@@ -243,7 +267,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ stored, series, failed, skipped });
+  return { status: 200, body: { stored, series, failed, skipped } };
 }
 
 /** Turn an archive error into something a radiologist can act on. */
