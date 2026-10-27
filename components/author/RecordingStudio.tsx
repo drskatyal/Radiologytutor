@@ -835,6 +835,15 @@ export function RecordingStudio({
             >
               Save as draft &amp; exit
             </Button>
+            {caseData.findings.length > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => router.push(`/case/${encodeURIComponent(caseData.caseId)}`)}
+              >
+                Test as student
+              </Button>
+            )}
             <Button
               size="sm"
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
@@ -1090,6 +1099,10 @@ export function RecordingStudio({
               !usingSample ? activeSeries?.seriesInstanceUID : undefined
             }
             studyInstanceUID={!usingSample ? activeSeries?.studyInstanceUID : undefined}
+            modality={caseData.modality}
+            clinicalQuestion={caseData.clinicalHistory}
+            diagnosis={caseData.primaryDiagnosis}
+            studySeriesUIDs={(caseData.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? [])}
             onCaseUpdated={setCaseData}
           />
           )}

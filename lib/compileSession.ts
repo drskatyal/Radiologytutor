@@ -13,6 +13,7 @@
 
 import {
   coerceCompileFrames,
+  compileVideoProcessing,
   prepareCompileFrames,
   trackClockSummary,
   type CompileFrame,
@@ -20,13 +21,15 @@ import {
 import {
   markerNearTime,
   segmentMidMs,
+  seriesNearTime,
   sliceNearTime,
   sliceTrack,
 } from "./captureSession";
 import { generate, parseJsonLoose, userParts, type GeminiPart } from "./gemini";
+import { materializeLiveTeachingPack } from "./liveTeachingPack";
 import { STRUCTURE_FINDING_SYSTEM, STRUCTURE_SESSION_SYSTEM } from "./teachingPrompt";
 import { guideForFindingTrack } from "./teachingGuide";
-import type { RecordedTrack, StructuredSession, StructuredSessionFinding } from "./types";
+import type { Finding, RecordedTrack, StructuredSession, StructuredSessionFinding } from "./types";
 
 const STILL_ADDENDUM = `
 
@@ -36,6 +39,11 @@ Viewport stills:
 - Do NOT output pixel coordinates, marker positions, or slice indices. The server places those from the viewer log.
 - Never invent a lesion, measurement, or diagnosis that was neither spoken nor clearly visible in a still.`;
 
+export interface CompileVideo {
+  base64: string;
+  mimeType: string;
+}
+
 export interface CompileSessionInput {
   audioBase64?: string;
   audioMime?: string;
@@ -43,6 +51,16 @@ export interface CompileSessionInput {
   durationMs: number;
   track?: RecordedTrack;
   frames?: CompileFrame[];
+  /**
+   * Viewer-only recording of the take. Long takes are sent to Flash with
+   * agentic video processing. This file is never forwarded to Gemini Live.
+   */
+  video?: CompileVideo;
+  caseId?: string;
+  modality?: string;
+  clinicalQuestion?: string;
+  diagnosis?: string;
+  studySeriesUIDs?: string[];
 }
 
 export interface CompileGenerateOpts {
@@ -66,8 +84,12 @@ export function compileSessionRequest(input: CompileSessionInput): {
   systemInstruction: string;
   parts: GeminiPart[];
 } {
-  const frames = prepareCompileFrames(input.frames);
   const durationMs = Number(input.durationMs) || 0;
+  const videoProcessing = input.video?.base64 ? compileVideoProcessing(durationMs) : null;
+  // A long recording is explored by Flash. Attaching the still strip as well
+  // would tokenize the same pixels twice. Short takes keep static video plus stills.
+  const frames =
+    videoProcessing === "AGENTIC" ? [] : prepareCompileFrames(input.frames);
   const hint = input.transcript?.trim() ?? "";
   const clock = trackClockSummary(input.track);
   const hintBlock = hint
@@ -94,6 +116,13 @@ export function compileSessionRequest(input: CompileSessionInput): {
       text,
       audioBase64: input.audioBase64,
       audioMime: input.audioBase64 ? input.audioMime : undefined,
+      video: input.video?.base64
+        ? {
+            data: input.video.base64,
+            mimeType: input.video.mimeType || "video/webm",
+            mediaProcessing: videoProcessing ?? "STATIC",
+          }
+        : undefined,
       images: frames.map((frame) => ({
         mimeType: frame.mimeType,
         data: frame.base64,
@@ -128,11 +157,28 @@ function materializeFindings(
     const teachingPoints = Array.isArray(f.teachingPoints)
       ? f.teachingPoints.filter((point): point is string => typeof point === "string")
       : [];
+    const prose = f as StructuredSessionFinding & Record<string, unknown>;
+    const text = (key: string): string | undefined => {
+      const value = prose[key];
+      return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    };
+    const mimics = Array.isArray(prose.mimics)
+      ? prose.mimics.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
+      : [];
+    const importance = Number(prose.clinicalImportance);
     const sub = track ? sliceTrack(track, tStart, tEnd) : undefined;
+    // Marker, slice, window, and series stay on the track. Model coordinates are dropped.
     return {
       label: typeof f.label === "string" && f.label.trim() ? f.label.trim() : `Finding ${i + 1}`,
       description,
       teachingPoints,
+      whatToNotice: text("whatToNotice") ?? (description || undefined),
+      pearl: text("pearl") ?? teachingPoints[0],
+      mimics: mimics.length ? mimics : teachingPoints.slice(1),
+      ...(Number.isFinite(importance) && importance >= 1 ? { clinicalImportance: Math.round(importance) } : {}),
+      whyClinicallyFirst: text("whyClinicallyFirst"),
+      reportLine: text("reportLine"),
+      landmark: text("landmark"),
       tStartMs: tStart,
       tEndMs: tEnd,
       suggestedMarker: markerNearTime(track, mid) ?? undefined,
@@ -147,7 +193,7 @@ export async function compileStructuredSession(
   generateFn: CompileGenerate = generate
 ): Promise<StructuredSession> {
   const transcriptHint = input.transcript?.trim() ?? "";
-  if (!input.audioBase64 && !transcriptHint) {
+  if (!input.audioBase64 && !transcriptHint && !input.video?.base64) {
     throw new Error("audioBase64 or transcript is required");
   }
   const durationMs = Number(input.durationMs) || 0;
@@ -160,11 +206,62 @@ export async function compileStructuredSession(
   });
   const parsed = parseJsonLoose<Partial<StructuredSession>>(result.text);
   const rawFindings = Array.isArray(parsed.findings) ? parsed.findings : [];
+  const findings = materializeFindings(rawFindings, durationMs, input.track);
   return {
     transcript:
       typeof parsed.transcript === "string" && parsed.transcript.trim()
         ? parsed.transcript.trim()
         : transcriptHint,
-    findings: materializeFindings(rawFindings, durationMs, input.track),
+    findings,
+    liveTeachingPack: packFromCompiledFindings(input, findings),
   };
+}
+
+/** Drive anchors from the track clock. Flash prose is copied. Model coordinates are already gone. */
+function packFromCompiledFindings(
+  input: CompileSessionInput,
+  findings: StructuredSessionFinding[]
+): StructuredSession["liveTeachingPack"] {
+  const drafts: Finding[] = findings.map((segment, index) => {
+    const mid = segmentMidMs(segment.tStartMs, segment.tEndMs);
+    const sub = input.track ? sliceTrack(input.track, segment.tStartMs, segment.tEndMs) : undefined;
+    return {
+      id: `seg_${index}`,
+      label: segment.label,
+      description: segment.description,
+      teachingPoints: segment.teachingPoints,
+      state: " ",
+      marker: segment.suggestedMarker ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" },
+      order: segment.clinicalImportance ?? index + 1,
+      sliceIndex: segment.suggestedSliceIndex,
+      seriesInstanceUID: seriesNearTime(input.track, mid) ?? undefined,
+      windowWidth: sub?.start.ww,
+      windowCenter: sub?.start.wc,
+      track: sub,
+      teachingGuide: segment.teachingGuide,
+      tStartMs: segment.tStartMs,
+      tEndMs: segment.tEndMs,
+      landmark: segment.landmark,
+    };
+  });
+  return materializeLiveTeachingPack({
+    caseId: input.caseId || "compile",
+    modality: input.modality || "CT",
+    clinicalQuestion: input.clinicalQuestion,
+    diagnosis: input.diagnosis,
+    findings: drafts,
+    prose: findings.map((segment, index) => ({
+      id: `seg_${index}`,
+      tStartMs: segment.tStartMs,
+      label: segment.label,
+      whatToNotice: segment.whatToNotice,
+      pearl: segment.pearl,
+      mimics: segment.mimics,
+      clinicalImportance: segment.clinicalImportance,
+      whyClinicallyFirst: segment.whyClinicallyFirst,
+      reportLine: segment.reportLine,
+      landmark: segment.landmark,
+    })),
+    studySeriesUIDs: input.studySeriesUIDs,
+  });
 }

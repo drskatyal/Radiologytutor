@@ -12,7 +12,7 @@
 | Frames/audio cache | **S3-compatible** (`lib/r2.ts`): Cloudflare R2, or GCS via `R2_ENDPOINT`. Private. Not a public CDN |
 | AI | Gemini Flash orchestration (`GEMINI_MODEL`, default `gemini-3.8-flash`) behind `lib/gemini.ts`. Same env on Cloud Run, values in Secret Manager |
 | Live tutor voice | **ElevenLabs** clone when enrolled (`lib/voice.ts` / `lib/elevenlabs.ts`); Gemini TTS fallback |
-| Realtime voice fallback | Gemini Live native audio (`GEMINI_LIVE_MODEL`) via ephemeral token from `POST /api/voice/realtime` when TTS latency exceeds `VOICE_LATENCY_BUDGET_MS` — see `docs/CONSULTANT_READING.md` |
+| Student microphone | Gemini Live (`GEMINI_LIVE_MODEL`, default `gemini-3.8-live`) via ephemeral token from `POST /api/voice/realtime`. Flash (`gemini-3.8-flash`) compiles the LiveTeachingPack offline. Live does not receive the recording. |
 | Payments | Deferred — `lib/payments.ts` stub; Razorpay/Cashfree later |
 
 ## Roles

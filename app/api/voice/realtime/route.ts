@@ -1,9 +1,9 @@
-// POST /api/voice/realtime — mint a Gemini Live ephemeral token (latency fallback).
-// GET  /api/voice/realtime — capability info (model, ws URL, soft budget).
+// POST /api/voice/realtime — mint a Gemini Live ephemeral token.
+// GET  /api/voice/realtime — capability info (model, ws URL).
 //
-// The browser never sees GEMINI_API_KEY. After minting, it opens Google's
-// Live WebSocket with the short-lived token. Recorded walk-throughs never
-// use this path — only Layer 3 live Q&A when ElevenLabs/TTS is too slow.
+// The learner microphone calls POST, then opens Google's Live WebSocket with
+// the short-lived token. The browser never sees GEMINI_API_KEY. Minting stays
+// behind requireSession — anonymous clients do not get a token.
 
 import { NextResponse } from "next/server";
 import {

@@ -144,9 +144,9 @@ function ConversationHint() {
     <div className="animate-fade-up rounded-lg border border-subtle bg-elevated/50 p-4">
       <p className="text-sm font-medium text-primary">Discuss the case with your attending.</p>
       <p className="mt-1 text-sm text-muted">
-        In Teach mode the tutor drives the viewer while explaining how to report.
-        Interrupt anytime — ask “why that window?”, “what goes in Impression?”, or
-        switch to Exam for viva.
+        Open the microphone to start. The attending teaches on the study and the
+        captions land here. Scroll whenever you like — scrolling does not start
+        the session. Switch to Examiner when you want to be questioned.
       </p>
     </div>
   );

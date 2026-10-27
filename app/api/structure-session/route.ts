@@ -26,7 +26,9 @@ export async function POST(req: NextRequest) {
     const track = body.track as RecordedTrack | undefined;
     const transcriptHint = typeof body.transcript === "string" ? body.transcript.trim() : "";
 
-    if (!audioBase64 && !transcriptHint) {
+    const videoBase64 = typeof body.videoBase64 === "string" ? body.videoBase64 : "";
+    const videoMime = typeof body.videoMime === "string" ? body.videoMime : "video/webm";
+    if (!audioBase64 && !transcriptHint && !videoBase64) {
       return NextResponse.json(
         { error: "audioBase64 or transcript is required" },
         { status: 400 }
@@ -40,6 +42,14 @@ export async function POST(req: NextRequest) {
       durationMs,
       track,
       frames: coerceCompileFrames(body.frames),
+      video: videoBase64 ? { base64: videoBase64, mimeType: videoMime } : undefined,
+      caseId: typeof body.caseId === "string" ? body.caseId : undefined,
+      modality: typeof body.modality === "string" ? body.modality : undefined,
+      clinicalQuestion: typeof body.clinicalQuestion === "string" ? body.clinicalQuestion : undefined,
+      diagnosis: typeof body.diagnosis === "string" ? body.diagnosis : undefined,
+      studySeriesUIDs: Array.isArray(body.studySeriesUIDs)
+        ? body.studySeriesUIDs.filter((uid: unknown) => typeof uid === "string")
+        : undefined,
     });
 
     return NextResponse.json(session);

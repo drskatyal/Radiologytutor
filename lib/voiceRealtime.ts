@@ -1,5 +1,5 @@
 /**
- * Gemini Live (realtime) capability surface — latency fallback for live Q&A.
+ * Gemini Live capability surface — the learner session, not a TTS fallback.
  *
  * Production path: mint a short-lived ephemeral token server-side, then the
  * browser opens a direct WebSocket to Google (never with GEMINI_API_KEY).
@@ -7,6 +7,7 @@
  */
 
 import { geminiConfigured } from "./gemini";
+import { GEMINI_LIVE_WS_URL, liveMintConstraints } from "./geminiLiveProtocol";
 import {
   geminiLiveModelId,
   realtimeVoiceAvailable,
@@ -26,11 +27,11 @@ export type RealtimeVoiceSessionInfo = {
   /** Google Live WebSocket endpoint (AI Studio / Generative Language). */
   wsUrl: string;
   /** API version required for ephemeral Live tokens. */
-  apiVersion: "v1alpha";
+  /** Live socket version. Token mint itself stays on the v1alpha auth surface. */
+  apiVersion: "v1beta";
 };
 
-const LIVE_WS =
-  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent";
+const LIVE_WS = GEMINI_LIVE_WS_URL;
 
 export function getRealtimeVoiceInfo(): RealtimeVoiceSessionInfo {
   return {
@@ -39,7 +40,7 @@ export function getRealtimeVoiceInfo(): RealtimeVoiceSessionInfo {
     proxyPath: "/api/voice/realtime",
     preferAfterMs: VOICE_LATENCY_BUDGET_MS,
     wsUrl: LIVE_WS,
-    apiVersion: "v1alpha",
+    apiVersion: "v1beta",
   };
 }
 
@@ -48,7 +49,7 @@ export type EphemeralLiveToken = {
   token: string;
   model: string;
   wsUrl: string;
-  apiVersion: "v1alpha";
+  apiVersion: "v1beta";
   expireTime?: string;
   newSessionExpireTime?: string;
   preferAfterMs: number;
@@ -77,12 +78,9 @@ export async function mintRealtimeEphemeralToken(): Promise<EphemeralLiveToken> 
     uses: 1,
     expireTime,
     newSessionExpireTime,
-    liveConnectConstraints: {
-      model: `models/${model}`,
-      config: {
-        responseModalities: ["AUDIO"],
-      },
-    },
+    // Model + audio only. The browser adds the case prompt, viewer tools,
+    // and search. thinking_level is not part of this config.
+    liveConnectConstraints: liveMintConstraints(model),
   };
 
   // Bounded: a hung mint would otherwise hold the request open indefinitely.
@@ -127,7 +125,7 @@ export async function mintRealtimeEphemeralToken(): Promise<EphemeralLiveToken> 
     token: data.name,
     model,
     wsUrl: LIVE_WS,
-    apiVersion: "v1alpha",
+    apiVersion: "v1beta",
     expireTime: data.expireTime || expireTime,
     newSessionExpireTime: data.newSessionExpireTime || newSessionExpireTime,
     preferAfterMs: VOICE_LATENCY_BUDGET_MS,

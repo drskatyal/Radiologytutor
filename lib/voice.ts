@@ -6,9 +6,9 @@
  *   2. Gemini TTS (platform default)
  *   3. Caller falls back to browser speechSynthesis
  *
- * Gemini Live (realtime native audio) is the latency escape hatch — see
- * `preferRealtimeFallback` / docs/CONSULTANT_READING.md. Mint a short-lived
- * token via `/api/voice/realtime` when TTS exceeds VOICE_LATENCY_BUDGET_MS.
+ * Gemini Live (gemini-3.8-live) is the learner session. Opening the microphone
+ * mints a token via `/api/voice/realtime` and the browser speaks with the
+ * attending. TTS here is still the authored-guide and clone path.
  */
 
 import { geminiConfigured, synthesizeSpeech } from "./gemini";
@@ -153,15 +153,15 @@ export async function synthesizeTutorSpeech(
   };
 }
 
+/** Default Live model. gemini-3.8-live is GA and does not take thinking_level. */
+export const GEMINI_LIVE_MODEL_DEFAULT = "gemini-3.8-live";
+
 /**
- * Gemini Live model id for the realtime fallback path.
- * Override with GEMINI_LIVE_MODEL when Google ships a newer Live Flash.
+ * Gemini Live model id for the mic-gated learner session.
+ * Override with GEMINI_LIVE_MODEL.
  */
 export function geminiLiveModelId(): string {
-  return (
-    process.env.GEMINI_LIVE_MODEL?.trim() ||
-    "gemini-live-2.5-flash-native-audio"
-  );
+  return process.env.GEMINI_LIVE_MODEL?.trim() || GEMINI_LIVE_MODEL_DEFAULT;
 }
 
 /** Whether the orchestrator should advertise realtime as an alternative. */

@@ -1,18 +1,12 @@
 "use client";
 
-// The student session state machine. Owns: the ordered finding walk-through,
-// the viewer drive handle, the chat transcript, and the EXACT two-call voice
-// flow from CLAUDE.md §2.
+// The student session state machine.
 //
-// Product: an AI attending teaches a registrar how to REPORT the scan — armed
-// with authored findings + reading digests — driving the viewer while speaking.
-// Teach mode (guided) plays a cleaned teaching guide when the finding has one
-// (scroll, window, zoom, laser, strokes). Authored say lines go through
-// speak(); a motion guide with none uses tutorSpeechPlan. Otherwise it asks
-// the model to teach. Before the commit (or a beat marked decision) the tour
-// pauses for a text check-in. A miss replays the lean-in; a hit skips the
-// pearl. An empty tutor answer advances the tour. Student voice/text pauses it.
-// Viva is the oral-exam path. The dense track is not played as a mic tape.
+// Opening the microphone starts a Gemini Live session loaded from the case's
+// LiveTeachingPack. Scrolling the study does not start teaching. Hang up ends
+// the session. Recorded-tour playback stays available as a tool the model may
+// call; it does not autoplay. Examiner withholds the diagnosis. Teach me the
+// case speaks and drives the viewer from authored anchors, including set_series.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRecorder } from "@/components/useRecorder";
@@ -45,6 +39,16 @@ import {
   type FindingCheckInState,
 } from "@/lib/tourCheckIn";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
+import { GeminiLiveSession, type LiveToolResult } from "@/lib/geminiLiveSession";
+import { buildLiveContextUpdate, type LiveToolCall } from "@/lib/geminiLiveProtocol";
+import {
+  liveModeFromSession,
+  livePackInstruction,
+  livePackTools,
+  liveSessionKick,
+  resolveLiveTeachingPack,
+  validateLiveToolCall,
+} from "@/lib/liveTeachingPack";
 import {
   authoredGuideLines,
   guideHasMotion,
@@ -69,7 +73,6 @@ import {
   mergeExamReveal,
   seatExamTranscript,
   settleFindingReveal,
-  spoilFindingOnNavigate,
 } from "@/lib/examLocate";
 import { nextGuidedIndex } from "@/lib/tourAdapt";
 import {
@@ -241,15 +244,34 @@ export function useStudentSession(
   locatedIdsRef.current = locatedIds;
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  const liveRef = useRef<GeminiLiveSession | null>(null);
+  const [liveStatus, setLiveStatus] = useState<"closed" | "connecting" | "open">("closed");
+  const liveStatusRef = useRef(liveStatus);
+  liveStatusRef.current = liveStatus;
+  const liveUserTurn = useRef<string | null>(null);
+  const liveAssistantTurn = useRef<string | null>(null);
+  const kickRef = useRef("");
+  const liveContextKey = useRef("");
+  const liveModeRef = useRef(liveModeFromSession(mode));
+  liveModeRef.current = liveModeFromSession(mode);
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
   turnsRef.current = turns;
 
-  const orderedFindings = useMemo(
-    () => caseData.findings.slice().sort((a, b) => a.order - b.order),
-    [caseData]
-  );
+  const teachingPack = useMemo(() => resolveLiveTeachingPack(caseData), [caseData]);
+  const teachingPackRef = useRef(teachingPack);
+  teachingPackRef.current = teachingPack;
+  const orderedFindings = useMemo(() => {
+    const byId = new Map(caseData.findings.map((finding) => [finding.id, finding]));
+    const ranked = teachingPack.findingOrder
+      .map((id) => byId.get(id))
+      .filter((finding): finding is Finding => Boolean(finding));
+    const rest = caseData.findings
+      .filter((finding) => !teachingPack.findingOrder.includes(finding.id))
+      .sort((a, b) => a.order - b.order);
+    return [...ranked, ...rest];
+  }, [caseData, teachingPack]);
   const activeIndexRef = useRef(-1);
   activeIndexRef.current = activeIndex;
   const orderedFindingsRef = useRef(orderedFindings);
@@ -379,7 +401,11 @@ export function useStudentSession(
   }, [compareOpen, examMode, activeIndex, revealedIds, orderedFindings]);
 
   const micState: MicState =
-    phase === "recording" ? "recording" : phase === "transcribing" ? "processing" : "idle";
+    liveStatus === "connecting" || liveStatus === "open" || phase === "recording"
+      ? "recording"
+      : phase === "transcribing"
+        ? "processing"
+        : "idle";
 
   // The single source of truth for the agent orb's mood.
   const orbState: OrbState =
@@ -397,6 +423,7 @@ export function useStudentSession(
 
   // Drive the synthetic mic level while recording; settle to 0 otherwise.
   useEffect(() => {
+    if (liveStatus !== "closed") return;
     if (phase !== "recording") {
       setMicLevel(0);
       return;
@@ -412,7 +439,7 @@ export function useStudentSession(
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [phase]);
+  }, [phase, liveStatus]);
 
   // --- Viewer ready ---------------------------------------------------------
   const onViewerReady = useCallback((c: CornerstoneControls) => {
@@ -1387,6 +1414,15 @@ export function useStudentSession(
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
+      if (liveRef.current?.isOpen) {
+        const findingId =
+          activeIndexRef.current >= 0
+            ? orderedFindingsRef.current[activeIndexRef.current]?.id
+            : undefined;
+        setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed, findingId }]);
+        liveRef.current.sendText(trimmed);
+        return;
+      }
       pauseTour();
       const history = turnsRef.current;
       const findingId =
@@ -1411,19 +1447,244 @@ export function useStudentSession(
     sendText("I don't know. Please show me this finding and teach it.");
   }, [revealFinding, sendText, orderedFindings]);
 
-  // --- Voice question: CALL 1 (transcribe) then CALL 2 (tutor) -------------
-  const onMicStart = useCallback(async () => {
-    if (busy) return;
-    pauseTour();
-    try {
-      await recorder.start();
-      setPhase("recording");
-    } catch {
-      toast({ title: "Microphone blocked", description: "Allow mic access to ask by voice.", variant: "warning" });
+  const appendLiveTranscript = useCallback((role: "user" | "assistant", chunk: string) => {
+    const piece = chunk.trim();
+    if (!piece) return;
+    if (role === "user" && kickRef.current && (kickRef.current.startsWith(piece) || piece === kickRef.current)) {
+      return;
     }
-  }, [busy, recorder, toast, pauseTour]);
+    const findingId =
+      activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : undefined;
+    setTurns((prev) => {
+      const currentId = role === "user" ? liveUserTurn.current : liveAssistantTurn.current;
+      if (currentId) {
+        return prev.map((turn) => {
+          if (turn.id !== currentId) return turn;
+          const text = turn.text && piece.startsWith(turn.text) ? piece : `${turn.text} ${piece}`.replace(/\s+/g, " ").trim();
+          return {
+            ...turn,
+            text,
+            pending: false,
+            liveCaption: role === "assistant" ? piece : turn.liveCaption,
+          };
+        });
+      }
+      const id = nextId();
+      if (role === "user") liveUserTurn.current = id;
+      else liveAssistantTurn.current = id;
+      return [
+        ...prev,
+        {
+          id,
+          role,
+          text: piece,
+          voice: role === "user",
+          findingId,
+          liveCaption: role === "assistant" ? piece : undefined,
+        },
+      ];
+    });
+  }, []);
+
+  const runLiveCall = useCallback(
+    async (call: LiveToolCall): Promise<LiveToolResult> => {
+      const pack = teachingPackRef.current;
+      const reply = (response: Record<string, unknown>): LiveToolResult => ({
+        id: call.id,
+        name: call.name,
+        response,
+      });
+      const currentId =
+        activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : undefined;
+      const decision = validateLiveToolCall(pack, call.name, call.args, currentId);
+      if (!decision.ok) return reply({ ok: false, error: decision.error, allowedSeries: decision.allowedSeries });
+
+      if (call.name === "web_search") {
+        const query = decision.query ?? "";
+        setSearching(true);
+        try {
+          const res = await fetch("/api/voice/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query }),
+          });
+          const data = (await res.json()) as { answer?: string; error?: string; sources?: ChatSource[] };
+          if (!res.ok) return reply({ ok: false, error: data.error || "Search failed" });
+          if (data.sources?.length) {
+            setTurns((prev) => {
+              const id = liveAssistantTurn.current;
+              if (!id) return prev;
+              return prev.map((turn) => (turn.id === id ? { ...turn, sources: data.sources } : turn));
+            });
+          }
+          return reply({ ok: true, answer: data.answer ?? "", sources: data.sources ?? [] });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Search failed";
+          return reply({ ok: false, error: message });
+        } finally {
+          setSearching(false);
+        }
+      }
+
+      const viewer = controls.current;
+      if (!viewer) return reply({ ok: false, error: "Viewer is not ready.", drive: decision.drive });
+      const spoil = liveModeRef.current === "teach_me";
+
+      if (decision.findingId && (call.name === "show_finding" || call.name === "next_finding")) {
+        const idx = orderedFindingsRef.current.findIndex((item) => item.id === decision.findingId);
+        if (idx < 0) return reply({ ok: false, error: "That finding is not on this case." });
+        await revealFinding(idx, { spoil });
+        return reply({ ok: true, findingId: decision.findingId, drive: decision.drive });
+      }
+
+      if (decision.seriesInstanceUID) {
+        if (!viewer.seriesUIDs.includes(decision.seriesInstanceUID)) {
+          return reply({
+            ok: false,
+            error: "That series is not loaded in the viewer.",
+            allowedSeries: pack.authoredSeriesInstanceUIDs,
+            drive: decision.drive,
+          });
+        }
+        if (viewer.activeSeriesUID !== decision.seriesInstanceUID) {
+          viewer.showSeries(decision.seriesInstanceUID);
+          await viewer.settle();
+        }
+      }
+
+      const view: { sliceIndex?: number; windowWidth?: number; windowCenter?: number; zoom?: number; pan?: [number, number] } = {};
+      if (decision.sliceIndex != null) view.sliceIndex = decision.sliceIndex;
+      if (decision.ww != null && decision.wc != null) {
+        view.windowWidth = decision.ww;
+        view.windowCenter = decision.wc;
+      }
+      if (decision.zoom != null) {
+        view.zoom = decision.zoom;
+        if (decision.panX != null && decision.panY != null) view.pan = [decision.panX, decision.panY];
+      }
+      if (Object.keys(view).length) await viewer.showState(view, 520);
+
+      if (decision.x_pct != null && decision.y_pct != null) {
+        const marker = { x_pct: decision.x_pct, y_pct: decision.y_pct, shape: "circle" as const };
+        await pointLaser(decision.x_pct, decision.y_pct, spoil ? marker : undefined);
+      }
+
+      if (call.name === "draw_annotation" && decision.findingId) {
+        const target = orderedFindingsRef.current.find((item) => item.id === decision.findingId);
+        if (target) {
+          const meas = target.measurements ?? [];
+          setMeasurements(meas);
+          setMeasurementsVisible(meas.length > 0);
+          const guide = resolveTeachingGuide(target);
+          const strokes = guide?.beats.flatMap((beat) => beat.actions.filter((action) => action.type === "annotate")) ?? [];
+          for (const stroke of strokes) {
+            const { type: _type, ...rest } = stroke;
+            viewer.applyEvent({ t: 0, type: "annotation", ...rest });
+          }
+        }
+      }
+
+      return reply({
+        ok: true,
+        findingId: decision.findingId,
+        seriesInstanceUID: decision.seriesInstanceUID,
+        sliceIndex: decision.sliceIndex,
+        ww: decision.ww,
+        wc: decision.wc,
+        drive: decision.drive,
+      });
+    },
+    [pointLaser, revealFinding]
+  );
+
+  // --- Microphone opens Gemini Live. Hang up ends it. -----------------------
+  const onMicStart = useCallback(async () => {
+    if (liveRef.current || liveStatusRef.current !== "closed") return;
+    pauseTour();
+    tourActiveRef.current = false;
+    setTourActive(false);
+    const liveMode = liveModeRef.current;
+    kickRef.current = liveSessionKick(liveMode);
+    const session = new GeminiLiveSession({
+      onPhase: (next) => {
+        if (next === "connecting") {
+          setLiveStatus("connecting");
+          setPhase("recording");
+          return;
+        }
+        setLiveStatus("open");
+        setPhase(next === "speaking" ? "speaking" : "recording");
+      },
+      onInputTranscript: (text) => appendLiveTranscript("user", text),
+      onOutputTranscript: (text) => appendLiveTranscript("assistant", text),
+      onTurnComplete: () => {
+        liveUserTurn.current = null;
+        liveAssistantTurn.current = null;
+      },
+      onInterrupted: () => {
+        setPhase("recording");
+      },
+      onSources: (sources) => {
+        setTurns((prev) => {
+          const id = liveAssistantTurn.current;
+          if (!id) return prev;
+          return prev.map((turn) => (turn.id === id ? { ...turn, sources } : turn));
+        });
+      },
+      onToolCalls: async (calls) => {
+        const results: LiveToolResult[] = [];
+        for (const call of calls) results.push(await runLiveCall(call));
+        return results;
+      },
+      onLevel: (level) => setMicLevel(level),
+      onError: (message) => {
+        toast({ title: "Live session", description: message, variant: "danger" });
+      },
+      onClose: () => {
+        liveRef.current = null;
+        liveUserTurn.current = null;
+        liveAssistantTurn.current = null;
+        setLiveStatus("closed");
+        setPhase("idle");
+        setMicLevel(0);
+      },
+    });
+    liveRef.current = session;
+    setLiveStatus("connecting");
+    setPhase("recording");
+    const pack = teachingPackRef.current;
+    const focusId =
+      activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : pack.findingOrder[0];
+    liveContextKey.current = `${liveMode}:${focusId ?? ""}`;
+    await session.start({
+      systemInstruction: livePackInstruction(pack, liveMode, caseData.title, focusId),
+      tools: livePackTools(pack.authoredSeriesInstanceUIDs),
+      openingText: kickRef.current,
+    });
+  }, [appendLiveTranscript, caseData.title, pauseTour, runLiveCall, toast]);
+
+  // Finding or mode change replaces the speakable instruction and the full tool list.
+  useEffect(() => {
+    const session = liveRef.current;
+    if (!session?.isOpen || liveStatus !== "open") return;
+    const focusId = activeIndex >= 0 ? orderedFindings[activeIndex]?.id : undefined;
+    const key = `${liveModeRef.current}:${focusId ?? ""}`;
+    if (liveContextKey.current === key) return;
+    liveContextKey.current = key;
+    const pack = teachingPackRef.current;
+    session.sendContextUpdate(
+      buildLiveContextUpdate({
+        systemInstruction: livePackInstruction(pack, liveModeRef.current, caseData.title, focusId),
+        tools: livePackTools(pack.authoredSeriesInstanceUIDs),
+      })
+    );
+  }, [liveStatus, activeIndex, mode, orderedFindings, caseData.title]);
 
   const onMicStop = useCallback(async () => {
+    if (liveRef.current || liveStatusRef.current !== "closed") {
+      liveRef.current?.hangup();
+      return;
+    }
     const rec = await recorder.stop();
     if (!rec) {
       setPhase("idle");
@@ -1481,18 +1742,15 @@ export function useStudentSession(
   // --- Tour controls (step rail) -------------------------------------------
   const goTo = useCallback(
     (index: number) => {
-      if (busy || !ready) return;
+      if ((busy && liveStatusRef.current === "closed") || !ready) return;
       if (index < 0 || index >= orderedFindings.length) return;
-      if (mode === "guided") {
-        tourActiveRef.current = true;
-        setTourActive(true);
-        void runGuidedRef.current(index);
-        return;
-      }
+      // Choosing a step seats the slice. It does not start a lecture.
+      tourActiveRef.current = false;
+      setTourActive(false);
       interruptPlayback();
-      revealFinding(index, { spoil: spoilFindingOnNavigate(mode) });
+      void revealFinding(index, { spoil: false });
     },
-    [busy, ready, orderedFindings.length, revealFinding, interruptPlayback, mode]
+    [busy, ready, orderedFindings.length, revealFinding, interruptPlayback]
   );
   const next = useCallback(() => goTo(Math.min(activeIndexRef.current + 1, orderedFindings.length - 1)), [goTo, orderedFindings.length]);
   const prev = useCallback(() => goTo(Math.max(activeIndexRef.current - 1, 0)), [goTo]);
@@ -1502,13 +1760,8 @@ export function useStudentSession(
     const cur = activeIndexRef.current;
     const nextIdx = Math.min(cur + 1, orderedFindings.length - 1);
     if (nextIdx === cur && cur >= 0) return;
-    if (mode === "guided") {
-      goTo(nextIdx);
-      return;
-    }
-    interruptPlayback();
-    void revealFinding(nextIdx, { spoil: spoilFindingOnNavigate(mode) });
-  }, [busy, ready, orderedFindings.length, revealFinding, interruptPlayback, mode, goTo]);
+    goTo(nextIdx);
+  }, [busy, ready, orderedFindings.length, goTo]);
 
   const revealCurrent = useCallback(() => {
     if (busy || !ready) return;
@@ -1577,6 +1830,10 @@ export function useStudentSession(
   }, [orderedFindings, series]);
 
   const onStopSpeaking = useCallback(() => {
+    if (liveRef.current) {
+      liveRef.current.interruptPlayback();
+      return;
+    }
     if (phase === "speaking") {
       stopSpeaking();
       setSpeakingTurnId(null);
@@ -1615,37 +1872,14 @@ export function useStudentSession(
     [speakingTurnId, phase, interruptPlayback, caseData.authorId]
   );
 
-  // Seat the first finding once the viewer is ready, then start the experience.
-  // Teach (guided): autonomous attending tour. Viva: examiner stem.
-  // Reporting: seat + invite to model Findings on the viewer.
+  // Seat the first finding. Scrolling and opening the case do not start teaching.
   useEffect(() => {
     if (!ready || startedRef.current || orderedFindings.length === 0) return;
     startedRef.current = true;
-    if (mode === "guided") {
-      tourActiveRef.current = true;
-      setTourActive(true);
-      void runGuidedRef.current(0);
-      return;
-    }
-    if (mode === "reporting") {
-      tourActiveRef.current = false;
-      setTourActive(false);
-      void revealFinding(0, { spoil: true }).then(() => {
-        void runTutor(
-          "You are coaching a structured report. Briefly introduce Technique for this modality, then start Findings: drive to the first finding and model how to dictate it. Two to three short sentences.",
-          []
-        );
-      });
-      return;
-    }
-    if (examMode) {
-      void revealFinding(0, { spoil: false }).then(() => {
-        if (mode === "viva") void runTutor("Begin the session.", []);
-      });
-    } else {
-      void revealFinding(0);
-    }
-  }, [ready, orderedFindings.length, examMode, mode, revealFinding, runTutor]);
+    tourActiveRef.current = false;
+    setTourActive(false);
+    void revealFinding(0, { spoil: false });
+  }, [ready, orderedFindings.length, revealFinding]);
 
   // Teach → Exam: the guide has already marked this finding revealed and is
   // often still speaking. Drop that spoiler, stop the clip, and let locate arm
@@ -1724,6 +1958,7 @@ export function useStudentSession(
       checkInAbortRef.current?.abort();
       checkInResolveRef.current?.(-1);
       checkInResolveRef.current = null;
+      liveRef.current?.hangup();
       stopSpeaking();
       replayRef.current?.cancel();
       replayAudioRef.current?.pause();
@@ -1753,6 +1988,7 @@ export function useStudentSession(
     phase,
     busy,
     micState,
+    liveStatus,
     micSupported: recorder.supported,
     orderedFindings,
     examMode,

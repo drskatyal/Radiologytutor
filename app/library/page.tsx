@@ -9,6 +9,7 @@ import {
   listPlaylists,
   listEnrollmentsForUser,
   listProgressForUser,
+  listCasesForOrg,
 } from "@/lib/cases";
 import { activeOrgId, demoAuthEnabled, getSession } from "@/lib/auth";
 import { Breadcrumbs, Button, PageContainer, Skeleton } from "@/components/ui";
@@ -20,6 +21,7 @@ import type { MyLearningCourse } from "@/components/catalog/MyLearning";
 import CasesPrefetcher from "@/components/CasesPrefetcher";
 import { DashboardError } from "@/components/home/DashboardError";
 import { isPlaceholderCourse, toLearnerCatalog } from "@/lib/catalogPlaceholders";
+import { selectLearnerStudy } from "@/lib/learnerEntry";
 import type { AppSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -42,6 +44,7 @@ export default async function LibraryPage() {
   let initial: CatalogResponse | null = null;
   let loadError: string | null = null;
   let enrolledCourses: MyLearningCourse[] = [];
+  let studyCase: { caseId: string; title?: string } | null = null;
 
   try {
     const [cases, facets, authors, courses, playlists] = await Promise.all([
@@ -52,6 +55,8 @@ export default async function LibraryPage() {
       listPlaylists(orgId),
     ]);
     initial = toLearnerCatalog({ cases, facets, authors, courses, playlists });
+    const study = selectLearnerStudy(await listCasesForOrg(orgId, { status: "published" }));
+    studyCase = study ? { caseId: study.caseId, title: study.title } : null;
 
     if (session) {
       const [enrollments, progressList] = await Promise.all([
@@ -90,6 +95,19 @@ export default async function LibraryPage() {
         <DashboardError title="Couldn't load the library" message={loadError ?? "Something went wrong."} />
       ) : (
         <PageContainer>
+          {studyCase && (
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-primary">Open a study</p>
+                <p className="text-sm text-secondary">
+                  {studyCase.title || "A published case"}. Scroll the images, then open the microphone to start.
+                </p>
+              </div>
+              <Link href={`/case/${studyCase.caseId}`}>
+                <Button size="sm">Start</Button>
+              </Link>
+            </div>
+          )}
           <MyLearning courses={enrolledCourses} />
           <Suspense fallback={<Skeleton className="h-64 w-full rounded-2xl" />}>
             <Catalog

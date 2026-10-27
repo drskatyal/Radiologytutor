@@ -30,9 +30,13 @@ export type TeachingViewerAction = HarnessViewerAction;
 
 export interface GeminiPart {
   text?: string;
-  /** Inline audio/image bytes (base64). Gemini Flash is multimodal — we send
-   * mic audio here so Gemini does STT + reasoning in one call. */
+  /** Inline audio/image/video bytes (base64). */
   inlineData?: { mimeType: string; data: string };
+  /**
+   * Video only. AGENTIC lets Flash walk a long viewer recording without
+   * tokenizing every frame. STATIC is the fixed-rate pass for a short take.
+   */
+  mediaProcessing?: "AGENTIC" | "STATIC";
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -129,8 +133,16 @@ export function userParts(opts: {
   audioMime?: string;
   /** Viewport stills. Each caption is a text part immediately before the image. */
   images?: Array<{ mimeType: string; data: string; caption?: string }>;
+  /** Viewer-only recording. Flash compile only — never sent to Gemini Live. */
+  video?: { data: string; mimeType: string; mediaProcessing: "AGENTIC" | "STATIC" };
 }): GeminiPart[] {
   const parts: GeminiPart[] = [];
+  if (opts.video?.data) {
+    parts.push({
+      inlineData: { mimeType: opts.video.mimeType || "video/webm", data: opts.video.data },
+      mediaProcessing: opts.video.mediaProcessing,
+    });
+  }
   for (const image of opts.images ?? []) {
     if (!image?.data) continue;
     if (image.caption) parts.push({ text: image.caption });

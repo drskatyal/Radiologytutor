@@ -524,7 +524,7 @@ export function FindingCard({
                   onClick={() => onPreview(finding.id)}
                   title="Open this finding in the student player"
                 >
-                  Preview
+                  Test as student
                 </Button>
               )}
               <Button

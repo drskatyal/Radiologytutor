@@ -37,6 +37,8 @@ import {
   addFinding,
   saveCaptureSession,
 } from "@/components/author/lib";
+import { updateCase } from "@/components/admin/api";
+import { materializeLiveTeachingPack, type LiveProse } from "@/lib/liveTeachingPack";
 import { mergeCaptureDemonstration } from "@/lib/harness/mergeCapture";
 import { displaySliceNumber, withDisplaySnapshot } from "@/lib/findingDisplayState";
 import {
@@ -70,6 +72,10 @@ export function ContinuousCapture({
   controls,
   seriesInstanceUID,
   studyInstanceUID,
+  modality,
+  clinicalQuestion,
+  diagnosis,
+  studySeriesUIDs,
   onCaseUpdated,
 }: {
   caseId: string;
@@ -77,6 +83,10 @@ export function ContinuousCapture({
   controls: MutableRefObject<CornerstoneControls | null>;
   seriesInstanceUID?: string;
   studyInstanceUID?: string;
+  modality?: string;
+  clinicalQuestion?: string;
+  diagnosis?: string;
+  studySeriesUIDs?: string[];
   onCaseUpdated: (c: Awaited<ReturnType<typeof addFinding>>) => void;
 }) {
   const { toast } = useToast();
@@ -376,6 +386,34 @@ export function ContinuousCapture({
 
       if (updated) {
         updated = await saveCaptureSession(caseId, session);
+        const prose: LiveProse[] = proposals.map((item) => ({
+          tStartMs: item.tStartMs,
+          label: item.label,
+          whatToNotice: item.whatToNotice,
+          pearl: item.pearl,
+          mimics: item.mimics,
+          clinicalImportance: item.clinicalImportance,
+          whyClinicallyFirst: item.whyClinicallyFirst,
+          reportLine: item.reportLine,
+          landmark: item.landmark,
+        }));
+        try {
+          const packed = await updateCase(caseId, {
+            liveTeachingPack: materializeLiveTeachingPack({
+              caseId,
+              modality: modality || updated.modality,
+              clinicalQuestion,
+              diagnosis,
+              findings: updated.findings,
+              prose,
+              prior: updated.liveTeachingPack,
+              studySeriesUIDs,
+            }),
+          });
+          updated = packed;
+        } catch {
+          /* Findings are already saved. The session rebuilds a pack from them. */
+        }
         onCaseUpdated(updated);
         toast({
           variant: "success",

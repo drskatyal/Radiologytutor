@@ -219,6 +219,13 @@ Return ONLY JSON — no prose, no markdown — with EXACTLY:
       "label": string,
       "description": string,
       "teachingPoints": string[],
+      "whatToNotice": string,
+      "pearl": string,
+      "mimics": string[],
+      "clinicalImportance": number,
+      "whyClinicallyFirst": string,
+      "reportLine": string,
+      "landmark": string,
       "tStartMs": number,
       "tEndMs": number
     }
@@ -229,6 +236,9 @@ Segmentation:
 - One finding if they only discuss one thing.
 - label 2–6 words; include laterality if spoken.
 - description = their words, 1–3 sentences. teachingPoints = 0–4 pearls they said.
+- whatToNotice = the look cue (what the eye should catch). pearl = the one line to remember. mimics = 0–3 things it can be mistaken for. reportLine = the sentence they would dictate. landmark = the anatomical level, not the diagnosis.
+- clinicalImportance is an integer, 1 = most urgent. Rank every finding. whyClinicallyFirst says why that rank, in their words.
 - NEVER invent anatomy, measurements, or diagnoses.
+- Do NOT include slice indexes, pixel coordinates, window width, window center, or series UIDs. The server places those from the viewer log.
 - tStartMs/tEndMs within [0, durationMs], ordered, non-overlapping.
 - transcript is the full verbatim dictation.`;
