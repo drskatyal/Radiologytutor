@@ -3,6 +3,9 @@
 import { Modal, Kbd } from "@/components/ui";
 import { SERIES_RAIL_TOGGLE_KEY } from "@/lib/seriesRailPreference";
 
+// Session keys are global. Viewport keys are scoped to the image — click or
+// tab into it first — so they cannot fight the session's bindings
+// (lib/viewerHotkeys.ts).
 const ROWS: { keys: string[]; does: string }[] = [
   { keys: ["Space"], does: "Interrupt the attending, then hold to answer" },
   { keys: ["Wheel"], does: "Scroll the stack" },
@@ -22,6 +25,19 @@ const ROWS: { keys: string[]; does: string }[] = [
   { keys: ["Esc"], does: "Exit fullscreen, or close the rail" },
 ];
 
+/** Keys the focused viewport answers. Click or tab into the image first. */
+const VIEWPORT_ROWS: { keys: string[]; does: string }[] = [
+  { keys: ["1", "2", "3", "4", "5"], does: "Scroll · Window/Level · Zoom · Pan · Length" },
+  { keys: ["↑", "↓"], does: "Previous / next slice — hold Shift to jump" },
+  { keys: ["PgUp", "PgDn"], does: "Jump a twentieth of the series" },
+  { keys: ["Home", "End"], does: "First / last slice" },
+  { keys: ["+", "−"], does: "Zoom in / out" },
+  { keys: ["I"], does: "Invert greyscale" },
+  { keys: ["0"], does: "Reset zoom, pan and window" },
+  { keys: ["K"], does: "Play or pause cine" },
+  { keys: ["Shift", "1…9"], does: "Window preset" },
+];
+
 export function HotkeysOverlay({
   open,
   onClose,
@@ -37,18 +53,38 @@ export function HotkeysOverlay({
       description="Keep your hands on the keyboard. The image stays the composition."
       size="sm"
     >
-      <ul className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
-        {ROWS.map((row) => (
-          <li key={row.does} className="flex items-center justify-between gap-3">
-            <span className="text-sm text-secondary">{row.does}</span>
-            <span className="flex shrink-0 items-center gap-1">
-              {row.keys.map((k) => (
-                <Kbd key={k}>{k}</Kbd>
-              ))}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <div className="flex max-h-[60vh] flex-col gap-5 overflow-y-auto">
+        <ul className="flex flex-col gap-2">
+          {ROWS.map((row) => (
+            <li key={row.does} className="flex items-center justify-between gap-3">
+              <span className="text-sm text-secondary">{row.does}</span>
+              <span className="flex shrink-0 items-center gap-1">
+                {row.keys.map((k) => (
+                  <Kbd key={k}>{k}</Kbd>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <section className="flex flex-col gap-2 border-t border-subtle pt-4">
+          <h3 className="text-sm font-medium text-primary">On the image</h3>
+          <p className="text-xs text-secondary">
+            Click or tab into the image first — these keys belong to the viewport.
+          </p>
+          <ul className="flex flex-col gap-2">
+            {VIEWPORT_ROWS.map((row) => (
+              <li key={row.does} className="flex items-center justify-between gap-3">
+                <span className="text-sm text-secondary">{row.does}</span>
+                <span className="flex shrink-0 items-center gap-1">
+                  {row.keys.map((k) => (
+                    <Kbd key={k}>{k}</Kbd>
+                  ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
     </Modal>
   );
 }

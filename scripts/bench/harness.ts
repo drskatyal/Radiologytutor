@@ -161,6 +161,28 @@ async function main() {
   await viewport.setStack([openingId], 0);
   viewport.render();
   const openMs = Math.round(await firstPixel);
+  // Prove the frame DECODED, not merely that a render event fired: an image
+  // whose metadata is missing still triggers IMAGE_RENDERED on a blank canvas,
+  // so every number below would be measuring an empty viewport.
+  const queued = core.imageLoader.loadAndCacheImage(openingId, {
+    priority: 5,
+    requestType: core.Enums.RequestType.Interaction,
+  }) as
+    | Promise<unknown>
+    | { promise?: Promise<unknown> };
+  const settled =
+    queued && typeof queued === "object" && "promise" in queued ? queued.promise : queued;
+  const decoded = await Promise.resolve(settled)
+    .then((value) => {
+      const image = value as { rows?: number; columns?: number; getPixelData?: () => ArrayLike<number> };
+      return {
+        rows: image?.rows,
+        columns: image?.columns,
+        pixels: image?.getPixelData?.().length ?? 0,
+      };
+    })
+    .catch((error: unknown) => ({ error: String(error) }));
+  log(`${knobs.label}: opening frame decoded ${JSON.stringify(decoded)}`);
   job.releaseMetadata();
   log(`${knobs.label}: first pixel ${openMs}ms`);
 
@@ -205,6 +227,7 @@ async function main() {
     directionalPrefetch: knobs.directionalPrefetch,
     prewarm: knobs.prewarm,
     prewarmedImageId: (await prewarmed) != null,
+    decoded,
     images: full.imageIds.length,
     workers,
     cacheBytes,

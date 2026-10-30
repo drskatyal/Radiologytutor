@@ -115,9 +115,10 @@ export async function startMockDicomweb(options = {}) {
     return Buffer.concat([head, pixels, tail]);
   };
 
-  const server = createServer(async (req, res) => {
+  const handled = async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const path = url.pathname;
+
 
     if (req.method === "POST" && path === "/bench/result") {
       const chunks = [];
@@ -262,7 +263,9 @@ export async function startMockDicomweb(options = {}) {
     }
 
     res.writeHead(404).end("unhandled dicomweb path");
-  });
+  };
+
+  const server = createServer(handled);
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
