@@ -50,8 +50,21 @@ export function prefetchNeighborImageIds(
   center: number,
   radius: number = ACTIVE_PREFETCH_RADIUS
 ): void {
-  if (typeof window === "undefined") return;
-  const indexes = neighborIndexes(imageIds.length, center, radius);
+  prefetchImageIndexes(imageIds, neighborIndexes(imageIds.length, center, radius));
+}
+
+/**
+ * Queue an explicit list of stack indexes at `prefetch` priority. The
+ * directional travel warm (`lib/prefetchPlan.ts`) uses this on every slice
+ * change, so it must stay cheap: no awaits before the queue call, duplicates
+ * are harmless (Cornerstone's cache de-dupes by imageId), and a rejected id
+ * is swallowed.
+ */
+export function prefetchImageIndexes(
+  imageIds: readonly string[],
+  indexes: readonly number[]
+): void {
+  if (typeof window === "undefined" || indexes.length === 0) return;
   void import("@cornerstonejs/core")
     .then((core) => {
       const loader = core.imageLoader;
@@ -181,6 +194,14 @@ export function startProgressiveWadorsLoad(input: {
   studyInstanceUID: string;
   seriesInstanceUID: string;
   open?: OpenSlice | null;
+  /**
+   * Instances in the series when the archive already told us (the series rail
+   * carries `CaseSeries.instanceCount`). With it, the opening slice is ONE
+   * 1-row QIDO request at the middle offset. Without it we have to page the
+   * whole SOP list just to find the midpoint — on a 1200-slice CTA that is a
+   * ~90 KB JSON document in front of the first pixel.
+   */
+  instanceCount?: number;
   signal?: AbortSignal;
 }): ProgressiveStack {
   const root = input.wadoRsRoot.replace(/\/$/, "");
@@ -188,6 +209,12 @@ export function startProgressiveWadorsLoad(input: {
   const series = input.seriesInstanceUID;
   const signal = input.signal;
   const hint = input.open ?? undefined;
+  const knownCount =
+    input.instanceCount != null &&
+    Number.isFinite(input.instanceCount) &&
+    input.instanceCount > 0
+      ? Math.round(input.instanceCount)
+      : null;
 
   let resolveOpening: (imageId: string) => void = () => undefined;
   let rejectOpening: (error: unknown) => void = () => undefined;
@@ -231,11 +258,16 @@ export function startProgressiveWadorsLoad(input: {
     // can still be emitted as soon as the stream has parsed that object.
     // The middle slice is emitted at the end of the body.
     let midTarget: number | null = sliceHint;
+    // SOP of the frame actually painted first, so the finished stack can open
+    // on it rather than recomputing a midpoint from a (possibly different)
+    // count. Held in an object so the closures below can write it.
+    const opened: { sop?: string } = {};
 
     const publishDataset = (dataset: unknown) => {
       const imageId = imageIdFor(root, study, dataset, series);
       if (!imageId) return;
       registerMetadata(imageId, dataset);
+      opened.sop = dicomTagString(dataset, SOP_TAG);
       emit(imageId);
     };
 
@@ -244,9 +276,16 @@ export function startProgressiveWadorsLoad(input: {
         const dataset = await fetchInstanceMetadata(root, study, series, earlySop, signal);
         if (dataset) publishDataset(dataset);
       } else {
+        // A known count turns "which slice is the middle?" into one 1-row
+        // QIDO at a computed offset. `midTarget` keeps the streamed fallback
+        // honest if the archive count is stale and that offset is empty.
+        const countedMid =
+          sliceHint == null && knownCount != null ? stackOpenIndex(knownCount) : null;
+        if (countedMid != null) midTarget = countedMid;
+        const offset = sliceHint ?? countedMid;
         const sop =
-          sliceHint != null
-            ? await qidoSopAt(root, study, series, sliceHint, signal)
+          offset != null
+            ? await qidoSopAt(root, study, series, offset, signal)
             : await qidoMiddleSop(root, study, series, signal);
         if (sop) {
           const dataset = await fetchInstanceMetadata(root, study, series, sop, signal);
@@ -276,7 +315,10 @@ export function startProgressiveWadorsLoad(input: {
       if (datasets.length <= midTarget) return;
       const dataset = datasets[midTarget];
       const imageId = dataset ? imageIdFor(root, study, dataset, series) : null;
-      if (imageId && dataset) emit(imageId);
+      if (imageId && dataset) {
+        opened.sop = dicomTagString(dataset, SOP_TAG);
+        emit(imageId);
+      }
     };
 
     const url = `${root}/studies/${study}/series/${series}/metadata`;
@@ -327,7 +369,13 @@ export function startProgressiveWadorsLoad(input: {
     }
     if (imageIds.length === 0) throw new Error("Series metadata was empty");
 
-    let openIndex = resolveOpenIndex(imageIds.length, sops, hint);
+    // The frame already on screen wins. Without this, a stale archive count
+    // (we asked QIDO for offset knownCount/2) would land the finished stack
+    // on realCount/2 and the image would jump under the reader.
+    let openIndex = resolveOpenIndex(imageIds.length, sops, {
+      ...hint,
+      ...(opened.sop ? { sopInstanceUID: opened.sop } : {}),
+    });
     if (sliceHint == null && !earlySop && !openingSettled) {
       openIndex = stackOpenIndex(imageIds.length);
     }

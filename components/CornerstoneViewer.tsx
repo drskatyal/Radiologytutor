@@ -47,9 +47,24 @@ import {
 import { createPortal } from "react-dom";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
+  prefetchImageIndexes,
   prefetchNeighborImageIds,
   startProgressiveWadorsLoad,
 } from "../lib/progressiveStack";
+import {
+  createScrollDirectionState,
+  directionalPrefetchIndexes,
+  prefetchRadiusFor,
+  trackScrollDirection,
+} from "../lib/prefetchPlan";
+import {
+  coreInitConfig,
+  describeRuntime,
+  detectDeviceProfile,
+  imageCacheBytes,
+  retrievalPoolSizes,
+  webWorkerCount,
+} from "../lib/viewerRuntime";
 import { NEIGHBOR_PREFETCH_DELAY_MS, tuneStackScrollTool } from "../lib/scrollSensitivity";
 import { stackOpenIndex } from "../lib/stackIndex";
 import type { OpenSlice } from "../lib/viewerLoad";
@@ -616,6 +631,11 @@ export default function CornerstoneViewer({
     series && series.length > 0
       ? caseSeriesToSource(series[Math.max(0, Math.min(series.length - 1, activeSeriesIndex))])
       : source;
+  // Instances the archive reported for a series, when the rail carries it.
+  // `startProgressiveWadorsLoad` turns a known count into ONE 1-row QIDO at
+  // the middle offset instead of paging the whole SOP list to find a midpoint.
+  const instanceCountFor = (seriesInstanceUID: string): number | undefined =>
+    seriesRef.current?.find((s) => s.seriesInstanceUID === seriesInstanceUID)?.instanceCount;
 
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
@@ -702,6 +722,7 @@ export default function CornerstoneViewer({
               studyInstanceUID: initialSource.StudyInstanceUID,
               seriesInstanceUID: initialSource.SeriesInstanceUID,
               open: openSliceRef.current,
+              instanceCount: instanceCountFor(initialSource.SeriesInstanceUID),
               signal: loadAbort.current.signal,
             })
           : null;
@@ -712,25 +733,32 @@ export default function CornerstoneViewer({
         const tools = await import("@cornerstonejs/tools");
         sharedCore = core as unknown as EngineHost;
 
-        await core.init();
+        // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
+        // how much decoded-pixel cache, how many frame requests may be in
+        // flight, and whether this is a phone (which drops Cornerstone's
+        // WebGL context pool from 7 to 1). They are device-dependent and the
+        // benchmark harness measures the same functions.
+        const deviceProfile = detectDeviceProfile();
+        await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
         await tools.init();
-        const workers = Math.min(4, navigator.hardwareConcurrency || 4);
+        const workers = webWorkerCount(deviceProfile);
         await loader.init({ maxWebWorkers: workers });
-        // Default interaction pool is 6. Google's DICOM viewer guidance, same
-        // region, moves ~0.5 MB frames from ~30 FPS at 6-wide to ~60 FPS near 20.
-        // 16 leaves headroom for metadata. Compute stays at the library default.
+        // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
+        // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
+        // ceiling costs re-decodes, never correctness.
+        try {
+          core.cache.setMaxCacheSize(imageCacheBytes(deviceProfile));
+        } catch {
+          /* older core without a settable ceiling — keep the library default */
+        }
         const retrieval = (
           core as {
             imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> };
           }
         ).imageRetrievalPoolManager;
         const pool = retrieval?.maxNumRequests;
-        if (pool) {
-          pool.interaction = 16;
-          // Thumbnails and neighbor prefetch must not crowd out the opening frame.
-          pool.thumbnail = 2;
-          pool.prefetch = 4;
-        }
+        if (pool) Object.assign(pool, retrievalPoolSizes(deviceProfile));
+        console.info("[radlearn] viewer runtime", describeRuntime(deviceProfile));
 
         const engine = await obtainSharedEngine(core as unknown as EngineHost);
         if (disposed || !elementRef.current) {
@@ -1009,15 +1037,34 @@ export default function CornerstoneViewer({
 
         const stackIdsRef: { current: string[] } = { current: [] };
         let prefetchCenter = -1;
-        // Neighbor prefetch used to run on every STACK_NEW_IMAGE. A fast wheel
-        // then queued a fresh radius-8 window per slice and fought the slice
-        // the reader was landing on. Wait until scrolling pauses.
+        const travel = createScrollDirectionState();
+        // Two prefetch rules (lib/prefetchPlan.ts), because a reader does two
+        // different things:
+        //
+        //   MOVING  — a handful of slices in the direction of travel, issued
+        //     on every slice change at `prefetch` priority. Without this, a
+        //     held wheel never lets the pause timer fire and every slice is a
+        //     cold round trip; the bench measures 49 → 11 ms/slice at 40 ms RTT.
+        //   STOPPED — the wide symmetric window, once, after the scroll
+        //     settles. Radius now scales with the series: a 30-slice MR is
+        //     warmed whole, a 1200-slice CTA stays a window.
+        const prefetchTravel = (index: number) => {
+          const ids = stackIdsRef.current;
+          if (disposed || ids.length === 0) return;
+          const direction = trackScrollDirection(travel, index);
+          prefetchImageIndexes(ids, directionalPrefetchIndexes(ids.length, index, direction));
+        };
         const prefetchAround = (index: number) => {
+          prefetchTravel(index);
           window.clearTimeout(prefetchTimer);
           prefetchTimer = window.setTimeout(() => {
             if (disposed || stackIdsRef.current.length === 0 || index === prefetchCenter) return;
             prefetchCenter = index;
-            prefetchNeighborImageIds(stackIdsRef.current, index);
+            prefetchNeighborImageIds(
+              stackIdsRef.current,
+              index,
+              prefetchRadiusFor(stackIdsRef.current.length)
+            );
           }, NEIGHBOR_PREFETCH_DELAY_MS);
         };
         let pixelMarked = false;
@@ -1093,6 +1140,7 @@ export default function CornerstoneViewer({
               studyInstanceUID: initialSource.StudyInstanceUID,
               seriesInstanceUID: initialSource.SeriesInstanceUID,
               open: openSliceRef.current,
+              instanceCount: instanceCountFor(initialSource.SeriesInstanceUID),
               signal: loadAbort.current.signal,
             });
           const ids = await loadPrepared(
@@ -1715,6 +1763,7 @@ export default function CornerstoneViewer({
                 studyInstanceUID: src.StudyInstanceUID,
                 seriesInstanceUID: src.SeriesInstanceUID,
                 open: null,
+                instanceCount: target.instanceCount,
                 signal: controller.signal,
               });
               ids = await loadPrepared(job, seriesUID, controller.signal);
