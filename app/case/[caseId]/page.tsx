@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { getAuthor, getCaseForOrg, listCaseShares } from "@/lib/cases";
-import { seriesHintFromCase } from "@/lib/viewerLoad";
+import { lastTeacherSlice, seriesHintFromCase } from "@/lib/viewerLoad";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
@@ -12,6 +12,7 @@ import StudentSession from "@/components/student/StudentSession";
 import { studentIntentFromQuery } from "@/lib/teacherCapture";
 import { RecordCaseOpen } from "@/components/learning/RecordCaseOpen";
 import { CaseViewer } from "@/components/library/CaseViewer";
+import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
 import {
   activeShare,
   caseHasTeachingPack,
@@ -69,6 +70,13 @@ export default async function CasePage({
     });
     const share = canAuthor ? activeShare(await listCaseShares(orgId, params.caseId)) : null;
     return (
+      <>
+      {/* Engine chunks + the opening frame start now, in parallel with the
+          viewer's own code-split download. See lib/viewerWarmup.ts. */}
+      <ViewerPrewarm
+        series={series[0] ?? null}
+        openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
+      />
       <CaseViewer
         caseId={caseData.caseId}
         title={caseData.title}
@@ -81,6 +89,7 @@ export default async function CasePage({
         sharedLink={false}
         namedStudy={studyUidsForCase(caseData).length > 0}
       />
+      </>
     );
   }
 
@@ -108,6 +117,10 @@ export default async function CasePage({
 
   return (
     <>
+      <ViewerPrewarm
+        series={series[0] ?? null}
+        openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
+      />
       <RecordCaseOpen courseId={courseId} caseId={params.caseId} />
       <StudentSession
         caseData={caseData}

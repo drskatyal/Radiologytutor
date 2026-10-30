@@ -41,15 +41,32 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
+  prefetchImageIndexes,
   prefetchNeighborImageIds,
   startProgressiveWadorsLoad,
 } from "../lib/progressiveStack";
+import {
+  createScrollDirectionState,
+  directionalPrefetchIndexes,
+  prefetchRadiusFor,
+  trackScrollDirection,
+} from "../lib/prefetchPlan";
+import {
+  coreInitConfig,
+  describeRuntime,
+  detectDeviceProfile,
+  imageCacheBytes,
+  retrievalPoolSizes,
+  webWorkerCount,
+} from "../lib/viewerRuntime";
 import { NEIGHBOR_PREFETCH_DELAY_MS, tuneStackScrollTool } from "../lib/scrollSensitivity";
 import { stackOpenIndex } from "../lib/stackIndex";
 import type { OpenSlice } from "../lib/viewerLoad";
@@ -76,6 +93,18 @@ import {
   type CornerstoneViewerState,
 } from "../lib/viewerController";
 import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
+import {
+  CINE_FPS_OPTIONS,
+  advanceCine,
+  cineAvailable,
+  cineFrameMs,
+  clampCineFps,
+  createCineState,
+  initialCineFps,
+  type CineWrap,
+} from "../lib/cinePlayer";
+import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
+import { isTextTarget, resolveViewerHotkey } from "../lib/viewerHotkeys";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
   finiteVoi,
@@ -138,6 +167,8 @@ import {
   Eraser,
   Move,
   MoveUpRight,
+  Pause,
+  Play,
   Ruler,
   Settings2,
   Square,
@@ -439,6 +470,8 @@ function imageSupportsAnnotation(
 }
 
 async function buildImageIds(source: ViewerSource): Promise<string[]> {
+  // Local files arrive already resolved: the ids ARE the stack, in order.
+  if (source.kind === "imageIds") return [...source.imageIds];
   if (source.kind === "wadouri") {
     // frame index is 1-based in the wadouri imageId (loader subtracts 1).
     return Array.from(
@@ -589,6 +622,16 @@ export default function CornerstoneViewer({
   const clearRef = useRef<() => void>(() => {});
   const invertRef = useRef<(value?: boolean) => void>(() => {});
   const applyPresetRef = useRef<(p: WindowPreset | null) => void>(() => {});
+  // Slice scrollbar, keyboard and cine all drive the stack through one fn.
+  // The target is a function of the LIVE index and count read off the
+  // viewport, not of React state — the corner readout is throttled to 80 ms
+  // and a held arrow key or a 30 fps cine would compute from a stale slice.
+  // `silent` suppresses the record stream: a cine sweep is a view aid, not a
+  // teaching beat, and 15 slice events a second would swamp a recording.
+  const setSliceRef = useRef<
+    (to: number | ((current: number, count: number) => number), silent?: boolean) => void
+  >(() => {});
+  const nudgeZoomRef = useRef<(factor: number) => void>(() => {});
   // Live viewport + the most recent rAF tween cancel fn (so we never overlap).
   const viewportRef = useRef<DrivableViewport | null>(null);
   const cancelTweenRef = useRef<() => void>(() => {});
@@ -616,6 +659,11 @@ export default function CornerstoneViewer({
     series && series.length > 0
       ? caseSeriesToSource(series[Math.max(0, Math.min(series.length - 1, activeSeriesIndex))])
       : source;
+  // Instances the archive reported for a series, when the rail carries it.
+  // `startProgressiveWadorsLoad` turns a known count into ONE 1-row QIDO at
+  // the middle offset instead of paging the whole SOP list to find a midpoint.
+  const instanceCountFor = (seriesInstanceUID: string): number | undefined =>
+    seriesRef.current?.find((s) => s.seriesInstanceUID === seriesInstanceUID)?.instanceCount;
 
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
@@ -644,6 +692,11 @@ export default function CornerstoneViewer({
   // real wadors/uploaded studies before their plane metadata had resolved.
   const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
   const [viewMode, setViewMode] = useState<MprMode>("stack");
+  const [cinePlaying, setCinePlaying] = useState(false);
+  const [cineFps, setCineFps] = useState(initialCineFps(null));
+  const cineWrap: CineWrap = "loop";
+  const cineStateRef = useRef(createCineState(1));
+  const scrollTrackRef = useRef<HTMLDivElement>(null);
   const [mprLive, setMprLive] = useState(false);
   const [mprLoading, setMprLoading] = useState(false);
   const [mprNotice, setMprNotice] = useState<string | null>(null);
@@ -702,6 +755,7 @@ export default function CornerstoneViewer({
               studyInstanceUID: initialSource.StudyInstanceUID,
               seriesInstanceUID: initialSource.SeriesInstanceUID,
               open: openSliceRef.current,
+              instanceCount: instanceCountFor(initialSource.SeriesInstanceUID),
               signal: loadAbort.current.signal,
             })
           : null;
@@ -712,25 +766,32 @@ export default function CornerstoneViewer({
         const tools = await import("@cornerstonejs/tools");
         sharedCore = core as unknown as EngineHost;
 
-        await core.init();
+        // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
+        // how much decoded-pixel cache, how many frame requests may be in
+        // flight, and whether this is a phone (which drops Cornerstone's
+        // WebGL context pool from 7 to 1). They are device-dependent and the
+        // benchmark harness measures the same functions.
+        const deviceProfile = detectDeviceProfile();
+        await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
         await tools.init();
-        const workers = Math.min(4, navigator.hardwareConcurrency || 4);
+        const workers = webWorkerCount(deviceProfile);
         await loader.init({ maxWebWorkers: workers });
-        // Default interaction pool is 6. Google's DICOM viewer guidance, same
-        // region, moves ~0.5 MB frames from ~30 FPS at 6-wide to ~60 FPS near 20.
-        // 16 leaves headroom for metadata. Compute stays at the library default.
+        // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
+        // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
+        // ceiling costs re-decodes, never correctness.
+        try {
+          core.cache.setMaxCacheSize(imageCacheBytes(deviceProfile));
+        } catch {
+          /* older core without a settable ceiling — keep the library default */
+        }
         const retrieval = (
           core as {
             imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> };
           }
         ).imageRetrievalPoolManager;
         const pool = retrieval?.maxNumRequests;
-        if (pool) {
-          pool.interaction = 16;
-          // Thumbnails and neighbor prefetch must not crowd out the opening frame.
-          pool.thumbnail = 2;
-          pool.prefetch = 4;
-        }
+        if (pool) Object.assign(pool, retrievalPoolSizes(deviceProfile));
+        console.info("[radlearn] viewer runtime", describeRuntime(deviceProfile));
 
         const engine = await obtainSharedEngine(core as unknown as EngineHost);
         if (disposed || !elementRef.current) {
@@ -1009,15 +1070,34 @@ export default function CornerstoneViewer({
 
         const stackIdsRef: { current: string[] } = { current: [] };
         let prefetchCenter = -1;
-        // Neighbor prefetch used to run on every STACK_NEW_IMAGE. A fast wheel
-        // then queued a fresh radius-8 window per slice and fought the slice
-        // the reader was landing on. Wait until scrolling pauses.
+        const travel = createScrollDirectionState();
+        // Two prefetch rules (lib/prefetchPlan.ts), because a reader does two
+        // different things:
+        //
+        //   MOVING  — a handful of slices in the direction of travel, issued
+        //     on every slice change at `prefetch` priority. Without this, a
+        //     held wheel never lets the pause timer fire and every slice is a
+        //     cold round trip; the bench measures 49 → 11 ms/slice at 40 ms RTT.
+        //   STOPPED — the wide symmetric window, once, after the scroll
+        //     settles. Radius now scales with the series: a 30-slice MR is
+        //     warmed whole, a 1200-slice CTA stays a window.
+        const prefetchTravel = (index: number) => {
+          const ids = stackIdsRef.current;
+          if (disposed || ids.length === 0) return;
+          const direction = trackScrollDirection(travel, index);
+          prefetchImageIndexes(ids, directionalPrefetchIndexes(ids.length, index, direction));
+        };
         const prefetchAround = (index: number) => {
+          prefetchTravel(index);
           window.clearTimeout(prefetchTimer);
           prefetchTimer = window.setTimeout(() => {
             if (disposed || stackIdsRef.current.length === 0 || index === prefetchCenter) return;
             prefetchCenter = index;
-            prefetchNeighborImageIds(stackIdsRef.current, index);
+            prefetchNeighborImageIds(
+              stackIdsRef.current,
+              index,
+              prefetchRadiusFor(stackIdsRef.current.length)
+            );
           }, NEIGHBOR_PREFETCH_DELAY_MS);
         };
         let pixelMarked = false;
@@ -1037,6 +1117,17 @@ export default function CornerstoneViewer({
         };
         const finishStack = (seriesUID: string, ids: string[], openIndex: number) => {
           stackIdsRef.current = ids;
+          // A cardiac loop authored at 30 fps should play at 30, not at our
+          // default. CineRate (0018,0040) when the series carries one.
+          try {
+            const cine = core.metaData.get("cineModule", ids[openIndex] ?? ids[0] ?? "") as
+              | { cineRate?: unknown }
+              | undefined;
+            const rate = Number(cine?.cineRate);
+            setCineFps(initialCineFps(Number.isFinite(rate) && rate > 0 ? rate : null));
+          } catch {
+            /* no cine module on this series — keep the default rate */
+          }
           prefetchCenter = -1;
           publishSeriesImageCount(seriesUID, ids.length);
           markViewerSeriesReady(activeNav, seriesUID, ids.length);
@@ -1093,6 +1184,7 @@ export default function CornerstoneViewer({
               studyInstanceUID: initialSource.StudyInstanceUID,
               seriesInstanceUID: initialSource.SeriesInstanceUID,
               open: openSliceRef.current,
+              instanceCount: instanceCountFor(initialSource.SeriesInstanceUID),
               signal: loadAbort.current.signal,
             });
           const ids = await loadPrepared(
@@ -1715,6 +1807,7 @@ export default function CornerstoneViewer({
                 studyInstanceUID: src.StudyInstanceUID,
                 seriesInstanceUID: src.SeriesInstanceUID,
                 open: null,
+                instanceCount: target.instanceCount,
                 signal: controller.signal,
               });
               ids = await loadPrepared(job, seriesUID, controller.signal);
@@ -1910,6 +2003,43 @@ export default function CornerstoneViewer({
           // A user-driven toggle is part of the record stream; a programmatic
           // set (replay) is not (it would echo back into the recording).
           if (value === undefined) emit({ type: "invert", value: next });
+        };
+
+        // --- Slice scrollbar / keyboard / cine ------------------------------
+        // One entry point for every non-mouse way to change slice. MPR owns
+        // its own planes, so these no-op while a volume is on screen.
+        setSliceRef.current = (to, silent) => {
+          const vp = viewportRef.current;
+          if (!vp || mprHeld) return;
+          const ids = vp.getImageIds();
+          if (ids.length === 0) return;
+          const current = vp.getCurrentImageIdIndex();
+          const wanted = clampIndex(
+            typeof to === "function" ? to(current, ids.length) : to,
+            ids.length
+          );
+          if (wanted === current) return;
+          if (silent) beginSuppress();
+          chain(async () => {
+            try {
+              await vp.setImageIdIndex(wanted);
+              vp.render();
+              applyPinnedVoi();
+            } finally {
+              if (silent) endSuppress();
+            }
+          });
+        };
+        nudgeZoomRef.current = (factor: number) => {
+          const vp = viewportRef.current;
+          if (!vp || mprHeld || !Number.isFinite(factor) || factor <= 0) return;
+          try {
+            vp.setZoom(vp.getZoom() * factor);
+            vp.render();
+            emitCamera();
+          } catch {
+            /* a 0x0 pane has no camera to scale */
+          }
         };
 
         // --- Replay / teach guide: re-apply ONE recorded event --------------
@@ -2496,6 +2626,92 @@ export default function CornerstoneViewer({
     void enterMprRef.current();
   }, [viewMode, ready]);
 
+  // --- Cine ----------------------------------------------------------------
+  // A cardiac loop, a dynamic contrast series and a fluoro run are unreadable
+  // one frame at a time, and "spin the wheel fast" is not an answer
+  // (docs/UI_AUDIT.md backlog #10). Timing lives in lib/cinePlayer.ts; the
+  // viewport is advanced silently so a recording is not swamped.
+  const sliceCount = readout?.count ?? 0;
+  const cineOffered = cineAvailable(sliceCount) && !mprLive && viewMode !== "mpr";
+  useEffect(() => {
+    if (!cinePlaying) return;
+    if (!cineOffered) {
+      setCinePlaying(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setSliceRef.current(
+        (current, count) => advanceCine(cineStateRef.current, current, count, cineWrap).index,
+        true
+      );
+    }, cineFrameMs(cineFps));
+    return () => window.clearInterval(timer);
+  }, [cinePlaying, cineOffered, cineFps, cineWrap]);
+
+  // Touching the stack stops the loop, the way a reading room expects.
+  useEffect(() => {
+    if (!cinePlaying) return;
+    const host = elementRef.current;
+    if (!host) return;
+    const stop = () => setCinePlaying(false);
+    host.addEventListener("pointerdown", stop);
+    host.addEventListener("wheel", stop, { passive: true });
+    return () => {
+      host.removeEventListener("pointerdown", stop);
+      host.removeEventListener("wheel", stop);
+    };
+  }, [cinePlaying]);
+
+  // A series switch or an MPR entry invalidates the loop's frame count.
+  useEffect(() => {
+    setCinePlaying(false);
+  }, [activeSeriesIndex, sourceKey, viewMode]);
+
+  // --- Keyboard ------------------------------------------------------------
+  // Bound to the VIEWPORT, not the window: the student session already owns a
+  // set of global keys (Space, C/N/P/R/T/F, `[`) and a second global listener
+  // would fight it. The host div is focusable, so tabbing or clicking into the
+  // image gives the reader a reading-room keyboard — and makes the viewer
+  // keyboard-operable at all, which it was not. See lib/viewerHotkeys.ts.
+  const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (isTextTarget(event.target)) return;
+    const action = resolveViewerHotkey(event, sliceCount);
+    if (!action) return;
+    event.preventDefault();
+    switch (action.type) {
+      case "tool":
+        setLeftToolRef.current(action.tool);
+        return;
+      case "slice":
+        setCinePlaying(false);
+        setSliceRef.current((current) => current + action.delta);
+        return;
+      case "sliceAbsolute":
+        setCinePlaying(false);
+        setSliceRef.current((_current, count) =>
+          action.where === "first" ? 0 : Math.max(0, count - 1)
+        );
+        return;
+      case "zoom":
+        nudgeZoomRef.current(action.factor);
+        return;
+      case "invert":
+        invertRef.current();
+        return;
+      case "reset":
+        resetRef.current();
+        return;
+      case "cine":
+        if (cineOffered) setCinePlaying((playing) => !playing);
+        return;
+      case "preset": {
+        const preset = presets[action.ordinal - 1];
+        if (preset) applyPresetRef.current(preset);
+        return;
+      }
+    }
+  };
+
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
   const mprShowing = mprLive || (viewMode === "mpr" && mprLoading);
@@ -2586,8 +2802,86 @@ export default function CornerstoneViewer({
       viewMode={viewMode}
       onViewMode={setViewMode}
       measurementsEnabled={!mprLive}
+      cineOffered={cineOffered}
+      cinePlaying={cinePlaying}
+      cineFps={cineFps}
+      onCineToggle={() => setCinePlaying((playing) => !playing)}
+      onCineFps={(fps) => setCineFps(clampCineFps(fps))}
     />
   );
+
+  // --- Slice scrollbar -----------------------------------------------------
+  // docs/UI_AUDIT.md backlog #2. Wheel-only scroll is invisible: a reader
+  // cannot tell a 240-slice CT from a radiograph, cannot see where they are,
+  // and cannot reach the end without 240 notches. The thumb's height is the
+  // share of the series one slice represents (floored so it stays grabbable),
+  // so series length is legible at a glance. Geometry is in
+  // lib/sliceScrollbar.ts. Hidden in MPR, which has its own three planes.
+  const sliceDragRef = useRef(false);
+  const scrollbarVisible = sliceCount > 1 && ready && !mprShowing;
+  const currentSlice = Math.max(0, (readout?.slice ?? 1) - 1);
+  const trackPx = scrollTrackRef.current?.clientHeight ?? 0;
+  const thumb = thumbGeometry(currentSlice, sliceCount, trackPx || 320);
+
+  const sliceFromEvent = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const track = scrollTrackRef.current;
+    if (!track) return;
+    const box = track.getBoundingClientRect();
+    setSliceRef.current(
+      indexFromPointer(event.clientY, { top: box.top, height: box.height }, sliceCount)
+    );
+  };
+
+  const sliceScrollbar = scrollbarVisible ? (
+    <div
+      ref={scrollTrackRef}
+      role="slider"
+      tabIndex={-1}
+      aria-label="Slice"
+      aria-orientation="vertical"
+      aria-valuemin={1}
+      aria-valuemax={sliceCount}
+      aria-valuenow={readout?.slice ?? 1}
+      aria-valuetext={`Slice ${readout?.slice ?? 1} of ${sliceCount}`}
+      className={cn(
+        "group absolute bottom-10 right-1 top-10 z-10 w-5 cursor-pointer touch-none",
+        "flex justify-center rounded-full"
+      )}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        sliceDragRef.current = true;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setCinePlaying(false);
+        sliceFromEvent(event);
+      }}
+      onPointerMove={(event) => {
+        if (!sliceDragRef.current) return;
+        sliceFromEvent(event);
+      }}
+      onPointerUp={(event) => {
+        sliceDragRef.current = false;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => {
+        sliceDragRef.current = false;
+      }}
+    >
+      {/* Track: a hairline at rest so it never competes with anatomy, and a
+          full-width rail once the pointer is near it or a drag is live. */}
+      <div
+        className={cn(
+          "pointer-events-none h-full w-1 rounded-full bg-white/15 transition-all",
+          "group-hover:w-2 group-hover:bg-white/25",
+          sliceDragRef.current && "w-2 bg-white/25"
+        )}
+      >
+        <div
+          className="w-full rounded-full bg-white/80 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
+          style={{ marginTop: `${thumb.topPct}%`, height: `${thumb.heightPct}%` }}
+        />
+      </div>
+    </div>
+  ) : null;
 
   const readoutLabel =
     readout == null
@@ -2618,17 +2912,29 @@ export default function CornerstoneViewer({
           ref={elementRef}
           className={cn(
             "touch-none select-none overscroll-contain bg-imaging",
+            "outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-0",
             docked
               ? "aspect-square w-full max-w-full overflow-hidden rounded-xl border border-subtle"
               : "absolute inset-0",
             mprLive && "invisible pointer-events-none"
           )}
           onContextMenu={(e) => e.preventDefault()}
-          aria-label="DICOM viewer"
+          // Focusable so the reading-room keys (lib/viewerHotkeys.ts) can be
+          // scoped to the image instead of fighting the session's global keys,
+          // and so the viewer is operable without a mouse at all.
+          tabIndex={mprLive ? -1 : 0}
+          onKeyDown={onViewerKeyDown}
+          aria-label={
+            sliceCount > 0
+              ? `DICOM viewer, slice ${readout?.slice ?? 1} of ${sliceCount}. ` +
+                "Arrow keys scroll, 1 to 5 pick a tool, 0 resets."
+              : "DICOM viewer"
+          }
           aria-hidden={mprLive || undefined}
           role="img"
           data-viewer-tool={activeTool}
         />
+        {sliceScrollbar}
         {(viewMode === "mpr" || mprLive) && (
           <MprLayout
             axialRef={axialRef}
@@ -2676,6 +2982,7 @@ export default function CornerstoneViewer({
         <p className="text-xs text-secondary">
           <span className="font-medium text-primary">{activeToolLabel}</span>
           {" on the left button · Wheel scroll · right-drag zoom · middle-drag pan"}
+          {" · click the image, then 1–5 picks a tool, arrows scroll, 0 resets"}
           {ready && !annotationsEnabled && (
             <>
               {" · "}
@@ -2800,6 +3107,11 @@ function ViewerToolbar({
   viewMode,
   onViewMode,
   measurementsEnabled,
+  cineOffered,
+  cinePlaying,
+  cineFps,
+  onCineToggle,
+  onCineFps,
 }: {
   orientation: "horizontal" | "vertical";
   /** Student pane: one tight row, no group captions. */
@@ -2827,6 +3139,12 @@ function ViewerToolbar({
   onViewMode: (mode: MprMode) => void;
   /** Length and ROI stay on the stack. MPR keeps scroll, pan, zoom, and window. */
   measurementsEnabled: boolean;
+  /** False on a 1- or 2-image series, and in MPR. The group is then hidden. */
+  cineOffered: boolean;
+  cinePlaying: boolean;
+  cineFps: number;
+  onCineToggle: () => void;
+  onCineFps: (fps: number) => void;
 }) {
   const vertical = orientation === "vertical";
   const activeMeasure =
@@ -2965,6 +3283,47 @@ function ViewerToolbar({
     </div>
   );
 
+  // Cine: play/pause plus the frame rate. Hidden outright when the series
+  // cannot loop, rather than shown disabled — a dead transport control on a
+  // chest radiograph is noise (lib/cinePlayer.ts).
+  const cineControl = cineOffered ? (
+    <div className="flex items-center gap-0.5">
+      <ToolButton
+        label={cinePlaying ? `Pause cine (${cineFps} fps)` : `Play cine (${cineFps} fps)`}
+        caption={vertical ? undefined : cinePlaying ? "Pause" : "Cine"}
+        active={cinePlaying}
+        disabled={!ready}
+        onClick={onCineToggle}
+      >
+        {cinePlaying ? (
+          <Pause className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+        ) : (
+          <Play className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+        )}
+      </ToolButton>
+      <label className="flex flex-col justify-end">
+        <span className="sr-only">Cine frame rate</span>
+        <select
+          disabled={!ready}
+          value={String(cineFps)}
+          onChange={(event) => onCineFps(Number(event.target.value))}
+          className={cn(
+            "h-11 shrink-0 rounded-lg border border-white/15 bg-transparent px-1.5 text-xs font-medium",
+            "tabular-nums text-white/85 transition-colors hover:bg-white/10 hover:text-white",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
+            "disabled:cursor-not-allowed disabled:opacity-40"
+          )}
+        >
+          {CINE_FPS_OPTIONS.map((fps) => (
+            <option key={fps} value={fps} className="bg-[#181818] text-white">
+              {fps} fps
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  ) : null;
+
   const display = (
     <>
       {presetControl}
@@ -3035,6 +3394,14 @@ function ViewerToolbar({
         )}
         {measureSplit}
       </div>
+      {cineControl ? (
+        <div className="flex flex-col gap-1">
+          {compact ? null : (
+            <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Cine</span>
+          )}
+          {cineControl}
+        </div>
+      ) : null}
       <div className="flex flex-col gap-1">
         {compact ? null : (
           <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Display</span>
