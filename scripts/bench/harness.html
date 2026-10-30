@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>FlowRad viewer benchmark</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #000;
+        color: #fff;
+        font: 13px/1.4 ui-monospace, monospace;
+      }
+      #stage {
+        width: 512px;
+        height: 512px;
+        background: #000;
+        touch-action: none;
+        user-select: none;
+      }
+      #log {
+        padding: 8px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <pre id="log">starting…</pre>
+    <script type="module" src="/bench/assets/harness.js"></script>
+  </body>
+</html>
