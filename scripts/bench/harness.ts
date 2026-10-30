@@ -23,6 +23,7 @@ import {
   startProgressiveWadorsLoad,
 } from "../../lib/progressiveStack";
 import { directionalPrefetchIndexes, prefetchRadiusFor } from "../../lib/prefetchPlan";
+import { warmOpeningFrame, warmViewerModules } from "../../lib/viewerWarmup";
 import {
   coreInitConfig,
   imageCacheBytes,
@@ -39,6 +40,12 @@ interface Knobs {
   countHint: boolean;
   /** Warm a few slices ahead on every slice change, not only on scroll pause. */
   directionalPrefetch: boolean;
+  /**
+   * Run lib/viewerWarmup's opening-frame warm BEFORE the engine exists, the
+   * way components/viewer/ViewerPrewarm does on a case page. Models the real
+   * overlap: the three round trips happen while the engine chunks download.
+   */
+  prewarm: boolean;
   slices: number;
   scrollSlices: number;
   studyUID: string;
@@ -67,6 +74,18 @@ const BASELINE = {
 
 async function main() {
   const t0 = performance.now();
+  // A case page mounts ViewerPrewarm and the dynamic viewer in the same tick.
+  // Kick the warm off first and do NOT await it — the point is the overlap.
+  const prewarmed = knobs.prewarm
+    ? warmOpeningFrame({
+        wadoRsRoot: WADO_ROOT,
+        studyInstanceUID: knobs.studyUID,
+        seriesInstanceUID: knobs.seriesUID,
+        instanceCount: knobs.slices,
+      })
+    : Promise.resolve(null);
+  void prewarmed.catch(() => null);
+  if (knobs.prewarm) void warmViewerModules();
   const core = await import("@cornerstonejs/core");
   const loader = await import("@cornerstonejs/dicom-image-loader");
   const tools = await import("@cornerstonejs/tools");
@@ -184,6 +203,8 @@ async function main() {
     runtime: knobs.runtime,
     countHint: knobs.countHint,
     directionalPrefetch: knobs.directionalPrefetch,
+    prewarm: knobs.prewarm,
+    prewarmedImageId: (await prewarmed) != null,
     images: full.imageIds.length,
     workers,
     cacheBytes,

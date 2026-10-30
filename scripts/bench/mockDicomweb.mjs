@@ -195,7 +195,8 @@ export async function startMockDicomweb(options = {}) {
       counters.bytes += body.length;
       res.writeHead(200, {
         "content-type": 'multipart/related; type="application/octet-stream"; boundary=--flowradbench',
-        "cache-control": "private, max-age=86400, immutable",
+        "cache-control": "private, max-age=86400, stale-while-revalidate=604800, immutable",
+        vary: "Accept",
       });
       res.end(body);
       return;
@@ -209,7 +210,14 @@ export async function startMockDicomweb(options = {}) {
         return;
       }
       counters.instanceMetadata += 1;
-      res.writeHead(200, { "content-type": "application/dicom+json" });
+      res.writeHead(200, {
+        "content-type": "application/dicom+json",
+        // Mirror lib/dicomwebProxy.ts so the browser cache behaves the way it
+        // does in front of /api/dicomweb — otherwise the prewarm profile
+        // measures a double fetch that production would never make.
+        "cache-control": "private, max-age=86400, immutable",
+        vary: "Accept",
+      });
       res.end(JSON.stringify([datasets[index]]));
       return;
     }
@@ -222,6 +230,8 @@ export async function startMockDicomweb(options = {}) {
       res.writeHead(200, {
         "content-type": "application/dicom+json",
         "content-length": String(seriesDoc.length),
+        "cache-control": "private, max-age=300, stale-while-revalidate=3600",
+        vary: "Accept",
       });
       // Chunked write so the streaming JSON scanner has something to scan.
       const chunk = 64 * 1024;
@@ -243,7 +253,10 @@ export async function startMockDicomweb(options = {}) {
       counters.qido += 1;
       counters.qidoBytes += body.length;
       counters.bytes += body.length;
-      res.writeHead(200, { "content-type": "application/dicom+json" });
+      res.writeHead(200, {
+        "content-type": "application/dicom+json",
+        "cache-control": "private, max-age=300, stale-while-revalidate=3600",
+      });
       res.end(body);
       return;
     }

@@ -129,12 +129,20 @@ function runChrome(url) {
 
 // Each profile flips ONE thing relative to `baseline`, and `tuned` flips all
 // of them, so the table attributes the delta instead of just reporting it.
+const BASE = { runtime: "baseline", countHint: false, directionalPrefetch: false, prewarm: false };
 const PROFILES = [
-  { label: "baseline", runtime: "baseline", countHint: false, directionalPrefetch: false },
-  { label: "engine", runtime: "tuned", countHint: false, directionalPrefetch: false },
-  { label: "prefetch", runtime: "baseline", countHint: false, directionalPrefetch: true },
-  { label: "counthint", runtime: "baseline", countHint: true, directionalPrefetch: false },
-  { label: "tuned", runtime: "tuned", countHint: true, directionalPrefetch: true },
+  { ...BASE, label: "baseline" },
+  { ...BASE, label: "engine", runtime: "tuned" },
+  { ...BASE, label: "prefetch", directionalPrefetch: true },
+  { ...BASE, label: "counthint", countHint: true },
+  { ...BASE, label: "prewarm", prewarm: true },
+  {
+    label: "tuned",
+    runtime: "tuned",
+    countHint: true,
+    directionalPrefetch: true,
+    prewarm: true,
+  },
 ];
 
 async function main() {
