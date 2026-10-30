@@ -123,7 +123,7 @@ function near(a: SketchPoint, b: SketchPoint, eps: number): boolean {
 }
 
 function presentationTail(tip: SketchPoint): SketchPoint {
-  return point(clampUnit(tip.x_pct - 0.14), clampUnit(tip.y_pct - 0.1));
+  return point(clampUnit(tip.x_pct + 0.16), clampUnit(tip.y_pct + 0.04));
 }
 
 function underlineFor(marker: SketchPoint): SketchPoint[] {
@@ -266,11 +266,20 @@ export function uncertainTapMark(tap: StudentTap, generation = 1): SketchMark {
 }
 
 function sentences(text: string, max: number): string[] {
-  return text
+  const parts = text
     .split(/(?<=[.!;])\s+|\n+/)
-    .map((line) => plainTeachingText(line, 72))
-    .filter(Boolean)
-    .slice(0, max);
+    .map((line) => plainTeachingText(line, 90))
+    .filter(Boolean);
+  const merged: string[] = [];
+  for (const part of parts) {
+    const prev = merged[merged.length - 1];
+    if (prev && /(?:\bapprox|\bvs|\be\.g|\bi\.e|\bDr|\bFig)\.$/i.test(prev)) {
+      merged[merged.length - 1] = plainTeachingText(`${prev} ${part}`, 90);
+    } else {
+      merged.push(part);
+    }
+  }
+  return merged.slice(0, max);
 }
 
 export function fillDiagramCard(
@@ -337,20 +346,6 @@ function arrowMark(item: LiveFinding, anchor: LiveSketchAnchor, generation: numb
   });
 }
 
-function underlineMark(item: LiveFinding, anchor: LiveSketchAnchor, generation: number, delayMs: number): SketchMark {
-  return baseMark({
-    id: `sk-${item.id}-underline-${generation}`,
-    kind: "underline",
-    certainty: "authored",
-    findingId: item.id,
-    sliceStart: anchor.sliceStart,
-    sliceEnd: anchor.sliceEnd,
-    anchor: anchor.marker,
-    points: anchor.underline,
-    delayMs,
-  });
-}
-
 function cardMark(
   item: LiveFinding | undefined,
   anchorPoint: SketchPoint,
@@ -384,10 +379,9 @@ export function replaySketches(pack: LiveTeachingPack, findingId: string, genera
   const card = fillDiagramCard("sign", {}, item);
   const marks = [
     circleMark(item, anchor, generation, 0),
-    arrowMark(item, anchor, generation, 160),
-    underlineMark(item, anchor, generation, 280),
+    arrowMark(item, anchor, generation, 360),
   ];
-  if (card) marks.push(cardMark(item, anchor.marker, card, generation, "authored", anchor, 420));
+  if (card) marks.push(cardMark(item, anchor.marker, card, generation, "authored", anchor, 580));
   return marks;
 }
 

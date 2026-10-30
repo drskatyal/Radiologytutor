@@ -93,6 +93,7 @@ export default function StudentSession({
   const tutorChosen = useRef(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const [anatomyOpen, setAnatomyOpen] = useState(false);
+  const [sliceStill, setSliceStill] = useState<string | null>(null);
   const hinted = series;
   const resolved = useResolvedSeries(caseData.caseId, hinted);
   const rail = resolved.series;
@@ -378,7 +379,11 @@ export default function StudentSession({
               size="md"
               className="h-11 w-11"
               variant={anatomyOpen ? "primary" : "secondary"}
-              onClick={() => setAnatomyOpen((open) => !open)}
+              onClick={() => {
+                const shot = s.controls.current?.captureViewportStill?.();
+                setSliceStill(shot ? `data:${shot.mimeType};base64,${shot.base64}` : null);
+                setAnatomyOpen((open) => !open);
+              }}
             >
               <Box className="h-4 w-4" />
             </IconButton>
@@ -538,7 +543,18 @@ export default function StudentSession({
               </div>
             )}
           </ImagingLayout>
-          {anatomyOpen && <AnatomyPanel onClose={() => setAnatomyOpen(false)} />}
+          {anatomyOpen && (
+            <AnatomyPanel
+              caseId={caseData.caseId}
+              findingId={
+                s.activeIndex >= 0
+                  ? s.orderedFindings[s.activeIndex]?.id
+                  : s.orderedFindings[0]?.id
+              }
+              sliceImage={sliceStill}
+              onClose={() => setAnatomyOpen(false)}
+            />
+          )}
         </div>
 
       <aside

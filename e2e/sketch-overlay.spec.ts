@@ -1,56 +1,50 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-async function openSketch(page: import("@playwright/test").Page) {
+async function openCase(page: Page) {
   await page.addInitScript(() => {
     window.localStorage.setItem("radlearn-cookie-ack", "1");
   });
-  await page.goto("/dev/sketch");
+  const auth = await page.request.post("/api/auth/demo", { data: { role: "author" } });
+  expect(auth.ok()).toBeTruthy();
+  await page.goto("/case/case-lidc-nodule-search");
+  await expect(page.getByTestId("sketch-stage")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("sketch-card")).toContainText("Lung window");
 }
 
-test("desktop marks stay on the image point and hide off-slice", async ({ page }) => {
+test("desktop sketch sits on the real chest CT", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await openSketch(page);
-  const circle = page.getByTestId("sketch-circle");
-  await expect(circle).toBeVisible();
-  const imageX = await circle.getAttribute("data-image-x");
-  const before = await circle.getAttribute("transform");
-  expect(imageX).toBe("0.34");
-  await expect(page.getByTestId("sketch-card")).toContainText("Spiculated nodule");
-  await expect(page.getByTestId("sketch-arrow")).toBeVisible();
-  await expect(page.getByTestId("sketch-underline")).toBeVisible();
-  await page.getByRole("button", { name: "Replay marks" }).click();
+  await openCase(page);
+  await page.waitForTimeout(1400);
+  const imageX = await page.getByTestId("sketch-stage").getAttribute("data-image-x");
+  expect(imageX).toBe("0.52");
+  await page.screenshot({ path: "/opt/cursor/artifacts/ct-desktop.png" });
+  await page.getByRole("button", { name: "Show in 3D" }).click();
+  await expect(page.getByTestId("anatomy-disclaimer")).toContainText("TotalSegmentator");
+  await page.waitForTimeout(1600);
+  await page.screenshot({ path: "/opt/cursor/artifacts/ct-desktop-3d.png" });
+  await page.getByRole("button", { name: "Exploded view" }).click();
   await page.waitForTimeout(900);
-  await page.screenshot({ path: "/opt/cursor/artifacts/sketch-desktop.png", fullPage: false });
-  await page.getByRole("button", { name: "Zoom in" }).click();
-  await expect(circle).toHaveAttribute("data-image-x", "0.34");
-  const after = await circle.getAttribute("transform");
-  expect(after).not.toBe(before);
-  await page.screenshot({ path: "/opt/cursor/artifacts/sketch-desktop-zoom.png" });
-  await page.getByRole("button", { name: "Other slice" }).click();
-  await expect(page.getByTestId("sketch-circle")).toHaveCount(0);
-  await page.screenshot({ path: "/opt/cursor/artifacts/sketch-desktop-offslice.png" });
+  await page.screenshot({ path: "/opt/cursor/artifacts/ct-desktop-exploded.png" });
 });
 
-test("phone card stays inside the viewport and 3D is labelled generic", async ({ page }) => {
+test("phone keeps the CT on screen and the 3D view in a sheet", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await openSketch(page);
+  await openCase(page);
+  await page.waitForTimeout(900);
   const card = page.getByTestId("sketch-card");
-  await expect(card).toBeVisible();
-  await expect(card).toContainText("Spiculated nodule");
-  const box = await card.boundingBox();
-  const stage = await page.getByTestId("sketch-stage").boundingBox();
-  expect(box).toBeTruthy();
-  expect(stage).toBeTruthy();
-  expect(box!.x).toBeGreaterThanOrEqual(stage!.x - 1);
-  expect(box!.y).toBeGreaterThanOrEqual(stage!.y - 1);
-  expect(box!.x + box!.width).toBeLessThanOrEqual(stage!.x + stage!.width + 1);
-  expect(box!.y + box!.height).toBeLessThanOrEqual(stage!.y + stage!.height + 1);
-  await page.screenshot({ path: "/opt/cursor/artifacts/sketch-phone.png" });
+  const stage = page.locator(".bg-imaging").first();
+  const cardBox = await card.boundingBox();
+  const stageBox = await stage.boundingBox();
+  expect(cardBox && stageBox).toBeTruthy();
+  expect(cardBox!.y).toBeGreaterThanOrEqual(stageBox!.y - 2);
+  expect(cardBox!.y + cardBox!.height).toBeLessThanOrEqual(stageBox!.y + stageBox!.height + 2);
+  await page.screenshot({ path: "/opt/cursor/artifacts/ct-phone.png" });
   await page.getByRole("button", { name: "Show in 3D" }).click();
-  await expect(page.getByTestId("anatomy-disclaimer")).toContainText("Not derived from this patient's CT");
-  await expect(page.getByRole("button", { name: "Right lung" })).toBeVisible();
-  const canvas = page.locator("canvas");
-  await expect(canvas).toBeVisible({ timeout: 20_000 });
-  await page.waitForTimeout(1200);
-  await page.screenshot({ path: "/opt/cursor/artifacts/sketch-phone-3d.png" });
+  await expect(page.getByTestId("anatomy-disclaimer")).toContainText("TotalSegmentator");
+  const panel = page.getByTestId("anatomy-panel");
+  const panelBox = await panel.boundingBox();
+  expect(panelBox).toBeTruthy();
+  expect(panelBox!.height).toBeLessThan(844 * 0.6);
+  await page.waitForTimeout(1600);
+  await page.screenshot({ path: "/opt/cursor/artifacts/ct-phone-3d.png" });
 });

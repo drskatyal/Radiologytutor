@@ -1840,7 +1840,7 @@ export function useStudentSession(
       tourActiveRef.current = false;
       setTourActive(false);
       interruptPlayback();
-      void revealFinding(index, { spoil: false });
+      void revealFinding(index, { spoil: !isExamMode(modeRef.current) });
     },
     [busy, ready, orderedFindings.length, revealFinding, interruptPlayback]
   );
@@ -1970,7 +1970,7 @@ export function useStudentSession(
     startedRef.current = true;
     tourActiveRef.current = false;
     setTourActive(false);
-    void revealFinding(0, { spoil: false });
+    void revealFinding(0, { spoil: !isExamMode(modeRef.current) });
   }, [ready, orderedFindings.length, revealFinding]);
 
   // Teach → Exam: the guide has already marked this finding revealed and is

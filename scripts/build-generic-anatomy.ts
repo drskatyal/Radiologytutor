@@ -153,7 +153,7 @@ function build(): Buffer {
       name: item.node,
       doubleSided: true,
       pbrMetallicRoughness: {
-        baseColorFactor: hexToFactor(item.color),
+        baseColorFactor: hexToFactor(item.color ?? "#c45b55"),
         metallicFactor: 0.04,
         roughnessFactor: 0.62,
       },

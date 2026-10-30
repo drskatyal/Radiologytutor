@@ -124,7 +124,7 @@ export function placeCardBox(
   viewport: { width: number; height: number },
   card: { width: number; height: number }
 ): { x: number; y: number } {
-  const margin = 8;
+  const margin = 16;
   const maxX = Math.max(margin, viewport.width - card.width - margin);
   const maxY = Math.max(margin, viewport.height - card.height - margin);
   // Findings on the left get the card on the right, so an arrow from the
@@ -159,5 +159,5 @@ export function leaderStart(
 
 export function cardPixelSize(viewportWidth: number): { width: number; height: number } {
   const width = Math.min(248, Math.max(148, Math.round(viewportWidth * 0.68)));
-  return { width, height: 118 };
+  return { width, height: 168 };
 }

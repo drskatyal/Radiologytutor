@@ -235,8 +235,10 @@ test("reaching a finding replays anchored marks", () => {
   const marks = replaySketches(pack, "f1", 7);
   assert.deepEqual(
     marks.map((mark) => mark.kind),
-    ["circle", "arrow", "underline", "card"]
+    ["circle", "arrow", "card"]
   );
+  assert.ok((marks[0]?.delayMs ?? 0) < (marks[1]?.delayMs ?? 0));
+  assert.ok((marks[1]?.delayMs ?? 0) < (marks.find((mark) => mark.kind === "card")?.delayMs ?? 0));
   assert.ok(marks.every((mark) => mark.anchor.x_pct === 0.32 && mark.certainty === "authored"));
   assert.equal(marks.find((mark) => mark.kind === "card")?.card?.title, "Spiculated nodule");
   const frame = frameFromCamera(camera, 12);

@@ -257,7 +257,9 @@ function ImagingPane({
       />
 
       <div ref={hitRef} className="pointer-events-none absolute inset-0">
-        {stackOverlay && marker && <FindingMarker marker={marker} visible={markerVisible} />}
+        {stackOverlay && marker && sketches.length === 0 && (
+          <FindingMarker marker={marker} visible={markerVisible} />
+        )}
         {stackOverlay && measurements && measurements.length > 0 && (
           <MeasurementOverlay
             measurements={measurements}

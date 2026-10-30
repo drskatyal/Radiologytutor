@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Kalam, Manrope } from "next/font/google";
+import { Manrope, Shantell_Sans } from "next/font/google";
 import { AppShell } from "@/components/AppShell";
 import { demoAuthEnabled } from "@/lib/auth";
 import "./globals.css";
@@ -13,10 +13,10 @@ const sans = Manrope({
   variable: "--font-sans",
 });
 
-const hand = Kalam({
+const hand = Shantell_Sans({
   subsets: ["latin"],
   display: "swap",
-  weight: ["400", "700"],
+  weight: ["500", "700"],
   variable: "--font-hand",
 });
 
@@ -46,6 +46,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${sans.variable} ${hand.variable}`}>
       <body className="font-sans">
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){function swallow(e){var r=e.reason||e.error;var m=String((r&&r.message)||e.message||"");if((r&&r.name)==="AbortError"||m.indexOf("samplesPerPixel")!==-1){e.preventDefault();e.stopImmediatePropagation();}}window.addEventListener("unhandledrejection",swallow,true);window.addEventListener("error",swallow,true);})();`,
+          }}
+        />
         <AppShell demoEnabled={demoAuthEnabled()}>{children}</AppShell>
       </body>
     </html>

@@ -7,6 +7,8 @@
 import { api } from "dicomweb-client";
 import cornerstoneDICOMImageLoader from "@cornerstonejs/dicom-image-loader";
 
+import { sortAxialStack } from "./stackOrder";
+
 const SOP_INSTANCE_UID = "00080018";
 const SERIES_INSTANCE_UID = "0020000E";
 
@@ -28,13 +30,16 @@ export default async function createImageIdsAndCacheMetaData({
     seriesInstanceUID: SeriesInstanceUID,
   });
 
-  return (instances as unknown as Record<string, { Value: string[] }>[]).map((inst) => {
-    const seriesUID = inst[SERIES_INSTANCE_UID].Value[0];
-    const sopUID = inst[SOP_INSTANCE_UID].Value[0];
+  return sortAxialStack(instances as unknown as Record<string, { Value?: Array<number | string> }>[]).map((inst) => {
+    const seriesUID = String(inst[SERIES_INSTANCE_UID]?.Value?.[0] ?? SeriesInstanceUID);
+    const sopUID = String(inst[SOP_INSTANCE_UID]?.Value?.[0] ?? "");
     const imageId =
       `wadors:${wadoRsRoot}/studies/${StudyInstanceUID}` +
       `/series/${seriesUID}/instances/${sopUID}/frames/1`;
-    cornerstoneDICOMImageLoader.wadors.metaDataManager.add(imageId, inst);
+    cornerstoneDICOMImageLoader.wadors.metaDataManager.add(
+      imageId,
+      inst as unknown as Parameters<typeof cornerstoneDICOMImageLoader.wadors.metaDataManager.add>[1]
+    );
     return imageId;
   });
 }

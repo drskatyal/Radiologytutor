@@ -13,11 +13,12 @@ export type RoughKind = "circle" | "ellipse" | "arrow" | "underline" | "leader" 
 function strokeOptions(seed: number, extra?: { roughness?: number; bowing?: number }) {
   return {
     seed,
-    roughness: extra?.roughness ?? 1.15,
-    bowing: extra?.bowing ?? 0.85,
-    strokeWidth: 2.6,
-    disableMultiStroke: true,
-    maxRandomnessOffset: 1.5,
+    roughness: extra?.roughness ?? 1.75,
+    bowing: extra?.bowing ?? 2.1,
+    strokeWidth: 3.1,
+    disableMultiStroke: false,
+    maxRandomnessOffset: 2.6,
+    curveFitting: 0.92,
   };
 }
 
@@ -33,15 +34,24 @@ export function sketchSeed(id: string): number {
 export function roughPaths(kind: RoughKind, seed: number): string[] {
   const drawable =
     kind === "circle"
-      ? generator.circle(0, 0, 100, strokeOptions(seed))
+      ? generator.arc(0, 0, 108, 108, -0.45, Math.PI * 2 + 0.62, false, strokeOptions(seed, { roughness: 1.85, bowing: 2.4 }))
       : kind === "ellipse"
-        ? generator.ellipse(0, 0, 100, 72, strokeOptions(seed))
+        ? generator.ellipse(0, 0, 108, 78, strokeOptions(seed, { roughness: 1.7 }))
         : kind === "arrow"
-          ? generator.line(0, 0, 100, 0, strokeOptions(seed, { bowing: 1.15 }))
+          ? generator.line(0, 0, 100, 0, strokeOptions(seed, { roughness: 1.6, bowing: 1.8 }))
           : kind === "leader"
-            ? generator.line(0, 0, 100, 0, strokeOptions(seed, { roughness: 0.9, bowing: 0.45 }))
+            ? generator.curve(
+                [
+                  [0, 8],
+                  [18, -6],
+                  [42, 14],
+                  [68, -4],
+                  [100, 6],
+                ],
+                strokeOptions(seed, { roughness: 1.9, bowing: 2.6 })
+              )
             : kind === "card"
-              ? generator.rectangle(6, 6, 188, 78, strokeOptions(seed, { roughness: 1.35, bowing: 0.8 }))
+              ? generator.rectangle(4, 4, 192, 82, strokeOptions(seed, { roughness: 1.5, bowing: 1.2 }))
               : generator.curve(
                   [
                     [0, 18],
@@ -90,7 +100,7 @@ export function drawDurationMs(kind: RoughKind | "card-in"): number {
       return 420;
     case "card":
     case "card-in":
-      return 640;
+      return 420;
     default:
       return 600;
   }

@@ -4,15 +4,32 @@
  * `scripts/build-generic-anatomy.ts`). This is not a segmentation of a study.
  */
 
+export interface AnatomyFindingMark {
+  findingId?: string;
+  label: string;
+  position: [number, number, number];
+}
+
+export interface AnatomyManifest {
+  source: "totalsegmentator" | "generic-schematic";
+  caseId?: string;
+  glb: string;
+  disclaimer: string;
+  structures: AnatomyStructure[];
+  findings: AnatomyFindingMark[];
+  /** Set by the panel from the teaching step. Not stored in the file. */
+  activeFindingId?: string;
+}
+
 export interface AnatomyStructure {
   id: string;
   /** glTF node / mesh name. */
   node: string;
   label: string;
   position: [number, number, number];
-  scale: [number, number, number];
+  scale?: [number, number, number];
   /** sRGB hex, written into the glTF material. */
-  color: string;
+  color?: string;
   /** Camera seat when the tutor (or the learner) flies to this structure. */
   camera: [number, number, number];
 }

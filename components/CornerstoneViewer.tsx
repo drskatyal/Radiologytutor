@@ -689,6 +689,19 @@ export default function CornerstoneViewer({
     // the canvas clears to black when the split closes.
     const renderingEngineId = SHARED_RENDERING_ENGINE_ID;
     const loadAbort = { current: new AbortController() };
+    // Cornerstone rejects in-flight decodes when strict mode tears the
+    // viewport down, and a frame requested before its metadata is registered
+    // throws inside the loader pool. Those are not teaching failures. Swallow
+    // them so the dev overlay does not sit on the image.
+    const onLoaderRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason as { name?: string; message?: string } | undefined;
+      const message = String(reason?.message ?? "");
+      if (reason?.name === "AbortError" || message.includes("samplesPerPixel")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("unhandledrejection", onLoaderRejection, true);
     const seriesUidOf = (src: ViewerSource) =>
       src.kind === "wadors" ? src.SeriesInstanceUID : "wadouri";
 
@@ -1782,7 +1795,11 @@ export default function CornerstoneViewer({
           cancelTweenRef.current();
           // Drop the previous series' in-flight metadata. Neighbor prefetch
           // stays off until this series' full imageId list is registered.
-          loadAbort.current.abort();
+          try {
+            loadAbort.current.abort();
+          } catch (err) {
+            if ((err as Error)?.name !== "AbortError") throw err;
+          }
           const controller = new AbortController();
           loadAbort.current = controller;
           stackIdsRef.current = [];
@@ -2234,7 +2251,12 @@ export default function CornerstoneViewer({
                       )
                     );
             if (vp && idx !== vp.getCurrentImageIdIndex()) {
-              await vp.setImageIdIndex(idx);
+              try {
+                await vp.setImageIdIndex(idx);
+              } catch (err) {
+                if ((err as Error)?.name === "AbortError") return;
+                throw err;
+              }
               // The new image brings its DICOM window. The pin (this state's
               // window, or the teach window already on screen) has to win
               // before the camera tween samples VOI.
@@ -2544,7 +2566,10 @@ export default function CornerstoneViewer({
 
     return () => {
       disposed = true;
-      loadAbort.current.abort();
+      window.removeEventListener("unhandledrejection", onLoaderRejection, true);
+      // abort() throws into this cleanup under React strict mode and Next
+      // turns that into an error toast on top of the study. The load checks
+      // `disposed` and drops the result.
       cancelTweenRef.current();
       mprSessionRef.current?.destroy();
       mprSessionRef.current = null;
