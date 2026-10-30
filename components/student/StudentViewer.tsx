@@ -16,8 +16,11 @@ import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { FindingMeasurement, Marker } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { ReplayOverlay, type ReplayOverlayHandle } from "@/components/ReplayOverlay";
+import type { SketchFrame } from "@/lib/sketchProjection";
+import type { SketchMark } from "@/lib/sketchMarks";
 import { FindingMarker } from "./FindingMarker";
 import { MeasurementOverlay } from "./MeasurementOverlay";
+import { SketchOverlay } from "./SketchOverlay";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
   ssr: false,
@@ -60,6 +63,8 @@ export function StudentViewer({
   ready,
   locateMode = false,
   onLocateClick,
+  sketches = [],
+  onImagePoint,
   secondary,
 }: {
   source: ViewerSource;
@@ -81,6 +86,10 @@ export function StudentViewer({
   /** Viva: student clicks the image to locate the finding. */
   locateMode?: boolean;
   onLocateClick?: (x: number, y: number) => void;
+  /** Hand-drawn tutor marks, in image fractions. */
+  sketches?: readonly SketchMark[];
+  /** A short click on the image, already in image fractions. */
+  onImagePoint?: (point: { x_pct: number; y_pct: number }, sliceIndex: number) => void;
   /** When set, a second stack opens beside the primary (compare). */
   secondary?: ViewerPane | null;
 }) {
@@ -121,6 +130,8 @@ export function StudentViewer({
         label={compare ? "Current" : undefined}
         locateMode={locateMode}
         onLocateClick={onLocateClick}
+        sketches={sketches}
+        onImagePoint={onImagePoint}
       />
       {secondary && (
         <ImagingPane
@@ -166,6 +177,8 @@ function ImagingPane({
   label,
   locateMode,
   onLocateClick,
+  sketches = [],
+  onImagePoint,
 }: {
   source: ViewerSource;
   series?: CaseSeries[];
@@ -186,8 +199,12 @@ function ImagingPane({
   label?: string;
   locateMode?: boolean;
   onLocateClick?: (x: number, y: number) => void;
+  sketches?: readonly SketchMark[];
+  onImagePoint?: (point: { x_pct: number; y_pct: number }, sliceIndex: number) => void;
 }) {
   const hitRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<SketchFrame | null>(null);
+  const downRef = useRef<{ x: number; y: number } | null>(null);
   // Markers and the laser are stored in stack-image fractions. Hide them
   // while MPR is up so they are not drawn across the three planes.
   const [layout, setLayout] = useState<"stack" | "mpr">("stack");
@@ -204,7 +221,24 @@ function ImagingPane({
   }
 
   return (
-    <div className="relative h-full min-h-0 w-full min-w-0 overflow-hidden bg-imaging lg:border-r lg:border-subtle/40 lg:last:border-r-0">
+    <div
+      className="relative h-full min-h-0 w-full min-w-0 overflow-hidden bg-imaging lg:border-r lg:border-subtle/40 lg:last:border-r-0"
+      onPointerDown={(event) => {
+        downRef.current = { x: event.clientX, y: event.clientY };
+      }}
+      onPointerUp={(event) => {
+        const start = downRef.current;
+        downRef.current = null;
+        if (!start || !onImagePoint) return;
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) return;
+        const frame = frameRef.current;
+        if (!frame) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        const image = frame.unproject(event.clientX - rect.left, event.clientY - rect.top);
+        if (!image) return;
+        onImagePoint(image, frame.sliceIndex);
+      }}
+    >
       <CornerstoneViewer
         source={source}
         series={series}
@@ -223,11 +257,22 @@ function ImagingPane({
       />
 
       <div ref={hitRef} className="pointer-events-none absolute inset-0">
-        {stackOverlay && marker && <FindingMarker marker={marker} visible={markerVisible} />}
+        {stackOverlay && marker && sketches.length === 0 && (
+          <FindingMarker marker={marker} visible={markerVisible} />
+        )}
         {stackOverlay && measurements && measurements.length > 0 && (
           <MeasurementOverlay
             measurements={measurements}
             visible={Boolean(measurementsVisible)}
+          />
+        )}
+        {stackOverlay && (
+          <SketchOverlay
+            marks={sketches}
+            controls={controls}
+            onFrame={(frame) => {
+              frameRef.current = frame;
+            }}
           />
         )}
         {stackOverlay && (

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  Box,
   ChevronLeft,
   ChevronRight,
   Columns2,
@@ -42,6 +43,7 @@ import { TutorCaption } from "./TutorCaption";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
 import { ImagingLayout } from "@/components/viewer/ImagingLayout";
+import { AnatomyPanel } from "./AnatomyPanel";
 import { NARROW_LAYOUT_MEDIA } from "@/lib/viewerLayout";
 import { ReportCoach } from "./ReportCoach";
 
@@ -90,6 +92,8 @@ export default function StudentSession({
   const [railOpen, setRailOpen] = useState(false);
   const tutorChosen = useRef(false);
   const [keysOpen, setKeysOpen] = useState(false);
+  const [anatomyOpen, setAnatomyOpen] = useState(false);
+  const [sliceStill, setSliceStill] = useState<string | null>(null);
   const hinted = series;
   const resolved = useResolvedSeries(caseData.caseId, hinted);
   const rail = resolved.series;
@@ -371,6 +375,19 @@ export default function StudentSession({
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-1">
             <IconButton
+              aria-label={anatomyOpen ? "Hide 3D anatomy" : "Show in 3D"}
+              size="md"
+              className="h-11 w-11"
+              variant={anatomyOpen ? "primary" : "secondary"}
+              onClick={() => {
+                const shot = s.controls.current?.captureViewportStill?.();
+                setSliceStill(shot ? `data:${shot.mimeType};base64,${shot.base64}` : null);
+                setAnatomyOpen((open) => !open);
+              }}
+            >
+              <Box className="h-4 w-4" />
+            </IconButton>
+            <IconButton
               aria-label={s.compareOpen ? "Close compare" : "Open compare"}
               size="md"
               className="h-11 w-11"
@@ -491,6 +508,8 @@ export default function StudentSession({
           ready={s.ready}
           locateMode={s.locateMode && imagingLive}
           onLocateClick={s.onLocateClick}
+          sketches={s.sketches}
+          onImagePoint={s.noteImagePoint}
           secondary={
             s.compareOpen
               ? {
@@ -524,6 +543,18 @@ export default function StudentSession({
               </div>
             )}
           </ImagingLayout>
+          {anatomyOpen && (
+            <AnatomyPanel
+              caseId={caseData.caseId}
+              findingId={
+                s.activeIndex >= 0
+                  ? s.orderedFindings[s.activeIndex]?.id
+                  : s.orderedFindings[0]?.id
+              }
+              sliceImage={sliceStill}
+              onClose={() => setAnatomyOpen(false)}
+            />
+          )}
         </div>
 
       <aside
