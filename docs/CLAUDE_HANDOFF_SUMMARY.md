@@ -1,3 +1,82 @@
+# Production outage — Railway crash loop since 27 Oct 22:28 (fixed on this branch)
+
+**Symptom (Railway logs, every boot):**
+
+```
+> flowrad-learn@0.1.0 start
+> next start
+sh: 1: next: not found
+```
+
+**Cause.** The production container is a Next.js **standalone** image, but it was
+started with `npm start` → `next start`. `next.config.mjs` sets
+`output: "standalone"`, so the runtime layer the `Dockerfile` ships contains only
+`server.js` plus the *traced* `node_modules` — there is no `node_modules/.bin`
+and no `next` CLI in it. `next start` therefore cannot resolve and exits 127.
+Reproduced verbatim in the built image:
+
+```
+$ docker run --rm --entrypoint sh flowrad-railway-check:local -c 'next start; echo exit=$?'
+sh: 1: next: not found
+exit=127
+```
+
+Two things it is **not**: `next` is in `dependencies` (not `devDependencies`), and
+`package.json`/`package-lock.json` are in sync (27 prod + 9 dev), so a clean
+`npm ci` — with or without `--omit=dev` / `NODE_ENV=production` — installs
+`node_modules/.bin/next` fine. Nothing is being pruned away at install time; the
+binary simply does not exist in the standalone runtime layer.
+
+The repo-side defect is that **the start contract was never pinned**: no
+`railway.json`, `railway.toml` or `nixpacks.toml` has ever existed in this
+repository (checked the full history), so Railway was free to pick its own
+builder and to run whatever start command the dashboard held — and `npm start`
+is a command that cannot work against a standalone build.
+
+Why it began at 22:28 on 27 Oct is Railway-side and not verifiable from here (no
+Railway access): the merge of #74 at 22:25:50 is viewer code only — `app/globals.css`,
+`components/CornerstoneViewer.tsx`, `lib/progressiveStack.ts`, `lib/scrollSensitivity.ts`
+and friends — and nothing in the 27 Oct range (#70–#74) touches `Dockerfile`,
+`next.config.mjs`, `package.json` or the lockfile. So the trigger was the *fresh
+build/boot* itself (a rebuilt image, a dashboard start command, or Railway's
+builder default moving to Railpack — which also keeps only the standalone output
+for a Next app and would print the same line). The latent fault was ours; the
+timing was theirs.
+
+**Fix (this commit, 2 files):**
+
+- **`railway.json`** (new) — config-as-code, which takes precedence over the
+  service's dashboard settings. Pins `build.builder = "DOCKERFILE"` (so Railway
+  builds the same image Fly and Cloud Run use, never a builder that re-derives a
+  start command) and `deploy.startCommand = "node server.js"`, with
+  `restartPolicyType = "ON_FAILURE"`.
+- **`Dockerfile`** — Next copies the project `package.json` into the standalone
+  output verbatim, so its `start` script is the unusable `next start`. The runner
+  stage now rewrites that script to `node server.js`, so `npm start` /
+  `npm run start` boot the real server too. The start contract is documented in
+  the file header. The repo's own `start` script is unchanged (`next start` is
+  still correct for a local non-standalone run).
+
+**Verified locally — no push, no deploy:**
+
+| Check | Result |
+| --- | --- |
+| `docker build -t flowrad-railway-check:local .` | exit 0, `✓ Compiled successfully` |
+| `next start` inside the image | `sh: 1: next: not found`, exit 127 — the outage, reproduced |
+| default `CMD ["node","server.js"]` | `✓ Ready`, `/` **HTTP 200** (`<title>RadLearn</title>`, 42 KB), `/library` **200** |
+| start command override `npm start` | logs `> node server.js`, `/` **HTTP 200** |
+| clean host install: `rm -rf node_modules && npm ci` | 462 packages, `node_modules/.bin/next` present |
+| `NODE_ENV=production npm run build`, standalone layout assembled, `npm start` | `/` **HTTP 200**, `/library` **HTTP 200** |
+
+**One thing to confirm on Railway while you are in there:** with
+`BETTER_AUTH_SECRET` unset the server boots happily and then 500s every request
+(`Refusing to serve with a public signing key`). That is a *different* failure
+from this one, but it looks like an outage too — make sure the service still has
+`BETTER_AUTH_SECRET` (and `BETTER_AUTH_URL`) set. No secrets were added to the
+repo; the local runs used a throwaway value.
+
+---
+
 # Handoff — `claude/viewer-perf`
 
 Date: 2026-10-30. Branched from `claude/epic-noether-3nvcbf` at `71c006a`
