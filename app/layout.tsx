@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Manrope } from "next/font/google";
+import { Kalam, Manrope } from "next/font/google";
 import { AppShell } from "@/components/AppShell";
 import { demoAuthEnabled } from "@/lib/auth";
 import "./globals.css";
@@ -11,6 +11,13 @@ const sans = Manrope({
   display: "swap",
   weight: ["400", "500", "600", "700"],
   variable: "--font-sans",
+});
+
+const hand = Kalam({
+  subsets: ["latin"],
+  display: "swap",
+  weight: ["400", "700"],
+  variable: "--font-hand",
 });
 
 export const viewport: Viewport = {
@@ -37,7 +44,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={sans.variable}>
+    <html lang="en" className={`${sans.variable} ${hand.variable}`}>
       <body className="font-sans">
         <AppShell demoEnabled={demoAuthEnabled()}>{children}</AppShell>
       </body>

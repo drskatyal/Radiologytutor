@@ -22,8 +22,13 @@ const track: RecordedTrack = {
 test("HARNESS_VIEWER_TOOLS declares viewer drives including the teach script", () => {
   const names = HARNESS_VIEWER_TOOLS.map((t) => t.name).sort();
   assert.deepEqual(names, [
+    "clear_overlay",
     "draw_annotation",
+    "draw_arrow",
+    "draw_circle",
+    "jump_to_key_view",
     "next_in_tour",
+    "place_card",
     "play_guide",
     "point_to",
     "prev_in_tour",

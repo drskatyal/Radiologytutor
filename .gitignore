@@ -41,3 +41,8 @@ deploy/gcp/terraform/*.tfstate
 deploy/gcp/terraform/*.tfstate.*
 deploy/gcp/terraform/terraform.tfvars
 deploy/gcp/terraform/.terraform.lock.hcl
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/

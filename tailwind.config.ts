@@ -57,6 +57,7 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
         display: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        hand: ["var(--font-hand)", "ui-rounded", "cursive"],
       },
       letterSpacing: {
         tightest: "-0.02em",

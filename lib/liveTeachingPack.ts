@@ -24,6 +24,15 @@ import {
 import { secondaryAnchor } from "./findingAnchors";
 import { formatMeasurementBrief, measurementsFromTrack } from "./findingMeasurements";
 import { guideForFindingTrack } from "./teachingGuide";
+import {
+  buildLiveSketch,
+  isSketchDraw,
+  isSketchTool,
+  resolveSketchTool,
+  type LiveSketchAnchor,
+  type SketchMark,
+  type StudentTap,
+} from "./sketchMarks";
 import type { Finding, FindingAnchor, Marker, RecordedTrack, TeachAct } from "./types";
 
 export type LiveMode = "examiner" | "teach_me";
@@ -76,6 +85,8 @@ export interface LiveFinding {
   reportLine?: string;
   landmark?: string;
   drive: LiveDrive;
+  /** Copied from the finding. Omitted from the spoken instruction. */
+  sketch?: LiveSketchAnchor;
   acts: Array<{ act: LiveAct; say: string }>;
 }
 
@@ -223,6 +234,66 @@ export const LIVE_PACK_TOOLS: LiveToolDeclaration[] = [
     description:
       "Switch the viewer to an authored series so a multi-series study (MRI sequences, priors) can be taught. seriesInstanceUID must be one of authoredSeriesInstanceUIDs. Optional sliceIndex is 0-based. Optional ww and wc apply after the series loads. Never invent a series UID.",
     parameters: SET_SERIES_PARAMETERS,
+  },
+  {
+    name: "draw_circle",
+    description:
+      "Draw a hand-drawn circle on an authored finding. Pass findingId. Do not pass coordinates. To mark where the learner tapped, pass uncertain:true and no findingId — the viewer labels that stroke uncertain. Never invent a lesion location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Authored finding id" },
+        uncertain: {
+          type: "boolean",
+          description: "True only to circle the learner's own tap",
+        },
+      },
+    },
+  },
+  {
+    name: "draw_arrow",
+    description:
+      "Draw a hand-drawn arrow whose tip is the authored marker (or the learner's tap when uncertain:true). Do not pass coordinates. Never invent a lesion location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "place_card",
+    description:
+      "Place a diagram card on an authored finding or the learner's tap. template is differential, mechanism, or sign. Send short plain text only — title and lines, or name and meaning. Never send HTML. The card is anchored to the finding; do not invent a location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+        template: { type: "string", description: "differential | mechanism | sign" },
+        title: { type: "string" },
+        lines: { type: "array", items: { type: "string" } },
+        name: { type: "string" },
+        meaning: { type: "string" },
+      },
+      required: ["template"],
+    },
+  },
+  {
+    name: "clear_overlay",
+    description: "Remove every hand-drawn circle, arrow, underline, and card from the viewer.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "jump_to_key_view",
+    description:
+      "Jump to the authored key view for a finding: its series, slice, window, and zoom. Pass findingId only. Do not invent slice, window, or zoom.",
+    parameters: {
+      type: "object",
+      properties: { findingId: { type: "string" } },
+      required: ["findingId"],
+    },
   },
   {
     name: "web_search",
@@ -444,6 +515,7 @@ export function materializeLiveTeachingPack(input: {
       reportLine: cleanText(note?.reportLine) ?? cleanText(finding.reportGold),
       landmark: cleanText(note?.landmark) ?? cleanText(finding.landmark),
       drive: driveFromFinding(finding),
+      sketch: buildLiveSketch(finding),
       acts: actsFromFinding(finding),
     };
   });
@@ -575,7 +647,7 @@ export function livePackTools(allowedSeries: readonly string[]): LiveToolDeclara
 }
 
 const LOOK_TOOLS =
-  "show_finding, set_series, scroll_to, set_window, point_to, zoom_to, draw_annotation, or next_finding";
+  "show_finding, set_series, scroll_to, set_window, point_to, zoom_to, draw_annotation, draw_circle, draw_arrow, place_card, jump_to_key_view, or next_finding";
 
 export function livePackInstruction(
   pack: LiveTeachingPack,
@@ -604,6 +676,7 @@ Teaching starts because the microphone is open.
 
 This instruction contains only what you may say. It does not contain series UIDs, slice indexes, window values, or marker coordinates. Do not invent them and do not speak them.
 Drive anchors were authored from the viewer log. Call show_finding with a finding id. The tool result is the only place those anchors exist. Copy them exactly into set_series({ seriesInstanceUID, sliceIndex?, ww?, wc? }), scroll_to, set_window, point_to, zoom_to, and draw_annotation. The viewer rejects any other value.
+draw_circle, draw_arrow, and place_card take a finding id. They draw on the teacher's marker. Do not pass x or y. jump_to_key_view seats that finding's slice, window, and zoom. clear_overlay removes the sketches. A learner tap may be marked only with uncertain:true, and the viewer labels it uncertain. Never invent a lesion location.
 set_series may use only a UID from allowedSeries on that tool. Use it when the next look is a different sequence.
 next_finding advances findingOrder. web_search is for a guideline or lexicon they asked about. Keep claims tied to this study.
 Tool calls are asynchronous. Keep speaking while the viewer moves.
@@ -677,6 +750,9 @@ export type LiveToolDecision =
       query?: string;
       /** Authored drive for this finding. Returned to the model on the tool channel. */
       drive?: LiveDrive;
+      /** Hand-drawn marks resolved from the pack or the learner's tap. */
+      marks?: SketchMark[];
+      clearOverlay?: boolean;
     };
 
 /**
@@ -687,12 +763,36 @@ export function validateLiveToolCall(
   pack: LiveTeachingPack,
   name: string,
   args: Record<string, unknown>,
-  currentFindingId?: string
+  currentFindingId?: string,
+  sketch?: { studentTap?: StudentTap | null }
 ): LiveToolDecision {
   const allowedSeries = pack.authoredSeriesInstanceUIDs;
   const fail = (error: string): LiveToolDecision => ({ ok: false, error, allowedSeries });
   const findingById = (id: string) => pack.findings.find((item) => item.id === id);
   const hits = driveHits(pack);
+
+  if (isSketchTool(name)) {
+    const outcome = resolveSketchTool(pack, name, args, {
+      currentFindingId,
+      studentTap: sketch?.studentTap,
+    });
+    if (!outcome.ok) return fail(outcome.error);
+    if (!isSketchDraw(outcome)) return { ok: true, clearOverlay: true };
+    const view = outcome.keyView;
+    return {
+      ok: true,
+      findingId: outcome.findingId,
+      seriesInstanceUID: view?.seriesInstanceUID,
+      sliceIndex: view?.sliceIndex,
+      ww: view?.ww,
+      wc: view?.wc,
+      zoom: view?.zoom,
+      panX: view?.panX,
+      panY: view?.panY,
+      marks: outcome.marks,
+      drive: outcome.findingId ? findingById(outcome.findingId)?.drive : undefined,
+    };
+  }
 
   if (name === "web_search") {
     const query = cleanText(args.query);
