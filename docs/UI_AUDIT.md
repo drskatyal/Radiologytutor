@@ -186,14 +186,28 @@ zoom, pan, and measurement drawing are untouched.
 
 Ordered by how much a radiologist would feel it. None of this is viewer-engine work.
 
+> **Update 2026-10-30 (`claude/viewer-perf`).** Items **2** and **10** are
+> closed, and **3** is half closed. The slice scrollbar, the viewport keyboard
+> (1–5 tools, arrows/PageUp/PageDown/Home/End, +/−, I, 0, Shift+digit presets)
+> and a cine transport now ship; see `lib/sliceScrollbar.ts`,
+> `lib/viewerHotkeys.ts`, `lib/cinePlayer.ts`. What is still open in #3 is the
+> real **menu widget** — the toolbar's preset and measurement menus remain
+> pointer menus with no arrow keys or typeahead. Everything else below is
+> untouched and still accurate. Viewer *performance* work from the same branch
+> is in `docs/VIEWER_BENCHMARK.md`.
+
 1. **One mode model.** The rail still has five equal tabs (Teach, Report,
    Socratic, Free, Viva) beside a Teach/Exam switch. Pick two intents on the
    surface and bury the rest. Do not do this as a visual tweak — it changes
    what `useStudentSession` thinks the product is.
-2. **Slice scrollbar** on the right edge of the stack (OHIF
-   `ViewportSliceProgressScrollbar`). Wheel-only scroll is invisible.
-3. **Tool shortcuts** (1–4 for W/L, pan, zoom, scroll) and a real menu widget
-   (arrow keys, typeahead). The menus are still pointer menus.
+2. ~~**Slice scrollbar** on the right edge of the stack (OHIF
+   `ViewportSliceProgressScrollbar`). Wheel-only scroll is invisible.~~
+   **Done** — `lib/sliceScrollbar.ts`. The thumb's height is the share of the
+   series one slice represents, so series length is legible at a glance.
+3. **Tool shortcuts** (1–4 for W/L, pan, zoom, scroll) — **done**, bound to
+   the now-focusable viewport (`lib/viewerHotkeys.ts`) rather than to `window`,
+   so they cannot fight the session's global keys. **Still open:** a real menu
+   widget (arrow keys, typeahead). The menus are still pointer menus.
 4. **Recording studio is still a form around a viewer.** Collapse the stepper,
    the transport card, and the three capture tabs into one column whose first
    action is the viewer. The side sequence board can stay.
@@ -212,9 +226,11 @@ Ordered by how much a radiologist would feel it. None of this is viewer-engine w
    hide the tool captions behind one “Tools” button. Not done.
 9. **`IconButton` `sm` is still 28px** in the tutor rail. Bump the size token
    or stop using `sm` for primary session actions.
-10. **No cine, no hanging-protocol layout, no magnify.** Diagnostic viewers
-    have them. A teaching viewer can live without cine until the scroll story
-    is obvious.
+10. ~~**No cine**~~ — **done** (`lib/cinePlayer.ts`): play/pause plus a frame
+    rate seeded from the series' own CineRate, hidden on a series too short to
+    loop, and it stops when the reader touches the stack. **Still open: no
+    hanging-protocol layout, no magnify.** Both are in the prioritised list in
+    `docs/VIEWER_BENCHMARK.md` §4.
 11. **Marker callout.** The ring is legible. It still does not say the finding
     name, and it has no leader line that dodges the abnormality. That is a
     design, not a border.
