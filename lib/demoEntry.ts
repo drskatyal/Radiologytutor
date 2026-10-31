@@ -7,6 +7,23 @@ import type { MembershipRole, PlatformRole } from "./types";
 
 export type DemoPick = "super_admin" | "author" | "student";
 
+/**
+ * Can the keyless demo mint anything above `student` here?
+ *
+ * Never in production. Every demo persona lives in the ONE shared demo org,
+ * so an anonymous "Teacher demo" there was an unauthenticated author in a
+ * real org: draft cases and registered studies included. There is
+ * deliberately no environment override — an override is the same hole with
+ * a switch on it. Teachers get a real account (sign-up provisions a personal
+ * org with an author membership). Local dev and tests keep all personas.
+ *
+ * `process.env.NODE_ENV` is inlined into client bundles at build time, so the
+ * server route and the buttons that offer these personas agree.
+ */
+export function elevatedDemoAvailable(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
 export type DemoSessionUser = {
   platformRole?: PlatformRole | null;
   membershipRole?: MembershipRole | null;
