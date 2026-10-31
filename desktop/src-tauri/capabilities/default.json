@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The viewer window: native open/save dialogs, restart after update, update checks. No filesystem plugin — file bytes reach the renderer only through the dicom:// protocol, which serves files the user opened.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-title",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-ask",
+    "process:allow-restart",
+    "updater:default"
+  ]
+}
