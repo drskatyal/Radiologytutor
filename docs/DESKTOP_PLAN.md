@@ -2,8 +2,9 @@
 
 Date: 2026-10-30. Branch `claude/viewer-perf`.
 
-> **Status (2026-10-31, branch `claude/desktop-viewer`).** Stage 1 and most of
-> Stage 2 are built: see [`desktop/README.md`](../desktop/README.md).
+> **Status (2026-10-31, branches `claude/desktop-viewer` → `-m2` → `-m3`).**
+> Built so far: Stages 1–3, and Stage 4's DICOM Q/R plus teaching-case
+> hand-off. See [`desktop/README.md`](../desktop/README.md).
 >
 > - **Approach.** The renderer is a Vite build that imports this repo's `lib/`
 >   and `components/ui`, not a `next build` static export. The desktop needs

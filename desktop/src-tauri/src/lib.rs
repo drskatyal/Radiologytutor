@@ -11,6 +11,7 @@
 
 mod anonymize;
 mod header;
+mod pacs;
 mod pet;
 mod scan;
 mod sources;
@@ -313,6 +314,9 @@ pub fn run() {
             store::settings_get,
             store::settings_set,
             anonymize::export_anonymized_dicom,
+            pacs::pacs_echo,
+            pacs::pacs_find,
+            pacs::pacs_retrieve,
             sync::sync_status,
             sync::sync_sign_in,
             sync::sync_sign_out,
