@@ -27,7 +27,8 @@ export const LIDC_CASE_ID = "case-lidc-nodule-search";
 /**
  * Image count of the public LIDC-IDRI series in the catalog. sliceAt() anchors
  * are written against this height, then import scales by the highest template
- * slice, which lands the three findings on 34 / 49 / 64.
+ * slice, which lands the three findings on 34 / 6 / 64 (6 is the reader-
+ * annotated left apical nodule).
  */
 export const LIDC_STACK_SLICES = 65;
 
@@ -38,7 +39,7 @@ export const DEMO_LEAN_IN_ZOOM = 2.2;
  * How many slices above the nodule survey the compare pane opens.
  * The public LIDC case has one series. This adjacent slice is the demo that
  * Compare is not a second copy of the primary landing. Two slices stays inside
- * the case prefetch radius around slice 49.
+ * the case prefetch radius around the nodule.
  */
 export const LIDC_COMPARE_SLICE_DELTA = 2;
 

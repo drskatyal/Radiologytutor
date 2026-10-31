@@ -35,11 +35,17 @@ export function ShareLinkControls({
   caseId,
   initialPath,
   manage = true,
+  getViewQuery,
 }: {
   caseId: string;
   initialPath: string | null;
   /** Rotate and revoke. Copy is always shown. */
   manage?: boolean;
+  /**
+   * Current view as a query string (lib/viewLink.ts). When present the copied
+   * share link opens on the image the sender is looking at.
+   */
+  getViewQuery?: () => string;
 }) {
   const { toast } = useToast();
   const [path, setPath] = useState(initialPath);
@@ -62,12 +68,15 @@ export function ShareLinkControls({
         next = data.share.path;
         setPath(next);
       }
-      const { url, copied } = await absoluteUrl(next);
+      const view = getViewQuery?.() ?? "";
+      const { url, copied } = await absoluteUrl(view ? `${next}?${view}` : next);
       toast({
         variant: "success",
         title: copied ? "Link copied" : "Share link",
         description: copied
-          ? "Anyone with this link can open the study in the viewer."
+          ? view
+            ? "Anyone with this link opens the study on this image and window."
+            : "Anyone with this link can open the study in the viewer."
           : url,
       });
     } catch (err) {

@@ -15,6 +15,7 @@ const nextConfig = {
     return config;
   },
   // Keep Node-only SDKs out of the webpack graph (R2 / Mongo).
+  transpilePackages: ["three", "@react-three/fiber", "@react-three/drei"],
   experimental: {
     serverComponentsExternalPackages: [
       "@aws-sdk/client-s3",
@@ -24,7 +25,24 @@ const nextConfig = {
       "better-auth",
       "@better-auth/mongo-adapter",
       "@better-auth/memory-adapter",
+      // Server-side HTJ2K / JPEG encoders for lib/dicomCdn (emscripten glue
+      // finds its .wasm via __dirname, so it must not be bundled).
+      "@cornerstonejs/codec-openjph",
+      "@cornerstonejs/codec-libjpeg-turbo-8bit",
     ],
+    // lib/dicomCdn/encode.ts requires the codecs at runtime by name, which
+    // the standalone tracer cannot see. Ship them with every route that can
+    // start a conversion (upload, first view via the manifest API).
+    outputFileTracingIncludes: {
+      "/api/upload": [
+        "./node_modules/@cornerstonejs/codec-openjph/**/*",
+        "./node_modules/@cornerstonejs/codec-libjpeg-turbo-8bit/**/*",
+      ],
+      "/api/dicom-cdn/manifest": [
+        "./node_modules/@cornerstonejs/codec-openjph/**/*",
+        "./node_modules/@cornerstonejs/codec-libjpeg-turbo-8bit/**/*",
+      ],
+    },
   },
 };
 

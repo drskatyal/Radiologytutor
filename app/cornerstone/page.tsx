@@ -104,7 +104,7 @@ export default function CornerstoneSpikePage() {
                 Public CT (DICOMweb)
               </SourceChip>
             </div>
-            <CornerstoneViewer source={source} />
+            <CornerstoneViewer source={source} questionMarkHelp />
           </div>
         )}
       </PageContainer>

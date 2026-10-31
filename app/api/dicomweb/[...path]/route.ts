@@ -24,13 +24,10 @@
 //      FRAME_CACHE_WAIT_MS (default 25) before going to the archive.
 
 import { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth";
-import { DEFAULT_ORG_ID, getStudyByUID, resolveShareAccess } from "@/lib/cases";
-import { SHARE_COOKIE, isShareToken, shareGrantsStudy } from "@/lib/caseShare";
 import { responseCacheControl, upstreamAccept, varyHeaderForDicomwebPath } from "@/lib/dicomwebProxy";
 import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "@/lib/orthanc";
 import { getObject, putObject, r2Configured, type GetObjectResult } from "@/lib/r2";
-import { createTtlMemo } from "@/lib/ttlMemo";
+import { authorizeStudyRead } from "@/lib/studyAccess";
 
 /** How long a frame-cache read may block the archive fetch. 0 skips the read. */
 const FRAME_CACHE_WAIT_MS = Number(process.env.FRAME_CACHE_WAIT_MS ?? 25);
@@ -54,73 +51,8 @@ function frameCacheKey(path: string): string | null {
   return `frames/${path.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
 }
 
-/**
- * Frame-path memos (`lib/ttlMemo.ts`). This route runs once per FRAME: a
- * reader scrolling a 500-slice CT asks these three questions 500 times in a
- * few seconds, and all three answers are stable for the length of a scroll.
- * Negative results are cached too, so a loop probing study UIDs it does not
- * own stays cheap.
- *
- *   session   who is calling + which org. A Better Auth session read plus a
- *             domain-user read, keyed on the exact Cookie header so any change
- *             to any cookie is a miss. SHORT ttl: a revoked session keeps
- *             reading pixels for at most this long, which is why it is an
- *             order of magnitude tighter than the other two and tunable.
- *   share     a /s/{token} link's org + study allowlist.
- *   ownership does that org own this study.
- */
-const SESSION_TTL_MS = Number(process.env.DICOMWEB_SESSION_TTL_MS ?? 10_000);
-const sessionMemo = createTtlMemo<string | null>({
-  ttlMs: SESSION_TTL_MS,
-  maxEntries: 2_000,
-});
-const shareMemo = createTtlMemo<{ studyUids: string[] | null; orgId: string }>({
-  ttlMs: 60_000,
-  maxEntries: 5_000,
-});
-const ownershipMemo = createTtlMemo<boolean>({ ttlMs: 60_000, maxEntries: 5_000 });
-
-/** Live share → org + study allowlist. Null study list means the token is dead. */
-async function shareAllows(token: string, studyUid: string): Promise<string | null> {
-  if (!isShareToken(token)) return null;
-  let hit = shareMemo.get(token);
-  if (!hit) {
-    const access = await resolveShareAccess(token);
-    hit = {
-      orgId: access?.orgId ?? "",
-      studyUids: access ? access.studyUids : null,
-    };
-    shareMemo.set(token, hit);
-  }
-  if (!hit.studyUids || !shareGrantsStudy(hit.studyUids, studyUid)) return null;
-  return hit.orgId || null;
-}
-
-/**
- * Active org for the caller, or null when there is no session.
- *
- * Resolves the session ONCE. The previous version called `getSession()` and
- * then `activeOrgId()`, and `activeOrgId()` calls `getSession()` again — two
- * full session resolutions, each a Better Auth read plus a domain-user read,
- * in front of every single frame.
- */
-async function callerOrgId(cookieHeader: string): Promise<string | null> {
-  const hit = sessionMemo.get(cookieHeader);
-  if (hit !== undefined) return hit;
-  const session = await getSession();
-  const orgId = session ? session.user.activeOrgId || DEFAULT_ORG_ID : null;
-  sessionMemo.set(cookieHeader, orgId);
-  return orgId;
-}
-
-async function orgOwnsStudy(orgId: string, studyUid: string): Promise<boolean> {
-  const key = `${orgId}\u0000${studyUid}`;
-  const hit = ownershipMemo.get(key);
-  if (hit !== undefined) return hit;
-  const owned = Boolean(await getStudyByUID(orgId, studyUid));
-  ownershipMemo.set(key, owned);
-  return owned;
-}
+// Who may read which study (session / share cookie / org ownership, memoised
+// per frame) lives in lib/studyAccess.ts, shared with /api/dicom-cdn.
 
 /**
  * Pull the StudyInstanceUID out of a DICOMweb path.
@@ -153,17 +85,11 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
     return new Response("A StudyInstanceUID is required.", { status: 400 });
   }
 
-  // Share cookie first, and only for the studies that case names. A leftover
-  // cookie must not block a signed-in reader of a different study.
-  const shareToken = req.cookies.get(SHARE_COOKIE)?.value;
-  const shareOrg = shareToken ? await shareAllows(shareToken, studyUid) : null;
-  let orgId = shareOrg;
-  if (!orgId) {
-    orgId = await callerOrgId(req.headers.get("cookie") ?? "");
-    if (!orgId) return new Response("Unauthorized", { status: 401 });
-  }
-  if (!(await orgOwnsStudy(orgId, studyUid))) {
-    return new Response("Not found", { status: 404 });
+  const access = await authorizeStudyRead(req, studyUid);
+  if (!access.ok) {
+    return new Response(access.status === 401 ? "Unauthorized" : "Not found", {
+      status: access.status,
+    });
   }
 
   const path = segments.join("/");
