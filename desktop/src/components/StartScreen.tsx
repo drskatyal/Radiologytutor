@@ -2,7 +2,7 @@
 // pick the disc that just went into the drive. Paints without Cornerstone.
 
 import { useEffect, useState } from "react";
-import { Clock, Disc3, FileArchive, Files, FolderOpen, FolderTree, HardDrive, ShieldCheck, Usb, X } from "lucide-react";
+import { Clock, Disc3, Network, Keyboard, Settings, FileArchive, Files, FolderOpen, FolderTree, HardDrive, ShieldCheck, Usb, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Kbd } from "@/components/ui/Kbd";
@@ -15,12 +15,14 @@ import { isMac } from "../shortcuts";
 
 interface Props {
   history: HistoryEntry[];
-  onOpen: (what: "files" | "folder" | "zip" | "dicomdir" | "disc") => void;
+  onOpen: (what: "files" | "folder" | "zip" | "dicomdir" | "disc" | "pacs") => void;
   onOpenPaths: (paths: string[], kind?: "disc") => void;
   onForget: (key: string) => void;
   onClearHistory: () => void;
   version: string;
   dragging: boolean;
+  onSettings: () => void;
+  onHelp: () => void;
 }
 
 function relativeTime(iso: string): string {
@@ -44,8 +46,17 @@ const KIND_ICON = {
   disc: Disc3,
 } as const;
 
-export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging }: Props) {
+export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp }: Props) {
   const [media, setMedia] = useState<MediaVolume[] | null>(null);
+  const [filter, setFilter] = useState("");
+  const needle = filter.trim().toLowerCase();
+  const shown = needle
+    ? history.filter((e) =>
+        [e.description, e.label, e.modalities.join(" "), e.studyDate, formatDicomDate(e.studyDate), ...e.paths]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(needle))
+      )
+    : history;
   const m = isMac() ? "⌘" : "Ctrl+";
 
   useEffect(() => {
@@ -78,18 +89,27 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               upload, no network.
             </p>
           </div>
-          <div className="hidden shrink-0 items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1 text-xs text-success md:flex">
-            <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-            Offline
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="hidden items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1 text-xs text-success md:flex">
+              <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
+              Offline
+            </div>
+            <IconButton aria-label="Keyboard shortcuts" title="Keyboard shortcuts · F1" onClick={onHelp}>
+              <Keyboard />
+            </IconButton>
+            <IconButton aria-label="Settings" title="Settings" onClick={onSettings}>
+              <Settings />
+            </IconButton>
           </div>
         </header>
 
-        <section aria-label="Open" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <section aria-label="Open" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           {[
             { what: "folder" as const, label: "Folder", hint: `${m}⇧O`, icon: FolderOpen, primary: true },
             { what: "files" as const, label: "Files", hint: `${m}O`, icon: Files },
             { what: "zip" as const, label: "Zip archive", hint: `${m}⇧Z`, icon: FileArchive },
             { what: "dicomdir" as const, label: "DICOMDIR", hint: "", icon: FolderTree },
+            { what: "pacs" as const, label: "PACS", hint: `${m}⇧P`, icon: Network },
           ].map((item) => (
             <button
               key={item.what}
@@ -155,6 +175,18 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
         <section aria-label="Recent studies" className="flex min-h-0 flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Recent</h2>
+            {history.length > 3 && (
+              <label className="ml-auto mr-2 flex items-center">
+                <span className="sr-only">Search recent studies</span>
+                <input
+                  type="search"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder="Search description, modality, date, folder…"
+                  className="h-8 w-72 rounded-lg border border-subtle bg-surface px-3 text-xs text-primary placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                />
+              </label>
+            )}
             {history.length > 0 && (
               <Button size="sm" variant="ghost" onClick={onClearHistory}>
                 Forget all
@@ -169,7 +201,10 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
             </div>
           ) : (
             <ul className="divide-y divide-subtle overflow-hidden rounded-xl border border-subtle bg-surface">
-              {history.map((entry) => {
+              {shown.length === 0 && (
+                <li className="px-4 py-6 text-center text-sm text-muted">No recent study matches “{filter}”.</li>
+              )}
+              {shown.map((entry) => {
                 const Icon = KIND_ICON[entry.kind] ?? FolderTree;
                 return (
                   <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated" onPointerEnter={prewarmEngine}>

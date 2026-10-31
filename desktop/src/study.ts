@@ -146,7 +146,8 @@ export function primarySeriesIndex(study: ViewerStudy): number {
   let best = 0;
   let bestScore = -1;
   study.series.forEach((s, i) => {
-    const crossSectional = ["CT", "MR", "PT", "NM"].includes(s.modality) ? 2 : 1;
+    // Anatomy first: on a PET/CT the CT hangs, the PET is one click away.
+    const crossSectional = ["CT", "MR"].includes(s.modality) ? 3 : ["PT", "NM"].includes(s.modality) ? 2 : 1;
     const score = crossSectional * 1_000_000 + Math.min(s.imageCount, 999_999);
     if (score > bestScore) {
       bestScore = score;

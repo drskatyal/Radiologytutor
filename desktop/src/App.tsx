@@ -38,6 +38,9 @@ import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSerie
 import { resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { StartScreen } from "./components/StartScreen";
 import { ExportDialog } from "./components/ExportDialog";
+import { PacsDialog } from "./components/PacsDialog";
+import { UpdatePrompt, useUpdater } from "./components/Updates";
+import { AccountSection, SendToRadLearnDialog, useSyncStatus } from "./components/Account";
 import { Toolbar } from "./components/Toolbar";
 import {
   CustomWindowDialog,
@@ -94,8 +97,10 @@ export default function App() {
   const [distractionFree, setDistractionFree] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState<"grid" | VolumeMode>("grid");
-  const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export">(null);
+  const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export" | "pacs" | "send">(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
+  const updater = useUpdater(settings.checkUpdates);
+  const sync = useSyncStatus();
   const [, setTick] = useState(0);
   const browserFileInput = useRef<HTMLInputElement>(null);
   const browserFolderInput = useRef<HTMLInputElement>(null);
@@ -197,7 +202,7 @@ export default function App() {
   }, []);
 
   const openPaths = useCallback(
-    async (paths: string[], kindHint?: SourceKind) => {
+    async (paths: string[], kindHint?: SourceKind, labelOverride?: string) => {
       if (!paths.length) return;
       void getEngine(); // initialise while Rust scans
       if (!isTauri) {
@@ -276,7 +281,7 @@ export default function App() {
           key: sourceKey(paths),
           paths,
           kind: kindHint ?? result.kind,
-          label: result.label,
+          label: labelOverride ?? result.label,
         };
         setSource(opened);
         void finishOpen(opened, built);
@@ -372,8 +377,13 @@ export default function App() {
   );
 
   const openDialog = useCallback(
-    async (what: "files" | "folder" | "disc" | "zip" | "dicomdir") => {
+    async (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => {
       void getEngine();
+      if (what === "pacs") {
+        if (isTauri) setDialog("pacs");
+        else toast({ title: "PACS needs the desktop app", variant: "info" });
+        return;
+      }
       if (!isTauri) {
         (what === "folder" ? browserFolderInput : browserFileInput).current?.click();
         return;
@@ -750,6 +760,7 @@ export default function App() {
           onSettings={() => setDialog("settings")}
           volumeView={view !== "grid"}
           onExport={view === "grid" ? () => setDialog("export") : undefined}
+          onSend={sync.status.signedIn ? () => setDialog("send") : undefined}
           advanced={{
             mprAvailable: !!volumeSeries,
             fusionAvailable: !!fusionPair,
@@ -840,6 +851,8 @@ export default function App() {
             }}
             version={version}
             dragging={dragging}
+            onSettings={() => setDialog("settings")}
+            onHelp={() => setDialog("help")}
           />
         )}
 
@@ -932,6 +945,11 @@ export default function App() {
           if (paths?.length) void openPaths(paths, "disc");
         }}
       />
+      <PacsDialog
+        open={dialog === "pacs"}
+        onClose={() => setDialog(null)}
+        onRetrieved={(folder, label) => void openPaths([folder], "folder", `PACS · ${label}`)}
+      />
       <ExportDialog
         open={dialog === "export"}
         onClose={() => setDialog(null)}
@@ -945,6 +963,50 @@ export default function App() {
         settings={settings}
         onChange={updateSettings}
         version={version}
+        extra={
+          <>
+            <section className="py-3">
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Updates</h3>
+              <label className="flex cursor-pointer items-start justify-between gap-4 py-2">
+                <span>
+                  <span className="block text-sm font-medium text-primary">Check for updates on launch</span>
+                  <span className="block text-xs text-muted">Asks before installing. Never updates silently.</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={settings.checkUpdates}
+                  onChange={(e) => updateSettings({ checkUpdates: e.target.checked })}
+                  className="mt-1 h-4 w-4 accent-[rgb(var(--accent))]"
+                />
+              </label>
+              <div className="flex items-center justify-between gap-4 py-1">
+                <span className="text-xs text-muted">
+                  {updater.status.state === "checking"
+                    ? "Checking…"
+                    : updater.status.state === "current"
+                      ? "You have the latest version."
+                      : updater.status.state === "available"
+                        ? `Version ${updater.status.update.version} is available.`
+                        : updater.status.state === "unavailable"
+                          ? updater.status.reason
+                          : ""}
+                </span>
+                <Button size="sm" variant="secondary" loading={updater.status.state === "checking"} onClick={() => void updater.check(true)}>
+                  Check now
+                </Button>
+              </div>
+            </section>
+            <AccountSection status={sync.status} onChange={sync.setStatus} />
+          </>
+        }
+      />
+      <UpdatePrompt update={updater.prompt} onClose={updater.dismiss} />
+      <SendToRadLearnDialog
+        open={dialog === "send"}
+        onClose={() => setDialog(null)}
+        status={sync.status}
+        series={active?.series ?? null}
+        study={active?.study ?? null}
       />
       {/* Keep the handles list fresh for the toolbar's cine state. */}
       <span hidden>{handlesVersion}</span>
