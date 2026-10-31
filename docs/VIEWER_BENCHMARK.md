@@ -332,6 +332,50 @@ remain pointer menus), and **#10**'s cine. Backlog #1, #4, #5, #6, #7, #8, #9,
 
 ---
 
+## 4a. Reading-room feel — `claude/viewer-ux` (2026-10-31)
+
+The perf branch made the viewer fast. This pass makes it feel like a PACS a
+radiologist reaches for on purpose. Compared against OHIF v3 (open source, read
+directly), Pacsbin (the share-link teaching viewer we are closest to in use),
+and Stradus. **Honesty note on Stradus:** we could not find public feature or
+shortcut documentation for it; a search mostly returns Optum's *Stratus* PACS,
+whose published key map (W window/level, I invert, Z magnify, F11 fullscreen,
+Backspace for comparison exams, `]` next protocol) is the kind of single-letter
+reading-room keyboard we benchmarked against. Rows below marked "convention"
+are the conventions those workstations share, not verified Stradus facts.
+
+| | Before | After (`claude/viewer-ux`) | OHIF v3 | Pacsbin | Reading-room convention |
+|---|---|---|---|---|---|
+| Toolbar | captions, group headings, a "Left button: …" line; 44–48 px wrapping rows | one quiet row on `#000`, light icons, one accent; dividers, no captions | labeled primary bar + More | minimal icon bar | dense, keyboard-first |
+| Shortcut discoverability | digits only, in a session cheatsheet | tooltip names every key; `H` / `?` sheet in the pane; student sheet reads the same table | hotkeys page in preferences | — | printed key map |
+| Letter shortcuts | none | W S Z M L A E B, I, O, X, G, K, `, .` | yes (configurable) | — | yes (W, I, Z …) |
+| Press feedback | 500 ms ease on shared buttons | 75 ms scale + fill on press; on-image HUD confirms key actions ("Lung  W 1500 L −600") | button state only | — | OSD text |
+| Menus | pointer-only `div role=menu` | Radix menus: arrows, typeahead, Escape, fullscreen-safe portal | Radix-style menus | — | — |
+| Corner overlay | one boxed pill: slice + W/L | four corners (series, image, thickness/location, window + preset, zoom, matrix) + orientation letters; `O` cycles full → basic → off; PHI impossible by type | customizable overlay | basic | four-corner text, toggleable |
+| MPR | three planes, small grey labels | plane names in their crosshair color, orientation letters per plane, overlay toggle hides them | crosshairs, colored | — | colored reference lines |
+| Hanging layouts | 1-up + compare | 1×1 / 1×2 / 2×1 / 2×2, `G` cycles, one shared toolbar follows the active pane | hanging protocols | layouts on roadmap | protocols |
+| Share the exact view | share link opens slice 1 | **View link**: series, image, window, layout in the URL; share links carry it too | URL params (study level) | public links | — |
+| Double-click | nothing | fit image to pane | — | — | fit / 1:1 |
+| Fullscreen | floating labeled button over the top-right of the image | in the toolbar (`F`); nothing floats over the overlay | toolbar | — | F11 |
+
+**Verified in this environment for the first time:** MPR *succeeds* under
+headless Chrome with `--use-angle=swiftshader --enable-unsafe-swiftshader`
+(§1 said it needed a GPU). `scripts/bench/phantomOrthanc.mjs` is a phantom
+archive (synthetic chest CT, three series, no patient tags) that stands in for
+Orthanc so the real UI can be driven and photographed:
+
+```bash
+node scripts/bench/phantomOrthanc.mjs --port 8042 --study <case study UID> --series <case series UID>
+ORTHANC_URL=http://127.0.0.1:8042 DEMO_AUTH_ENABLED=1 BETTER_AUTH_SECRET=… npx next start -p 3123
+```
+
+**Still not done** (and still in §4): reference lines across non-MPR panes,
+synchronized scroll between panes, magnify, rotate/flip (left out on purpose
+until the record stream can replay them), thick-slab MIP, and a wheel model
+that lets a sustained trackpad gesture exceed ~12 slices/s
+(`lib/scrollSensitivity.ts` caps it to fix the one-notch-many-slices bug — needs
+a real trackpad to retune, not a headless guess).
+
 ## 5. One thing we found that is worth not forgetting
 
 `lib/prefetch.ts`'s `buildPrefetchManifest` returns series order with
