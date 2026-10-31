@@ -77,9 +77,22 @@ import {
 } from "../lib/viewerSession";
 import {
   markViewerFirstPixel,
+  markViewerFirstPreview,
+  markViewerFullQuality,
   markViewerNavigation,
   markViewerSeriesReady,
 } from "../lib/viewerTiming";
+import {
+  QUALITY_EVENT,
+  imageSource,
+  installBundleLoader,
+  isPreviewImage,
+  isQualitySwap,
+  type CoreLike,
+  type DicomLoaderLike,
+  type QualityEventDetail,
+} from "../lib/dicomCdn/cornerstoneBridge";
+import { previewBlocksPress } from "../lib/dicomCdn/previewLock";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
@@ -667,6 +680,15 @@ export default function CornerstoneViewer({
 
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
+  const activeToolRef = useRef(activeTool);
+  activeToolRef.current = activeTool;
+  /**
+   * The slice on screen is an 8-bit preview from a converted bundle
+   * (lib/dicomCdn). Window/level and measurement wait for the full frame.
+   */
+  const [previewing, setPreviewing] = useState(false);
+  const previewingRef = useRef(false);
+  const pressGuardRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   /** True once any frame has been drawn. The loading chip moves off the anatomy. */
   const [painted, setPainted] = useState(false);
@@ -725,6 +747,7 @@ export default function CornerstoneViewer({
     let disposed = false;
     let prefetchTimer = 0;
     let detachListeners: () => void = () => {};
+    let detachQuality: () => void = () => {};
     let resizeObserver: ResizeObserver | null = null;
     let restoreRaf = 0;
     const viewportId = viewportIdFor(instanceId);
@@ -743,6 +766,7 @@ export default function CornerstoneViewer({
       viewportEngineRegistry.acquire(instanceId);
       beginViewerNavigation(instanceId);
       let activeNav = markViewerNavigation(seriesUidOf(initialSource));
+      let activeSeriesUid = seriesUidOf(initialSource);
       setStatus("Opening slice…");
       setReady(false);
       setPainted(false);
@@ -776,6 +800,13 @@ export default function CornerstoneViewer({
         await tools.init();
         const workers = webWorkerCount(deviceProfile);
         await loader.init({ maxWebWorkers: workers });
+        // Converted-bundle delivery (HTJ2K + previews via CDN) behind the same
+        // wadors imageIds. Falls through to DICOMweb per image. Idempotent.
+        installBundleLoader(
+          core as unknown as CoreLike,
+          loader as unknown as DicomLoaderLike,
+          { decodeWorkers: workers }
+        );
         // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
         // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
         // ceiling costs re-decodes, never correctness.
@@ -807,6 +838,49 @@ export default function CornerstoneViewer({
 
         const viewport = engine.getViewport(viewportId) as unknown as DrivableViewport;
         viewportRef.current = viewport;
+
+        // Preview vs full quality of the slice on screen, plus the two open
+        // timings (lib/viewerTiming.ts). Reset per navigation.
+        let qualityNav = "";
+        let previewMarked = false;
+        let fullMarked = false;
+        const noteQuality = (preview: boolean, source: "bundle" | "dicomweb") => {
+          if (previewingRef.current !== preview) {
+            previewingRef.current = preview;
+            setPreviewing(preview);
+          }
+          if (qualityNav !== activeNav) {
+            qualityNav = activeNav;
+            previewMarked = false;
+            fullMarked = false;
+          }
+          if (preview && !previewMarked) {
+            previewMarked = true;
+            markViewerFirstPreview(activeNav, activeSeriesUid);
+          } else if (!preview && !fullMarked) {
+            fullMarked = true;
+            markViewerFullQuality(activeNav, activeSeriesUid, source);
+          }
+        };
+        const onQuality = (evt: Event) => {
+          const detail = (evt as CustomEvent<QualityEventDetail>).detail;
+          if (detail) noteQuality(detail.preview, "bundle");
+        };
+        const onStackImage = (evt: Event) => {
+          const image = (evt as CustomEvent<{ image?: unknown }>).detail?.image;
+          if (image) noteQuality(isPreviewImage(image), imageSource(image));
+        };
+        // Attached before the first setStack so the opening preview, and an
+        // opening swap that lands before the stack finishes, are both seen.
+        const qualityEl = elementRef.current;
+        const stackNewImage = core.Enums.Events.STACK_NEW_IMAGE;
+        qualityEl.addEventListener(stackNewImage, onStackImage);
+        qualityEl.addEventListener(QUALITY_EVENT, onQuality);
+        detachQuality = () => {
+          qualityEl.removeEventListener(stackNewImage, onStackImage);
+          qualityEl.removeEventListener(QUALITY_EVENT, onQuality);
+        };
+
 
         const {
           addTool,
@@ -1311,6 +1385,9 @@ export default function CornerstoneViewer({
         let pinLocked = false;
 
         const emitSlice = () => {
+          // The bridge swapped a preview for its full frame in place. Same
+          // slice, same camera — not a navigation, so nothing to record.
+          if (isQualitySwap()) return;
           const vp = viewportRef.current;
           if (!vp) return;
           rememberPresentation();
@@ -1796,6 +1873,7 @@ export default function CornerstoneViewer({
           const src = caseSeriesToSource(target);
           const seriesUID = seriesUidOf(src);
           activeNav = markViewerNavigation(seriesUID);
+          activeSeriesUid = seriesUID;
           beginViewerNavigation(instanceId);
           try {
             let ids: string[] | null = null;
@@ -2587,6 +2665,7 @@ export default function CornerstoneViewer({
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
       resizeObserver?.disconnect();
       detachListeners();
+      detachQuality();
       viewportRef.current = null;
       loadedSeriesIndexRef.current = -1;
       // Allow the effect to FULLY re-initialize on a source change (the engine
@@ -2667,6 +2746,32 @@ export default function CornerstoneViewer({
     setCinePlaying(false);
   }, [activeSeriesIndex, sourceKey, viewMode]);
 
+  // --- Preview lock ---------------------------------------------------------
+  // While the slice is an 8-bit preview (lib/dicomCdn/previewLock.ts), a
+  // left-button / one-finger press with Window/Level or a measurement tool is
+  // swallowed in the CAPTURE phase on the frame, before Cornerstone's own
+  // mousedown/touchstart listeners on the canvas element see it. Wheel,
+  // right-drag zoom, middle-drag pan and pinch are untouched.
+  useEffect(() => {
+    const host = pressGuardRef.current;
+    if (!host) return;
+    const guard = (event: MouseEvent | TouchEvent) => {
+      const press =
+        event.type === "touchstart"
+          ? { type: event.type, touchCount: (event as TouchEvent).touches.length }
+          : { type: event.type, button: (event as MouseEvent).button };
+      if (!previewBlocksPress(previewingRef.current, activeToolRef.current, press)) return;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    host.addEventListener("mousedown", guard, true);
+    host.addEventListener("touchstart", guard, { capture: true, passive: false });
+    return () => {
+      host.removeEventListener("mousedown", guard, true);
+      host.removeEventListener("touchstart", guard, { capture: true });
+    };
+  }, []);
+
   // --- Keyboard ------------------------------------------------------------
   // Bound to the VIEWPORT, not the window: the student session already owns a
   // set of global keys (Space, C/N/P/R/T/F, `[`) and a second global listener
@@ -2705,6 +2810,7 @@ export default function CornerstoneViewer({
         if (cineOffered) setCinePlaying((playing) => !playing);
         return;
       case "preset": {
+        if (previewingRef.current) return;
         const preset = presets[action.ordinal - 1];
         if (preset) applyPresetRef.current(preset);
         return;
@@ -2802,6 +2908,7 @@ export default function CornerstoneViewer({
       viewMode={viewMode}
       onViewMode={setViewMode}
       measurementsEnabled={!mprLive}
+      previewLocked={previewing && !mprLive}
       cineOffered={cineOffered}
       cinePlaying={cinePlaying}
       cineFps={cineFps}
@@ -2901,6 +3008,7 @@ export default function CornerstoneViewer({
       )}
     >
       <div
+        ref={pressGuardRef}
         className={cn(
           "relative",
           docked && "w-full",
@@ -2973,6 +3081,15 @@ export default function CornerstoneViewer({
         {((!ready && painted) || (ready && stacking)) && (
           <p className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-md bg-black/80 px-2 py-1 text-xs text-white ring-1 ring-white/15">
             {status}
+          </p>
+        )}
+        {previewing && painted && !mprShowing && (
+          <p
+            className="pointer-events-none absolute bottom-2 right-8 z-10 flex items-center gap-1.5 rounded-md bg-black/80 px-2 py-1 text-xs font-medium text-white ring-1 ring-white/15"
+            title="Showing a fast 8-bit preview. Window/level and measurements unlock when the full-quality image arrives."
+          >
+            <Spinner size="sm" className="text-white/70" label="Loading full-quality image" />
+            <span aria-hidden="true">Preview</span>
           </p>
         )}
         {mprShowing ? null : imageOverlay}
@@ -3107,6 +3224,7 @@ function ViewerToolbar({
   viewMode,
   onViewMode,
   measurementsEnabled,
+  previewLocked = false,
   cineOffered,
   cinePlaying,
   cineFps,
@@ -3139,6 +3257,11 @@ function ViewerToolbar({
   onViewMode: (mode: MprMode) => void;
   /** Length and ROI stay on the stack. MPR keeps scroll, pan, zoom, and window. */
   measurementsEnabled: boolean;
+  /**
+   * The slice on screen is an 8-bit preview: window presets wait for the
+   * full-quality frame (drags are held by the viewer's press guard).
+   */
+  previewLocked?: boolean;
   /** False on a 1- or 2-image series, and in MPR. The group is then hidden. */
   cineOffered: boolean;
   cinePlaying: boolean;
@@ -3235,10 +3358,15 @@ function ViewerToolbar({
     <div className="relative" ref={presetMenuRef}>
       <button
         type="button"
-        disabled={!ready}
+        disabled={!ready || previewLocked}
+        title={previewLocked ? "Window presets unlock when full-quality pixels load" : undefined}
         aria-haspopup="menu"
         aria-expanded={presetOpen}
-        aria-label={`Window presets, ${activePresetLabel}`}
+        aria-label={
+          previewLocked
+            ? `Window presets, ${activePresetLabel} — available when full quality loads`
+            : `Window presets, ${activePresetLabel}`
+        }
         onClick={onTogglePreset}
         className={cn(
           "flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors",

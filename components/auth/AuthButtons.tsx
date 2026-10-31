@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, cn } from "@/components/ui";
+import { clearDicomDeviceCache } from "@/lib/dicomCdn/deviceCache";
 import {
   demoEntryDestination,
   demoRoleBody,
@@ -311,6 +312,9 @@ export function SignOutButton({ className }: { className?: string }) {
     try {
       await fetch("/api/auth/sign-out", { method: "POST", credentials: "include" });
       await fetch("/api/auth/demo", { method: "DELETE", credentials: "include" });
+      // Converted DICOM chunks cached on this device belong to the session
+      // that fetched them (lib/dicomCdn/deviceCache.ts).
+      await clearDicomDeviceCache();
       router.push("/sign-in");
       router.refresh();
       window.location.href = "/sign-in";
