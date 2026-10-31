@@ -9,6 +9,7 @@ import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
 import { shortcutSheet } from "../shortcuts";
+import type { ViewerSettings } from "../settings";
 import { cacheUsage, clearCache, listMedia, type MediaVolume } from "../platform";
 
 export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -168,20 +169,6 @@ export function DiscPickerDialog({
     </Modal>
   );
 }
-
-export interface ViewerSettings {
-  showOverlay: boolean;
-  rememberHistory: boolean;
-  checkUpdates: boolean;
-  scaleBar: boolean;
-}
-
-export const DEFAULT_SETTINGS: ViewerSettings = {
-  showOverlay: true,
-  rememberHistory: true,
-  checkUpdates: true,
-  scaleBar: false,
-};
 
 function Toggle({
   label,

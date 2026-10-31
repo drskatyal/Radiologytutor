@@ -26,12 +26,17 @@ dicom-core = "0.10"
 dicom-dictionary-std = "0.10"
 # Deflated Explicit VR LE (some US / SR exports) — read, and re-served inflated.
 dicom-transfer-syntax-registry = { version = "0.10", features = ["deflate"] }
+# PACS: DIMSE (C-ECHO / C-FIND / C-MOVE + a storage SCP) and DICOMweb (QIDO / WADO-RS).
+dicom-ul = "0.10"
+dicom-encoding = "0.10"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 walkdir = "2"
 rayon = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 parking_lot = "0.12"
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart", "json"] }
+png = "0.18"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart", "json", "stream"] }
 
 [profile.release]
 codegen-units = 1

@@ -16,6 +16,7 @@ import { registerHandle, type ViewportHandle, type ViewportReadout } from "./han
 import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
 import { voiRangeOf, wwwcOf } from "./presets";
 import { ensureSuv } from "./suv";
+import { isTauri, previewUrlFor } from "../platform";
 
 export interface StackViewportProps {
   cellKey: string;
@@ -30,6 +31,8 @@ export interface StackViewportProps {
   onDropSeries: (seriesUid: string) => void;
   onDoubleClick: () => void;
   onFirstPaint?: (ms: number) => void;
+  /** Fired when the instant Rust-rendered preview is on screen. */
+  onPreview?: () => void;
 }
 
 interface Readout extends ViewportReadout {
@@ -58,6 +61,7 @@ function StackViewportImpl({
   onDropSeries,
   onDoubleClick,
   onFirstPaint,
+  onPreview,
 }: StackViewportProps) {
   const elementRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -66,6 +70,9 @@ function StackViewportImpl({
   seriesRef.current = series;
   const [readout, setReadout] = useState<Readout | null>(null);
   const [loading, setLoading] = useState(false);
+  /** Series whose first Cornerstone frame is on screen; until then the preview shows. */
+  const [paintedUid, setPaintedUid] = useState<string | null>(null);
+  const [previewFailed, setPreviewFailed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [cine, setCine] = useState<{ playing: boolean; fps: number }>({ playing: false, fps: 15 });
@@ -134,6 +141,9 @@ function StackViewportImpl({
     const element = elementRef.current!;
     let resizeObserver: ResizeObserver | null = null;
     (async () => {
+      // Let the instant preview land first (it needs the main thread for a
+      // frame or two); the engine's parse+init would otherwise block it.
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
       const engine = await getEngine();
       if (disposed) return;
       engineRef.current = engine;
@@ -240,6 +250,7 @@ function StackViewportImpl({
             vp.setProperties({ voiRange: voiRangeOf(h.windowWidth, h.windowCenter) });
           }
           onFirstPaint?.(performance.now() - started);
+          setPaintedUid(series.uid);
         }
         vp.render();
         setLoading(false);
@@ -447,6 +458,21 @@ function StackViewportImpl({
       onContextMenu={(e) => e.preventDefault()}
     >
       <div ref={elementRef} className="cs-viewport absolute inset-0" data-viewport-id={viewportId} />
+
+      {/* Instant first image: rendered by Rust in a few ms, shown while the
+          engine starts, replaced by the real viewport on its first paint. */}
+      {series && isTauri && paintedUid !== series.uid && previewFailed !== series.uid && series.headers[0] && (
+        <img
+          key={series.uid}
+          src={previewUrlFor(series.headers[0].fileId)}
+          alt=""
+          aria-hidden
+          draggable={false}
+          onLoad={onPreview}
+          onError={() => setPreviewFailed(series.uid)}
+          className="pointer-events-none absolute inset-0 h-full w-full bg-imaging object-contain"
+        />
+      )}
 
       {!series && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted">

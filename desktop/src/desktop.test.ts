@@ -217,3 +217,11 @@ test("export file names never carry patient text", () => {
   const name = exportBaseName({ modality: "CT", seriesNumber: 2 }, new Date(2026, 0, 2, 3, 4, 5));
   assert.equal(name, "CT_se2_20260102-030405");
 });
+
+test("PET/CT hangs the CT first even when the PET has more slices", () => {
+  const studies = buildStudies([
+    ...[0, 1, 2].map((z) => ct(z, 30 + z, { seriesInstanceUID: "ct", modality: "CT", seriesNumber: 3 })),
+    ...[0, 1, 2, 3, 4].map((z) => ct(z, 40 + z, { seriesInstanceUID: "pt", modality: "PT", seriesNumber: 4 })),
+  ]);
+  assert.equal(studies[0].series[primarySeriesIndex(studies[0])].uid, "ct");
+});

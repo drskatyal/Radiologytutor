@@ -51,8 +51,9 @@ this setup. It is not a like-for-like comparison with §1.1.
 
 | metric | RadLearn Viewer (this box) | how |
 |---|---|---|
-| App binary (renderer, every codec and WASM embedded) | **11.0 MB** uncompressed | `ls -l target/release/radlearn-viewer` |
-| Cold start → painted start screen | **0.81 s** median of 6 (0.80 s first run) | `bench.mjs coldstart` |
+| Installer, Linux `.deb` | **5.85 MiB** (M3 build, PACS and sync included) | `tauri build --bundles deb` |
+| App binary (renderer, every codec and WASM embedded) | **11.6 MB** uncompressed (11.0 MB at M1) | `ls -l target/release/radlearn-viewer` |
+| Cold start → painted start screen | **0.81–0.85 s** median of 6 (M1: 0.81 s; M3: 0.85 s) | `bench.mjs coldstart` |
 | … of which WebKitGTK startup, before our JS runs | ~0.70 s | `jsStartMs` mark |
 | … of which our JS, start → paint | ~0.11 s | `firstPaintMs − jsStartMs` |
 | Idle memory, whole process tree (PSS) | **224 MB** (418 MB before the fix in §1.4) | `/proc/*/smaps_rollup` |
@@ -138,7 +139,7 @@ every slice loaded and every pane drawn (`RADLEARN_BENCH_VIEW`).
 | MPR (3 planes + 3D) | CT, 300 × 512² | **2.0 s** |
 | 3D volume rendering | CT, 300 × 512² | **1.9 s** |
 | PET/CT fusion (3 fused planes + PET MIP) | CT 300 + PET 75 | **2.5 s** |
-| MPR | CT, 1,200 × 512² (600 MB) | **8.3 s** |
+| MPR | CT, 1,200 × 512² (600 MB) | **8.3 s** (4.3 s after the speed pass, §1.5.1) |
 
 RadiAnt's published claim, for reference: a coronal MPR from more than 2,000
 axial CT slices in about 3 s on a modern Core i7. That is a vendor claim, not
@@ -154,6 +155,27 @@ percentage while it builds.
 read and decode in parallel, then hand the renderer one buffer through a raw
 IPC body, instead of 1,200 protocol requests and worker decodes. That is M3
 work if the HP numbers show a gap.
+
+### 1.5.1 Speed pass after M3 (same box, release build)
+
+| | before | after | what changed |
+|---|---|---|---|
+| MPR ready, CT 1,200 × 512² | 8.3 s | **4.3 s** | decode pool's prefetch lane 8 → 32, retrieval pool 8 → 32, and decode workers = every core (desktop has no server to protect) |
+| MPR ready, CT 300 × 512² | 2.0 s | **1.37 s** | same |
+| **Anything on screen** after opening a CT | ~0.72 s | **0.13–0.16 s** | Rust renders a windowed PNG of the first slice in **2.7 ms**, served at `dicom://…/p/<id>`, shown until Cornerstone paints |
+| Series hung (browser populated) | ~0.39 s | **0.04 s** | the engine is no longer parsed on the main thread while the scan runs; it starts once the preview is up |
+| Full interactive viewport | ~0.72 s | 0.72 s | unchanged: Cornerstone init (~350 ms on software GL) is the floor here |
+| Startup JS chunk | 577 KB | **437 KB** | toolbar, viewports, MPR/3D and every dialog load on demand |
+
+Trade-offs, stated:
+- **Compressed series** (J2K, JPEG, RLE…) have no Rust preview, and reach the full viewport ~60 ms later than before (0.88 s vs 0.82 s), because the engine now starts at hang time instead of at scan start.
+- **Cold start** is unchanged at ~0.80 s. WebKitGTK spends ~0.68 s before our JS runs; our own share is ~0.12 s.
+
+**Tried and dropped: assembling the whole volume in Rust.**
+- **The upside:** Rust read and rescaled a 300-slice CT (150 MB) in **90 ms**.
+- **The transfer cost:** handing that buffer to the WebView cost **2.6 s** through WebKitGTK's custom scheme (~60 MB/s). That would make a 1,200-slice study slower than streaming. A 150 MB IPC response was worse still.
+- **A second problem:** Cornerstone's `createLocalVolume` then stalled.
+- **Verdict:** reverted rather than shipped. Worth re-testing on WebView2 and WKWebView, whose custom-scheme throughput may be far higher, once the HP and a Mac are available.
 
 ### 1.6 Measure it on the HP (owed)
 
@@ -196,19 +218,19 @@ the app's group; add them all up.
 |---|---|---|
 | **Platforms** | Windows only. macOS only through CrossOver | ✅ Windows, ✅ **macOS (native, universal)**, ✅ Linux |
 | **Price / licence** | paid licence, time-limited trial | ✅ free, no trial wall |
-| **Installer** | setup.exe (~7 MB), 9.8 MB installed | ⏳ M3: .msi + .exe (NSIS), .dmg, .AppImage/.deb from CI |
-| **Auto-update** | ? | ⏳ M3: Tauri updater, signed, user-controlled |
+| **Installer** | setup.exe (~7 MB), 9.8 MB installed | ✅ `.msi` + `.exe` (NSIS, per-user), universal `.dmg`, `.AppImage` + `.deb`, all from `.github/workflows/desktop-release.yml`. **`.deb` measured at 5.85 MiB.** Windows and macOS sizes come from the first CI run |
+| **Auto-update** | ? | ✅ Tauri updater with an Ed25519-signed `latest.json` on GitHub Releases. Checks 8 s after launch (can be turned off), always asks, never installs silently. Offline or unsigned builds say so plainly |
 | **Open: folder / files / drag-drop** | ✅ | ✅ including OS drag-drop, "Open with…" and command-line paths |
 | **Open: DICOMDIR** | ✅ also builds thumbnails from it | ✅ index-driven, case-insensitive, ISO 9660 `;1` tolerant, falls back to a walk when the index is stale |
 | **Open: zip** | ✅ including encrypted (prompts for password) | ✅ unencrypted. Encrypted archives get a clear message. Extracted once into the cache, zip-slip safe |
 | **Open: CD/DVD** | ✅ Ctrl+Alt+O | ✅ Ctrl+Alt+O. Drives auto-detected on all three OSes, and DICOMDIR flagged |
-| **PACS: C-FIND / C-MOVE / C-GET / C-STORE** | ✅ | ⏳ M3: DICOMweb (QIDO/WADO) first, DIMSE via `dicom-ul` after |
+| **PACS: C-FIND / C-MOVE / C-GET / C-STORE** | ✅ | ✅ **DIMSE:** C-ECHO, C-FIND (study root) and C-MOVE into a built-in storage SCP. ✅ **DICOMweb:** QIDO-RS search and WADO-RS retrieve, 8 instances in parallel. Both verified against a live Orthanc: 135 instances retrieved over WADO-RS in ~5 s, opened as a local study. C-GET and push to PACS: not yet |
 | **Progressive display while loading** | ✅ "images can be browsed while still being opened" | ✅ the scanner streams headers and the first series hangs at once |
 | **Transfer syntaxes** | JPEG baseline/lossless, JPEG-LS, J2K, RLE, deflate; HTJ2K? | ✅ **all of these, HTJ2K included**: 10/10 syntax fixtures plus multiframe verified in the real app |
 | **Multiframe / cine** | ✅ | ✅ frame rate read from FrameTime / RecommendedDisplayFrameRate |
 | **DICOM video (MPEG-2/H.264)** | ✅ | ✖ not yet |
 | **Series browser with thumbnails** | ✅ | ✅ decoded thumbnails at low priority, drag onto any viewport |
-| **Study history / local database** | ✅ database, keywords, CSV | 🟡 recent studies (paths and descriptions, no PHI) plus scan cache. A searchable archive is ⏳ M3 |
+| **Study history / local database** | ✅ database, keywords, CSV | 🟡 searchable recent studies (description, modality, date, folder; no PHI), an instant re-open cache, and a PACS retrieve cache. **A managed local archive is not built yet:** no import-into-library, keywords or CSV |
 | **Layouts** | multiple series and windows | ✅ 1×1 to 3×3, maximise a cell (Enter or double-click), hang by drag-and-drop |
 | **Side-by-side compare** | ✅ | ✅ any series in any cell, across studies |
 | **Synchronised scrolling** | ✅ automatic within a plane | ✅ F5, position-based, works across series and studies sharing a frame of reference |
@@ -230,7 +252,7 @@ the app's group; add them all up.
 | **Export DICOM, anonymised** | ✅ (anonymisation is a paid add-on) | ✅ **free**: PS3.15 basic-profile header scrub, private tags removed, consistent UID remap, compressed pixel data kept byte-for-byte. Verified on all 10 transfer syntaxes and re-opened |
 | **Printing** | ✅ (2025.1) | ✖ not planned |
 | **Keyboard shortcuts** | ✅ | ✅ RadiAnt's documented keys plus a full sheet (F1) |
-| **Teaching overlays / RadLearn hand-off** | ✖ | ⏳ M3: sign in and send a study, anonymised on this machine first |
+| **Teaching overlays / RadLearn hand-off** | ✖ | ✅ optional sign-in, then **Send to RadLearn**: anonymised here, posted to `/api/upload`, de-identified again by the server. Verified end to end against a local RadLearn + Orthanc (24/24 images arrived with an empty patient name and a remapped Study UID) |
 
 ### 2.1 Where RadLearn Viewer already beats RadiAnt
 
@@ -265,17 +287,34 @@ the app's group; add them all up.
 1. ~~**M2:** MPR with linked crosshairs, MIP/MinIP slab, 3D VR, PET/CT
    fusion with SUV, export to PNG/JPEG/MP4/AVI and anonymised DICOM.~~
    **Done.** See §1.5 for timings.
-2. **M3:**
-   - installers and signed auto-update from CI;
-   - a searchable local archive;
-   - DICOMweb query/retrieve, with DIMSE C-FIND/C-MOVE after;
-   - RadLearn sign-in and send.
-3. **Re-measure on the HP** (§1.6). If cold start is still over 0.5 s there,
-   the remaining levers are:
-   - cut the startup bundle further: framer-motion and Radix load lazily
-     behind the first dialog;
-   - add a native splash, painted before the WebView exists.
-4. **Idle RAM.** The WebView floor (~80–150 MB) is the price of sharing the
-   renderer with the web app. The lever is a native renderer (wgpu): a
-   different product with a different maintenance cost. It is not proposed
-   unless the HP numbers show it matters to users.
+2. ~~**M3:** installers and signed auto-update from CI, searchable history,
+   DICOMweb + DIMSE query/retrieve, RadLearn sign-in and send.~~ **Done,
+   with one exception:** the full local archive (import-into-library, keywords,
+   CSV export) is still open.
+3. **Owed, and needs hardware or accounts we don't have here:**
+   - Re-measure on the HP (§1.6).
+   - Run the WKWebView spike on a Mac (`docs/DESKTOP_PLAN.md` §1.1).
+   - Add the signing identities:
+     - Apple Developer ID, $99/yr;
+     - Azure Artifact Signing, ~$10/month;
+     - the updater key pair, from `npx tauri signer generate`, with the
+       public key in the `TAURI_UPDATER_PUBKEY` variable.
+
+     The release workflow already reads all three.
+4. **Remaining feature gaps, by value:**
+   - a managed local archive;
+   - C-GET and push to PACS (C-STORE SCU);
+   - DICOM video (MPEG-2/H.264);
+   - curved MPR;
+   - printing;
+   - time-intensity curves.
+5. **Startup and memory against the hard targets** (<0.5 s cold start; low
+   idle RAM). The levers, in order, if the HP numbers miss them:
+   - **Startup bundle.** Load framer-motion and Radix lazily behind the
+     first dialog. Our share of startup is ~0.11–0.22 s here.
+   - **Native splash.** Paint a native splash before the WebView exists, so
+     the window appears at native speed.
+   - **Idle RAM.** The WebView floor (~80–150 MB) is the price of sharing one
+     renderer with the web app. Going below it means a native renderer
+     (wgpu): a different product with a different maintenance cost. It is
+     not proposed unless users show it matters.

@@ -5,7 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import { Button } from "@/components/ui/Button";
@@ -37,19 +37,10 @@ import { historyEntryFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { StartScreen } from "./components/StartScreen";
-import { ExportDialog } from "./components/ExportDialog";
-import { Toolbar } from "./components/Toolbar";
-import {
-  CustomWindowDialog,
-  DEFAULT_SETTINGS,
-  DiscPickerDialog,
-  SettingsDialog,
-  ShortcutsDialog,
-  type ViewerSettings,
-} from "./components/Dialogs";
-import { SeriesBrowser } from "./viewer/SeriesBrowser";
-import { StackViewport } from "./viewer/StackViewport";
-import { VolumeWorkspace, type VolumeMode } from "./viewer/VolumeWorkspace";
+import { useUpdater } from "./components/Updates";
+import { useSyncStatus } from "./components/Account";
+import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
+import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
   clearAnnotations,
@@ -65,6 +56,25 @@ import {
 } from "./viewer/engine";
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
+
+// Everything the start screen does not need loads on demand: the start screen
+// must paint from the smallest possible bundle (cold-start budget).
+function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T {
+  return lazy(() => load().then((m) => ({ default: m[key] as React.ComponentType }))) as unknown as T;
+}
+const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => import("./components/Toolbar"), "Toolbar");
+const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
+const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
+const VolumeWorkspace = named<typeof import("./viewer/VolumeWorkspace").VolumeWorkspace>(() => import("./viewer/VolumeWorkspace"), "VolumeWorkspace");
+const ExportDialog = named<typeof import("./components/ExportDialog").ExportDialog>(() => import("./components/ExportDialog"), "ExportDialog");
+const PacsDialog = named<typeof import("./components/PacsDialog").PacsDialog>(() => import("./components/PacsDialog"), "PacsDialog");
+const UpdatePrompt = named<typeof import("./components/Updates").UpdatePrompt>(() => import("./components/Updates"), "UpdatePrompt");
+const AccountSection = named<typeof import("./components/Account").AccountSection>(() => import("./components/Account"), "AccountSection");
+const SendToRadLearnDialog = named<typeof import("./components/Account").SendToRadLearnDialog>(() => import("./components/Account"), "SendToRadLearnDialog");
+const ShortcutsDialog = named<typeof import("./components/Dialogs").ShortcutsDialog>(() => import("./components/Dialogs"), "ShortcutsDialog");
+const CustomWindowDialog = named<typeof import("./components/Dialogs").CustomWindowDialog>(() => import("./components/Dialogs"), "CustomWindowDialog");
+const DiscPickerDialog = named<typeof import("./components/Dialogs").DiscPickerDialog>(() => import("./components/Dialogs"), "DiscPickerDialog");
+const SettingsDialog = named<typeof import("./components/Dialogs").SettingsDialog>(() => import("./components/Dialogs"), "SettingsDialog");
 
 type ScanState = { label: string; progress: ScanProgress | null } | null;
 
@@ -94,8 +104,10 @@ export default function App() {
   const [distractionFree, setDistractionFree] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState<"grid" | VolumeMode>("grid");
-  const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export">(null);
+  const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export" | "pacs" | "send">(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
+  const updater = useUpdater(settings.checkUpdates);
+  const sync = useSyncStatus();
   const [, setTick] = useState(0);
   const browserFileInput = useRef<HTMLInputElement>(null);
   const browserFolderInput = useRef<HTMLInputElement>(null);
@@ -197,9 +209,11 @@ export default function App() {
   }, []);
 
   const openPaths = useCallback(
-    async (paths: string[], kindHint?: SourceKind) => {
+    async (paths: string[], kindHint?: SourceKind, labelOverride?: string) => {
       if (!paths.length) return;
-      void getEngine(); // initialise while Rust scans
+      // The engine is NOT started here: parsing ~3 MB of Cornerstone on the
+      // main thread would delay hanging the series and its instant preview.
+      // The viewport starts it once the preview is on screen.
       if (!isTauri) {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
@@ -276,7 +290,7 @@ export default function App() {
           key: sourceKey(paths),
           paths,
           kind: kindHint ?? result.kind,
-          label: result.label,
+          label: labelOverride ?? result.label,
         };
         setSource(opened);
         void finishOpen(opened, built);
@@ -372,8 +386,13 @@ export default function App() {
   );
 
   const openDialog = useCallback(
-    async (what: "files" | "folder" | "disc" | "zip" | "dicomdir") => {
+    async (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => {
       void getEngine();
+      if (what === "pacs") {
+        if (isTauri) setDialog("pacs");
+        else toast({ title: "PACS needs the desktop app", variant: "info" });
+        return;
+      }
       if (!isTauri) {
         (what === "folder" ? browserFolderInput : browserFileInput).current?.click();
         return;
@@ -663,6 +682,10 @@ export default function App() {
     historyList<HistoryEntry>().then(setHistory, () => undefined);
   }, [resetWorkspace]);
 
+  const onPreview = useCallback(() => {
+    if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = performance.now() - bench.current.t0;
+  }, []);
+
   const onFirstPaint = useCallback(() => {
     if (bench.current.firstPaint == null) bench.current.firstPaint = performance.now() - bench.current.t0;
   }, []);
@@ -750,6 +773,7 @@ export default function App() {
           onSettings={() => setDialog("settings")}
           volumeView={view !== "grid"}
           onExport={view === "grid" ? () => setDialog("export") : undefined}
+          onSend={sync.status.signedIn ? () => setDialog("send") : undefined}
           advanced={{
             mprAvailable: !!volumeSeries,
             fusionAvailable: !!fusionPair,
@@ -763,7 +787,13 @@ export default function App() {
 
       <main className="relative flex min-h-0 flex-1">
         {hasStudy ? (
-          <>
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center bg-imaging">
+                <Spinner label="Loading viewer" />
+              </div>
+            }
+          >
             {browserOpen && !distractionFree && (
               <aside className="w-[244px] shrink-0 border-r border-subtle bg-surface">
                 <SeriesBrowser
@@ -822,12 +852,13 @@ export default function App() {
                     onDropSeries={(dropped) => showSeries(dropped, i)}
                     onDoubleClick={() => cells.length > 1 && setMaximized((m) => (m == null ? i : null))}
                     onFirstPaint={onFirstPaint}
+                    onPreview={onPreview}
                   />
                 );
               })}
             </section>
             )}
-          </>
+          </Suspense>
         ) : (
           <StartScreen
             history={history}
@@ -840,6 +871,8 @@ export default function App() {
             }}
             version={version}
             dragging={dragging}
+            onSettings={() => setDialog("settings")}
+            onHelp={() => setDialog("help")}
           />
         )}
 
@@ -912,13 +945,19 @@ export default function App() {
         </footer>
       )}
 
+      <Suspense fallback={null}>
+      {dialog === "help" && (
       <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} />
+      )}
+      {dialog === "window" && (
       <CustomWindowDialog
         open={dialog === "window"}
         onClose={() => setDialog(null)}
         initial={{ ww: handle?.readout()?.ww, wc: handle?.readout()?.wc }}
         onApply={(ww, wc) => handle?.setVoi(ww, wc)}
       />
+      )}
+      {dialog === "disc" && (
       <DiscPickerDialog
         open={dialog === "disc"}
         onClose={() => setDialog(null)}
@@ -932,6 +971,15 @@ export default function App() {
           if (paths?.length) void openPaths(paths, "disc");
         }}
       />
+      )}
+      {dialog === "pacs" && (
+      <PacsDialog
+        open={dialog === "pacs"}
+        onClose={() => setDialog(null)}
+        onRetrieved={(folder, label) => void openPaths([folder], "folder", `PACS · ${label}`)}
+      />
+      )}
+      {dialog === "export" && (
       <ExportDialog
         open={dialog === "export"}
         onClose={() => setDialog(null)}
@@ -939,13 +987,65 @@ export default function App() {
         series={active?.series ?? null}
         study={active?.study ?? null}
       />
+      )}
+      {dialog === "settings" && (
       <SettingsDialog
         open={dialog === "settings"}
         onClose={() => setDialog(null)}
         settings={settings}
         onChange={updateSettings}
         version={version}
+        extra={
+          <>
+            <section className="py-3">
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Updates</h3>
+              <label className="flex cursor-pointer items-start justify-between gap-4 py-2">
+                <span>
+                  <span className="block text-sm font-medium text-primary">Check for updates on launch</span>
+                  <span className="block text-xs text-muted">Asks before installing. Never updates silently.</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={settings.checkUpdates}
+                  onChange={(e) => updateSettings({ checkUpdates: e.target.checked })}
+                  className="mt-1 h-4 w-4 accent-[rgb(var(--accent))]"
+                />
+              </label>
+              <div className="flex items-center justify-between gap-4 py-1">
+                <span className="text-xs text-muted">
+                  {updater.status.state === "checking"
+                    ? "Checking…"
+                    : updater.status.state === "current"
+                      ? "You have the latest version."
+                      : updater.status.state === "available"
+                        ? `Version ${updater.status.update.version} is available.`
+                        : updater.status.state === "unavailable"
+                          ? updater.status.reason
+                          : ""}
+                </span>
+                <Button size="sm" variant="secondary" loading={updater.status.state === "checking"} onClick={() => void updater.check(true)}>
+                  Check now
+                </Button>
+              </div>
+            </section>
+            <AccountSection status={sync.status} onChange={sync.setStatus} />
+          </>
+        }
       />
+      )}
+      {updater.prompt && (
+      <UpdatePrompt update={updater.prompt} onClose={updater.dismiss} />
+      )}
+      {dialog === "send" && (
+      <SendToRadLearnDialog
+        open={dialog === "send"}
+        onClose={() => setDialog(null)}
+        status={sync.status}
+        series={active?.series ?? null}
+        study={active?.study ?? null}
+      />
+      )}
+      </Suspense>
       {/* Keep the handles list fresh for the toolbar's cine state. */}
       <span hidden>{handlesVersion}</span>
     </div>

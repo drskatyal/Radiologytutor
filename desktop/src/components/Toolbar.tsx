@@ -41,6 +41,8 @@ import {
   Undo2,
   Trash2,
   Merge,
+  Network,
+  CloudUpload,
   ZoomIn,
   Spline,
   Pipette,
@@ -72,7 +74,7 @@ export interface ToolbarProps {
   cineAvailable: boolean;
   onToggleCine: () => void;
   onCineFps: (fps: number) => void;
-  onOpen: (what: "files" | "folder" | "disc" | "zip" | "dicomdir") => void;
+  onOpen: (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => void;
   onHome: () => void;
   onUndo: () => void;
   onClear: () => void;
@@ -89,6 +91,8 @@ export interface ToolbarProps {
     onFusion: () => void;
   };
   onExport?: () => void;
+  /** Present only when signed in to RadLearn. */
+  onSend?: () => void;
   /** MPR / 3D / fusion on screen: hide the stack-only controls. */
   volumeView?: boolean;
 }
@@ -167,6 +171,8 @@ export function Toolbar(props: ToolbarProps) {
           <MenuItem icon={<FileArchive />} shortcut={`${mod}⇧Z`} onSelect={() => props.onOpen("zip")}>Zip archive…</MenuItem>
           <MenuItem icon={<FolderTree />} onSelect={() => props.onOpen("dicomdir")}>DICOMDIR…</MenuItem>
           <MenuItem icon={<Disc3 />} shortcut={`${mod}⌥O`} onSelect={() => props.onOpen("disc")}>CD / DVD / USB…</MenuItem>
+          <MenuSeparator />
+          <MenuItem icon={<Network />} shortcut={`${mod}⇧P`} onSelect={() => props.onOpen("pacs")}>PACS…</MenuItem>
         </MenuContent>
       </MenuRoot>
       <Divider />
@@ -359,6 +365,11 @@ export function Toolbar(props: ToolbarProps) {
       )}
 
       <div className="ml-auto flex items-center gap-0.5 pl-2">
+        {props.onSend && (
+          <Tool label="Send to RadLearn (anonymised)" onClick={props.onSend}>
+            <CloudUpload />
+          </Tool>
+        )}
         {props.onExport && (
           <Tool label="Export" shortcut={`${mod}E`} onClick={props.onExport}>
             <Download />

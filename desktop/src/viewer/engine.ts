@@ -102,7 +102,9 @@ async function createEngine(): Promise<Engine> {
   profile.isMobile = false;
   await core.init(coreInitConfig(profile) as Parameters<typeof core.init>[0]);
   await tools.init();
-  await loader.init({ maxWebWorkers: webWorkerCount(profile) });
+  // Desktop: the reader is the only workload, so decode on every core (the web
+  // viewer leaves a quarter free for the page; lib/viewerRuntime.ts).
+  await loader.init({ maxWebWorkers: Math.max(webWorkerCount(profile), Math.min(profile.cores, 12)) });
   try {
     core.cache.setMaxCacheSize(imageCacheBytes(profile));
   } catch {
@@ -111,7 +113,12 @@ async function createEngine(): Promise<Engine> {
   const pool = (core as unknown as { imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> } })
     .imageRetrievalPoolManager?.maxNumRequests;
   // Local disk: there is no server to be polite to. Keep interaction deep.
-  if (pool) Object.assign(pool, { ...retrievalPoolSizes(profile), interaction: 24, prefetch: 8 });
+  if (pool) Object.assign(pool, { ...retrievalPoolSizes(profile), interaction: 32, prefetch: 32 });
+  // Volume loads (MPR / 3D) run in the prefetch lane of BOTH pools: fetch and
+  // decode. Local disk has no server to protect, so keep the decoders fed.
+  const decodePool = (core as unknown as { imageLoadPoolManager?: { maxNumRequests?: Record<string, number> } })
+    .imageLoadPoolManager?.maxNumRequests;
+  if (decodePool) Object.assign(decodePool, { interaction: 32, prefetch: 32, thumbnail: 4 });
 
   const t = tools;
   for (const Tool of [
