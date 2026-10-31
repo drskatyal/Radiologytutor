@@ -3088,6 +3088,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tempfile",
  "walkdir",
  "windows-sys 0.59.0",
  "zip 2.6.1",

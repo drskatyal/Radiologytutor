@@ -219,6 +219,14 @@ fn bench_view() -> Option<String> {
     std::env::var("RADLEARN_BENCH_VIEW").ok()
 }
 
+/// `RADLEARN_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
+/// image in the bench report, so a script can check every codec against an
+/// independent decoder (`desktop/scripts/codec-check.py`).
+#[tauri::command]
+fn bench_pixels() -> bool {
+    std::env::var("RADLEARN_BENCH_PIXELS").as_deref() == Ok("1")
+}
+
 #[tauri::command]
 fn bench_enabled() -> bool {
     std::env::var("RADLEARN_BENCH").as_deref() == Ok("1")
@@ -332,6 +340,7 @@ pub fn run() {
             bench_report,
             bench_enabled,
             bench_view,
+            bench_pixels,
             startup_elapsed_ms,
             store::history_list,
             store::history_record,
@@ -373,12 +382,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    /// Needs a fixture from `desktop/scripts/make-fixtures.py`:
-    /// DEFLATED_FIXTURE=<fixtures>/ts/deflated-le/IM000001 DEFLATED_OUT=/tmp/x.dcm cargo test
+    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test inflates
     #[test]
     fn inflates_deflated_explicit_le() {
-        let Ok(path) = std::env::var("DEFLATED_FIXTURE") else { return };
-        let bytes = super::inflate_to_explicit_le(std::path::Path::new(&path)).expect("inflate");
-        std::fs::write(std::env::var("DEFLATED_OUT").unwrap(), bytes).unwrap();
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let dir = std::path::Path::new(&root).join("ts/deflated-le");
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+        files.sort();
+        let bytes = super::inflate_to_explicit_le(&files[0]).expect("inflate");
+        let out = std::env::temp_dir().join(format!("inflated-{}.dcm", std::process::id()));
+        std::fs::write(&out, bytes).unwrap();
+        let obj = dicom_object::open_file(&out).unwrap();
+        assert_eq!(obj.meta().transfer_syntax().trim_end_matches('\0'), "1.2.840.10008.1.2.1");
+        let pixels = obj.element(dicom_dictionary_std::tags::PIXEL_DATA).unwrap().to_bytes().unwrap();
+        assert_eq!(pixels.len(), 512 * 512 * 2);
+        let _ = std::fs::remove_file(out);
     }
 }

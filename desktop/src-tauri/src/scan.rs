@@ -352,3 +352,72 @@ pub fn scan(
     })
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_hash_is_deterministic_and_distinct() {
+        assert_eq!(stable_hash("/media/cd"), stable_hash("/media/cd"));
+        assert_ne!(stable_hash("/media/cd"), stable_hash("/media/cd2"));
+        assert_eq!(stable_hash("x").len(), 16);
+    }
+
+    #[test]
+    fn single_child_dir_descends_only_through_a_lone_folder() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("cd-media")).unwrap();
+        fs::write(d.path().join(".hidden"), b"x").unwrap();
+        assert_eq!(single_child_dir(d.path()), Some(d.path().join("cd-media")));
+        fs::write(d.path().join("README.TXT"), b"x").unwrap();
+        assert_eq!(single_child_dir(d.path()), None);
+    }
+
+    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test scan
+    #[test]
+    fn scans_a_disc_via_dicomdir_then_hits_the_cache_without_storing_phi() {
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let cache = tempfile::tempdir().unwrap();
+        let paths = vec![Path::new(&root).join("cd-media")];
+        let cancel = AtomicBool::new(false);
+        let batches = AtomicUsize::new(0);
+        let run = || {
+            scan(&paths, cache.path(), &cancel, &|_| {}, &|_| {}, &|b| {
+                batches.fetch_add(b.len(), Ordering::Relaxed);
+            })
+            .unwrap()
+        };
+        let first = run();
+        assert!(first.used_dicomdir);
+        assert_eq!(first.headers.len(), 84);
+        assert_eq!(first.cache_hits, 0);
+        assert_eq!(batches.load(Ordering::Relaxed), 84, "every header streamed in a batch");
+        assert!(first.headers.iter().all(|h| h.patient_name.is_some()), "overlay still gets patient names");
+
+        let second = run();
+        assert_eq!(second.cache_hits, 84);
+        assert!(second.headers.iter().all(|h| h.patient_name.is_some()), "names re-read, not cached");
+
+        // The on-disk cache holds no patient identifiers.
+        let cached: String = walkdir::WalkDir::new(cache.path().join("scan"))
+            .into_iter()
+            .flatten()
+            .filter(|e| e.file_type().is_file())
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(!cached.is_empty());
+        for phi in ["PHANTOM^CT", "PHANTOM^MR", "FIX-001", "FIX-002"] {
+            assert!(!cached.contains(phi), "{phi} in the scan cache");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_scan_reports_cancelled() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("IM1"), b"x").unwrap();
+        let cancel = AtomicBool::new(true);
+        let err = scan(&[d.path().to_path_buf()], d.path(), &cancel, &|_| {}, &|_| {}, &|_| {}).unwrap_err();
+        assert_eq!(err, "cancelled");
+    }
+}

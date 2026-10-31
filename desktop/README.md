@@ -80,6 +80,8 @@ RADLEARN_TEST_PACS=localhost:4242 cargo test --manifest-path desktop/src-tauri/C
 python3 desktop/scripts/make-fixtures.py --bench /tmp/fixtures   # every transfer syntax, DICOMDIR, zip, PET/CT
 npx --prefix desktop tauri build --debug --no-bundle
 xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/radlearn-viewer /tmp/fixtures
+# Per-codec decode check: the app's decoders vs pydicom, bit-exact for lossless syntaxes
+xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/radlearn-viewer /tmp/fixtures
 ```
 
 ## Benchmark

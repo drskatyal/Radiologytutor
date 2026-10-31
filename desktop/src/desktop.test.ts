@@ -10,6 +10,7 @@ import { windowPresetsFor, voiRangeOf, wwwcOf } from "./viewer/presets";
 import type { DesktopHeader } from "./types";
 import { sanitizePetMeta } from "./viewer/suv";
 import { buildMjpegAvi, exportBaseName } from "./viewer/exporter";
+import { pixelStats } from "./viewer/pixelStats";
 import { calculateSUVScalingFactors } from "@cornerstonejs/calculate-suv";
 
 const key = (k: string, extra: Partial<KeyLike> = {}): KeyLike => ({ key: k, ...extra });
@@ -224,4 +225,9 @@ test("PET/CT hangs the CT first even when the PET has more slices", () => {
     ...[0, 1, 2, 3, 4].map((z) => ct(z, 40 + z, { seriesInstanceUID: "pt", modality: "PT", seriesNumber: 4 })),
   ]);
   assert.equal(studies[0].series[primarySeriesIndex(studies[0])].uid, "ct");
+});
+
+test("pixel stats for the codec check: exact integer sum, min, max, count", () => {
+  assert.deepEqual(pixelStats(new Int16Array([-1024, 0, 40, 3071])), { count: 4, min: -1024, max: 3071, sum: 2087 });
+  assert.deepEqual(pixelStats(new Uint8Array([7])), { count: 1, min: 7, max: 7, sum: 7 });
 });

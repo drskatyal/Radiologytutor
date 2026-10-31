@@ -56,6 +56,7 @@ import {
 } from "./viewer/engine";
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
+import { firstImagePixelStats } from "./viewer/pixelStats";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -310,6 +311,9 @@ export default function App() {
               firstImagePaintedMs: bench.current.firstPaint,
               engineInitMs: engineTimings.initMs,
               processUptimeMs: startup,
+              ...((await invoke<boolean>("bench_pixels").catch(() => false))
+                ? { pixels: await firstImagePixelStats(built).catch((e) => ({ error: String(e) })) }
+                : {}),
             });
           };
           const benchView = await invoke<string | null>("bench_view").catch(() => null);
