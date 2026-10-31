@@ -74,6 +74,8 @@ function disabledInThisBrowser(): boolean {
   try {
     const param = new URLSearchParams(window.location.search).get("dicomcdn");
     if (param === "off" || param === "on") window.localStorage.setItem("radlearn:dicomcdn", param);
+    // `on` also forgets a remembered "server says off" for this tab.
+    if (param === "on") window.sessionStorage.removeItem("radlearn:dicomcdn-server-off");
     return window.localStorage.getItem("radlearn:dicomcdn") === "off";
   } catch {
     return false;
@@ -107,7 +109,36 @@ type Manifest = { index: SeriesBundleIndex; delivery: Delivery };
  */
 const manifests = new Map<string, { at: number; until: number; value: Promise<Manifest | null> }>();
 
+/**
+ * When the server says the feature is off ("disabled"), remember it for this
+ * tab session so later opens skip the manifest round trip entirely and the
+ * DICOMweb path pays nothing for this feature existing.
+ */
+const OFF_KEY = "radlearn:dicomcdn-server-off";
+let serverOff: boolean | null = null;
+
+function serverSaidOff(): boolean {
+  if (serverOff == null) {
+    try {
+      serverOff = window.sessionStorage.getItem(OFF_KEY) === "1";
+    } catch {
+      serverOff = false;
+    }
+  }
+  return serverOff;
+}
+
+function rememberServerOff(): void {
+  serverOff = true;
+  try {
+    window.sessionStorage.setItem(OFF_KEY, "1");
+  } catch {
+    /* private mode — the in-memory flag still holds for this page */
+  }
+}
+
 async function requestManifest(study: string, series: string): Promise<Manifest | null> {
+  if (serverSaidOff()) return null;
   const timeout = AbortSignal.timeout?.(MANIFEST_TIMEOUT_MS);
   try {
     const res = await fetch(
@@ -116,6 +147,7 @@ async function requestManifest(study: string, series: string): Promise<Manifest 
     );
     if (!res.ok) return null;
     const body = (await res.json()) as ManifestResponse;
+    if (!body.available && body.reason === "disabled") rememberServerOff();
     if (!body.available || !isUsableIndex(body.index)) return null;
     return { index: body.index, delivery: body.delivery };
   } catch {
