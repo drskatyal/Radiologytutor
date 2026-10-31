@@ -68,7 +68,7 @@ export function ViewerHelp({ open, onClose }: { open: boolean; onClose: () => vo
         className="max-h-full w-full max-w-2xl overflow-y-auto overscroll-contain rounded-xl border border-white/10 bg-[#181818] p-4 text-white shadow-2xl sm:p-5"
       >
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 id={titleId} className="text-sm font-semibold tracking-tight">
+          <h2 id={titleId} className="text-sm font-semibold tracking-tight text-white">
             Viewer shortcuts
           </h2>
           <button

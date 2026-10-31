@@ -34,9 +34,10 @@ function Plane({
   showLabels: boolean;
 }) {
   const markers = PLANE_MARKERS[plane];
+  // A small black backing: the crosshair lines meet the edges exactly
+  // where these letters sit.
   const marker = cn(
-    "pointer-events-none absolute z-[1] select-none text-xs font-semibold text-white/75",
-    shadow
+    "pointer-events-none absolute z-[1] select-none rounded-sm bg-black/75 px-1 text-xs font-semibold leading-4 text-white/80"
   );
   return (
     <div className="relative min-h-0 min-w-0 bg-imaging">

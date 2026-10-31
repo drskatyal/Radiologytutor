@@ -117,6 +117,17 @@ export function CaseViewer({
     setPanes((prev) => (prev[0] === at ? prev : [at, ...prev.slice(1)]));
   }, [rail, link.seriesInstanceUID]);
 
+  // A pane that changes size keeps its camera (the teach path relies on
+  // that), so a layout switch would crop. Refit every pane once it settles.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      for (const ref of controlsRef.current) {
+        if (ref.current?.ready) ref.current.fit?.();
+      }
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [layoutId]);
+
   const offered = layoutsForSeriesCount(rail.length);
   const activeSeriesIndex = Math.min(panes[activePane] ?? 0, Math.max(0, rail.length - 1));
 

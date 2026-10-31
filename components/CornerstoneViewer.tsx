@@ -256,6 +256,8 @@ export interface CornerstoneControls {
   setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
   reset: () => void;
+  /** Fit the image to the pane; keeps the window. (Hanging-layout reflow.) */
+  fit?: () => void;
   /**
    * Resize onto the current pane and repaint. Used when compare closes so the
    * primary buffer matches the single-pane layout without dropping the teach
@@ -448,6 +450,9 @@ async function buildImageIds(source: ViewerSource): Promise<string[]> {
   }
   return createImageIdsAndCacheMetaData(source);
 }
+
+/** One Cornerstone core/tools/loader init per page; see the init effect. */
+let engineInit: Promise<void> | null = null;
 
 type SharedEngine = {
   enableElement: (entry: {
@@ -802,10 +807,23 @@ export default function CornerstoneViewer({
         // WebGL context pool from 7 to 1). They are device-dependent and the
         // benchmark harness measures the same functions.
         const deviceProfile = detectDeviceProfile();
-        await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
-        await tools.init();
-        const workers = webWorkerCount(deviceProfile);
-        await loader.init({ maxWebWorkers: workers });
+        // Once per page, not once per pane. `dicomImageLoader.init()` runs
+        // `registerLoaders()`, which PURGES the image cache and the wadors
+        // metadata store — so a second pane mounting (a hanging layout, or
+        // student compare) silently wiped the first pane's metadata. Its stack
+        // kept painting from textures, but MPR then found no pixel module for
+        // any slice ("no spatial orientation") and prefetch decodes threw.
+        engineInit ??= (async () => {
+          await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
+          await tools.init();
+          await loader.init({ maxWebWorkers: webWorkerCount(deviceProfile) });
+        })();
+        try {
+          await engineInit;
+        } catch (err) {
+          engineInit = null;
+          throw err;
+        }
         // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
         // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
         // ceiling costs re-decodes, never correctness.
@@ -2618,6 +2636,7 @@ export default function CornerstoneViewer({
         };
 
         const handle: CornerstoneControls = {
+          fit: () => fitRef.current(),
           ready: true,
           imageCount: imageIds.length,
           showState: showStateFn,

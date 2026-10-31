@@ -393,7 +393,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           <MenuLabel>Window</MenuLabel>
           <MenuItem
             label="Series default"
-            hint="from DICOM"
+            hint="DICOM"
             shortcut="⇧0"
             active={activePreset === FULL_DYNAMIC_ID}
             onSelect={() => props.onPreset(null)}

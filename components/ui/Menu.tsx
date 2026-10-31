@@ -41,7 +41,7 @@ export function Menu({
           collisionPadding={8}
           data-viewer-menu=""
           className={cn(
-            "z-[80] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] w-52 overflow-y-auto overscroll-contain",
+            "z-[80] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] w-56 overflow-y-auto overscroll-contain",
             "rounded-lg border border-white/10 bg-[#181818] p-1 text-white shadow-xl"
           )}
         >

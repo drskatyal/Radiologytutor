@@ -116,7 +116,7 @@ export const VIEWER_SHORTCUT_GROUPS: ShortcutGroup[] = [
     title: "Stack",
     rows: [
       { keys: ["↑", "↓"], does: "Previous / next image" },
-      { keys: ["PgUp", "PgDn"], does: "Jump 5% of the series (or Shift + ↑ ↓)" },
+      { keys: ["PgUp", "PgDn"], does: "Jump 5% (or Shift + arrow)" },
       { keys: ["Home", "End"], does: "First / last image" },
       { keys: ["K"], does: "Play / pause cine" },
       { keys: [",", "."], does: "Cine slower / faster" },
