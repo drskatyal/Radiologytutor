@@ -17,7 +17,8 @@ const type =
 function Lines({ lines, className }: { lines: string[]; className: string }) {
   if (lines.length === 0) return null;
   return (
-    <div className={cn(type, className)}>
+    // data-imaging-chrome: tutor cards are seated clear of corner text.
+    <div data-imaging-chrome className={cn(type, className)}>
       {lines.map((line, i) => (
         // Secondary lines drop first on a phone-width pane.
         <p key={i} className={cn("whitespace-nowrap", i > 0 && "max-sm:hidden")}>
@@ -53,17 +54,18 @@ export function ViewportOverlay({
       <Lines lines={corners.bottomRight} className={cn(right, "bottom-2 text-right")} />
       {markers ? (
         <>
-          <span aria-hidden="true" className={cn(marker, "left-1/2 top-1.5 -translate-x-1/2")}>
+          <span aria-hidden="true" data-imaging-chrome className={cn(marker, "left-1/2 top-1.5 -translate-x-1/2")}>
             {markers.top}
           </span>
-          <span aria-hidden="true" className={cn(marker, "bottom-1.5 left-1/2 -translate-x-1/2")}>
+          <span aria-hidden="true" data-imaging-chrome className={cn(marker, "bottom-1.5 left-1/2 -translate-x-1/2")}>
             {markers.bottom}
           </span>
-          <span aria-hidden="true" className={cn(marker, "imaging-readout left-2 top-1/2 -translate-y-1/2")}>
+          <span aria-hidden="true" data-imaging-chrome className={cn(marker, "imaging-readout left-2 top-1/2 -translate-y-1/2")}>
             {markers.left}
           </span>
           <span
             aria-hidden="true"
+            data-imaging-chrome
             className={cn(marker, scrollbar ? "right-8" : "right-2", "top-1/2 -translate-y-1/2")}
           >
             {markers.right}

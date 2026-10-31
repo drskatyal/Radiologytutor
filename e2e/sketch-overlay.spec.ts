@@ -38,6 +38,11 @@ test("desktop: one ring on the nodule, a solid card in black space, clear of the
   expect(overlaps(card, ring)).toBe(false);
   expect(overlaps(card, toolbar)).toBe(false);
   expect(overlaps(card, scrollbar)).toBe(false);
+  // Corner text and orientation letters stay readable.
+  for (const chrome of await page.locator("[data-imaging-chrome]").all()) {
+    const box = await chrome.boundingBox();
+    if (box && box.width > 0) expect(overlaps(card, box)).toBe(false);
+  }
   // Exactly one stroke: no unrequested arrow next to the ring.
   await expect(page.getByTestId("sketch-arrow")).toHaveCount(0);
   await expect(page.getByTestId("sketch-connector")).toHaveCount(1);
