@@ -101,3 +101,28 @@ variable "gemini_model" {
   type        = string
   default     = "gemini-3.8-flash"
 }
+
+variable "dicom_cdn_bucket" {
+  description = "Globally unique PRIVATE GCS bucket for converted DICOM (HTJ2K + previews). Empty skips converted delivery entirely. Example: radlearn-app-dicom-cdn."
+  type        = string
+  default     = ""
+}
+
+variable "dicom_cdn_domain" {
+  description = "Hostname for the Cloud CDN load balancer in front of dicom_cdn_bucket, e.g. dicom-cdn.radlearn.app. Empty: chunks are served by the app (/api/dicom-cdn/files)."
+  type        = string
+  default     = ""
+}
+
+variable "dicom_cdn_key_name" {
+  description = "Cloud CDN signed-URL key name. The app reads it as DICOM_CDN_KEY_NAME."
+  type        = string
+  default     = "radlearn-dicom-1"
+}
+
+variable "dicom_cdn_signing_key" {
+  description = "base64url 16-byte Cloud CDN signing key (same value as the DICOM_CDN_KEY secret). Required with dicom_cdn_domain."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
