@@ -9,7 +9,14 @@ export type ViewerSource =
       wadoRsRoot: string;
       StudyInstanceUID: string;
       SeriesInstanceUID: string;
-    };
+    }
+  /**
+   * A stack already resolved to imageIds — local files opened from disk
+   * (`lib/localDicomFiles.ts`, `dicomfile:` ids), where there is no archive to
+   * query and no URL to template. `key` identifies the stack so the viewer can
+   * tell one local series from another without comparing a 1200-id array.
+   */
+  | { kind: "imageIds"; key: string; imageIds: string[] };
 
 // Bundled open sample: pydicom's emri_small (MR, 10 frames, uncompressed),
 // served from /public — no backend, no CORS. Tiny (64x64), just to prove our
@@ -101,6 +108,9 @@ export function caseSeriesToSource(s: CaseSeries): ViewerSource {
 export function viewerSourceKey(source: ViewerSource): string {
   if (source.kind === "wadouri") {
     return `wadouri\0${source.url}\0${source.frames}`;
+  }
+  if (source.kind === "imageIds") {
+    return `imageIds\0${source.key}\0${source.imageIds.length}`;
   }
   return `wadors\0${source.wadoRsRoot}\0${source.StudyInstanceUID}\0${source.SeriesInstanceUID}`;
 }

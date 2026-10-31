@@ -105,7 +105,10 @@ export function CaseViewer({
         </p>
       </header>
 
-      <div className="relative min-h-0 flex-1 bg-imaging" role="region" aria-label="DICOM viewer">
+      {/* "Imaging pane", not "DICOM viewer": the viewport inside carries that
+          label, and two identically-named landmarks make a screen reader
+          announce the same thing twice. */}
+      <div className="relative min-h-0 flex-1 bg-imaging" role="region" aria-label="Imaging pane">
         <ImagingLayout
           fill
           series={rail}

@@ -46,3 +46,7 @@ deploy/gcp/terraform/.terraform.lock.hcl
 /test-results/
 /playwright-report/
 /blob-report/
+
+# Viewer benchmark artifacts (scripts/bench/run.mjs)
+scripts/bench/.build/
+scripts/bench/results/
