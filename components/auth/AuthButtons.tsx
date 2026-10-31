@@ -8,6 +8,7 @@ import { clearDicomDeviceCache } from "@/lib/dicomCdn/deviceCache";
 import {
   demoEntryDestination,
   demoRoleBody,
+  elevatedDemoAvailable,
   safeNext,
   type DemoPick,
   type DemoSessionUser,
@@ -41,6 +42,13 @@ export function useDemoSignIn(defaultNext?: string) {
 
   async function signInAs(role: DemoPick, next?: string, id?: string) {
     if (busyId) return;
+    // Production has no anonymous teacher/admin demo (lib/demoEntry.ts):
+    // the teacher door is a real account, which gets its own org.
+    if (role !== "student" && !elevatedDemoAvailable()) {
+      const dest = safeNext(next ?? defaultNext);
+      window.location.assign(dest ? `/sign-up?next=${encodeURIComponent(dest)}` : "/sign-up");
+      return;
+    }
     setBusyId(id ?? role);
     setError(null);
     try {
@@ -106,9 +114,12 @@ export function GoogleSignInButton({
 /** Sign-in only. Includes Continue as demo, which these marketing buttons do not. */
 export function DemoSignInButton({ next }: { next?: string }) {
   const { busyId, error, signInAs } = useDemoSignIn(next);
+  const elevated = elevatedDemoAvailable();
 
   return (
     <div className="flex flex-col gap-2">
+      {elevated ? (
+      <>
       <Button
         type="button"
         variant="secondary"
@@ -129,9 +140,11 @@ export function DemoSignInButton({ next }: { next?: string }) {
       >
         Teacher demo
       </Button>
+      </>
+      ) : null}
       <Button
         type="button"
-        variant="ghost"
+        variant={elevated ? "ghost" : "secondary"}
         className="w-full"
         loading={busyId === "student"}
         disabled={busyId != null && busyId !== "student"}
