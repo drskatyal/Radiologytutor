@@ -2,6 +2,18 @@
 
 Date: 2026-10-30. Branch `claude/viewer-perf`.
 
+> **Status (2026-10-31, branches `claude/desktop-viewer` → `-m2` → `-m3`).**
+> Built so far: Stages 1–3, and Stage 4's DICOM Q/R plus teaching-case
+> hand-off. See [`desktop/README.md`](../desktop/README.md).
+>
+> - **Approach.** The renderer is a Vite build that imports this repo's `lib/`
+>   and `components/ui`, not a `next build` static export. The desktop needs
+>   one page and no Next runtime.
+> - **WKWebView spike (§1.1).** Still owed on a Mac, because it needs macOS
+>   hardware.
+> - **Performance and features vs RadiAnt.** See
+>   [`docs/RADIANT_BENCHMARK.md`](RADIANT_BENCHMARK.md).
+
 **Product goal.** A free, downloadable viewer that opens a study from a CD, a
 USB stick or a folder, on macOS and Windows, with no account and no upload. It
 is the same viewport the teaching product uses, so every improvement to one

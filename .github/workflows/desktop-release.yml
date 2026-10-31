@@ -1,0 +1,133 @@
+# RadLearn Viewer release: Windows (.msi + .exe), macOS (universal .dmg),
+# Linux (.AppImage + .deb), plus the signed updater manifest (latest.json),
+# attached to a DRAFT GitHub release. Nothing is published automatically.
+#
+# Trigger: push a tag `desktop-v0.2.0` (version must match
+# desktop/src-tauri/tauri.conf.json), or run manually.
+#
+# Secrets (all optional — without them the build is unsigned and has no
+# working auto-update, which is fine for a smoke build):
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#       from `npx tauri signer generate`; the matching public key goes in the
+#       repository VARIABLE TAURI_UPDATER_PUBKEY.
+#   APPLE_CERTIFICATE (base64 .p12 "Developer ID Application"),
+#   APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_PRIVATE_KEY (.p8 contents)
+#       for signing + notarisation (stapled, so first launch works offline).
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET plus variables
+#   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
+#       for Windows signing with Azure Artifact Signing.
+# Variables: RADLEARN_SERVER_URL (default address for optional sign-in).
+name: desktop-release
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    env:
+      HAS_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Linux packages
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - run: npm ci
+      - run: npm ci --prefix desktop
+
+      - name: Configure updater and signing for this build
+        shell: bash
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          IS_WINDOWS: ${{ runner.os == 'Windows' }}
+        run: |
+          node - <<'JS'
+          const fs = require("fs");
+          const p = "desktop/src-tauri/tauri.conf.json";
+          const c = JSON.parse(fs.readFileSync(p, "utf8"));
+          if (process.env.HAS_UPDATER_KEY === "true" && process.env.PUBKEY) {
+            c.plugins.updater.pubkey = process.env.PUBKEY;
+          } else {
+            console.log("No updater key: building without update artifacts.");
+            c.bundle.createUpdaterArtifacts = false;
+          }
+          if (process.env.IS_WINDOWS === "true" && process.env.HAS_AZURE === "true") {
+            const e = process.env;
+            c.bundle.windows.signCommand = `trusted-signing-cli -e ${e.AZURE_SIGNING_ENDPOINT} -a ${e.AZURE_SIGNING_ACCOUNT} -c ${e.AZURE_SIGNING_PROFILE} -d "RadLearn Viewer" %1`;
+          }
+          fs.writeFileSync(p, JSON.stringify(c, null, 2));
+          JS
+      - name: Azure Artifact Signing CLI
+        if: runner.os == 'Windows' && env.HAS_AZURE == 'true'
+        run: cargo install trusted-signing-cli --locked
+      - name: App Store Connect API key (notarisation)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+            mkdir -p "$RUNNER_TEMP/apple" && printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/apple/AuthKey.p8"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RADLEARN_SERVER_URL: ${{ vars.RADLEARN_SERVER_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'desktop-v__VERSION__' }}
+          releaseName: "RadLearn Viewer v__VERSION__"
+          releaseBody: |
+            Free, offline DICOM viewer for Windows, macOS and Linux. Not for diagnostic use.
+            See docs/RADIANT_BENCHMARK.md for what is in this build.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
