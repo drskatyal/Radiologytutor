@@ -36,11 +36,18 @@ function arg(name, fallback) {
 
 const SLICES = Number(arg("slices", 240));
 const LATENCY_MS = Number(arg("latency", 35));
+// Shared downstream link in Mbit/s; 0 = unlimited (localhost).
+const BANDWIDTH_MBPS = Number(arg("bandwidth", 0));
 const METADATA_BUILD_MS = Number(arg("metadata-build", 400));
 const SCROLL_SLICES = Number(arg("scroll", 24));
 const REPEATS = Number(arg("repeats", 2));
 const ROWS = Number(arg("rows", 512));
 const COLUMNS = Number(arg("columns", ROWS));
+// Comma list to run a subset, e.g. `--profiles tuned,bundle`.
+const ONLY = arg("profiles", "")
+  .split(",")
+  .map((p) => p.trim())
+  .filter(Boolean);
 
 async function bundle() {
   await rm(BUILD, { recursive: true, force: true });
@@ -107,6 +114,7 @@ function runChrome(url) {
     "google-chrome",
     [
       "--headless=new",
+      ...(process.env.BENCH_VERBOSE ? ["--enable-logging=stderr", "--v=0"] : []),
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu-sandbox",
@@ -143,21 +151,50 @@ const PROFILES = [
     directionalPrefetch: true,
     prewarm: true,
   },
-];
+  // lib/dicomCdn: converted bundle (8-bit preview chunk → HTJ2K full chunk),
+  // built by the real packer, served at the same per-request latency.
+  {
+    label: "bundle",
+    runtime: "tuned",
+    countHint: true,
+    directionalPrefetch: true,
+    prewarm: true,
+    bundle: true,
+  },
+].filter((p) => ONLY.length === 0 || ONLY.includes(p.label));
+
+async function packBundle() {
+  const out = join(BUILD, "bundle");
+  const tsx = join(REPO, "node_modules", ".bin", "tsx");
+  const child = spawn(
+    tsx,
+    [join(HERE, "packBundle.ts"), "--slices", String(SLICES), "--rows", String(ROWS), "--columns", String(COLUMNS), "--out", out],
+    { cwd: REPO, stdio: ["ignore", "pipe", "inherit"] }
+  );
+  let stdout = "";
+  child.stdout.on("data", (d) => (stdout += String(d)));
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  if (code !== 0) throw new Error(`packBundle exited ${code}`);
+  console.log(`packed bundle: ${stdout.trim()}`);
+  return out;
+}
 
 async function main() {
   console.log(
     `bundling harness… (slices=${SLICES}, ${ROWS}x${COLUMNS}, latency=${LATENCY_MS}ms, ` +
-      `metadata build=${METADATA_BUILD_MS}ms)`
+      `metadata build=${METADATA_BUILD_MS}ms, link=${BANDWIDTH_MBPS || "∞"} Mbit/s)`
   );
   await bundle();
+  const bundleDir = PROFILES.some((p) => p.bundle) ? await packBundle() : null;
 
   const server = await startMockDicomweb({
+    bundleDir,
     slices: SLICES,
     rows: ROWS,
     columns: COLUMNS,
     latencyMs: LATENCY_MS,
     metadataBuildMs: METADATA_BUILD_MS,
+    bandwidthMbps: BANDWIDTH_MBPS,
   });
   console.log(`mock DICOMweb on ${server.origin}`);
 
@@ -187,6 +224,7 @@ async function main() {
           throw error;
         }
         chrome.kill("SIGKILL");
+        if (process.env.BENCH_VERBOSE) console.log(logs.join(""));
         if (payload.error) {
           console.error(`${profile.label} failed:\n${payload.error}`);
           throw new Error(`${profile.label} harness error`);
@@ -195,7 +233,8 @@ async function main() {
         console.log(
           `  run ${repeat} ${profile.label.padEnd(8)} ` +
             `engine ${String(payload.moduleMs).padStart(5)}ms  ` +
-            `open ${String(payload.openMs).padStart(5)}ms  ` +
+            `open ${String(payload.openMs).padStart(5)}ms${payload.openedOnPreview ? "*" : " "} ` +
+            `full ${String(payload.fullQualityMs).padStart(5)}ms  ` +
             `ready ${String(payload.seriesReadyMs).padStart(5)}ms  ` +
             `cold ${String(payload.coldMsPerSlice).padStart(5)}ms/slice  ` +
             `warm ${String(payload.warmFps).padStart(5)} fps  ` +
@@ -219,10 +258,13 @@ async function main() {
   for (const label of Object.keys(best)) {
     const r = best[label];
     console.log(
-      `${label.padEnd(9)} open ${r.openMs}ms · ready ${r.seriesReadyMs}ms · ` +
+      `${label.padEnd(9)} open ${r.openMs}ms${r.openedOnPreview ? " (preview)" : ""} · ` +
+        `full quality ${r.fullQualityMs}ms · ready ${r.seriesReadyMs}ms · ` +
         `cold ${r.coldMsPerSlice}ms/slice · warm ${r.warmFps} slices/s · ` +
         `heap ${r.jsHeapMb}MB · cache ${r.cacheMb}MB · workers ${r.workers} · ` +
-        `qido ${r.requests.qido} reqs / ${Math.round(r.requests.qidoBytes / 1024)}KB`
+        `qido ${r.requests.qido} reqs / ${Math.round(r.requests.qidoBytes / 1024)}KB · ` +
+        `frames ${r.requests.frames} reqs · bundle ${r.requests.bundleChunks} reqs · ` +
+        `${(r.requests.bytes / 1e6).toFixed(1)}MB`
     );
   }
 
@@ -240,6 +282,7 @@ async function main() {
           columns: COLUMNS,
           latencyMs: LATENCY_MS,
           metadataBuildMs: METADATA_BUILD_MS,
+          bandwidthMbps: BANDWIDTH_MBPS,
           scrollSlices: SCROLL_SLICES,
         },
         runs,
