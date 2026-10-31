@@ -284,3 +284,48 @@ pub async fn export_anonymized_dicom(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Needs fixtures from `desktop/scripts/make-fixtures.py`:
+    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test anonymize
+    #[test]
+    fn anonymize_scrubs_identity_and_remaps_uids_consistently() {
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
+            eprintln!("skipped: set RADLEARN_FIXTURES");
+            return;
+        };
+        let dir = std::path::Path::new(&root).join("ct-phantom");
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+        files.sort();
+        let options = AnonymizeOptions::default();
+        let mut uids = UidMap::new();
+        let mut out = Vec::new();
+        for path in files.iter().take(2) {
+            let original = open_file(path).unwrap();
+            let bytes = anonymize_to_bytes(path, &options, &mut uids).unwrap();
+            let tmp = std::env::temp_dir().join(format!("anon-{}.dcm", out.len()));
+            std::fs::write(&tmp, &bytes).unwrap();
+            let anon = open_file(&tmp).unwrap();
+            assert_eq!(get_str(&anon, tags::PATIENT_NAME).as_deref(), Some("ANONYMOUS"));
+            assert_eq!(get_str(&anon, tags::PATIENT_ID).as_deref(), Some("ANON"));
+            assert!(get_str(&anon, tags::PATIENT_BIRTH_DATE).unwrap_or_default().is_empty());
+            assert!(get_str(&anon, tags::INSTITUTION_NAME).is_none());
+            assert_eq!(get_str(&anon, tags::PATIENT_IDENTITY_REMOVED).as_deref(), Some("YES"));
+            assert!(anon.tags().all(|t| t.group() % 2 == 0), "private tags removed");
+            let study = get_str(&anon, tags::STUDY_INSTANCE_UID).unwrap();
+            assert_ne!(Some(study.clone()), get_str(&original, tags::STUDY_INSTANCE_UID));
+            assert!(study.starts_with("2.25."));
+            assert_eq!(anon.meta().media_storage_sop_instance_uid().trim_end_matches('\0'), get_str(&anon, tags::SOP_INSTANCE_UID).unwrap());
+            // Pixels untouched.
+            assert_eq!(
+                original.element(tags::PIXEL_DATA).unwrap().to_bytes().unwrap(),
+                anon.element(tags::PIXEL_DATA).unwrap().to_bytes().unwrap()
+            );
+            out.push((study, get_str(&anon, tags::SERIES_INSTANCE_UID).unwrap()));
+        }
+        assert_eq!(out[0], out[1], "same study/series map to the same new UIDs");
+    }
+}

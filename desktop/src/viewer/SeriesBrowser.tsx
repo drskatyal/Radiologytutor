@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/Badge";
 import type { ViewerSeries, ViewerStudy } from "../types";
 import { describeSeries, formatDicomDate, formatPersonName } from "../study";
 import { getEngine } from "./engine";
+import { ensureSuv } from "./suv";
 
 const THUMB = 112;
 
@@ -37,6 +38,10 @@ function Thumbnail({ series }: { series: ViewerSeries }) {
       if (cancelled || !canvasRef.current) return;
       try {
         const { core } = await getEngine();
+        // PET: register SUV scaling BEFORE the first decode. The cache is
+        // shared, and an unscaled thumbnail slice would later sit in the
+        // fused volume as one raw-count plane.
+        await ensureSuv(series);
         const canvas = canvasRef.current;
         if (!canvas) return;
         await core.utilities.loadImageToCanvas({

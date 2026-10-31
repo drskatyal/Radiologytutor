@@ -37,6 +37,7 @@ import { historyEntryFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { StartScreen } from "./components/StartScreen";
+import { ExportDialog } from "./components/ExportDialog";
 import { Toolbar } from "./components/Toolbar";
 import {
   CustomWindowDialog,
@@ -48,6 +49,7 @@ import {
 } from "./components/Dialogs";
 import { SeriesBrowser } from "./viewer/SeriesBrowser";
 import { StackViewport } from "./viewer/StackViewport";
+import { VolumeWorkspace, type VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
   clearAnnotations,
@@ -91,7 +93,8 @@ export default function App() {
   const [browserOpen, setBrowserOpen] = useState(true);
   const [distractionFree, setDistractionFree] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc">(null);
+  const [view, setView] = useState<"grid" | VolumeMode>("grid");
+  const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export">(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
   const [, setTick] = useState(0);
   const browserFileInput = useRef<HTMLInputElement>(null);
@@ -99,7 +102,14 @@ export default function App() {
   const openSeq = useRef(0);
   /** True until the reader changes what is on screen; lets the final scan re-hang the primary series. */
   const autoHung = useRef(true);
-  const bench = useRef<{ enabled: boolean; t0: number; firstPaint?: number; marks: Record<string, number> }>({
+  const bench = useRef<{
+    enabled: boolean;
+    t0: number;
+    firstPaint?: number;
+    marks: Record<string, number>;
+    pendingVolume?: () => Promise<void>;
+    volumeT0?: number;
+  }>({
     enabled: false,
     t0: 0,
     marks: {},
@@ -139,6 +149,17 @@ export default function App() {
   const activeSeriesUid = cells[activeCell] ?? null;
   const active = activeSeriesUid ? seriesByUid.get(activeSeriesUid) : undefined;
   const presets = useMemo(() => windowPresetsFor(active?.series.modality ?? ""), [active?.series.modality]);
+  const volumeSeries = active?.series.volumetric ? active.series : null;
+  /** PET/CT pair from the active study: the active CT (or the largest CT volume) and the largest PET volume. */
+  const fusionPair = useMemo(() => {
+    const study = active?.study;
+    if (!study) return null;
+    const largest = (m: string) =>
+      study.series.filter((s) => s.modality === m && s.volumetric).sort((a, b) => b.imageCount - a.imageCount)[0];
+    const ct = active.series.modality === "CT" && active.series.volumetric ? active.series : largest("CT");
+    const pt = active.series.modality === "PT" && active.series.volumetric ? active.series : largest("PT");
+    return ct && pt ? { ct, pt } : null;
+  }, [active]);
   const activeHandle = () => getHandle(cellKey(activeCell));
 
   // ───────────── open flow ─────────────
@@ -149,6 +170,7 @@ export default function App() {
     setLayout({ rows: 1, cols: 1 });
     setActiveCell(0);
     setMaximized(null);
+    setView("grid");
   }, []);
 
   const finishOpen = useCallback(
@@ -276,9 +298,17 @@ export default function App() {
               processUptimeMs: startup,
             });
           };
-          // Wait for the first pixel before reporting.
-          const waitPaint = () => (bench.current.firstPaint != null ? report() : window.setTimeout(waitPaint, 20));
-          waitPaint();
+          const benchView = await invoke<string | null>("bench_view").catch(() => null);
+          if (benchView === "mpr" || benchView === "3d" || benchView === "fusion") {
+            // Volume benchmark: switch view; the report fires when the volume is loaded.
+            bench.current.pendingVolume = report;
+            bench.current.volumeT0 = performance.now();
+            setView(benchView);
+          } else {
+            // Wait for the first pixel before reporting.
+            const waitPaint = () => (bench.current.firstPaint != null ? report() : window.setTimeout(waitPaint, 20));
+            waitPaint();
+          }
         }
       } catch (error) {
         if (seq !== openSeq.current) return;
@@ -483,6 +513,27 @@ export default function App() {
     else await document.documentElement.requestFullscreen();
   }, []);
 
+  const toggleView = useCallback(
+    (next: VolumeMode) => {
+      setView((current) => {
+        if (current === next) return "grid";
+        if (next === "fusion" ? !fusionPair : !volumeSeries) {
+          toast({
+            title: next === "fusion" ? "Fusion needs a CT and a PET volume" : "This series is not a volume",
+            description:
+              next === "fusion"
+                ? "Open a study with a PET series and a CT series covering the same patient."
+                : "MPR and 3D need evenly spaced, parallel slices (a CT or MR stack), not a scout, a multiframe clip or a single image.",
+            variant: "info",
+          });
+          return current;
+        }
+        return next;
+      });
+    },
+    [fusionPair, volumeSeries, toast]
+  );
+
   const runAction = useCallback(
     (action: ShortcutAction) => {
       const handle = activeHandle();
@@ -496,6 +547,10 @@ export default function App() {
         case "distractionFree":
           return setDistractionFree((v) => !v);
         case "escape":
+          if (view !== "grid") {
+            setView("grid");
+            return;
+          }
           if (distractionFree) setDistractionFree(false);
           if (maximized != null) setMaximized(null);
           if (isTauri) {
@@ -563,6 +618,15 @@ export default function App() {
           return setReferenceLines((v) => !v);
         case "toggleBrowser":
           return setBrowserOpen((v) => !v);
+        case "export":
+          if (view !== "grid") return;
+          return setDialog("export");
+        case "mpr":
+          return toggleView("mpr");
+        case "volume3d":
+          return toggleView("3d");
+        case "fusion":
+          return toggleView("fusion");
         case "undoAnnotation":
           return void getEngine().then(undoLastAnnotation);
         case "clearAnnotations":
@@ -572,7 +636,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen]
+    [studies.length, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
   );
 
   useEffect(() => {
@@ -684,6 +748,16 @@ export default function App() {
           onFullscreen={() => void toggleFullscreen()}
           onHelp={() => setDialog("help")}
           onSettings={() => setDialog("settings")}
+          volumeView={view !== "grid"}
+          onExport={view === "grid" ? () => setDialog("export") : undefined}
+          advanced={{
+            mprAvailable: !!volumeSeries,
+            fusionAvailable: !!fusionPair,
+            view,
+            onMpr: () => toggleView("mpr"),
+            onVolume: () => toggleView("3d"),
+            onFusion: () => toggleView("fusion"),
+          }}
         />
       )}
 
@@ -701,6 +775,24 @@ export default function App() {
                 />
               </aside>
             )}
+            {view !== "grid" && (view === "fusion" ? fusionPair : volumeSeries) ? (
+              <VolumeWorkspace
+                key={view}
+                mode={view}
+                series={view === "fusion" ? fusionPair!.ct : volumeSeries!}
+                petSeries={view === "fusion" ? fusionPair!.pt : null}
+                study={active?.study ?? null}
+                showOverlay={overlay}
+                onExit={() => setView("grid")}
+                onVolumeReady={(t) => {
+                  bench.current.marks.volumeLoadedMs = t.loadedMs;
+                  bench.current.marks.volumeBuildMs = t.shellMs;
+                  const pending = bench.current.pendingVolume;
+                  bench.current.pendingVolume = undefined;
+                  void pending?.();
+                }}
+              />
+            ) : (
             <section
               aria-label="Viewports"
               className="grid min-w-0 flex-1 gap-px bg-black"
@@ -734,6 +826,7 @@ export default function App() {
                 );
               })}
             </section>
+            )}
           </>
         ) : (
           <StartScreen
@@ -838,6 +931,13 @@ export default function App() {
           const paths = await pickFolder("Choose the disc or USB drive");
           if (paths?.length) void openPaths(paths, "disc");
         }}
+      />
+      <ExportDialog
+        open={dialog === "export"}
+        onClose={() => setDialog(null)}
+        handle={handle}
+        series={active?.series ?? null}
+        study={active?.study ?? null}
       />
       <SettingsDialog
         open={dialog === "settings"}

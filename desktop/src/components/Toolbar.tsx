@@ -89,6 +89,8 @@ export interface ToolbarProps {
     onFusion: () => void;
   };
   onExport?: () => void;
+  /** MPR / 3D / fusion on screen: hide the stack-only controls. */
+  volumeView?: boolean;
 }
 
 const mod = isMac() ? "⌘" : "Ctrl+";
@@ -169,6 +171,8 @@ export function Toolbar(props: ToolbarProps) {
       </MenuRoot>
       <Divider />
 
+{!props.volumeView && (
+        <>
       <Tool label="Browse slices" shortcut="B" active={leftTool === "StackScroll"} onClick={() => onTool("StackScroll")}>
         <MousePointer2 />
       </Tool>
@@ -317,6 +321,9 @@ export function Toolbar(props: ToolbarProps) {
           ))}
         </select>
       </label>
+
+        </>
+      )}
 
       {props.advanced && (
         <>

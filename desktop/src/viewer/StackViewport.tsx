@@ -15,6 +15,7 @@ import { addViewportToGroup, getEngine, removeViewportFromGroups, STACK_GROUP, t
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "./handles";
 import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
 import { voiRangeOf, wwwcOf } from "./presets";
+import { ensureSuv } from "./suv";
 
 export interface StackViewportProps {
   cellKey: string;
@@ -219,7 +220,12 @@ function StackViewportImpl({
     }
     const voi = sameSeries ? vp.getProperties?.().voiRange : null;
     const camera = sameSeries ? vp.getCamera?.() : null;
-    vp.setStack(ids, index)
+    let suv: "suv" | "raw" = "raw";
+    ensureSuv(series)
+      .then((state) => {
+        suv = state;
+        return vp.setStack(ids, index);
+      })
       .then(() => {
         if (loadedRef.current?.ids !== ids) return;
         if (sameSeries) {
@@ -227,7 +233,10 @@ function StackViewportImpl({
           if (camera) vp.setCamera(camera);
         } else {
           const h = series.headers[index];
-          if (h?.windowWidth && h.windowWidth > 1 && h.windowCenter != null) {
+          if (series.modality === "PT") {
+            // Header windows are in raw counts; after SUV scaling they are meaningless.
+            if (suv === "suv") vp.setProperties({ voiRange: { lower: 0, upper: 5 } });
+          } else if (h?.windowWidth && h.windowWidth > 1 && h.windowCenter != null) {
             vp.setProperties({ voiRange: voiRangeOf(h.windowWidth, h.windowCenter) });
           }
           onFirstPaint?.(performance.now() - started);
@@ -361,6 +370,29 @@ function StackViewportImpl({
         }
       },
       cine: () => cineRef.current,
+      renderFrame(i) {
+        const vp = viewport();
+        const engine = engineRef.current;
+        if (!vp || !engine) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          const event = engine.core.Enums.Events.IMAGE_RENDERED;
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            element.removeEventListener(event, onRendered);
+            resolve();
+          };
+          const onRendered = () => requestAnimationFrame(finish);
+          element.addEventListener(event, onRendered);
+          window.setTimeout(finish, 3000);
+          if ((vp.getCurrentImageIdIndex?.() ?? -1) === i) {
+            vp.render();
+          } else {
+            void vp.setImageIdIndex(i);
+          }
+        });
+      },
       readout: () => readoutRef.current,
     };
     return registerHandle(cellKey, handle);

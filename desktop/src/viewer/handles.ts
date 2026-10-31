@@ -29,6 +29,8 @@ export interface ViewportHandle {
   setCineFps(fps: number): void;
   cine(): { playing: boolean; fps: number };
   readout(): ViewportReadout | null;
+  /** Show image `i` and resolve once it has been drawn (export, video). */
+  renderFrame(i: number): Promise<void>;
 }
 
 const handles = new Map<string, ViewportHandle>();

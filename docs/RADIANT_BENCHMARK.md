@@ -45,7 +45,7 @@ slower than on a laptop with a real GPU and WebView2. The table is honest about
 this setup. It is not a like-for-like comparison with §1.1.
 
 **How to measure on the HP.** To compare on the same laptop, run
-`desktop/scripts/bench.mjs` there (§1.5). That is the next measurement owed.
+`desktop/scripts/bench.mjs` there (§1.6). That is the next measurement owed.
 
 **Release build.** `npx tauri build --no-bundle`, LTO, `opt-level=3`.
 
@@ -128,7 +128,34 @@ number: same files, same box, and it does not depend on GPU work.
   unaffected, which was verified with all 18 fixture sources. An explicit
   `WEBKIT_DISABLE_DMABUF_RENDERER` set by the user still wins.
 
-### 1.5 Measure it on the HP (owed)
+### 1.5 MPR, 3D and fusion build times (M2)
+
+Same box, release build. The timer runs from the MPR, 3D or fusion click to
+every slice loaded and every pane drawn (`RADLEARN_BENCH_VIEW`).
+
+| view | study | ready in |
+|---|---|---|
+| MPR (3 planes + 3D) | CT, 300 × 512² | **2.0 s** |
+| 3D volume rendering | CT, 300 × 512² | **1.9 s** |
+| PET/CT fusion (3 fused planes + PET MIP) | CT 300 + PET 75 | **2.5 s** |
+| MPR | CT, 1,200 × 512² (600 MB) | **8.3 s** |
+
+RadiAnt's published claim, for reference: a coronal MPR from more than 2,000
+axial CT slices in about 3 s on a modern Core i7. That is a vendor claim, not
+our measurement.
+
+**What we fixed on the way.** Attaching a streaming volume to the viewports
+before it was full made every decoded slice re-render every pane, the 3D ray
+cast included. On software GL that took **67 s** for 300 slices. Building the
+volume first and then attaching it takes **2.0 s**. A progress chip shows the
+percentage while it builds.
+
+**The next lever for 1,000+ slice studies.** Assemble the volume in Rust:
+read and decode in parallel, then hand the renderer one buffer through a raw
+IPC body, instead of 1,200 protocol requests and worker decodes. That is M3
+work if the HP numbers show a gap.
+
+### 1.6 Measure it on the HP (owed)
 
 ```powershell
 npm ci; npm ci --prefix desktop
@@ -186,21 +213,21 @@ the app's group; add them all up.
 | **Side-by-side compare** | ✅ | ✅ any series in any cell, across studies |
 | **Synchronised scrolling** | ✅ automatic within a plane | ✅ F5, position-based, works across series and studies sharing a frame of reference |
 | **Reference lines** | ✅ | ✅ Ctrl+F12 |
-| **3D cursor** | ✅ | ⏳ M2, through MPR crosshairs |
+| **3D cursor** | ✅ | ✅ MPR crosshairs: click any plane and the others jump to that point |
 | **W/L, presets, custom WW/WL** | ✅ Ctrl+F11 | ✅ right-drag, 1–9 modality presets, Ctrl+F11 dialog, invert |
 | **Zoom / pan / rotate / flip** | ✅ | ✅ including RadiAnt's Ctrl+0–4 zoom levels and Ctrl+arrow pan |
 | **Length, angle, Cobb** | ✅ | ✅ |
 | **Ellipse ROI with stats** | ✅ mean/min/max/area/SD | ✅ same stats, in HU |
 | **Rectangle / circle / freehand ROI** | polygon ✅, rectangle ? | ✅ rectangle, circle, freehand |
 | **Probe, arrow, bidirectional, magnifier** | arrow ✅, pen ✅ | ✅ all four |
-| **MPR (orthogonal / oblique)** | ✅ | ⏳ M2 |
-| **MIP / MinIP / average slab** | ✅ | ⏳ M2 |
-| **3D volume rendering** | ✅ | ⏳ M2 |
-| **PET-CT fusion with SUV** | ✅ | ⏳ M2 |
+| **MPR (orthogonal / oblique)** | ✅ | ✅ axial, sagittal and coronal with linked crosshairs. Drag a line for an oblique plane. Colour-coded planes |
+| **MIP / MinIP / average slab** | ✅ | ✅ 1–60 mm slab, with slab bounds drawn on the crosshairs |
+| **3D volume rendering** | ✅ | ✅ 11 presets (CT bone, chest contrast, soft tissue, lung, AAA, cardiac, MIP, muscle, MR default, angio and MIP). Opens like a radiograph; trackball rotate |
+| **PET-CT fusion with SUV** | ✅ | ✅ SUVbw computed from the dose, timing and weight tags. Three fused planes plus a coronal PET MIP; colormap, opacity and SUV window controls. Falls back to raw values, labelled as such, when the tags are missing |
 | **Time-intensity curves** | ✅ | ✖ not planned |
-| **Export JPEG / PNG** | JPEG, BMP | ⏳ M2: JPEG, PNG |
-| **Export video** | WMV, MP4 | ⏳ M2: MP4 (WebCodecs) or WebM |
-| **Export DICOM, anonymised** | ✅ (anonymisation is a paid add-on) | ⏳ M2: free, PS3.15 basic profile scrub, consistent UID remap. The Rust side is already built |
+| **Export JPEG / PNG** | JPEG, BMP | ✅ PNG and JPEG for one image or a whole series. Annotations optional; text overlay anonymous by default |
+| **Export video** | WMV, MP4 | ✅ MP4 (H.264 via WebCodecs) where the OS provides an encoder, otherwise Motion-JPEG AVI. Both faster than real time |
+| **Export DICOM, anonymised** | ✅ (anonymisation is a paid add-on) | ✅ **free**: PS3.15 basic-profile header scrub, private tags removed, consistent UID remap, compressed pixel data kept byte-for-byte. Verified on all 10 transfer syntaxes and re-opened |
 | **Printing** | ✅ (2025.1) | ✖ not planned |
 | **Keyboard shortcuts** | ✅ | ✅ RadiAnt's documented keys plus a full sheet (F1) |
 | **Teaching overlays / RadLearn hand-off** | ✖ | ⏳ M3: sign in and send a study, anonymised on this machine first |
@@ -235,19 +262,15 @@ the app's group; add them all up.
 
 ## 4. Gaps, in the order we close them
 
-1. **M2:**
-   - MPR with linked crosshairs, MIP/MinIP slab, 3D volume rendering, and
-     PET/CT fusion with SUV;
-   - export to PNG/JPEG/MP4 and anonymised DICOM;
-   - a 3D cursor through the crosshairs.
-
-   These are the user-named gaps.
+1. ~~**M2:** MPR with linked crosshairs, MIP/MinIP slab, 3D VR, PET/CT
+   fusion with SUV, export to PNG/JPEG/MP4/AVI and anonymised DICOM.~~
+   **Done.** See §1.5 for timings.
 2. **M3:**
    - installers and signed auto-update from CI;
    - a searchable local archive;
    - DICOMweb query/retrieve, with DIMSE C-FIND/C-MOVE after;
    - RadLearn sign-in and send.
-3. **Re-measure on the HP** (§1.5). If cold start is still over 0.5 s there,
+3. **Re-measure on the HP** (§1.6). If cold start is still over 0.5 s there,
    the remaining levers are:
    - cut the startup bundle further: framer-motion and Radix load lazily
      behind the first dialog;

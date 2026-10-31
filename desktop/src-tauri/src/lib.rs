@@ -11,6 +11,7 @@
 
 mod anonymize;
 mod header;
+mod pet;
 mod scan;
 mod sources;
 mod store;
@@ -108,6 +109,31 @@ async fn scan_sources(
     .map_err(|e| e.to_string())?
 }
 
+/// SUV inputs for PET files (by protocol id), in the order asked.
+#[tauri::command]
+async fn pet_metadata(state: tauri::State<'_, AppState>, file_ids: Vec<u32>) -> Result<Vec<Option<pet::PetMeta>>, String> {
+    let paths = paths_for(&state, &file_ids);
+    tauri::async_runtime::spawn_blocking(move || {
+        paths.iter().map(|p| p.as_ref().and_then(|p| pet::read_pet(p))).collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Absolute paths for protocol ids — what the anonymised export copies.
+#[tauri::command]
+fn paths_for_ids(state: tauri::State<'_, AppState>, file_ids: Vec<u32>) -> Vec<Option<String>> {
+    paths_for(&state, &file_ids)
+        .into_iter()
+        .map(|p| p.map(|p| p.to_string_lossy().into_owned()))
+        .collect()
+}
+
+fn paths_for(state: &AppState, ids: &[u32]) -> Vec<Option<PathBuf>> {
+    let reg = state.registry.lock();
+    ids.iter().map(|id| reg.paths.get(*id as usize).cloned()).collect()
+}
+
 #[tauri::command]
 fn cancel_scan(state: tauri::State<'_, AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
@@ -183,6 +209,12 @@ static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::n
 #[tauri::command]
 fn startup_elapsed_ms() -> f64 {
     STARTED.get().map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0)
+}
+
+/// `RADLEARN_BENCH_VIEW=mpr|3d|fusion`: switch to that view once the study is open.
+#[tauri::command]
+fn bench_view() -> Option<String> {
+    std::env::var("RADLEARN_BENCH_VIEW").ok()
 }
 
 #[tauri::command]
@@ -263,6 +295,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_sources,
             cancel_scan,
+            pet_metadata,
+            paths_for_ids,
             list_media,
             take_launch_paths,
             write_export,
@@ -270,6 +304,7 @@ pub fn run() {
             clear_cache,
             bench_report,
             bench_enabled,
+            bench_view,
             startup_elapsed_ms,
             store::history_list,
             store::history_record,
