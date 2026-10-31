@@ -45,8 +45,13 @@ test("set_series keeps the sidepane argument names on Live and the text tutor", 
   assert.deepEqual(SET_SERIES_PARAMETERS.required, ["seriesInstanceUID"]);
   const names = LIVE_PACK_TOOLS.map((item) => item.name).sort();
   assert.deepEqual(names, [
+    "clear_overlay",
     "draw_annotation",
+    "draw_arrow",
+    "draw_circle",
+    "jump_to_key_view",
     "next_finding",
+    "place_card",
     "point_to",
     "scroll_to",
     "set_series",

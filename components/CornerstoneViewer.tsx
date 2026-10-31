@@ -146,6 +146,7 @@ import {
   toolGroupIdFor,
   type ViewPresentation,
 } from "../lib/compareViewport";
+import type { SketchFrame } from "../lib/sketchProjection";
 import {
   normalizeMeasurements,
   statsFromAnnotation,
@@ -316,6 +317,11 @@ export interface CornerstoneControls {
    * page, the sidebar, or another panel. Null when the canvas cannot stream.
    */
   captureViewportStream?: () => MediaStream | null;
+  /**
+   * Image-fraction → canvas pixels for the sketch layer. Fires on camera,
+   * slice, and resize. Null while MPR owns the pane.
+   */
+  subscribeView?: (listener: (frame: SketchFrame | null) => void) => () => void;
 }
 
 type CachedSlice = {
@@ -785,6 +791,8 @@ export default function CornerstoneViewer({
     let detachQuality: () => void = () => {};
     let resizeObserver: ResizeObserver | null = null;
     let restoreRaf = 0;
+    const viewListeners = new Set<(frame: SketchFrame | null) => void>();
+    let viewRaf = 0;
     const viewportId = viewportIdFor(instanceId);
     const toolGroupId = toolGroupIdFor(instanceId);
     // One engine for every pane. A second RenderingEngine allocates another
@@ -792,6 +800,19 @@ export default function CornerstoneViewer({
     // the canvas clears to black when the split closes.
     const renderingEngineId = SHARED_RENDERING_ENGINE_ID;
     const loadAbort = { current: new AbortController() };
+    // Cornerstone rejects in-flight decodes when strict mode tears the
+    // viewport down, and a frame requested before its metadata is registered
+    // throws inside the loader pool. Those are not teaching failures. Swallow
+    // them so the dev overlay does not sit on the image.
+    const onLoaderRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason as { name?: string; message?: string } | undefined;
+      const message = String(reason?.message ?? "");
+      if (reason?.name === "AbortError" || message.includes("samplesPerPixel")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("unhandledrejection", onLoaderRejection, true);
     const seriesUidOf = (src: ViewerSource) =>
       src.kind === "wadors" ? src.SeriesInstanceUID : "wadouri";
 
@@ -1482,12 +1503,94 @@ export default function CornerstoneViewer({
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
         const THROTTLE = 50;
+
+        const readProjector = (): SketchFrame | null => {
+          if (mprSessionRef.current) return null;
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host) return null;
+          const canvas = host.querySelector("canvas");
+          const width = canvas?.clientWidth || host.clientWidth || 0;
+          const height = canvas?.clientHeight || host.clientHeight || 0;
+          if (width < 2 || height < 2) return null;
+          let sliceIndex = 0;
+          try {
+            sliceIndex = vp.getCurrentImageIdIndex();
+          } catch {
+            sliceIndex = 0;
+          }
+          const imageData = (
+            vp as DrivableViewport & {
+              getImageData?: () => {
+                dimensions?: number[];
+                imageData?: {
+                  indexToWorld?: (ijk: number[], out?: number[]) => number[] | undefined;
+                  worldToIndex?: (world: number[], out?: number[]) => number[] | undefined;
+                };
+              };
+            }
+          ).getImageData?.();
+          const dims = imageData?.dimensions;
+          const vtk = imageData?.imageData;
+          const asPoint = (value: unknown): number[] | null => {
+            if (!value || typeof value !== "object") return null;
+            const arr = Array.from(value as ArrayLike<number>);
+            if (arr.length < 2 || arr.some((n) => !Number.isFinite(n))) return null;
+            return arr;
+          };
+          const project = (xPct: number, yPct: number) => {
+            if (!dims || dims[0] < 2 || dims[1] < 2 || typeof vtk?.indexToWorld !== "function" || typeof vp.worldToCanvas !== "function") {
+              return null;
+            }
+            try {
+              const out = [0, 0, 0];
+              const returned = vtk.indexToWorld([xPct * (dims[0] - 1), yPct * (dims[1] - 1), 0], out);
+              const world = asPoint(returned) ?? asPoint(out);
+              if (!world || world.length < 3) return null;
+              const [cx, cy] = vp.worldToCanvas(world as [number, number, number]);
+              if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+              return { x: cx, y: cy };
+            } catch {
+              return null;
+            }
+          };
+          const unproject = (x: number, y: number) => {
+            if (!dims || dims[0] < 2 || dims[1] < 2 || typeof vtk?.worldToIndex !== "function" || typeof vp.canvasToWorld !== "function") {
+              return null;
+            }
+            try {
+              const world = vp.canvasToWorld([x, y]);
+              const out = [0, 0, 0];
+              const returned = vtk.worldToIndex(world, out);
+              const ijk = asPoint(returned) ?? asPoint(out);
+              if (!ijk) return null;
+              const x_pct = ijk[0]! / (dims[0] - 1);
+              const y_pct = ijk[1]! / (dims[1] - 1);
+              if (!Number.isFinite(x_pct) || !Number.isFinite(y_pct)) return null;
+              return { x_pct, y_pct };
+            } catch {
+              return null;
+            }
+          };
+          return { sliceIndex, width, height, project, unproject };
+        };
+        const publishView = () => {
+          if (viewRaf) return;
+          viewRaf = requestAnimationFrame(() => {
+            viewRaf = 0;
+            if (viewListeners.size === 0) return;
+            const frame = readProjector();
+            for (const listener of viewListeners) listener(frame);
+          });
+        };
         // While a stack is being put back, the image's own window fires
         // VOI_MODIFIED. That is not a user drag and must not replace the
         // window the user set on the MPR planes.
         let pinLocked = false;
 
         const emitSlice = () => {
+          // Overlays (tutor ink, laser) follow the slice, swap or not.
+          publishView();
           // The bridge swapped a preview for its full frame in place. Same
           // slice, same camera — not a navigation, so nothing to record.
           if (isQualitySwap()) return;
@@ -1518,6 +1621,7 @@ export default function CornerstoneViewer({
           if (v) emit({ type: "voi", ww: v.ww, wc: v.wc });
         };
         const emitCamera = () => {
+          publishView();
           const vp = viewportRef.current;
           if (!vp) return;
           rememberPresentation();
@@ -1965,7 +2069,11 @@ export default function CornerstoneViewer({
           cancelTweenRef.current();
           // Drop the previous series' in-flight metadata. Neighbor prefetch
           // stays off until this series' full imageId list is registered.
-          loadAbort.current.abort();
+          try {
+            loadAbort.current.abort();
+          } catch (err) {
+            if ((err as Error)?.name !== "AbortError") throw err;
+          }
           const controller = new AbortController();
           loadAbort.current = controller;
           stackIdsRef.current = [];
@@ -2473,7 +2581,12 @@ export default function CornerstoneViewer({
                       )
                     );
             if (vp && idx !== vp.getCurrentImageIdIndex()) {
-              await vp.setImageIdIndex(idx);
+              try {
+                await vp.setImageIdIndex(idx);
+              } catch (err) {
+                if ((err as Error)?.name === "AbortError") return;
+                throw err;
+              }
               // The new image brings its DICOM window. The pin (this state's
               // window, or the teach window already on screen) has to win
               // before the camera tween samples VOI.
@@ -2681,6 +2794,7 @@ export default function CornerstoneViewer({
               lastRestoreW = width;
               lastRestoreH = height;
               rememberPresentation();
+              publishView();
             };
             if (!plan.keepCamera && plan.sliceIndex !== vp.getCurrentImageIdIndex()) {
               Promise.resolve(vp.setImageIdIndex(plan.sliceIndex)).finally(paint);
@@ -2755,7 +2869,14 @@ export default function CornerstoneViewer({
             ),
           captureViewportStream: () =>
             openViewportStream(mprSessionRef.current ? axialRef.current : elementRef.current),
+          subscribeView: (listener) => {
+            viewListeners.add(listener);
+            const frame = readProjector();
+            listener(frame);
+            return () => viewListeners.delete(listener);
+          },
         };
+        publishView();
         if (controls) controls.current = handle;
         onReady?.(handle);
         // A view link names a window. Apply it once the stack is drivable;
@@ -2782,7 +2903,10 @@ export default function CornerstoneViewer({
 
     return () => {
       disposed = true;
-      loadAbort.current.abort();
+      window.removeEventListener("unhandledrejection", onLoaderRejection, true);
+      // abort() throws into this cleanup under React strict mode and Next
+      // turns that into an error toast on top of the study. The load checks
+      // `disposed` and drops the result.
       cancelTweenRef.current();
       mprSessionRef.current?.destroy();
       mprSessionRef.current = null;
@@ -2791,6 +2915,8 @@ export default function CornerstoneViewer({
       window.clearTimeout(readoutTimerRef.current);
       window.clearTimeout(prefetchTimer);
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
+      if (viewRaf) cancelAnimationFrame(viewRaf);
+      viewListeners.clear();
       resizeObserver?.disconnect();
       detachListeners();
       detachQuality();

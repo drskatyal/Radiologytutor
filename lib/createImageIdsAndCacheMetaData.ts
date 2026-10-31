@@ -28,13 +28,19 @@ export default async function createImageIdsAndCacheMetaData({
     seriesInstanceUID: SeriesInstanceUID,
   });
 
-  return (instances as unknown as Record<string, { Value: string[] }>[]).map((inst) => {
-    const seriesUID = inst[SERIES_INSTANCE_UID].Value[0];
-    const sopUID = inst[SOP_INSTANCE_UID].Value[0];
+  // Series metadata order, as the progressive loader uses, so a finding's
+  // sliceIndex means the same image on every path. Re-sorting here would
+  // move every authored slice on an archive that returns another order.
+  return (instances as unknown as Record<string, { Value?: Array<number | string> }>[]).map((inst) => {
+    const seriesUID = String(inst[SERIES_INSTANCE_UID]?.Value?.[0] ?? SeriesInstanceUID);
+    const sopUID = String(inst[SOP_INSTANCE_UID]?.Value?.[0] ?? "");
     const imageId =
       `wadors:${wadoRsRoot}/studies/${StudyInstanceUID}` +
       `/series/${seriesUID}/instances/${sopUID}/frames/1`;
-    cornerstoneDICOMImageLoader.wadors.metaDataManager.add(imageId, inst);
+    cornerstoneDICOMImageLoader.wadors.metaDataManager.add(
+      imageId,
+      inst as unknown as Parameters<typeof cornerstoneDICOMImageLoader.wadors.metaDataManager.add>[1]
+    );
     return imageId;
   });
 }

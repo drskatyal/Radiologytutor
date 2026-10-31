@@ -17,6 +17,9 @@ const iconButtonVariants = cva(
         primary:
           "bg-accent text-accent-foreground shadow-sm hover:brightness-[1.07]",
         danger: "text-secondary hover:bg-danger/15 hover:text-danger",
+        // On an imaging surface (pure black).
+        imaging:
+          "border border-white/15 bg-white/[0.06] text-white backdrop-blur-md hover:bg-white/[0.12] focus-visible:ring-white/70 focus-visible:ring-offset-black",
       },
       size: {
         sm: "h-7 w-7 [&_svg]:h-3.5 [&_svg]:w-3.5",
