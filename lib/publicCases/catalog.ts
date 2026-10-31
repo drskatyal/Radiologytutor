@@ -108,20 +108,37 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
       {
         label: "Peripheral nodule survey",
         description:
-          "On lung windows scrutinise the periphery for round opacities. Compare size on adjacent slices to confirm a true nodule versus vessel on end.",
+          "On lung windows scrutinise the periphery for round opacities. In the left upper lobe apex a small solid nodule is present on one slice and gone on the slices above and below, so it is a nodule, not a vessel on end.",
         teachingPoints: [
-          "Scroll through the nodule — if it disappears it may be a vessel.",
+          "Scroll through the nodule — if it runs on as a tube it is a vessel; a nodule appears and disappears.",
           "Note solid vs subsolid density before measuring.",
         ],
+        landmark: "left lung apex",
         reportGold:
           "Periphery checked on lung windows for round opacities. A true nodule is distinguished from a vessel on end on adjacent slices. Density is noted as solid or subsolid before measuring.",
         reportMustMention: ["round opacities", "nodule", "vessel", "solid", "subsolid"],
         state: " ",
-        marker: { x_pct: 0.68, y_pct: 0.55, shape: "circle" },
+        // A real lesion, not a placeholder position: LIDC-IDRI DICOM-SEG
+        // nodule 2 (three readers), about 5 mm, solid, left upper lobe apex.
+        // On the 65-image stack (cranial first) it is index 6. Template slices
+        // are scaled by the deepest finding (42 → 64), so 4 lands on 6.
+        marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+        measurements: [
+          {
+            id: "m_lidc_n2",
+            kind: "ellipse",
+            sliceIndex: 6,
+            handles: [
+              [0.6751, 0.4873],
+              [0.6849, 0.501],
+            ],
+            label: "LIDC reader extent",
+          },
+        ],
         order: 2,
         studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
         seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
-        sliceIndex: sliceAt(0.5, 65),
+        sliceIndex: sliceAt(0.0625, 65),
         windowWidth: 1500,
         windowCenter: -600,
       },

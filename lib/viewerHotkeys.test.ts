@@ -2,6 +2,8 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   TOOL_DIGITS,
+  VIEWER_SHORTCUT_GROUPS,
+  shortcutForTool,
   VIEWER_HOTKEY_HINTS,
   isTextTarget,
   resolveViewerHotkey,
@@ -86,13 +88,11 @@ test("a preset shortcut never doubles as a tool shortcut", () => {
 });
 
 test("unbound keys pass through", () => {
-  for (const key of ["a", "z", "Enter", "Tab", "Escape", "F5", "1", "ArrowDown"]) {
-    const action = resolveViewerHotkey({ key });
-    if (["1", "ArrowDown"].includes(key)) {
-      assert.notEqual(action, null, key);
-    } else if (["a", "z", "Enter", "Tab", "Escape", "F5"].includes(key)) {
-      assert.equal(action, null, key);
-    }
+  for (const key of ["q", "y", "Enter", "Tab", "Escape", "F5"]) {
+    assert.equal(resolveViewerHotkey({ key }), null, key);
+  }
+  for (const key of ["1", "ArrowDown", "a", "z"]) {
+    assert.notEqual(resolveViewerHotkey({ key }), null, key);
   }
 });
 
@@ -114,5 +114,58 @@ test("every hint names a key the resolver actually answers", () => {
   for (const hint of VIEWER_HOTKEY_HINTS) {
     assert.ok(hint.keys.trim().length > 0, "a hint without a key");
     assert.ok(hint.does.trim().length > 0, `"${hint.keys}" without a description`);
+  }
+});
+
+test("letter tools follow the PACS mnemonic", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "w" }), { type: "tool", tool: "WindowLevel" });
+  assert.deepEqual(resolveViewerHotkey({ key: "S" }), { type: "tool", tool: "StackScroll" });
+  assert.deepEqual(resolveViewerHotkey({ key: "z" }), { type: "tool", tool: "Zoom" });
+  assert.deepEqual(resolveViewerHotkey({ key: "m" }), { type: "tool", tool: "Pan" });
+  assert.deepEqual(resolveViewerHotkey({ key: "l" }), { type: "tool", tool: "Length" });
+  assert.deepEqual(resolveViewerHotkey({ key: "a" }), { type: "tool", tool: "Angle" });
+  assert.deepEqual(resolveViewerHotkey({ key: "e" }), { type: "tool", tool: "EllipticalROI" });
+  assert.deepEqual(resolveViewerHotkey({ key: "b" }), { type: "tool", tool: "RectangleROI" });
+});
+
+test("overlay, MPR, layout, help and cine rate", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "o" }), { type: "overlay" });
+  assert.deepEqual(resolveViewerHotkey({ key: "x" }), { type: "mpr" });
+  assert.deepEqual(resolveViewerHotkey({ key: "g" }), { type: "layout" });
+  assert.deepEqual(resolveViewerHotkey({ key: "h" }), { type: "help" });
+  assert.deepEqual(resolveViewerHotkey({ key: "," }), { type: "cineFps", delta: -1 });
+  assert.deepEqual(resolveViewerHotkey({ key: "." }), { type: "cineFps", delta: 1 });
+});
+
+test("? is help only where the viewer owns it", () => {
+  assert.equal(resolveViewerHotkey({ key: "?" }), null);
+  assert.deepEqual(resolveViewerHotkey({ key: "?" }, 0, { questionMarkHelp: true }), {
+    type: "help",
+  });
+});
+
+test("Shift+0 is the series default window", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "0", shiftKey: true }), {
+    type: "preset",
+    ordinal: 0,
+  });
+  assert.deepEqual(resolveViewerHotkey({ key: ")" }), { type: "preset", ordinal: 0 });
+});
+
+test("tooltips and the help sheet read the same bindings", () => {
+  assert.equal(shortcutForTool("WindowLevel"), "2 · W");
+  assert.equal(shortcutForTool("Angle"), "A");
+  assert.equal(shortcutForTool("Probe"), null);
+  for (const group of VIEWER_SHORTCUT_GROUPS) {
+    for (const row of group.rows) {
+      for (const key of row.keys) {
+        if (key.length !== 1 || !/[A-Z]/.test(key)) continue;
+        assert.notEqual(
+          resolveViewerHotkey({ key: key.toLowerCase() }),
+          null,
+          `help lists ${key} but the resolver ignores it`
+        );
+      }
+    }
   }
 });

@@ -2,6 +2,7 @@
 
 import { Modal, Kbd } from "@/components/ui";
 import { SERIES_RAIL_TOGGLE_KEY } from "@/lib/seriesRailPreference";
+import { VIEWER_SHORTCUT_GROUPS } from "@/lib/viewerHotkeys";
 
 // Session keys are global. Viewport keys are scoped to the image — click or
 // tab into it first — so they cannot fight the session's bindings
@@ -26,17 +27,10 @@ const ROWS: { keys: string[]; does: string }[] = [
 ];
 
 /** Keys the focused viewport answers. Click or tab into the image first. */
-const VIEWPORT_ROWS: { keys: string[]; does: string }[] = [
-  { keys: ["1", "2", "3", "4", "5"], does: "Scroll · Window/Level · Zoom · Pan · Length" },
-  { keys: ["↑", "↓"], does: "Previous / next slice — hold Shift to jump" },
-  { keys: ["PgUp", "PgDn"], does: "Jump a twentieth of the series" },
-  { keys: ["Home", "End"], does: "First / last slice" },
-  { keys: ["+", "−"], does: "Zoom in / out" },
-  { keys: ["I"], does: "Invert greyscale" },
-  { keys: ["0"], does: "Reset zoom, pan and window" },
-  { keys: ["K"], does: "Play or pause cine" },
-  { keys: ["Shift", "1…9"], does: "Window preset" },
-];
+// One source with the viewer's own sheet, so the two cannot drift.
+const VIEWPORT_ROWS: { keys: string[]; does: string }[] = VIEWER_SHORTCUT_GROUPS.flatMap(
+  (group) => group.rows
+).filter((row) => !row.keys.includes("G"));
 
 export function HotkeysOverlay({
   open,

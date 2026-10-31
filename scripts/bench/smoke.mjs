@@ -280,6 +280,24 @@ async function main() {
       ready.readout
     );
 
+    // Open timings from lib/viewerTiming.ts (User Timing measures). On a
+    // converted series (lib/dicomCdn) first-preview < full-quality; on
+    // DICOMweb there is no preview and full quality is the first pixel.
+    // Waits up to 15 s for the full-quality swap.
+    const timings = await page.evaluate(`
+      const read = () => Object.fromEntries(
+        performance.getEntriesByType("measure")
+          .filter((m) => m.name.startsWith("radlearn:navigation-to-"))
+          .map((m) => [m.name.replace("radlearn:navigation-to-", ""), Math.round(m.duration)])
+      );
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && read()["full-quality"] == null) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return read();
+    `);
+    console.log(`TIMING  ${JSON.stringify(timings)}`);
+
     const scrollbar = await page.evaluate(`
       const el = document.querySelector('[role="slider"][aria-label="Slice"]');
       if (!el) return null;

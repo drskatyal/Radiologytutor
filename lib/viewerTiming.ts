@@ -1,6 +1,8 @@
 // Console + User Timing marks for viewer open.
 //
 // navigation → first pixel: one frame has been drawn.
+// navigation → first preview: an 8-bit preview is on screen (converted bundle only).
+// navigation → full quality: the slice on screen is the real 16-bit frame.
 // navigation → series ready: the active stack is scrollable (imageIds set).
 // Read them in DevTools → Performance, or in the console during a ~1000-image load.
 
@@ -42,4 +44,31 @@ export function markViewerSeriesReady(navMark: string, seriesUID: string, imageC
   if (canMark()) performance.mark(end);
   const ms = measure("radlearn:navigation-to-series-ready", navMark, end);
   console.info("[radlearn] viewer series ready", { seriesUID, imageCount, ms });
+}
+
+/**
+ * The opening slice is on screen as an 8-bit preview (converted bundle path).
+ * `ms` is milliseconds since navigation. DICOMweb opens never fire this.
+ */
+export function markViewerFirstPreview(navMark: string, seriesUID: string): void {
+  const end = `radlearn:first-preview:${navMark}`;
+  if (canMark()) performance.mark(end);
+  const ms = measure("radlearn:navigation-to-first-preview", navMark, end);
+  console.info("[radlearn] viewer first preview", { seriesUID, ms });
+}
+
+/**
+ * The slice on screen is full-quality (16-bit, W/L and measurement live) for
+ * the first time since navigation. On DICOMweb this is the first pixel; on a
+ * bundle it is the preview → full swap of the opening slice.
+ */
+export function markViewerFullQuality(
+  navMark: string,
+  seriesUID: string,
+  source: "bundle" | "dicomweb"
+): void {
+  const end = `radlearn:full-quality:${navMark}`;
+  if (canMark()) performance.mark(end);
+  const ms = measure("radlearn:navigation-to-full-quality", navMark, end);
+  console.info("[radlearn] viewer full quality", { seriesUID, source, ms });
 }
