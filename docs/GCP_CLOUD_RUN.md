@@ -104,7 +104,7 @@ Gemini (`generativelanguage.googleapis.com`) is a global API. Same-region Cloud 
 | Timeout | 300s | Zipped study uploads |
 | Startup probe | `GET /` | Cloud Run will not send traffic until the process answers |
 | VPC egress | `all-traffic` until Atlas PSC, then `private-ranges-only` | Atlas IP allowlist vs DICOM not hairpinning through NAT |
-| Public CDN | no | Frames are `Cache-Control: private` |
+| Public CDN | no | Frames are `Cache-Control: private`. Converted series can go through Cloud CDN with **signed URL prefixes** only: see docs/DICOM_CDN_REPORT.md |
 | Object cache | optional, same region | `R2_ENDPOINT=https://storage.googleapis.com` reuses `lib/r2.ts`. 25 ms budget, then the store |
 
 Raise the DICOM store read quota before a class. A room of students scrolling is a lot of WADO-RS. HTTP 429 is the symptom. Google's conformance statement documents 429; the numeric quota is the project's, so confirm it in Cloud Console rather than guessing a limit here.

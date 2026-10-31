@@ -184,6 +184,11 @@ export interface ViewerToolbarProps {
   annotationsEnabled: boolean;
   /** False in MPR — measurements stay on the stack. */
   measurementsEnabled: boolean;
+  /**
+   * The slice on screen is an 8-bit CDN preview (lib/dicomCdn): there is no
+   * real window to set until full-quality pixels arrive.
+   */
+  previewLocked?: boolean;
   inverted: boolean;
   activePreset: string | null;
   presets: WindowPreset[];
@@ -219,6 +224,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
     cinePlaying,
     cineFps,
     overlay,
+    previewLocked = false,
   } = props;
   const host = usePortalHost();
   const [measureOpen, setMeasureOpen] = useState(false);
@@ -376,8 +382,13 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           trigger={
             <button
               type="button"
-              disabled={!ready}
-              aria-label={`Window presets, ${presetName}`}
+              disabled={!ready || previewLocked}
+              title={previewLocked ? "Window presets unlock when full-quality pixels load" : undefined}
+              aria-label={
+                previewLocked
+                  ? "Window presets — unlock when full-quality pixels load"
+                  : `Window presets, ${presetName}`
+              }
               className={cn(
                 "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md pl-2 pr-1.5 text-xs font-medium [@media(pointer:coarse)]:h-11",
                 pressable,

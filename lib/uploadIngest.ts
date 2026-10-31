@@ -9,6 +9,7 @@
 import AdmZip from "adm-zip";
 import { upsertDeidReport } from "./cases";
 import { DeidFailError, type DeidReport } from "./deid";
+import { scheduleSeriesBundle } from "./dicomCdn/jobs";
 import { looksLikeDicomUid, readDicomUids } from "./healthcareDicom";
 import { imagingStudySummary, orthancIngestInstance, orthancSeriesMeta } from "./orthanc";
 import { TeachingDeidError, deidentifyTeachingInstance } from "./teachingDeidentify";
@@ -241,6 +242,14 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
         });
       }
     }
+  }
+
+  // Convert each touched series to HTJ2K + previews once the upload settles
+  // (lib/dicomCdn/jobs.ts). Reads the de-identified bytes back from the
+  // archive, so it never sees anything the gate above did not pass. No-op
+  // unless DICOM_CDN_BUCKET / DICOM_CDN_LOCAL_DIR is set.
+  if (stored > 0) {
+    for (const s of series) scheduleSeriesBundle(s.studyInstanceUID, s.seriesInstanceUID);
   }
 
   return { status: 200, body: { stored, duplicates, deidentified, series, failed, skipped } };

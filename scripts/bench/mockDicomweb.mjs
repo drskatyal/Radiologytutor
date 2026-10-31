@@ -67,6 +67,34 @@ function dataset(index, cfg) {
   };
 }
 
+/** Minimal Part-10 file: meta group + SOP UID + raw OW pixel data (Explicit VR LE). */
+function part10(sop, pixels) {
+  const el = (group, element, vr, value) => {
+    const head = Buffer.alloc(vr === "OW" ? 12 : 8);
+    head.writeUInt16LE(group, 0);
+    head.writeUInt16LE(element, 2);
+    head.write(vr, 4, "latin1");
+    if (vr === "OW") head.writeUInt32LE(value.length, 8);
+    else head.writeUInt16LE(value.length, 6);
+    return Buffer.concat([head, value]);
+  };
+  const ui = (text) => {
+    const b = Buffer.from(text, "latin1");
+    return b.length % 2 ? Buffer.concat([b, Buffer.from([0])]) : b;
+  };
+  const ts = el(0x0002, 0x0010, "UI", ui("1.2.840.10008.1.2.1"));
+  const groupLength = Buffer.alloc(4);
+  groupLength.writeUInt32LE(ts.length, 0);
+  return Buffer.concat([
+    Buffer.alloc(128),
+    Buffer.from("DICM", "latin1"),
+    el(0x0002, 0x0000, "UL", groupLength),
+    ts,
+    el(0x0008, 0x0018, "UI", ui(sop)),
+    el(0x7fe0, 0x0010, "OW", pixels),
+  ]);
+}
+
 /** One shared noise+gradient plane; each frame reads a rotating window of it. */
 function pixelPool(rows, columns) {
   const pixels = rows * columns;
@@ -91,7 +119,29 @@ export async function startMockDicomweb(options = {}) {
     metadataBuildMs: Number(options.metadataBuildMs ?? 400),
     sliceThickness: 1.25,
     modality: options.modality ?? "CT",
+    // Directory holding a bundle built by scripts/bench/packBundle.ts (the
+    // real lib/dicomCdn packer). Unset → the manifest API says "unavailable",
+    // exactly like production with conversion off.
+    bundleDir: options.bundleDir ?? null,
+    // One shared downstream link, in Mbit/s (0 = unlimited). Responses queue
+    // FIFO behind each other, the way frames share a learner's connection.
+    bandwidthMbps: Number(options.bandwidthMbps ?? 0),
   };
+  let linkFreeAt = 0;
+  /** Wait until `bytes` have crossed the shared link. */
+  const throttle = async (bytes) => {
+    if (!(cfg.bandwidthMbps > 0)) return;
+    const now = performance.now();
+    const start = Math.max(now, linkFreeAt);
+    linkFreeAt = start + (bytes * 8) / (cfg.bandwidthMbps * 1000);
+    await sleep(linkFreeAt - now);
+  };
+  let bundleIndex = null;
+  if (cfg.bundleDir) {
+    bundleIndex = JSON.parse(
+      await readFile(join(cfg.bundleDir, "dicom", "v1", STUDY_UID, SERIES_UID, "index.json"), "utf8")
+    );
+  }
 
   const pool = pixelPool(cfg.rows, cfg.columns);
   const frameBytes = cfg.rows * cfg.columns * 2;
@@ -100,7 +150,16 @@ export async function startMockDicomweb(options = {}) {
   const seriesDoc = Buffer.from(JSON.stringify(datasets));
 
   const results = [];
-  const counters = { frames: 0, instanceMetadata: 0, seriesMetadata: 0, qido: 0, qidoBytes: 0, bytes: 0 };
+  const counters = {
+    frames: 0,
+    instanceMetadata: 0,
+    seriesMetadata: 0,
+    qido: 0,
+    qidoBytes: 0,
+    bytes: 0,
+    bundleChunks: 0,
+    bundleBytes: 0,
+  };
   let onResult = () => {};
 
   const frameBody = (index) => {
@@ -160,6 +219,25 @@ export async function startMockDicomweb(options = {}) {
     }
 
     // Harness bundle sourcemap + the worker/wasm assets esbuild emits next to it.
+    // Cornerstone's codec loaders reference their wasm as
+    // `new URL("@cornerstonejs/codec-x/wasm", import.meta.url)`. webpack turns
+    // that into an asset; esbuild leaves the bare specifier, so the worker asks
+    // for /bench/assets/@cornerstonejs/codec-x/wasm. Serve the package's file.
+    const codecWasm = /^\/bench\/assets\/@cornerstonejs\/(codec-[a-z0-9-]+)\/(wasm|decodewasm)$/.exec(path);
+    if (codecWasm) {
+      try {
+        const pkgDir = join(HERE, "..", "..", "node_modules", "@cornerstonejs", codecWasm[1]);
+        const pkg = JSON.parse(await readFile(join(pkgDir, "package.json"), "utf8"));
+        const target = pkg.exports?.[`./${codecWasm[2]}`];
+        const wasm = await readFile(join(pkgDir, target));
+        res.writeHead(200, { "content-type": "application/wasm" });
+        res.end(wasm);
+      } catch {
+        res.writeHead(404).end("no such codec");
+      }
+      return;
+    }
+
     if (path.startsWith("/bench/assets/")) {
       try {
         const asset = await readFile(join(HERE, ".build", path.slice("/bench/assets/".length)));
@@ -172,6 +250,56 @@ export async function startMockDicomweb(options = {}) {
         res.end(asset);
       } catch {
         res.writeHead(404).end("no such asset");
+      }
+      return;
+    }
+
+    // --- converted-bundle delivery (same shapes as /api/dicom-cdn) ----------
+    // Delivered in "proxy" mode: same origin, same per-request latency as a
+    // DICOMweb frame, so the comparison is request count + bytes, not a CDN.
+    if (path === "/api/dicom-cdn/manifest") {
+      await sleep(cfg.latencyMs);
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
+      res.end(
+        JSON.stringify(
+          bundleIndex
+            ? {
+                available: true,
+                index: bundleIndex,
+                delivery: {
+                  mode: "proxy",
+                  base: `/cdn/${bundleIndex.version}/`,
+                  query: "",
+                  expiresAt: Date.now() + 3_600_000,
+                },
+              }
+            : { available: false, reason: "not-converted" }
+        )
+      );
+      return;
+    }
+    const cdn = /^\/cdn\/([a-z0-9]+)\/((?:[pf]\d{4}\.frb)|meta\.gz)$/.exec(path);
+    if (cdn && bundleIndex && cdn[1] === bundleIndex.version) {
+      await sleep(cfg.latencyMs);
+      try {
+        const file = await readFile(
+          join(cfg.bundleDir, "dicom", "v1", STUDY_UID, SERIES_UID, cdn[1], cdn[2])
+        );
+        const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
+        const body = range ? file.subarray(Number(range[1]), Number(range[2]) + 1) : file;
+        counters.bundleChunks += 1;
+        counters.bundleBytes += body.length;
+        counters.bytes += body.length;
+        await throttle(body.length);
+        res.writeHead(range ? 206 : 200, {
+          "content-type": "application/octet-stream",
+          "cache-control": "private, max-age=31536000, immutable",
+          "content-length": String(body.length),
+          ...(range ? { "content-range": `bytes ${range[1]}-${Number(range[1]) + body.length - 1}/${file.length}` } : {}),
+        });
+        res.end(body);
+      } catch {
+        res.writeHead(404).end("no such chunk");
       }
       return;
     }
@@ -194,11 +322,30 @@ export async function startMockDicomweb(options = {}) {
       const body = frameBody(index);
       counters.frames += 1;
       counters.bytes += body.length;
+      await throttle(body.length);
       res.writeHead(200, {
         "content-type": 'multipart/related; type="application/octet-stream"; boundary=--flowradbench',
         "cache-control": "private, max-age=86400, stale-while-revalidate=604800, immutable",
         vary: "Accept",
       });
+      res.end(body);
+      return;
+    }
+
+    // Part-10 instance (WADO-RS retrieve instance) — what the lib/dicomCdn
+    // packer reads when the app converts a series. Explicit VR LE, raw pixels.
+    const instance = /^\/studies\/[^/]+\/series\/[^/]+\/instances\/([^/]+)$/.exec(dicomweb);
+    if (instance) {
+      const index = sopToIndex.get(instance[1]);
+      if (index == null) {
+        res.writeHead(404).end("no such instance");
+        return;
+      }
+      const offset = (index * 977) % (pool.length - frameBytes / 2);
+      const body = part10(sopFor(index), Buffer.from(pool.buffer, offset * 2, frameBytes));
+      counters.bytes += body.length;
+      await throttle(body.length);
+      res.writeHead(200, { "content-type": "application/dicom" });
       res.end(body);
       return;
     }
@@ -228,6 +375,7 @@ export async function startMockDicomweb(options = {}) {
       await sleep(cfg.metadataBuildMs);
       counters.seriesMetadata += 1;
       counters.bytes += seriesDoc.length;
+      await throttle(seriesDoc.length);
       res.writeHead(200, {
         "content-type": "application/dicom+json",
         "content-length": String(seriesDoc.length),
@@ -283,6 +431,8 @@ export async function startMockDicomweb(options = {}) {
       counters.qido = 0;
       counters.qidoBytes = 0;
       counters.bytes = 0;
+      counters.bundleChunks = 0;
+      counters.bundleBytes = 0;
     },
     waitForResult(timeoutMs = 180_000) {
       return new Promise((resolve, reject) => {
