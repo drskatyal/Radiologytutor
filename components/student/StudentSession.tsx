@@ -551,6 +551,9 @@ export default function StudentSession({
                   ? s.orderedFindings[s.activeIndex]?.label
                   : s.orderedFindings[0]?.label
               }
+              findingAnchor={
+                s.activeIndex >= 0 ? s.orderedFindings[s.activeIndex] : s.orderedFindings[0]
+              }
               onClose={() => setAnatomyOpen(false)}
             />
           )}

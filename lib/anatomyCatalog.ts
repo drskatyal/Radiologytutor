@@ -8,6 +8,27 @@ export interface AnatomyFindingMark {
   findingId?: string;
   label: string;
   position: [number, number, number];
+  /**
+   * The slice and marker this position was computed from. A store seeded
+   * before the finding moved still has the old anchor; the 3D view must not
+   * claim a lesion the 2D view is not showing.
+   */
+  sliceIndex?: number;
+  marker?: { x_pct: number; y_pct: number };
+}
+
+/** True when a manifest mark was built from this finding's current anchor. */
+export function markMatchesFinding(
+  mark: AnatomyFindingMark,
+  finding: { sliceIndex?: number; marker?: { x_pct: number; y_pct: number } | null } | undefined
+): boolean {
+  if (!finding) return false;
+  if (mark.sliceIndex == null || !mark.marker) return true;
+  if (finding.sliceIndex !== mark.sliceIndex || !finding.marker) return false;
+  return (
+    Math.abs(finding.marker.x_pct - mark.marker.x_pct) <= 0.01 &&
+    Math.abs(finding.marker.y_pct - mark.marker.y_pct) <= 0.01
+  );
 }
 
 export interface AnatomyManifest {

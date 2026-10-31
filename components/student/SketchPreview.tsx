@@ -138,7 +138,7 @@ export function SketchPreview() {
           {spine && <ellipse cx={spine.cx} cy={spine.cy} rx={spine.rx} ry={spine.ry} fill="#2c2418" />}
         </svg>
         <SketchOverlay marks={marks} frame={frame} />
-        {anatomy && <AnatomyPanel caseId="case-lidc-nodule-search" findingId="f_caselidcno_2" onClose={() => setAnatomy(false)} />}
+        {anatomy && <AnatomyPanel caseId="case-lidc-nodule-search" findingId="f_caselidcno_2" findingAnchor={{ sliceIndex: 6, marker: { x_pct: 0.68, y_pct: 0.494 } }} onClose={() => setAnatomy(false)} />}
       </div>
     </div>
   );

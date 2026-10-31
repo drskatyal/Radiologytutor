@@ -18,3 +18,14 @@ test("generic schematic glb names every catalog structure", () => {
     assert.ok(Math.abs((node?.translation[0] ?? 99) - item.position[0]) < 1e-6);
   }
 });
+
+test("a 3D finding mark shows only for the anchor it was built from", async () => {
+  const { markMatchesFinding } = await import("./anatomyCatalog.ts");
+  const mark = { label: "Left apical nodule", position: [0, 0, 0] as [number, number, number], sliceIndex: 6, marker: { x_pct: 0.68, y_pct: 0.494 } };
+  assert.equal(markMatchesFinding(mark, { sliceIndex: 6, marker: { x_pct: 0.681, y_pct: 0.494 } }), true);
+  // A store seeded before the fix still has the old anchor.
+  assert.equal(markMatchesFinding(mark, { sliceIndex: 49, marker: { x_pct: 0.68, y_pct: 0.55 } }), false);
+  assert.equal(markMatchesFinding(mark, undefined), false);
+  // Older manifests without an anchor keep their mark.
+  assert.equal(markMatchesFinding({ label: "x", position: [0, 0, 0] }, { sliceIndex: 1, marker: null }), true);
+});

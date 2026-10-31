@@ -174,7 +174,9 @@ export function placeCard(input: {
   const diag = Math.hypot(viewport.width, viewport.height) || 1;
   const maxX = Math.max(margin, viewport.width - card.width - margin);
   const maxY = Math.max(margin, viewport.height - card.height - margin);
-  const gaps = [26, 56, 96, 150, 220, 300];
+  // Every 20 px out to ~320: coarse steps skip the one seat that fits a
+  // narrow strip of black between the body and the viewer controls.
+  const gaps = Array.from({ length: 16 }, (_, i) => 26 + i * 20);
   let best: { cost: number; place: CardPlacement } | null = null;
 
   for (let step = 0; step < 24; step++) {

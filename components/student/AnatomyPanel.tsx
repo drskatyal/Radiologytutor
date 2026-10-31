@@ -12,6 +12,7 @@ import { Button, IconButton, Spinner } from "@/components/ui";
 import {
   ANATOMY_DISCLAIMER,
   GENERIC_STRUCTURES,
+  markMatchesFinding,
   type AnatomyManifest,
 } from "@/lib/anatomyCatalog";
 
@@ -41,10 +42,13 @@ export function AnatomyPanel({
   caseId,
   findingId,
   findingLabel,
+  findingAnchor,
   onClose,
 }: {
   caseId?: string;
   findingId?: string;
+  /** The finding's current slice and marker; the 3D mark shows only if it matches. */
+  findingAnchor?: { sliceIndex?: number; marker?: { x_pct: number; y_pct: number } | null };
   /** Shown on the marker when the manifest has no label for this finding. */
   findingLabel?: string;
   onClose: () => void;
@@ -91,8 +95,16 @@ export function AnatomyPanel({
   }, [onClose]);
 
   const patient = manifest?.source === "totalsegmentator";
-  const view = manifest ? { ...manifest, activeFindingId: findingId } : null;
-  const finding = view?.findings.find((item) => item.findingId === findingId);
+  const mark = manifest?.findings.find((item) => item.findingId === findingId);
+  const markOk = mark ? markMatchesFinding(mark, findingAnchor) : false;
+  const view = manifest
+    ? {
+        ...manifest,
+        activeFindingId: findingId,
+        findings: markOk ? manifest.findings : manifest.findings.filter((item) => item.findingId !== findingId),
+      }
+    : null;
+  const finding = markOk ? mark : undefined;
   const hoveredLabel = hovered ? view?.structures.find((item) => item.id === hovered)?.label : null;
 
   return (

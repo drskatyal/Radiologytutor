@@ -88,6 +88,15 @@ upper lobe apex. It is present on that slice and gone above and below, which is
 the "nodule, not a vessel on end" teaching point.
 
 A store seeded before this change keeps the old finding until it is re-seeded.
+The 3D manifest records the slice and marker each mark was built from, and the
+panel hides a mark whose finding no longer matches, so an old store never shows
+a 3D nodule the 2D view is not circling.
+
+**Stack order.** The viewer keeps the archive's series-metadata order on every
+path (the progressive loader and `createImageIdsAndCacheMetaData` agree), so an
+authored `sliceIndex` never moves under existing cases. The demo indices above
+assume the archive returns this series cranial-first, as
+`scripts/serve_local_ct.py` does.
 
 ## Running it locally
 

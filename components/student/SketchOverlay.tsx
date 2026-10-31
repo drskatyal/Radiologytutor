@@ -51,15 +51,15 @@ export function SketchOverlay({
     return peak > 0.05 ? grid : null;
   }, []);
 
-  // Viewer chrome the card must not cover (toolbar, slice readout,
-  // full-screen control), in this overlay's pixels.
+  // Viewer chrome the card must not cover (toolbar, slice scrollbar, slice
+  // readout, full-screen control), in this overlay's pixels.
   const chromeBoxes = useCallback((): Box[] => {
     const root = rootRef.current;
     if (!root) return [];
     const origin = root.getBoundingClientRect();
     const scope = root.closest("[data-imaging-layout]") ?? root.closest("[data-viewer-root]")?.parentElement ?? document.body;
     const boxes: Box[] = [];
-    for (const el of Array.from(scope.querySelectorAll('[role="toolbar"], .imaging-readout, [data-imaging-chrome]'))) {
+    for (const el of Array.from(scope.querySelectorAll('[role="toolbar"], [role="slider"], .imaging-readout, [data-imaging-chrome]'))) {
       const r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       const box = { x: r.left - origin.left - 6, y: r.top - origin.top - 6, width: r.width + 12, height: r.height + 12 };

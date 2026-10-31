@@ -34,8 +34,10 @@ test("desktop: one ring on the nodule, a solid card in black space, clear of the
   const card = (await page.getByTestId("sketch-card").boundingBox())!;
   const ring = (await page.getByTestId("sketch-ring").boundingBox())!;
   const toolbar = (await page.getByRole("toolbar").first().boundingBox())!;
+  const scrollbar = (await page.getByRole("slider", { name: "Slice" }).boundingBox())!;
   expect(overlaps(card, ring)).toBe(false);
   expect(overlaps(card, toolbar)).toBe(false);
+  expect(overlaps(card, scrollbar)).toBe(false);
   // Exactly one stroke: no unrequested arrow next to the ring.
   await expect(page.getByTestId("sketch-arrow")).toHaveCount(0);
   await expect(page.getByTestId("sketch-connector")).toHaveCount(1);

@@ -7,8 +7,6 @@
 import { api } from "dicomweb-client";
 import cornerstoneDICOMImageLoader from "@cornerstonejs/dicom-image-loader";
 
-import { sortAxialStack } from "./stackOrder";
-
 const SOP_INSTANCE_UID = "00080018";
 const SERIES_INSTANCE_UID = "0020000E";
 
@@ -30,7 +28,10 @@ export default async function createImageIdsAndCacheMetaData({
     seriesInstanceUID: SeriesInstanceUID,
   });
 
-  return sortAxialStack(instances as unknown as Record<string, { Value?: Array<number | string> }>[]).map((inst) => {
+  // Series metadata order, as the progressive loader uses, so a finding's
+  // sliceIndex means the same image on every path. Re-sorting here would
+  // move every authored slice on an archive that returns another order.
+  return (instances as unknown as Record<string, { Value?: Array<number | string> }>[]).map((inst) => {
     const seriesUID = String(inst[SERIES_INSTANCE_UID]?.Value?.[0] ?? SeriesInstanceUID);
     const sopUID = String(inst[SOP_INSTANCE_UID]?.Value?.[0] ?? "");
     const imageId =
