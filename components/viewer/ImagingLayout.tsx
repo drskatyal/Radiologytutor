@@ -19,6 +19,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -39,6 +40,7 @@ import type { CaseSeries } from "@/lib/viewerSource";
 import type { RailInstanceSource } from "@/lib/seriesRail";
 import { SeriesNavigator } from "./SeriesNavigator";
 import { useLazySeriesRail } from "./useLazySeriesRail";
+import { ImagingStageContext, type ImagingStage } from "./stageContext";
 
 export function ImagingLayout({
   series = [],
@@ -188,6 +190,17 @@ export function ImagingLayout({
     else void enter();
   }, [enter, exit, expanded]);
 
+  // A viewer toolbar inside the stage can take over the fullscreen control.
+  const [claims, setClaims] = useState(0);
+  const claim = useCallback(() => {
+    setClaims((n) => n + 1);
+    return () => setClaims((n) => Math.max(0, n - 1));
+  }, []);
+  const stage = useMemo<ImagingStage>(
+    () => ({ expanded, toggle, claim }),
+    [expanded, toggle, claim]
+  );
+
   const togglePane = useCallback((fromControl: boolean) => {
     if (fromControl) focusToggle.current = true;
     const next = !paneOpenRef.current;
@@ -231,6 +244,7 @@ export function ImagingLayout({
   const railOpen = showPane && paneOpen;
 
   return (
+    <ImagingStageContext.Provider value={stage}>
     <div
       ref={rootRef}
       className={cn(
@@ -348,6 +362,7 @@ export function ImagingLayout({
         )}
       >
         {body}
+        {claims > 0 ? null : (
         <div className="pointer-events-none absolute right-[max(0.5rem,env(safe-area-inset-right))] top-[max(0.5rem,env(safe-area-inset-top))] z-40 flex items-center gap-1">
           <div className="pointer-events-auto">
             <Button
@@ -379,6 +394,7 @@ export function ImagingLayout({
             </Button>
           </div>
         </div>
+        )}
         {expanded && fullscreenDock ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-[max(4.5rem,env(safe-area-inset-bottom))] z-50 flex justify-center px-3">
             <div className="pointer-events-auto rounded-full bg-black/80 p-1 ring-1 ring-white/20">
@@ -388,5 +404,6 @@ export function ImagingLayout({
         ) : null}
       </div>
     </div>
+    </ImagingStageContext.Provider>
   );
 }
