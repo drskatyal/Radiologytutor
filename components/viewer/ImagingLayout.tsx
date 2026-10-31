@@ -247,6 +247,7 @@ export function ImagingLayout({
     <ImagingStageContext.Provider value={stage}>
     <div
       ref={rootRef}
+      data-imaging-layout
       className={cn(
         "relative flex min-w-0 max-w-full bg-imaging",
         fill && "h-full w-full",
@@ -380,6 +381,8 @@ export function ImagingLayout({
                 )
               }
               onClick={toggle}
+              // Tutor cards are seated clear of this control.
+              data-imaging-chrome
               className={cn(
                 "min-h-11 min-w-11 border border-white/25 bg-black/85 text-white shadow-lg",
                 "hover:bg-[#1a1a1a] hover:text-white",

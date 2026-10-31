@@ -22,6 +22,9 @@ const buttonVariants = cva(
         secondary: "border border-strong bg-elevated text-primary hover:bg-overlay",
         ghost: "text-secondary hover:bg-overlay hover:text-primary",
         danger: "bg-danger text-white",
+        // On an imaging surface (pure black): quiet glass, white type.
+        imaging:
+          "border border-white/15 bg-white/[0.06] text-white backdrop-blur-md hover:bg-white/[0.12] aria-pressed:border-white/40 aria-pressed:bg-white aria-pressed:text-black focus-visible:ring-white/70 focus-visible:ring-offset-black",
       },
       size: {
         sm: "px-3 py-2 text-sm",

@@ -15,6 +15,7 @@ const nextConfig = {
     return config;
   },
   // Keep Node-only SDKs out of the webpack graph (R2 / Mongo).
+  transpilePackages: ["three", "@react-three/fiber", "@react-three/drei"],
   experimental: {
     serverComponentsExternalPackages: [
       "@aws-sdk/client-s3",

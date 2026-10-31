@@ -199,6 +199,13 @@ export interface GuidePlayOptions {
   /** Speak one beat. Omit for a silent visual pass (the tutor's own TTS). */
   narrate?: (text: string) => Promise<void>;
   /**
+   * A beat's line is starting (`start`, same turn as narrate) or its viewer
+   * motion has landed (`landed`: scroll, window, zoom and the laser are
+   * done). The tutor's ink hangs off this so a mark is drawn on the word
+   * that names it. Not called after cancel.
+   */
+  onBeat?: (event: { beat: TeachBeat; phase: "start" | "landed" }) => void;
+  /**
    * Prefetch the next say line while this beat is still speaking and driving.
    * Called after the current `narrate` has started (so it does not cancel the
    * clip in flight) and before that clip finishes. Must not start playback.
@@ -654,6 +661,8 @@ export function playTeachingGuide(
             if (cancelled) return;
           }
         }
+        if (cancelled) return;
+        opts.onBeat?.({ beat, phase: "start" });
         const motion = (async () => {
           try {
             // The search line names the window ("Lung windows, 1500 over
@@ -733,7 +742,10 @@ export function playTeachingGuide(
         if (!cancelled && primeNext) opts.primeNarration?.(primeNext);
         const hold = line ? holdFor(line) : 0;
         const speech = awaitSpeech(speechWork, hold);
-        await Promise.all([motion, speech]);
+        const landed = motion.then(() => {
+          if (!cancelled) opts.onBeat?.({ beat, phase: "landed" });
+        });
+        await Promise.all([landed, speech]);
         prevT = beat.t;
         prevEnded = performance.now();
       };

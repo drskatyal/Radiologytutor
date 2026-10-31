@@ -39,6 +39,7 @@ import {
   type FindingCheckInState,
 } from "@/lib/tourCheckIn";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
+import { useSketchLayer } from "./useSketchLayer";
 import { GeminiLiveSession, type LiveToolResult } from "@/lib/geminiLiveSession";
 import { buildLiveContextUpdate, type LiveToolCall } from "@/lib/geminiLiveProtocol";
 import {
@@ -151,6 +152,7 @@ export function useStudentSession(
   const recorder = useRecorder();
 
   const controls = useRef<CornerstoneControls | null>(null);
+  const sketch = useSketchLayer(controls);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Author QA replay only — student product does not VCR-play tracks.
@@ -663,9 +665,11 @@ export function useStudentSession(
         setMeasurementsVisible(spoil && meas.length > 0);
       }
       if (!stillCurrent() || epoch !== revealEpochRef.current) return;
+      if (spoil) sketch.replay(teachingPackRef.current, finding.id);
+      else sketch.clearAuthored();
       await seatSecondary(finding, spoil);
     },
-    [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary, commitFindingStep]
+    [orderedFindings, stopReplay, pointLaser, markRevealed, seatSecondary, commitFindingStep, sketch.replay, sketch.clearAuthored]
   );
 
   // --- Play a cleaned teach script (learner clock, not the mic tape) ------
@@ -687,6 +691,11 @@ export function useStudentSession(
       setMarkerVisible(false);
       setMeasurementsVisible(false);
       setReplaying(true);
+      // Ink follows the voice: the ring lands when the laser does on the
+      // commit line, the card arrives with the pearl. Nothing is drawn
+      // ahead of the sentence that names it, and nothing in exam mode.
+      sketch.clearAuthored();
+      const inkAllowed = () => !isExamMode(modeRef.current);
       const ctrl = playTeachingGuide(
         guide,
         {
@@ -708,6 +717,14 @@ export function useStudentSession(
           narrate: opts?.narrate,
           primeNarration: opts?.primeNarration,
           onCheckIn: opts?.onCheckIn,
+          onBeat: ({ beat, phase }) => {
+            if (!inkAllowed()) return;
+            if (beat.act === "commit" && phase === "landed") {
+              sketch.replay(teachingPackRef.current, finding.id, "ring");
+            } else if (beat.act === "pearl" && phase === "start") {
+              sketch.replay(teachingPackRef.current, finding.id, "card");
+            }
+          },
           // Hint only. The script's own say lines already go through narrate.
           // Do not fill this with tutorSpeech — guided mode would name the finding.
           landmark: finding.landmark,
@@ -721,7 +738,7 @@ export function useStudentSession(
         setReplaying(false);
       }
     },
-    [stopReplay]
+    [stopReplay, sketch.clearAuthored, sketch.replay]
   );
 
   // --- Execute a tutor viewer action ---------------------------------------
@@ -928,11 +945,28 @@ export function useStudentSession(
           }
           break;
         }
+        case "draw_circle":
+        case "draw_arrow":
+        case "place_card":
+        case "clear_overlay":
+          await sketch.applyAction(teachingPackRef.current, action, {
+            spoil: !isExamMode(modeRef.current),
+            currentFindingId:
+              activeIndexRef.current >= 0
+                ? orderedFindings[activeIndexRef.current]?.id
+                : undefined,
+          });
+          break;
+        case "jump_to_key_view": {
+          const idx = orderedFindings.findIndex((item) => item.id === action.findingId);
+          if (idx >= 0) await revealFinding(idx, { spoil: !isExamMode(modeRef.current) });
+          break;
+        }
         default:
           break;
       }
     },
-    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep, primeGuideLine, speakGuideSentences]
+    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep, primeGuideLine, speakGuideSentences, sketch.applyAction]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -1559,6 +1593,11 @@ export function useStudentSession(
       const decision = validateLiveToolCall(pack, call.name, call.args, currentId);
       if (!decision.ok) return reply({ ok: false, error: decision.error, allowedSeries: decision.allowedSeries });
 
+      if (decision.clearOverlay) {
+        sketch.clear();
+        return reply({ ok: true, cleared: true });
+      }
+
       if (call.name === "web_search") {
         const query = decision.query ?? "";
         setSearching(true);
@@ -1590,7 +1629,10 @@ export function useStudentSession(
       if (!viewer) return reply({ ok: false, error: "Viewer is not ready.", drive: decision.drive });
       const spoil = liveModeRef.current === "teach_me";
 
-      if (decision.findingId && (call.name === "show_finding" || call.name === "next_finding")) {
+      if (
+        decision.findingId &&
+        (call.name === "show_finding" || call.name === "next_finding" || call.name === "jump_to_key_view")
+      ) {
         const idx = orderedFindingsRef.current.findIndex((item) => item.id === decision.findingId);
         if (idx < 0) return reply({ ok: false, error: "That finding is not on this case." });
         await revealFinding(idx, { spoil });
@@ -1630,6 +1672,8 @@ export function useStudentSession(
         await pointLaser(decision.x_pct, decision.y_pct, spoil ? marker : undefined);
       }
 
+      if (decision.marks?.length) sketch.showMarks(decision.marks);
+
       if (call.name === "draw_annotation" && decision.findingId) {
         const target = orderedFindingsRef.current.find((item) => item.id === decision.findingId);
         if (target) {
@@ -1655,7 +1699,7 @@ export function useStudentSession(
         drive: decision.drive,
       });
     },
-    [pointLaser, revealFinding]
+    [pointLaser, revealFinding, sketch.clear, sketch.showMarks]
   );
 
   // --- Microphone opens Gemini Live. Hang up ends it. -----------------------
@@ -1809,7 +1853,7 @@ export function useStudentSession(
       tourActiveRef.current = false;
       setTourActive(false);
       interruptPlayback();
-      void revealFinding(index, { spoil: false });
+      void revealFinding(index, { spoil: !isExamMode(modeRef.current) });
     },
     [busy, ready, orderedFindings.length, revealFinding, interruptPlayback]
   );
@@ -1939,7 +1983,7 @@ export function useStudentSession(
     startedRef.current = true;
     tourActiveRef.current = false;
     setTourActive(false);
-    void revealFinding(0, { spoil: false });
+    void revealFinding(0, { spoil: !isExamMode(modeRef.current) });
   }, [ready, orderedFindings.length, revealFinding]);
 
   // Teach → Exam: the guide has already marked this finding revealed and is
@@ -2002,16 +2046,20 @@ export function useStudentSession(
 
   // Leaving exam mode uncovers the active finding so guided/report aren't blank.
   useEffect(() => {
-    if (examMode) return;
+    if (examMode) {
+      sketch.clearAuthored();
+      return;
+    }
     const f = orderedFindings[activeIndexRef.current];
     if (f) {
+      sketch.replay(teachingPackRef.current, f.id);
       markRevealed(f.id);
       if (f.marker) setMarkerVisible(true);
       const meas = f.measurements ?? [];
       setMeasurements(meas);
       setMeasurementsVisible(meas.length > 0);
     }
-  }, [examMode, orderedFindings, markRevealed]);
+  }, [examMode, orderedFindings, markRevealed, sketch.clearAuthored, sketch.replay]);
 
   // Cleanup: stop audio/replay + abort any in-flight tutor call on unmount.
   useEffect(
@@ -2083,6 +2131,8 @@ export function useStudentSession(
       total: orderedFindings.length,
     },
     onLocateClick,
+    sketches: sketch.marks,
+    noteImagePoint: sketch.noteImagePoint,
     locateMode: locateModeArmed({
       examMode,
       finding: activeIndex >= 0 ? orderedFindings[activeIndex] : null,

@@ -119,7 +119,8 @@ const pressable =
   "disabled:pointer-events-none disabled:opacity-35";
 
 const idle = "text-white/75 hover:bg-white/10 hover:text-white active:bg-white/20";
-const selected = "bg-accent text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]";
+// Neutral on the image: the tutor's ink is the only colour over the CT.
+const selected = "bg-white text-black shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]";
 const square = "h-9 w-9 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11";
 
 export function ToolbarButton({
