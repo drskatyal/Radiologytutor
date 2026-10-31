@@ -5,8 +5,10 @@ import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { LiveTeachingPack } from "@/lib/liveTeachingPack";
 import {
   isSketchDraw,
+  keepWith,
   replaySketches,
   resolveSketchTool,
+  type ReplayStep,
   uncertainTapMark,
   type SketchMark,
   type StudentTap,
@@ -56,17 +58,28 @@ export function useSketchLayer(controls: RefObject<CornerstoneControls | null>) 
     setTapMark(uncertainTapMark(tap, generation.current));
   }, []);
 
+  // One confident mark at a time: a new stroke replaces the previous
+  // stroke, and another finding's marks leave. A card stays with its
+  // finding until a new card replaces it.
   const showMarks = useCallback((next: SketchMark[]) => {
     if (!next.length) return;
-    setMarks((prev) => {
-      const keys = new Set(next.map((mark) => `${mark.findingId ?? "tap"}:${mark.kind}`));
-      return [...prev.filter((mark) => !keys.has(`${mark.findingId ?? "tap"}:${mark.kind}`)), ...next];
-    });
+    setMarks((prev) => keepWith(prev, next));
   }, []);
 
-  const replay = useCallback((pack: LiveTeachingPack, findingId: string) => {
+  const replay = useCallback((pack: LiveTeachingPack, findingId: string, step: ReplayStep = "all") => {
     generation.current += 1;
-    setMarks(replaySketches(pack, findingId, generation.current));
+    if (step !== "card") {
+      setMarks(replaySketches(pack, findingId, generation.current, step));
+      return;
+    }
+    // The card names a lesion that is circled. If the ring was skipped
+    // (a check-in answered it), draw both, ring first.
+    const gen = generation.current;
+    setMarks((prev) =>
+      prev.some((mark) => mark.findingId === findingId && mark.kind !== "card")
+        ? keepWith(prev, replaySketches(pack, findingId, gen, "card"))
+        : replaySketches(pack, findingId, gen, "all")
+    );
   }, []);
 
   const applyTool = useCallback(
@@ -142,3 +155,4 @@ export function useSketchLayer(controls: RefObject<CornerstoneControls | null>) 
     studentTap: tapRef,
   };
 }
+

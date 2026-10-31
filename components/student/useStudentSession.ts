@@ -691,6 +691,11 @@ export function useStudentSession(
       setMarkerVisible(false);
       setMeasurementsVisible(false);
       setReplaying(true);
+      // Ink follows the voice: the ring lands when the laser does on the
+      // commit line, the card arrives with the pearl. Nothing is drawn
+      // ahead of the sentence that names it, and nothing in exam mode.
+      sketch.clearAuthored();
+      const inkAllowed = () => !isExamMode(modeRef.current);
       const ctrl = playTeachingGuide(
         guide,
         {
@@ -712,6 +717,14 @@ export function useStudentSession(
           narrate: opts?.narrate,
           primeNarration: opts?.primeNarration,
           onCheckIn: opts?.onCheckIn,
+          onBeat: ({ beat, phase }) => {
+            if (!inkAllowed()) return;
+            if (beat.act === "commit" && phase === "landed") {
+              sketch.replay(teachingPackRef.current, finding.id, "ring");
+            } else if (beat.act === "pearl" && phase === "start") {
+              sketch.replay(teachingPackRef.current, finding.id, "card");
+            }
+          },
           // Hint only. The script's own say lines already go through narrate.
           // Do not fill this with tutorSpeech — guided mode would name the finding.
           landmark: finding.landmark,
@@ -725,7 +738,7 @@ export function useStudentSession(
         setReplaying(false);
       }
     },
-    [stopReplay]
+    [stopReplay, sketch.clearAuthored, sketch.replay]
   );
 
   // --- Execute a tutor viewer action ---------------------------------------

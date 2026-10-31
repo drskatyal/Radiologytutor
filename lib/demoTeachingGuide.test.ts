@@ -125,18 +125,18 @@ test("every LIDC finding gets a five-beat demo guide and a teacher track wins", 
   assert.notEqual(rebuilt?.beats.map((beat) => beat.say).join(" "), kept.teachingGuide?.beats[0].say);
 });
 
-test("import scaling lands the demo guide on slices 34, 49, and 64", () => {
+test("import scaling lands the demo guide on slices 34, 6 (the apical nodule), and 64", () => {
   assert.equal(LIDC_STACK_SLICES, 65);
   const planned = planPublicCaseFindings(LIDC_CASE_ID, template.findings, LIDC_STACK_SLICES);
   assert.deepEqual(
     planned.create.map((finding) => finding.sliceIndex),
-    [34, 49, 64]
+    [34, 6, 64]
   );
   const nodule = planned.create.find((finding) => /nodule/i.test(finding.label));
   assert.ok(nodule?.teachingGuide);
   const scroll = nodule.teachingGuide.beats.find((beat) => beat.act === "orient")?.actions[0];
   assert.ok(scroll && scroll.type === "scroll");
-  assert.equal(scroll.sliceIndex, 49);
+  assert.equal(scroll.sliceIndex, 6);
   assert.equal(nodule.teachingGuide.beats.find((beat) => beat.act === "search")?.actions[0]?.type, "window");
   assert.ok(!planned.create.some((finding) => finding.track));
 
@@ -169,7 +169,8 @@ test("committed seed case matches the demo guide for a 65-slice stack", () => {
   assert.equal(seed.status, "published");
   assert.deepEqual(
     seed.findings.map((finding) => finding.sliceIndex),
-    [34, 49, 64]
+    // 6 is the LIDC readers' left apical nodule, not a placeholder fraction.
+    [34, 6, 64]
   );
   assert.deepEqual(
     seed.findings.map((finding) => finding.teachingGuide),
@@ -301,8 +302,8 @@ test("LIDC nodule compare is an adjacent slice of the only series", () => {
   assert.equal(sec.viewportRole, "secondary");
   assert.equal(sec.seriesInstanceUID, pri.seriesInstanceUID);
   assert.equal(sec.seriesInstanceUID, nodule.seriesInstanceUID);
-  assert.equal(pri.sliceIndex, 49);
-  assert.equal(sec.sliceIndex, 49 - LIDC_COMPARE_SLICE_DELTA);
+  assert.equal(pri.sliceIndex, 6);
+  assert.equal(sec.sliceIndex, 6 - LIDC_COMPARE_SLICE_DELTA);
   assert.notEqual(sec.sliceIndex, pri.sliceIndex);
   assert.equal(sec.windowWidth, 1500);
   assert.equal(sec.windowCenter, -600);

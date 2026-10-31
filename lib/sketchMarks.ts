@@ -11,12 +11,12 @@
 
 import type { Finding, FindingMeasurement } from "./types";
 import type { LiveFinding, LiveTeachingPack } from "./liveTeachingPack";
-import { drawDurationMs } from "./roughStroke";
+import { drawDurationMs, INK, STROKE_GAP_MS } from "./inkStroke";
 
+/** Authored ink is marker yellow; a learner tap is rose. No third colour. */
 export const SKETCH_STROKE = {
-  yellow: "#FFE14A",
-  cyan: "#3EE0FF",
-  magenta: "#FF4DDE",
+  yellow: INK.authored,
+  magenta: INK.uncertain,
 } as const;
 
 export type SketchColor = keyof typeof SKETCH_STROKE;
@@ -54,6 +54,11 @@ export interface SketchMark {
   card?: DiagramCardContent;
   /** Shown beside an uncertain stroke. */
   caption?: string;
+  /**
+   * Arrow only: stop the tip this far (image fraction) short of `to`, so a
+   * presentation arrow points at the lesion instead of covering it.
+   */
+  standoff?: number;
   delayMs: number;
   durationMs: number;
 }
@@ -233,10 +238,8 @@ function anchorOf(item: LiveFinding): LiveSketchAnchor | undefined {
   };
 }
 
-function colorFor(kind: SketchMark["kind"], certainty: SketchMark["certainty"]): SketchColor {
-  if (certainty === "uncertain") return "magenta";
-  if (kind === "arrow" || kind === "underline") return "cyan";
-  return "yellow";
+function colorFor(certainty: SketchMark["certainty"]): SketchColor {
+  return certainty === "uncertain" ? "magenta" : "yellow";
 }
 
 function baseMark(
@@ -244,7 +247,7 @@ function baseMark(
 ): SketchMark {
   return {
     ...partial,
-    color: colorFor(partial.kind, partial.certainty),
+    color: colorFor(partial.certainty),
     delayMs: partial.delayMs ?? 0,
     durationMs: drawDurationMs(partial.kind === "card" ? "card" : partial.kind),
   };
@@ -333,6 +336,7 @@ function circleMark(item: LiveFinding, anchor: LiveSketchAnchor, generation: num
 
 function arrowMark(item: LiveFinding, anchor: LiveSketchAnchor, generation: number, delayMs: number): SketchMark {
   return baseMark({
+    ...(anchor.arrow.authored ? {} : { standoff: anchor.circleRx * 0.9 }),
     id: `sk-${item.id}-arrow-${generation}`,
     kind: "arrow",
     certainty: "authored",
@@ -353,10 +357,13 @@ function cardMark(
   generation: number,
   certainty: SketchMark["certainty"],
   slice?: { sliceStart?: number; sliceEnd?: number },
-  delayMs = 420
+  delayMs = 420,
+  ringRx?: number
 ): SketchMark {
   const id = item?.id ?? "tap";
   return baseMark({
+    rx: ringRx,
+    ry: ringRx,
     id: `sk-${id}-card-${card.template}-${generation}`,
     kind: "card",
     certainty,
@@ -370,18 +377,31 @@ function cardMark(
   });
 }
 
-/** Marks played when the tutor reaches an authored finding. */
-export function replaySketches(pack: LiveTeachingPack, findingId: string, generation = 1): SketchMark[] {
+export type ReplayStep = "ring" | "card" | "all";
+
+/**
+ * Marks played when the tutor reaches an authored finding: one ring, then
+ * (after the hand lifts) the leader and its card. No arrow unless asked —
+ * one confident mark at a time. `step` lets narration land each part on its
+ * own sentence.
+ */
+export function replaySketches(
+  pack: LiveTeachingPack,
+  findingId: string,
+  generation = 1,
+  step: ReplayStep = "all"
+): SketchMark[] {
   const item = pack.findings.find((finding) => finding.id === findingId);
   if (!item) return [];
   const anchor = anchorOf(item);
   if (!anchor) return [];
+  const ring = circleMark(item, anchor, generation, 0);
+  const marks: SketchMark[] = step === "card" ? [] : [ring];
+  if (step === "ring") return marks;
   const card = fillDiagramCard("sign", {}, item);
-  const marks = [
-    circleMark(item, anchor, generation, 0),
-    arrowMark(item, anchor, generation, 360),
-  ];
-  if (card) marks.push(cardMark(item, anchor.marker, card, generation, "authored", anchor, 580));
+  const cardDelay = step === "card" ? 0 : ring.durationMs + STROKE_GAP_MS;
+  const ringRx = ring.rx;
+  if (card) marks.push(cardMark(item, anchor.marker, card, generation, "authored", anchor, cardDelay, ringRx));
   return marks;
 }
 
@@ -516,6 +536,7 @@ export function resolveSketchTool(
           anchor: anchor.arrow.to,
           from: anchor.arrow.from,
           to: anchor.arrow.to,
+          standoff: anchor.circleRx * 0.9,
           caption: "uncertain",
         });
     return { ok: true, findingId: item?.id, marks: [mark], keyView, certainty };
@@ -529,11 +550,33 @@ export function resolveSketchTool(
     return {
       ok: true,
       findingId: item?.id,
-      marks: [cardMark(item, anchorPoint, card, generation, certainty, slice, 0)],
+      marks: [cardMark(item, anchorPoint, card, generation, certainty, slice, 0, anchor.ellipse?.rx ?? anchor.circleRx)],
       keyView,
       certainty,
     };
   }
 
   return { ok: false, error: "That tool is not part of the live teaching pack." };
+}
+
+function isStroke(mark: SketchMark): boolean {
+  return mark.kind !== "card";
+}
+
+/**
+ * One confident mark at a time. A new stroke replaces the previous stroke,
+ * another finding's marks leave, and a card stays with its finding until a
+ * new card replaces it. Returns the marks that survive `next`, then `next`.
+ */
+export function keepWith(prev: readonly SketchMark[], next: readonly SketchMark[]): SketchMark[] {
+  if (!next.length) return [...prev];
+  const owner = next[0]?.findingId ?? "tap";
+  const bringsStroke = next.some(isStroke);
+  const bringsCard = next.some((mark) => mark.kind === "card");
+  const kept = prev.filter((mark) => {
+    if ((mark.findingId ?? "tap") !== owner) return false;
+    if (isStroke(mark)) return !bringsStroke;
+    return !bringsCard;
+  });
+  return [...kept, ...next];
 }

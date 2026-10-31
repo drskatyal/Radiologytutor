@@ -8,7 +8,11 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:3000",
     viewport: { width: 1280, height: 800 },
     screenshot: "only-on-failure",
-    video: "retain-on-failure",
+    // Sandboxes that ship their own Chromium (not the pinned build) set this.
+    ...(process.env.PW_CHROMIUM_PATH
+      ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH, args: ["--headless", "--no-sandbox"] } }
+      : {}),
+    video: process.env.PW_CHROMIUM_PATH ? "off" : "retain-on-failure",
   },
   webServer: {
     command:

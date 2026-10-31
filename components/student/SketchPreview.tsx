@@ -107,8 +107,8 @@ export function SketchPreview() {
 
   return (
     <div className="flex h-dvh min-h-0 flex-col bg-imaging text-white">
-      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[#1F1F1F] bg-[#181818] px-3 py-2">
-        <p className="font-hand text-xl leading-none text-[#FFE14A]">Sketch preview</p>
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 bg-annotation px-3 py-2">
+        <p className="text-sm font-semibold text-white">Sketch preview</p>
         <div className="flex flex-wrap gap-1.5">
           <Button size="sm" variant="secondary" onClick={() => setZoom((value) => (value > 1.2 ? 1 : 1.85))}>
             {zoom > 1.2 ? "Fit" : "Zoom in"}
@@ -130,7 +130,7 @@ export function SketchPreview() {
           slice {slice} · zoom {zoom.toFixed(2)}
         </p>
       </header>
-      <div ref={stageRef} className="relative min-h-0 flex-1 bg-black" data-testid="sketch-stage">
+      <div ref={stageRef} className="relative min-h-0 flex-1 bg-black" data-viewer-root data-testid="sketch-preview-stage">
         <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
           {body && <ellipse cx={body.cx} cy={body.cy} rx={body.rx} ry={body.ry} fill="#141414" stroke="#2a2a2a" />}
           {rightLung && <ellipse cx={rightLung.cx} cy={rightLung.cy} rx={rightLung.rx} ry={rightLung.ry} fill="#101418" stroke="#243038" />}
@@ -138,7 +138,7 @@ export function SketchPreview() {
           {spine && <ellipse cx={spine.cx} cy={spine.cy} rx={spine.rx} ry={spine.ry} fill="#2c2418" />}
         </svg>
         <SketchOverlay marks={marks} frame={frame} />
-        {anatomy && <AnatomyPanel onClose={() => setAnatomy(false)} />}
+        {anatomy && <AnatomyPanel caseId="case-lidc-nodule-search" findingId="f_caselidcno_2" onClose={() => setAnatomy(false)} />}
       </div>
     </div>
   );

@@ -56,8 +56,29 @@ interface DrawnAnnotation {
 
 const TRAIL_LENGTH = 8;
 
-export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }>(
-  function ReplayOverlay({ active }, ref) {
+/**
+ * `accent` is the author tool's laser. `ink` is the student tutor's pen: a
+ * white nib with a warm glow, matching the tutor's marks (no blue on the
+ * image).
+ */
+export type ReplayTone = "accent" | "ink";
+
+const TONE = {
+  accent: {
+    trail: "bg-accent/70",
+    halo: "bg-accent/20",
+    dot: "border-2 border-accent-foreground/30 bg-accent ring-1 ring-accent/50",
+  },
+  ink: {
+    trail: "bg-ink/60",
+    halo: "bg-ink/25 blur-[3px]",
+    dot: "bg-white ring-2 ring-ink shadow-[0_0_10px_2px_rgb(255_212_71/0.65),0_0_0_4px_rgb(0_0_0/0.45)]",
+  },
+} as const;
+
+export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean; tone?: ReplayTone }>(
+  function ReplayOverlay({ active, tone = "accent" }, ref) {
+    const look = TONE[tone];
     const [dot, setDot] = useState<{ x: number; y: number } | null>(null);
     const [trail, setTrail] = useState<TrailPoint[]>([]);
     const [annotations, setAnnotations] = useState<DrawnAnnotation[]>([]);
@@ -144,7 +165,7 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
           return (
             <span
               key={p.id}
-              className="absolute h-2.5 w-2.5 rounded-full bg-accent/70"
+              className={`absolute h-2.5 w-2.5 rounded-full ${look.trail}`}
               style={style}
             />
           );
@@ -155,8 +176,8 @@ export const ReplayOverlay = forwardRef<ReplayOverlayHandle, { active: boolean }
             className="absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: `${dot.x * 100}%`, top: `${dot.y * 100}%` }}
           >
-            <span className="absolute -inset-2 rounded-full bg-accent/20" />
-            <span className="relative block h-3.5 w-3.5 rounded-full border-2 border-accent-foreground/30 bg-accent ring-1 ring-accent/50" />
+            <span className={`absolute -inset-2 rounded-full ${look.halo}`} />
+            <span className={`relative block h-3.5 w-3.5 rounded-full ${look.dot}`} />
           </span>
         )}
       </div>

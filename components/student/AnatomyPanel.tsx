@@ -1,9 +1,14 @@
 "use client";
 
+// Full-viewport 3D view of this study's anatomy. The organ meshes come from
+// TotalSegmentator run on the same de-identified CT; the active finding is a
+// glowing marker inside frosted-glass lungs. A generic schematic stands in
+// (and says so) when the case has no patient meshes.
+
 import dynamic from "next/dynamic";
-import { useEffect, useState } from "react";
-import { X } from "lucide-react";
-import { IconButton, Spinner } from "@/components/ui";
+import { useEffect, useRef, useState } from "react";
+import { RotateCcw, X } from "lucide-react";
+import { Button, IconButton, Spinner } from "@/components/ui";
 import {
   ANATOMY_DISCLAIMER,
   GENERIC_STRUCTURES,
@@ -12,12 +17,7 @@ import {
 
 const AnatomyStage = dynamic(() => import("./AnatomyStage"), {
   ssr: false,
-  loading: () => (
-    <div className="flex h-full min-h-32 items-center justify-center gap-2 bg-black text-sm text-white">
-      <Spinner size="sm" label="Loading 3D anatomy" />
-      Loading 3D anatomy…
-    </div>
-  ),
+  loading: () => <StageMessage>Loading 3D anatomy…</StageMessage>,
 });
 
 const GENERIC_MANIFEST: AnatomyManifest = {
@@ -28,20 +28,33 @@ const GENERIC_MANIFEST: AnatomyManifest = {
   findings: [],
 };
 
+function StageMessage({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex h-full items-center justify-center gap-2 text-sm text-white/80">
+      <Spinner size="sm" label="Loading 3D anatomy" />
+      {children}
+    </div>
+  );
+}
+
 export function AnatomyPanel({
   caseId,
   findingId,
-  sliceImage,
+  findingLabel,
   onClose,
 }: {
   caseId?: string;
   findingId?: string;
-  sliceImage?: string | null;
+  /** Shown on the marker when the manifest has no label for this finding. */
+  findingLabel?: string;
   onClose: () => void;
 }) {
   const [manifest, setManifest] = useState<AnatomyManifest | null>(null);
-  const [selected, setSelected] = useState("right-lung");
+  const [failed, setFailed] = useState(false);
   const [exploded, setExploded] = useState(false);
+  const [resetToken, setResetToken] = useState(0);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +64,6 @@ export function AnatomyPanel({
         if (cancelled) return;
         if (data && data.source === "totalsegmentator" && (!caseId || data.caseId === caseId)) {
           setManifest(data);
-          setSelected(data.structures[0]?.id ?? "right-lung");
           return;
         }
         setManifest(GENERIC_MANIFEST);
@@ -64,65 +76,103 @@ export function AnatomyPanel({
     };
   }, [caseId]);
 
+  // A dialog: focus lands on close, Escape closes.
+  useEffect(() => {
+    closeRef.current?.focus();
+    // Capture phase: an escape layer lower down (menus, toasts) stops the
+    // event before it would bubble back to window.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
+  const patient = manifest?.source === "totalsegmentator";
   const view = manifest ? { ...manifest, activeFindingId: findingId } : null;
-  const current = view?.structures.find((item) => item.id === selected);
+  const finding = view?.findings.find((item) => item.findingId === findingId);
+  const hoveredLabel = hovered ? view?.structures.find((item) => item.id === hovered)?.label : null;
 
   return (
     <div
-      className="absolute z-30 flex min-h-0 flex-col border-[#1F1F1F] bg-black shadow-[0_18px_50px_rgba(0,0,0,0.55)] max-lg:inset-x-0 max-lg:bottom-0 max-lg:h-[min(48dvh,440px)] max-lg:rounded-t-2xl max-lg:border-t lg:inset-y-0 lg:right-0 lg:w-[min(440px,42%)] lg:border-l"
+      className="fixed inset-0 z-50 bg-black"
       role="dialog"
+      aria-modal="true"
       aria-label="3D anatomy"
       data-testid="anatomy-panel"
     >
-      <div className="flex shrink-0 items-start justify-between gap-2 px-3 py-2">
+      <div className="absolute inset-0">
+        {failed ? (
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-white/80">
+            3D view needs WebGL, which this browser has turned off.
+          </div>
+        ) : view ? (
+          <AnatomyStage
+            manifest={view}
+            exploded={exploded}
+            resetToken={resetToken}
+            findingLabel={finding?.label ?? findingLabel}
+            onHover={setHovered}
+            onError={() => setFailed(true)}
+          />
+        ) : (
+          <StageMessage>Loading organ meshes…</StageMessage>
+        )}
+      </div>
+
+      {/* Top: what this is, and how to leave. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-4 bg-gradient-to-b from-black/80 to-transparent px-4 pb-10 pt-4 sm:px-6">
         <div className="min-w-0">
-          <p className="font-hand text-lg leading-none tracking-tight text-[#FFE14A]">
-            {view?.source === "totalsegmentator" ? "This study, in 3D" : "Schematic anatomy"}
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink">
+            {patient ? "This study · 3D" : "Schematic anatomy"}
           </p>
-          <p className="mt-1 text-[11px] leading-snug text-white/70" data-testid="anatomy-disclaimer">
+          <h2 className="mt-1 text-lg font-semibold tracking-tightest text-white sm:text-xl">
+            {finding?.label ?? findingLabel ?? "Chest anatomy"}
+          </h2>
+          <p className="mt-1 max-w-md text-xs leading-snug text-white/60" data-testid="anatomy-disclaimer">
             {view?.disclaimer ?? "Loading organ meshes…"}
           </p>
         </div>
-        <IconButton aria-label="Close 3D anatomy" variant="secondary" onClick={onClose}>
-          <X className="h-4 w-4" />
+        <IconButton
+          ref={closeRef}
+          aria-label="Close 3D anatomy"
+          variant="imaging"
+          size="lg"
+          className="pointer-events-auto h-11 w-11 shrink-0"
+          onClick={onClose}
+        >
+          <X />
         </IconButton>
       </div>
-      <div className="flex shrink-0 gap-1 overflow-x-auto px-3 pb-2">
-        {view?.structures.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={
-              item.id === selected
-                ? "shrink-0 rounded-full bg-[#FFE14A] px-2.5 py-1 font-hand text-[13px] tracking-tight text-[#1a1408]"
-                : "shrink-0 rounded-full bg-white/5 px-2.5 py-1 font-hand text-[13px] tracking-tight text-[#f6efe2] ring-1 ring-white/15"
-            }
-            onClick={() => setSelected(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-        <div className="flex shrink-0 items-center justify-between px-3 pb-1">
-          {current ? <p className="font-hand text-sm text-[#3EE0FF]">Flying to {current.label}</p> : <span />}
-          <button
-            type="button"
-            className="rounded-full bg-white/5 px-2.5 py-1 font-hand text-[13px] tracking-tight text-[#f6efe2] ring-1 ring-white/15"
+
+      {/* Bottom: the two things worth doing in 3D. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap items-end justify-between gap-3 bg-gradient-to-t from-black/80 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-10 sm:px-6">
+        <p className="min-h-5 text-sm text-white/75" aria-live="polite">
+          {hoveredLabel ?? "Drag to turn · scroll or pinch to zoom"}
+        </p>
+        <div className="pointer-events-auto flex gap-2">
+          <Button
+            variant="imaging"
+            size="sm"
+            aria-pressed={exploded}
             onClick={() => setExploded((value) => !value)}
           >
             {exploded ? "Assemble" : "Exploded view"}
-          </button>
+          </Button>
+          <Button
+            variant="imaging"
+            size="sm"
+            leadingIcon={<RotateCcw className="h-4 w-4" />}
+            onClick={() => {
+              setExploded(false);
+              setResetToken((n) => n + 1);
+            }}
+          >
+            Reset view
+          </Button>
         </div>
-      <div className="relative min-h-0 flex-1">
-        {view ? (
-          <AnatomyStage
-            manifest={view}
-            selected={selected}
-            onSelect={setSelected}
-            exploded={exploded}
-            sliceImage={sliceImage}
-          />
-        ) : null}
       </div>
     </div>
   );

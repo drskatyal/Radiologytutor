@@ -18,6 +18,14 @@ const config: Config = {
         elevated: "rgb(var(--elevated) / <alpha-value>)",
         overlay: "rgb(var(--overlay) / <alpha-value>)",
         imaging: "#000000",
+        // Tutor ink on the image. Authored marks are marker yellow; a mark at
+        // a learner's tap is rose. Cards are solid near-black so they read on
+        // any window. Keep in sync with INK in lib/inkStroke.ts.
+        ink: {
+          DEFAULT: "#FFD447",
+          uncertain: "#FF8FD8",
+        },
+        annotation: "#0B0B0C",
         primary: "rgb(var(--text-primary) / <alpha-value>)",
         secondary: "rgb(var(--text-secondary) / <alpha-value>)",
         muted: "rgb(var(--text-muted) / <alpha-value>)",
@@ -74,6 +82,7 @@ const config: Config = {
         lg: "0 24px 48px -16px rgb(18 18 18 / 0.16)",
         focus: "0 0 0 3px rgb(var(--accent) / 0.3)",
         glow: "0 0 0 1px rgb(var(--accent) / 0.4)",
+        annotation: "0 18px 40px -12px rgb(0 0 0 / 0.85), 0 0 0 1px rgb(255 255 255 / 0.09)",
       },
       backgroundImage: {},
       transitionTimingFunction: {

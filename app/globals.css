@@ -201,20 +201,21 @@
   }
 }
 
-@keyframes sketch-draw-in {
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-@keyframes sketch-card-in {
+/* Tutor card: lands after its leader reaches the card edge. */
+@keyframes ink-card-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.96);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-ink-card] {
+    animation: none !important;
   }
 }
 

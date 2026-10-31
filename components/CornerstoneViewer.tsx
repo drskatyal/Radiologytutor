@@ -3053,7 +3053,7 @@ function ViewerToolbar({
           "disabled:cursor-not-allowed disabled:opacity-40",
           vertical ? "h-11 w-11" : "h-11 min-h-11 min-w-11 flex-col px-2 text-xs max-lg:w-11",
           activePreset
-            ? "bg-accent text-white"
+            ? "bg-white text-black"
             : presetOpen
               ? "bg-white/10 text-white"
               : "text-white/85 hover:bg-white/10 hover:text-white"
@@ -3208,7 +3208,7 @@ function ToolButton({
           ? "flex h-11 min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-lg px-1.5 lg:h-12 lg:min-w-12"
           : "flex h-11 w-11 items-center justify-center rounded-lg",
         active
-          ? "bg-accent text-white"
+          ? "bg-white text-black"
           : "text-white/85 hover:bg-white/10 hover:text-white"
       )}
     >
@@ -3246,11 +3246,11 @@ function PresetItem({
         "flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
         "disabled:cursor-not-allowed disabled:opacity-40",
-        active ? "bg-accent text-white" : "text-white/90 hover:bg-white/10 hover:text-white"
+        active ? "bg-white text-black" : "text-white/90 hover:bg-white/10 hover:text-white"
       )}
     >
       <span className="font-medium">{label}</span>
-      <span className={cn("tabular-nums", active ? "text-white/80" : "text-white/65")}>{hint}</span>
+      <span className={cn("tabular-nums", active ? "text-black/60" : "text-white/65")}>{hint}</span>
     </button>
   );
 }

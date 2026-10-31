@@ -151,7 +151,7 @@ export function LayoutToggle({
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
               "disabled:cursor-not-allowed disabled:opacity-40",
               selected
-                ? "bg-accent text-white"
+                ? "bg-white text-black"
                 : "text-white/85 hover:bg-white/10 hover:text-white"
             )}
           >

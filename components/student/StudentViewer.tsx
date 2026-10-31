@@ -20,6 +20,7 @@ import type { SketchFrame } from "@/lib/sketchProjection";
 import type { SketchMark } from "@/lib/sketchMarks";
 import { FindingMarker } from "./FindingMarker";
 import { MeasurementOverlay } from "./MeasurementOverlay";
+import { ImageRectLayer } from "./ImageRectLayer";
 import { SketchOverlay } from "./SketchOverlay";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
@@ -222,6 +223,7 @@ function ImagingPane({
 
   return (
     <div
+      data-viewer-root
       className="relative h-full min-h-0 w-full min-w-0 overflow-hidden bg-imaging lg:border-r lg:border-subtle/40 lg:last:border-r-0"
       onPointerDown={(event) => {
         downRef.current = { x: event.clientX, y: event.clientY };
@@ -257,14 +259,27 @@ function ImagingPane({
       />
 
       <div ref={hitRef} className="pointer-events-none absolute inset-0">
-        {stackOverlay && marker && sketches.length === 0 && (
-          <FindingMarker marker={marker} visible={markerVisible} />
-        )}
-        {stackOverlay && measurements && measurements.length > 0 && (
-          <MeasurementOverlay
-            measurements={measurements}
-            visible={Boolean(measurementsVisible)}
-          />
+        {stackOverlay && (
+          // Marker, calipers and laser are image fractions: lay them over
+          // the displayed image, not the letterboxed viewport.
+          <ImageRectLayer controls={controls}>
+            {marker && sketches.length === 0 && (
+              <FindingMarker marker={marker} visible={markerVisible} />
+            )}
+            {measurements && measurements.length > 0 && sketches.length === 0 && (
+              <MeasurementOverlay
+                measurements={measurements}
+                visible={Boolean(measurementsVisible)}
+              />
+            )}
+            <ReplayOverlay
+              ref={(h) => {
+                overlay.current = h;
+              }}
+              active={replaying}
+              tone="ink"
+            />
+          </ImageRectLayer>
         )}
         {stackOverlay && (
           <SketchOverlay
@@ -273,14 +288,6 @@ function ImagingPane({
             onFrame={(frame) => {
               frameRef.current = frame;
             }}
-          />
-        )}
-        {stackOverlay && (
-          <ReplayOverlay
-            ref={(h) => {
-              overlay.current = h;
-            }}
-            active={replaying}
           />
         )}
         {locateMode && onLocateClick && (

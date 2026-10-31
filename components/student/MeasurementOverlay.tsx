@@ -66,7 +66,7 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
           y1={`${a[1] * 100}%`}
           x2={`${b[0] * 100}%`}
           y2={`${b[1] * 100}%`}
-          className="stroke-accent"
+          className="stroke-ink"
           strokeWidth={1.5}
           vectorEffect="non-scaling-stroke"
         />
@@ -78,7 +78,7 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
 
   if (m.kind === "angle" && pts.length >= 2) {
     return (
-      <g className="stroke-accent" strokeWidth={1.5} vectorEffect="non-scaling-stroke">
+      <g className="stroke-ink" strokeWidth={1.5} vectorEffect="non-scaling-stroke">
         {pts.slice(0, -1).map((a, i) => {
           const b = pts[i + 1];
           return (
@@ -104,7 +104,7 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
         cy={`${box.cy * 100}%`}
         rx={`${box.rx * 100}%`}
         ry={`${box.ry * 100}%`}
-        className="fill-accent/10 stroke-accent"
+        className="fill-ink/10 stroke-ink"
         strokeWidth={1.5}
         vectorEffect="non-scaling-stroke"
       />
@@ -120,7 +120,7 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
         y1={`${p[1] * 100}%`}
         x2={`${(p[0] + 0.012) * 100}%`}
         y2={`${p[1] * 100}%`}
-        className="stroke-accent"
+        className="stroke-ink"
         strokeWidth={1.5}
         vectorEffect="non-scaling-stroke"
       />
@@ -129,7 +129,7 @@ function MeasurementGraphic({ m }: { m: FindingMeasurement }) {
         y1={`${(p[1] - 0.012) * 100}%`}
         x2={`${p[0] * 100}%`}
         y2={`${(p[1] + 0.012) * 100}%`}
-        className="stroke-accent"
+        className="stroke-ink"
         strokeWidth={1.5}
         vectorEffect="non-scaling-stroke"
       />
@@ -143,7 +143,7 @@ function HandleDot({ x, y }: { x: number; y: number }) {
       cx={`${x * 100}%`}
       cy={`${y * 100}%`}
       r={3}
-      className="fill-accent stroke-canvas"
+      className="fill-ink stroke-canvas"
       strokeWidth={1}
     />
   );

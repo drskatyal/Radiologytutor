@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { materializeLiveTeachingPack, validateLiveToolCall } from "./liveTeachingPack.ts";
 import {
   fillDiagramCard,
+  keepWith,
   markVisibleOnSlice,
   plainTeachingText,
   replaySketches,
@@ -10,16 +11,26 @@ import {
   uncertainTapMark,
 } from "./sketchMarks.ts";
 import {
-  cardPixelSize,
   frameFromCamera,
   imageFractionToWorld,
-  leaderStart,
-  placeCardBox,
   projectImageNorm,
   unprojectImageNorm,
   type StackCamera,
 } from "./sketchProjection.ts";
-import { drawDurationMs, roughArrowHead, roughPaths, sketchSeed } from "./roughStroke.ts";
+import {
+  arrowStrokes,
+  brushOutline,
+  dashStroke,
+  drawDurationMs,
+  inkSeed,
+  loopOffsets,
+  outlinePath,
+  partialStroke,
+  penProgress,
+  polylineLength,
+  squiggleStroke,
+} from "./inkStroke.ts";
+import { backgroundMask, cardEdgeToward, cardNeedsReseat, cardWidthFor, lumaGrid, placeCard } from "./cardPlacement.ts";
 import type { Finding } from "./types.ts";
 
 function finding(partial: Partial<Finding> & Pick<Finding, "id" | "label">): Finding {
@@ -73,29 +84,116 @@ test("image fractions land on the DICOM plane", () => {
   assert.deepEqual(world, [-0.5, -0.5, 0]);
 });
 
-test("a card stays inside a phone viewport", () => {
-  const size = cardPixelSize(390);
-  assert.ok(size.width <= 390 - 16);
-  const box = placeCardBox({ x: 300, y: 40 }, { width: 390, height: 700 }, size);
-  assert.ok(box.x >= 8);
-  assert.ok(box.y >= 8);
-  assert.ok(box.x + size.width <= 390 - 8);
-  const edge = leaderStart({ x: box.x, y: box.y, width: size.width, height: size.height }, { x: 300, y: 40 });
-  assert.ok(edge.x >= box.x - 1 && edge.x <= box.x + size.width + 1);
+test("a card stays inside a phone viewport and clear of the ring", () => {
+  const width = cardWidthFor(390);
+  assert.ok(width <= 390 - 32);
+  const anchor = { x: 300, y: 40 };
+  const box = placeCard({ anchor, ringRadius: 24, card: { width, height: 110 }, viewport: { width: 390, height: 700 } });
+  assert.ok(box.x >= 12 && box.y >= 12);
+  assert.ok(box.x + width <= 390 - 12);
+  assert.equal(cardNeedsReseat(box, anchor, 24, { width: 390, height: 700 }), false);
+  const edge = cardEdgeToward(box, anchor);
+  assert.ok(edge.x >= box.x - 1 && edge.x <= box.x + width + 1);
 });
 
-test("rough strokes are seeded, curved, and timed inside 0.4–0.8s", () => {
-  const seed = sketchSeed("f-nodule");
-  const first = roughPaths("circle", seed).join(" ");
-  const second = roughPaths("circle", seed).join(" ");
-  assert.equal(first, second);
-  assert.match(first, /[MC]/);
-  assert.notEqual(roughPaths("circle", seed + 1).join(" "), first);
-  assert.ok(roughArrowHead(seed)[0]?.includes("M"));
+/** A synthetic slice: black outside, a bright body disc, a dark lung inside it. */
+function syntheticSlice(width: number, height: number) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const k = (y * width + x) * 4;
+      const body = Math.hypot((x - width / 2) / (width * 0.3), (y - height / 2) / (height * 0.38)) < 1;
+      const lung = Math.hypot((x - width * 0.6) / (width * 0.08), (y - height / 2) / (height * 0.16)) < 1;
+      const v = body ? (lung ? 14 : 210) : 0;
+      data[k] = data[k + 1] = data[k + 2] = v;
+      data[k + 3] = 255;
+    }
+  }
+  return { width, height, data };
+}
+
+test("cards sit in the black outside the body, not on the lung", () => {
+  const view = { width: 960, height: 600 };
+  const grid = lumaGrid(syntheticSlice(view.width, view.height), view);
+  const mask = backgroundMask(grid);
+  // The lung is dark but enclosed by the body, so it is not background.
+  const lungCell = Math.floor(300 / grid.cell) * grid.cols + Math.floor(576 / grid.cell);
+  assert.equal(mask[lungCell], 0);
+  assert.equal(mask[0], 1);
+  const anchor = { x: 576, y: 300 };
+  const place = placeCard({ anchor, ringRadius: 26, card: { width: 256, height: 120 }, viewport: view, grid });
+  assert.ok(place.background > 0.9, `background ${place.background}`);
+  // Outside the body ellipse entirely.
+  const corners = [
+    [place.x, place.y],
+    [place.x + 256, place.y],
+    [place.x, place.y + 120],
+    [place.x + 256, place.y + 120],
+  ];
+  const insideBody = corners.filter(([x, y]) => Math.hypot((x! - 480) / 288, (y! - 300) / 228) < 1).length;
+  assert.equal(insideBody, 0);
+});
+
+test("ink strokes are seeded, hand-shaped, and timed inside 0.4–0.8s", () => {
+  const seed = inkSeed("f-nodule");
+  const loop = loopOffsets(seed);
+  assert.deepEqual(loopOffsets(seed), loop);
+  assert.notDeepEqual(loopOffsets(seed + 1), loop);
+  // The loop overshoots its start: the ends cross instead of meeting.
+  const start = Math.atan2(loop[0]!.y, loop[0]!.x);
+  const turns = loop.reduce((sum, p, i) => {
+    if (i === 0) return 0;
+    const a = Math.atan2(loop[i - 1]!.y, loop[i - 1]!.x);
+    let d = Math.atan2(p.y, p.x) - a;
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return sum + d;
+  }, 0);
+  assert.ok(Number.isFinite(start));
+  assert.ok(Math.abs(turns) > Math.PI * 2 + 0.3, `swept ${turns}`);
+  // Not a perfect circle.
+  const radii = loop.map((p) => Math.hypot(p.x, p.y));
+  assert.ok(Math.max(...radii) - Math.min(...radii) > 0.05);
+
+  const strokes = arrowStrokes({ x: 0, y: 0 }, { x: 120, y: 40 }, seed);
+  assert.equal(strokes.length, 3);
+  assert.deepEqual(strokes[0]!.at(-1), { x: 120, y: 40 });
+  const outline = brushOutline(strokes[0]!, { size: 5 });
+  assert.ok(outline.length > 8);
+  assert.match(outlinePath(outline), /^M.*Z$/);
+
+  const leader = squiggleStroke({ x: 0, y: 0 }, { x: 200, y: 0 }, seed);
+  assert.ok(leader.some((p) => Math.abs(p.y) > 1), "the leader wavers");
+  const half = partialStroke(leader, 0.5);
+  assert.ok(Math.abs(polylineLength(half) - polylineLength(leader) / 2) < 1);
+  assert.ok(dashStroke(leader, 12, 8).length > 4);
+  assert.equal(penProgress(0, 600), 0);
+  assert.equal(penProgress(600, 600), 1);
+
   for (const kind of ["circle", "ellipse", "arrow", "underline", "leader", "card"] as const) {
     const ms = drawDurationMs(kind);
     assert.ok(ms >= 400 && ms <= 800, kind);
   }
+});
+
+test("one confident mark at a time", () => {
+  const pack = materializeLiveTeachingPack({
+    caseId: "c1",
+    modality: "CT",
+    findings: [finding({ id: "f1", label: "Spiculated nodule" }), finding({ id: "f2", label: "Effusion", order: 2 })],
+  });
+  const ring = replaySketches(pack, "f1", 1, "ring");
+  const withCard = keepWith(ring, replaySketches(pack, "f1", 2, "card"));
+  assert.deepEqual(withCard.map((mark) => mark.kind), ["circle", "card"]);
+  const arrow = resolveSketchTool(pack, "draw_arrow", { findingId: "f1" });
+  assert.ok(arrow.ok && "marks" in arrow);
+  if (arrow.ok && "marks" in arrow) {
+    // The arrow replaces the ring; the card stays with its finding.
+    assert.deepEqual(keepWith(withCard, arrow.marks).map((mark) => mark.kind), ["card", "arrow"]);
+  }
+  // Another finding's ink clears this one's.
+  const other = keepWith(withCard, replaySketches(pack, "f2", 3, "ring"));
+  assert.deepEqual(other.map((mark) => mark.findingId), ["f2"]);
 });
 
 test("draw tools reject an invented point and accept the authored marker", () => {
@@ -233,12 +331,13 @@ test("reaching a finding replays anchored marks", () => {
     findings: [finding({ id: "f1", label: "Spiculated nodule" })],
   });
   const marks = replaySketches(pack, "f1", 7);
+  // A ring, then the card once the hand lifts. No unrequested arrow.
   assert.deepEqual(
     marks.map((mark) => mark.kind),
-    ["circle", "arrow", "card"]
+    ["circle", "card"]
   );
-  assert.ok((marks[0]?.delayMs ?? 0) < (marks[1]?.delayMs ?? 0));
-  assert.ok((marks[1]?.delayMs ?? 0) < (marks.find((mark) => mark.kind === "card")?.delayMs ?? 0));
+  assert.ok((marks[0]?.delayMs ?? 0) + (marks[0]?.durationMs ?? 0) <= (marks[1]?.delayMs ?? 0));
+  assert.equal(marks[1]?.rx, marks[0]?.rx);
   assert.ok(marks.every((mark) => mark.anchor.x_pct === 0.32 && mark.certainty === "authored"));
   assert.equal(marks.find((mark) => mark.kind === "card")?.card?.title, "Spiculated nodule");
   const frame = frameFromCamera(camera, 12);

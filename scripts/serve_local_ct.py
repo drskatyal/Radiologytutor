@@ -9,13 +9,15 @@ normal so stack index 34 is the mid-chest the teaching case describes.
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pydicom
 
-DICOM_DIR = Path("/workspace/data/lidc-ct")
-META_PATH = Path("/workspace/data/lidc-ct/metadata.json")
+# Directory of NNN.dcm plus metadata.json (DICOM JSON, same order).
+DICOM_DIR = Path(os.environ.get("LIDC_CT_DIR", "/workspace/data/lidc-ct"))
+META_PATH = DICOM_DIR / "metadata.json"
 STUDY = "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159"
 SERIES = "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463"
 STUDY_ID = "study-lidc"
