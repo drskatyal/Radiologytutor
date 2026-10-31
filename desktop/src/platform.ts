@@ -37,6 +37,12 @@ export function imageUrlFor(fileId: number): string {
   return `${protocolBase}${fileId}`;
 }
 
+/** Rust-rendered PNG of a file's first frame (uncompressed greyscale only; 404 otherwise). */
+export function previewUrlFor(fileId: number): string {
+  if (!protocolBase) throw new Error("dicom protocol not initialised");
+  return `${protocolBase.replace(/f\/$/, "p/")}${fileId}`;
+}
+
 export async function listen<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
   if (!isTauri) return () => {};
   const { listen } = await import("@tauri-apps/api/event");

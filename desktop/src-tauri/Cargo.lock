@@ -3078,6 +3078,7 @@ dependencies = [
  "futures-util",
  "parking_lot",
  "percent-encoding",
+ "png",
  "rayon",
  "reqwest 0.12.28",
  "serde",

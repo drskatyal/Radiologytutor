@@ -13,6 +13,7 @@ mod anonymize;
 mod header;
 mod pacs;
 mod pet;
+mod preview;
 mod scan;
 mod sources;
 mod store;
@@ -223,6 +224,25 @@ fn bench_enabled() -> bool {
     std::env::var("RADLEARN_BENCH").as_deref() == Ok("1")
 }
 
+/// `/p/<id>`: instant-preview PNG of a registered file (see preview.rs).
+fn serve_preview(registry: &Mutex<FileRegistry>, id: &str) -> Response<Vec<u8>> {
+    let path = id.parse::<u32>().ok().and_then(|id| registry.lock().paths.get(id as usize).cloned());
+    match path.and_then(|p| preview::render_png(&p)) {
+        Some(png) => Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "image/png")
+            .header(http_header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(http_header::CACHE_CONTROL, "no-store")
+            .body(png)
+            .unwrap(),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(http_header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(Vec::new())
+            .unwrap(),
+    }
+}
+
 fn serve_file(registry: &Mutex<FileRegistry>, uri_path: &str) -> Response<Vec<u8>> {
     let not_found = || {
         Response::builder()
@@ -291,7 +311,13 @@ pub fn run() {
             let registry = registry.clone();
             let path = request.uri().path().to_string();
             // Disc reads can take tens of ms; never block the webview thread.
-            std::thread::spawn(move || responder.respond(serve_file(&registry, &path)));
+            std::thread::spawn(move || {
+                let response = match path.trim_start_matches('/').strip_prefix("p/") {
+                    Some(id) => serve_preview(&registry, id),
+                    None => serve_file(&registry, &path),
+                };
+                responder.respond(response)
+            });
         })
         .invoke_handler(tauri::generate_handler![
             scan_sources,

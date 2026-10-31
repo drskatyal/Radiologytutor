@@ -28,7 +28,7 @@
       "csp": {
         "default-src": "'self' customprotocol: asset:",
         "connect-src": "'self' ipc: http://ipc.localhost dicom: http://dicom.localhost",
-        "img-src": "'self' data: blob:",
+        "img-src": "'self' data: blob: dicom: http://dicom.localhost",
         "media-src": "'self' blob:",
         "worker-src": "'self' blob:",
         "script-src": "'self' 'wasm-unsafe-eval'",

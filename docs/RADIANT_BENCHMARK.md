@@ -139,7 +139,7 @@ every slice loaded and every pane drawn (`RADLEARN_BENCH_VIEW`).
 | MPR (3 planes + 3D) | CT, 300 × 512² | **2.0 s** |
 | 3D volume rendering | CT, 300 × 512² | **1.9 s** |
 | PET/CT fusion (3 fused planes + PET MIP) | CT 300 + PET 75 | **2.5 s** |
-| MPR | CT, 1,200 × 512² (600 MB) | **8.3 s** |
+| MPR | CT, 1,200 × 512² (600 MB) | **8.3 s** (4.3 s after the speed pass, §1.5.1) |
 
 RadiAnt's published claim, for reference: a coronal MPR from more than 2,000
 axial CT slices in about 3 s on a modern Core i7. That is a vendor claim, not
@@ -155,6 +155,27 @@ percentage while it builds.
 read and decode in parallel, then hand the renderer one buffer through a raw
 IPC body, instead of 1,200 protocol requests and worker decodes. That is M3
 work if the HP numbers show a gap.
+
+### 1.5.1 Speed pass after M3 (same box, release build)
+
+| | before | after | what changed |
+|---|---|---|---|
+| MPR ready, CT 1,200 × 512² | 8.3 s | **4.3 s** | decode pool's prefetch lane 8 → 32, retrieval pool 8 → 32, and decode workers = every core (desktop has no server to protect) |
+| MPR ready, CT 300 × 512² | 2.0 s | **1.37 s** | same |
+| **Anything on screen** after opening a CT | ~0.72 s | **0.13–0.16 s** | Rust renders a windowed PNG of the first slice in **2.7 ms**, served at `dicom://…/p/<id>`, shown until Cornerstone paints |
+| Series hung (browser populated) | ~0.39 s | **0.04 s** | the engine is no longer parsed on the main thread while the scan runs; it starts once the preview is up |
+| Full interactive viewport | ~0.72 s | 0.72 s | unchanged: Cornerstone init (~350 ms on software GL) is the floor here |
+| Startup JS chunk | 577 KB | **437 KB** | toolbar, viewports, MPR/3D and every dialog load on demand |
+
+Trade-offs, stated:
+- **Compressed series** (J2K, JPEG, RLE…) have no Rust preview, and reach the full viewport ~60 ms later than before (0.88 s vs 0.82 s), because the engine now starts at hang time instead of at scan start.
+- **Cold start** is unchanged at ~0.80 s. WebKitGTK spends ~0.68 s before our JS runs; our own share is ~0.12 s.
+
+**Tried and dropped: assembling the whole volume in Rust.**
+- **The upside:** Rust read and rescaled a 300-slice CT (150 MB) in **90 ms**.
+- **The transfer cost:** handing that buffer to the WebView cost **2.6 s** through WebKitGTK's custom scheme (~60 MB/s). That would make a 1,200-slice study slower than streaming. A 150 MB IPC response was worse still.
+- **A second problem:** Cornerstone's `createLocalVolume` then stalled.
+- **Verdict:** reverted rather than shipped. Worth re-testing on WebView2 and WKWebView, whose custom-scheme throughput may be far higher, once the HP and a Mac are available.
 
 ### 1.6 Measure it on the HP (owed)
 
