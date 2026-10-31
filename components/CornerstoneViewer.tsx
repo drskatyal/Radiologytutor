@@ -37,8 +37,8 @@
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
 import {
+  useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -118,6 +118,16 @@ import {
 } from "../lib/cinePlayer";
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
 import { isTextTarget, resolveViewerHotkey } from "../lib/viewerHotkeys";
+import {
+  OVERLAY_STORAGE_KEY,
+  nextOverlayDensity,
+  orientationMarkers,
+  overlayCorners,
+  parseOverlayDensity,
+  windowLine,
+  type OverlayDensity,
+  type OverlayMeta,
+} from "../lib/dicomOverlay";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
   finiteVoi,
@@ -160,7 +170,15 @@ import {
 } from "../lib/windowPresets";
 import { Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
-import { LayoutToggle, MprLayout } from "./MprLayout";
+import { MprLayout } from "./MprLayout";
+import {
+  MEASURE_TOOLS,
+  PRIMARY_TOOLS,
+  ViewerToolbar,
+  toolLabel,
+} from "./viewer/ViewerToolbar";
+import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
+import { ViewerHelp } from "./viewer/ViewerHelp";
 import {
   assessMpr,
   modalityForMpr,
@@ -172,67 +190,16 @@ import {
   type MprSessionHandle,
   type PlaneSample,
 } from "../lib/mpr";
-import {
-  Blend,
-  ChevronDown,
-  Circle,
-  Crosshair,
-  Eraser,
-  Move,
-  MoveUpRight,
-  Pause,
-  Play,
-  Ruler,
-  Settings2,
-  Square,
-  Layers as LayersIconL,
-  RotateCcw,
-  SunMoon,
-  Triangle,
-  ZoomIn,
-  type LucideIcon,
-} from "lucide-react";
 
-// Tools selectable on the LEFT mouse button. Pan/Zoom/Scroll also keep their
-// wheel/middle/right bindings so the usual PACS mouse scheme still works.
+// Tools selectable on the LEFT mouse button live in viewer/ViewerToolbar.tsx.
+// Pan/Zoom/Scroll also keep their wheel/middle/right bindings so the usual
+// PACS mouse scheme still works.
 //
-// `annotation: true` marks the measurement/markup tools. These place annotations
-// in world space; only the real-world MEASUREMENT (mm vs px) needs per-image
-// PixelSpacing — the tools still DRAW correctly without it. So we keep them
-// ENABLED by default and only disable them when a study POSITIVELY has no pixel
-// spacing at all (e.g. the tiny synthetic multiframe MR we bundle as an offline
-// sample). Real DICOMweb / uploaded studies keep the tools live — at worst a
-// measurement falls back to pixels, which is far better than a dead control.
-type ViewerTool = {
-  name: string;
-  label: string;
-  /** Short visible caption. The accessible name stays `label`. */
-  short: string;
-  annotation?: boolean;
-};
-
-// Primary tools stay on the bar. Measurement tools other than Length live in
-// an overflow, matching OHIF's MeasurementTools split + MoreTools — ten equal
-// icons is how a toolbar becomes wallpaper.
-const NAV_TOOLS: ViewerTool[] = [
-  // Scroll leads so the reading-room default stays on screen when a narrow
-  // series rail leaves only ~150px for the bar. Window/Level is the next tap.
-  { name: "StackScroll", label: "Scroll", short: "Scroll" },
-  { name: "WindowLevel", label: "Window / Level", short: "W/L" },
-  { name: "Pan", label: "Pan", short: "Pan" },
-  { name: "Zoom", label: "Zoom", short: "Zoom" },
-];
-
-const MEASURE_TOOLS: ViewerTool[] = [
-  { name: "Length", label: "Length", short: "Length", annotation: true },
-  { name: "Angle", label: "Angle", short: "Angle", annotation: true },
-  { name: "EllipticalROI", label: "Ellipse ROI", short: "Ellipse", annotation: true },
-  { name: "RectangleROI", label: "Rectangle ROI", short: "Rect", annotation: true },
-  { name: "Probe", label: "Probe", short: "Probe", annotation: true },
-  { name: "ArrowAnnotate", label: "Arrow", short: "Arrow", annotation: true },
-];
-
-const PRIMARY_TOOLS: ViewerTool[] = [...NAV_TOOLS, ...MEASURE_TOOLS];
+// Measurement tools place annotations in world space; only the real-world
+// MEASUREMENT (mm vs px) needs per-image PixelSpacing — the tools still DRAW
+// correctly without it. So they stay ENABLED by default and are only disabled
+// when a study POSITIVELY has no pixel spacing at all (e.g. the tiny synthetic
+// multiframe MR we bundle as an offline sample).
 
 /** `dock` — square image, bar underneath (record / demo).
  *  `edge` — image fills the pane, bar along its bottom edge (student).
@@ -302,6 +269,8 @@ export interface CornerstoneControls {
   setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
   reset: () => void;
+  /** Fit the image to the pane; keeps the window. (Hanging-layout reflow.) */
+  fit?: () => void;
   /**
    * Resize onto the current pane and repaint. Used when compare closes so the
    * primary buffer matches the single-pane layout without dropping the teach
@@ -495,6 +464,9 @@ async function buildImageIds(source: ViewerSource): Promise<string[]> {
   return createImageIdsAndCacheMetaData(source);
 }
 
+/** One Cornerstone core/tools/loader init per page; see the init effect. */
+let engineInit: Promise<void> | null = null;
+
 type SharedEngine = {
   enableElement: (entry: {
     viewportId: string;
@@ -567,6 +539,12 @@ export default function CornerstoneViewer({
   openSlice = null,
   defaultTool = "WindowLevel",
   onViewModeChange,
+  questionMarkHelp = false,
+  onCycleLayout,
+  toolbarHost,
+  active = true,
+  onActivate,
+  initialWindow = null,
 }: {
   source?: ViewerSource;
   /**
@@ -621,6 +599,27 @@ export default function CornerstoneViewer({
   defaultTool?: string;
   /** Stack markers and lasers are in image fractions. Callers hide them in MPR. */
   onViewModeChange?: (mode: MprMode) => void;
+  /**
+   * `?` opens the viewer's shortcut sheet. Leave off inside the student
+   * session, which owns `?` on `window`; the standalone viewer turns it on.
+   * H always opens it.
+   */
+  questionMarkHelp?: boolean;
+  /** G cycles the caller's hanging layout. Omit where there is no grid. */
+  onCycleLayout?: () => void;
+  /**
+   * Hanging layouts: the shared toolbar slot under the grid. When set, this
+   * pane portals its toolbar there while it is the active pane and renders
+   * none of its own, so a 2×2 has one bar that follows focus (OHIF's model;
+   * docs/UI_AUDIT.md backlog #7).
+   */
+  toolbarHost?: HTMLElement | null;
+  /** False for a non-focused pane in a grid. */
+  active?: boolean;
+  /** Pointer down or focus inside this pane. */
+  onActivate?: () => void;
+  /** Window to open on (a view link). Applied once, after the first pixel. */
+  initialWindow?: { ww: number; wc: number } | null;
 }) {
   const chrome = resolveChrome(showToolbar, chromeProp);
   const docked = chrome === "dock";
@@ -698,15 +697,51 @@ export default function CornerstoneViewer({
   openSliceRef.current = openSlice;
   const [inverted, setInverted] = useState(false);
   const [activePreset, setActivePreset] = useState<string | null>(null);
-  const [presetOpen, setPresetOpen] = useState(false);
-  const [measureOpen, setMeasureOpen] = useState(false);
   const [readout, setReadout] = useState<{
     slice: number;
     count: number;
     ww?: number;
     wc?: number;
     plane?: string;
+    /** Image the metadata below was read from (equality check only). */
+    imageId?: string;
+    meta?: OverlayMeta;
+    zoom?: number;
   } | null>(null);
+  // Corner overlay density, remembered per browser. Hydrated after mount so
+  // server and first client render agree.
+  const [overlay, setOverlay] = useState<OverlayDensity>("full");
+  useEffect(() => {
+    try {
+      setOverlay(parseOverlayDensity(window.localStorage.getItem(OVERLAY_STORAGE_KEY)));
+    } catch {
+      /* storage blocked — keep the default */
+    }
+  }, []);
+  const cycleOverlay = useCallback(() => {
+    setOverlay((current) => {
+      const next = nextOverlayDensity(current);
+      try {
+        window.localStorage.setItem(OVERLAY_STORAGE_KEY, next);
+      } catch {
+        /* storage blocked — still toggles for this session */
+      }
+      return next;
+    });
+  }, []);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // On-screen confirmation for key presses. Cleared after a beat.
+  const [hud, setHud] = useState<string | null>(null);
+  const hudTimerRef = useRef(0);
+  const flash = useCallback((text: string) => {
+    window.clearTimeout(hudTimerRef.current);
+    setHud(text);
+    hudTimerRef.current = window.setTimeout(() => setHud(null), 1100);
+  }, []);
+  useEffect(() => () => window.clearTimeout(hudTimerRef.current), []);
+  const fitRef = useRef<() => void>(() => {});
+  const initialWindowRef = useRef(initialWindow);
+  initialWindowRef.current = initialWindow;
   const readoutTimerRef = useRef(0);
   // Whether the annotation tools are enabled. Default ENABLED — we only flip to
   // disabled once we POSITIVELY confirm a study has no pixel spacing (e.g. the
@@ -796,10 +831,24 @@ export default function CornerstoneViewer({
         // WebGL context pool from 7 to 1). They are device-dependent and the
         // benchmark harness measures the same functions.
         const deviceProfile = detectDeviceProfile();
-        await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
-        await tools.init();
+        // Once per page, not once per pane. `dicomImageLoader.init()` runs
+        // `registerLoaders()`, which PURGES the image cache and the wadors
+        // metadata store — so a second pane mounting (a hanging layout, or
+        // student compare) silently wiped the first pane's metadata. Its stack
+        // kept painting from textures, but MPR then found no pixel module for
+        // any slice ("no spatial orientation") and prefetch decodes threw.
+        engineInit ??= (async () => {
+          await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
+          await tools.init();
+          await loader.init({ maxWebWorkers: webWorkerCount(deviceProfile) });
+        })();
+        try {
+          await engineInit;
+        } catch (err) {
+          engineInit = null;
+          throw err;
+        }
         const workers = webWorkerCount(deviceProfile);
-        await loader.init({ maxWebWorkers: workers });
         // Converted-bundle delivery (HTJ2K + previews via CDN) behind the same
         // wadors imageIds. Falls through to DICOMweb per image. Idempotent.
         installBundleLoader(
@@ -1048,22 +1097,67 @@ export default function CornerstoneViewer({
           fit: boolean;
         } | null = null;
         let heldVoi: Voi | null = null;
+        // Corner-overlay metadata. An allow-list read (lib/dicomOverlay.ts):
+        // series and geometry fields only, never a patient module.
+        const overlayMetaFor = (imageId: string | undefined): OverlayMeta | undefined => {
+          if (!imageId) return undefined;
+          try {
+            const seriesModule = core.metaData.get("generalSeriesModule", imageId) as
+              | { modality?: string; seriesDescription?: string; seriesNumber?: number | string }
+              | undefined;
+            const plane = core.metaData.get("imagePlaneModule", imageId) as
+              | {
+                  sliceThickness?: number;
+                  sliceLocation?: number;
+                  rows?: number;
+                  columns?: number;
+                  imageOrientationPatient?: number[];
+                }
+              | undefined;
+            return {
+              modality: seriesModule?.modality ?? null,
+              seriesDescription: seriesModule?.seriesDescription ?? null,
+              seriesNumber: seriesModule?.seriesNumber ?? null,
+              sliceThickness: plane?.sliceThickness ?? null,
+              sliceLocation: plane?.sliceLocation ?? null,
+              rows: plane?.rows ?? null,
+              columns: plane?.columns ?? null,
+              imageOrientationPatient: plane?.imageOrientationPatient ?? null,
+            };
+          } catch {
+            return undefined;
+          }
+        };
+        const sameReadout = (
+          prev: typeof readout,
+          next: NonNullable<typeof readout>
+        ): boolean =>
+          !!prev &&
+          prev.slice === next.slice &&
+          prev.count === next.count &&
+          prev.ww === next.ww &&
+          prev.wc === next.wc &&
+          prev.plane === next.plane &&
+          prev.imageId === next.imageId &&
+          prev.zoom === next.zoom &&
+          (prev.meta != null) === (next.meta != null);
         const publishReadout = () => {
           if (mprHeld) {
             const ww = heldVoi ? Math.round(heldVoi.ww) : undefined;
             const wc = heldVoi ? Math.round(heldVoi.wc) : undefined;
             const slice = displaySliceNumber(mprHeld.index);
             const count = mprHeld.imageIds.length;
-            setReadout((prev) =>
-              prev &&
-              prev.slice === slice &&
-              prev.count === count &&
-              prev.ww === ww &&
-              prev.wc === wc &&
-              prev.plane === "Axial"
-                ? prev
-                : { slice, count, ww, wc, plane: "Axial" }
-            );
+            const imageId = mprHeld.imageIds[mprHeld.index];
+            const next = {
+              slice,
+              count,
+              ww,
+              wc,
+              plane: "Axial",
+              imageId,
+              meta: overlayMetaFor(imageId),
+            };
+            setReadout((prev) => (sameReadout(prev, next) ? prev : next));
             return;
           }
           const vp = viewportRef.current;
@@ -1073,16 +1167,25 @@ export default function CornerstoneViewer({
           const slice = displaySliceNumber(vp.getCurrentImageIdIndex());
           const ww = v ? Math.round(v.ww) : undefined;
           const wc = v ? Math.round(v.wc) : undefined;
-          setReadout((prev) =>
-            prev &&
-            prev.slice === slice &&
-            prev.count === count &&
-            prev.ww === ww &&
-            prev.wc === wc &&
-            prev.plane == null
-              ? prev
-              : { slice, count, ww, wc }
-          );
+          let zoom: number | undefined;
+          try {
+            const z = vp.getZoom();
+            zoom = Number.isFinite(z) && z > 0 ? Math.round(z * 100) / 100 : undefined;
+          } catch {
+            zoom = undefined;
+          }
+          const imageId = vp.getCurrentImageId?.() || vp.getImageIds()[vp.getCurrentImageIdIndex()];
+          const next = {
+            slice,
+            count,
+            ww,
+            wc,
+            plane: undefined,
+            imageId,
+            meta: overlayMetaFor(imageId),
+            zoom,
+          };
+          setReadout((prev) => (sameReadout(prev, next) ? prev : next));
           rememberPresentation();
         };
         const scheduleReadout = () => {
@@ -1418,6 +1521,7 @@ export default function CornerstoneViewer({
           const vp = viewportRef.current;
           if (!vp) return;
           rememberPresentation();
+          scheduleReadout();
           const now = performance.now();
           if (now - lastCamEmit < THROTTLE) return;
           lastCamEmit = now;
@@ -1957,6 +2061,23 @@ export default function CornerstoneViewer({
           setInverted(vp.getProperties().invert ?? false);
           setActivePreset(null);
           rememberPresentation();
+        };
+        // Double-click: fit the image to the pane without touching the window.
+        fitRef.current = () => {
+          cancelTweenRef.current();
+          if (mprSessionRef.current) {
+            mprSessionRef.current.resetView();
+            return;
+          }
+          const vp = viewportRef.current;
+          if (!vp) return;
+          try {
+            vp.resetCamera();
+            vp.render();
+            emitCamera();
+          } catch {
+            /* a 0x0 pane has no camera to fit */
+          }
         };
         const clearAnnotations = () => {
           beginSuppress();
@@ -2594,6 +2715,7 @@ export default function CornerstoneViewer({
         };
 
         const handle: CornerstoneControls = {
+          fit: () => fitRef.current(),
           ready: true,
           imageCount: imageIds.length,
           showState: showStateFn,
@@ -2636,6 +2758,12 @@ export default function CornerstoneViewer({
         };
         if (controls) controls.current = handle;
         onReady?.(handle);
+        // A view link names a window. Apply it once the stack is drivable;
+        // the caller's own setWindow (teach) still wins afterwards.
+        const linkedWindow = initialWindowRef.current;
+        if (linkedWindow && linkedWindow.ww > 0) {
+          void setWindow(linkedWindow.ww, linkedWindow.wc, 0);
+        }
 
         if (elementRef.current && typeof ResizeObserver !== "undefined") {
           resizeObserver = new ResizeObserver(() => scheduleLayoutRestore(false));
@@ -2780,12 +2908,27 @@ export default function CornerstoneViewer({
   // keyboard-operable at all, which it was not. See lib/viewerHotkeys.ts.
   const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (isTextTarget(event.target)) return;
-    const action = resolveViewerHotkey(event, sliceCount);
+    if (event.key === "Escape" && helpOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      setHelpOpen(false);
+      return;
+    }
+    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp });
     if (!action) return;
     event.preventDefault();
     switch (action.type) {
       case "tool":
+        if (!ready) return;
+        if (
+          ANNOTATION_TOOL_NAMES.has(action.tool) &&
+          (!annotationsEnabled || mprShowing)
+        ) {
+          flash(mprShowing ? "Measurements stay on the stack" : "No pixel spacing — can't measure");
+          return;
+        }
         setLeftToolRef.current(action.tool);
+        flash(toolLabel(action.tool));
         return;
       case "slice":
         setCinePlaying(false);
@@ -2796,25 +2939,71 @@ export default function CornerstoneViewer({
         setSliceRef.current((_current, count) =>
           action.where === "first" ? 0 : Math.max(0, count - 1)
         );
+        flash(action.where === "first" ? "First image" : "Last image");
         return;
       case "zoom":
         nudgeZoomRef.current(action.factor);
         return;
       case "invert":
         invertRef.current();
+        flash(inverted ? "Invert off" : "Invert on");
         return;
       case "reset":
         resetRef.current();
+        flash("View reset");
         return;
       case "cine":
-        if (cineOffered) setCinePlaying((playing) => !playing);
+        if (!cineOffered) {
+          flash("Cine needs a longer series");
+          return;
+        }
+        flash(cinePlaying ? "Cine paused" : `Cine ${cineFps} fps`);
+        setCinePlaying((playing) => !playing);
         return;
-      case "preset": {
-        if (previewingRef.current) return;
-        const preset = presets[action.ordinal - 1];
-        if (preset) applyPresetRef.current(preset);
+      case "cineFps": {
+        if (!cineOffered) return;
+        const options = CINE_FPS_OPTIONS as readonly number[];
+        const at = Math.max(0, options.indexOf(cineFps));
+        const next = options[Math.min(options.length - 1, Math.max(0, at + action.delta))]!;
+        setCineFps(clampCineFps(next));
+        flash(`Cine ${next} fps`);
         return;
       }
+      case "preset": {
+        // An 8-bit preview has no real window to set (lib/dicomCdn).
+        if (previewingRef.current) {
+          flash("Presets unlock when full quality loads");
+          return;
+        }
+        if (action.ordinal === 0) {
+          applyPresetRef.current(null);
+          flash("Series default window");
+          return;
+        }
+        const preset = presets[action.ordinal - 1];
+        if (!preset) return;
+        applyPresetRef.current(preset);
+        flash(`${preset.label}   ${windowLine(preset.ww, preset.wc) ?? ""}`.trim());
+        return;
+      }
+      case "overlay": {
+        const next = nextOverlayDensity(overlay);
+        cycleOverlay();
+        flash(next === "full" ? "Overlay: full" : next === "basic" ? "Overlay: basic" : "Overlay off");
+        return;
+      }
+      case "mpr":
+        if (!ready) return;
+        setViewMode((mode) => (mode === "mpr" ? "stack" : "mpr"));
+        flash(viewMode === "mpr" ? "Stack" : "MPR");
+        return;
+      case "layout":
+        if (onCycleLayout) onCycleLayout();
+        return;
+      case "help":
+        event.stopPropagation();
+        setHelpOpen((open) => !open);
+        return;
     }
   };
 
@@ -2834,86 +3023,44 @@ export default function CornerstoneViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSeriesIndex, ready, series]);
 
-  // Close the preset menu on outside click / Escape.
-  const presetMenuRef = useRef<HTMLDivElement>(null);
-  const measureMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!presetOpen && !measureOpen) return;
-    const onDocClick = (e: MouseEvent) => {
-      const node = e.target as Node;
-      if (presetMenuRef.current?.contains(node)) return;
-      if (measureMenuRef.current?.contains(node)) return;
-      const element = node instanceof Element ? node : node.parentElement;
-      if (element?.closest("[data-viewer-menu]")) return;
-      setPresetOpen(false);
-      setMeasureOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setPresetOpen(false);
-        setMeasureOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [presetOpen, measureOpen]);
-
-  const activePresetLabel =
-    activePreset === FULL_DYNAMIC_ID
-      ? "Full dynamic"
-      : WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? "W/L";
-
-  const activeToolMeta = PRIMARY_TOOLS.find((t) => t.name === activeTool);
-  const activeToolLabel = activeToolMeta?.label ?? "Window / Level";
+  const closeHelp = useCallback(() => {
+    setHelpOpen(false);
+    elementRef.current?.focus({ preventScroll: true });
+  }, []);
 
   const toolbar = (
     <ViewerToolbar
-      orientation="horizontal"
-      compact={edge}
+      variant={edge || toolbarHost !== undefined ? "edge" : "dock"}
       ready={ready}
       activeTool={activeTool}
-      activeToolLabel={activeToolLabel}
       annotationsEnabled={annotationsEnabled}
+      measurementsEnabled={!mprLive}
       inverted={inverted}
-      presetOpen={presetOpen}
-      measureOpen={measureOpen}
-      activePresetLabel={activePresetLabel}
       activePreset={activePreset}
       presets={presets}
-      presetMenuRef={presetMenuRef}
-      measureMenuRef={measureMenuRef}
-      onTogglePreset={() => {
-        setMeasureOpen(false);
-        setPresetOpen((o) => !o);
-      }}
-      onToggleMeasure={() => {
-        setPresetOpen(false);
-        setMeasureOpen((o) => !o);
-      }}
-      onSelectTool={(name) => {
-        setLeftToolRef.current(name);
-        setMeasureOpen(false);
-      }}
+      viewMode={viewMode}
+      cineOffered={cineOffered}
+      cinePlaying={cinePlaying}
+      cineFps={cineFps}
+      overlay={overlay}
+      onSelectTool={(name) => setLeftToolRef.current(name)}
       onPreset={(preset) => {
         applyPresetRef.current(preset);
-        setPresetOpen(false);
+        flash(
+          preset
+            ? `${preset.label}   ${windowLine(preset.ww, preset.wc) ?? ""}`.trim()
+            : "Series default window"
+        );
       }}
       onInvert={() => invertRef.current()}
       onReset={() => resetRef.current()}
       onClear={() => clearRef.current()}
-      viewMode={viewMode}
       onViewMode={setViewMode}
-      measurementsEnabled={!mprLive}
       previewLocked={previewing && !mprLive}
-      cineOffered={cineOffered}
-      cinePlaying={cinePlaying}
-      cineFps={cineFps}
       onCineToggle={() => setCinePlaying((playing) => !playing)}
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
+      onOverlay={cycleOverlay}
+      onHelp={() => setHelpOpen((open) => !open)}
     />
   );
 
@@ -2997,36 +3144,73 @@ export default function CornerstoneViewer({
         ? `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}, window ${readout.ww}, level ${readout.wc}`
         : `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}`;
 
+  const corners = overlayCorners(
+    readout?.meta,
+    readout
+      ? {
+          slice: readout.slice,
+          count: readout.count,
+          ww: readout.ww,
+          wc: readout.wc,
+          zoom: readout.zoom,
+          plane: readout.plane,
+          inverted,
+          presetLabel:
+            activePreset && activePreset !== FULL_DYNAMIC_ID
+              ? WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? null
+              : null,
+          cineFps: cinePlaying ? cineFps : null,
+        }
+      : null,
+    overlay
+  );
+  // Orientation letters only on the stack: the MPR planes carry their own.
+  const markers =
+    overlay !== "off" && !mprShowing ? orientationMarkers(readout?.meta?.imageOrientationPatient) : null;
+
+  // Grid panes portal one shared bar; a lone pane keeps its own.
+  const sharedBar = toolbarHost !== undefined;
+  const ownBar = (docked || edge) && !sharedBar;
+  const portaledBar =
+    sharedBar && active && toolbarHost ? createPortal(toolbar, toolbarHost) : null;
+
   return (
     <div
       className={cn(
-        docked && "flex w-full flex-col gap-2",
-        edge && "flex h-full w-full flex-col",
-        !docked && !edge &&         "relative h-full w-full",
+        docked && !sharedBar && "flex w-full flex-col gap-2",
+        (edge || sharedBar) && "flex h-full w-full flex-col",
+        !docked && !edge && !sharedBar && "relative h-full w-full",
         "min-w-0 max-w-full",
         className
       )}
+      onPointerDownCapture={onActivate}
+      onFocusCapture={onActivate}
     >
       <div
         ref={pressGuardRef}
         className={cn(
           "relative",
-          docked && "w-full",
-          edge && "min-h-0 flex-1",
-          !docked && !edge && "h-full w-full"
+          docked && !sharedBar && "w-full",
+          (edge || sharedBar) && "min-h-0 flex-1",
+          !docked && !edge && !sharedBar && "h-full w-full"
         )}
       >
         <div
           ref={elementRef}
           className={cn(
             "touch-none select-none overscroll-contain bg-imaging",
-            "outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-0",
-            docked
-              ? "aspect-square w-full max-w-full overflow-hidden rounded-xl border border-subtle"
+            "outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
+            docked && !sharedBar
+              ? "aspect-square w-full max-w-full overflow-hidden rounded-lg border border-[#1F1F1F]"
               : "absolute inset-0",
             mprLive && "invisible pointer-events-none"
           )}
           onContextMenu={(e) => e.preventDefault()}
+          onDoubleClick={() => {
+            // Annotation tools use double-click to edit; leave it to them.
+            if (ANNOTATION_TOOL_NAMES.has(activeTool)) return;
+            fitRef.current();
+          }}
           // Focusable so the reading-room keys (lib/viewerHotkeys.ts) can be
           // scoped to the image instead of fighting the session's global keys,
           // and so the viewer is operable without a mouse at all.
@@ -3034,8 +3218,8 @@ export default function CornerstoneViewer({
           onKeyDown={onViewerKeyDown}
           aria-label={
             sliceCount > 0
-              ? `DICOM viewer, slice ${readout?.slice ?? 1} of ${sliceCount}. ` +
-                "Arrow keys scroll, 1 to 5 pick a tool, 0 resets."
+              ? `DICOM viewer, image ${readout?.slice ?? 1} of ${sliceCount}. ` +
+                "Arrow keys scroll, H lists shortcuts."
               : "DICOM viewer"
           }
           aria-hidden={mprLive || undefined}
@@ -3052,600 +3236,64 @@ export default function CornerstoneViewer({
             live={mprLive}
             loading={mprLoading}
             notice={mprNotice}
-            framed={docked && mprLive}
+            framed={docked && !sharedBar && mprLive}
+            showLabels={overlay !== "off"}
           />
         )}
-        {readout && ready && (
+        {readout && ready && !mprShowing && (
+          <ViewportOverlay
+            corners={corners}
+            markers={markers}
+            scrollbar={scrollbarVisible}
+            label={readoutLabel}
+          />
+        )}
+        {readout && ready && mprShowing && overlay !== "off" && (
+          // MPR: one compact line in the axial pane's corner. The planes
+          // already carry their names and the crosshair colors.
           <p
-            className="imaging-readout pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-3.5rem)] rounded-md bg-black/80 px-2 py-1 text-xs font-medium leading-tight text-white shadow-md ring-1 ring-white/20 lg:max-w-[calc(100%-8.5rem)]"
+            className="pointer-events-none absolute right-2 top-2 z-10 text-[11px] font-medium tabular-nums text-white/90 [text-shadow:0_0_3px_rgba(0,0,0,1)] sm:text-xs"
             aria-label={readoutLabel}
           >
-            <span className="block whitespace-nowrap tabular-nums">
-              {readout.plane ? `${readout.plane} ` : ""}
-              {readout.slice} / {readout.count}
-            </span>
-            {readout.ww != null && readout.wc != null && (
-              <span className="block whitespace-nowrap tabular-nums">
-                W {readout.ww} L {readout.wc}
-              </span>
-            )}
+            {`Im ${readout.slice} / ${readout.count}`}
+            {windowLine(readout.ww, readout.wc) ? `   ${windowLine(readout.ww, readout.wc)}` : ""}
           </p>
         )}
         {!ready && !painted && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
+            <span className="flex items-center gap-2 rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/10">
+              {status.startsWith("Error") ? null : (
+                <Spinner size="sm" label="Loading" className="text-white" />
+              )}
               {status}
             </span>
           </div>
         )}
         {((!ready && painted) || (ready && stacking)) && (
-          <p className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-md bg-black/80 px-2 py-1 text-xs text-white ring-1 ring-white/15">
+          <p className="pointer-events-none absolute bottom-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md bg-black/80 px-2.5 py-1 text-xs text-white ring-1 ring-white/10">
             {status}
           </p>
         )}
         {previewing && painted && !mprShowing && (
           <p
-            className="pointer-events-none absolute bottom-2 right-8 z-10 flex items-center gap-1.5 rounded-md bg-black/80 px-2 py-1 text-xs font-medium text-white ring-1 ring-white/15"
+            className="pointer-events-none absolute bottom-12 right-8 z-10 flex items-center gap-1.5 rounded-md bg-black/80 px-2 py-1 text-xs font-medium text-white ring-1 ring-white/15"
             title="Showing a fast 8-bit preview. Window/level and measurements unlock when the full-quality image arrives."
           >
             <Spinner size="sm" className="text-white/70" label="Loading full-quality image" />
             <span aria-hidden="true">Preview</span>
           </p>
         )}
+        <ViewerHud text={hud} />
+        <ViewerHelp open={helpOpen} onClose={closeHelp} />
         {mprShowing ? null : imageOverlay}
       </div>
-      {(docked || edge) && toolbar}
-      {docked && (
-        <p className="text-xs text-secondary">
-          <span className="font-medium text-primary">{activeToolLabel}</span>
-          {" on the left button · Wheel scroll · right-drag zoom · middle-drag pan"}
-          {" · click the image, then 1–5 picks a tool, arrows scroll, 0 resets"}
-          {ready && !annotationsEnabled && (
-            <>
-              {" · "}
-              <span className="text-warning">
-                this study has no pixel spacing — measurement tools are disabled
-              </span>
-            </>
-          )}
+      {ownBar && toolbar}
+      {portaledBar}
+      {docked && !sharedBar && ready && !annotationsEnabled && (
+        <p className="text-xs text-warning">
+          This study has no pixel spacing — measurement tools are off.
         </p>
       )}
     </div>
   );
-}
-
-function menuHost(): HTMLElement {
-  const fullscreen = document.fullscreenElement;
-  return fullscreen instanceof HTMLElement ? fullscreen : document.body;
-}
-
-/**
- * Toolbar menus open upward over the image. The bar scrolls horizontally, and
- * `overflow-x: auto` clips anything that paints outside it, so an absolute
- * menu survives only as a sliver above the toolbar. Portal to the document
- * (or the fullscreen element, which hides body-level nodes).
- */
-function FloatingMenu({
-  open,
-  anchorRef,
-  label,
-  side,
-  children,
-}: {
-  open: boolean;
-  anchorRef: MutableRefObject<HTMLDivElement | null>;
-  label: string;
-  side: "above" | "right";
-  children: ReactNode;
-}) {
-  const [box, setBox] = useState<{
-    left: number;
-    top?: number;
-    bottom?: number;
-    maxHeight: number;
-  } | null>(null);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setBox(null);
-      return;
-    }
-    const place = () => {
-      const anchor = anchorRef.current;
-      if (!anchor) return;
-      const rect = anchor.getBoundingClientRect();
-      const host = menuHost();
-      const hostRect = host === document.body ? null : host.getBoundingClientRect();
-      const originTop = hostRect?.top ?? 0;
-      const originLeft = hostRect?.left ?? 0;
-      const viewportHeight = hostRect?.height ?? window.innerHeight;
-      const gap = 6;
-      if (side === "right") {
-        setBox({
-          left: Math.max(8, rect.right - originLeft + gap),
-          top: Math.max(8, rect.top - originTop),
-          maxHeight: Math.max(120, viewportHeight - (rect.top - originTop) - 16),
-        });
-        return;
-      }
-      const roomAbove = rect.top - originTop - gap - 8;
-      setBox({
-        left: Math.max(8, rect.left - originLeft),
-        bottom: viewportHeight - (rect.top - originTop) + gap,
-        maxHeight: Math.max(120, roomAbove),
-      });
-    };
-    place();
-    window.addEventListener("resize", place);
-    document.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      document.removeEventListener("scroll", place, true);
-    };
-  }, [open, anchorRef, side]);
-
-  if (!open || !box || typeof document === "undefined") return null;
-  return createPortal(
-    <div
-      role="menu"
-      aria-label={label}
-      data-viewer-menu=""
-      style={{ left: box.left, top: box.top, bottom: box.bottom, maxHeight: box.maxHeight }}
-      className="fixed z-[80] w-48 overflow-y-auto overscroll-contain rounded-xl border border-[#1F1F1F] bg-[#181818] p-1 text-white shadow-lg ring-1 ring-white/15"
-    >
-      {children}
-    </div>,
-    menuHost()
-  );
-}
-
-function ViewerToolbar({
-  orientation,
-  compact = false,
-  ready,
-  activeTool,
-  activeToolLabel,
-  annotationsEnabled,
-  inverted,
-  presetOpen,
-  measureOpen,
-  activePresetLabel,
-  activePreset,
-  presets,
-  presetMenuRef,
-  measureMenuRef,
-  onTogglePreset,
-  onToggleMeasure,
-  onSelectTool,
-  onPreset,
-  onInvert,
-  onReset,
-  onClear,
-  viewMode,
-  onViewMode,
-  measurementsEnabled,
-  previewLocked = false,
-  cineOffered,
-  cinePlaying,
-  cineFps,
-  onCineToggle,
-  onCineFps,
-}: {
-  orientation: "horizontal" | "vertical";
-  /** Student pane: one tight row, no group captions. */
-  compact?: boolean;
-  ready: boolean;
-  activeTool: string;
-  activeToolLabel: string;
-  annotationsEnabled: boolean;
-  inverted: boolean;
-  presetOpen: boolean;
-  measureOpen: boolean;
-  activePresetLabel: string;
-  activePreset: string | null;
-  presets: WindowPreset[];
-  presetMenuRef: MutableRefObject<HTMLDivElement | null>;
-  measureMenuRef: MutableRefObject<HTMLDivElement | null>;
-  onTogglePreset: () => void;
-  onToggleMeasure: () => void;
-  onSelectTool: (name: string) => void;
-  onPreset: (preset: WindowPreset | null) => void;
-  onInvert: () => void;
-  onReset: () => void;
-  onClear: () => void;
-  viewMode: MprMode;
-  onViewMode: (mode: MprMode) => void;
-  /** Length and ROI stay on the stack. MPR keeps scroll, pan, zoom, and window. */
-  measurementsEnabled: boolean;
-  /**
-   * The slice on screen is an 8-bit preview: window presets wait for the
-   * full-quality frame (drags are held by the viewer's press guard).
-   */
-  previewLocked?: boolean;
-  /** False on a 1- or 2-image series, and in MPR. The group is then hidden. */
-  cineOffered: boolean;
-  cinePlaying: boolean;
-  cineFps: number;
-  onCineToggle: () => void;
-  onCineFps: (fps: number) => void;
-}) {
-  const vertical = orientation === "vertical";
-  const activeMeasure =
-    MEASURE_TOOLS.find((t) => t.name === activeTool) ?? MEASURE_TOOLS[0];
-  const measureActive = MEASURE_TOOLS.some((t) => t.name === activeTool);
-
-  const measureBlocked = (tool: ViewerTool) =>
-    !measurementsEnabled || (!!tool.annotation && !annotationsEnabled);
-  const toolLabel = (tool: ViewerTool) => {
-    if (!measurementsEnabled && tool.annotation) {
-      return `${tool.label} — measurements stay on the stack view`;
-    }
-    if (tool.annotation && !annotationsEnabled) {
-      return `${tool.label} — this study has no pixel spacing for measurements`;
-    }
-    return tool.label;
-  };
-
-  const nav = NAV_TOOLS.map((tool) => (
-    <ToolButton
-      key={tool.name}
-      label={tool.label}
-      caption={vertical ? undefined : tool.short}
-      active={activeTool === tool.name}
-      disabled={!ready}
-      onClick={() => onSelectTool(tool.name)}
-    >
-      <ToolIcon name={tool.name} />
-    </ToolButton>
-  ));
-
-  const measureSplit = (
-    <div className={cn("relative flex", vertical ? "flex-col items-center" : "items-end")} ref={measureMenuRef}>
-      <ToolButton
-        label={toolLabel(activeMeasure)}
-        caption={vertical ? undefined : activeMeasure.short}
-        active={measureActive}
-        disabled={!ready || measureBlocked(activeMeasure)}
-        onClick={() => onSelectTool(activeMeasure.name)}
-      >
-        <ToolIcon name={activeMeasure.name} />
-      </ToolButton>
-      <button
-        type="button"
-        disabled={!ready}
-        aria-haspopup="menu"
-        aria-expanded={measureOpen}
-        aria-label="More measurement tools"
-        onClick={onToggleMeasure}
-        className={cn(
-          "flex h-11 w-11 items-center justify-center rounded-lg text-white/85 transition-colors",
-          "hover:bg-white/10 hover:text-white",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
-          "disabled:cursor-not-allowed disabled:opacity-40",
-          measureOpen && "bg-white/10 text-white"
-        )}
-      >
-        <ChevronDown
-          className={cn("h-3.5 w-3.5", vertical && "-rotate-90")}
-          strokeWidth={2.2}
-          aria-hidden="true"
-        />
-      </button>
-      <FloatingMenu
-        open={measureOpen}
-        anchorRef={measureMenuRef}
-        label="Measurement tools"
-        side={vertical ? "right" : "above"}
-      >
-        {MEASURE_TOOLS.map((tool) => {
-          const blocked = measureBlocked(tool);
-          return (
-            <PresetItem
-              key={tool.name}
-              label={tool.label}
-              hint={!measurementsEnabled ? "stack view" : blocked ? "no spacing" : tool.short}
-              active={activeTool === tool.name}
-              disabled={!ready || blocked}
-              onClick={() => onSelectTool(tool.name)}
-            />
-          );
-        })}
-      </FloatingMenu>
-    </div>
-  );
-
-  const presetControl = (
-    <div className="relative" ref={presetMenuRef}>
-      <button
-        type="button"
-        disabled={!ready || previewLocked}
-        title={previewLocked ? "Window presets unlock when full-quality pixels load" : undefined}
-        aria-haspopup="menu"
-        aria-expanded={presetOpen}
-        aria-label={
-          previewLocked
-            ? `Window presets, ${activePresetLabel} — available when full quality loads`
-            : `Window presets, ${activePresetLabel}`
-        }
-        onClick={onTogglePreset}
-        className={cn(
-          "flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
-          "disabled:cursor-not-allowed disabled:opacity-40",
-          vertical ? "h-11 w-11" : "h-11 min-h-11 min-w-11 flex-col px-2 text-xs max-lg:w-11",
-          activePreset
-            ? "bg-accent text-white"
-            : presetOpen
-              ? "bg-white/10 text-white"
-              : "text-white/85 hover:bg-white/10 hover:text-white"
-        )}
-      >
-        <ToolIcon name="Preset" />
-        {vertical ? null : (
-          <span className="max-w-[4.5rem] truncate leading-none max-lg:sr-only">{activePresetLabel}</span>
-        )}
-      </button>
-      <FloatingMenu
-        open={presetOpen}
-        anchorRef={presetMenuRef}
-        label="Window/Level presets"
-        side={vertical ? "right" : "above"}
-      >
-        <PresetItem
-          label="Full dynamic"
-          hint="series default"
-          active={activePreset === FULL_DYNAMIC_ID}
-          onClick={() => onPreset(null)}
-        />
-        <span className="my-1 block h-px bg-white/15" />
-        {presets.map((p) => (
-          <PresetItem
-            key={p.id}
-            label={p.label}
-            hint={`W ${p.ww}  L ${p.wc}`}
-            active={activePreset === p.id}
-            onClick={() => onPreset(p)}
-          />
-        ))}
-      </FloatingMenu>
-    </div>
-  );
-
-  // Cine: play/pause plus the frame rate. Hidden outright when the series
-  // cannot loop, rather than shown disabled — a dead transport control on a
-  // chest radiograph is noise (lib/cinePlayer.ts).
-  const cineControl = cineOffered ? (
-    <div className="flex items-center gap-0.5">
-      <ToolButton
-        label={cinePlaying ? `Pause cine (${cineFps} fps)` : `Play cine (${cineFps} fps)`}
-        caption={vertical ? undefined : cinePlaying ? "Pause" : "Cine"}
-        active={cinePlaying}
-        disabled={!ready}
-        onClick={onCineToggle}
-      >
-        {cinePlaying ? (
-          <Pause className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-        ) : (
-          <Play className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-        )}
-      </ToolButton>
-      <label className="flex flex-col justify-end">
-        <span className="sr-only">Cine frame rate</span>
-        <select
-          disabled={!ready}
-          value={String(cineFps)}
-          onChange={(event) => onCineFps(Number(event.target.value))}
-          className={cn(
-            "h-11 shrink-0 rounded-lg border border-white/15 bg-transparent px-1.5 text-xs font-medium",
-            "tabular-nums text-white/85 transition-colors hover:bg-white/10 hover:text-white",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
-            "disabled:cursor-not-allowed disabled:opacity-40"
-          )}
-        >
-          {CINE_FPS_OPTIONS.map((fps) => (
-            <option key={fps} value={fps} className="bg-[#181818] text-white">
-              {fps} fps
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
-  ) : null;
-
-  const display = (
-    <>
-      {presetControl}
-      <ToolButton
-        label="Invert"
-        caption={vertical ? undefined : "Invert"}
-        active={inverted}
-        disabled={!ready}
-        onClick={onInvert}
-      >
-        <ToolIcon name="Invert" />
-      </ToolButton>
-      <ToolButton
-        label="Reset view"
-        caption={vertical ? undefined : "Reset"}
-        disabled={!ready}
-        onClick={onReset}
-      >
-        <ToolIcon name="Reset" />
-      </ToolButton>
-      <ToolButton
-        label="Clear annotations"
-        caption={vertical ? undefined : "Clear"}
-        disabled={!ready}
-        onClick={onClear}
-      >
-        <ToolIcon name="Clear" />
-      </ToolButton>
-    </>
-  );
-
-  return (
-    <div
-      className={cn(
-        // Scroll container is a block, not the flex row. A flex row that is
-        // also the scroller still reports its content width to the page, which
-        // opened a horizontal scrollbar on the record stage. Black on every
-        // surface so the bar matches the imaging viewport (#68).
-        "w-full min-w-0 max-w-full touch-pan-x overflow-x-auto overscroll-x-contain border border-[#1F1F1F] bg-[#181818] text-white",
-        compact ? "rounded-none border-x-0 border-b-0" : "rounded-xl"
-      )}
-    >
-    <div
-      role="toolbar"
-      aria-label="Viewer tools"
-      aria-orientation="horizontal"
-      className={cn(
-        "flex w-full min-w-0 items-end gap-x-1 gap-y-1 px-1 py-1",
-        "max-lg:w-max max-lg:flex-nowrap",
-        compact ? "" : "flex-wrap"
-      )}
-    >
-      <div className="order-first flex flex-col gap-1 max-lg:order-last">
-        {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Layout</span>
-        )}
-        <LayoutToggle mode={viewMode} ready={ready} onChange={onViewMode} />
-      </div>
-      <div className="flex flex-col gap-1">
-        {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Navigate</span>
-        )}
-        <div className="flex items-center gap-0.5">{nav}</div>
-      </div>
-      <div className="flex flex-col gap-1">
-        {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Measure</span>
-        )}
-        {measureSplit}
-      </div>
-      {cineControl ? (
-        <div className="flex flex-col gap-1">
-          {compact ? null : (
-            <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Cine</span>
-          )}
-          {cineControl}
-        </div>
-      ) : null}
-      <div className="flex flex-col gap-1">
-        {compact ? null : (
-          <span className="px-1 text-xs font-medium text-white/70 max-lg:hidden">Display</span>
-        )}
-        <div className="flex items-center gap-0.5">{display}</div>
-      </div>
-      {compact ? null : (
-        <p className="mb-1 ml-auto hidden text-xs text-white/70 lg:block">
-          Left button: <span className="font-medium text-white">{activeToolLabel}</span>
-        </p>
-      )}
-    </div>
-    </div>
-  );
-}
-
-function ToolButton({
-  label,
-  caption,
-  active,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string;
-  /** Visible short name under the icon. Omitted on the edge rail. */
-  caption?: string;
-  active?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "shrink-0 transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
-        "disabled:cursor-not-allowed disabled:opacity-40",
-        caption
-          ? "flex h-11 min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-lg px-1.5 lg:h-12 lg:min-w-12"
-          : "flex h-11 w-11 items-center justify-center rounded-lg",
-        active
-          ? "bg-accent text-white"
-          : "text-white/85 hover:bg-white/10 hover:text-white"
-      )}
-    >
-      {children}
-      {caption ? (
-        <span className="max-w-[3.5rem] truncate text-xs font-medium leading-none max-lg:sr-only">
-          {caption}
-        </span>
-      ) : null}
-    </button>
-  );
-}
-
-function PresetItem({
-  label,
-  hint,
-  active,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  hint: string;
-  active?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={active}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-0",
-        "disabled:cursor-not-allowed disabled:opacity-40",
-        active ? "bg-accent text-white" : "text-white/90 hover:bg-white/10 hover:text-white"
-      )}
-    >
-      <span className="font-medium">{label}</span>
-      <span className={cn("tabular-nums", active ? "text-white/80" : "text-white/65")}>{hint}</span>
-    </button>
-  );
-}
-
-// PACS toolbar glyphs, mapped to lucide icons. Each tool keeps its name; only
-// the rendered glyph changed (no Cornerstone tool binding is touched).
-const TOOL_ICONS: Record<string, LucideIcon> = {
-  WindowLevel: Blend,
-  Pan: Move,
-  Zoom: ZoomIn,
-  StackScroll: LayersIconL,
-  Length: Ruler,
-  Angle: Triangle,
-  EllipticalROI: Circle,
-  RectangleROI: Square,
-  Probe: Crosshair,
-  ArrowAnnotate: MoveUpRight,
-  Preset: Settings2,
-  Invert: SunMoon,
-  Reset: RotateCcw,
-  Clear: Eraser,
-};
-
-function ToolIcon({ name }: { name: string }) {
-  const Icon = TOOL_ICONS[name];
-  if (!Icon) return null;
-  return <Icon className="h-4 w-4" strokeWidth={1.9} aria-hidden="true" />;
 }
