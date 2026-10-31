@@ -70,12 +70,26 @@ export function formatDicomTime(raw?: string): string {
   return m ? `${m[1]}:${m[2]}` : "";
 }
 
+/**
+ * PACS convention: an axial stack opens at the top of the patient. The shared
+ * ordering (`sortSeriesInstances`) is ascending along the slice normal, which
+ * for an axial series is feet-first; flip it when the slices are axial.
+ */
+export function headFirst(ordered: DesktopHeader[]): DesktopHeader[] {
+  if (ordered.length < 2) return ordered;
+  const first = ordered[0].imagePositionPatient;
+  const last = ordered[ordered.length - 1].imagePositionPatient;
+  const normal = sliceNormal(ordered[0].imageOrientationPatient);
+  if (!first || !last || !normal || Math.abs(normal[2]) < 0.8) return ordered;
+  return first[2] < last[2] ? [...ordered].reverse() : ordered;
+}
+
 export function buildStudies(headers: readonly DesktopHeader[]): ViewerStudy[] {
   const byFile = new Map(headers.map((h) => [h.fileName, h]));
   const grouped = groupLocalStudies(headers);
   return grouped.map((study) => {
     const series: ViewerSeries[] = study.series.map((s) => {
-      const ordered = s.instances.map((i) => byFile.get(i.fileName)!).filter(Boolean);
+      const ordered = headFirst(s.instances.map((i) => byFile.get(i.fileName)!).filter(Boolean));
       const imageIds: string[] = [];
       const perImage: DesktopHeader[] = [];
       for (const h of ordered) {

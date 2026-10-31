@@ -22,7 +22,6 @@ pub enum SourceKind {
     Dicomdir,
     Zip,
     Files,
-    Disc,
 }
 
 pub fn is_zip(path: &Path) -> bool {

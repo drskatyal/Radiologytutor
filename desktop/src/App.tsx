@@ -51,6 +51,7 @@ import { StackViewport } from "./viewer/StackViewport";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
   clearAnnotations,
+  engineTimings,
   getEngine,
   prewarmEngine,
   setGroupLeftTool,
@@ -61,22 +62,12 @@ import {
   undoLastAnnotation,
 } from "./viewer/engine";
 import { windowPresetsFor } from "./viewer/presets";
+import { hangSeries } from "./layout";
 
 type ScanState = { label: string; progress: ScanProgress | null } | null;
 
 const cellKey = (i: number) => `cell-${i}`;
 const viewportIdFor = (i: number) => `vp-${i}`;
-
-/** Fill a resized grid: keep what is on screen, then hang unseen series in order. */
-export function hangSeries(previous: (string | null)[], size: number, order: string[]): (string | null)[] {
-  const next = Array.from({ length: size }, (_, i) => previous[i] ?? null);
-  const shown = new Set(next.filter(Boolean));
-  const queue = order.filter((uid) => !shown.has(uid));
-  for (let i = 0; i < next.length; i += 1) {
-    if (!next[i] && queue.length) next[i] = queue.shift()!;
-  }
-  return next;
-}
 
 export default function App() {
   const { toast } = useToast();
@@ -122,11 +113,11 @@ export default function App() {
     });
     historyList<HistoryEntry>().then(setHistory, () => setHistory([]));
     benchEnabled().then((on) => (bench.current.enabled = on));
-    // First paint is done; start parsing the engine in idle time so the first
-    // study opens without paying for it.
-    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
-    if (idle) idle(() => prewarmEngine());
-    else window.setTimeout(prewarmEngine, 200);
+    if (isTauri) invoke<number>("startup_elapsed_ms").then((ms) => (bench.current.marks.windowReadyMs = ms), () => undefined);
+    // The engine (≈3 MB of JS, WebGL, workers) is NOT loaded at idle: an idle
+    // viewer must stay small. It warms on intent instead — an open dialog, a
+    // drag over the window, a hover on a recent study — which is always
+    // hundreds of ms before the first pixel is needed.
     return onHandlesChanged(() => setHandlesVersion((v) => v + 1));
   }, []);
 
@@ -183,6 +174,7 @@ export default function App() {
   const openPaths = useCallback(
     async (paths: string[], kindHint?: SourceKind) => {
       if (!paths.length) return;
+      void getEngine(); // initialise while Rust scans
       if (!isTauri) {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
@@ -190,7 +182,7 @@ export default function App() {
       const seq = ++openSeq.current;
       const t0 = performance.now();
       bench.current.t0 = t0;
-      bench.current.marks = {};
+      bench.current.marks = { windowReadyMs: bench.current.marks.windowReadyMs ?? 0 };
       bench.current.firstPaint = undefined;
       resetWorkspace();
       const label = paths[0].split(/[\\/]/).filter(Boolean).pop() || paths[0];
@@ -269,6 +261,7 @@ export default function App() {
               rust: result.timings,
               ...bench.current.marks,
               firstImagePaintedMs: bench.current.firstPaint,
+              engineInitMs: engineTimings.initMs,
               processUptimeMs: startup,
             });
           };
@@ -295,6 +288,9 @@ export default function App() {
     async (files: File[]) => {
       if (!files.length) return;
       const seq = ++openSeq.current;
+      const t0 = performance.now();
+      bench.current.t0 = t0;
+      bench.current.firstPaint = undefined;
       resetWorkspace();
       setScan({ label: `${files.length} files`, progress: null });
       try {
@@ -311,6 +307,21 @@ export default function App() {
         }
         hangFirst(built);
         setSource({ key: `browser:${Date.now()}`, paths: [], kind: "files", label: `${files.length} files` });
+        const scanDoneMs = performance.now() - t0;
+        if (await benchEnabled()) {
+          const waitPaint = () =>
+            bench.current.firstPaint != null
+              ? void benchReport({
+                  path: "browser (lib/localDicomFiles)",
+                  files: files.length,
+                  images: built.reduce((n, s) => n + s.imageCount, 0),
+                  scanDoneMs,
+                  firstImagePaintedMs: bench.current.firstPaint,
+                  engineInitMs: engineTimings.initMs,
+                })
+              : window.setTimeout(waitPaint, 20);
+          waitPaint();
+        }
       } catch (error) {
         setScan(null);
         toast({ title: "Those files could not be read", description: String(error), variant: "danger" });
@@ -321,6 +332,7 @@ export default function App() {
 
   const openDialog = useCallback(
     async (what: "files" | "folder" | "disc" | "zip" | "dicomdir") => {
+      void getEngine();
       if (!isTauri) {
         (what === "folder" ? browserFolderInput : browserFileInput).current?.click();
         return;
@@ -346,11 +358,21 @@ export default function App() {
     (async () => {
       const initial = await takeLaunchPaths();
       if (initial.length) void openPaths(initial);
+      else if (await benchEnabled()) {
+        // Cold-start probe: report once the start screen has painted.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(async () => {
+            const ms = await invoke<number>("startup_elapsed_ms").catch(() => 0);
+            await benchReport({ coldStart: true, firstPaintMs: ms, jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs });
+          })
+        );
+      }
       off.push(await listen<string[]>("open-paths", (paths) => paths.length && openPaths(paths)));
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       off.push(
         await getCurrentWebview().onDragDropEvent((event) => {
           const p = event.payload;
+          if (p.type === "enter") void getEngine();
           if (p.type === "enter" || p.type === "over") setDragging(true);
           else if (p.type === "leave") setDragging(false);
           else if (p.type === "drop") {
@@ -581,6 +603,7 @@ export default function App() {
       onDragOver={(e) => {
         if (!isTauri && e.dataTransfer.types.includes("Files")) {
           e.preventDefault();
+          prewarmEngine();
           setDragging(true);
         }
       }}

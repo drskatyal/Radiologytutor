@@ -75,8 +75,17 @@ export function prewarmEngine(): void {
   void import("@cornerstonejs/dicom-image-loader");
 }
 
+/** Wall-clock cost of the last engine init, for the benchmark report. */
+export const engineTimings: { initMs?: number } = {};
+
 export function getEngine(): Promise<Engine> {
-  enginePromise ??= createEngine();
+  if (!enginePromise) {
+    const t0 = performance.now();
+    enginePromise = createEngine().then((e) => {
+      engineTimings.initMs = performance.now() - t0;
+      return e;
+    });
+  }
   return enginePromise;
 }
 

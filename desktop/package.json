@@ -3,13 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "RadLearn Viewer — free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
+  "description": "RadLearn Viewer \u2014 free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --tsconfig tsconfig.json --test src/*.test.ts",
     "icons": "tauri icon app-icon.png"
   },
   "dependencies": {
@@ -23,6 +23,7 @@
     "@originjs/vite-plugin-commonjs": "^1.0.3",
     "@tauri-apps/cli": "^2.12.0",
     "@vitejs/plugin-react": "^4.7.0",
-    "vite": "^6.3.0"
+    "vite": "^6.3.0",
+    "tsx": "^4.16.2"
   }
 }

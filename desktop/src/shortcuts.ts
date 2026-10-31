@@ -60,7 +60,7 @@ interface Binding {
   action: ShortcutAction;
 }
 
-const plain = (e: KeyLike, mod: boolean) => !mod && !e.altKey;
+const plain = (e: KeyLike, mod: boolean) => !mod && !e.altKey && !e.ctrlKey && !e.metaKey;
 const keyIs = (e: KeyLike, ...keys: string[]) => keys.includes(e.key.length === 1 ? e.key.toLowerCase() : e.key);
 const digit = (e: KeyLike) => (e.code?.startsWith("Digit") ? Number(e.code.slice(5)) : /^[0-9]$/.test(e.key) ? Number(e.key) : NaN);
 

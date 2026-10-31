@@ -34,16 +34,27 @@ use crate::scan::ScanResult;
 struct FileRegistry {
     paths: Vec<PathBuf>,
     by_path: std::collections::HashMap<PathBuf, u32>,
+    /// Deflated Explicit VR LE files: served inflated (see `serve_file`).
+    deflated: std::collections::HashSet<u32>,
 }
 
+const DEFLATED_EXPLICIT_LE: &str = "1.2.840.10008.1.2.1.99";
+
 impl FileRegistry {
-    fn register(&mut self, path: PathBuf) -> u32 {
-        if let Some(id) = self.by_path.get(&path) {
-            return *id;
+    fn register(&mut self, header: &header::Header) -> u32 {
+        let path = PathBuf::from(&header.file_name);
+        let id = match self.by_path.get(&path) {
+            Some(id) => *id,
+            None => {
+                let id = self.paths.len() as u32;
+                self.paths.push(path.clone());
+                self.by_path.insert(path, id);
+                id
+            }
+        };
+        if header.transfer_syntax_uid.as_deref() == Some(DEFLATED_EXPLICIT_LE) {
+            self.deflated.insert(id);
         }
-        let id = self.paths.len() as u32;
-        self.paths.push(path.clone());
-        self.by_path.insert(path, id);
         id
     }
 }
@@ -81,7 +92,7 @@ async fn scan_sources(
                 let _ = emitter.emit("scan-progress", progress);
             },
             &|header| {
-                header.file_id = registry.lock().register(PathBuf::from(&header.file_name));
+                header.file_id = registry.lock().register(header);
             },
             &|batch| {
                 let _ = batch_emitter.emit("scan-batch", batch);
@@ -89,7 +100,7 @@ async fn scan_sources(
         )?;
         let mut reg = registry.lock();
         for header in result.headers.iter_mut() {
-            header.file_id = reg.register(PathBuf::from(&header.file_name));
+            header.file_id = reg.register(header);
         }
         Ok(result)
     })
@@ -194,9 +205,13 @@ fn serve_file(registry: &Mutex<FileRegistry>, uri_path: &str) -> Response<Vec<u8
         .and_then(|rest| rest.split(['/', '?', '&']).next())
         .and_then(|s| s.parse::<u32>().ok());
     let Some(id) = id else { return not_found() };
-    let path = registry.lock().paths.get(id as usize).cloned();
+    let (path, deflated) = {
+        let reg = registry.lock();
+        (reg.paths.get(id as usize).cloned(), reg.deflated.contains(&id))
+    };
     let Some(path) = path else { return not_found() };
-    match std::fs::read(&path) {
+    let bytes = if deflated { inflate_to_explicit_le(&path) } else { std::fs::read(&path).map_err(|e| e.to_string()) };
+    match bytes {
         Ok(bytes) => Response::builder()
             .status(StatusCode::OK)
             .header(http_header::CONTENT_TYPE, "application/dicom")
@@ -206,6 +221,17 @@ fn serve_file(registry: &Mutex<FileRegistry>, uri_path: &str) -> Response<Vec<u8
             .unwrap(),
         Err(_) => not_found(),
     }
+}
+
+/// Cornerstone's loader cannot read Deflated Explicit VR LE, so those files
+/// are re-encoded as plain Explicit VR LE on the way out. Rare in practice
+/// (some ultrasound and SR exports), and per-file, so the cost is local.
+fn inflate_to_explicit_le(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let mut obj = dicom_object::open_file(path).map_err(|e| e.to_string())?;
+    obj.update_meta(|meta| meta.transfer_syntax = "1.2.840.10008.1.2.1\0".to_string());
+    let mut out = Vec::new();
+    obj.write_all(&mut out).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 fn launch_args() -> Vec<String> {
@@ -278,4 +304,16 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// Needs a fixture from `desktop/scripts/make-fixtures.py`:
+    /// DEFLATED_FIXTURE=<fixtures>/ts/deflated-le/IM000001 DEFLATED_OUT=/tmp/x.dcm cargo test
+    #[test]
+    fn inflates_deflated_explicit_le() {
+        let Ok(path) = std::env::var("DEFLATED_FIXTURE") else { return };
+        let bytes = super::inflate_to_explicit_le(std::path::Path::new(&path)).expect("inflate");
+        std::fs::write(std::env::var("DEFLATED_OUT").unwrap(), bytes).unwrap();
+    }
 }

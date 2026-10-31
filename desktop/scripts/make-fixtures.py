@@ -1679,7 +1679,9 @@ def main() -> int:
             reports.append(verify_folder(root, f"ts/{folder}", ref=sub, ref_desc=ref_desc, lossy=(folder == "j2k-lossy")))
     rep = verify_folder(root, "multiframe")
     reports.append(rep)
-    reports.append(verify_folder(root, "cd-media", recursive=True))
+    # The media junk (autorun, a bundled viewer, a readme) is there on purpose.
+    reports.append(verify_folder(root, "cd-media", recursive=True,
+                                 skip_names=("AUTORUN.INF", "README.TXT", "VIEWER.EXE")))
     try:
         from pydicom.fileset import FileSet
         fs = FileSet(pydicom.dcmread(root / "cd-media" / "DICOMDIR"))

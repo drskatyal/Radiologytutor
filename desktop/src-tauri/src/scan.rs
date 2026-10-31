@@ -99,6 +99,20 @@ fn save_cache(path: &Path, headers: &[Header]) {
     }
 }
 
+/// `dir` when it holds exactly one folder and nothing else (dotfiles aside).
+fn single_child_dir(dir: &Path) -> Option<PathBuf> {
+    let entries: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| !p.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(true))
+        .collect();
+    match entries.as_slice() {
+        [only] if only.is_dir() => Some(only.clone()),
+        _ => None,
+    }
+}
+
 fn label_for(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -180,6 +194,8 @@ fn list_candidates(
             let dest = cache_dir.join("archives").join(stable_hash(&key));
             match extract_zip(path, &dest) {
                 Ok(dir) => {
+                    // Archives usually wrap the disc in one top-level folder.
+                    let dir = single_child_dir(&dir).unwrap_or(dir);
                     used_dicomdir |= expand_dir(&dir, &mut out, warnings);
                 }
                 Err(e) => warnings.push(e),

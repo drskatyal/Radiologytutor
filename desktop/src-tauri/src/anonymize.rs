@@ -18,7 +18,8 @@ use dicom_object::{open_file, DefaultDicomObject};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
-/// Removed outright.
+/// Removed outright. Retired tags stay on the list: old studies still carry them.
+#[allow(deprecated)]
 const REMOVE: &[Tag] = &[
     tags::PATIENT_BIRTH_TIME,
     tags::PATIENT_ADDRESS,

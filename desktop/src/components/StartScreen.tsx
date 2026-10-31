@@ -8,6 +8,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/components/ui/cn";
 import { listMedia, type MediaVolume } from "../platform";
+import { prewarmEngine } from "../viewer/engine";
 import type { HistoryEntry } from "../history";
 import { formatDicomDate } from "../study";
 import { isMac } from "../shortcuts";
@@ -129,7 +130,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               {media.map((v) => {
                 const Icon = v.kind === "optical" ? Disc3 : Usb;
                 return (
-                  <li key={v.path}>
+                  <li key={v.path} onPointerEnter={prewarmEngine}>
                     <button
                       type="button"
                       onClick={() => onOpenPaths([v.path], "disc")}
@@ -171,7 +172,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               {history.map((entry) => {
                 const Icon = KIND_ICON[entry.kind] ?? FolderTree;
                 return (
-                  <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated">
+                  <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated" onPointerEnter={prewarmEngine}>
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
