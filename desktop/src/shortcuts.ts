@@ -8,7 +8,7 @@
 
 export type ShortcutAction =
   | { type: "tool"; tool: string }
-  | { type: "open"; what: "files" | "folder" | "disc" | "zip" }
+  | { type: "open"; what: "files" | "folder" | "disc" | "zip" | "pacs" }
   | { type: "slice"; delta: number }
   | { type: "sliceEdge"; where: "first" | "last" }
   | { type: "series"; delta: number }
@@ -96,6 +96,7 @@ export const BINDINGS: Binding[] = [
   { keys: "Mod+O", does: "Open DICOM files", group: "Open", match: (e, m) => m && !e.shiftKey && !e.altKey && keyIs(e, "o"), action: { type: "open", what: "files" } },
   { keys: "Mod+Shift+O", does: "Open a folder", group: "Open", match: (e, m) => m && !!e.shiftKey && !e.altKey && keyIs(e, "o"), action: { type: "open", what: "folder" } },
   { keys: "Mod+Alt+O", does: "Open CD / DVD / USB", group: "Open", match: (e, m) => m && !!e.altKey && keyIs(e, "o", "ø"), action: { type: "open", what: "disc" } },
+  { keys: "Mod+Shift+P", does: "Query / retrieve from a PACS", group: "Open", match: (e, m) => m && !!e.shiftKey && keyIs(e, "p"), action: { type: "open", what: "pacs" } },
   { keys: "Mod+Shift+Z", does: "Open a zip archive", group: "Open", match: (e, m) => m && !!e.shiftKey && keyIs(e, "z"), action: { type: "open", what: "zip" } },
 
   // Tools (left mouse button)

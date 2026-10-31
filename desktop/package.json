@@ -17,7 +17,8 @@
     "@tauri-apps/plugin-dialog": "^2.4.0",
     "@tauri-apps/plugin-process": "^2.3.0",
     "@tauri-apps/plugin-updater": "^2.9.0",
-    "mp4-muxer": "^5.2.2"
+    "mp4-muxer": "^5.2.2",
+    "@cornerstonejs/calculate-suv": "^1.0.3"
   },
   "devDependencies": {
     "@originjs/vite-plugin-commonjs": "^1.0.3",

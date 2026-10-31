@@ -32,6 +32,8 @@ export const ENGINE_ID = "radlearn-desktop";
 export const STACK_GROUP = "stack";
 export const MPR_GROUP = "mpr";
 export const VR_GROUP = "vr";
+/** PET MIP: no crosshairs (its slab spans the body, so a crosshair band would cover it). */
+export const MIP_GROUP = "petmip";
 
 /** Left-button tools the toolbar offers, by Cornerstone tool name. */
 export const LEFT_TOOLS = [
@@ -100,7 +102,9 @@ async function createEngine(): Promise<Engine> {
   profile.isMobile = false;
   await core.init(coreInitConfig(profile) as Parameters<typeof core.init>[0]);
   await tools.init();
-  await loader.init({ maxWebWorkers: webWorkerCount(profile) });
+  // Desktop: the reader is the only workload, so decode on every core (the web
+  // viewer leaves a quarter free for the page; lib/viewerRuntime.ts).
+  await loader.init({ maxWebWorkers: Math.max(webWorkerCount(profile), Math.min(profile.cores, 12)) });
   try {
     core.cache.setMaxCacheSize(imageCacheBytes(profile));
   } catch {
@@ -109,7 +113,12 @@ async function createEngine(): Promise<Engine> {
   const pool = (core as unknown as { imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> } })
     .imageRetrievalPoolManager?.maxNumRequests;
   // Local disk: there is no server to be polite to. Keep interaction deep.
-  if (pool) Object.assign(pool, { ...retrievalPoolSizes(profile), interaction: 24, prefetch: 8 });
+  if (pool) Object.assign(pool, { ...retrievalPoolSizes(profile), interaction: 32, prefetch: 32 });
+  // Volume loads (MPR / 3D) run in the prefetch lane of BOTH pools: fetch and
+  // decode. Local disk has no server to protect, so keep the decoders fed.
+  const decodePool = (core as unknown as { imageLoadPoolManager?: { maxNumRequests?: Record<string, number> } })
+    .imageLoadPoolManager?.maxNumRequests;
+  if (decodePool) Object.assign(decodePool, { interaction: 32, prefetch: 32, thumbnail: 4 });
 
   const t = tools;
   for (const Tool of [
@@ -218,7 +227,7 @@ export function addViewportToGroup(engine: Engine, groupId: string, viewportId: 
 }
 
 export function removeViewportFromGroups(engine: Engine, viewportId: string): void {
-  for (const id of [STACK_GROUP, MPR_GROUP, VR_GROUP]) {
+  for (const id of [STACK_GROUP, MPR_GROUP, VR_GROUP, MIP_GROUP]) {
     try {
       engine.tools.ToolGroupManager.getToolGroup(id)?.removeViewports(ENGINE_ID, viewportId);
     } catch {
@@ -298,4 +307,72 @@ export function undoLastAnnotation(engine: Engine): void {
   const last = all[all.length - 1];
   if (last?.annotationUID) annotation.state.removeAnnotation(last.annotationUID);
   engine.renderingEngine.render();
+}
+
+// ───────────────────────────── volume groups ─────────────────────────────
+
+const PLANE_COLORS: Record<string, string> = {
+  "vol-axial": "rgb(240, 90, 80)",
+  "vol-coronal": "rgb(52, 199, 120)",
+  "vol-sagittal": "rgb(110, 160, 255)",
+};
+
+/**
+ * MPR planes: crosshairs on the left button (drag the centre to move, the
+ * lines to rotate an oblique, the handles for slab thickness), wheel = slice,
+ * right = window, middle = pan, Ctrl+wheel = zoom.
+ * 3D: rotate on the left, zoom on the right, pan on the middle.
+ */
+export function ensureVolumeGroups(engine: Engine): void {
+  const { tools } = engine;
+  const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
+  if (!tools.ToolGroupManager.getToolGroup(MPR_GROUP)) {
+    const g = tools.ToolGroupManager.createToolGroup(MPR_GROUP)!;
+    g.addTool("Crosshairs", {
+      getReferenceLineColor: (viewportId: string) => PLANE_COLORS[viewportId] ?? "rgb(240, 176, 64)",
+      getReferenceLineControllable: () => true,
+      getReferenceLineDraggableRotatable: () => true,
+      getReferenceLineSlabThicknessControlsOn: () => true,
+      mobile: { enabled: false },
+    });
+    for (const name of ["StackScroll", "WindowLevel", "Pan", "Zoom", "Length", "EllipticalROI", "Probe"]) g.addTool(name);
+    g.setToolActive("Crosshairs", { bindings: [{ mouseButton: MouseBindings.Primary }] });
+    g.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
+    g.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
+    g.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
+    g.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl }] });
+    for (const name of ["Length", "EllipticalROI", "Probe"]) g.setToolPassive(name);
+    leftByGroup.set(MPR_GROUP, "Crosshairs");
+  }
+  if (!tools.ToolGroupManager.getToolGroup(MIP_GROUP)) {
+    const g = tools.ToolGroupManager.createToolGroup(MIP_GROUP)!;
+    for (const name of ["WindowLevel", "Pan", "Zoom"]) g.addTool(name);
+    g.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Primary }, { mouseButton: MouseBindings.Secondary }] });
+    g.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
+    g.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
+  }
+  if (!tools.ToolGroupManager.getToolGroup(VR_GROUP)) {
+    const g = tools.ToolGroupManager.createToolGroup(VR_GROUP)!;
+    for (const name of ["TrackballRotate", "Zoom", "Pan"]) g.addTool(name);
+    g.setToolActive("TrackballRotate", { bindings: [{ mouseButton: MouseBindings.Primary }] });
+    g.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Secondary }, { mouseButton: MouseBindings.Wheel }] });
+    g.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
+  }
+}
+
+/** Volume ids currently held, so a new MPR releases the previous volume's memory. */
+const heldVolumes = new Set<string>();
+
+export function holdVolumes(engine: Engine, keep: string[]): void {
+  for (const id of [...heldVolumes]) {
+    if (!keep.includes(id)) {
+      try {
+        engine.core.cache.removeVolumeLoadObject(id);
+      } catch {
+        /* already evicted */
+      }
+      heldVolumes.delete(id);
+    }
+  }
+  keep.forEach((id) => heldVolumes.add(id));
 }

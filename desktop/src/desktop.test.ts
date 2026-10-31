@@ -8,6 +8,9 @@ import { hangSeries } from "./layout";
 import { historyEntryFor, sourceKey } from "./history";
 import { windowPresetsFor, voiRangeOf, wwwcOf } from "./viewer/presets";
 import type { DesktopHeader } from "./types";
+import { sanitizePetMeta } from "./viewer/suv";
+import { buildMjpegAvi, exportBaseName } from "./viewer/exporter";
+import { calculateSUVScalingFactors } from "@cornerstonejs/calculate-suv";
 
 const key = (k: string, extra: Partial<KeyLike> = {}): KeyLike => ({ key: k, ...extra });
 
@@ -171,4 +174,54 @@ test("real KeyboardEvent-shaped objects (prototype getters) keep their modifiers
     get altKey() { return false; }
   }
   assert.deepEqual(resolveShortcut(new CtrlShiftO() as unknown as KeyLike, false), { type: "open", what: "folder" });
+});
+
+test("SUVbw computes for PatientSex 'O' and absent optional tags", () => {
+  const meta = sanitizePetMeta({
+    CorrectedImage: ["ATTN", "DECY"], Units: "BQML", RadionuclideHalfLife: 6586.2, RadionuclideTotalDose: 370000000,
+    DecayCorrection: "START", PatientWeight: 75, PatientSize: 1.75, PatientSex: "O", SeriesDate: "20240115",
+    SeriesTime: "100000.00", AcquisitionDate: "20240115", AcquisitionTime: "100000.00",
+    RadiopharmaceuticalStartTime: "090000.00", RadiopharmaceuticalStartDateTime: null, FrameReferenceTime: null,
+  });
+  assert.equal("PatientSex" in meta, false);
+  assert.equal("FrameReferenceTime" in meta, false);
+  const [r] = calculateSUVScalingFactors([meta] as never);
+  // 75 kg, 370 MBq, 1 h after injection, F-18: suvbw ≈ 75000 / (370e6 · 2^(-3600/6586.2)).
+  const expected = 75000 / (370e6 * Math.pow(2, -3600 / 6586.2));
+  assert.ok(Math.abs(r.suvbw - expected) / expected < 1e-3, `${r.suvbw} vs ${expected}`);
+});
+
+test("MJPEG AVI container: RIFF sizes, frame count, index offsets", () => {
+  const frames = [new Uint8Array([0xff, 0xd8, 1, 0xff, 0xd9]), new Uint8Array([0xff, 0xd8, 2, 3, 0xff, 0xd9])];
+  const avi = buildMjpegAvi(frames, 64, 48, 15);
+  const dv = new DataView(avi.buffer);
+  const tag = (o: number) => String.fromCharCode(...avi.slice(o, o + 4));
+  assert.equal(tag(0), "RIFF");
+  assert.equal(dv.getUint32(4, true), avi.byteLength - 8);
+  assert.equal(tag(8), "AVI ");
+  // avih: total frames, width, height
+  assert.equal(dv.getUint32(32 + 16, true), 2);
+  assert.equal(dv.getUint32(32 + 32, true), 64);
+  assert.equal(dv.getUint32(32 + 36, true), 48);
+  const movi = [...avi.keys()].find((i) => tag(i) === "movi")!;
+  const idx = [...avi.keys()].find((i) => tag(i) === "idx1")!;
+  assert.equal(tag(idx + 8), "00dc");
+  const firstOffset = dv.getUint32(idx + 16, true);
+  assert.equal(tag(movi + firstOffset), "00dc");
+  assert.equal(dv.getUint32(movi + firstOffset + 4, true), 5);
+  const secondOffset = dv.getUint32(idx + 32, true);
+  assert.equal(tag(movi + secondOffset), "00dc", "odd-length frame is padded");
+});
+
+test("export file names never carry patient text", () => {
+  const name = exportBaseName({ modality: "CT", seriesNumber: 2 }, new Date(2026, 0, 2, 3, 4, 5));
+  assert.equal(name, "CT_se2_20260102-030405");
+});
+
+test("PET/CT hangs the CT first even when the PET has more slices", () => {
+  const studies = buildStudies([
+    ...[0, 1, 2].map((z) => ct(z, 30 + z, { seriesInstanceUID: "ct", modality: "CT", seriesNumber: 3 })),
+    ...[0, 1, 2, 3, 4].map((z) => ct(z, 40 + z, { seriesInstanceUID: "pt", modality: "PT", seriesNumber: 4 })),
+  ]);
+  assert.equal(studies[0].series[primarySeriesIndex(studies[0])].uid, "ct");
 });
