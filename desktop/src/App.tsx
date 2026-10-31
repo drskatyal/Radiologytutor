@@ -97,6 +97,8 @@ export default function App() {
   const browserFileInput = useRef<HTMLInputElement>(null);
   const browserFolderInput = useRef<HTMLInputElement>(null);
   const openSeq = useRef(0);
+  /** True until the reader changes what is on screen; lets the final scan re-hang the primary series. */
+  const autoHung = useRef(true);
   const bench = useRef<{ enabled: boolean; t0: number; firstPaint?: number; marks: Record<string, number> }>({
     enabled: false,
     t0: 0,
@@ -141,6 +143,7 @@ export default function App() {
 
   // ───────────── open flow ─────────────
   const resetWorkspace = useCallback(() => {
+    autoHung.current = true;
     setStudies([]);
     setCells([null]);
     setLayout({ rows: 1, cols: 1 });
@@ -238,7 +241,15 @@ export default function App() {
           resetWorkspace();
           return;
         }
-        hangFirst(built);
+        // Progressive open hung whatever streamed in first. If the reader has
+        // not touched anything yet, show the study's primary series instead.
+        if (autoHung.current) {
+          const study = built[0];
+          const primary = study.series[primarySeriesIndex(study)]?.uid;
+          if (primary) setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)]));
+        } else {
+          hangFirst(built);
+        }
         const opened: OpenedSource = {
           key: sourceKey(paths),
           paths,
@@ -435,6 +446,7 @@ export default function App() {
   // ───────────── actions ─────────────
   const applyLayout = useCallback(
     (rows: number, cols: number) => {
+      autoHung.current = false;
       setMaximized(null);
       setLayout({ rows, cols });
       setCells((prev) => hangSeries(prev, rows * cols, seriesOrder));
@@ -445,6 +457,7 @@ export default function App() {
 
   const showSeries = useCallback(
     (uid: string, cell = activeCell) => {
+      autoHung.current = false;
       setCells((prev) => prev.map((v, i) => (i === cell ? uid : v)));
     },
     [activeCell]
@@ -710,7 +723,10 @@ export default function App() {
                     active={i === activeCell && cells.length > 1}
                     showOverlay={overlay}
                     growing={growing}
-                    onActivate={() => setActiveCell(i)}
+                    onActivate={() => {
+                      autoHung.current = false;
+                      setActiveCell(i);
+                    }}
                     onDropSeries={(dropped) => showSeries(dropped, i)}
                     onDoubleClick={() => cells.length > 1 && setMaximized((m) => (m == null ? i : null))}
                     onFirstPaint={onFirstPaint}

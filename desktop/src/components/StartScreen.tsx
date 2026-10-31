@@ -64,8 +64,8 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
   }, []);
 
   return (
-    <div className={cn("flex h-full overflow-y-auto transition-colors", dragging && "bg-accent-muted/20")}>
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-8 py-10">
+    <div className={cn("h-full w-full overflow-y-auto transition-colors", dragging && "bg-accent-muted/20")}>
+      <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-8 px-8 py-10">
         <header className="flex items-end justify-between gap-6">
           <div>
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-accent-bright">

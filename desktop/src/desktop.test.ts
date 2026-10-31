@@ -38,6 +38,7 @@ test("digits pick presets, Shift+digits pick layouts (by code, not the shifted s
   assert.deepEqual(resolveShortcut(key("0", { code: "Digit0" }), false), { type: "presetDefault" });
   assert.deepEqual(resolveShortcut(key("$", { code: "Digit4", shiftKey: true }), false), { type: "layout", rows: 2, cols: 2 });
   assert.deepEqual(resolveShortcut(key("&", { code: "Digit7", shiftKey: true }), false), { type: "layout", rows: 3, cols: 3 });
+  assert.deepEqual(resolveShortcut(key("@", { code: "", shiftKey: true }), false), { type: "layout", rows: 1, cols: 2 }, "no code");
 });
 
 test("navigation and the ambiguous pairs resolve to the intended action", () => {
@@ -149,4 +150,25 @@ test("window presets are modality-aware and round-trip through VOI ranges", () =
   assert.ok(windowPresetsFor("CT").some((p) => p.label === "Lung"));
   assert.deepEqual(windowPresetsFor("MR"), []);
   assert.deepEqual(wwwcOf(voiRangeOf(400, 40)), { ww: 400, wc: 40 });
+});
+
+test("real KeyboardEvent-shaped objects (prototype getters) keep their modifiers", () => {
+  class FakeKeyboardEvent {
+    get key() { return "$"; }
+    get code() { return "Digit4"; }
+    get shiftKey() { return true; }
+    get ctrlKey() { return false; }
+    get metaKey() { return false; }
+    get altKey() { return false; }
+  }
+  assert.deepEqual(resolveShortcut(new FakeKeyboardEvent() as unknown as KeyLike, false), { type: "layout", rows: 2, cols: 2 });
+  class CtrlShiftO {
+    get key() { return "O"; }
+    get code() { return "KeyO"; }
+    get shiftKey() { return true; }
+    get ctrlKey() { return true; }
+    get metaKey() { return false; }
+    get altKey() { return false; }
+  }
+  assert.deepEqual(resolveShortcut(new CtrlShiftO() as unknown as KeyLike, false), { type: "open", what: "folder" });
 });

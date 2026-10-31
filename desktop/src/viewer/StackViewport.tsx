@@ -32,6 +32,8 @@ export interface StackViewportProps {
 }
 
 interface Readout extends ViewportReadout {
+  /** Small cell (3×3 grids): essentials only, so text never covers anatomy. */
+  compact?: boolean;
   edges?: EdgeLabels;
   header?: DesktopHeader;
   rows?: number;
@@ -108,7 +110,9 @@ function StackViewportImpl({
           ? edgeLabels(camera.viewUp as Vec3, camera.viewPlaneNormal as Vec3)
           : undefined;
       const header = s.headers[index];
+      const el = elementRef.current;
       setReadout({
+        compact: !!el && (el.clientWidth < 520 || el.clientHeight < 380),
         index,
         count: s.imageIds.length,
         ww: voi?.ww,
@@ -433,27 +437,31 @@ function StackViewportImpl({
       {series && showOverlay && (
         <div className="pointer-events-none absolute inset-0 select-none p-2 font-sans text-[11px] leading-[1.35] text-white/90 text-halo tabular-nums">
           <div className="absolute left-2 top-2">
-            {patientLine.map((line) => (
+            {(readout?.compact ? patientLine.slice(0, 1) : patientLine).map((line) => (
               <div key={line} className={line === patientLine[0] ? "font-semibold text-white" : undefined}>
                 {line}
               </div>
             ))}
           </div>
-          <div className="absolute right-2 top-2 text-right">
-            {study?.institution && <div>{study.institution}</div>}
-            <div>{study?.description || "Study"}</div>
-            <div>
-              {formatDicomDate(study?.date)} {formatDicomTime(study?.time)}
-            </div>
-            <div className="text-white">{series.description}</div>
+          <div className="absolute right-6 top-2 text-right">
+            {!readout?.compact && (
+              <>
+                {study?.institution && <div>{study.institution}</div>}
+                <div>{study?.description || "Study"}</div>
+                <div>
+                  {formatDicomDate(study?.date)} {formatDicomTime(study?.time)}
+                </div>
+              </>
+            )}
+            <div className="max-w-[40ch] truncate text-white">{series.description}</div>
           </div>
           <div className="absolute bottom-2 left-2">
             <div className="text-white">
               Im {index + 1} / {count}
               {growing && <span className="text-warning"> · loading</span>}
             </div>
-            {h?.sliceLocation != null && <div>Loc {fmt(h.sliceLocation, 1)} mm</div>}
-            {h?.sliceThickness != null && <div>Thk {fmt(h.sliceThickness, 1)} mm</div>}
+            {!readout?.compact && h?.sliceLocation != null && <div>Loc {fmt(h.sliceLocation, 1)} mm</div>}
+            {!readout?.compact && h?.sliceThickness != null && <div>Thk {fmt(h.sliceThickness, 1)} mm</div>}
             <div>
               W {fmt(readout?.ww)} · L {fmt(readout?.wc)}
             </div>
@@ -463,7 +471,7 @@ function StackViewportImpl({
               {series.modality}
               {series.number != null ? ` · Se ${series.number}` : ""}
             </div>
-            {readout?.columns && readout.rows && (
+            {!readout?.compact && readout?.columns && readout.rows && (
               <div>
                 {readout.columns} × {readout.rows}
               </div>

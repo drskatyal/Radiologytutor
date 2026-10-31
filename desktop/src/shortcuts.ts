@@ -62,7 +62,16 @@ interface Binding {
 
 const plain = (e: KeyLike, mod: boolean) => !mod && !e.altKey && !e.ctrlKey && !e.metaKey;
 const keyIs = (e: KeyLike, ...keys: string[]) => keys.includes(e.key.length === 1 ? e.key.toLowerCase() : e.key);
-const digit = (e: KeyLike) => (e.code?.startsWith("Digit") ? Number(e.code.slice(5)) : /^[0-9]$/.test(e.key) ? Number(e.key) : NaN);
+/** US-layout shifted digits, for events that arrive without `code` (some WebKitGTK/X11 paths). */
+const SHIFTED_DIGITS: Record<string, number> = { "!": 1, "@": 2, "#": 3, $: 4, "%": 5, "^": 6, "&": 7, "*": 8, "(": 9, ")": 0 };
+const digit = (e: KeyLike) =>
+  e.code?.startsWith("Digit")
+    ? Number(e.code.slice(5))
+    : /^[0-9]$/.test(e.key)
+      ? Number(e.key)
+      : e.shiftKey && e.key in SHIFTED_DIGITS
+        ? SHIFTED_DIGITS[e.key]
+        : NaN;
 
 const tool = (letter: string, toolName: string, does: string): Binding => ({
   keys: letter.toUpperCase(),
@@ -173,7 +182,17 @@ export function isMac(): boolean {
 /** Resolve a key event to an action. `mac` decides whether ⌘ or Ctrl is "Mod". */
 export function resolveShortcut(e: KeyLike, mac = isMac()): ShortcutAction | null {
   const mod = mac ? !!e.metaKey : !!e.ctrlKey;
-  const event = { ...e, key: e.key ?? "" };
+  // Copy explicitly: a DOM KeyboardEvent's fields are prototype getters, so a
+  // spread (`{ ...e }`) would silently drop code/shift/alt/ctrl/meta.
+  const event = {
+    key: e.key ?? "",
+    code: e.code,
+    shiftKey: !!e.shiftKey,
+    altKey: !!e.altKey,
+    ctrlKey: !!e.ctrlKey,
+    metaKey: !!e.metaKey,
+  };
+  e = event;
   for (const binding of BINDINGS) {
     if (!binding.match(event, mod)) continue;
     const action = binding.action;
