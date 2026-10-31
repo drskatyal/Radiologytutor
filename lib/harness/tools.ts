@@ -55,6 +55,20 @@ export type HarnessViewerAction =
       x2_pct?: number;
       y2_pct?: number;
     }
+  | { type: "draw_circle"; findingId?: string; uncertain?: boolean }
+  | { type: "draw_arrow"; findingId?: string; uncertain?: boolean }
+  | {
+      type: "place_card";
+      findingId?: string;
+      uncertain?: boolean;
+      template?: string;
+      title?: string;
+      lines?: string[];
+      name?: string;
+      meaning?: string;
+    }
+  | { type: "clear_overlay" }
+  | { type: "jump_to_key_view"; findingId: string }
   | { type: "play_guide"; findingId: string }
   | { type: "none" };
 
@@ -197,6 +211,63 @@ const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
     },
   },
   {
+    name: "draw_circle",
+    description:
+      "Draw a hand-drawn circle on an authored finding. Pass findingId. Do not pass coordinates. Pass uncertain:true only to circle the learner's own tap — that stroke is labelled uncertain. Never invent a lesion location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "draw_arrow",
+    description:
+      "Draw a hand-drawn arrow whose tip is the authored marker, or the learner's tap when uncertain:true. Do not pass coordinates. Never invent a lesion location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "place_card",
+    description:
+      "Place a diagram card (template differential, mechanism, or sign) on an authored finding or the learner's tap. Send plain text fields only. Never send HTML. Do not invent a location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+        template: { type: "string" },
+        title: { type: "string" },
+        lines: { type: "array", items: { type: "string" } },
+        name: { type: "string" },
+        meaning: { type: "string" },
+      },
+      required: ["template"],
+    },
+  },
+  {
+    name: "clear_overlay",
+    description: "Remove hand-drawn circles, arrows, underlines, and cards from the viewer.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "jump_to_key_view",
+    description:
+      "Jump to the authored key view for a finding: slice, window, and zoom. Pass findingId only. Do not invent those numbers.",
+    parameters: {
+      type: "object",
+      properties: { findingId: { type: "string" } },
+      required: ["findingId"],
+    },
+  },
+  {
     name: "play_guide",
     description:
       "Perform the finding's consultant walk-through in order (scroll, window, zoom, hold, point, measure) while you speak. Prefer this over inventing scroll_to / zoom_to. Pass the finding id.",
@@ -303,6 +374,35 @@ export function harnessActionFromCall(call?: {
       const findingId = String(call.args.findingId ?? "").trim();
       if (!findingId) return { type: "none" };
       return { type: "play_guide", findingId };
+    }
+    case "draw_circle":
+    case "draw_arrow":
+      return {
+        type: call.name,
+        findingId: call.args.findingId != null ? String(call.args.findingId) : undefined,
+        uncertain: call.args.uncertain === true,
+      };
+    case "place_card": {
+      const lines = Array.isArray(call.args.lines)
+        ? call.args.lines.map((line) => String(line)).filter(Boolean).slice(0, 4)
+        : undefined;
+      return {
+        type: "place_card",
+        findingId: call.args.findingId != null ? String(call.args.findingId) : undefined,
+        uncertain: call.args.uncertain === true,
+        template: call.args.template != null ? String(call.args.template) : undefined,
+        title: call.args.title != null ? String(call.args.title) : undefined,
+        lines,
+        name: call.args.name != null ? String(call.args.name) : undefined,
+        meaning: call.args.meaning != null ? String(call.args.meaning) : undefined,
+      };
+    }
+    case "clear_overlay":
+      return { type: "clear_overlay" };
+    case "jump_to_key_view": {
+      const findingId = String(call.args.findingId ?? "").trim();
+      if (!findingId) return { type: "none" };
+      return { type: "jump_to_key_view", findingId };
     }
     default:
       return { type: "none" };

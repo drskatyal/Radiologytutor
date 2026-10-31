@@ -25,6 +25,13 @@ import {
 import { directionalPrefetchIndexes, prefetchRadiusFor } from "../../lib/prefetchPlan";
 import { warmOpeningFrame, warmViewerModules } from "../../lib/viewerWarmup";
 import {
+  QUALITY_EVENT,
+  installBundleLoader,
+  isPreviewImage,
+  type CoreLike,
+  type DicomLoaderLike,
+} from "../../lib/dicomCdn/cornerstoneBridge";
+import {
   coreInitConfig,
   imageCacheBytes,
   retrievalPoolSizes,
@@ -46,6 +53,8 @@ interface Knobs {
    * overlap: the three round trips happen while the engine chunks download.
    */
   prewarm: boolean;
+  /** Open through lib/dicomCdn (converted bundle) instead of DICOMweb. */
+  bundle?: boolean;
   slices: number;
   scrollSlices: number;
   studyUID: string;
@@ -82,7 +91,7 @@ async function main() {
         studyInstanceUID: knobs.studyUID,
         seriesInstanceUID: knobs.seriesUID,
         instanceCount: knobs.slices,
-      })
+      }, { bundles: Boolean(knobs.bundle) })
     : Promise.resolve(null);
   void prewarmed.catch(() => null);
   if (knobs.prewarm) void warmViewerModules();
@@ -110,6 +119,11 @@ async function main() {
   }
   await tools.init();
   await loader.init({ maxWebWorkers: workers });
+  if (knobs.bundle) {
+    installBundleLoader(core as unknown as CoreLike, loader as unknown as DicomLoaderLike, {
+      decodeWorkers: workers,
+    });
+  }
   if (cacheBytes != null) core.cache.setMaxCacheSize(cacheBytes);
 
   const retrieval = (
@@ -146,6 +160,8 @@ async function main() {
     seriesInstanceUID: knobs.seriesUID,
     open: null,
     ...(knobs.countHint ? { instanceCount: knobs.slices } : {}),
+    // The DICOMweb profiles measure DICOMweb; `bundle` opts into lib/dicomCdn.
+    bundles: Boolean(knobs.bundle),
   });
 
   const firstPixel = new Promise<number>((resolve) => {
@@ -155,6 +171,31 @@ async function main() {
       resolve(performance.now() - navStart);
     };
     element.addEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered);
+  });
+
+  // Full quality: the slice on screen is a real 16-bit frame. On DICOMweb
+  // that is the first pixel; on a bundle it is the preview → full swap.
+  let previewSeen = false;
+  const fullQuality = new Promise<number>((resolve) => {
+    const onImage = (evt: Event) => {
+      const image = (evt as CustomEvent<{ image?: unknown }>).detail?.image;
+      if (!image) return;
+      if (isPreviewImage(image)) {
+        previewSeen = true;
+        return;
+      }
+      done();
+    };
+    const onQuality = (evt: Event) => {
+      if (!(evt as CustomEvent<{ preview: boolean }>).detail?.preview) done();
+    };
+    const done = () => {
+      element.removeEventListener(core.Enums.Events.STACK_NEW_IMAGE, onImage);
+      element.removeEventListener(QUALITY_EVENT, onQuality);
+      resolve(performance.now() - navStart);
+    };
+    element.addEventListener(core.Enums.Events.STACK_NEW_IMAGE, onImage);
+    element.addEventListener(QUALITY_EVENT, onQuality);
   });
 
   const openingId = await job.opening;
@@ -184,7 +225,11 @@ async function main() {
     .catch((error: unknown) => ({ error: String(error) }));
   log(`${knobs.label}: opening frame decoded ${JSON.stringify(decoded)}`);
   job.releaseMetadata();
-  log(`${knobs.label}: first pixel ${openMs}ms`);
+  log(`${knobs.label}: first pixel ${openMs}ms${previewSeen ? " (preview)" : ""}`);
+  // On DICOMweb the decoded frame is the full-quality frame, so full quality
+  // can be no earlier than the first pixel.
+  const fullQualityMs = Math.max(openMs, Math.round(await fullQuality));
+  log(`${knobs.label}: full quality ${fullQualityMs}ms`);
 
   const full = await job.full;
   await viewport.setStack(full.imageIds, full.openIndex);
@@ -234,6 +279,9 @@ async function main() {
     prefetchRadius: radius,
     moduleMs,
     openMs,
+    openedOnPreview: previewSeen,
+    fullQualityMs,
+    stackSource: full.source,
     seriesReadyMs,
     coldScrollMs,
     coldScrollSlices: knobs.scrollSlices,

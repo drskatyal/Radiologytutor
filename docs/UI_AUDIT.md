@@ -196,6 +196,16 @@ Ordered by how much a radiologist would feel it. None of this is viewer-engine w
 > untouched and still accurate. Viewer *performance* work from the same branch
 > is in `docs/VIEWER_BENCHMARK.md`.
 
+> **Update 2026-10-31 (`claude/viewer-ux`).** **#3** is closed — the toolbar
+> menus are Radix menus (arrow keys, typeahead, Escape) and every control's
+> tooltip names its shortcut. **#7** is closed in the standalone viewer: hanging
+> layouts share one toolbar that follows the outlined pane (student compare
+> still has two bars). **#10**'s layout half is closed (1×1 / 1×2 / 2×1 / 2×2;
+> magnify still open). **#12** is enforced by type: the corner overlay reads an
+> allow-list of series fields (`lib/dicomOverlay.ts`), so a patient name cannot
+> reach the screen. Details and the OHIF / Pacsbin / Stradus comparison are in
+> `docs/VIEWER_BENCHMARK.md` §4a.
+
 1. **One mode model.** The rail still has five equal tabs (Teach, Report,
    Socratic, Free, Viva) beside a Teach/Exam switch. Pick two intents on the
    surface and bury the rest. Do not do this as a visual tweak — it changes

@@ -218,6 +218,7 @@ export function LocalStudyViewer() {
               modality={series.modality}
               chrome="dock"
               defaultTool="StackScroll"
+              questionMarkHelp
             />
             {result.warnings.length > 0 && (
               <ul className="mt-2 flex flex-col gap-1">
