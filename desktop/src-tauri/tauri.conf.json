@@ -39,14 +39,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "nsis",
-      "msi",
-      "dmg",
-      "app",
-      "appimage",
-      "deb"
-    ],
+    "targets": "all",
     "createUpdaterArtifacts": true,
     "publisher": "FlowRad",
     "category": "Medical",

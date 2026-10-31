@@ -3,7 +3,8 @@
 # attached to a DRAFT GitHub release. Nothing is published automatically.
 #
 # Trigger: push a tag `desktop-v0.2.0` (version must match
-# desktop/src-tauri/tauri.conf.json), or run manually.
+# desktop/src-tauri/tauri.conf.json), run manually, or push the
+# `claude/desktop-release` branch.
 #
 # Secrets (all optional — without them the build is unsigned and has no
 # working auto-update, which is fine for a smoke build):
@@ -23,6 +24,9 @@ name: desktop-release
 on:
   push:
     tags: ["desktop-v*"]
+    # Pushing this branch cuts a DRAFT release too (tag created by the action),
+    # for contexts that can push branches but not tags or dispatch workflows.
+    branches: ["claude/desktop-release"]
   workflow_dispatch:
 
 permissions:
