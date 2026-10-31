@@ -73,3 +73,37 @@ jobs:
         run: xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/radlearn-viewer "$RUNNER_TEMP/fixtures"
       - name: Per-codec decode check (app decoders vs pydicom, bit-exact for lossless)
         run: xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/radlearn-viewer "$RUNNER_TEMP/fixtures"
+      - name: e2e — normal launch paints real pixels in the main viewport
+        run: xvfb-run -a python3 desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/radlearn-viewer
+
+  # The blank-viewport bug was Windows-only (WebView2). Same e2e, on WebView2.
+  windows-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pydicom numpy
+      - run: npm ci
+      - run: npm ci --prefix desktop
+      - name: Rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test --lib
+      - name: Build the app (debug, embedded renderer)
+        run: npx tauri build --debug --no-bundle
+        working-directory: desktop
+      - name: e2e — normal launch paints real pixels in the main viewport
+        run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/radlearn-viewer.exe

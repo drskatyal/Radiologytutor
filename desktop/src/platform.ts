@@ -26,10 +26,14 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
 
 /** `dicom://localhost/f/<id>` on macOS/Linux, `http://dicom.localhost/f/<id>` on Windows. */
 let protocolBase: string | null = null;
-export async function initProtocol(): Promise<void> {
-  if (!isTauri) return;
-  const { convertFileSrc } = await import("@tauri-apps/api/core");
-  protocolBase = convertFileSrc("f", "dicom").replace(/f$/, "f/");
+let protocolPromise: Promise<void> | null = null;
+export function initProtocol(): Promise<void> {
+  protocolPromise ??= (async () => {
+    if (!isTauri) return;
+    const { convertFileSrc } = await import("@tauri-apps/api/core");
+    protocolBase = convertFileSrc("f", "dicom").replace(/f$/, "f/");
+  })();
+  return protocolPromise;
 }
 
 export function imageUrlFor(fileId: number): string {

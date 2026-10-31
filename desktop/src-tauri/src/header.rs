@@ -163,7 +163,9 @@ pub fn is_obviously_not_dicom(path: &Path) -> bool {
 fn text(obj: &DefaultDicomObject, tag: Tag) -> Option<String> {
     let element = obj.element_opt(tag).ok()??;
     let value = element.to_str().ok()?;
-    let trimmed = value.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string();
+    let trimmed = value
+        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+        .to_string();
     if trimmed.is_empty() {
         None
     } else {
@@ -177,7 +179,14 @@ fn int(obj: &DefaultDicomObject, tag: Tag) -> Option<i64> {
         return Some(v);
     }
     // IS with stray whitespace or a decimal point in the wild.
-    text(obj, tag).and_then(|s| s.split('\\').next()?.trim().parse::<f64>().ok().map(|f| f as i64))
+    text(obj, tag).and_then(|s| {
+        s.split('\\')
+            .next()?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|f| f as i64)
+    })
 }
 
 fn floats(obj: &DefaultDicomObject, tag: Tag) -> Option<Vec<f64>> {
@@ -205,17 +214,46 @@ fn float(obj: &DefaultDicomObject, tag: Tag) -> Option<f64> {
 }
 
 /// Parse one file's header. `None` when it is not readable DICOM.
+///
+/// One open per file: the magic probe, the size/mtime and the parse all use
+/// the same handle. On Windows every `CreateFile` costs an antivirus callback,
+/// so a 10,000-file MRI folder spent most of its scan opening each file twice
+/// and stat-ing it twice more.
 pub fn read_header(path: &Path) -> Option<Header> {
-    if !has_dicom_magic(path) {
-        return None;
+    let file = File::open(path).ok()?;
+    let meta = file.metadata().ok();
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut probe = [0u8; MAGIC_PROBE];
+    let mut filled = 0;
+    while filled < MAGIC_PROBE {
+        match reader.read(&mut probe[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return None,
+        }
     }
+    let at = |offset: usize| filled >= offset + 4 && &probe[offset..offset + 4] == b"DICM";
+    // Hand the parser a stream that starts at "DICM" (no preamble).
+    let start: &[u8] = if at(128) {
+        &probe[128..filled]
+    } else if at(0) {
+        &probe[..filled]
+    } else {
+        return None;
+    };
     let obj = OpenFileOptions::new()
+        .read_preamble(dicom_object::file::ReadPreamble::Never)
         .read_until(tags::PIXEL_DATA)
-        .open_file(path)
+        .from_reader(start.chain(reader))
         .ok()?;
-    let meta = std::fs::metadata(path).ok();
-    let sop_class = text(&obj, tags::SOP_CLASS_UID)
-        .or_else(|| Some(obj.meta().media_storage_sop_class_uid().trim_end_matches('\0').to_string()));
+    let sop_class = text(&obj, tags::SOP_CLASS_UID).or_else(|| {
+        Some(
+            obj.meta()
+                .media_storage_sop_class_uid()
+                .trim_end_matches('\0')
+                .to_string(),
+        )
+    });
 
     // Structured reports, presentation states, raw data, key-object notes and
     // encapsulated PDFs carry no pixels; they are not series the user scrolls.
@@ -233,7 +271,12 @@ pub fn read_header(path: &Path) -> Option<Header> {
         series_instance_uid: text(&obj, tags::SERIES_INSTANCE_UID),
         sop_instance_uid: text(&obj, tags::SOP_INSTANCE_UID),
         sop_class_uid: sop_class,
-        transfer_syntax_uid: Some(obj.meta().transfer_syntax().trim_end_matches('\0').to_string()),
+        transfer_syntax_uid: Some(
+            obj.meta()
+                .transfer_syntax()
+                .trim_end_matches('\0')
+                .to_string(),
+        ),
         instance_number: int(&obj, tags::INSTANCE_NUMBER),
         image_position_patient: floats(&obj, tags::IMAGE_POSITION_PATIENT),
         image_orientation_patient: floats(&obj, tags::IMAGE_ORIENTATION_PATIENT),
@@ -303,20 +346,42 @@ mod tests {
         let mut part10 = vec![0u8; 128];
         part10.extend_from_slice(b"DICM");
         assert!(has_dicom_magic(file_with(&part10).path()));
-        assert!(has_dicom_magic(file_with(b"DICM\x02\x00\x00\x00").path()), "preamble-less");
+        assert!(
+            has_dicom_magic(file_with(b"DICM\x02\x00\x00\x00").path()),
+            "preamble-less"
+        );
         assert!(!has_dicom_magic(file_with(b"%PDF-1.7 not dicom").path()));
         assert!(!has_dicom_magic(file_with(&[0u8; 64]).path()), "short file");
         let mut wrong = vec![0u8; 64];
         wrong.extend_from_slice(b"DICM");
-        assert!(!has_dicom_magic(file_with(&wrong).path()), "DICM at the wrong offset");
+        assert!(
+            !has_dicom_magic(file_with(&wrong).path()),
+            "DICM at the wrong offset"
+        );
     }
 
     #[test]
     fn media_junk_is_skipped_without_opening_but_extensionless_files_are_kept() {
-        for junk in ["AUTORUN.INF", "VIEWER.EXE", "readme.txt", ".DS_Store", "DICOMDIR", "Thumbs.db", "index.html", "x.zip"] {
+        for junk in [
+            "AUTORUN.INF",
+            "VIEWER.EXE",
+            "readme.txt",
+            ".DS_Store",
+            "DICOMDIR",
+            "Thumbs.db",
+            "index.html",
+            "x.zip",
+        ] {
             assert!(is_obviously_not_dicom(Path::new(junk)), "{junk}");
         }
-        for image in ["IM000001", "I10", "0001", "image.dcm", "CT.1.2.3", "IMG00042.IMA"] {
+        for image in [
+            "IM000001",
+            "I10",
+            "0001",
+            "image.dcm",
+            "CT.1.2.3",
+            "IMG00042.IMA",
+        ] {
             assert!(!is_obviously_not_dicom(Path::new(image)), "{image}");
         }
     }
@@ -350,17 +415,30 @@ mod tests {
     /// RADLEARN_FIXTURES=/tmp/fixtures cargo test header
     #[test]
     fn reads_identity_geometry_and_skips_non_images() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
+            return;
+        };
         let root = Path::new(&root);
-        let mut files: Vec<_> = std::fs::read_dir(root.join("ct-phantom")).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+        let mut files: Vec<_> = std::fs::read_dir(root.join("ct-phantom"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
         files.sort();
         let h = read_header(&files[0]).expect("CT header");
         assert_eq!(h.modality.as_deref(), Some("CT"));
         assert_eq!((h.rows, h.columns), (Some(512), Some(512)));
         assert_eq!(h.image_position_patient.as_ref().map(|v| v.len()), Some(3));
-        assert_eq!(h.image_orientation_patient.as_ref().map(|v| v.len()), Some(6));
+        assert_eq!(
+            h.image_orientation_patient.as_ref().map(|v| v.len()),
+            Some(6)
+        );
         assert!(h.study_instance_uid.is_some() && h.series_instance_uid.is_some());
-        assert_eq!(h.transfer_syntax_uid.as_deref(), Some("1.2.840.10008.1.2.1"));
+        assert_eq!(
+            h.transfer_syntax_uid.as_deref(),
+            Some("1.2.840.10008.1.2.1")
+        );
         // DICOMDIR is DICOM but not an image: no Rows, so it is not a stack member.
         assert!(read_header(&root.join("cd-media/DICOMDIR")).is_none());
         // Junk on the disc is not DICOM at all.

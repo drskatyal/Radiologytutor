@@ -70,7 +70,9 @@ pub fn stable_hash(value: &str) -> String {
 }
 
 fn cache_path(cache_dir: &Path, key: &str) -> PathBuf {
-    cache_dir.join("scan").join(format!("{}.json", stable_hash(key)))
+    cache_dir
+        .join("scan")
+        .join(format!("{}.json", stable_hash(key)))
 }
 
 fn load_cache(path: &Path) -> HashMap<String, Header> {
@@ -87,7 +89,10 @@ fn save_cache(path: &Path, headers: &[Header]) {
         .iter()
         .map(|h| (h.file_name.clone(), h.without_phi()))
         .collect();
-    let file = CacheFile { version: CACHE_VERSION, entries };
+    let file = CacheFile {
+        version: CACHE_VERSION,
+        entries,
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -99,13 +104,34 @@ fn save_cache(path: &Path, headers: &[Header]) {
     }
 }
 
+/// Header reads are I/O-latency bound (open, antivirus callback, first 64 KB),
+/// not CPU bound, so the scan runs on its own pool with twice the cores:
+/// while half the threads wait on the disk the other half parse.
+fn scan_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads((cores * 2).clamp(8, 32))
+            .thread_name(|i| format!("scan-{i}"))
+            .build()
+            .expect("scan thread pool")
+    })
+}
+
 /// `dir` when it holds exactly one folder and nothing else (dotfiles aside).
 fn single_child_dir(dir: &Path) -> Option<PathBuf> {
     let entries: Vec<PathBuf> = fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| !p.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(true))
+        .filter(|p| {
+            !p.file_name()
+                .map(|n| n.to_string_lossy().starts_with('.'))
+                .unwrap_or(true)
+        })
         .collect();
     match entries.as_slice() {
         [only] if only.is_dir() => Some(only.clone()),
@@ -221,7 +247,12 @@ pub fn scan(
 ) -> Result<ScanResult, String> {
     let started = Instant::now();
     let mut warnings = Vec::new();
-    on_progress(ScanProgress { phase: "listing", read: 0, accepted: 0, total: 0 });
+    on_progress(ScanProgress {
+        phase: "listing",
+        read: 0,
+        accepted: 0,
+        total: 0,
+    });
     let (files, kind, used_dicomdir) = list_candidates(paths, cache_dir, &mut warnings);
     let list_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -256,41 +287,48 @@ pub fn scan(
         }
     };
 
-    let mut headers: Vec<(Header, bool)> = files
-        .par_iter()
-        .filter_map(|path| {
-            if cancel.load(Ordering::Relaxed) {
-                return None;
-            }
-            let key = path.to_string_lossy();
-            let meta = fs::metadata(path).ok();
-            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let mtime = meta.as_ref().map(mtime_secs).unwrap_or(0);
-            let result = match cached.get(key.as_ref()) {
-                Some(hit) if hit.size_bytes == size && hit.mtime == mtime => {
-                    hits.fetch_add(1, Ordering::Relaxed);
-                    Some((hit.clone(), true))
+    let mut headers: Vec<(Header, bool)> = scan_pool().install(|| {
+        files
+            .par_iter()
+            .filter_map(|path| {
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
                 }
-                _ => read_header(path).map(|h| (h, false)),
-            };
-            let result = result.map(|(mut h, hit)| {
-                on_header(&mut h);
-                pending.lock().0.push(h.clone());
-                flush(false);
-                (h, hit)
-            });
-            let n = read.fetch_add(1, Ordering::Relaxed) + 1;
-            let a = if result.is_some() {
-                accepted.fetch_add(1, Ordering::Relaxed) + 1
-            } else {
-                accepted.load(Ordering::Relaxed)
-            };
-            if n % 64 == 0 || n == total {
-                on_progress(ScanProgress { phase: "reading", read: n, accepted: a, total });
-            }
-            result
-        })
-        .collect();
+                let key = path.to_string_lossy();
+                let meta = fs::metadata(path).ok();
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let mtime = meta.as_ref().map(mtime_secs).unwrap_or(0);
+                let result = match cached.get(key.as_ref()) {
+                    Some(hit) if hit.size_bytes == size && hit.mtime == mtime => {
+                        hits.fetch_add(1, Ordering::Relaxed);
+                        Some((hit.clone(), true))
+                    }
+                    _ => read_header(path).map(|h| (h, false)),
+                };
+                let result = result.map(|(mut h, hit)| {
+                    on_header(&mut h);
+                    pending.lock().0.push(h.clone());
+                    flush(false);
+                    (h, hit)
+                });
+                let n = read.fetch_add(1, Ordering::Relaxed) + 1;
+                let a = if result.is_some() {
+                    accepted.fetch_add(1, Ordering::Relaxed) + 1
+                } else {
+                    accepted.load(Ordering::Relaxed)
+                };
+                if n % 64 == 0 || n == total {
+                    on_progress(ScanProgress {
+                        phase: "reading",
+                        read: n,
+                        accepted: a,
+                        total,
+                    });
+                }
+                result
+            })
+            .collect()
+    });
 
     flush(true);
     if cancel.load(Ordering::Relaxed) {
@@ -302,7 +340,9 @@ pub fn scan(
     for (h, from_cache) in &headers {
         if !from_cache {
             if let Some(uid) = &h.study_instance_uid {
-                fresh_by_study.entry(uid.clone()).or_insert_with(|| h.clone());
+                fresh_by_study
+                    .entry(uid.clone())
+                    .or_insert_with(|| h.clone());
             }
         }
     }
@@ -323,7 +363,11 @@ pub fn scan(
     }
     for (h, from_cache) in headers.iter_mut() {
         if *from_cache {
-            if let Some(src) = h.study_instance_uid.as_ref().and_then(|u| fresh_by_study.get(u)) {
+            if let Some(src) = h
+                .study_instance_uid
+                .as_ref()
+                .and_then(|u| fresh_by_study.get(u))
+            {
                 h.copy_patient_fields_from(src);
             }
         }
@@ -352,7 +396,6 @@ pub fn scan(
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,7 +420,9 @@ mod tests {
     /// RADLEARN_FIXTURES=/tmp/fixtures cargo test scan
     #[test]
     fn scans_a_disc_via_dicomdir_then_hits_the_cache_without_storing_phi() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
+            return;
+        };
         let cache = tempfile::tempdir().unwrap();
         let paths = vec![Path::new(&root).join("cd-media")];
         let cancel = AtomicBool::new(false);
@@ -392,12 +437,22 @@ mod tests {
         assert!(first.used_dicomdir);
         assert_eq!(first.headers.len(), 84);
         assert_eq!(first.cache_hits, 0);
-        assert_eq!(batches.load(Ordering::Relaxed), 84, "every header streamed in a batch");
-        assert!(first.headers.iter().all(|h| h.patient_name.is_some()), "overlay still gets patient names");
+        assert_eq!(
+            batches.load(Ordering::Relaxed),
+            84,
+            "every header streamed in a batch"
+        );
+        assert!(
+            first.headers.iter().all(|h| h.patient_name.is_some()),
+            "overlay still gets patient names"
+        );
 
         let second = run();
         assert_eq!(second.cache_hits, 84);
-        assert!(second.headers.iter().all(|h| h.patient_name.is_some()), "names re-read, not cached");
+        assert!(
+            second.headers.iter().all(|h| h.patient_name.is_some()),
+            "names re-read, not cached"
+        );
 
         // The on-disk cache holds no patient identifiers.
         let cached: String = walkdir::WalkDir::new(cache.path().join("scan"))
@@ -417,7 +472,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         fs::write(d.path().join("IM1"), b"x").unwrap();
         let cancel = AtomicBool::new(true);
-        let err = scan(&[d.path().to_path_buf()], d.path(), &cancel, &|_| {}, &|_| {}, &|_| {}).unwrap_err();
+        let err = scan(
+            &[d.path().to_path_buf()],
+            d.path(),
+            &cancel,
+            &|_| {},
+            &|_| {},
+            &|_| {},
+        )
+        .unwrap_err();
         assert_eq!(err, "cancelled");
     }
 }

@@ -7,7 +7,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
-import { useToast } from "@/components/ui/Toast";
+import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import type { WindowPreset } from "@/lib/windowPresets";
@@ -21,6 +21,7 @@ import {
   historyRecord,
   historyRemove,
   imageUrlFor,
+  initProtocol,
   invoke,
   isTauri,
   listen,
@@ -57,6 +58,7 @@ import {
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
 import { firstImagePixelStats } from "./viewer/pixelStats";
+import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -143,8 +145,42 @@ export default function App() {
     // viewer must stay small. It warms on intent instead — an open dialog, a
     // drag over the window, a hover on a recent study — which is always
     // hundreds of ms before the first pixel is needed.
+    // e2e paint probe (RADLEARN_PROBE_AFTER_MS): a normal launch, then report
+    // what every viewport actually shows. desktop/scripts/e2e-paint.py.
+    if (isTauri)
+      invoke<number | null>("probe_after_ms").then((ms) => {
+        if (ms == null) return;
+        window.setTimeout(() => {
+          const viewports = [...document.querySelectorAll<HTMLElement>(".cs-viewport[data-has-series]")].map((el) => ({
+            id: el.dataset.viewportId,
+            maxLum: sampleCanvas(el),
+          }));
+          void invoke("probe_report", {
+            report: {
+              afterMs: ms,
+              viewports,
+              nonBlank: viewports.length > 0 && viewports.every((v) => (v.maxLum ?? 0) > 8),
+              renderPath: paintHealth.last?.renderPath ?? null,
+              visibility: document.visibilityState,
+            },
+          });
+        }, ms);
+      }, () => undefined);
     return onHandlesChanged(() => setHandlesVersion((v) => v + 1));
   }, []);
+
+  // Idle footprint: with nothing open, ask the webview to give memory back
+  // (WebView2's Low memory-usage target on Windows; a no-op elsewhere). The
+  // moment a study starts opening it goes back to Normal.
+  const nothingOpen = studies.length === 0 && scan == null;
+  useEffect(() => {
+    if (!isTauri) return;
+    const timer = window.setTimeout(
+      () => void invoke("set_memory_mode", { low: nothingOpen }).catch(() => undefined),
+      nothingOpen ? 1500 : 0
+    );
+    return () => window.clearTimeout(timer);
+  }, [nothingOpen]);
 
   const updateSettings = useCallback((patch: Partial<ViewerSettings>) => {
     setSettings((s) => ({ ...s, ...patch }));
@@ -229,6 +265,7 @@ export default function App() {
       setScan({ label, progress: null });
       setGrowing(true);
 
+      await initProtocol();
       const acc = new Map<string, DesktopHeader>();
       let timer = 0;
       let firstShown = false;
@@ -298,19 +335,36 @@ export default function App() {
         for (const w of result.warnings.slice(0, 2)) toast({ title: "Heads up", description: w, variant: "warning", duration: 8000 });
         bench.current.marks.scanDoneMs = performance.now() - t0;
         if (bench.current.enabled) {
-          const report = async () => {
+          // Scan numbers are reported whether or not a frame ever paints (a
+          // locked or minimised window may never paint); paint is its own field.
+          // The shell also prints RADLEARN_BENCH_SCAN the moment the scan ends,
+          // and a watchdog line if nothing is reported at all.
+          const report = async (paintTimedOut = false) => {
             const startup = await invoke<number>("startup_elapsed_ms").catch(() => 0);
+            const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             await benchReport({
               source: paths,
               files: result.inspected,
               images: built.reduce((n, s) => n + s.imageCount, 0),
+              studies: built.length,
+              series: built.reduce((n, s) => n + s.series.length, 0),
+              skipped: result.skipped,
               cacheHits: result.cacheHits,
               usedDicomdir: result.usedDicomdir,
               rust: result.timings,
               ...bench.current.marks,
-              firstImagePaintedMs: bench.current.firstPaint,
+              firstImagePaintedMs: bench.current.firstPaint ?? null,
+              paint: {
+                firstPreviewMs: bench.current.marks.firstPreviewMs ?? null,
+                firstImagePaintedMs: bench.current.firstPaint ?? null,
+                timedOut: paintTimedOut,
+                visibility: document.visibilityState,
+                focused: document.hasFocus(),
+              },
+              viewport: paintHealth.last ?? null,
               engineInitMs: engineTimings.initMs,
               processUptimeMs: startup,
+              ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
               ...((await invoke<boolean>("bench_pixels").catch(() => false))
                 ? { pixels: await firstImagePixelStats(built).catch((e) => ({ error: String(e) })) }
                 : {}),
@@ -323,8 +377,14 @@ export default function App() {
             bench.current.volumeT0 = performance.now();
             setView(benchView);
           } else {
-            // Wait for the first pixel before reporting.
-            const waitPaint = () => (bench.current.firstPaint != null ? report() : window.setTimeout(waitPaint, 20));
+            // Wait for the first pixel, but not forever.
+            const limit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
+            const deadline = performance.now() + limit;
+            const waitPaint = () => {
+              if (bench.current.firstPaint != null) void report();
+              else if (performance.now() > deadline) void report(true);
+              else window.setTimeout(waitPaint, 20);
+            };
             waitPaint();
           }
         }
@@ -427,7 +487,20 @@ export default function App() {
         requestAnimationFrame(() =>
           requestAnimationFrame(async () => {
             const ms = await invoke<number>("startup_elapsed_ms").catch(() => 0);
-            await benchReport({ coldStart: true, firstPaintMs: ms, jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs });
+            const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+            // performance.now() counts from the webview's navigation start, so
+            // ms − now() ≈ when the webview began loading the page: everything
+            // before it is window + WebView2/WebKit start-up, after it is ours.
+            const now = performance.now();
+            await benchReport({
+              coldStart: true,
+              firstPaintMs: ms,
+              webviewNavStartMs: Math.max(0, ms - now),
+              jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs,
+              pageToPaintMs: now,
+              windowReadyMs: bench.current.marks.windowReadyMs,
+              ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
+            });
           })
         );
       }

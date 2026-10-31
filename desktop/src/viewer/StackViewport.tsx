@@ -17,6 +17,7 @@ import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
 import { voiRangeOf, wwwcOf } from "./presets";
 import { ensureSuv } from "./suv";
 import { isTauri, previewUrlFor } from "../platform";
+import { verifyPainted, type PaintHealth } from "./paintCheck";
 
 export interface StackViewportProps {
   cellKey: string;
@@ -30,7 +31,7 @@ export interface StackViewportProps {
   onActivate: () => void;
   onDropSeries: (seriesUid: string) => void;
   onDoubleClick: () => void;
-  onFirstPaint?: (ms: number) => void;
+  onFirstPaint?: (ms: number, health: PaintHealth) => void;
   /** Fired when the instant Rust-rendered preview is on screen. */
   onPreview?: () => void;
 }
@@ -249,10 +250,18 @@ function StackViewportImpl({
           } else if (h?.windowWidth && h.windowWidth > 1 && h.windowCenter != null) {
             vp.setProperties({ voiRange: voiRangeOf(h.windowWidth, h.windowCenter) });
           }
-          onFirstPaint?.(performance.now() - started);
-          setPaintedUid(series.uid);
         }
         vp.render();
+        if (!sameSeries) {
+          // Never call it painted until real pixels are on screen: a GPU path
+          // that renders black (some drivers' 16-bit textures) falls back to
+          // CPU rendering here instead of leaving the reader a black box.
+          void verifyPainted(engineRef.current, vp, elementRef.current, ids, index).then((health) => {
+            if (loadedRef.current?.ids !== ids) return;
+            onFirstPaint?.(performance.now() - started, health);
+            setPaintedUid(series.uid);
+          });
+        }
         setLoading(false);
         refreshReadout();
       })
@@ -457,7 +466,7 @@ function StackViewportImpl({
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div ref={elementRef} className="cs-viewport absolute inset-0" data-viewport-id={viewportId} />
+      <div ref={elementRef} className="cs-viewport absolute inset-0" data-viewport-id={viewportId} data-has-series={series ? "1" : undefined} />
 
       {/* Instant first image: rendered by Rust in a few ms, shown while the
           engine starts, replaced by the real viewport on its first paint. */}

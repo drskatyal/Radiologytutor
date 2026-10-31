@@ -47,6 +47,9 @@ strip = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+# WebView2's MemoryUsageTargetLevel (idle footprint). Same versions wry uses.
+webview2-com = "0.39"
+windows = "0.62"
 
 [dev-dependencies]
 tempfile = "3"
