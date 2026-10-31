@@ -16,8 +16,18 @@
 // 3. When the body finishes, the caller setStacks the full list and the
 //    series is scrollable.
 // 4. Neighbor prefetch is a separate call, after the opening frame is requested.
+//
+// 0. Before any of that: a converted bundle (lib/dicomCdn). One small
+//    same-origin call asks whether this series was converted to HTJ2K +
+//    previews. If so, the opening slice paints from an 8-bit preview chunk and
+//    the whole stack registers from one gzip metadata document — no QIDO, no
+//    archive-built series metadata. The imageIds are the SAME wadors ids, so
+//    if anything in the bundle fails the DICOMweb steps below take over
+//    without the stack changing under the reader.
 
 import cornerstoneDICOMImageLoader from "@cornerstonejs/dicom-image-loader";
+import { SeriesBundle, fetchSeriesManifest } from "./dicomCdn/client";
+import { attachBundle } from "./dicomCdn/cornerstoneBridge";
 import { JsonArrayScanner } from "./jsonArrayStream";
 import { stackOpenIndex } from "./stackIndex";
 import {
@@ -33,11 +43,14 @@ const SOP_TAG = "00080018";
 const SERIES_TAG = "0020000E";
 const JSON_ACCEPT = "application/dicom+json";
 
+/** Where the pixels come from: a converted bundle (CDN/proxy) or DICOMweb. */
+export type StackSource = "bundle" | "dicomweb";
+
 export interface ProgressiveStack {
   /** Resolves once the opening instance's metadata is registered. */
   opening: Promise<string>;
   /** Resolves once every instance in the series is registered, in stack order. */
-  full: Promise<{ imageIds: string[]; openIndex: number }>;
+  full: Promise<{ imageIds: string[]; openIndex: number; source: StackSource }>;
   /**
    * Start the series metadata document. Call after the opening frame request
    * is in flight so that document cannot sit ahead of the first pixels.
@@ -203,6 +216,8 @@ export function startProgressiveWadorsLoad(input: {
    */
   instanceCount?: number;
   signal?: AbortSignal;
+  /** False skips the converted-bundle lookup (benchmarks, tests). Default true. */
+  bundles?: boolean;
 }): ProgressiveStack {
   const root = input.wadoRsRoot.replace(/\/$/, "");
   const study = input.studyInstanceUID;
@@ -248,6 +263,22 @@ export function startProgressiveWadorsLoad(input: {
   };
 
   const full = (async () => {
+    if (input.bundles !== false) {
+      const bundled = await openFromBundle({
+        root,
+        study,
+        series,
+        hint,
+        signal,
+        emit: (imageId, dataset) => {
+          registerMetadata(imageId, dataset);
+          emit(imageId);
+        },
+      });
+      if (bundled) return { ...bundled, source: "bundle" as const };
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    }
+
     const earlySop = hint?.sopInstanceUID?.trim();
     const sliceHint =
       hint?.sliceIndex != null && Number.isFinite(hint.sliceIndex)
@@ -384,11 +415,65 @@ export function startProgressiveWadorsLoad(input: {
       registerMetadata(openingId, datasets[openIndex]);
       emit(openingId);
     }
-    return { imageIds, openIndex };
+    return { imageIds, openIndex, source: "dicomweb" as const };
   })().catch((err) => {
     fail(err);
     throw err;
   });
 
   return { opening, full, releaseMetadata };
+}
+
+/**
+ * Bundle path for one series. Resolves null when there is no bundle or it
+ * failed before the stack was complete — the caller then runs DICOMweb with
+ * the same imageIds. The bundle lives until `signal` aborts (series switch,
+ * unmount), then detaches from the loader and frees its memory.
+ */
+async function openFromBundle(input: {
+  root: string;
+  study: string;
+  series: string;
+  hint: OpenSlice | undefined;
+  signal: AbortSignal | undefined;
+  emit: (imageId: string, dataset: unknown) => void;
+}): Promise<{ imageIds: string[]; openIndex: number } | null> {
+  const { root, study, series, hint, signal } = input;
+  const manifest = await fetchSeriesManifest(study, series, signal);
+  if (!manifest || signal?.aborted) return null;
+
+  const imageIds = manifest.index.sops.map((sop) => wadorsImageId(root, study, series, sop));
+  const bundle = new SeriesBundle(manifest.index, manifest.delivery, 0);
+  const openIndex = bundle.openIndexFor(hint);
+  bundle.setCurrent(openIndex);
+  const detach = attachBundle(bundle, imageIds);
+  const release = () => {
+    detach();
+    bundle.dispose();
+  };
+  signal?.addEventListener("abort", release, { once: true });
+
+  try {
+    // Two small requests race for the opening slice: its preview chunk (paint
+    // + metadata) and its own full frame by byte range (the swap). Nothing
+    // else competes for the link until the preview is in.
+    void bundle.prefetchFrame(openIndex).catch(() => undefined);
+    await bundle.ensurePreviewChunk(openIndex);
+    const openingMeta = bundle.metadataFor(openIndex);
+    if (openingMeta) input.emit(imageIds[openIndex], openingMeta);
+    // Then the rest, in reading order: full chunk under the reader, previews
+    // of the whole stack, outward (lib/dicomCdn/format.planFetchOrder).
+    bundle.start();
+    const all = await bundle.allMetadata();
+    if (all.length !== imageIds.length) throw new Error("Bundle metadata does not match its index");
+    all.forEach((dataset, i) => registerMetadata(imageIds[i], dataset));
+    if (!openingMeta) input.emit(imageIds[openIndex], all[openIndex]);
+    return { imageIds, openIndex };
+  } catch (err) {
+    signal?.removeEventListener("abort", release);
+    release();
+    if (signal?.aborted) throw err;
+    console.warn("[radlearn] converted bundle unavailable, using DICOMweb", { series, err });
+    return null;
+  }
 }

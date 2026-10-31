@@ -96,10 +96,20 @@ if [[ -n "${FRAME_BUCKET}" ]]; then
   ENV_VARS+=",R2_BUCKET=${FRAME_BUCKET}"
 fi
 
+# Converted-DICOM delivery (docs/DICOM_CDN_REPORT.md). Off unless the bucket is set.
+if [[ -n "${DICOM_CDN_BUCKET:-}" ]]; then
+  ENV_VARS+=",DICOM_CDN_BUCKET=${DICOM_CDN_BUCKET}"
+  ENV_VARS+=",DICOM_CDN_BUILD=$(env_get DICOM_CDN_BUILD auto)"
+  if [[ -n "${DICOM_CDN_URL:-}" ]]; then
+    ENV_VARS+=",DICOM_CDN_URL=${DICOM_CDN_URL}"
+    ENV_VARS+=",DICOM_CDN_KEY_NAME=$(env_get DICOM_CDN_KEY_NAME radlearn-dicom-1)"
+  fi
+fi
+
 SECRETS="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 SECRETS+=",BETTER_AUTH_SECRET=BETTER_AUTH_SECRET:latest"
 SECRETS+=",MONGODB_URI=MONGODB_URI:latest"
-for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY DICOM_CDN_KEY; do
   if gcloud secrets versions describe latest --secret="${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     SECRETS+=",${name}=${name}:latest"
   fi

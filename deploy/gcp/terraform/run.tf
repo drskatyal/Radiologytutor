@@ -103,6 +103,22 @@ resource "google_cloud_run_v2_service" "app" {
         }
       }
 
+      # Converted-DICOM delivery (dicom_cdn.tf). The signing key secret is
+      # attached by deploy/gcp/deploy-app.sh once DICOM_CDN_KEY has a version.
+      dynamic "env" {
+        for_each = var.dicom_cdn_bucket == "" ? {} : merge(
+          { DICOM_CDN_BUCKET = var.dicom_cdn_bucket },
+          var.dicom_cdn_domain == "" ? {} : {
+            DICOM_CDN_URL      = "https://${var.dicom_cdn_domain}"
+            DICOM_CDN_KEY_NAME = var.dicom_cdn_key_name
+          }
+        )
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
       # Optional secrets (Google OAuth, ElevenLabs, GCS HMAC) are attached by
       # deploy/gcp/deploy-app.sh only when a version exists. Referencing an
       # empty secret here would stop the revision from starting.

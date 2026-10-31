@@ -546,6 +546,39 @@ export async function listCases(): Promise<CaseData[]> {
     .sort((a, b) => a.title.localeCompare(b.title)) as CaseData[];
 }
 
+/**
+ * Platform maintenance (scripts/dicom-cdn-backfill.ts): every case's imaging
+ * references across ALL orgs — study UID plus the series its findings and
+ * studyRefs name. Not for request handlers; those stay orgId-scoped.
+ */
+export async function listCaseImagingRefsAllOrgs(): Promise<
+  Array<{ orgId: string; caseId: string; studyInstanceUID: string; seriesInstanceUIDs: string[] }>
+> {
+  const out: Array<{ orgId: string; caseId: string; studyInstanceUID: string; seriesInstanceUIDs: string[] }> = [];
+  for (const raw of await casesStore.find({})) {
+    const c = normalizeCase(raw);
+    const byStudy = new Map<string, Set<string>>();
+    const add = (study?: string, series?: string) => {
+      const st = study?.trim();
+      if (!st) return;
+      const set = byStudy.get(st) ?? new Set<string>();
+      if (series?.trim()) set.add(series.trim());
+      byStudy.set(st, set);
+    };
+    for (const ref of c.studyRefs ?? []) {
+      if (!ref.seriesInstanceUIDs?.length) add(ref.studyInstanceUID);
+      for (const series of ref.seriesInstanceUIDs ?? []) add(ref.studyInstanceUID, series);
+    }
+    for (const f of c.findings ?? []) {
+      add(f.studyInstanceUID ?? c.studyRefs?.[0]?.studyInstanceUID, f.seriesInstanceUID);
+    }
+    for (const [studyInstanceUID, series] of byStudy) {
+      out.push({ orgId: c.orgId ?? DEFAULT_ORG_ID, caseId: c.caseId, studyInstanceUID, seriesInstanceUIDs: [...series] });
+    }
+  }
+  return out;
+}
+
 export async function getCase(caseId: string): Promise<CaseData | null> {
   const raw = await casesStore.get(caseId);
   return raw ? normalizeCase(raw) : null;
