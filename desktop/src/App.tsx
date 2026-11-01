@@ -10,7 +10,7 @@ import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
-import type { WindowPreset } from "@/lib/windowPresets";
+import type { WindowPreset } from "@flowrad/viewer-core";
 import {
   appVersion,
   benchEnabled,
@@ -41,7 +41,7 @@ import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/Updates";
 import { useSyncStatus } from "./components/Account";
 import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
-import { setScrollPreferences } from "@/lib/scrollSensitivity";
+import { setScrollPreferences } from "@flowrad/viewer-core";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {

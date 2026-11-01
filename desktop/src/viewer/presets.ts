@@ -3,7 +3,7 @@
 // offer; other modalities get presets that mean something for them instead of
 // falling back to CT windows (a "Lung" window on an MR is noise).
 
-import { WINDOW_PRESETS, type WindowPreset } from "@/lib/windowPresets";
+import { WINDOW_PRESETS, type WindowPreset } from "@flowrad/viewer-core";
 
 const CT_EXTRA: WindowPreset[] = [
   { id: "ct-mediastinum", label: "Mediastinum", ww: 350, wc: 50, modalities: ["CT"] },

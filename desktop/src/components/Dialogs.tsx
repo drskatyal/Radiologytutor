@@ -16,7 +16,7 @@ import {
   slicesForNotch,
   takeWheelSlices,
   type ScrollPreferences,
-} from "@/lib/scrollSensitivity";
+} from "@flowrad/viewer-core";
 import { shortcutSheet } from "../shortcuts";
 import type { ViewerSettings } from "../settings";
 import { cacheUsage, clearCache, listMedia, type MediaVolume } from "../platform";

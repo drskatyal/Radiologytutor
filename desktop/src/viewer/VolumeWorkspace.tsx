@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
-import { mprVolumeId } from "@/lib/mpr";
+import { mprVolumeId } from "@flowrad/viewer-core";
 import type { ViewerSeries, ViewerStudy } from "../types";
 import { formatPersonName } from "../study";
 import {

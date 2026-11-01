@@ -8,7 +8,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/Spinner";
-import { clampCineFps } from "@/lib/cinePlayer";
+import { clampCineFps } from "@flowrad/viewer-core";
 import type { DesktopHeader, ViewerSeries, ViewerStudy } from "../types";
 import { formatDicomDate, formatDicomTime, formatPersonName } from "../study";
 import { addViewportToGroup, getEngine, removeViewportFromGroups, STACK_GROUP, type Engine } from "./engine";

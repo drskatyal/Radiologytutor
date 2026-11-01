@@ -11,7 +11,7 @@ import {
   imageIdsForInstance,
   instanceImageCount,
   sliceNormal,
-} from "@/lib/localStudy";
+} from "@flowrad/viewer-core";
 import type { DesktopHeader, ViewerSeries, ViewerStudy } from "./types";
 
 const MODALITY_ORDER = ["CT", "MR", "PT", "NM", "US", "XA", "RF", "CR", "DX", "MG", "SC", "OT"];

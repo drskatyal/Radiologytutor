@@ -15,8 +15,8 @@ import {
   imageCacheBytes,
   retrievalPoolSizes,
   webWorkerCount,
-} from "@/lib/viewerRuntime";
-import { tuneStackScrollTool } from "@/lib/scrollSensitivity";
+} from "@flowrad/viewer-core";
+import { tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */

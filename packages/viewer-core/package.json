@@ -1,0 +1,10 @@
+{
+  "name": "@flowrad/viewer-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FlowRad Viewer core: stack/MPR/cine/window/hanging/scroll logic shared by desktop, web and mobile web. No app, auth or teaching imports.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "sideEffects": false
+}
