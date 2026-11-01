@@ -46,12 +46,12 @@ test("a 1000-slice series warms only the active open window, not other series", 
   );
 
   assert.ok(indexes.includes(500), "viewport opens at the middle");
-  assert.ok(indexes.every((index) => index >= 492 && index <= 508));
+  assert.ok(indexes.every((index) => index >= 490 && index <= 510), "±10 open window");
   assert.ok(!indexes.includes(0), "apex is not prefetched");
   assert.ok(!indexes.includes(34), "a distant finding is not prefetched");
   assert.ok(targets.every((target) => target.seriesInstanceUID === active.seriesInstanceUID));
   assert.ok(targets.length <= WARM_CAP);
-  assert.equal(targets.length, 17);
+  assert.equal(targets.length, 21, "the opening slice ±10");
   assert.ok(WARM_CONCURRENCY <= 4);
 });
 

@@ -21,6 +21,7 @@ import {
 } from "@/lib/hangingLayout";
 import { parseViewLink, viewLinkQuery, viewLinkUrl, type ViewLinkState } from "@/lib/viewLink";
 import { caseSeriesToSource, type CaseSeries, type ViewerSource } from "@/lib/viewerSource";
+import type { OpenSlice } from "@/lib/viewerLoad";
 import { ShareLinkControls } from "./ShareLinkControls";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
@@ -60,7 +61,14 @@ export function CaseViewer({
   sharePath,
   sharedLink,
   namedStudy = false,
+  openSlice = null,
 }: {
+  /**
+   * The teacher's landing on series 0. The page prewarm (ViewerPrewarm) warms
+   * exactly this slice, so the viewer must open on it too — opening mid-stack
+   * instead threw the warm away and cost three extra archive round trips.
+   */
+  openSlice?: OpenSlice | null;
   caseId: string;
   title: string;
   modality: string;
@@ -316,7 +324,9 @@ export function CaseViewer({
                         // a re-mount on another series must open mid-stack.
                         pane === 0 && link.image != null && seriesIndex === linkedSeriesIndex
                           ? { sliceIndex: link.image - 1 }
-                          : null
+                          : pane === 0 && seriesIndex === 0
+                            ? openSlice
+                            : null
                       }
                       initialWindow={
                         pane === 0 && link.ww != null && link.wc != null

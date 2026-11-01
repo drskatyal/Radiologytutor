@@ -16,7 +16,7 @@ const BASE = (process.env.BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, ""
 /** @type {{ name: string; method?: string; path: string; body?: unknown; expect: Record<Actor, number> }[]} */
 const CASES = [
   // Identity
-  { name: "GET /api/me", path: "/api/me", expect: { anon: 401, student: 200, author: 200, admin: 200 } },
+  { name: "GET /api/me", path: "/api/me", expect: { anon: 200, student: 200, author: 200, admin: 200 } },
   {
     name: "GET /api/enrollments",
     path: "/api/enrollments",

@@ -104,14 +104,28 @@ export function StudentViewer({
     if (wasOpen && !compare) controls.current?.restoreLayout();
   }, [compare, controls]);
 
+  // Compare shares ONE toolbar under both panes; it acts on the pane the
+  // reader last touched (outlined). A lone pane keeps its own bar. The tree
+  // shape is the same either way so the primary viewport never remounts.
+  const [barHost, setBarHost] = useState<HTMLDivElement | null>(null);
+  const [activePane, setActivePane] = useState(0);
+  useEffect(() => {
+    if (!compare) setActivePane(0);
+  }, [compare]);
+
   return (
+    <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-imaging">
     <div
       className={cn(
-        "relative h-full w-full min-w-0 overflow-hidden bg-imaging",
-        compare && "grid h-full min-h-0 grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"
+        "relative min-h-0 w-full min-w-0 flex-1 overflow-hidden bg-imaging",
+        compare && "grid gap-px bg-[#1F1F1F] grid-rows-2 lg:grid-cols-2 lg:grid-rows-1"
       )}
     >
       <ImagingPane
+        toolbarHost={compare ? barHost : undefined}
+        active={!compare || activePane === 0}
+        outlined={compare && activePane === 0}
+        onActivate={() => setActivePane(0)}
         source={source}
         series={series}
         activeSeriesIndex={activeSeriesIndex}
@@ -136,6 +150,10 @@ export function StudentViewer({
       />
       {secondary && (
         <ImagingPane
+          toolbarHost={barHost}
+          active={activePane === 1}
+          outlined={activePane === 1}
+          onActivate={() => setActivePane(1)}
           source={secondary.source}
           series={secondary.series}
           activeSeriesIndex={secondary.activeSeriesIndex}
@@ -154,6 +172,8 @@ export function StudentViewer({
           label={secondary.label ?? "Compare"}
         />
       )}
+    </div>
+    {compare ? <div ref={setBarHost} className="shrink-0" /> : null}
     </div>
   );
 }
@@ -180,7 +200,15 @@ function ImagingPane({
   onLocateClick,
   sketches = [],
   onImagePoint,
+  toolbarHost,
+  active = true,
+  outlined = false,
+  onActivate,
 }: {
+  toolbarHost?: HTMLElement | null;
+  active?: boolean;
+  outlined?: boolean;
+  onActivate?: () => void;
   source: ViewerSource;
   series?: CaseSeries[];
   activeSeriesIndex?: number;
@@ -224,7 +252,7 @@ function ImagingPane({
   return (
     <div
       data-viewer-root
-      className="relative h-full min-h-0 w-full min-w-0 overflow-hidden bg-imaging lg:border-r lg:border-subtle/40 lg:last:border-r-0"
+      className="relative h-full min-h-0 w-full min-w-0 overflow-hidden bg-imaging"
       onPointerDown={(event) => {
         downRef.current = { x: event.clientX, y: event.clientY };
       }}
@@ -256,6 +284,10 @@ function ImagingPane({
         instanceId={instanceId}
         className="h-full w-full bg-imaging"
         onViewModeChange={setLayout}
+        toolbarHost={toolbarHost}
+        active={active}
+        onActivate={onActivate}
+        paneLabel={label}
       />
 
       <div ref={hitRef} className="pointer-events-none absolute inset-0">
@@ -300,11 +332,12 @@ function ImagingPane({
         )}
       </div>
 
-      {label && (
-        <span className="pointer-events-none absolute left-2 top-2 z-20 rounded-md border border-strong/50 bg-elevated/85 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-secondary">
-          {label}
-        </span>
-      )}
+      {outlined ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 z-20 shadow-[inset_0_0_0_1.5px_rgb(var(--accent))]"
+        />
+      ) : null}
 
       {!ready && <ViewerSkeleton label="Warming images…" />}
     </div>

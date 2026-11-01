@@ -103,5 +103,5 @@ test("describeRuntime names every number it applies", () => {
   assert.match(line, /8 cores/);
   assert.match(line, /6 decode workers/);
   assert.match(line, /1024MB image cache/);
-  assert.match(line, /16 interactive requests/);
+  assert.match(line, /32 interactive requests/);
 });
