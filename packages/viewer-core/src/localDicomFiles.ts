@@ -32,7 +32,9 @@ import {
   type LocalInstanceHeader,
   type LocalSeries,
   type LocalStudy,
+  withKeyImageSeries,
 } from "./localStudy";
+import { documentFromDataSet, isStructuredDocumentClass, type DicomDocument, type SrDataSet } from "./srDocument";
 
 /**
  * Header bytes read per file. Enough for the identity + geometry tags on every
@@ -45,6 +47,7 @@ const TAG = {
   studyInstanceUID: "x0020000d",
   seriesInstanceUID: "x0020000e",
   sopInstanceUID: "x00080018",
+  sopClassUID: "x00080016",
   instanceNumber: "x00200013",
   imagePositionPatient: "x00200032",
   imageOrientationPatient: "x00200037",
@@ -135,6 +138,7 @@ export function parseLocalHeader(
     studyInstanceUID: text(TAG.studyInstanceUID),
     seriesInstanceUID: text(TAG.seriesInstanceUID),
     sopInstanceUID: text(TAG.sopInstanceUID),
+    sopClassUID: text(TAG.sopClassUID),
     instanceNumber: int(TAG.instanceNumber),
     imagePositionPatient: decimalArray(dataSet, TAG.imagePositionPatient),
     imageOrientationPatient: decimalArray(dataSet, TAG.imageOrientationPatient),
@@ -165,6 +169,8 @@ export interface LocalOpenResult {
   dicomDirCount: number;
   /** Non-fatal problems worth telling the user about. */
   warnings: string[];
+  /** Structured Reports and key-image notes found among the files. */
+  documents: DicomDocument[];
 }
 
 /**
@@ -184,6 +190,7 @@ export async function openLocalFiles(
   const headers: LocalInstanceHeader[] = [];
   const imageIdsByFile = new Map<string, string[]>();
   const warnings: string[] = [];
+  const documents: DicomDocument[] = [];
   let skipped = 0;
   let dicomDirCount = 0;
   let read = 0;
@@ -217,6 +224,20 @@ export async function openLocalFiles(
       options?.onProgress?.({ read, accepted: headers.length, total: files.length });
       continue;
     }
+    if (isStructuredDocumentClass(header.sopClassUID)) {
+      // A report or key-image note: no pixels. Read it whole (they are small)
+      // for the content tree instead of adding it as an image.
+      try {
+        const doc = documentFromDataSet(
+          parser.parseDicom(new Uint8Array(await file.arrayBuffer())) as unknown as SrDataSet,
+          name
+        );
+        if (doc) documents.push(doc);
+      } catch (error) {
+        warnings.push(`${name}: this report could not be read (${String(error)})`);
+      }
+      continue;
+    }
 
     const baseImageId = fileManager.add(file);
     imageIdsByFile.set(name, imageIdsForInstance(baseImageId, instanceImageCount(header)));
@@ -231,11 +252,12 @@ export async function openLocalFiles(
   }
 
   return {
-    studies: groupLocalStudies(headers),
+    studies: withKeyImageSeries(groupLocalStudies(headers), documents),
     imageIdsByFile,
     skipped,
     dicomDirCount,
     warnings,
+    documents,
   };
 }
 

@@ -3,19 +3,10 @@
 
 import type { ViewerSeries, ViewerStudy } from "./types";
 
-export interface DicomDocument {
-  kind: "sr" | "ko";
-  fileName: string;
-  studyInstanceUid?: string;
-  seriesInstanceUid?: string;
-  sopInstanceUid?: string;
-  title: string;
-  date?: string;
-  /** Content tree, one line per item, two-space indent per level. */
-  lines: string[];
-  /** SOP Instance UIDs it points at. */
-  references: string[];
-}
+// One shape on both platforms: the Rust reader fills it on desktop, the page
+// (viewer-core srDocument.ts) on the web.
+export type { DicomDocument } from "@flowrad/viewer-core";
+import type { DicomDocument } from "@flowrad/viewer-core";
 
 /**
  * Each key-image note becomes a series of exactly the images it selects, in

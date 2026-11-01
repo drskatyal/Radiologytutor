@@ -25,6 +25,8 @@
 /** DICOM Part 10 files carry "DICM" at byte offset 128. */
 export const DICM_PREAMBLE_OFFSET = 128;
 
+import { keyImageSeriesDescription } from "./srDocument";
+
 export interface LocalInstanceHeader {
   /** Path as the user sees it, e.g. `DICOM/ST0/SE1/IM000042`. */
   fileName: string;
@@ -32,6 +34,8 @@ export interface LocalInstanceHeader {
   studyInstanceUID?: string;
   seriesInstanceUID?: string;
   sopInstanceUID?: string;
+  /** Tells images from documents (Structured Reports, key-image notes). */
+  sopClassUID?: string;
   instanceNumber?: number;
   imagePositionPatient?: readonly number[];
   imageOrientationPatient?: readonly number[];
@@ -287,4 +291,41 @@ export function describeLocalSeries(series: LocalSeries): string {
   const description = series.description?.trim();
   if (description) parts.push(description);
   return parts.join(" · ");
+}
+
+/**
+ * Each key-image note becomes a series of exactly the images it selects, in
+ * the note's order, first in its study (so it scrolls, hangs and exports like
+ * any series). Notes whose images are not in the study are skipped.
+ */
+export function withKeyImageSeries(
+  studies: LocalStudy[],
+  documents: readonly import("./srDocument").DicomDocument[]
+): LocalStudy[] {
+  const notes = documents.filter((d) => d.kind === "ko" && d.references.length > 0);
+  if (notes.length === 0) return studies;
+  return studies.map((study) => {
+    const mine = notes.filter((d) => !d.studyInstanceUid || d.studyInstanceUid === study.studyInstanceUID);
+    if (mine.length === 0) return study;
+    const bySop = new Map<string, LocalInstanceHeader>();
+    for (const series of study.series)
+      for (const instance of series.instances)
+        if (instance.sopInstanceUID && !bySop.has(instance.sopInstanceUID)) bySop.set(instance.sopInstanceUID, instance);
+    const extra: LocalSeries[] = [];
+    for (const note of mine) {
+      const instances = note.references
+        .map((uid) => bySop.get(uid))
+        .filter((i): i is LocalInstanceHeader => !!i);
+      if (instances.length === 0) continue;
+      extra.push({
+        seriesInstanceUID: `ko:${note.sopInstanceUid ?? note.fileName}`,
+        studyInstanceUID: study.studyInstanceUID,
+        modality: "KO",
+        description: keyImageSeriesDescription(note),
+        instances,
+        imageCount: instances.reduce((n, i) => n + instanceImageCount(i), 0),
+      });
+    }
+    return extra.length > 0 ? { ...study, series: [...extra, ...study.series] } : study;
+  });
 }

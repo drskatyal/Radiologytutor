@@ -11,6 +11,7 @@ export * from "./frameTransfer";
 export * from "./hangingLayout";
 export * from "./localDicomFiles";
 export * from "./localStudy";
+export * from "./srDocument";
 export * from "./mpr";
 export * from "./mprSession";
 export * from "./pointerTween";
