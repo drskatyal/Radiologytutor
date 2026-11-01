@@ -136,7 +136,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number>;
+    marks: Record<string, number> & { interaction?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -447,7 +447,18 @@ export default function App() {
             const limit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
             const deadline = performance.now() + limit;
             const waitPaint = () => {
-              if (bench.current.firstPaint != null) void report();
+              if (bench.current.firstPaint != null && benchView === "interact") {
+                // Frame-time profile of scroll / zoom / W-L on the main stack.
+                void (async () => {
+                  const engine = enginePeek();
+                  const vp = engine?.renderingEngine.getViewport(viewportIdFor(0));
+                  if (engine && vp) {
+                    const { profileInteraction } = await import("./viewer/frameProfile");
+                    bench.current.marks.interaction = await profileInteraction(engine.core, vp);
+                  }
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null) void report();
               else if (performance.now() > deadline) void report(true);
               else window.setTimeout(waitPaint, 20);
             };
