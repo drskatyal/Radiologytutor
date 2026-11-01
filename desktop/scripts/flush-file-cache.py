@@ -38,6 +38,15 @@ def flush_windows() -> str:
     class TOKEN_PRIVILEGES(ctypes.Structure):
         _fields_ = [("PrivilegeCount", wintypes.DWORD), ("Privileges", LUID_AND_ATTRIBUTES * 1)]
 
+    # 64-bit handles: declare the signatures, or ctypes truncates the
+    # GetCurrentProcess() pseudo-handle (-1) and OpenProcessToken fails (6).
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p]
+    advapi.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+    ntdll.NtSetSystemInformation.argtypes = [ctypes.c_int, ctypes.c_void_p, wintypes.ULONG]
+    ntdll.NtSetSystemInformation.restype = ctypes.c_long
     token = wintypes.HANDLE()
     TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY, SE_PRIVILEGE_ENABLED = 0x20, 0x8, 0x2
     if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ctypes.byref(token)):
@@ -46,6 +55,7 @@ def flush_windows() -> str:
     if not advapi.LookupPrivilegeValueW(None, "SeProfileSingleProcessPrivilege", ctypes.byref(luid)):
         raise OSError(f"LookupPrivilegeValue failed ({ctypes.get_last_error()})")
     tp = TOKEN_PRIVILEGES(1, (LUID_AND_ATTRIBUTES * 1)(LUID_AND_ATTRIBUTES(luid, SE_PRIVILEGE_ENABLED)))
+    ctypes.set_last_error(0)
     advapi.AdjustTokenPrivileges(token, False, ctypes.byref(tp), 0, None, None)
     if ctypes.get_last_error() != 0:
         raise OSError("SeProfileSingleProcessPrivilege not held (run elevated)")

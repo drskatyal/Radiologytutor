@@ -143,6 +143,8 @@ jobs:
     timeout-minutes: 90
     env:
       FIRST_IMAGE_MAX_MS: "1100"
+      # First slice on screen (Rust preview or engine paint, whichever first); target 300.
+      FIRST_VISIBLE_MAX_MS: "400"
       MPR_MAX_MS: "2000"
       MPR_MAX_MB: "1200"
       IDLE_MAX_MB: "400"
@@ -217,7 +219,7 @@ jobs:
       - name: Cold start (median of 5, first paint in-process)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
       - name: Open + first image (cold and warm)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }}
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
