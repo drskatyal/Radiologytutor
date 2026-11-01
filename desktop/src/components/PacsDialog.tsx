@@ -13,7 +13,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Input } from "@/components/ui/Input";
 import { Field } from "@/components/ui/Field";
 import { Spinner } from "@/components/ui/Spinner";
-import { useToast } from "@/components/ui/Toast";
+import { useToast } from "../toast";
 import { cn } from "@/components/ui/cn";
 import { invoke, listen, settingsGet, settingsSet } from "../platform";
 import { formatDicomDate, formatPersonName } from "../study";

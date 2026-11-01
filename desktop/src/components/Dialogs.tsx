@@ -8,6 +8,15 @@ import { Kbd } from "@/components/ui/Kbd";
 import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
+import { Slider } from "@/components/ui/Slider";
+import {
+  ACCELERATION_WINDOW_MS,
+  createWheelScrollState,
+  dragPixelsPerSlice,
+  slicesForNotch,
+  takeWheelSlices,
+  type ScrollPreferences,
+} from "@/lib/scrollSensitivity";
 import { shortcutSheet } from "../shortcuts";
 import type { ViewerSettings } from "../settings";
 import { cacheUsage, clearCache, listMedia, type MediaVolume } from "../platform";
@@ -197,6 +206,65 @@ function Toggle({
   );
 }
 
+/**
+ * Live preview: wheel or drag over the strip and it moves through a pretend
+ * 120-slice series with exactly the viewer's rules (same functions).
+ */
+function ScrollPreview({ prefs }: { prefs: ScrollPreferences }) {
+  const COUNT = 120;
+  const [index, setIndex] = useState(60);
+  const [wheel] = useState(createWheelScrollState);
+  const [run] = useState(() => ({ last: Number.NEGATIVE_INFINITY, length: 0 }));
+  const [drag, setDrag] = useState<{ y: number; acc: number } | null>(null);
+  const move = (delta: number) => setIndex((i) => Math.max(0, Math.min(COUNT - 1, i + delta)));
+  // Automatic drag in the viewer depends on viewport height / slice count; show a typical value.
+  const dragPx = dragPixelsPerSlice(Math.max(2, 600 / COUNT), prefs);
+  return (
+    <div className="mt-1">
+      <div
+        role="slider"
+        tabIndex={0}
+        aria-label="Scroll preview: wheel or drag here"
+        aria-valuemin={1}
+        aria-valuemax={COUNT}
+        aria-valuenow={index + 1}
+        onWheel={(e) => {
+          const now = performance.now();
+          const steps = takeWheelSlices(wheel, e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY, now);
+          if (!steps) return;
+          if (now - run.last < ACCELERATION_WINDOW_MS) run.length += 1;
+          else run.length = 1;
+          run.last = now;
+          move(Math.sign(steps) * Math.abs(steps) * slicesForNotch(prefs, run.length));
+        }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setDrag({ y: e.clientY, acc: 0 });
+        }}
+        onPointerMove={(e) => {
+          if (!drag) return;
+          const acc = drag.acc + (e.clientY - drag.y);
+          const steps = Math.trunc(acc / dragPx);
+          if (steps) move(steps);
+          setDrag({ y: e.clientY, acc: acc - steps * dragPx });
+        }}
+        onPointerUp={() => setDrag(null)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" || e.key === "ArrowRight") move(1);
+          if (e.key === "ArrowUp" || e.key === "ArrowLeft") move(-1);
+        }}
+        className="relative flex h-14 cursor-ns-resize select-none items-center justify-between overflow-hidden rounded-lg border border-subtle bg-black px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <span className="text-xs text-secondary">Try it: wheel or drag here</span>
+        <span className="text-sm font-medium text-primary tabular-nums">
+          Im {index + 1} / {COUNT}
+        </span>
+        <span aria-hidden className="absolute bottom-0 left-0 h-0.5 bg-accent" style={{ width: `${((index + 1) / COUNT) * 100}%` }} />
+      </div>
+    </div>
+  );
+}
+
 export function SettingsDialog({
   open,
   onClose,
@@ -225,6 +293,46 @@ export function SettingsDialog({
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Display</h3>
           <Toggle label="Show DICOM overlay" description="Patient, study and image details in the viewport corners." checked={settings.showOverlay} onChange={(v) => onChange({ showOverlay: v })} />
           <Toggle label="Scale bar" description="A calibrated ruler on images with pixel spacing." checked={settings.scaleBar} onChange={(v) => onChange({ scaleBar: v })} />
+          <Toggle
+            label="Hide patient name and ID"
+            description="For teaching and screen sharing: the overlay and series list show no name, ID or birth date."
+            checked={settings.hidePatient}
+            onChange={(v) => onChange({ hidePatient: v })}
+          />
+          <Toggle label="Compact series list" description="One line per series instead of thumbnails." checked={settings.compactSeries} onChange={(v) => onChange({ compactSeries: v })} />
+        </section>
+        <section className="py-3">
+          <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Scrolling</h3>
+          <Slider
+            label="Mouse wheel"
+            min={1}
+            max={10}
+            value={settings.scrollSlicesPerNotch}
+            valueLabel={`${settings.scrollSlicesPerNotch} slice${settings.scrollSlicesPerNotch === 1 ? "" : "s"} per notch`}
+            onChange={(v) => onChange({ scrollSlicesPerNotch: v })}
+          />
+          <Slider
+            label="Browse drag (B)"
+            min={0}
+            max={40}
+            value={settings.scrollDragPx}
+            valueLabel={settings.scrollDragPx === 0 ? "Automatic" : `${settings.scrollDragPx} px per slice`}
+            description="Pixels of drag per slice. Lower is faster. Automatic scales to the series length."
+            onChange={(v) => onChange({ scrollDragPx: v })}
+          />
+          <Toggle
+            label="Acceleration"
+            description="A quick run of wheel notches moves progressively further (up to 4×)."
+            checked={settings.scrollAcceleration}
+            onChange={(v) => onChange({ scrollAcceleration: v })}
+          />
+          <ScrollPreview
+            prefs={{
+              slicesPerNotch: settings.scrollSlicesPerNotch,
+              dragPixelsPerSlice: settings.scrollDragPx > 0 ? settings.scrollDragPx : null,
+              acceleration: settings.scrollAcceleration,
+            }}
+          />
         </section>
         <section className="py-3">
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Privacy &amp; storage</h3>
@@ -262,7 +370,7 @@ export function SettingsDialog({
         {extra}
         <section className="pt-3 text-xs text-muted">
           <p>
-            RadLearn Viewer <span className="tabular-nums">{version}</span>. Works fully offline: opening, viewing and
+            FlowRad Viewer <span className="tabular-nums">{version}</span>. Works fully offline: opening, viewing and
             exporting never touch the network.
           </p>
           <p className="mt-1 font-medium text-warning">Not for diagnostic use.</p>

@@ -3,7 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RadLearn Viewer</title>
+    <title>FlowRad Viewer</title>
+    <style>
+      /* Splash: painted by the webview before any JS runs; React replaces #root's children. */
+      html, body { margin: 0; height: 100%; background: #0b0d10; }
+      #root:empty::before {
+        content: "FlowRad Viewer";
+        position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+        font: 600 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+        letter-spacing: 0.18em; text-transform: uppercase; color: #8ea2ff;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

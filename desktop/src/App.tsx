@@ -1,4 +1,4 @@
-// RadLearn Viewer — the window.
+// FlowRad Viewer — the window.
 //
 // Owns: what is open (studies, source), how it is hung (layout, which series in
 // which cell), the left-button tool, view toggles, and the open flow. The
@@ -7,7 +7,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
-import { useToast } from "@/components/ui/Toast";
+import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import type { WindowPreset } from "@/lib/windowPresets";
@@ -21,6 +21,7 @@ import {
   historyRecord,
   historyRemove,
   imageUrlFor,
+  initProtocol,
   invoke,
   isTauri,
   listen,
@@ -40,11 +41,13 @@ import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/Updates";
 import { useSyncStatus } from "./components/Account";
 import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
+import { setScrollPreferences } from "@/lib/scrollSensitivity";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
   clearAnnotations,
   engineTimings,
+  enginePeek,
   getEngine,
   prewarmEngine,
   setGroupLeftTool,
@@ -56,6 +59,9 @@ import {
 } from "./viewer/engine";
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
+import { firstImagePixelStats } from "./viewer/pixelStats";
+import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
+import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -142,8 +148,51 @@ export default function App() {
     // viewer must stay small. It warms on intent instead — an open dialog, a
     // drag over the window, a hover on a recent study — which is always
     // hundreds of ms before the first pixel is needed.
+    // e2e paint probe (RADLEARN_PROBE_AFTER_MS): a normal launch, then report
+    // what every viewport actually shows. desktop/scripts/e2e-paint.py.
+    if (isTauri)
+      invoke<number | null>("probe_after_ms").then((ms) => {
+        if (ms == null) return;
+        window.setTimeout(() => {
+          const viewports = [...document.querySelectorAll<HTMLElement>(".cs-viewport[data-has-series]")].map((el) => ({
+            id: el.dataset.viewportId,
+            maxLum: sampleCanvas(el),
+          }));
+          void invoke("probe_report", {
+            report: {
+              afterMs: ms,
+              viewports,
+              nonBlank: viewports.length > 0 && viewports.every((v) => (v.maxLum ?? 0) > 8),
+              renderPath: paintHealth.last?.renderPath ?? null,
+              visibility: document.visibilityState,
+            },
+          });
+        }, ms);
+      }, () => undefined);
     return onHandlesChanged(() => setHandlesVersion((v) => v + 1));
   }, []);
+
+  // Idle footprint: with nothing open, ask the webview to give memory back
+  // (WebView2's Low memory-usage target on Windows; a no-op elsewhere). The
+  // moment a study starts opening it goes back to Normal.
+  const nothingOpen = studies.length === 0 && scan == null;
+  useEffect(() => {
+    if (!isTauri) return;
+    const timer = window.setTimeout(
+      () => void invoke("set_memory_mode", { low: nothingOpen }).catch(() => undefined),
+      nothingOpen ? 1500 : 0
+    );
+    return () => window.clearTimeout(timer);
+  }, [nothingOpen]);
+
+  // Scroll feel is read by the StackScroll tool on every wheel / drag event.
+  useEffect(() => {
+    setScrollPreferences({
+      slicesPerNotch: settings.scrollSlicesPerNotch,
+      dragPixelsPerSlice: settings.scrollDragPx > 0 ? settings.scrollDragPx : null,
+      acceleration: settings.scrollAcceleration,
+    });
+  }, [settings.scrollSlicesPerNotch, settings.scrollDragPx, settings.scrollAcceleration]);
 
   const updateSettings = useCallback((patch: Partial<ViewerSettings>) => {
     setSettings((s) => ({ ...s, ...patch }));
@@ -228,6 +277,7 @@ export default function App() {
       setScan({ label, progress: null });
       setGrowing(true);
 
+      await initProtocol();
       const acc = new Map<string, DesktopHeader>();
       let timer = 0;
       let firstShown = false;
@@ -297,19 +347,42 @@ export default function App() {
         for (const w of result.warnings.slice(0, 2)) toast({ title: "Heads up", description: w, variant: "warning", duration: 8000 });
         bench.current.marks.scanDoneMs = performance.now() - t0;
         if (bench.current.enabled) {
-          const report = async () => {
+          // Scan numbers are reported whether or not a frame ever paints (a
+          // locked or minimised window may never paint); paint is its own field.
+          // The shell also prints RADLEARN_BENCH_SCAN the moment the scan ends,
+          // and a watchdog line if nothing is reported at all.
+          const report = async (paintTimedOut = false) => {
             const startup = await invoke<number>("startup_elapsed_ms").catch(() => 0);
+            const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             await benchReport({
               source: paths,
               files: result.inspected,
               images: built.reduce((n, s) => n + s.imageCount, 0),
+              studies: built.length,
+              series: built.reduce((n, s) => n + s.series.length, 0),
+              skipped: result.skipped,
               cacheHits: result.cacheHits,
               usedDicomdir: result.usedDicomdir,
               rust: result.timings,
               ...bench.current.marks,
-              firstImagePaintedMs: bench.current.firstPaint,
+              firstImagePaintedMs: bench.current.firstPaint ?? null,
+              paint: {
+                firstPreviewMs: bench.current.marks.firstPreviewMs ?? null,
+                firstImagePaintedMs: bench.current.firstPaint ?? null,
+                timedOut: paintTimedOut,
+                visibility: document.visibilityState,
+                focused: document.hasFocus(),
+              },
+              viewport: paintHealth.last ?? null,
+              gpu: gpuInfo(),
+              trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
+              ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
               engineInitMs: engineTimings.initMs,
               processUptimeMs: startup,
+              ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
+              ...((await invoke<boolean>("bench_pixels").catch(() => false))
+                ? { pixels: await firstImagePixelStats(built).catch((e) => ({ error: String(e) })) }
+                : {}),
             });
           };
           const benchView = await invoke<string | null>("bench_view").catch(() => null);
@@ -319,8 +392,14 @@ export default function App() {
             bench.current.volumeT0 = performance.now();
             setView(benchView);
           } else {
-            // Wait for the first pixel before reporting.
-            const waitPaint = () => (bench.current.firstPaint != null ? report() : window.setTimeout(waitPaint, 20));
+            // Wait for the first pixel, but not forever.
+            const limit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
+            const deadline = performance.now() + limit;
+            const waitPaint = () => {
+              if (bench.current.firstPaint != null) void report();
+              else if (performance.now() > deadline) void report(true);
+              else window.setTimeout(waitPaint, 20);
+            };
             waitPaint();
           }
         }
@@ -423,7 +502,20 @@ export default function App() {
         requestAnimationFrame(() =>
           requestAnimationFrame(async () => {
             const ms = await invoke<number>("startup_elapsed_ms").catch(() => 0);
-            await benchReport({ coldStart: true, firstPaintMs: ms, jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs });
+            const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+            // performance.now() counts from the webview's navigation start, so
+            // ms − now() ≈ when the webview began loading the page: everything
+            // before it is window + WebView2/WebKit start-up, after it is ours.
+            const now = performance.now();
+            await benchReport({
+              coldStart: true,
+              firstPaintMs: ms,
+              webviewNavStartMs: Math.max(0, ms - now),
+              jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs,
+              pageToPaintMs: now,
+              windowReadyMs: bench.current.marks.windowReadyMs,
+              ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
+            });
           })
         );
       }
@@ -565,7 +657,18 @@ export default function App() {
           return void toggleFullscreen();
         case "distractionFree":
           return setDistractionFree((v) => !v);
-        case "escape":
+        case "escape": {
+          // 1) a measurement being drawn → cancel it; 2) a tool other than
+          // browsing → back to browsing; 3) then leave modes / full screen.
+          const element = handle?.element;
+          if (element && enginePeek()) {
+            const cancelled = enginePeek()!.tools.cancelActiveManipulations(element);
+            if (cancelled) return;
+          }
+          if (leftTool !== "StackScroll" && view === "grid") {
+            setLeftTool("StackScroll");
+            return;
+          }
           if (view !== "grid") {
             setView("grid");
             return;
@@ -579,6 +682,7 @@ export default function App() {
             });
           }
           return;
+        }
       }
       if (!studies.length) return;
       switch (action.type) {
@@ -655,7 +759,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
+    [studies.length, leftTool, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
   );
 
   useEffect(() => {
@@ -663,6 +767,8 @@ export default function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
       if (dialog) return;
+      // Tab switches series only from the image; on a control it still moves focus.
+      if (e.key === "Tab" && target && target !== document.body && target.closest("button, a, [role=menuitem], [tabindex]")) return;
       const action = resolveShortcut(e);
       if (!action) return;
       e.preventDefault();
@@ -801,6 +907,8 @@ export default function App() {
                   onScreen={cells}
                   activeSeriesUid={activeSeriesUid}
                   growing={growing}
+                  compact={settings.compactSeries}
+                  hidePatient={settings.hidePatient}
                   onOpenSeries={(uid) => showSeries(uid)}
                 />
               </aside>
@@ -844,6 +952,7 @@ export default function App() {
                     study={entry?.study ?? null}
                     active={i === activeCell && cells.length > 1}
                     showOverlay={overlay}
+                    hidePatient={settings.hidePatient}
                     growing={growing}
                     onActivate={() => {
                       autoHung.current = false;

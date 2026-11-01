@@ -1,7 +1,7 @@
 // The viewer toolbar. Every button maps to a keyboard shortcut (shown in its
 // tooltip) and acts on the active viewport.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   ArrowUpRight,
   Box,
@@ -99,6 +99,41 @@ export interface ToolbarProps {
 
 const mod = isMac() ? "⌘" : "Ctrl+";
 
+/** Hover to size a grid (up to 4 × 4), click to apply. Arrow keys work too. */
+function GridPicker({ current, onPick }: { current: { rows: number; cols: number }; onPick: (rows: number, cols: number) => void }) {
+  const MAX = 4;
+  const [hover, setHover] = useState<{ rows: number; cols: number } | null>(null);
+  const shown = hover ?? current;
+  return (
+    <div className="p-1">
+      <div className="grid w-fit grid-cols-4 gap-0.5" onMouseLeave={() => setHover(null)}>
+        {Array.from({ length: MAX * MAX }, (_, k) => {
+          const r = Math.floor(k / MAX) + 1;
+          const c = (k % MAX) + 1;
+          const on = r <= shown.rows && c <= shown.cols;
+          return (
+            <button
+              key={k}
+              type="button"
+              aria-label={`${r} × ${c} layout`}
+              onMouseEnter={() => setHover({ rows: r, cols: c })}
+              onFocus={() => setHover({ rows: r, cols: c })}
+              onClick={() => onPick(r, c)}
+              className={cn(
+                "h-5 w-5 rounded-[3px] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                on ? "border-accent bg-accent/60" : "border-subtle bg-elevated hover:border-strong"
+              )}
+            />
+          );
+        })}
+      </div>
+      <div className="mt-1 text-center text-[11px] text-secondary tabular-nums">
+        {shown.rows} × {shown.cols}
+      </div>
+    </div>
+  );
+}
+
 function Tool({
   label,
   shortcut,
@@ -134,12 +169,12 @@ function Divider() {
 }
 
 const MEASURE: { tool: string; label: string; key: string; icon: ReactNode }[] = [
-  { tool: "Length", label: "Length", key: "L", icon: <Ruler /> },
+  { tool: "Length", label: "Measure length", key: "M / L", icon: <Ruler /> },
   { tool: "Angle", label: "Angle", key: "A", icon: <Triangle /> },
   { tool: "CobbAngle", label: "Cobb angle", key: "C", icon: <Spline /> },
   { tool: "EllipticalROI", label: "Ellipse ROI", key: "E", icon: <Circle /> },
   { tool: "RectangleROI", label: "Rectangle ROI", key: "R", icon: <Square /> },
-  { tool: "PlanarFreehandROI", label: "Freehand ROI", key: "P", icon: <PenLine /> },
+  { tool: "PlanarFreehandROI", label: "Freehand ROI", key: "N", icon: <PenLine /> },
   { tool: "Probe", label: "Pixel probe", key: "X", icon: <Pipette /> },
   { tool: "ArrowAnnotate", label: "Arrow", key: "Y", icon: <ArrowUpRight /> },
 ];
@@ -185,7 +220,7 @@ export function Toolbar(props: ToolbarProps) {
       <Tool label="Window / level" shortcut="W · right drag" active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
         <SunMedium />
       </Tool>
-      <Tool label="Pan" shortcut="M · middle drag" active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
+      <Tool label="Pan" shortcut="P · middle drag" active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
         <Hand />
       </Tool>
       <Tool label="Zoom" shortcut={`Z · ${mod}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
@@ -292,6 +327,8 @@ export function Toolbar(props: ToolbarProps) {
               );
             })}
           </div>
+          <MenuLabel>Custom</MenuLabel>
+          <GridPicker current={props.layout} onPick={props.onLayout} />
         </MenuContent>
       </MenuRoot>
       <Tool label="Synchronise scrolling" shortcut="F5" active={props.syncScroll} onClick={props.onToggleSync}>

@@ -17,6 +17,10 @@ import {
   webWorkerCount,
 } from "@/lib/viewerRuntime";
 import { tuneStackScrollTool } from "@/lib/scrollSensitivity";
+import { installDatasetTrim } from "./memory";
+
+/** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
+const DESKTOP_CACHE_BUDGET = 1024 * 1024 * 1024;
 
 type Core = typeof import("@cornerstonejs/core");
 type Tools = typeof import("@cornerstonejs/tools");
@@ -80,11 +84,18 @@ export function prewarmEngine(): void {
 /** Wall-clock cost of the last engine init, for the benchmark report. */
 export const engineTimings: { initMs?: number } = {};
 
+let engineReady: Engine | null = null;
+/** The engine if it is already initialised, without starting it. */
+export function enginePeek(): Engine | null {
+  return engineReady;
+}
+
 export function getEngine(): Promise<Engine> {
   if (!enginePromise) {
     const t0 = performance.now();
     enginePromise = createEngine().then((e) => {
       engineTimings.initMs = performance.now() - t0;
+      engineReady = e;
       return e;
     });
   }
@@ -104,9 +115,19 @@ async function createEngine(): Promise<Engine> {
   await tools.init();
   // Desktop: the reader is the only workload, so decode on every core (the web
   // viewer leaves a quarter free for the page; lib/viewerRuntime.ts).
-  await loader.init({ maxWebWorkers: Math.max(webWorkerCount(profile), Math.min(profile.cores, 12)) });
+  // Legacy dataset path: the metadata tags are read from a dicom-parser dataset
+  // that memory.ts trims to its header after decode. The default (naturalized)
+  // path pins every file's full bytes in a metadata store for the session.
+  await loader.init({
+    maxWebWorkers: Math.max(webWorkerCount(profile), Math.min(profile.cores, 12)),
+    useLegacyMetadataProvider: true,
+  } as Parameters<typeof loader.init>[0]);
+  installDatasetTrim(core, loader);
   try {
-    core.cache.setMaxCacheSize(imageCacheBytes(profile));
+    // Honest now that raw file bytes are released after decode (memory.ts):
+    // this budget is close to what the decoded images really hold. LRU
+    // eviction keeps a long session from growing past it.
+    core.cache.setMaxCacheSize(Math.min(imageCacheBytes(profile), DESKTOP_CACHE_BUDGET));
   } catch {
     /* library default */
   }

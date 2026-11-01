@@ -27,6 +27,8 @@ export type { ToastOptions } from "./Toast";
 export { Tabs } from "./Tabs";
 export type { TabsProps, TabItem } from "./Tabs";
 export { EmptyState } from "./EmptyState";
+export { Slider } from "./Slider";
+export type { SliderProps } from "./Slider";
 export type { EmptyStateProps } from "./EmptyState";
 export { PageContainer, SectionHeading } from "./Page";
 export type { PageContainerProps, SectionHeadingProps } from "./Page";

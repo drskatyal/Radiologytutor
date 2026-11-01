@@ -92,7 +92,7 @@ export function UpdatePrompt({ update, onClose }: { update: Update | null; onClo
     <Modal
       open={!!update}
       onClose={progress ? () => undefined : onClose}
-      title={update ? `RadLearn Viewer ${update.version} is available` : ""}
+      title={update ? `FlowRad Viewer ${update.version} is available` : ""}
       description={update ? `You have ${update.currentVersion}. Installing restarts the viewer; open studies re-open from Recent.` : undefined}
       footer={
         <>

@@ -81,7 +81,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
           <div>
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-accent-bright">
               <span className="inline-block h-2 w-2 rounded-full bg-accent-bright" aria-hidden />
-              RadLearn Viewer
+              FlowRad Viewer
             </div>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight text-primary">Open a study</h1>
             <p className="mt-1 max-w-xl text-sm text-secondary">

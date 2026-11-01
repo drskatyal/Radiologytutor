@@ -1,4 +1,4 @@
-// RadLearn Viewer renderer. Built with Vite (not `next build`): the desktop
+// FlowRad Viewer renderer. Built with Vite (not `next build`): the desktop
 // bundle needs one static page, no server, and no Next runtime. It imports the
 // SAME `lib/` and `components/ui` the web app ships, through the `@/` alias, so
 // stack ordering, presets, cine and the design system stay identical.

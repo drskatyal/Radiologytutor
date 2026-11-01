@@ -10,12 +10,13 @@ import { windowPresetsFor, voiRangeOf, wwwcOf } from "./viewer/presets";
 import type { DesktopHeader } from "./types";
 import { sanitizePetMeta } from "./viewer/suv";
 import { buildMjpegAvi, exportBaseName } from "./viewer/exporter";
+import { pixelStats } from "./viewer/pixelStats";
 import { calculateSUVScalingFactors } from "@cornerstonejs/calculate-suv";
 
 const key = (k: string, extra: Partial<KeyLike> = {}): KeyLike => ({ key: k, ...extra });
 
-test("RadiAnt tool letters map to Cornerstone tools", () => {
-  const map: Record<string, string> = { b: "StackScroll", w: "WindowLevel", m: "Pan", z: "Zoom", l: "Length", a: "Angle", c: "CobbAngle", e: "EllipticalROI", y: "ArrowAnnotate", p: "PlanarFreehandROI" };
+test("tool letters: W window, Z zoom, P pan, M measure (and RadiAnt's B, L, A, C, E, Y)", () => {
+  const map: Record<string, string> = { b: "StackScroll", w: "WindowLevel", p: "Pan", z: "Zoom", m: "Length", l: "Length", a: "Angle", c: "CobbAngle", e: "EllipticalROI", y: "ArrowAnnotate", n: "PlanarFreehandROI" };
   for (const [letter, tool] of Object.entries(map)) {
     assert.deepEqual(resolveShortcut(key(letter), false), { type: "tool", tool });
     assert.deepEqual(resolveShortcut(key(letter.toUpperCase()), false), { type: "tool", tool }, "caps lock");
@@ -224,4 +225,25 @@ test("PET/CT hangs the CT first even when the PET has more slices", () => {
     ...[0, 1, 2, 3, 4].map((z) => ct(z, 40 + z, { seriesInstanceUID: "pt", modality: "PT", seriesNumber: 4 })),
   ]);
   assert.equal(studies[0].series[primarySeriesIndex(studies[0])].uid, "ct");
+});
+
+test("pixel stats for the codec check: exact integer sum, min, max, count", () => {
+  assert.deepEqual(pixelStats(new Int16Array([-1024, 0, 40, 3071])), { count: 4, min: -1024, max: 3071, sum: 2087 });
+  assert.deepEqual(pixelStats(new Uint8Array([7])), { count: 1, min: 7, max: 7, sum: 7 });
+});
+
+test("navigation: arrows and PgUp/PgDn scroll slices; Tab and [ ] switch series", () => {
+  assert.deepEqual(resolveShortcut(key("ArrowDown"), false), { type: "slice", delta: 1 });
+  assert.deepEqual(resolveShortcut(key("ArrowUp"), false), { type: "slice", delta: -1 });
+  assert.deepEqual(resolveShortcut(key("ArrowRight"), false), { type: "slice", delta: 1 });
+  assert.deepEqual(resolveShortcut(key("ArrowLeft"), false), { type: "slice", delta: -1 });
+  assert.deepEqual(resolveShortcut(key("PageDown"), false), { type: "slice", delta: 10 });
+  assert.deepEqual(resolveShortcut(key("PageUp"), false), { type: "slice", delta: -10 });
+  assert.deepEqual(resolveShortcut(key("Tab"), false), { type: "series", delta: 1 });
+  assert.deepEqual(resolveShortcut(key("Tab", { shiftKey: true }), false), { type: "series", delta: -1 });
+  assert.deepEqual(resolveShortcut(key("]"), false), { type: "series", delta: 1 });
+  assert.deepEqual(resolveShortcut(key("["), false), { type: "series", delta: -1 });
+  assert.deepEqual(resolveShortcut(key("}", { shiftKey: true }), false), { type: "cineFps", delta: 5 });
+  assert.deepEqual(resolveShortcut(key("?", { shiftKey: true }), false), { type: "help" });
+  assert.deepEqual(resolveShortcut(key("Escape"), false), { type: "escape" });
 });

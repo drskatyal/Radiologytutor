@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// RadLearn Viewer benchmark harness.
+// FlowRad Viewer benchmark harness.
 //
 //   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5]
 //   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5]
@@ -47,7 +47,20 @@ function runApp(binary, args, env = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
+    // Whole-tree memory: sampled every second, peak kept (private bytes).
+    let peak = null;
+    const sample = () => {
+      try {
+        const m = treeMemory(child.pid);
+        if (!peak || m.privateMb > peak.privateMb) peak = m;
+        return m;
+      } catch {
+        return null;
+      }
+    };
+    const sampler = setInterval(sample, 1000);
     const timer = setTimeout(() => {
+      clearInterval(sampler);
       child.kill("SIGKILL");
       reject(new Error(`timed out; output:\n${out}`));
     }, 120_000);
@@ -58,6 +71,10 @@ function runApp(binary, args, env = {}) {
         child.reported = true;
         const report = JSON.parse(line.slice("RADLEARN_BENCH ".length));
         report.externalMs = performance.now() - started;
+        clearInterval(sampler);
+        const atReport = sample();
+        report.tree = atReport && { wsMb: atReport.wsMb, privateMb: atReport.privateMb, processes: atReport.processes.length };
+        report.peakTree = peak && { wsMb: peak.wsMb, privateMb: peak.privateMb };
         clearTimeout(timer);
         child.once("exit", () => resolve(report));
         setTimeout(() => child.kill("SIGKILL"), 3000);
@@ -69,7 +86,7 @@ function runApp(binary, args, env = {}) {
 }
 
 function appCacheDir() {
-  const id = "app.radlearn.viewer";
+  const id = "app.flowrad.viewer";
   if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA ?? "", id);
   if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Caches", id);
   return path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"), id);
@@ -127,30 +144,70 @@ async function benchColdStart(binary) {
   );
 }
 
-function treeRssKb(pid) {
-  if (process.platform === "win32") return NaN; // use Task Manager / Get-Process on Windows
-  const ps = execFileSync("ps", ["-e", "-o", "pid=,ppid=,rss="]).toString();
-  const rows = ps.trim().split("\n").map((l) => l.trim().split(/\s+/).map(Number));
+/**
+ * Memory of the app's WHOLE process tree (the webview runs in child
+ * processes: WebView2's browser, GPU, renderer and utility processes on
+ * Windows; WebKit's web and network processes on Linux).
+ *   ws      — working set (Windows) / RSS (Linux), MB
+ *   private — private bytes (Windows PrivatePageCount) / private dirty+clean (Linux), MB
+ */
+function treeMemory(pid) {
+  if (process.platform === "win32") {
+    const ps = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine | ConvertTo-Json -Compress",
+      ],
+      { maxBuffer: 64 * 1024 * 1024 }
+    ).toString();
+    const rows = JSON.parse(ps);
+    const kids = new Map();
+    for (const r of rows) kids.set(r.ParentProcessId, [...(kids.get(r.ParentProcessId) ?? []), r]);
+    const procs = [];
+    const stack = rows.filter((r) => r.ProcessId === pid);
+    while (stack.length) {
+      const r = stack.pop();
+      const type = /--type=([\w-]+)/.exec(r.CommandLine ?? "")?.[1] ?? (procs.length ? "browser" : "app");
+      procs.push({ name: r.Name, type, wsMb: Math.round(r.WorkingSetSize / 1048576), privateMb: Math.round(Number(r.PrivatePageCount) / 1048576) });
+      stack.push(...(kids.get(r.ProcessId) ?? []));
+    }
+    return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
+  }
+  const ps = execFileSync("ps", ["-e", "-o", "pid=,ppid=,comm="]).toString();
+  const rows = ps.trim().split("\n").map((l) => l.trim().split(/\s+/));
   const kids = new Map();
-  for (const [p, pp] of rows) kids.set(pp, [...(kids.get(pp) ?? []), p]);
-  const rss = new Map(rows.map(([p, , r]) => [p, r]));
-  let total = 0;
+  for (const [p, pp] of rows) kids.set(Number(pp), [...(kids.get(Number(pp)) ?? []), Number(p)]);
+  const name = new Map(rows.map(([p, , c]) => [Number(p), c]));
+  const procs = [];
   const stack = [pid];
   while (stack.length) {
     const p = stack.pop();
-    total += rss.get(p) ?? 0;
+    let rss = 0, priv = 0;
+    try {
+      for (const line of execFileSync("cat", [`/proc/${p}/smaps_rollup`]).toString().split("\n")) {
+        const [k, v] = line.split(":");
+        const kb = parseInt(v, 10) || 0;
+        if (k === "Rss") rss = kb;
+        if (k === "Private_Clean" || k === "Private_Dirty") priv += kb;
+      }
+    } catch {
+      /* exited */
+    }
+    procs.push({ name: name.get(p), wsMb: Math.round(rss / 1024), privateMb: Math.round(priv / 1024) });
     stack.push(...(kids.get(p) ?? []));
   }
-  return total;
+  return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
 }
 
 async function benchIdle(binary) {
   const seconds = flag("seconds", 8);
   const child = spawn(binary, [], { stdio: "ignore", env: { ...process.env } });
   await new Promise((r) => setTimeout(r, seconds * 1000));
-  const kb = treeRssKb(child.pid);
+  const mem = treeMemory(child.pid);
   child.kill("SIGKILL");
-  console.log(JSON.stringify({ mode: "idle", afterSeconds: seconds, rssMb: Math.round(kb / 1024) }, null, 2));
+  console.log(JSON.stringify({ mode: "idle", afterSeconds: seconds, tree: mem }, null, 2));
 }
 
 function listFiles(dir) {

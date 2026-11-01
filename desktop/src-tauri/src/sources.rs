@@ -278,3 +278,83 @@ pub fn list_media() -> Vec<MediaVolume> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn zip_is_detected_by_extension_or_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("study.zip");
+        write_zip(&a, &[("x", b"1")]);
+        let b = dir.path().join("download"); // extensionless browser download
+        fs::copy(&a, &b).unwrap();
+        let c = dir.path().join("IM0001");
+        fs::write(&c, b"not a zip").unwrap();
+        assert!(is_zip(&a) && is_zip(&b));
+        assert!(!is_zip(&c));
+    }
+
+    #[test]
+    fn zip_extraction_rejects_path_traversal_and_is_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("evil.zip");
+        write_zip(&archive, &[("../escaped.txt", b"pwned"), ("/abs.txt", b"pwned"), ("ok/IM1", b"data")]);
+        let dest = dir.path().join("out");
+        extract_zip(&archive, &dest).unwrap();
+        assert!(dest.join("ok/IM1").exists(), "normal entries are extracted");
+        assert!(!dir.path().join("escaped.txt").exists(), "zip-slip must not escape the cache");
+        assert!(!Path::new("/abs.txt").exists());
+        // Second open reuses the completed extraction (marker present).
+        fs::remove_file(dest.join("ok/IM1")).unwrap();
+        extract_zip(&archive, &dest).unwrap();
+        assert!(!dest.join("ok/IM1").exists(), "a complete extraction is not redone");
+    }
+
+    #[test]
+    fn walk_skips_hidden_folders_and_junk() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("DICOM/SE1")).unwrap();
+        fs::create_dir_all(dir.path().join(".Trashes")).unwrap();
+        fs::create_dir_all(dir.path().join("__MACOSX")).unwrap();
+        for p in ["DICOM/SE1/IM1", "DICOM/SE1/IM2", ".Trashes/IM9", "__MACOSX/IM8", "AUTORUN.INF", "viewer.exe"] {
+            fs::write(dir.path().join(p), b"x").unwrap();
+        }
+        let mut found: Vec<String> = walk_folder(dir.path())
+            .iter()
+            .map(|p| p.strip_prefix(dir.path()).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["DICOM/SE1/IM1", "DICOM/SE1/IM2"]);
+    }
+
+    #[test]
+    fn dicomdir_is_found_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("dicomdir"), b"x").unwrap();
+        assert!(find_dicomdir(dir.path()).is_some());
+        assert!(is_dicomdir_name(Path::new("/media/cd/DICOMDIR")));
+    }
+
+    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test sources
+    #[test]
+    fn dicomdir_resolves_every_referenced_image_on_the_disc_layout() {
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let (files, missing) = dicomdir_files(&Path::new(&root).join("cd-media/DICOMDIR")).unwrap();
+        assert_eq!(missing, 0);
+        assert_eq!(files.len(), 84);
+        assert!(files.iter().all(|p| p.is_file()));
+    }
+}

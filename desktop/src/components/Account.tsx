@@ -8,7 +8,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Field } from "@/components/ui/Field";
-import { useToast } from "@/components/ui/Toast";
+import { useToast } from "../toast";
 import { invoke, isTauri, listen } from "../platform";
 import type { ViewerSeries, ViewerStudy } from "../types";
 
