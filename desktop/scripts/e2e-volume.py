@@ -17,7 +17,10 @@ still streaming in when the first slice paints, then MPR is requested. It
 fails unless the volume loads and the session stayed on the GPU path.
 
 Usage (Linux: wrap in xvfb-run -a):
-  python3 desktop/scripts/e2e-volume.py <app-binary> [<study-dir>] [--view mpr|3d|both] [--runs N]
+  python3 desktop/scripts/e2e-volume.py <app-binary> [<study-dir>] [--view mpr|3d|both|coronal|sagittal|axial|reformat] [--runs N] [--slab mip:20]
+
+--view coronal|sagittal|axial opens a quick single-plane reformat in a normal
+viewport (FLOWRAD_BENCH_REFORMAT) instead of the full MPR; "reformat" runs all three.
 Use a large study (scripts/make-test-ct.py --slices 848): the race needs the
 first decode to be slow. Without one, a small CT is generated.
 """
@@ -59,23 +62,35 @@ def main() -> int:
             del args[i : i + 2]
             return value
         return default
-    views = {"both": ["mpr", "3d"]}.get(opt("--view", "both"), None) or [opt("--view", "mpr")]
+    view_opt = opt("--view", "both")
+    views = {"both": ["mpr", "3d"], "reformat": ["coronal", "sagittal", "axial"]}.get(view_opt) or [view_opt]
+    planes = ("coronal", "sagittal", "axial")
     runs = int(opt("--runs", "3"))
+    slab = opt("--slab", "")
     binary = args[0]
     study = Path(args[1]) if len(args) > 1 else make_study()
     failures = 0
+    flush_spec = importlib.util.spec_from_file_location("flush", Path(__file__).with_name("flush-file-cache.py"))
+    flush_mod = importlib.util.module_from_spec(flush_spec)
+    assert flush_spec.loader
+    flush_spec.loader.exec_module(flush_mod)
     for view, attempt in [(v, n) for v in views for n in range(1, runs + 1)]:
         shutil.rmtree(cache_dir(), ignore_errors=True)
+        # Cold means cold: the OS file cache too, not only the app's scan cache.
+        flushed, what = flush_mod.flush()
+        if attempt == 1 or not flushed:
+            print(f"     ({what})")
         env = {
             **os.environ,
             "FLOWRAD_BENCH": "1",
             "FLOWRAD_BENCH_EXIT": "1",
-            "FLOWRAD_BENCH_VIEW": view,
+            **({"FLOWRAD_BENCH_REFORMAT": view} if view in planes else {"FLOWRAD_BENCH_VIEW": view}),
             "FLOWRAD_BENCH_TIMEOUT_MS": "90000",
             # Slow every file read so the study is still streaming in when the
             # first slice paints (an 848-slice CT at 8 ms/file reproduced the
             # hang on 2 of 2 runs before the fix).
             "FLOWRAD_SCAN_DELAY_US": os.environ.get("E2E_SCAN_DELAY_US", "8000"),
+            **({"FLOWRAD_BENCH_SLAB": slab} if slab else {}),
         }
         proc = subprocess.run([binary, str(study)], env=env, capture_output=True, text=True, timeout=180)
         line = next((l for l in proc.stdout.splitlines() if l.startswith("FLOWRAD_BENCH ")), None)
@@ -85,19 +100,30 @@ def main() -> int:
         problems = []
         if not line:
             problems.append(f"no report (exit {proc.returncode})")
-        if loaded is None:
+        reformat = report.get("reformat") or {}
+        if view in planes:
+            loaded = reformat.get("ms")
+            if loaded is None:
+                problems.append(f"{view} reformat never painted: {report.get('note') or 'no reformat mark'}")
+            elif reformat.get("plane") != view:
+                problems.append(f"wrong plane: wanted {view}, report says {reformat.get('plane')}")
+            if slab and reformat.get("slab") != slab:
+                problems.append(f"slab not applied: wanted {slab}, report says {reformat.get('slab')}")
+        elif loaded is None:
             problems.append(f"{view} never loaded: {report.get('volumeStuck') or report.get('note')}")
-        panes = report.get("mprPanes" if view == "mpr" else "vrPanes") or {}
+        panes = (reformat.get("maxLum") if view in planes else report.get("mprPanes" if view == "mpr" else "vrPanes")) or {}
         want = 3 if view == "mpr" else 1
         # Pixels, not "volume built": every pane must show something bright.
         if len(panes) < want or any((v if v is not None else 0) <= 8 for v in panes.values()):
             problems.append(f"{view} panes blank or missing: {panes}")
+        if slab and view == "mpr" and report.get("mprSlab") != slab:
+            problems.append(f"slab not applied: wanted {slab}, report says {report.get('mprSlab')}")
         # MPR and 3D are rendered natively (Rust) and do not depend on the 2D
         # viewer's render path; report a 2D CPU fallback, don't fail on it
         # (e2e-paint.py owns the 2D render-path checks).
         note = f"  (2D viewer fell back to {path}: {report.get('fallbackWhy')})" if path not in ("gpu", None) else ""
         status = "OK  " if not problems else "FAIL"
-        painted = report.get("mprPaintedMs" if view == "mpr" else "vrPaintedMs")
+        painted = reformat.get("ms") if view in planes else report.get("mprPaintedMs" if view == "mpr" else "vrPaintedMs")
         print(f"{status} cold open #{attempt} -> {view}  render={path}  volumeLoadedMs={loaded}  paintedMs={painted}  panes={panes}{note}")
         for p in problems:
             print("     " + p)

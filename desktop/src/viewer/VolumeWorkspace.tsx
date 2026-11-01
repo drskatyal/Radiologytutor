@@ -46,6 +46,7 @@ import {
 import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
 import { voiRangeOf, windowPresetsFor, wwwcOf } from "./presets";
 import { ensureSuv } from "./suv";
+import { setToolCursor } from "./toolCursor";
 
 export type VolumeMode = "mpr" | "3d" | "fusion";
 
@@ -143,6 +144,7 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
   // Curved MPR: click a centreline on an MPR plane; Enter / double-click builds it.
   const [curveMode, setCurveMode] = useState(false);
   const [curve, setCurve] = useState<{ paneId: string; points: Point3[] } | null>(null);
+  useEffect(() => setToolCursor(curveMode ? "Crosshairs" : leftTool), [leftTool, curveMode]);
   const [cpr, setCpr] = useState<{ image: CurvedMprImage; ww: number; wc: number; stepMm: number } | null>(null);
   const [readouts, setReadouts] = useState<Record<string, PaneReadout>>({});
   const presets = windowPresetsFor(series.modality);

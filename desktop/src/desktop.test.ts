@@ -1,7 +1,7 @@
 // Pure renderer logic. Run: npm --prefix desktop test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveShortcut, shortcutSheet, BINDINGS, type KeyLike } from "./shortcuts";
+import { resolveShortcut, shortcutSheet, BINDINGS, keySpecOf, conflictFor, type KeyLike } from "./shortcuts";
 import { edgeLabels, directionLabel } from "./viewer/orientation";
 import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex } from "./study";
 import { hangSeries } from "./layout";
@@ -48,7 +48,7 @@ test("digits pick presets, Shift+digits pick layouts (by code, not the shifted s
 
 test("navigation and the ambiguous pairs resolve to the intended action", () => {
   assert.deepEqual(resolveShortcut(key("ArrowDown"), false), { type: "slice", delta: 1 });
-  assert.deepEqual(resolveShortcut(key("PageUp"), false), { type: "slice", delta: -10 });
+  assert.deepEqual(resolveShortcut(key("PageUp"), false), { type: "slicePage", dir: -1 });
   assert.deepEqual(resolveShortcut(key("z", { ctrlKey: true }), false), { type: "undoAnnotation" });
   assert.deepEqual(resolveShortcut(key("Z", { ctrlKey: true, shiftKey: true }), false), { type: "open", what: "zip" });
   assert.deepEqual(resolveShortcut(key("F12", { ctrlKey: true, shiftKey: true }), false), { type: "toggleOverlay" });
@@ -233,13 +233,15 @@ test("pixel stats for the codec check: exact integer sum, min, max, count", () =
   assert.deepEqual(pixelStats(new Uint8Array([7])), { count: 1, min: 7, max: 7, sum: 7 });
 });
 
-test("navigation: arrows and PgUp/PgDn scroll slices; Tab and [ ] switch series", () => {
+test("navigation (RadiAnt): up/down slices, left/right series, PgUp/PgDn 10%, Tab and [ ] series", () => {
   assert.deepEqual(resolveShortcut(key("ArrowDown"), false), { type: "slice", delta: 1 });
   assert.deepEqual(resolveShortcut(key("ArrowUp"), false), { type: "slice", delta: -1 });
-  assert.deepEqual(resolveShortcut(key("ArrowRight"), false), { type: "slice", delta: 1 });
-  assert.deepEqual(resolveShortcut(key("ArrowLeft"), false), { type: "slice", delta: -1 });
-  assert.deepEqual(resolveShortcut(key("PageDown"), false), { type: "slice", delta: 10 });
-  assert.deepEqual(resolveShortcut(key("PageUp"), false), { type: "slice", delta: -10 });
+  assert.deepEqual(resolveShortcut(key("ArrowRight"), false), { type: "series", delta: 1 });
+  assert.deepEqual(resolveShortcut(key("ArrowLeft"), false), { type: "series", delta: -1 });
+  assert.deepEqual(resolveShortcut(key("PageDown"), false), { type: "slicePage", dir: 1 });
+  assert.deepEqual(resolveShortcut(key("PageUp"), false), { type: "slicePage", dir: -1 });
+  assert.deepEqual(resolveShortcut(key("Home"), false), { type: "sliceEdge", where: "first" });
+  assert.deepEqual(resolveShortcut(key("End"), false), { type: "sliceEdge", where: "last" });
   assert.deepEqual(resolveShortcut(key("Tab"), false), { type: "series", delta: 1 });
   assert.deepEqual(resolveShortcut(key("Tab", { shiftKey: true }), false), { type: "series", delta: -1 });
   assert.deepEqual(resolveShortcut(key("]"), false), { type: "series", delta: 1 });
@@ -297,4 +299,28 @@ test("shortcut labels: words on Windows/Linux (no ⇧ ⌥ ⌫ that render as '?'
   for (const spec of ["Shift+Q", "Mod+Shift+M", "Mod+Alt+O", "Mod+Shift+Backspace", "Mod+Shift+F12"]) {
     assert.doesNotMatch(keyLabel(spec, false), /[⇧⌥⌫⌘]/, spec);
   }
+});
+
+test("reformat and slab shortcuts: Alt+C/S/A, T, Ctrl+[ ]", () => {
+  assert.deepEqual(resolveShortcut(key("c", { altKey: true, code: "KeyC" }), false), { type: "reformat", plane: "coronal" });
+  assert.deepEqual(resolveShortcut(key("ß", { altKey: true, code: "KeyS" }), true), { type: "reformat", plane: "sagittal" }, "macOS Option letter");
+  assert.deepEqual(resolveShortcut(key("a", { altKey: true, code: "KeyA" }), false), { type: "reformat", plane: "axial" });
+  assert.deepEqual(resolveShortcut(key("t"), false), { type: "slabCycle" });
+  assert.deepEqual(resolveShortcut(key("]", { ctrlKey: true, code: "BracketRight" }), false), { type: "slabThickness", deltaMm: 2 });
+  assert.deepEqual(resolveShortcut(key("[", { ctrlKey: true, code: "BracketLeft" }), false), { type: "slabThickness", deltaMm: -2 });
+});
+
+test("re-mapped shortcuts: the new key fires, the default no longer does, clashes are found", () => {
+  const overrides = { "tool.w": "Shift+W", "series.next": "Mod+Alt+ArrowRight" };
+  assert.deepEqual(resolveShortcut(key("W", { shiftKey: true, code: "KeyW" }), false, overrides), { type: "tool", tool: "WindowLevel" });
+  assert.equal(resolveShortcut(key("w", { code: "KeyW" }), false, overrides), null, "default released");
+  assert.deepEqual(resolveShortcut(key("ArrowRight", { ctrlKey: true, altKey: true }), false, overrides), { type: "series", delta: 1 });
+  assert.equal(keySpecOf(key("k", { ctrlKey: true, shiftKey: true, code: "KeyK" }), false), "Mod+Shift+K");
+  assert.equal(keySpecOf(key("4", { metaKey: true, code: "Digit4" }), true), "Mod+4");
+  assert.equal(keySpecOf(key("Shift", { shiftKey: true }), false), null, "modifier alone");
+  assert.equal(conflictFor("Z", "tool.w", {}, false)?.action.type, "tool", "Z is zoom");
+  assert.equal(conflictFor("Shift+3", "tool.w", {}, false)?.action.type, "layout", "range bindings claim their keys");
+  assert.equal(conflictFor("Mod+Shift+K", "tool.w", {}, false), null);
+  assert.equal(conflictFor("Shift+W", "invert", overrides, false)?.id, "tool.w", "re-mapped keys are claimed");
+  assert.ok(shortcutSheet(false, overrides).some((r) => r.custom && r.keys === "Shift+W"));
 });

@@ -74,6 +74,8 @@ export const MEASURE_TOOLS: ViewerTool[] = [
   { name: "RectangleROI", label: "Rectangle ROI", annotation: true },
   { name: "Probe", label: "Probe (HU)", annotation: true },
   { name: "ArrowAnnotate", label: "Arrow", annotation: true },
+  // Not a Cornerstone tool: clicks go to AnnotationEditLayer, which deletes.
+  { name: "Eraser", label: "Eraser (click to delete)" },
 ];
 
 export const PRIMARY_TOOLS: ViewerTool[] = [...NAV_TOOLS, ...MEASURE_TOOLS];
@@ -97,6 +99,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   RectangleROI: Square,
   Probe: Crosshair,
   ArrowAnnotate: MoveUpRight,
+  Eraser,
 };
 
 function keysOf(shortcut: string | null): string[] | null {

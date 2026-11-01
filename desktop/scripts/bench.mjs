@@ -22,7 +22,7 @@
 // On Windows run from PowerShell with the .exe path; on Linux CI wrap in
 // `xvfb-run -a`. Numbers are medians.
 
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { readdirSync, statSync, rmSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -104,7 +104,12 @@ async function benchDesktop(binary, study) {
   const runs = flag("runs", 5);
   const reports = [];
   for (let i = 0; i < runs; i += 1) {
-    if (i === 0) rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
+    if (i === 0) {
+      rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
+      // A cold run reads from disk: drop the OS file cache too (elevated CI runners).
+      const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
+      console.error(`run 1: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+    }
     const report = await runApp(binary, [study]);
     reports.push(report);
     console.error(
@@ -144,15 +149,23 @@ async function benchColdStart(binary) {
   const runs = flag("runs", 5);
   const inProc = [];
   const external = [];
+  const stages = { windowBuiltMs: [], navStartMs: [], jsStartMs: [], navDoneMs: [] };
   for (let i = 0; i < runs; i += 1) {
     const report = await runApp(binary, []);
     inProc.push(report.firstPaintMs);
     external.push(report.externalMs);
-    console.error(`run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms in-process · ${r0(report.externalMs)} ms spawn→report`);
+    for (const k of Object.keys(stages)) if (typeof report[k] === "number") stages[k].push(report[k]);
+    console.error(
+      `run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms · window built ${r0(report.windowBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms`
+    );
   }
+  // Where the time goes before first paint: Rust + window creation
+  // (windowBuiltMs), WebView2 start until it begins loading the page
+  // (navStartMs), page JS start, first paint.
+  const breakdown = Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, v.length ? r0(median(v)) : null]));
   console.log(
     JSON.stringify(
-      { mode: "coldstart", firstRunMs: r0(inProc[0]), medianMs: r0(median(inProc)), medianExternalMs: r0(median(external)) },
+      { mode: "coldstart", firstRunMs: r0(inProc[0]), medianMs: r0(median(inProc)), medianExternalMs: r0(median(external)), median: breakdown },
       null,
       2
     )

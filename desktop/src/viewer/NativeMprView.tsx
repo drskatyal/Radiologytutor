@@ -11,12 +11,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Slider } from "@/components/ui/Slider";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
 import { invoke, volumePlaneUrl } from "../platform";
 import type { ViewerSeries } from "../types";
+import { installToolCursors } from "./toolCursor";
 
-type Plane = "axial" | "coronal" | "sagittal";
+installToolCursors();
+
+export type Plane = "axial" | "coronal" | "sagittal";
+
+export type SlabMode = "off" | "mip" | "minip" | "avg";
+export interface Slab {
+  mode: SlabMode;
+  /** Thickness in mm (0 = a single slice). */
+  mm: number;
+}
+export const SLAB_MODES: { mode: SlabMode; label: string }[] = [
+  { mode: "off", label: "Slice" },
+  { mode: "mip", label: "MIP" },
+  { mode: "minip", label: "MinIP" },
+  { mode: "avg", label: "AvgIP" },
+];
+export const SLAB_MAX_MM = 100;
+export function slabLabel(s: Slab): string | null {
+  if (s.mode === "off" || s.mm <= 0) return null;
+  return `${SLAB_MODES.find((m) => m.mode === s.mode)?.label} ${s.mm.toFixed(s.mm < 10 ? 1 : 0)} mm`;
+}
 
 export interface VolumeInfo {
   key: string;
@@ -47,6 +69,8 @@ interface Props {
   /** The native core cannot read this series (e.g. JPEG-LS): use the GPU MPR. */
   onUnsupported?: () => void;
   onVolumeReady?: (t: { shellMs: number; loadedMs: number }) => void;
+  /** Start with a slab (bench / shortcut); default a single slice. */
+  initialSlab?: Slab;
   /** Bench: every pane has drawn its first plane (brightest pixel per pane). */
   onPainted?: (t: { ms: number; maxLum: Record<string, number> }) => void;
 }
@@ -58,7 +82,7 @@ const PLANES: { plane: Plane; label: string }[] = [
 ];
 
 /** Slice count along a plane's own axis. */
-function depthOf(info: VolumeInfo, plane: Plane): number {
+export function depthOf(info: VolumeInfo, plane: Plane): number {
   return plane === "axial" ? info.dims[2] : plane === "coronal" ? info.dims[1] : info.dims[0];
 }
 
@@ -145,7 +169,7 @@ export function usePlaneImage(url: string | null, onLoaded?: (maxLum: number) =>
   return { src, failed };
 }
 
-function Pane({
+export function Pane({
   info,
   plane,
   label,
@@ -159,6 +183,9 @@ function Pane({
   onPoint,
   onReset,
   onPainted,
+  slab,
+  onSlab,
+  crosshair: showCrosshair = true,
 }: {
   info: VolumeInfo;
   plane: Plane;
@@ -173,6 +200,11 @@ function Pane({
   onPoint: (fx: number, fy: number) => void;
   onReset: () => void;
   onPainted?: (maxLum: number) => void;
+  slab: Slab;
+  /** Change the slab thickness by `deltaMm` (Ctrl+wheel). */
+  onSlab: (deltaMm: number) => void;
+  /** Draw the crosshair (MPR); a single-plane reformat hides it. */
+  crosshair?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
@@ -188,7 +220,8 @@ function Pane({
   const scale = size[0] && size[1] ? Math.min(size[0] / mmW, size[1] / mmH) : 0;
   const rect = { w: mmW * scale, h: mmH * scale, x: (size[0] - mmW * scale) / 2, y: (size[1] - mmH * scale) / 2 };
   const maxDim = Math.min(1024, Math.max(128, Math.ceil(Math.max(rect.w, rect.h) * (window.devicePixelRatio || 1))));
-  const url = scale ? volumePlaneUrl(info.key, plane, at[plane], center, width, maxDim) : null;
+  const url = scale ? volumePlaneUrl(info.key, plane, at[plane], center, width, maxDim, slab) : null;
+  const slabText = slabLabel(slab);
   const { src, failed } = usePlaneImage(url, onPainted);
   const [cx, cy] = crosshair(info, plane, at);
 
@@ -206,7 +239,13 @@ function Pane({
         else return;
         e.preventDefault();
       }}
-      onWheel={(e) => onScroll((e.deltaY > 0 ? 1 : -1) * (e.shiftKey ? 5 : 1))}
+      onWheel={(e) => {
+        // Ctrl+wheel: slab thickness (Shift: ×5); plain wheel pages the slab.
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          onSlab((e.deltaY > 0 ? -1 : 1) * (e.shiftKey ? 5 : 1));
+        } else onScroll((e.deltaY > 0 ? 1 : -1) * (e.shiftKey ? 5 : 1));
+      }}
       onPointerDown={(e) => {
         onActivate();
         (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -234,7 +273,9 @@ function Pane({
       }}
       onDoubleClick={onReset}
       className={cn(
-        "relative min-h-0 min-w-0 cursor-crosshair touch-none select-none overflow-hidden bg-black outline-none",
+        // Click places the crosshair; without one, drag only windows.
+        showCrosshair ? "cursor-crosshair" : "tool-cursor-wl",
+        "relative min-h-0 min-w-0 touch-none select-none overflow-hidden bg-black outline-none",
         active ? "ring-1 ring-inset ring-accent" : "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
       )}
     >
@@ -248,7 +289,7 @@ function Pane({
           style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
         />
       )}
-      {src && (
+      {src && showCrosshair && (
         <div className="pointer-events-none absolute" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
           <span className="absolute inset-y-0 w-px bg-accent/60" style={{ left: `${cx * 100}%` }} />
           <span className="absolute inset-x-0 h-px bg-accent/60" style={{ top: `${cy * 100}%` }} />
@@ -268,16 +309,29 @@ function Pane({
       <div className="pointer-events-none absolute bottom-2 left-2 text-[11px] tabular-nums text-white/60">
         {at[plane] + 1} / {depthOf(info, plane)}
       </div>
+      {slabText && (
+        <div data-testid="slab-overlay" className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-accent">
+          {slabText}
+        </div>
+      )}
     </div>
   );
 }
 
-export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted }: Props) {
+export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted, initialSlab }: Props) {
   const [info, setInfo] = useState<VolumeInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [at, setAt] = useState<Record<Plane, number>>({ axial: 0, coronal: 0, sagittal: 0 });
   const [voi, setVoi] = useState<{ center: number; width: number }>({ center: 40, width: 400 });
   const [active, setActive] = useState<Plane>("axial");
+  const [slab, setSlab] = useState<Slab>(initialSlab ?? { mode: "off", mm: 0 });
+  const changeSlab = (deltaMm: number) =>
+    setSlab((s) => {
+      const mm = Math.max(0, Math.min(SLAB_MAX_MM, s.mm + deltaMm));
+      // Thickening from a single slice starts a MIP (RadiAnt's default).
+      return { mode: mm === 0 ? "off" : s.mode === "off" ? "mip" : s.mode, mm };
+    });
+  const pickSlabMode = (mode: SlabMode) => setSlab((s) => ({ mode, mm: mode === "off" ? 0 : s.mm || 10 }));
   // Keyed on the SET of files, not the series object: a cold open rebuilds the
   // study list (new objects, same files) and must not rebuild the volume.
   const filesKey = useMemo(() => series.headers.map((h) => h.fileId).sort((a, b) => a - b).join(","), [series]);
@@ -368,6 +422,33 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
             W {Math.round(voi.width)} · L {Math.round(voi.center)} · {info.dims[0]}×{info.dims[1]}×{info.dims[2]}
           </span>
         )}
+        {info && (
+          <div role="radiogroup" aria-label="Slab" className="ml-2 flex items-center gap-1">
+            {SLAB_MODES.map((m) => (
+              <Button
+                key={m.mode}
+                size="sm"
+                variant={slab.mode === m.mode ? "secondary" : "ghost"}
+                role="radio"
+                aria-checked={slab.mode === m.mode}
+                onClick={() => pickSlabMode(m.mode)}
+              >
+                {m.label}
+              </Button>
+            ))}
+            {slab.mode !== "off" && (
+              <Slider
+                label="Thickness"
+                min={1}
+                max={SLAB_MAX_MM}
+                value={slab.mm}
+                valueLabel={`${slab.mm} mm`}
+                onChange={(mm) => setSlab((s) => ({ ...s, mm }))}
+                className="ml-2 w-40"
+              />
+            )}
+          </div>
+        )}
         {info && reducedNote(info) && <span className="text-xs text-warning">{reducedNote(info)}</span>}
         <span className="flex-1" />
         {info && (
@@ -405,10 +486,12 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
               onPoint={(fx, fy) => point(plane, fx, fy)}
               onReset={() => reset(info)}
               onPainted={(lum) => notePaint(plane, lum)}
+              slab={slab}
+              onSlab={changeSlab}
             />
           ))}
           <div className="flex items-center justify-center p-4 text-center text-xs text-white/50">
-            Scroll to move through a plane · drag to window · click to move the crosshair
+            Scroll to move through a plane · Ctrl+scroll for slab thickness · drag to window · click to move the crosshair
           </div>
         </div>
       )}

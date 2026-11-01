@@ -21,16 +21,28 @@ Plan: [`docs/DESKTOP_PLAN.md`](../docs/DESKTOP_PLAN.md). Competitive benchmark:
 - **Decodes locally**, in web workers: JPEG baseline/extended, JPEG lossless,
   JPEG-LS, JPEG 2000, HTJ2K, RLE, implicit/explicit LE, deflated LE (inflated
   in Rust), and multiframe instances.
-- **Reads** with a series browser (decoded thumbnails, drag a series onto any
+- **Reads** with a series browser (decoded thumbnails; click to show a series in
+  the selected viewport, outlined in the accent colour, or drag it onto any
   viewport), layouts from 1×1 to 3×3, synchronized scrolling, reference lines,
   window/level with modality presets, zoom/pan/rotate/flip/invert, length,
   angle, Cobb angle, ellipse/rectangle/circle/freehand ROI with HU stats, probe,
-  arrow, bidirectional, magnifier, cine, and RadiAnt-compatible keyboard
-  shortcuts (F1 in the app).
+  arrow, bidirectional, magnifier, cine, and a cursor that matches the tool.
+- **Keyboard, RadiAnt-style.** ↑/↓ slice, ←/→ series, PgUp/PgDn 10 % of the
+  series, Home/End, tool letters, Shift+1…7 layouts, Alt+C/S/A reformat, T slab
+  mode, Ctrl+[ / ] slab thickness, I invert, Backspace reset. `?` or F1 shows
+  the sheet; any tool or navigation key can be re-mapped in Settings.
+- **Annotations you can edit.** Arrows draw without a prompt; double-click (or
+  right-click → Add label) puts an inline label field next to the arrowhead.
+  Click to select, Delete to remove, an eraser tool, right-click for Delete ·
+  Copy value · Delete all on this image / in the series, and Ctrl+Z / Ctrl+Y
+  for all of it.
 - **MPR, 3D and fusion.**
   - MPR: axial, sagittal and coronal planes with linked crosshairs (a 3D
     cursor), oblique planes by dragging a line, and MIP / MinIP / average
-    slabs.
+    slabs (Ctrl+wheel sets the thickness, shown on the image).
+  - Quick reformat: a coronal, sagittal or axial-slab plane of any series in a
+    normal viewport (toolbar or Alt+C / Alt+S / Alt+A), rendered from the
+    native volume; Esc goes back to the slices.
   - 3D: volume rendering with presets.
   - PET/CT fusion in SUVbw, with a PET MIP.
   - Volumes are built before they are attached (≈2 s for 300 slices).
@@ -84,6 +96,10 @@ xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/flo
 xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/flowrad-viewer /tmp/fixtures
 # e2e: a NORMAL launch with a study must put non-blank pixels in the main viewport (also on Windows CI)
 xvfb-run -a python3 desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer [study-dir …]
+# e2e: MPR / 3D / quick reformat / slabs draw real pixels on a cold open (flushes the OS file cache)
+xvfb-run -a python3 desktop/scripts/e2e-volume.py <binary> [study-dir] --view mpr|3d|both|coronal|sagittal|axial|reformat [--slab mip:20]
+# e2e: the UI with real mouse and keys (border, drag-and-drop, keys, re-mapping, cursors, annotations)
+npm --prefix desktop run build && node desktop/scripts/e2e-ui.mjs /tmp/fixtures/ct-phantom [--shots dir]
 ```
 
 ## Benchmark

@@ -36,7 +36,7 @@ import { headersFromBrowserFiles } from "./browserSource";
 import { buildStudies, primarySeriesIndex } from "./study";
 import { historyEntryFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
-import { resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { keyLabel, resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/Updates";
 import { useSyncStatus } from "./components/Account";
@@ -51,6 +51,7 @@ import {
   engineTimings,
   enginePeek,
   leaveVolumeMemory,
+  enterNativeVolumeMemory,
   getEngine,
   prewarmEngine,
   setGroupLeftTool,
@@ -61,14 +62,18 @@ import {
   setStackOffset,
   setSynchronized,
   STACK_GROUP,
-  undoLastAnnotation,
+  annotationHistory,
+  enterIdleMemory,
+  leaveIdleMemory,
 } from "./viewer/engine";
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
 import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
-import { longTasks } from "./perfWatch";
+import { longTasks, markPhase } from "./perfWatch";
+import { onSeriesDrop, useSeriesDrag } from "./viewer/seriesDrag";
+import { setToolCursor } from "./viewer/toolCursor";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -79,6 +84,7 @@ const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => impor
 const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
 const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
 const Native3DView = named<typeof import("./viewer/Native3DView").Native3DView>(() => import("./viewer/Native3DView"), "Native3DView");
+const NativePlaneView = named<typeof import("./viewer/NativePlaneView").NativePlaneView>(() => import("./viewer/NativePlaneView"), "NativePlaneView");
 const NativeMprView = named<typeof import("./viewer/NativeMprView").NativeMprView>(() => import("./viewer/NativeMprView"), "NativeMprView");
 const VolumeWorkspace = named<typeof import("./viewer/VolumeWorkspace").VolumeWorkspace>(() => import("./viewer/VolumeWorkspace"), "VolumeWorkspace");
 const ExportDialog = named<typeof import("./components/ExportDialog").ExportDialog>(() => import("./components/ExportDialog"), "ExportDialog");
@@ -138,6 +144,22 @@ export default function App() {
   const autoHung = useRef(true);
   // Debug memory HUD: FLOWRAD_DEBUG=1 at launch, or Ctrl+Alt+Shift+M.
   const [hud, setHud] = useState(false);
+  // Series dragged from the list (pointer-driven, seriesDrag.ts).
+  const seriesDrag = useSeriesDrag();
+  /** Bench: volume views start with this slab (FLOWRAD_BENCH_SLAB=mip:20). */
+  const [benchSlab, setBenchSlab] = useState<{ mode: "off" | "mip" | "minip" | "avg"; mm: number } | undefined>();
+  useEffect(() => {
+    if (!isTauri) return;
+    void invoke<string | null>("bench_slab").then((v) => {
+      const [mode, mm] = (v ?? "").split(":");
+      if (mode === "mip" || mode === "minip" || mode === "avg") setBenchSlab({ mode, mm: Number(mm) || 10 });
+    }, () => undefined);
+  }, []);
+  /** Quick reformats by cell: that cell shows one native plane of its series. */
+  const [reformats, setReformats] = useState<Record<number, { uid: string; plane: "axial" | "coronal" | "sagittal" }>>({});
+  /** Slab shortcut (T, Ctrl+[ ]) for the active reformat; `seq` re-fires the same command. */
+  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; seq: number } | undefined>();
+  const slabCycle = useRef<"off" | "mip" | "minip" | "avg">("off");
   /** Series the native MPR cannot decode (falls back to the GPU MPR). */
   const [nativeMprUnsupported, setNativeMprUnsupported] = useState<string | null>(null);
   useEffect(() => {
@@ -155,7 +177,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown };
+    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -207,6 +229,8 @@ export default function App() {
   // (WebView2's Low memory-usage target on Windows; a no-op elsewhere). The
   // moment a study starts opening it goes back to Normal.
   const nothingOpen = studies.length === 0 && scan == null;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const nothingOpenRef = useRef(nothingOpen);
   nothingOpenRef.current = nothingOpen;
   useEffect(() => {
@@ -246,8 +270,18 @@ export default function App() {
   // Back in 2D: release the volume and return to the browsing cache budget,
   // so a study left open idles small (viewer/engine.ts).
   useEffect(() => {
-    if (view !== "grid") return;
+    markPhase(`view: ${view}`);
     const engine = enginePeek();
+    if (view !== "grid") {
+      // Native MPR / 3D: the 2D cache and workers are not needed meanwhile,
+      // and the webview only shows images Rust renders: hold WebView2 at its
+      // Low memory target for the whole view (3D warm peak was 1.28 GB on the HP).
+      if (isTauri && settings.nativeMpr && view !== "fusion") {
+        if (engine) enterNativeVolumeMemory(engine);
+        void invoke("set_memory_mode", { low: true }).catch(() => undefined);
+      }
+      return;
+    }
     if (!engine) return;
     leaveVolumeMemory(engine);
     // Give the freed volume back to the OS: a short Low memory-target pulse
@@ -256,7 +290,42 @@ export default function App() {
     void invoke("set_memory_mode", { low: true }).catch(() => undefined);
     const timer = window.setTimeout(() => void invoke("set_memory_mode", { low: false }).catch(() => undefined), 2000);
     return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
+
+  // Idle with a study open: after 10 s without input, ask WebView2 to trim
+  // (Low memory target: renderer and GPU process give memory back; HP idle
+  // with a CT open was 0.97 GB). Any input restores Normal at once.
+  useEffect(() => {
+    if (!isTauri || nothingOpen) return;
+    let low = false;
+    let timer = 0;
+    const arm = () => {
+      window.clearTimeout(timer);
+      if (low) {
+        low = false;
+        void invoke("set_memory_mode", { low: false }).catch(() => undefined);
+        const engine = enginePeek();
+        if (engine) leaveIdleMemory(engine);
+      }
+      timer = window.setTimeout(() => {
+        // Never while a volume view or cine is busy: only the 2D grid idles.
+        if (viewRef.current !== "grid" || activeHandleRef.current()?.cine().playing) return arm();
+        low = true;
+        const engine = enginePeek();
+        if (engine) enterIdleMemory(engine);
+        void invoke("set_memory_mode", { low: true }).catch(() => undefined);
+      }, 10_000);
+    };
+    const events = ["pointerdown", "pointermove", "wheel", "keydown"] as const;
+    events.forEach((e) => window.addEventListener(e, arm, { passive: true }));
+    arm();
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((e) => window.removeEventListener(e, arm));
+      if (low) void invoke("set_memory_mode", { low: false }).catch(() => undefined);
+    };
+  }, [nothingOpen]);
 
   // Hidden or minimised: hold the Low memory target until the reader is back.
   useEffect(() => {
@@ -357,6 +426,7 @@ export default function App() {
       const rebuild = () => {
         timer = 0;
         if (seq !== openSeq.current) return;
+        markPhase("study: group series");
         const built = buildStudies([...acc.values()]);
         setStudies(built);
         if (!firstShown && built.length) {
@@ -387,6 +457,7 @@ export default function App() {
         const headers = result.headers.map((h) => ({ ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` }));
         const docs = result.documents ?? [];
         // Key-image notes become series of the images they select.
+        markPhase("study: group series");
         const built = withKeyImageSeries(buildStudies(headers), docs);
         setDocuments(docs);
         setStudies(built);
@@ -474,7 +545,7 @@ export default function App() {
               // Relative to the open: when the engine started and was ready.
               engineStartMs: engineTimings.startAt != null ? Math.round(engineTimings.startAt - bench.current.t0) : undefined,
               engineSteps: engineTimings.steps,
-              longTasks: { count: longTasks.count, maxMs: longTasks.maxMs, totalMs: longTasks.totalMs },
+              longTasks: { count: longTasks.count, maxMs: longTasks.maxMs, totalMs: longTasks.totalMs, recent: longTasks.recent },
               engineReadyMs: engineTimings.readyAt != null ? Math.round(engineTimings.readyAt - bench.current.t0) : undefined,
               processUptimeMs: startup,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
@@ -484,6 +555,30 @@ export default function App() {
             });
           };
           const benchView = await invoke<string | null>("bench_view").catch(() => null);
+          const benchReformat = await invoke<string | null>("bench_reformat").catch(() => null);
+          if (benchReformat === "coronal" || benchReformat === "sagittal" || benchReformat === "axial") {
+            // Quick reformat benchmark: the largest volume, one plane in cell 0;
+            // the report fires when that plane is on screen.
+            const target = built
+              .flatMap((st) => st.series)
+              .filter((sr) => sr.volumetric)
+              .sort((a, b) => b.imageIds.length - a.imageIds.length)[0];
+            if (target) {
+              bench.current.pendingVolume = report;
+              autoHung.current = false;
+              setCells((prev) => prev.map((v, i) => (i === 0 ? target.uid : v)));
+              setActiveCell(0);
+              setReformats({ 0: { uid: target.uid, plane: benchReformat } });
+              bench.current.marks.volumeSeriesImages = target.imageIds.length;
+              const limit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
+              window.setTimeout(() => {
+                if (!bench.current.pendingVolume) return;
+                bench.current.pendingVolume = undefined;
+                void report(true);
+              }, limit * 2);
+              return;
+            }
+          }
           if (benchView === "mpr" || benchView === "3d" || benchView === "fusion") {
             // Volume benchmark: switch view; the report fires when the volume is loaded.
             bench.current.pendingVolume = report;
@@ -651,8 +746,18 @@ export default function App() {
     let off: (() => void)[] = [];
     (async () => {
       const initial = await takeLaunchPaths();
-      if (initial.length) void openPaths(initial);
-      else if (await benchEnabled()) {
+      // A study on the command line: fetch and compile the engine while Rust
+      // scans (warm first slice on the HP was ~0.5 s, mostly engine start).
+      if (initial.length) {
+        prewarmEngine();
+        void openPaths(initial);
+      } else {
+        // Start screen: compile the engine in idle time so the first open does
+        // not pay for it (code only: no WebGL context, no decode workers).
+        const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+        window.setTimeout(() => (idle ? idle(() => prewarmEngine(), { timeout: 4000 }) : prewarmEngine()), 1500);
+      }
+      if (!initial.length && (await benchEnabled())) {
         // Cold-start probe: report once the start screen has painted.
         requestAnimationFrame(() =>
           requestAnimationFrame(async () => {
@@ -662,8 +767,10 @@ export default function App() {
             // ms − now() ≈ when the webview began loading the page: everything
             // before it is window + WebView2/WebKit start-up, after it is ours.
             const now = performance.now();
+            const marks = await invoke<Record<string, number | null>>("startup_marks").catch(() => ({}));
             await benchReport({
               coldStart: true,
+              ...marks,
               firstPaintMs: ms,
               webviewNavStartMs: Math.max(0, ms - now),
               jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs,
@@ -695,6 +802,12 @@ export default function App() {
   }, []);
 
   // ───────────── engine wiring ─────────────
+  // The cursor follows the left-button tool, however it was chosen (toolbar,
+  // shortcut, voice). Volume views set their own.
+  useEffect(() => {
+    if (view === "grid") setToolCursor(leftTool);
+  }, [leftTool, view]);
+
   useEffect(() => {
     if (!studies.length) return;
     let cancelled = false;
@@ -777,6 +890,51 @@ export default function App() {
     [activeCell]
   );
 
+  const reformatAt = (i: number) => {
+    const r = reformats[i];
+    return r && r.uid === cells[i] ? r : null;
+  };
+  const activeReformat = reformatAt(activeCell);
+  const setReformat = useCallback(
+    (plane: "axial" | "coronal" | "sagittal" | null, cell = activeCell) => {
+      const uid = cells[cell];
+      if (plane && !uid) return;
+      if (plane && !isTauri) {
+        toast({ title: "Reformat needs the desktop app", description: "Use MPR for coronal and sagittal planes here.", variant: "info" });
+        return;
+      }
+      slabCycle.current = "off";
+      setReformats((prev) => {
+        const next = { ...prev };
+        if (plane && uid) next[cell] = { uid, plane };
+        else delete next[cell];
+        return next;
+      });
+    },
+    [activeCell, cells, toast]
+  );
+
+  useEffect(() => {
+    onSeriesDrop((uid, cell) => {
+      showSeries(uid, cell);
+      setActiveCell(cell);
+    });
+    return () => onSeriesDrop(null);
+  }, [showSeries]);
+
+  const onAnnotationsDeleted = useCallback(
+    (count: number, scope: "one" | "image" | "series") => {
+      if (scope === "one") return;
+      toast({
+        title: `${count} annotation${count === 1 ? "" : "s"} deleted ${scope === "image" ? "from this image" : "from the series"}`,
+        description: `${keyLabel("Mod+Z")} brings ${count === 1 ? "it" : "them"} back.`,
+        variant: "info",
+      });
+    },
+    [toast]
+  );
+  const onCopied = useCallback((text: string) => toast({ title: "Copied", description: text, variant: "info", duration: 2500 }), [toast]);
+
   const applyPreset = useCallback(
     (preset: WindowPreset | null) => {
       const handle = activeHandle();
@@ -846,6 +1004,10 @@ export default function App() {
             setView("grid");
             return;
           }
+          if (activeReformat) {
+            setReformat(null);
+            return;
+          }
           if (distractionFree) setDistractionFree(false);
           if (maximized != null) setMaximized(null);
           if (isTauri) {
@@ -863,6 +1025,25 @@ export default function App() {
           return setLeftTool(action.tool);
         case "slice":
           return handle?.step(action.delta);
+        case "slicePage": {
+          const count = (activeSeriesUid && seriesByUid.get(activeSeriesUid)?.series.imageCount) || 10;
+          return handle?.step(action.dir * Math.max(1, Math.round(count / 10)));
+        }
+        case "reformat":
+          if (view !== "grid") setView("grid");
+          return setReformat(activeReformat?.plane === action.plane ? null : action.plane);
+        case "slabCycle": {
+          if (!activeReformat) {
+            toast({ title: "Slab works on a reformat or MPR", description: "Press Alt+C, Alt+S or Alt+A for a reformat, then T or Ctrl+wheel.", variant: "info" });
+            return;
+          }
+          const order = ["off", "mip", "minip", "avg"] as const;
+          slabCycle.current = order[(order.indexOf(slabCycle.current) + 1) % order.length];
+          return setSlabCommand((c) => ({ mode: slabCycle.current, seq: (c?.seq ?? 0) + 1 }));
+        }
+        case "slabThickness":
+          if (!activeReformat) return;
+          return setSlabCommand((c) => ({ deltaMm: action.deltaMm, seq: (c?.seq ?? 0) + 1 }));
         case "sliceEdge":
           return handle?.goTo(action.where);
         case "series": {
@@ -923,8 +1104,10 @@ export default function App() {
           return toggleView("3d");
         case "fusion":
           return toggleView("fusion");
+        case "redoAnnotation":
+          return void getEngine().then((e) => annotationHistory(e, "redo"));
         case "undoAnnotation":
-          return void getEngine().then(undoLastAnnotation);
+          return void getEngine().then((e) => annotationHistory(e, "undo"));
         case "clearAnnotations":
           return void getEngine().then((e) => clearAnnotations(e));
         default:
@@ -932,7 +1115,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, leftTool, toggleSync, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
+    [studies.length, leftTool, toggleSync, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
   );
 
   useEffect(() => {
@@ -942,14 +1125,14 @@ export default function App() {
       if (dialog) return;
       // Tab switches series only from the image; on a control it still moves focus.
       if (e.key === "Tab" && target && target !== document.body && target.closest("button, a, [role=menuitem], [tabindex]")) return;
-      const action = resolveShortcut(e);
+      const action = resolveShortcut(e, undefined, settings.shortcuts);
       if (!action) return;
       e.preventDefault();
       runAction(action);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runAction, dialog]);
+  }, [runAction, dialog, settings.shortcuts]);
 
   const goHome = useCallback(() => {
     openSeq.current += 1;
@@ -1058,6 +1241,7 @@ export default function App() {
           onOpen={(w) => void openDialog(w)}
           onHome={goHome}
           onUndo={() => runAction({ type: "undoAnnotation" })}
+          onRedo={() => runAction({ type: "redoAnnotation" })}
           onClear={() => runAction({ type: "clearAnnotations" })}
           onFullscreen={() => void toggleFullscreen()}
           onHelp={() => setDialog("help")}
@@ -1072,6 +1256,11 @@ export default function App() {
             onMpr: () => toggleView("mpr"),
             onVolume: () => toggleView("3d"),
             onFusion: () => toggleView("fusion"),
+            reformat: view === "grid" ? activeReformat?.plane ?? null : null,
+            onReformat: isTauri && settings.nativeMpr ? (plane) => {
+              if (view !== "grid") setView("grid");
+              setReformat(plane);
+            } : undefined,
           }}
         />
       )}
@@ -1124,6 +1313,7 @@ export default function App() {
             ) : view === "mpr" && isTauri && settings.nativeMpr && volumeSeries && nativeMprUnsupported !== volumeSeries.uid ? (
               <NativeMprView
                 series={volumeSeries}
+                initialSlab={benchSlab}
                 onExit={() => setView("grid")}
                 onUnsupported={() => setNativeMprUnsupported(volumeSeries.uid)}
                 onVolumeReady={(t) => {
@@ -1135,6 +1325,7 @@ export default function App() {
                   // (0.6.0 built in 0.36 s and never painted on the HP).
                   bench.current.marks.mprPaintedMs = t.ms;
                   bench.current.marks.mprPanes = t.maxLum;
+                  if (benchSlab) bench.current.marks.mprSlab = `${benchSlab.mode}:${benchSlab.mm}`;
                   const pending = bench.current.pendingVolume;
                   bench.current.pendingVolume = undefined;
                   void pending?.();
@@ -1187,6 +1378,31 @@ export default function App() {
               {gridCells.map((i) => {
                 const uid = cells[i];
                 const entry = uid ? seriesByUid.get(uid) : undefined;
+                const reformat = reformatAt(i);
+                if (reformat && entry)
+                  return (
+                    <NativePlaneView
+                      key={`r${i}`}
+                      series={entry.series}
+                      plane={reformat.plane}
+                      cellIndex={i}
+                      active={i === activeCell}
+                      dropHover={seriesDrag?.cell === i}
+                      onActivate={() => {
+                        autoHung.current = false;
+                        setActiveCell(i);
+                      }}
+                      onClose={() => setReformat(null, i)}
+                      slabCommand={i === activeCell ? slabCommand : undefined}
+                      initialSlab={benchSlab}
+                      onPainted={(t) => {
+                        bench.current.marks.reformat = { plane: reformat.plane, ms: Math.round(t.ms), maxLum: t.maxLum, slab: `${t.slab.mode}:${t.slab.mm}` };
+                        const pending = bench.current.pendingVolume;
+                        bench.current.pendingVolume = undefined;
+                        void pending?.();
+                      }}
+                    />
+                  );
                 return (
                   <StackViewport
                     key={i}
@@ -1194,7 +1410,9 @@ export default function App() {
                     viewportId={viewportIdFor(i)}
                     series={entry?.series ?? null}
                     study={entry?.study ?? null}
-                    active={i === activeCell && cells.length > 1}
+                    active={i === activeCell}
+                    cellIndex={i}
+                    dropHover={seriesDrag?.cell === i}
                     showOverlay={overlay}
                     hidePatient={settings.hidePatient}
                     growing={growing}
@@ -1206,6 +1424,9 @@ export default function App() {
                     onDoubleClick={() => cells.length > 1 && setMaximized((m) => (m == null ? i : null))}
                     onFirstPaint={onFirstPaint}
                     onPreview={onPreview}
+                    eraser={leftTool === "Eraser"}
+                    onAnnotationsDeleted={onAnnotationsDeleted}
+                    onCopied={onCopied}
                   />
                 );
               })}
@@ -1302,8 +1523,18 @@ export default function App() {
 
       <Suspense fallback={null}>
       {hud && <MemoryHud onClose={() => setHud(false)} />}
+      {seriesDrag && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed z-50 max-w-[240px] -translate-y-full truncate rounded-md border border-accent bg-elevated/95 px-2 py-1 text-xs font-medium text-primary shadow-lg"
+          // Dynamic position: follows the pointer.
+          style={{ left: seriesDrag.x + 12, top: seriesDrag.y - 8 }}
+        >
+          {seriesDrag.label}
+        </div>
+      )}
       {dialog === "help" && (
-      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} />
+      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.shortcuts} />
       )}
       {dialog === "window" && (
       <CustomWindowDialog

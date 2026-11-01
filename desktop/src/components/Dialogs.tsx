@@ -17,15 +17,15 @@ import {
   takeWheelSlices,
   type ScrollPreferences,
 } from "@flowrad/viewer-core";
-import { shortcutSheet } from "../shortcuts";
+import { conflictFor, keyLabel, keySpecOf, remappableBindings, shortcutSheet, type ShortcutOverrides } from "../shortcuts";
 import type { ViewerSettings } from "../settings";
 import { cacheUsage, clearCache, listMedia, type MediaVolume } from "../platform";
 
-export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const rows = shortcutSheet();
+export function ShortcutsDialog({ open, onClose, overrides }: { open: boolean; onClose: () => void; overrides?: ShortcutOverrides }) {
+  const rows = shortcutSheet(undefined, overrides);
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
-    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description="Mouse: left = selected tool · wheel = scroll · Ctrl+wheel = zoom · right drag = window/level · middle drag = pan · Shift+click = 3D cursor (link every viewport to that point)." size="xl">
+    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description="Mouse: left = selected tool · wheel = scroll · Ctrl+wheel = zoom (slab thickness in a reformat) · right drag = window/level · middle drag = pan · Shift+click = 3D cursor. Change keys in Settings." size="xl">
       <div className="grid max-h-[60vh] grid-cols-1 gap-x-8 gap-y-5 overflow-y-auto pr-1 md:grid-cols-2">
         {groups.map((group) => (
           <section key={group}>
@@ -34,8 +34,11 @@ export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () 
               {rows
                 .filter((r) => r.group === group)
                 .map((r) => (
-                  <div key={r.keys + r.does} className="flex items-baseline justify-between gap-4 text-sm">
-                    <dt className="text-secondary">{r.does}</dt>
+                  <div key={r.keys + r.does} className="flex items-baseline justify-between gap-4 text-sm" data-shortcut-row={r.does}>
+                    <dt className="text-secondary">
+                      {r.does}
+                      {r.custom && <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-accent">custom</span>}
+                    </dt>
                     <dd className="shrink-0">
                       <Kbd>{r.keys}</Kbd>
                     </dd>
@@ -379,6 +382,7 @@ export function SettingsDialog({
             </Button>
           </div>
         </section>
+        <ShortcutSettings overrides={settings.shortcuts} onChange={(shortcuts) => onChange({ shortcuts })} />
         {extra}
         <section className="pt-3 text-xs text-muted">
           <p>
@@ -389,5 +393,94 @@ export function SettingsDialog({
         </section>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Re-map shortcuts: "Change" listens for the next key combination (Esc
+ * cancels), a clash with another shortcut is shown and refused, and each row
+ * can go back to its default.
+ */
+function ShortcutSettings({ overrides, onChange }: { overrides: ShortcutOverrides; onChange: (next: Record<string, string>) => void }) {
+  const [recording, setRecording] = useState<string | null>(null);
+  const [problem, setProblem] = useState<{ id: string; text: string } | null>(null);
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Capture before the viewer's own handler and the modal's Esc.
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") return setRecording(null);
+      const spec = keySpecOf(e);
+      if (!spec) return;
+      const clash = conflictFor(spec, recording, overrides);
+      if (clash) {
+        setProblem({ id: recording, text: `${keyLabel(spec)} is already “${clash.does}”.` });
+        return setRecording(null);
+      }
+      setProblem(null);
+      onChange({ ...overrides, [recording]: spec });
+      setRecording(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording, overrides, onChange]);
+  const rows = remappableBindings();
+  const changed = Object.keys(overrides).length;
+  return (
+    <section className="py-3" aria-labelledby="shortcut-settings">
+      <div className="mb-1 flex items-center justify-between">
+        <h3 id="shortcut-settings" className="text-[11px] font-semibold uppercase tracking-wide text-muted">Keyboard shortcuts</h3>
+        {changed > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => onChange({})}>
+            Reset all
+          </Button>
+        )}
+      </div>
+      <ul className="flex flex-col">
+        {rows.map((b) => {
+          const id = b.id!;
+          const custom = overrides[id];
+          const listening = recording === id;
+          return (
+            <li key={id} className="flex items-center justify-between gap-3 py-1" data-shortcut-id={id}>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm text-secondary">{b.does}</span>
+                {problem?.id === id && (
+                  <span role="alert" className="block text-xs text-warning">
+                    {problem.text}
+                  </span>
+                )}
+              </span>
+              <Kbd>{listening ? "Press keys…" : keyLabel(custom ?? b.keys)}</Kbd>
+              <Button
+                size="sm"
+                variant={listening ? "primary" : "secondary"}
+                aria-label={`Change the shortcut for ${b.does}`}
+                onClick={() => {
+                  setProblem(null);
+                  setRecording(listening ? null : id);
+                }}
+              >
+                {listening ? "Cancel" : "Change"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!custom}
+                aria-label={`Restore the default shortcut for ${b.does}`}
+                onClick={() => {
+                  const next = { ...overrides };
+                  delete next[id];
+                  onChange(next);
+                }}
+              >
+                Default
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
