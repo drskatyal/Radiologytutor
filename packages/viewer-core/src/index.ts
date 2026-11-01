@@ -25,3 +25,4 @@ export * from "./windowPresets";
 export * from "./hangingProtocols";
 export * from "./positionSync";
 export * from "./curvedMpr";
+export * from "./volume3d";

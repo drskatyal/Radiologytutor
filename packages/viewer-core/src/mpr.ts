@@ -71,6 +71,13 @@ export interface MprSessionHandle {
   setRender: (mode: MprRender) => Promise<boolean>;
   /** Scroll one plane by `delta` slices (keyboard). */
   scrollPlane: (plane: MprPlane, delta: number) => void;
+  /** 3D view: volume rendering with `preset`, or a shaded iso-surface at `surfaceThreshold`. No-op before 3D is shown. */
+  setVolumeLook?: (preset: string, surfaceThreshold: number | null) => void;
+  /** 3D view: one cut plane, or none. `makePlane` builds the renderer's plane (vtk.js `vtkPlane.newInstance`). */
+  setCutPlane?: (
+    cut: { axis: "axial" | "coronal" | "sagittal"; fraction: number; flip?: boolean } | null,
+    makePlane: (p: { origin: [number, number, number]; normal: [number, number, number] }) => unknown
+  ) => void;
 }
 
 export type MprAction = "idle" | "teardown" | "mount" | "replace" | "fallback";

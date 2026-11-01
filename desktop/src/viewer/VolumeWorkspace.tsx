@@ -16,7 +16,17 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
-import { curvedMpr, mprVolumeId, type CurvedMprImage, type Point3 } from "@flowrad/viewer-core";
+import {
+  applyCutPlane,
+  applyVolumeLook,
+  curvedMpr,
+  mprVolumeId,
+  SURFACE_PRESETS,
+  type CurvedMprImage,
+  type CutAxis,
+  type Point3,
+} from "@flowrad/viewer-core";
+import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
 import { CurvedMprView } from "./CurvedMprView";
 import type { ViewerSeries, ViewerStudy } from "../types";
 import { formatPersonName } from "../study";
@@ -113,6 +123,11 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
   const [blend, setBlend] = useState<Blend>("composite");
   const [slab, setSlab] = useState(0);
   const [vrPreset, setVrPreset] = useState(series.modality === "MR" ? "MR-Default" : "CT-Bone");
+  /** 3D look: volume rendering (preset) or a shaded iso-surface at `threshold`. */
+  const [render3d, setRender3d] = useState<"volume" | "surface">("volume");
+  const [threshold, setThreshold] = useState(250);
+  /** Cut plane through the 3D view. */
+  const [cut, setCut] = useState<{ axis: CutAxis | "off"; fraction: number; flip: boolean }>({ axis: "off", fraction: 0.5, flip: false });
   const [colormap, setColormap] = useState("hsv");
   const [opacity, setOpacity] = useState(0.55);
   const [suvMax, setSuvMax] = useState(6);
@@ -312,18 +327,27 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
     }
   }, [ready, blend, slab, orthoIds, vp, ctVolumeId]);
 
-  // 3D preset.
+  // 3D look (preset volume rendering or shaded iso-surface) and cut plane:
+  // the shared viewer-core helpers, which the web viewer uses too.
   useEffect(() => {
     if (!ready) return;
     const v = vp("vol-3d");
     if (!v) return;
     try {
-      v.setProperties({ preset: vrPreset });
-      v.render();
+      applyVolumeLook(v, vrPreset, render3d === "surface" ? threshold : null);
     } catch {
       /* preset not applicable */
     }
-  }, [ready, vrPreset, vp]);
+  }, [ready, vrPreset, render3d, threshold, vp]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const v = vp("vol-3d");
+    if (!v) return;
+    applyCutPlane(v, cut.axis === "off" ? null : { axis: cut.axis, fraction: cut.fraction, flip: cut.flip }, (p) =>
+      vtkPlane.newInstance({ origin: p.origin, normal: p.normal })
+    );
+  }, [ready, cut, vp]);
 
   // Fusion overlay look.
   useEffect(() => {
@@ -587,6 +611,82 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
             </select>
           </label>
         )}
+        {panes.some((p) => p.kind === "3d") && (
+          <>
+            <label className="flex items-center gap-1.5 text-secondary">
+              Render
+              <select
+                value={render3d === "volume" ? "volume" : `surface:${threshold}`}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === "volume") setRender3d("volume");
+                  else {
+                    setRender3d("surface");
+                    setThreshold(Number(value.split(":")[1]));
+                  }
+                }}
+                aria-label="3D rendering: volume or surface"
+                className="h-7 rounded-md border border-subtle bg-elevated px-1 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <option value="volume">Volume</option>
+                {SURFACE_PRESETS.map((sp) => (
+                  <option key={sp.id} value={`surface:${sp.threshold}`}>
+                    Surface · {sp.label}
+                  </option>
+                ))}
+                {render3d === "surface" && !SURFACE_PRESETS.some((sp) => sp.threshold === threshold) && (
+                  <option value={`surface:${threshold}`}>Surface · {threshold} HU</option>
+                )}
+              </select>
+            </label>
+            {render3d === "surface" && (
+              <label className="flex items-center gap-1.5 text-secondary">
+                <input
+                  type="range"
+                  min={-1000}
+                  max={1500}
+                  step={10}
+                  value={threshold}
+                  onChange={(e) => setThreshold(Number(e.target.value))}
+                  aria-label="Surface threshold (HU)"
+                  className="w-24 accent-accent"
+                />
+                <span className="w-14 tabular-nums text-primary">{threshold} HU</span>
+              </label>
+            )}
+            <label className="flex items-center gap-1.5 text-secondary">
+              Cut
+              <select
+                value={cut.axis}
+                onChange={(e) => setCut((c) => ({ ...c, axis: e.target.value as CutAxis | "off" }))}
+                aria-label="Cut plane orientation"
+                className="h-7 rounded-md border border-subtle bg-elevated px-1 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <option value="off">Off</option>
+                <option value="axial">Axial</option>
+                <option value="coronal">Coronal</option>
+                <option value="sagittal">Sagittal</option>
+              </select>
+            </label>
+            {cut.axis !== "off" && (
+              <>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={cut.fraction}
+                  onChange={(e) => setCut((c) => ({ ...c, fraction: Number(e.target.value) }))}
+                  aria-label="Cut plane position"
+                  className="w-24 accent-accent"
+                />
+                <Button size="sm" variant="ghost" onClick={() => setCut((c) => ({ ...c, flip: !c.flip }))} aria-pressed={cut.flip}>
+                  Flip
+                </Button>
+              </>
+            )}
+          </>
+        )}
         {mode === "fusion" && (
           <>
             <label className="flex items-center gap-1.5 text-secondary">
@@ -709,7 +809,8 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
                   )}
                   {pane.kind === "3d" && (
                     <div className="absolute bottom-2 left-2">
-                      {vrPreset.replace(/-/g, " ")} · drag to rotate
+                      {render3d === "surface" ? `Surface ${threshold} HU` : vrPreset.replace(/-/g, " ")}
+                      {cut.axis !== "off" && ` · ${cut.axis} cut ${Math.round(cut.fraction * 100)}%${cut.flip ? " (flipped)" : ""}`} · drag to rotate
                     </div>
                   )}
                   {r?.edges && pane.kind === "ortho" && (

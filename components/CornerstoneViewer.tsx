@@ -181,6 +181,8 @@ import {
 } from "./viewer/ViewerToolbar";
 import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
 import { ViewerHelp } from "./viewer/ViewerHelp";
+import { SURFACE_PRESETS, type CutAxis } from "@flowrad/viewer-core";
+import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
 import {
   assessMpr,
   modalityForMpr,
@@ -763,6 +765,9 @@ export default function CornerstoneViewer({
   const [viewMode, setViewMode] = useState<MprMode>("stack");
   // Thin MPR, MIP slab or 3D once the volume is up (lib/mprSession.ts).
   const [mprRender, setMprRender] = useState<MprRender>("mpr");
+  // 3D look and cut plane (shared viewer-core helpers, same as FlowRad Viewer desktop).
+  const [surface3d, setSurface3d] = useState<number | null>(null);
+  const [cut3d, setCut3d] = useState<{ axis: CutAxis; fraction: number } | null>(null);
   const mprRenderRef = useRef<MprRender>("mpr");
   mprRenderRef.current = mprRender;
   // The plane the reader last touched; arrow keys scroll that one.
@@ -3040,6 +3045,14 @@ export default function CornerstoneViewer({
     };
   }, [mprRender, mprLive, flash]);
 
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session || mprRender !== "3d") return;
+    const ct = (modality ?? "").toUpperCase() === "CT";
+    session.setVolumeLook?.(ct ? "CT-Bone" : "MR-Default", surface3d);
+    session.setCutPlane?.(cut3d, (p) => vtkPlane.newInstance({ origin: p.origin, normal: p.normal }));
+  }, [surface3d, cut3d, mprRender, mprLive, modality]);
+
   // --- Cine ----------------------------------------------------------------
   // A cardiac loop, a dynamic contrast series and a fluoro run are unreadable
   // one frame at a time, and "spin the wheel fast" is not an answer
@@ -3487,6 +3500,52 @@ export default function CornerstoneViewer({
             framed={docked && !sharedBar && mprLive}
             render={mprRender}
             volume3dRef={volume3dRef}
+            volume3dControls={
+              <>
+                <label className="flex items-center gap-1">
+                  <span className="sr-only">3D rendering</span>
+                  <select
+                    value={surface3d == null ? "volume" : String(surface3d)}
+                    onChange={(e) => setSurface3d(e.target.value === "volume" ? null : Number(e.target.value))}
+                    className="rounded bg-black/60 px-1 py-0.5 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <option value="volume">Volume</option>
+                    {SURFACE_PRESETS.map((sp) => (
+                      <option key={sp.id} value={sp.threshold}>
+                        Surface · {sp.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="sr-only">Cut plane</span>
+                  <select
+                    value={cut3d?.axis ?? "off"}
+                    onChange={(e) =>
+                      setCut3d(e.target.value === "off" ? null : { axis: e.target.value as CutAxis, fraction: cut3d?.fraction ?? 0.5 })
+                    }
+                    className="rounded bg-black/60 px-1 py-0.5 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <option value="off">No cut</option>
+                    <option value="axial">Axial cut</option>
+                    <option value="coronal">Coronal cut</option>
+                    <option value="sagittal">Sagittal cut</option>
+                  </select>
+                </label>
+                {cut3d && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={cut3d.fraction}
+                    onChange={(e) => setCut3d({ ...cut3d, fraction: Number(e.target.value) })}
+                    aria-label="Cut plane position"
+                    className="w-20 accent-accent"
+                  />
+                )}
+              </>
+            }
             onPlanePointer={(plane) => {
               activePlaneRef.current = plane;
             }}
