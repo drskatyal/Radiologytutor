@@ -1,0 +1,64 @@
+# Web app checks on every PR that touches the web app or the shared viewer:
+# unit tests, the production build, and the viewer's visual-regression + perf
+# gate (e2e/visual, against a synthetic CT; no backend needed).
+name: web-ci
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "packages/**"
+      - "e2e/visual/**"
+      - "scripts/make-test-ct.py"
+      - "playwright.visual.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.*"
+      - "tailwind.config.ts"
+      - ".github/workflows/web-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build-visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Synthetic CT (deterministic)
+        run: |
+          pip install pydicom numpy
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
+      - name: Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Visual regression + first-image budget (desktop, tablet, phone, landscape)
+        env:
+          CI: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+        run: npx playwright test -c playwright.visual.config.ts
+      - name: Upload screenshots and samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
