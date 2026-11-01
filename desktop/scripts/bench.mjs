@@ -2,7 +2,8 @@
 // FlowRad Viewer benchmark harness.
 //
 //   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N]
-//   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5]
+//   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5] [--max-ms N]
+//   node desktop/scripts/bench.mjs interact <binary> <study-path> [--max-frame-p95-ms 16.7] [--max-dropped 0]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
 //   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N] [--max-settled-mb N]
@@ -156,6 +157,33 @@ async function benchColdStart(binary) {
       2
     )
   );
+  const budget = flag("max-ms", Infinity);
+  if (!(median(inProc) <= budget)) {
+    console.error(`cold-start gate failed: median first paint ${r0(median(inProc))} ms > ${budget} ms`);
+    process.exitCode = 1;
+  }
+}
+
+// Frame-time profile: open the study, then scroll 120 slices, zoom and drag
+// window/level one step per frame (desktop/src/viewer/frameProfile.ts).
+// Gate: input→render p95 within one 60 Hz frame and no dropped frames.
+async function benchInteract(binary, study) {
+  const maxP95 = flag("max-frame-p95-ms", Infinity);
+  const maxDropped = flag("max-dropped", Infinity);
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "interact" }));
+  const i = report.interaction;
+  if (!i) throw new Error("no interaction profile in the report");
+  const summary = { mode: "interact", study, ...i };
+  console.log(JSON.stringify(summary, null, 2));
+  const over = [];
+  for (const k of ["scroll", "zoom", "windowLevel"]) {
+    if (i[k].p95 > maxP95) over.push(`${k} p95 ${i[k].p95} ms > ${maxP95} ms`);
+  }
+  if (i.frames.over33 > maxDropped) over.push(`${i.frames.over33} dropped frames (> 33 ms) > ${maxDropped}`);
+  if (over.length) {
+    console.error(`frame-time gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
 }
 
 /**
@@ -365,6 +393,7 @@ async function benchMpr(binary, study) {
 }
 
 const modes = {
+  interact: () => benchInteract(positional[0], positional[1]),
   mpr: () => benchMpr(positional[0], positional[1]),
   desktop: () => benchDesktop(positional[0], positional[1]),
   coldstart: () => benchColdStart(positional[0]),
@@ -372,7 +401,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact …  (see header)");
   process.exit(2);
 }
 await modes[mode]();

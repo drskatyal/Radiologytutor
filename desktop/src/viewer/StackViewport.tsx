@@ -79,6 +79,11 @@ function StackViewportImpl({
   const [loading, setLoading] = useState(false);
   /** Series whose first Cornerstone frame is on screen; until then the preview shows. */
   const [paintedUid, setPaintedUid] = useState<string | null>(null);
+  // The series whose first paint has been verified. Kept apart from
+  // `sameSeries`: a streaming scan can grow the stack before the first
+  // setStack resolves, and that first check is then superseded, so growth
+  // must re-run it until one completes (or the bench never sees a paint).
+  const verifiedUidRef = useRef<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -280,12 +285,13 @@ function StackViewportImpl({
           }
         }
         vp.render();
-        if (!sameSeries) {
+        if (verifiedUidRef.current !== series.uid) {
           // Never call it painted until real pixels are on screen: a GPU path
           // that renders black (some drivers' 16-bit textures) falls back to
           // CPU rendering here instead of leaving the reader a black box.
           void verifyPainted(engineRef.current, vp, elementRef.current, ids, index).then((health) => {
-            if (loadedRef.current?.ids !== ids) return;
+            if (loadedRef.current?.ids !== ids || verifiedUidRef.current === series.uid) return;
+            verifiedUidRef.current = series.uid;
             onFirstPaint?.(performance.now() - started, health);
             setPaintedUid(series.uid);
           });
