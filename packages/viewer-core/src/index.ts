@@ -31,3 +31,5 @@ export * from "./volume3d";
 export * as annotationEditing from "./annotationEditing";
 export * from "./voiceCommands";
 export * from "./crossWindow";
+export * from "./contextMenu";
+export * from "./dicomTags";

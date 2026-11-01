@@ -50,6 +50,9 @@ import {
 import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import { imageMenu } from "@flowrad/viewer-core";
+import { shortcutForTool } from "../lib/viewerHotkeys";
+import dynamicImport from "next/dynamic";
 import type { VoiceState } from "./viewer/voice/voiceSession";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
@@ -221,6 +224,24 @@ function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrom
   if (chrome) return chrome;
   return showToolbar ? "dock" : "off";
 }
+
+/** The DICOM tags viewer loads on first use. */
+const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
+
+/** Tools in the right-click menu, in order. */
+const WEB_MENU_TOOLS = [
+  { id: "StackScroll", label: "Scroll" },
+  { id: "WindowLevel", label: "Window / level" },
+  { id: "Zoom", label: "Zoom" },
+  { id: "Pan", label: "Pan" },
+  { id: "Length", label: "Length" },
+  { id: "Angle", label: "Angle" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Eraser", label: "Eraser" },
+];
 
 const ANNOTATION_TOOL_NAMES = new Set(
   PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
@@ -3332,6 +3353,134 @@ export default function CornerstoneViewer({
     }
   };
 
+  // ── Right-click / long-press menu (shared @flowrad/viewer-core contextMenu) ──
+  const [tagsImageId, setTagsImageId] = useState<string | null>(null);
+  const [annotationsHidden, setAnnotationsHidden] = useState(false);
+  const webMenuShortcut = (command: string): string | undefined => {
+    const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
+    if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
+    if (head === "preset") {
+      if (arg === "auto") return "Shift+0";
+      const i = presets.findIndex((p) => p.id === arg);
+      return i >= 0 && i < 9 ? `Shift+${i + 1}` : undefined;
+    }
+    return ({ invert: "I", reset: "0", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
+  };
+  const webImageMenu = () =>
+    imageMenu({
+      modality,
+      tools: WEB_MENU_TOOLS,
+      activeTool,
+      presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
+      inverted,
+      links: { scroll: false, voi: false, zoom: false },
+      referenceLines: false,
+      overlay: overlay !== "off",
+      annotations: !annotationsHidden,
+      cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
+      slab: null,
+      layout: null,
+      can: { mpr: ready && sliceCount >= 3, copyImage: true, saveImage: true, tags: true, links: false },
+      shortcut: webMenuShortcut,
+    });
+  const viewportCanvas = () => elementRef.current?.querySelector("canvas") ?? null;
+  const runWebMenuCommand = (command: string) => {
+    const at = command.indexOf(":");
+    const head = at < 0 ? command : command.slice(0, at);
+    const arg = at < 0 ? "" : command.slice(at + 1);
+    const vp = viewportRef.current as unknown as {
+      resetCamera?: () => void;
+      setZoom?: (z: number) => void;
+      getCamera?: () => { flipHorizontal?: boolean; flipVertical?: boolean };
+      setCamera?: (c: Record<string, unknown>) => void;
+      getViewPresentation?: () => { rotation?: number };
+      setViewPresentation?: (p: Record<string, unknown>) => void;
+      getCurrentImageId?: () => string;
+      render?: () => void;
+    } | null;
+    switch (head) {
+      case "tool":
+        return runViewerAction({ type: "tool", tool: arg });
+      case "preset": {
+        if (arg === "auto") return runViewerAction({ type: "preset", ordinal: 0 });
+        const i = presets.findIndex((p) => p.id === arg);
+        return i >= 0 ? runViewerAction({ type: "preset", ordinal: i + 1 }) : undefined;
+      }
+      case "invert":
+      case "reset":
+      case "cine":
+      case "overlay":
+      case "mpr":
+        return runViewerAction({ type: head } as ViewerHotkeyAction);
+      case "zoom":
+        if (arg === "fit") vp?.resetCamera?.();
+        else vp?.setZoom?.(Number(arg));
+        return vp?.render?.();
+      case "rotate": {
+        const now = vp?.getViewPresentation?.()?.rotation ?? 0;
+        vp?.setViewPresentation?.({ rotation: (now + Number(arg) + 360) % 360 });
+        return vp?.render?.();
+      }
+      case "flip": {
+        const cam = vp?.getCamera?.() ?? {};
+        vp?.setCamera?.(arg === "v" ? { flipVertical: !cam.flipVertical } : { flipHorizontal: !cam.flipHorizontal });
+        return vp?.render?.();
+      }
+      case "fps":
+        return setCineFps(clampCineFps(Number(arg)));
+      case "annotations": {
+        const hide = !annotationsHidden;
+        setAnnotationsHidden(hide);
+        void import("@cornerstonejs/tools").then((t) => {
+          for (const a of t.annotation.state.getAllAnnotations()) if (a.annotationUID) t.annotation.visibility.setAnnotationVisibility(a.annotationUID, !hide);
+          vp?.render?.();
+        });
+        return flash(hide ? "Annotations hidden" : "Annotations shown");
+      }
+      case "copyImage": {
+        const canvas = viewportCanvas();
+        if (!canvas) return;
+        canvas.toBlob(async (blob) => {
+          try {
+            if (!blob || typeof ClipboardItem !== "function") throw new Error("unsupported");
+            await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+            flash("Image copied (pixels only)");
+          } catch {
+            flash("Copy not supported here: use Save as PNG");
+          }
+        }, "image/png");
+        return;
+      }
+      case "save": {
+        const canvas = viewportCanvas();
+        if (!canvas) return;
+        const type = arg === "jpeg" ? "image/jpeg" : "image/png";
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) return;
+            // Pixels only (no overlay text), and a name without patient details.
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `${(modality || "image").toLowerCase()}-image-${Date.now().toString(36)}.${arg === "jpeg" ? "jpg" : "png"}`;
+            a.click();
+            window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+            flash("Saved (anonymised)");
+          },
+          type,
+          0.92
+        );
+        return;
+      }
+      case "tags": {
+        const id = vp?.getCurrentImageId?.();
+        if (id) setTagsImageId(id);
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
   // ── Offline voice commands (components/viewer/voice) ──
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
   const voiceSessionRef = useRef<{ stop(): void } | null>(null);
@@ -3662,7 +3811,13 @@ export default function CornerstoneViewer({
             seriesImageIds={viewportRef.current?.getImageIds() ?? []}
             eraser={activeTool === "Eraser"}
             handleUndoKeys
+            imageMenu={webImageMenu}
+            onCommand={runWebMenuCommand}
+            menuShortcut={(id) => (id === "ann:delete" ? "Del" : undefined)}
           />
+        )}
+        {tagsImageId && (
+          <DicomTagsDialog open onClose={() => setTagsImageId(null)} imageId={tagsImageId} description={modality ? `${modality} · current image` : undefined} />
         )}
         {sliceScrollbar}
         {(viewMode === "mpr" || mprLive) && (

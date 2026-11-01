@@ -423,9 +423,14 @@ if (want("annotate")) {
   check("annotate: a length measurement draws", (await state()).onImage === 2);
   await page.keyboard.press("b");
   await page.mouse.click(...P(0.68, 0.3), { button: "right" });
-  const menu = page.getByRole("menu", { name: "Annotation" });
-  const menuOk = await menu.waitFor({ timeout: 3000 }).then(() => true, () => false);
-  const items = menuOk ? await menu.getByRole("menuitemradio").allInnerTexts() : [];
+  const menu = page.getByRole("menu", { name: /^(Annotation|Image)$/ });
+  const menuOk = await menu.waitFor({ timeout: 3000 }).then(
+    () => true,
+    () => false,
+  );
+  const items = menuOk
+    ? await menu.getByRole("menuitemradio").allInnerTexts()
+    : [];
   check(
     "annotate: right-click opens Delete / Copy value / Delete all",
     menuOk && ["Delete", "Copy value", "Delete all on this image", "Delete all in series"].every((l) => items.some((t) => t.startsWith(l))),
@@ -446,7 +451,8 @@ if (want("annotate")) {
   await settle(300);
   check("annotate: right-drag windows without opening the menu", !(await menu.isVisible().catch(() => false)));
 
-  await page.mouse.click(...P(0.12, 0.82), { button: "right" });
+  // Delete-all lives in the annotation's own menu: right-click one.
+  await page.mouse.click(...P(0.68, 0.3), { button: "right" });
   await menu.waitFor({ timeout: 3000 }).catch(() => undefined);
   await menu.getByRole("menuitemradio", { name: /^Delete all on this image/ }).click().catch(() => undefined);
   await settle();
@@ -462,8 +468,12 @@ if (want("annotate")) {
   await drag(P(0.3, 0.6), P(0.45, 0.6));
   await page.keyboard.press("b");
   s = await state();
-  check("annotate: series count spans images", s.inSeries === 3 && s.onImage === 1, JSON.stringify(s));
-  await page.mouse.click(...P(0.12, 0.82), { button: "right" });
+  check(
+    "annotate: series count spans images",
+    s.inSeries === 3 && s.onImage === 1,
+    JSON.stringify(s),
+  );
+  await page.mouse.click(...P(0.38, 0.6), { button: "right" });
   await menu.waitFor({ timeout: 3000 }).catch(() => undefined);
   const seriesItem = menu.getByRole("menuitemradio", { name: /^Delete all in series/ });
   const clicked = await seriesItem.click({ timeout: 3000 }).then(() => "clicked", (e) => String(e).split("\n")[0]);
@@ -698,10 +708,12 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     for (let k = 0; k < 5; k += 1) await page.keyboard.press("ArrowUp");
     const lines = popup.getByTestId("remote-reference-lines");
     const hasLine = await lines.waitFor({ timeout: 8000 }).then(() => true, () => false);
-    const y1 = await popup.locator('[data-testid="remote-reference-lines"] line').first().getAttribute("y1").catch(() => null);
+    const lineEl = popup.locator('[data-testid="remote-reference-lines"] line').first();
+    await lineEl.waitFor({ timeout: 5000 }).catch(() => undefined);
+    const y1 = await lineEl.getAttribute("y1", { timeout: 5000 }).catch(() => null);
     for (let k = 0; k < 30; k += 1) await page.keyboard.press("ArrowDown");
     await popup.waitForTimeout(800);
-    const y2 = await popup.locator('[data-testid="remote-reference-lines"] line').first().getAttribute("y1").catch(() => null);
+    const y2 = await lineEl.getAttribute("y1", { timeout: 5000 }).catch(() => null);
     check("multiwindow: the main window's slice shows as a reference line in the other window, and moves", hasLine && y1 != null && y2 != null && y1 !== y2, `${y1} → ${y2}`);
     await popup.screenshot({ path: shots ? path.join(shots, "multiwindow-second.png") : undefined }).catch(() => undefined);
 
@@ -712,6 +724,464 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
   }
 }
 
+// ── right-click menus: image, annotation, thumbnail (shared contextMenu.ts) ─
+if (want("contextmenu")) {
+  await focusImage();
+  await page.keyboard.press("Shift+Digit1"); // 1×1
+  await settle(400);
+  const b0 = await box(0);
+  const at = (fx, fy) => [b0.x + b0.width * fx, b0.y + b0.height * fy];
+  const imageMenu = page.getByRole("menu", { name: "Image" });
+  // Open latency: right-button release → menu in the DOM.
+  const openMs = await (async () => {
+    await page.evaluate(() => {
+      window.__menuT = null;
+      window.addEventListener("pointerup", (e) => e.button === 2 && (window.__menuT = performance.now()), { capture: true, once: true });
+      new MutationObserver((_, obs) => {
+        if (document.querySelector('[data-testid="viewer-context-menu"]')) {
+          obs.disconnect();
+          // Until the frame that shows it.
+          requestAnimationFrame(() => (window.__menuOpenMs = performance.now() - (window.__menuT ?? performance.now())));
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+    await page.mouse.click(...at(0.15, 0.15), { button: "right" });
+    await imageMenu.waitFor({ timeout: 3000 }).catch(() => undefined);
+    await page.waitForFunction(() => window.__menuOpenMs != null, null, { timeout: 2000 }).catch(() => undefined);
+    return page.evaluate(() => window.__menuOpenMs ?? null);
+  })();
+  check("contextmenu: right-click on the image opens the menu under 50 ms", openMs != null && openMs < 50, `${openMs?.toFixed?.(1)} ms`);
+  const top = (await imageMenu.locator(":scope > div > [role]").allInnerTexts()).map((t) => t.split("\n")[0]);
+  // Slab is drawn by the Rust core: the real app shows it, this browser build cannot.
+  const want = ["Tools", "Window / level", "Zoom, rotate, flip", "Reset view", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
+  check("contextmenu: every section of the spec is there", want.every((w) => top.includes(w)), top.join(" | "));
+  const kbds = await imageMenu.locator("kbd").count();
+  check("contextmenu: keyboard shortcuts are shown beside items", kbds >= 3, `${kbds} shortcuts`);
+  // Window / level submenu (built only when opened): pick Lung.
+  await imageMenu.getByRole("menuitem", { name: /^Window \/ level/ }).hover();
+  const wlSub = page.getByRole("menu").filter({ has: page.getByRole("menuitemradio", { name: /^Lung/ }) });
+  const subOk = await wlSub.waitFor({ timeout: 3000 }).then(() => true, () => false);
+  const lungKey = subOk ? await wlSub.getByRole("menuitemradio", { name: /^Lung/ }).locator("kbd").innerText().catch(() => "") : "";
+  check("contextmenu: the W/L submenu lists the CT presets with their keys", subOk && lungKey === "1", `Lung key "${lungKey}"`);
+  await shot("context-menu-image");
+  if (subOk) await wlSub.getByRole("menuitemradio", { name: /^Lung/ }).click();
+  await settle(400);
+  const wl = (await cell(0).innerText()).match(/W (\d+) · L (-?\d+)/);
+  check("contextmenu: choosing a preset applies it", !!wl && wl[1] === "1500" && wl[2] === "-600", wl?.[0] ?? "");
+
+  // Layout from the menu.
+  await page.mouse.click(...at(0.15, 0.15), { button: "right" });
+  await imageMenu.getByRole("menuitem", { name: /^Layout/ }).hover();
+  await page.getByRole("menuitemradio", { name: /^2 × 2/ }).click();
+  await settle(500);
+  check("contextmenu: Layout → 2 × 2 gives four panes", (await page.locator("[data-drop-cell]").count()) === 4);
+  await page.keyboard.press("Shift+Digit1");
+  await settle(400);
+
+  // DICOM tags viewer.
+  await page.mouse.click(...at(0.15, 0.15), { button: "right" });
+  await imageMenu.getByRole("menuitemradio", { name: /^DICOM tags/ }).click();
+  const tags = page.getByTestId("dicom-tags");
+  const tagsOk = await tags.locator("tbody tr").first().waitFor({ timeout: 8000 }).then(() => true, () => false);
+  const rows = tagsOk ? await tags.locator("tbody tr").count() : 0;
+  await page.getByRole("searchbox", { name: "Search tags" }).fill("0028,0010");
+  await settle(200);
+  const rowsTag = tagsOk ? await tags.locator("tbody tr").first().innerText() : "";
+  check("contextmenu: DICOM tags shows the header, searchable", tagsOk && rows > 20 && /Rows/.test(rowsTag) && /512|\d+/.test(rowsTag), `${rows} rows; ${rowsTag.replace(/\s+/g, " ")}`);
+  await shot("dicom-tags");
+  await page.keyboard.press("Escape");
+  await settle(300);
+
+  // Annotation: colour from its own menu.
+  await page.keyboard.press("m");
+  const p1 = at(0.55, 0.7);
+  const p2 = at(0.75, 0.7);
+  await page.mouse.move(...p1);
+  await page.mouse.down();
+  await page.mouse.move(...p2, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.press("b");
+  await settle(300);
+  const annMenu = page.getByRole("menu", { name: "Annotation" });
+  await page.mouse.click(...at(0.65, 0.7), { button: "right" });
+  const annOk = await annMenu.waitFor({ timeout: 3000 }).then(() => true, () => false);
+  const annItems = annOk ? (await annMenu.locator(":scope > div > [role]").allInnerTexts()).map((t) => t.split("\n")[0]) : [];
+  check("contextmenu: on an annotation its own items come first", annOk && ["Colour", "Copy value", "Delete", "Delete all on this image", "Delete all in series"].every((w) => annItems.includes(w)), annItems.slice(0, 7).join(" | "));
+  await shot("context-menu-annotation");
+  if (annOk) {
+    await annMenu.getByRole("menuitem", { name: /^Colour/ }).hover();
+    await page.getByRole("menuitemradio", { name: "Red" }).click();
+    await settle(400);
+  }
+  const red = await cell(0).evaluate((el) => [...el.querySelectorAll("svg [stroke]")].some((n) => /rgb\(239, 68, 68\)|#ef4444/i.test(n.getAttribute("stroke") ?? getComputedStyle(n).stroke)));
+  check("contextmenu: Colour → Red recolours the measurement", red);
+
+  // Thumbnail menu.
+  const card = page.locator('nav[aria-label="Series"] li button').first();
+  await card.click({ button: "right" });
+  const seriesMenu = page.getByRole("menu", { name: "Series" });
+  const thumbOk = await seriesMenu.waitFor({ timeout: 3000 }).then(() => true, () => false);
+  const thumbItems = thumbOk ? (await seriesMenu.getByRole("menuitemradio").allInnerTexts()).map((t) => t.split("\n")[0]) : [];
+  check("contextmenu: a thumbnail has open / new pane / quick reformat / info / hide", ["Open in active pane", "Open in a new layout pane", "Series info…", "Hide series"].every((w) => thumbItems.includes(w)), thumbItems.join(" | "));
+  await shot("context-menu-thumbnail");
+  if (thumbOk) await seriesMenu.getByRole("menuitemradio", { name: "Series info…" }).click();
+  const infoOk = await page.getByTestId("dicom-tags").waitFor({ timeout: 5000 }).then(() => true, () => false);
+  check("contextmenu: Series info opens with a summary", infoOk && /Images/.test(await page.getByRole("dialog").innerText().catch(() => "")));
+  await page.keyboard.press("Escape");
+  await settle(300);
+  const before = await page.locator('nav[aria-label="Series"] li button').count();
+  await page.locator('nav[aria-label="Series"] li button').last().click({ button: "right" });
+  await seriesMenu.waitFor({ timeout: 3000 }).catch(() => undefined);
+  await seriesMenu.getByRole("menuitemradio", { name: "Hide series" }).click().catch(() => undefined);
+  await settle(300);
+  const after = await page.locator('nav[aria-label="Series"] li button').count();
+  check("contextmenu: Hide series removes it from the list, Show all brings it back", after === before - 1, `${before} → ${after}`);
+  await page.getByRole("button", { name: "Show all" }).click().catch(() => undefined);
+  await settle(200);
+  check("contextmenu: Show all restores hidden series", (await page.locator('nav[aria-label="Series"] li button').count()) === before);
+}
+
+// ── MR/CT fusion with a blend slider. Run on CT + same-frame MR: --only fusion.
+if (want("fusion") && only?.includes("fusion")) {
+  await focusImage();
+  await page.keyboard.press("Control+Shift+F");
+  const title = page.getByText(/^(MR|PET) \/ CT fusion$/i).first();
+  const opened = await title.waitFor({ timeout: 60_000 }).then(
+    () => true,
+    () => false,
+  );
+  const isMr = /MR/i.test(await title.innerText().catch(() => ""));
+  check(`fusion: opens ${isMr ? "MR" : "PET"} / CT fusion`, opened);
+  if (!opened) await shot("fusion-not-open");
+  else {
+    const ready = await page
+      .waitForFunction(
+        () => !/Building volume/.test(document.body.innerText),
+        null,
+        { timeout: 120_000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+    await settle(800);
+    const lit = await page.evaluate(() =>
+      [...document.querySelectorAll("canvas")]
+        .filter((c) => c.width > 32 && c.height > 32)
+        .map((c) => {
+          const t = document.createElement("canvas");
+          t.width = 64;
+          t.height = 64;
+          const g = t.getContext("2d");
+          g.drawImage(c, 0, 0, 64, 64);
+          const d = g.getImageData(0, 0, 64, 64).data;
+          let n = 0;
+          for (let i = 0; i < d.length; i += 4)
+            if (d[i] + d[i + 1] + d[i + 2] > 30) n += 1;
+          return n;
+        }),
+    );
+    check(
+      "fusion: the fused planes finish loading and show pixels",
+      ready && lit.filter((n) => n > 100).length >= 3,
+      `lit pixels per pane ${lit.join(", ")}`,
+    );
+    const blend = async () =>
+      (
+        await page
+          .getByTestId("fusion-blend")
+          .first()
+          .innerText()
+          .catch(() => "")
+      ).trim();
+    const before = await blend();
+    const slider = page.getByRole("slider", { name: "Blend" });
+    await slider.focus();
+    for (let k = 0; k < 4; k += 1) await page.keyboard.press("ArrowRight");
+    await settle(400);
+    const after = await blend();
+    check(
+      "fusion: the blend slider changes the overlay opacity",
+      before !== after && /\d+%/.test(after),
+      `${before} → ${after}`,
+    );
+    const petControls = await page
+      .getByRole("slider", { name: /SUV max|^Max$/ })
+      .count();
+    check(
+      isMr
+        ? "fusion: no PET-only controls for an MR overlay"
+        : "fusion: PET has its SUV / max window control",
+      isMr ? petControls === 0 : petControls === 1,
+    );
+    await shot(isMr ? "fusion-mr-ct" : "fusion-pet-ct");
+  }
+}
+
+// ── cine: multiframe loops at their own rate, fps control, pause ─────────
+// Run on a multiframe study (fixtures/multiframe): --only cine.
+if (want("cine") && only?.includes("cine")) {
+  const status = async () =>
+    (await cell(0).innerText()).match(/▶ (\d+) fps/)?.[1];
+  const at = async () => (await imageNo(0))?.at;
+  await page.waitForTimeout(800);
+  const fps0 = await status();
+  check(
+    "cine: a multiframe loop starts playing at its recorded rate",
+    fps0 === "30",
+    `status ${fps0 ?? "paused"}`,
+  );
+  const a = await at();
+  await page.waitForTimeout(700);
+  const b = await at();
+  check(
+    "cine: frames advance while playing",
+    a != null && b != null && a !== b,
+    `${a} → ${b}`,
+  );
+  await focusImage();
+  await page.keyboard.press("Shift+BracketRight");
+  await settle(300);
+  check(
+    "cine: Shift+] raises the frame rate",
+    Number(await status()) > 30,
+    `status ${await status()}`,
+  );
+  await page.keyboard.press("Space");
+  await settle(300);
+  const c = await at();
+  await page.waitForTimeout(600);
+  check(
+    "cine: Space pauses",
+    c === (await at()) && !(await status()),
+    `${c} → ${await at()}`,
+  );
+  await shot("cine");
+}
+
+// ── export: key images (marked with *), cine video ──────────────────────
+if (want("export")) {
+  await focusImage();
+  await page.keyboard.press("Shift+Digit1");
+  await settle(500);
+  const b = await box(0);
+  await page.mouse.click(b.x + b.width * 0.92, b.y + b.height * 0.5);
+  await page.keyboard.press("Home");
+  for (let k = 0; k < 3; k += 1) {
+    await page.keyboard.press("Shift+Digit8"); // "*"
+    await settle(200);
+    if (k === 0)
+      check(
+        "export: * marks a key image (overlay)",
+        await cell(0)
+          .getByTestId("key-image-mark")
+          .isVisible()
+          .catch(() => false),
+      );
+    await page.keyboard.press("PageDown");
+    await settle(200);
+  }
+  const downloads = [];
+  page.on("download", (d) => downloads.push(d));
+  await page.keyboard.press("Control+e");
+  const dlg = page.getByRole("dialog", { name: /Export/ });
+  await dlg.waitFor();
+  const keysRadio = dlg.getByRole("radio", { name: /Key images/ });
+  check(
+    "export: the dialog counts the key images",
+    /3 marked/.test(await keysRadio.innerText()),
+    await keysRadio.innerText(),
+  );
+  await keysRadio.click();
+  await dlg.getByRole("button", { name: /^Export/ }).click();
+  await page.waitForTimeout(4000);
+  const pngs = [];
+  for (const d of downloads.splice(0))
+    pngs.push(await readFile(await d.path()));
+  check(
+    "export: three key images saved as PNG",
+    pngs.length === 3 &&
+      pngs.every((p) => p.subarray(1, 4).toString() === "PNG"),
+    `${pngs.length} files`,
+  );
+  await shot("export-keys");
+  // Cine video (MP4 where the system has H.264, else Motion-JPEG AVI), of the
+  // 60-image series (software GL renders each frame).
+  await page.keyboard.press("Escape").catch(() => undefined);
+  for (let k = 0; k < 3 && (await imageNo(0))?.of !== 60; k += 1) {
+    await page.keyboard.press("ArrowRight");
+    await page.waitForTimeout(1200);
+  }
+  await page.keyboard.press("Control+e").catch(() => undefined);
+  await dlg.waitFor().catch(() => undefined);
+  await dlg.getByRole("radio", { name: /^Video/ }).click();
+  await dlg.getByRole("button", { name: /^Export/ }).click();
+  const video = await page
+    .waitForEvent("download", { timeout: 180_000 })
+    .catch(() => null);
+  if (!video) {
+    await shot("export-video-missing");
+    console.error(
+      "toasts:",
+      await page
+        .locator("[role=status], [data-sonner-toast], li[role=status]")
+        .allInnerTexts()
+        .catch(() => []),
+    );
+    console.error("errors:", consoleErrors.slice(-5));
+  }
+  const bytes = video ? await readFile(await video.path()) : Buffer.alloc(0);
+  const container =
+    bytes.subarray(4, 8).toString() === "ftyp"
+      ? "mp4"
+      : bytes.subarray(0, 4).toString() === "RIFF"
+        ? "avi"
+        : "?";
+  check(
+    "export: the series exports as a cine video",
+    container !== "?" && bytes.length > 50_000,
+    `${container}, ${(bytes.length / 1e6).toFixed(1)} MB`,
+  );
+  await page.keyboard.press("Escape");
+  await settle(300);
+}
+
+// ── measurements: HU ROI, Cobb angle, spine labels across series ─────────
+if (want("measure")) {
+  const count = async (i) => (await imageNo(i))?.of;
+  await focusImage();
+  await page.keyboard.press("Shift+Digit2");
+  await page.waitForSelector('[data-drop-cell="1"]');
+  await settle(600);
+  const cards = page.locator('nav[aria-label="Series"] li button');
+  const cardWith = async (n) => {
+    for (let i = 0; i < (await cards.count()); i += 1)
+      if (
+        ((await cards.nth(i).innerText()).match(/\d+/g) ?? []).includes(
+          String(n),
+        )
+      )
+        return cards.nth(i);
+    return null;
+  };
+  const dragTo = async (card, target) => {
+    const cb = await card.boundingBox();
+    const tb = await box(target);
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, {
+      steps: 12,
+    });
+    await page.mouse.up();
+    await settle(1000);
+  };
+  if ((await count(0)) !== 300) await dragTo(await cardWith(300), 0);
+  const coronal = await cardWith(47);
+  if (coronal) await dragTo(coronal, 1);
+  const b0 = await box(0);
+  const P0 = (fx, fy) => [b0.x + b0.width * fx, b0.y + b0.height * fy];
+  await page.mouse.click(...P0(0.92, 0.5));
+  await page.keyboard.press("Home");
+  for (let k = 0; k < 4; k += 1) await page.keyboard.press("PageDown");
+  await settle(500);
+  const svgText = async (i) =>
+    await cell(i)
+      .locator("svg")
+      .evaluateAll((els) => els.map((e) => e.textContent ?? "").join(" "));
+  // Ellipse ROI: mean / SD in HU and area in mm².
+  await page.keyboard.press("e");
+  await page.mouse.move(...P0(0.45, 0.45));
+  await page.mouse.down();
+  await page.mouse.move(...P0(0.55, 0.55), { steps: 8 });
+  await page.mouse.up();
+  await settle(600);
+  const roi = await svgText(0);
+  check(
+    "measure: ellipse ROI shows mean and SD in HU, and area in mm²",
+    /HU/.test(roi) && /mm²|mm2/.test(roi) && /(Std|SD)/i.test(roi),
+    roi.slice(0, 160),
+  );
+  // Cobb angle: two lines.
+  await page.keyboard.press("c");
+  for (const [a, z] of [
+    [
+      [0.3, 0.3],
+      [0.5, 0.35],
+    ],
+    [
+      [0.3, 0.7],
+      [0.5, 0.6],
+    ],
+  ]) {
+    await page.mouse.move(...P0(...a));
+    await page.mouse.down();
+    await page.mouse.move(...P0(...z), { steps: 8 });
+    await page.mouse.up();
+    await settle(300);
+  }
+  await settle(400);
+  check(
+    "measure: Cobb angle shows degrees",
+    /\d+(\.\d+)?\s*°/.test(await svgText(0)),
+    (await svgText(0)).slice(0, 160),
+  );
+  await shot("measure-roi-cobb");
+  // Spine labels: where the axial slice is, on the coronal (its reference line).
+  await page.keyboard.press("b");
+  await page.keyboard.press("Control+F12");
+  await settle(600);
+  const line = await cell(1)
+    .locator("svg line")
+    .first()
+    .evaluate((l) => {
+      const r = l.getBoundingClientRect();
+      return { y: r.top + r.height / 2 };
+    })
+    .catch(() => null);
+  await page.keyboard.press("Control+F12");
+  await settle(300);
+  check(
+    "measure: the axial level is visible on the coronal (reference line)",
+    !!line,
+    String(line?.y),
+  );
+  if (line) {
+    const b1 = await box(1);
+    await page.keyboard.press("k");
+    await settle(300);
+    await cell(1)
+      .locator("#spine-start")
+      .selectOption("L3")
+      .catch(() => cell(0).locator("#spine-start").selectOption("L3"));
+    for (const dy of [0, 40, 80]) {
+      await page.mouse.click(b1.x + b1.width * 0.5, line.y + dy);
+      await settle(250);
+    }
+    await page.keyboard.press("b");
+    await settle(600);
+    const onCoronal = Number(
+      (await cell(1)
+        .getByTestId("spine-labels")
+        .getAttribute("data-count")
+        .catch(() => "0")) ?? 0,
+    );
+    const axialText = await cell(0)
+      .getByTestId("spine-labels")
+      .innerText()
+      .catch(() => "");
+    check(
+      "measure: three spine levels placed on the coronal",
+      onCoronal === 3,
+      `${onCoronal} on coronal`,
+    );
+    check(
+      "measure: the label propagates to the axial series at that level",
+      /L3/.test(axialText) && !/L5/.test(axialText),
+      axialText,
+    );
+    await shot("spine-labels");
+  }
+}
 
 // ── voice commands ──────────────────────────────────────────────────────
 if (want("voice")) {
