@@ -5,6 +5,12 @@
 // navigation → full quality: the slice on screen is the real 16-bit frame.
 // navigation → series ready: the active stack is scrollable (imageIds set).
 // Read them in DevTools → Performance, or in the console during a ~1000-image load.
+//
+// Privacy: the console lines carry timings and counts only — never a study,
+// series or instance UID, never a header value. The same viewer opens files
+// off a user's own disk (/viewer), where a UID is an identifier of a real
+// patient's study. Parameters that name a series exist for callers; they are
+// deliberately not printed.
 
 let navSeq = 0;
 
@@ -16,7 +22,8 @@ function canMark(): boolean {
 export function markViewerNavigation(seriesUID: string): string {
   const name = `radlearn:nav:${++navSeq}`;
   if (canMark()) performance.mark(name);
-  console.info("[radlearn] viewer navigation", { seriesUID });
+  void seriesUID;
+  console.info("[radlearn] viewer navigation");
   return name;
 }
 
@@ -35,7 +42,7 @@ export function markViewerFirstPixel(navMark: string, seriesUID: string): void {
   const end = `radlearn:first-pixel:${navMark}`;
   if (canMark()) performance.mark(end);
   const ms = measure("radlearn:navigation-to-first-pixel", navMark, end);
-  console.info("[radlearn] viewer first pixel", { seriesUID, ms });
+  console.info("[radlearn] viewer first pixel", { ms });
 }
 
 /** The active series has its full imageId stack. Scrolling can request any slice. */
@@ -43,7 +50,7 @@ export function markViewerSeriesReady(navMark: string, seriesUID: string, imageC
   const end = `radlearn:series-ready:${navMark}`;
   if (canMark()) performance.mark(end);
   const ms = measure("radlearn:navigation-to-series-ready", navMark, end);
-  console.info("[radlearn] viewer series ready", { seriesUID, imageCount, ms });
+  console.info("[radlearn] viewer series ready", { imageCount, ms });
 }
 
 /**
@@ -54,7 +61,7 @@ export function markViewerFirstPreview(navMark: string, seriesUID: string): void
   const end = `radlearn:first-preview:${navMark}`;
   if (canMark()) performance.mark(end);
   const ms = measure("radlearn:navigation-to-first-preview", navMark, end);
-  console.info("[radlearn] viewer first preview", { seriesUID, ms });
+  console.info("[radlearn] viewer first preview", { ms });
 }
 
 /**
@@ -70,5 +77,5 @@ export function markViewerFullQuality(
   const end = `radlearn:full-quality:${navMark}`;
   if (canMark()) performance.mark(end);
   const ms = measure("radlearn:navigation-to-full-quality", navMark, end);
-  console.info("[radlearn] viewer full quality", { seriesUID, source, ms });
+  console.info("[radlearn] viewer full quality", { source, ms });
 }
