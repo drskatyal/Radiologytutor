@@ -7,6 +7,8 @@ export interface EmptyStateProps {
   /** Primary action(s) — typically a Button. */
   action?: React.ReactNode;
   className?: string;
+  /** `imaging`: on a pure-black reading-room surface (the free viewer). */
+  tone?: "default" | "imaging";
 }
 
 /** Composed getting started view. Flat surface, no glow. */
@@ -16,11 +18,14 @@ export function EmptyState({
   description,
   action,
   className,
+  tone = "default",
 }: EmptyStateProps) {
+  const imaging = tone === "imaging";
   return (
     <div
       className={cn(
-        "flex flex-col items-start rounded-2xl border border-subtle bg-surface p-8 text-left",
+        "flex flex-col items-start rounded-2xl border p-8 text-left",
+        imaging ? "border-white/10 bg-white/[0.03]" : "border-subtle bg-surface",
         className
       )}
     >
@@ -29,9 +34,9 @@ export function EmptyState({
           {icon}
         </div>
       )}
-      <h3 className="text-base font-semibold tracking-tight text-primary text-balance">{title}</h3>
+      <h3 className={cn("text-base font-semibold tracking-tight text-balance", imaging ? "text-white" : "text-primary")}>{title}</h3>
       {description && (
-        <p className="mt-2 max-w-[65ch] text-sm text-secondary text-pretty">{description}</p>
+        <p className={cn("mt-2 max-w-[65ch] text-sm text-pretty", imaging ? "text-white/70" : "text-secondary")}>{description}</p>
       )}
       {action && <div className="mt-6">{action}</div>}
     </div>
