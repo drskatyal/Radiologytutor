@@ -16,7 +16,20 @@ export type ViewerSource =
    * query and no URL to template. `key` identifies the stack so the viewer can
    * tell one local series from another without comparing a 1200-id array.
    */
-  | { kind: "imageIds"; key: string; imageIds: string[] };
+  | {
+      kind: "imageIds";
+      key: string;
+      imageIds: string[];
+      /**
+       * Progressive open (the free local viewer). `imageIds` is what can paint
+       * NOW — usually one slice — and `full` resolves with the whole ordered
+       * stack once every header is parsed. The viewer paints the preview, then
+       * swaps to the full stack in place (no remount), keeping the slice on
+       * screen. Keep the source object stable across the swap: `viewerSourceKey`
+       * includes the preview length.
+       */
+      full?: Promise<{ imageIds: string[]; openIndex: number }>;
+    };
 
 // Bundled open sample: pydicom's emri_small (MR, 10 frames, uncompressed),
 // served from /public — no backend, no CORS. Tiny (64x64), just to prove our
