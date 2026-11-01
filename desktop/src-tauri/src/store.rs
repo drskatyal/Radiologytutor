@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use tauri::Manager;
 
-const HISTORY_CAP: usize = 100;
+const HISTORY_CAP: usize = 1000;
 
 fn data_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
