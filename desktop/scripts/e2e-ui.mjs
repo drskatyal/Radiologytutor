@@ -28,6 +28,10 @@ const flag = (name) => {
 };
 const only = flag("only")?.split(",");
 const shots = flag("shots");
+// Voice: a WAV of spoken commands for Chromium's fake microphone (CI makes it
+// with espeak-ng); --require-voice fails instead of skipping without a model.
+const voiceWav = flag("voice-wav");
+const requireVoice = args.includes("--require-voice");
 if (!study) {
   console.error("usage: e2e-ui.mjs <study-dir> [--only a,b] [--shots dir]");
   process.exit(2);
@@ -64,9 +68,18 @@ const port = server.address().port;
 const { chromium } = createRequire(import.meta.url)("playwright");
 const browser = await chromium.launch({
   executablePath: process.env.PW_CHROMIUM || undefined,
-  args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
+  args: [
+    "--enable-unsafe-swiftshader",
+    "--use-angle=swiftshader",
+    "--use-fake-ui-for-media-stream",
+    "--use-fake-device-for-media-stream",
+    ...(voiceWav ? [`--use-file-for-fake-audio-capture=${path.resolve(voiceWav)}`] : []),
+  ],
 });
-const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] });
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write", "microphone"] });
+// Voice must load nothing until the mic is switched on.
+const voiceRequests = [];
+context.on("request", (r) => /\/assets\/vosk-|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
 const page = await context.newPage();
 const consoleErrors = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
@@ -465,6 +478,48 @@ if (want("annotate")) {
   await page.keyboard.press("Escape");
   await settle();
   check("annotate: Esc leaves the eraser", (await page.evaluate(() => document.body.dataset.toolCursor)) === "scroll");
+}
+
+// ── voice commands ──────────────────────────────────────────────────────
+if (want("voice")) {
+  const hasModel = existsSync(path.join(dist, "voice", "model.tar.gz"));
+  if (!hasModel || !voiceWav) {
+    const why = !hasModel ? "no voice model in this build (scripts/fetch-voice-model.py)" : "no --voice-wav";
+    if (requireVoice) check("voice: model and spoken commands available", false, why);
+    else console.error(`SKIP  voice: ${why}`);
+  } else {
+    check("voice: nothing loaded before the mic is switched on", voiceRequests.length === 0, voiceRequests.join(" "));
+    const workersBefore = page.workers().length;
+    await focusImage();
+    await page.keyboard.press("Shift+Digit1");
+    await settle(400);
+    const mic = page.getByRole("button", { name: /^Voice commands/ });
+    await mic.click();
+    await page.waitForFunction(() => !!document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 60_000 }).catch(() => undefined);
+    const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
+    check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
+    check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
+    // The WAV says: "layout two", "lung window", "zoom in" (looped by Chromium).
+    const heard = new Set();
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline && heard.size < 3) {
+      const chip = await page.getByTestId("voice-heard").innerText().catch(() => "");
+      if (chip) heard.add(chip.replace(/[“”]/g, ""));
+      const cells = await page.locator("[data-drop-cell]").count();
+      const wl = (await cell(0).innerText().catch(() => "")).match(/W (\d+) · L (-?\d+)/);
+      if (cells === 2) heard.add("layout two ✓");
+      if (wl && Number(wl[1]) === 1500 && Number(wl[2]) === -600) heard.add("lung window ✓");
+      await page.waitForTimeout(250);
+    }
+    check("voice: “layout two” switches to two viewports", heard.has("layout two ✓"), [...heard].join(" | "));
+    check("voice: “lung window” applies the lung preset", heard.has("lung window ✓"), [...heard].join(" | "));
+    check("voice: what was heard is shown", [...heard].some((h) => /layout|lung|zoom/.test(h) && !h.includes("✓")), [...heard].join(" | "));
+    await shot("voice-listening");
+    await page.keyboard.press("Control+Shift+V");
+    await page.waitForFunction(() => !document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 10_000 }).catch(() => undefined);
+    await settle(800);
+    check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
+  }
 }
 
 const unexpected = consoleErrors.filter((e) => !/favicon|DevTools|GPU stall|WebGL|Failed to load resource/i.test(e));

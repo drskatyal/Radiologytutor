@@ -49,6 +49,8 @@ import {
 import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import type { VoiceState } from "./viewer/voice/voiceSession";
+import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
   prefetchImageIndexes,
@@ -120,7 +122,7 @@ import {
   type CineWrap,
 } from "../lib/cinePlayer";
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
-import { isTextTarget, resolveViewerHotkey } from "../lib/viewerHotkeys";
+import { isTextTarget, resolveViewerHotkey, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
 import {
   OVERLAY_STORAGE_KEY,
   nextOverlayDensity,
@@ -3153,6 +3155,12 @@ export default function CornerstoneViewer({
     const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp });
     if (!action) return;
     event.preventDefault();
+    if (action.type === "help") event.stopPropagation();
+    runViewerAction(action);
+  };
+
+  /** One viewer action, from a key or a voice command. */
+  const runViewerAction = (action: ViewerHotkeyAction) => {
     switch (action.type) {
       case "tool":
         if (!ready) return;
@@ -3243,11 +3251,79 @@ export default function CornerstoneViewer({
         if (onCycleLayout) onCycleLayout();
         return;
       case "help":
-        event.stopPropagation();
         setHelpOpen((open) => !open);
         return;
     }
   };
+
+  // ── Offline voice commands (components/viewer/voice) ──
+  const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
+  const voiceSessionRef = useRef<{ stop(): void } | null>(null);
+  // Client-only (the server render has no microphone API): no hydration mismatch.
+  const [canVoice, setCanVoice] = useState(false);
+  useEffect(() => setCanVoice(typeof navigator.mediaDevices?.getUserMedia === "function"), []);
+  const voiceActionRef = useRef<(a: VoiceAction) => void>(() => undefined);
+  voiceActionRef.current = (a: VoiceAction) => {
+    switch (a.type) {
+      case "series": {
+        if (!series?.length || !onSeriesChangeRef.current) return;
+        const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
+        if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
+        return;
+      }
+      case "slice":
+        return runViewerAction({ type: "slice", delta: a.delta });
+      case "page":
+        return runViewerAction({ type: "slice", delta: a.dir * Math.max(1, Math.round(sliceCount / 10)) });
+      case "zoom":
+        return runViewerAction({ type: "zoom", factor: a.factor });
+      case "tool":
+        return runViewerAction({ type: "tool", tool: a.tool });
+      case "reset":
+        return runViewerAction({ type: "reset" });
+      case "invert":
+        return runViewerAction({ type: "invert" });
+      case "mpr":
+      case "volume3d":
+        return runViewerAction({ type: "mpr" });
+      case "layout":
+        return runViewerAction({ type: "layout" });
+      case "preset": {
+        const want = a.name === "abdomen" ? /abdom|soft/i : new RegExp(a.name, "i");
+        const at = presets.findIndex((p) => want.test(p.label) || want.test(p.id));
+        if (at < 0) return flash(`No ${a.name} window for this series`);
+        return runViewerAction({ type: "preset", ordinal: at + 1 });
+      }
+      case "slab":
+      case "slabThickness":
+        return flash("Slabs are in the desktop viewer");
+      case "stop":
+        voiceSessionRef.current?.stop();
+        return;
+    }
+  };
+  const toggleVoice = async () => {
+    if (voiceSessionRef.current || voice.state === "loading") {
+      voiceSessionRef.current?.stop();
+      voiceSessionRef.current = null;
+      return;
+    }
+    const { startVoice } = await import("./viewer/voice/voiceSession");
+    voiceSessionRef.current = await startVoice({
+      modelUrl: "/voice/model.tar.gz",
+      onAction: (action, heard) => {
+        flash(`“${heard}”`);
+        voiceActionRef.current(action);
+      },
+      onUnrecognized: (heard) => flash(`“${heard}” ?`),
+      onState: (state, detail) => {
+        setVoice({ state });
+        if (state === "error" && detail) flash(detail);
+        if (state === "off" || state === "error") voiceSessionRef.current = null;
+      },
+    });
+  };
+  useEffect(() => () => voiceSessionRef.current?.stop(), []);
 
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
@@ -3325,6 +3401,7 @@ export default function CornerstoneViewer({
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
       onHelp={() => setHelpOpen((open) => !open)}
+      voice={canVoice ? { state: voice.state, onToggle: () => void toggleVoice() } : undefined}
     />
   );
 

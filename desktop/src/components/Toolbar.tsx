@@ -3,6 +3,9 @@
 
 import { useState, type ReactNode } from "react";
 import {
+  Loader2,
+  Mic,
+  MicOff,
   Eraser,
   Redo2,
   ArrowUpRight,
@@ -78,6 +81,8 @@ export interface ToolbarProps {
   onCineFps: (fps: number) => void;
   onOpen: (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => void;
   onHome: () => void;
+  /** Offline voice commands: the mic toggle (absent where unavailable). */
+  voice?: { state: "off" | "loading" | "listening" | "error"; heard?: string | null; onToggle: () => void };
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
@@ -444,6 +449,26 @@ export function Toolbar(props: ToolbarProps) {
           <Tool label="Export" shortcut={keyLabel("Mod+E")} onClick={props.onExport}>
             <Download />
           </Tool>
+        )}
+        {props.voice && (
+          <span className="relative flex items-center">
+            <Tool
+              label={props.voice.state === "listening" ? "Voice commands on — click to stop" : props.voice.state === "loading" ? "Starting voice commands…" : "Voice commands"}
+              shortcut={keyLabel("Mod+Shift+V")}
+              active={props.voice.state === "listening"}
+              onClick={props.voice.onToggle}
+            >
+              {props.voice.state === "loading" ? <Loader2 className="animate-spin" /> : props.voice.state === "listening" ? <Mic /> : <MicOff />}
+            </Tool>
+            {props.voice.state === "listening" && (
+              <span aria-hidden className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-accent-foreground" />
+            )}
+            {props.voice.heard && (
+              <span role="status" aria-live="polite" data-testid="voice-heard" className="pointer-events-none absolute right-0 top-9 z-50 whitespace-nowrap rounded-md bg-elevated px-2 py-1 text-[11px] text-secondary shadow-lg">
+                “{props.voice.heard}”
+              </span>
+            )}
+          </span>
         )}
         <Tool label={props.overlay ? "Hide overlay" : "Show overlay"} shortcut={keyLabel("Mod+Shift+F12")} active={!props.overlay} onClick={props.onToggleOverlay}>
           {props.overlay ? <Eye /> : <EyeOff />}
