@@ -11,12 +11,13 @@
 // as slices decode. One volume is held at a time (`holdVolumes`).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Crosshair, Hand, RotateCcw, Ruler, Circle, SunMedium, ZoomIn, Pipette, ArrowLeft } from "lucide-react";
+import { Crosshair, Hand, RotateCcw, Ruler, Circle, SunMedium, ZoomIn, Pipette, ArrowLeft, Spline } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
-import { mprVolumeId } from "@/lib/mpr";
+import { curvedMpr, mprVolumeId, type CurvedMprImage, type Point3 } from "@flowrad/viewer-core";
+import { CurvedMprView } from "./CurvedMprView";
 import type { ViewerSeries, ViewerStudy } from "../types";
 import { formatPersonName } from "../study";
 import {
@@ -119,6 +120,10 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
   /** Raw PET (no dose tags): keep the auto window until the reader sets one. */
   const [maxTouched, setMaxTouched] = useState(false);
   const [leftTool, setLeftTool] = useState("Crosshairs");
+  // Curved MPR: click a centreline on an MPR plane; Enter / double-click builds it.
+  const [curveMode, setCurveMode] = useState(false);
+  const [curve, setCurve] = useState<{ paneId: string; points: Point3[] } | null>(null);
+  const [cpr, setCpr] = useState<{ image: CurvedMprImage; ww: number; wc: number; stepMm: number } | null>(null);
   const [readouts, setReadouts] = useState<Record<string, PaneReadout>>({});
   const presets = windowPresetsFor(series.modality);
 
@@ -375,6 +380,71 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
     engineRef.current?.renderingEngine.renderViewports(orthoIds);
   };
 
+  const addCurvePoint = (event: React.PointerEvent, paneId: string) => {
+    const v = vp(paneId);
+    const el = elements.current[paneId];
+    if (!v?.canvasToWorld || !el) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const rect = el.getBoundingClientRect();
+    const world = v.canvasToWorld([event.clientX - rect.left, event.clientY - rect.top]) as number[];
+    setCurve((c) => ({
+      paneId,
+      points: [...(c && c.paneId === paneId ? c.points : []), [world[0], world[1], world[2]] as Point3],
+    }));
+  };
+
+  const buildCurve = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine || !curve || curve.points.length < 2) return;
+    const volume = engine.core.cache.getVolume(ctVolumeId) as unknown as {
+      imageData: { worldToIndex: (w: number[]) => number[]; getDimensions: () => number[]; getSpacing: () => number[] };
+      voxelManager: { getAtIJK: (i: number, j: number, k: number) => number };
+    };
+    const camera = vp(curve.paneId)?.getCamera?.();
+    if (!volume?.imageData || !camera?.viewPlaneNormal) return;
+    const dims = volume.imageData.getDimensions();
+    const spacing = volume.imageData.getSpacing();
+    const stepMm = Math.max(0.3, Math.min(spacing[0], spacing[1], spacing[2]));
+    const sample = (w: Point3) => {
+      const [i, j, k] = volume.imageData.worldToIndex([w[0], w[1], w[2]]).map(Math.round);
+      if (i < 0 || j < 0 || k < 0 || i >= dims[0] || j >= dims[1] || k >= dims[2]) return Number.NaN;
+      return volume.voxelManager.getAtIJK(i, j, k);
+    };
+    const image = curvedMpr({
+      points: curve.points,
+      normal: camera.viewPlaneNormal as Point3,
+      halfHeightMm: 40,
+      stepMm,
+      sample,
+    });
+    const r = readouts[curve.paneId];
+    setCpr({ image, ww: r?.ww ?? 400, wc: r?.wc ?? 40, stepMm });
+    setCurveMode(false);
+  }, [curve, ctVolumeId, vp, readouts]);
+
+  useEffect(() => {
+    if (!curveMode && !cpr) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && curveMode) {
+        e.preventDefault();
+        buildCurve();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (cpr) setCpr(null);
+        else {
+          setCurveMode(false);
+          setCurve(null);
+        }
+      } else if (e.key === "Backspace" && curveMode) {
+        setCurve((c) => (c ? { ...c, points: c.points.slice(0, -1) } : c));
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [curveMode, cpr, buildCurve]);
+
   const reset = () => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -435,6 +505,21 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
                 {t.icon}
               </IconButton>
             ))}
+            {mode === "mpr" && (
+              <IconButton
+                aria-label="Curved MPR: click points along a structure on any plane, then Enter"
+                title="Curved MPR · click points along the structure, Enter to build, Backspace to undo, Esc to cancel"
+                size="sm"
+                aria-pressed={curveMode}
+                onClick={() => {
+                  setCurveMode((on) => !on);
+                  setCurve(null);
+                }}
+                className={cn("h-7 w-7 rounded-md", curveMode && "bg-accent text-accent-foreground hover:bg-accent")}
+              >
+                <Spline />
+              </IconButton>
+            )}
             <span aria-hidden className="h-5 w-px bg-subtle" />
             <label className="flex items-center gap-1.5 text-secondary">
               Slab
@@ -557,7 +642,34 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
         {panes.map((pane) => {
           const r = readouts[pane.id];
           return (
-            <div key={pane.id} className="relative overflow-hidden bg-imaging" onContextMenu={(e) => e.preventDefault()}>
+            <div
+              key={pane.id}
+              className={cn("relative overflow-hidden bg-imaging", curveMode && pane.kind === "ortho" && !pane.petMip && "cursor-crosshair")}
+              onContextMenu={(e) => e.preventDefault()}
+              onPointerDownCapture={(e) => {
+                if (curveMode && e.button === 0 && pane.kind === "ortho" && !pane.petMip) addCurvePoint(e, pane.id);
+              }}
+              onDoubleClick={() => curveMode && buildCurve()}
+            >
+              {curve?.paneId === pane.id && curve.points.length > 0 && (
+                <svg aria-hidden className="pointer-events-none absolute inset-0 z-[1] h-full w-full">
+                  {(() => {
+                    const v = vp(pane.id);
+                    const pts = curve.points.map((p) => (v?.worldToCanvas ? (v.worldToCanvas(p) as number[]) : [0, 0]));
+                    return (
+                      <>
+                        <polyline points={pts.map(([x, y]) => `${x},${y}`).join(" ")} className="fill-none stroke-warning [stroke-width:2]" />
+                        {pts.map(([x, y], i) => (
+                          <circle key={i} cx={x} cy={y} r={3} className="fill-warning" />
+                        ))}
+                      </>
+                    );
+                  })()}
+                </svg>
+              )}
+              {cpr && pane.kind === "3d" && (
+                <CurvedMprView image={cpr.image} ww={cpr.ww} wc={cpr.wc} stepMm={cpr.stepMm} onClose={() => setCpr(null)} />
+              )}
               <div
                 ref={(el) => {
                   elements.current[pane.id] = el;

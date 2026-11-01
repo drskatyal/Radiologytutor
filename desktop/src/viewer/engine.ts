@@ -15,9 +15,10 @@ import {
   imageCacheBytes,
   retrievalPoolSizes,
   webWorkerCount,
-} from "@/lib/viewerRuntime";
-import { tuneStackScrollTool } from "@/lib/scrollSensitivity";
+} from "@flowrad/viewer-core";
+import { tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
+import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
 const DESKTOP_CACHE_BUDGET = 1024 * 1024 * 1024;
@@ -289,9 +290,118 @@ export function ensureSynchronizer(engine: Engine, kind: SyncKind) {
   const { synchronizers, SynchronizerManager } = engine.tools;
   const existing = SynchronizerManager.getSynchronizer(SYNC_IDS[kind]);
   if (existing) return existing;
-  if (kind === "slice") return synchronizers.createImageSliceSynchronizer(SYNC_IDS[kind]);
+  if (kind === "slice") {
+    // Anatomy, not slice number: nearest slice by patient position (+ prior
+    // registration offset); stack fraction when positions are missing.
+    return engine.tools.SynchronizerManager.createSynchronizer(
+      SYNC_IDS[kind],
+      engine.core.Enums.Events.STACK_NEW_IMAGE,
+      (_sync: unknown, source: ViewportRef, target: ViewportRef) => syncSlice(engine, source, target)
+    );
+  }
   if (kind === "voi") return synchronizers.createVOISynchronizer(SYNC_IDS[kind], { syncInvertState: true, syncColormap: false });
   return synchronizers.createZoomPanSynchronizer(SYNC_IDS[kind]);
+}
+
+type ViewportRef = { renderingEngineId: string; viewportId: string };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyViewport = any;
+
+/** Registration offsets (mm) by a stack's first imageId: prior studies. */
+const stackOffsets = new Map<string, number>();
+export function setStackOffset(firstImageId: string, offsetMm: number | null): void {
+  if (offsetMm == null) stackOffsets.delete(firstImageId);
+  else stackOffsets.set(firstImageId, offsetMm);
+}
+
+/**
+ * Slice geometry by imageId, from the shell's header scan. Cornerstone's
+ * metadata only knows slices it has already loaded, so sync and the 3D
+ * cursor read positions from here (every slice, from the moment of opening).
+ */
+const geometry = new Map<string, { ipp?: readonly number[]; iop?: readonly number[] }>();
+export function registerGeometry(imageIds: readonly string[], planes: readonly { imagePositionPatient?: readonly number[]; imageOrientationPatient?: readonly number[] }[]): void {
+  imageIds.forEach((id, i) => geometry.set(id, { ipp: planes[i]?.imagePositionPatient, iop: planes[i]?.imageOrientationPatient }));
+}
+
+const syncStacks = new WeakMap<readonly string[], SyncStack>();
+function syncStackOf(engine: Engine, vp: AnyViewport): SyncStack | null {
+  const ids: string[] | undefined = vp?.getImageIds?.();
+  if (!ids?.length) return null;
+  let stack = syncStacks.get(ids);
+  if (!stack) {
+    const planes = ids.map((id) => {
+      const known = geometry.get(id);
+      if (known?.ipp) return known;
+      const m = engine.core.metaData.get("imagePlaneModule", id) as { imagePositionPatient?: number[]; rowCosines?: number[]; columnCosines?: number[] } | undefined;
+      return { ipp: m?.imagePositionPatient, iop: m?.rowCosines && m?.columnCosines ? [...m.rowCosines, ...m.columnCosines] : undefined };
+    });
+    const normal = sliceNormalOf(planes.find((p) => p.iop)?.iop);
+    stack = {
+      positions: normal ? positionsAlong(planes.map((p) => p.ipp), normal) : ids.map(() => Number.NaN),
+      normal,
+    };
+    // Cache only complete geometry; a partial one is rebuilt next time.
+    if (stack.positions.every(Number.isFinite)) syncStacks.set(ids, stack);
+  }
+  return { ...stack, offsetMm: stackOffsets.get(ids[0]) ?? 0 };
+}
+
+function syncSlice(engine: Engine, source: ViewportRef, target: ViewportRef): void {
+  const re = engine.renderingEngine;
+  const s = re.getViewport(source.viewportId);
+  const t = re.getViewport(target.viewportId);
+  const sStack = syncStackOf(engine, s);
+  const tStack = syncStackOf(engine, t);
+  if (!sStack || !tStack) return;
+  const index = syncTargetIndex(sStack, s.getCurrentImageIdIndex(), tStack);
+  if (index >= 0 && index !== t.getCurrentImageIdIndex()) void t.setImageIdIndex(index);
+}
+
+/**
+ * "Link at the current position": treat what each viewport shows right now as
+ * the same anatomy. Sets each stack's registration offset relative to
+ * `referenceId`, so turning sync on after lining a prior up by eye keeps them
+ * aligned (the standard PACS way to register a follow-up).
+ */
+export function linkStacksAtCurrent(engine: Engine, viewportIds: string[], referenceId: string): void {
+  const re = engine.renderingEngine;
+  const ref = re.getViewport(referenceId) as AnyViewport;
+  const refStack = syncStackOf(engine, ref);
+  if (!refStack) return;
+  const zRef = refStack.positions[ref.getCurrentImageIdIndex()] + (refStack.offsetMm ?? 0);
+  if (!Number.isFinite(zRef)) return;
+  for (const id of viewportIds) {
+    if (id === referenceId) continue;
+    const vp = re.getViewport(id) as AnyViewport;
+    const stack = syncStackOf(engine, vp);
+    const z = stack?.positions[vp.getCurrentImageIdIndex()];
+    const first = vp?.getImageIds?.()[0];
+    if (!first || !Number.isFinite(z)) continue;
+    setStackOffset(first, zRef - (z as number));
+  }
+}
+
+/**
+ * 3D cursor: send every other stack viewport in the same frame of reference
+ * to the slice nearest `world` (mm, patient). Returns how many moved.
+ */
+export function jumpTo3dPoint(engine: Engine, sourceViewportId: string, world: readonly number[]): number {
+  const source = engine.renderingEngine.getViewport(sourceViewportId);
+  const frame = source?.getFrameOfReferenceUID?.();
+  let moved = 0;
+  for (const vp of engine.renderingEngine.getViewports() as AnyViewport[]) {
+    if (vp.id === sourceViewportId || !vp.getImageIds || vp.getFrameOfReferenceUID?.() !== frame) continue;
+    const stack = syncStackOf(engine, vp);
+    if (!stack?.normal || !stack.positions.some(Number.isFinite)) continue;
+    const z = world[0] * stack.normal[0] + world[1] * stack.normal[1] + world[2] * stack.normal[2];
+    const index = nearestIndex(stack.positions, z);
+    if (index >= 0 && index !== vp.getCurrentImageIdIndex()) {
+      void vp.setImageIdIndex(index);
+      moved += 1;
+    }
+  }
+  return moved;
 }
 
 /** Put exactly `viewportIds` in the synchronizer (or none when disabled). */
