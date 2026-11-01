@@ -15,6 +15,8 @@
 //   4. CR / DX / MG / XA single images: the views side by side (up to 4).
 //   5. Anything else: null — the app keeps its default.
 
+import type { LocalStudy } from "./localStudy";
+
 export type Orientation = "axial" | "coronal" | "sagittal" | "oblique";
 
 export interface HpSeries {
@@ -239,4 +241,33 @@ export function chooseHangingProtocol(studies: readonly HpStudy[]): HangingPlan 
   const study = studies[0];
   if (!study) return null;
   return ctPlan(study) ?? mrPlan(study) ?? projectionPlan(study);
+}
+
+/** Adapter for studies grouped by `localStudy` (the web local viewer, browser files). */
+export function hpStudyFromLocal(study: LocalStudy): HpStudy {
+  return {
+    uid: study.studyInstanceUID,
+    date: study.studyDate,
+    series: study.series.map((series) => {
+      const first = series.instances[0];
+      const zs = series.instances.map((i) => i.imagePositionPatient?.[2]).filter((z): z is number => Number.isFinite(z));
+      return {
+        uid: series.seriesInstanceUID,
+        modality: series.modality ?? "",
+        description: series.description ?? "",
+        imageCount: series.imageCount,
+        number: series.seriesNumber,
+        orientation: orientationOf(first?.imageOrientationPatient),
+        zRange: zs.length ? ([Math.min(...zs), Math.max(...zs)] as [number, number]) : undefined,
+      };
+    }),
+  };
+}
+
+/** Index of the series a protocol would put first, for single-viewport viewers (0 when none applies). */
+export function primarySeriesIndexByProtocol(study: LocalStudy): number {
+  const plan = chooseHangingProtocol([hpStudyFromLocal(study)]);
+  const uid = plan?.cells[0];
+  const i = uid ? study.series.findIndex((s) => s.seriesInstanceUID === uid) : -1;
+  return i < 0 ? 0 : i;
 }

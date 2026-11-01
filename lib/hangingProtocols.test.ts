@@ -97,3 +97,16 @@ test("similarity and offset helpers", () => {
 test("unknown modality keeps the app default", () => {
   assert.equal(chooseHangingProtocol([{ uid: "x", series: [s("a", "SR", "Report", 1)] }]), null);
 });
+
+test("local-study adapter: a single-viewport viewer opens on the protocol's primary series", async () => {
+  const { primarySeriesIndexByProtocol } = await import("../packages/viewer-core/src/hangingProtocols");
+  const inst = (z: number) => ({ imagePositionPatient: [0, 0, z], imageOrientationPatient: [1, 0, 0, 0, 1, 0] });
+  const study = {
+    studyInstanceUID: "s", studyDate: "20260101", imageCount: 0,
+    series: [
+      { seriesInstanceUID: "scout", studyInstanceUID: "s", modality: "CT", description: "Topogram", imageCount: 1, instances: [inst(0)] },
+      { seriesInstanceUID: "ax", studyInstanceUID: "s", modality: "CT", description: "Abdomen 1.0", imageCount: 200, instances: [inst(0), inst(1)] },
+    ],
+  };
+  assert.equal(primarySeriesIndexByProtocol(study as never), 1);
+});
