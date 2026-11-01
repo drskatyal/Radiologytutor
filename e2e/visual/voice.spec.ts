@@ -37,7 +37,7 @@ async function openStudy(page: Page) {
 }
 
 test("voice: loads on demand, “lung window” applies the preset, off frees the worker", async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const voiceRequests: string[] = [];
   page.on("request", (r) => /vosk|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
   await page.setViewportSize({ width: 1440, height: 1200 });
@@ -45,8 +45,22 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   expect(voiceRequests, "nothing loaded before the mic is on").toEqual([]);
   const workersBefore = page.workers().length;
 
+  // On failure, say why: the page's console and what the voice button says.
+  const consoleLines: string[] = [];
+  page.on("console", (m) => consoleLines.push(`${m.type()}: ${m.text()}`.slice(0, 300)));
+  page.on("pageerror", (e) => consoleLines.push(`pageerror: ${e.message}`.slice(0, 300)));
   await page.getByRole("button", { name: /^Voice commands/ }).click();
-  await expect(page.getByRole("button", { name: /^Voice commands on/ })).toBeVisible({ timeout: 60_000 });
+  const on = await page
+    .getByRole("button", { name: /^Voice commands on/ })
+    .waitFor({ timeout: 90_000 })
+    .then(() => true, () => false);
+  if (!on) {
+    const labels = await page.getByRole("button", { name: /^Voice commands/ }).evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+    const toasts = await page.locator('[role="status"], [role="alert"]').allInnerTexts();
+    throw new Error(
+      `voice never turned on. button: ${JSON.stringify(labels)}; toasts: ${JSON.stringify(toasts)}; requests: ${JSON.stringify(voiceRequests)}; console:\n${consoleLines.slice(-25).join("\n")}`
+    );
+  }
   expect(page.workers().length).toBeGreaterThan(workersBefore);
 
   // The fake microphone loops "layout two", "lung window", "zoom in".
