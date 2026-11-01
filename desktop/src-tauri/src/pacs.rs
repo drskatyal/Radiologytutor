@@ -440,6 +440,153 @@ fn dimse_move(host: &str, port: u16, called: &str, calling: &str, local_port: u1
     result
 }
 
+// ─────────────────────────── C-STORE (send) ───────────────────────────
+
+const UNCOMPRESSED: [&str; 2] = ["1.2.840.10008.1.2.1", "1.2.840.10008.1.2"];
+/// Native pixel data we can always re-encode into an UNCOMPRESSED syntax
+/// (deflate and big endian are wrappers many PACS do not accept).
+const REENCODABLE: [&str; 4] = ["1.2.840.10008.1.2.1", "1.2.840.10008.1.2", "1.2.840.10008.1.2.1.99", "1.2.840.10008.1.2.2"];
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendSummary {
+    pub sent: usize,
+    pub failed: usize,
+    /// First few problems, for the reader (not every instance).
+    pub errors: Vec<String>,
+}
+
+impl SendSummary {
+    fn fail(&mut self, msg: String) {
+        self.failed += 1;
+        if self.errors.len() < 5 {
+            self.errors.push(msg);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SendProgress {
+    sent: usize,
+    total: usize,
+}
+
+/// SOP Class and Transfer Syntax from a file's meta header (reads ~1 KB).
+fn file_meta(path: &Path) -> Option<(String, String)> {
+    let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut preamble = [0u8; 128];
+    f.read_exact(&mut preamble).ok()?;
+    let meta = dicom_object::meta::FileMetaTable::from_reader(f).ok()?;
+    let clean = |s: &str| s.trim_end_matches(|c: char| c == '\0' || c.is_whitespace()).to_string();
+    Some((clean(meta.media_storage_sop_class_uid()), clean(meta.transfer_syntax())))
+}
+
+/// Presentation contexts to propose. The acceptor picks ONE transfer syntax per
+/// context, so each compressed syntax a file uses gets its own context (sent
+/// as-is, never transcoded), plus one uncompressed context per SOP class that
+/// native files (incl. deflated / big endian) are re-encoded into, losslessly.
+fn store_contexts(metas: &[Option<(String, String)>]) -> Vec<(String, Vec<String>)> {
+    let mut by_class: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = std::collections::BTreeMap::new();
+    for (class, ts) in metas.iter().flatten() {
+        by_class.entry(class.clone()).or_default().insert(ts.clone());
+    }
+    let mut out = Vec::new();
+    for (class, syntaxes) in by_class {
+        for ts in syntaxes.iter().filter(|t| !REENCODABLE.contains(&t.as_str())) {
+            out.push((class.clone(), vec![ts.clone()]));
+        }
+        out.push((class, UNCOMPRESSED.iter().map(|t| t.to_string()).collect()));
+    }
+    out
+}
+
+fn dimse_store(host: &str, port: u16, called: &str, calling: &str, files: &[PathBuf], on_progress: &dyn Fn(usize, usize)) -> Result<SendSummary, String> {
+    let metas: Vec<Option<(String, String)>> = files.iter().map(|f| file_meta(f)).collect();
+    let contexts = store_contexts(&metas);
+    if contexts.is_empty() {
+        return Err("None of these files is a DICOM instance that can be sent.".into());
+    }
+    if contexts.len() > 127 {
+        return Err(format!("{} object type / encoding combinations in one send; a DICOM association allows 127.", contexts.len()));
+    }
+    let mut options = ClientAssociationOptions::new()
+        .calling_ae_title(calling.to_string())
+        .called_ae_title(called.to_string())
+        .connection_timeout(Duration::from_secs(8))
+        .read_timeout(Duration::from_secs(60));
+    for (class, ts) in &contexts {
+        options = options.with_presentation_context(class.clone(), ts.clone());
+    }
+    let mut scu = options
+        .establish_with(&format!("{host}:{port}"))
+        .map_err(|e| format!("Could not associate with {called}@{host}:{port}: {e}"))?;
+    let accepted: Vec<_> = scu
+        .presentation_contexts()
+        .iter()
+        .filter(|pc| pc.reason == dicom_ul::pdu::PresentationContextResultReason::Acceptance)
+        .cloned()
+        .collect();
+
+    let total = files.len();
+    let mut summary = SendSummary::default();
+    for (i, (path, meta)) in files.iter().zip(&metas).enumerate() {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some((class, file_ts)) = meta else {
+            summary.fail(format!("{name}: not a DICOM file"));
+            continue;
+        };
+        // Same transfer syntax if the PACS took it, else re-encode uncompressed data.
+        let pc = accepted
+            .iter()
+            .find(|pc| &pc.abstract_syntax == class && &pc.transfer_syntax == file_ts)
+            .or_else(|| {
+                REENCODABLE
+                    .contains(&file_ts.as_str())
+                    .then(|| accepted.iter().find(|pc| &pc.abstract_syntax == class && UNCOMPRESSED.contains(&pc.transfer_syntax.as_str())))
+                    .flatten()
+            });
+        let Some(pc) = pc else {
+            summary.fail(format!("{name}: the PACS does not accept this object type ({class}) in transfer syntax {file_ts}"));
+            continue;
+        };
+        let result = (|| -> Result<u16, String> {
+            let obj = dicom_object::OpenFileOptions::new().open_file(path).map_err(err("read"))?;
+            let sop_instance = text(&obj, tags::SOP_INSTANCE_UID).ok_or("no SOP Instance UID")?;
+            let ts = TransferSyntaxRegistry.get(&pc.transfer_syntax).ok_or("unknown transfer syntax")?;
+            let mut data = Vec::new();
+            obj.write_dataset_with_ts(&mut data, ts).map_err(err("encode"))?;
+            let msg_id = (i % 0xFFFF) as u16 + 1;
+            let cmd = command(0x0001, class, msg_id, true, vec![DataElement::new(tags::AFFECTED_SOP_INSTANCE_UID, VR::UI, PrimitiveValue::from(sop_instance.as_str()))]);
+            send_command(&mut scu, pc.id, &cmd, None)?;
+            {
+                use std::io::Write;
+                let mut w = scu.send_pdata(pc.id);
+                w.write_all(&data).map_err(err("send"))?;
+                w.finish().map_err(err("send"))?;
+            }
+            let (rsp, _) = receive_response(&mut scu, ts)?;
+            status_of(&rsp).ok_or_else(|| "no status in the response".to_string())
+        })();
+        match result {
+            // 0xB000/0xB007/0xB006: stored with warnings (coercion etc.).
+            Ok(0) | Ok(0xB000) | Ok(0xB006) | Ok(0xB007) => summary.sent += 1,
+            Ok(status) => summary.fail(format!("{name}: the PACS refused it (status 0x{status:04X})")),
+            Err(e) => {
+                summary.fail(format!("{name}: {e}"));
+                // The association is unusable after a transport error.
+                if e.starts_with("send") || e.starts_with("response") {
+                    summary.failed += total - i - 1;
+                    break;
+                }
+            }
+        }
+        on_progress(summary.sent + summary.failed, total);
+    }
+    let _ = scu.release();
+    Ok(summary)
+}
+
 // ───────────────────────────── DICOMweb ─────────────────────────────
 
 fn web_client() -> Result<reqwest::Client, String> {
@@ -592,6 +739,79 @@ async fn web_retrieve(app: &tauri::AppHandle, url: &str, node: &PacsNode, study_
     Ok(got)
 }
 
+/// Multipart body for STOW-RS: each file is one application/dicom part.
+fn stow_body(boundary: &str, parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(parts.iter().map(|p| p.len() + 96).sum());
+    for part in parts {
+        body.extend_from_slice(format!("--{boundary}\r\nContent-Type: application/dicom\r\n\r\n").as_bytes());
+        body.extend_from_slice(part);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// STOW-RS in batches (≤ 32 files or ~48 MB per request).
+async fn web_store(app: &tauri::AppHandle, url: &str, node: &PacsNode, files: &[PathBuf]) -> Result<SendSummary, String> {
+    let client = web_client()?;
+    let boundary = format!("flowrad-{:x}", std::process::id() as u64 ^ 0x5eed_cafe);
+    let total = files.len();
+    let mut summary = SendSummary::default();
+    let mut batch: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut size = 0usize;
+    let mut i = 0;
+    while i <= files.len() {
+        let flush = i == files.len() || batch.len() >= 32 || size > 48 * 1024 * 1024;
+        if flush && !batch.is_empty() {
+            let parts: Vec<Vec<u8>> = batch.iter().map(|(_, b)| b.clone()).collect();
+            let n = batch.len();
+            let rsp = authed(client.post(format!("{url}/studies")), node)
+                .header("Content-Type", format!("multipart/related; type=\"application/dicom\"; boundary={boundary}"))
+                .header("Accept", "application/dicom+json")
+                .body(stow_body(&boundary, &parts))
+                .send()
+                .await;
+            match rsp {
+                Ok(r) if r.status().as_u16() == 200 => summary.sent += n,
+                // 202: some stored. The response lists failures; count them as failed.
+                Ok(r) if r.status().as_u16() == 202 => {
+                    let body: Value = r.json().await.unwrap_or(Value::Null);
+                    let failed = body.get("00081198").and_then(|v| v.get("Value")).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0).min(n);
+                    summary.sent += n - failed;
+                    for _ in 0..failed {
+                        summary.fail("the server refused an instance (STOW-RS 202)".into());
+                    }
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    for (name, _) in &batch {
+                        summary.fail(format!("{name}: HTTP {status}"));
+                    }
+                }
+                Err(e) => return Err(format!("Could not reach {url}: {e}")),
+            }
+            let _ = app.emit("pacs-send-progress", SendProgress { sent: summary.sent + summary.failed, total });
+            batch.clear();
+            size = 0;
+        }
+        if i == files.len() {
+            break;
+        }
+        let path = &files[i];
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match std::fs::read(path) {
+            Ok(bytes) if bytes.len() > 132 && &bytes[128..132] == b"DICM" => {
+                size += bytes.len();
+                batch.push((name, bytes));
+            }
+            Ok(_) => summary.fail(format!("{name}: not a DICOM Part 10 file")),
+            Err(e) => summary.fail(format!("{name}: {e}")),
+        }
+        i += 1;
+    }
+    Ok(summary)
+}
+
 // ───────────────────────────── commands ─────────────────────────────
 
 #[tauri::command]
@@ -654,6 +874,28 @@ pub async fn pacs_retrieve(app: tauri::AppHandle, node: PacsNode, study_uid: Str
     Ok(dest.to_string_lossy().into_owned())
 }
 
+/// Send files (an open study) to a PACS: C-STORE, or STOW-RS for DICOMweb.
+#[tauri::command]
+pub async fn pacs_send(app: tauri::AppHandle, node: PacsNode, files: Vec<String>) -> Result<SendSummary, String> {
+    let files: Vec<PathBuf> = files.into_iter().map(PathBuf::from).collect();
+    if files.is_empty() {
+        return Err("Nothing to send.".into());
+    }
+    match node {
+        PacsNode::Dimse { host, port, called_ae, calling_ae, .. } => {
+            let app2 = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                dimse_store(&host, port, &called_ae, &calling_ae, &files, &|sent, total| {
+                    let _ = app2.emit("pacs-send-progress", SendProgress { sent, total });
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        PacsNode::Dicomweb { ref url, .. } => web_store(&app, url.trim_end_matches('/'), &node, &files).await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +928,83 @@ mod tests {
         let body = b"--abc\r\nContent-Type: application/dicom\r\n\r\nDICMDATA\r\n--abc--\r\n";
         assert_eq!(first_multipart_part("multipart/related; type=\"application/dicom\"; boundary=abc", body).unwrap(), b"DICMDATA");
         assert_eq!(first_multipart_part("multipart/related; boundary=\"abc\"", body).unwrap(), b"DICMDATA");
+    }
+
+    #[test]
+    fn store_contexts_one_per_compressed_syntax_plus_uncompressed() {
+        let ct = "1.2.840.10008.5.1.4.1.1.2".to_string();
+        let mr = "1.2.840.10008.5.1.4.1.1.4".to_string();
+        let jpeg = "1.2.840.10008.1.2.4.70".to_string();
+        let deflate = "1.2.840.10008.1.2.1.99".to_string();
+        let metas = vec![Some((ct.clone(), jpeg.clone())), Some((ct.clone(), UNCOMPRESSED[0].into())), Some((mr.clone(), UNCOMPRESSED[1].into())), Some((mr.clone(), deflate)), None];
+        let ctx = store_contexts(&metas);
+        let plain: Vec<String> = UNCOMPRESSED.iter().map(|t| t.to_string()).collect();
+        assert_eq!(ctx, vec![(ct.clone(), vec![jpeg]), (ct, plain.clone()), (mr, plain)]);
+    }
+
+    #[test]
+    fn stow_body_is_well_formed_multipart() {
+        let body = stow_body("b1", &[b"AAA".to_vec(), b"BB".to_vec()]);
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text, "--b1\r\nContent-Type: application/dicom\r\n\r\nAAA\r\n--b1\r\nContent-Type: application/dicom\r\n\r\nBB\r\n--b1--\r\n");
+        assert_eq!(first_multipart_part("multipart/related; boundary=b1", text.as_bytes()).unwrap(), b"AAA");
+    }
+
+    fn walk_files(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() { out.extend(walk_files(&p)) } else { out.push(p) }
+        }
+        out
+    }
+
+    /// C-STORE round trip against our own storage SCP (no external PACS needed).
+    #[test]
+    fn c_store_round_trip_through_local_scp() {
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let src = std::path::Path::new(&root).join("ct-phantom/axial-5mm");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&src).unwrap().flatten().map(|e| e.path()).take(5).collect();
+        // Every transfer syntax fixture goes as-is (the SCP accepts them all): no transcoding.
+        let ts_files: Vec<PathBuf> = walk_files(&std::path::Path::new(&root).join("ts")).into_iter().filter(|p| file_meta(p).is_some()).collect();
+        let expected = files.len() + ts_files.len();
+        files.extend(ts_files);
+        let dest = std::env::temp_dir().join(format!("flowrad-store-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        let received = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let scp = spawn_store_scp(11199, "FLOWRADTEST".into(), dest.clone(), received.clone(), stop.clone()).unwrap();
+        let summary = dimse_store("127.0.0.1", 11199, "FLOWRADTEST", "FLOWRAD", &files, &|_, _| {}).expect("C-STORE");
+        std::thread::sleep(Duration::from_millis(200));
+        stop.store(true, Ordering::Relaxed);
+        let _ = scp.join();
+        assert_eq!(summary.sent, expected, "{summary:?}");
+        assert_eq!(summary.failed, 0);
+        assert_eq!(received.load(Ordering::Relaxed), expected);
+        let first = std::fs::read_dir(&dest).unwrap().flatten().next().unwrap().path();
+        assert!(crate::header::read_header(&first).is_some());
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    /// Against a third-party SCP, e.g. dcmtk: storescp -aet TESTPACS +xa 4242
+    /// RADLEARN_TEST_STORESCP=localhost:4242 RADLEARN_FIXTURES=… cargo test c_store_to
+    #[test]
+    fn c_store_to_an_external_scp() {
+        let (Ok(addr), Ok(root)) = (std::env::var("RADLEARN_TEST_STORESCP"), std::env::var("RADLEARN_FIXTURES")) else { return };
+        let (host, port) = addr.split_once(':').unwrap();
+        let only = std::env::var("RADLEARN_TEST_STORE_ONLY").ok();
+        let mut files = Vec::new();
+        for sub in ["ct-phantom/axial-5mm", "ts", "documents"] {
+            files.extend(walk_files(&std::path::Path::new(&root).join(sub)).into_iter().filter(|p| file_meta(p).is_some()));
+        }
+        if let Some(only) = only {
+            files.retain(|p| p.to_string_lossy().contains(&only));
+        }
+        // dcmtk does not know HTJ2K (2023): skip it there, it is covered by the local SCP test.
+        files.retain(|p| file_meta(p).map(|(_, ts)| !ts.starts_with("1.2.840.10008.1.2.4.20")).unwrap_or(false));
+        let summary = dimse_store(host, port.parse().unwrap(), "TESTPACS", "FLOWRAD", &files, &|_, _| {}).expect("C-STORE");
+        eprintln!("sent {} of {}: {:?}", summary.sent, files.len(), summary.errors);
+        assert_eq!(summary.failed, 0, "{summary:?}");
+        assert_eq!(summary.sent, files.len());
     }
 }
