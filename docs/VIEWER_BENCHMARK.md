@@ -376,6 +376,102 @@ that lets a sustained trackpad gesture exceed ~12 slices/s
 (`lib/scrollSensitivity.ts` caps it to fix the one-notch-many-slices bug — needs
 a real trackpad to retune, not a headless guess).
 
+## 6. Production test round — `claude/viewer-speed` (2026-11-01)
+
+A real test of the production viewer (Cloud Healthcare backend) reported: an
+848-slice CT took ~90 s to load, each GCP frame ~620 ms regardless of
+parallelism, a 9.5 MB series metadata document, duplicate fetches on open,
+uncompressed JSON, the wheel skipping ~2 slices, and a set of UX bugs.
+
+### Rig (reproducible, no production access needed)
+
+```bash
+node scripts/bench/phantomOrthanc.mjs --port 8042 --slices 848 --matrix 512 \
+     --latency 620 --meta-pad 10000 --warm 1 --study <uid> --series <uid>
+ORTHANC_URL=http://127.0.0.1:8042 DEMO_AUTH_ENABLED=1 DICOMWEB_FRAME_TRANSFER_SYNTAX=jls npx next start -p 3123
+node scripts/bench/h2proxy.mjs --port 8443 --target http://127.0.0.1:3123   # HTTP/2 like production
+node scripts/bench/viewerLoad.mjs  --mbps 40 --slices 848                  # the real viewer page
+node scripts/bench/seriesFetch.mjs --mbps 40 --concurrency 24 --repeat 1   # wire cost of the series
+node scripts/bench/s3stub.mjs --port 9000                                  # object-store tier, locally
+```
+
+The phantom serves 848 × 512² 16-bit CT frames with **620 ms per request**
+and ~11 KB of metadata per instance (9.68 MB series document, matching
+production). **40 Mbit/s** is the downlink that reproduces production's 90 s:
+445 MB of raw frames ÷ 90 s ≈ 5 MB/s. That is the key finding — the 90 s was
+**bandwidth-bound**, not latency-bound, so bytes (JPEG-LS) and caching are the
+levers; concurrency only removes the 620 ms floor.
+
+### Before → after (same rig, same machine)
+
+| | before | after |
+|---|---|---|
+| Whole 848-slice series over the wire, 40 Mbit/s, cold | **90.9 s**, 445 MB | **33.2 s**, 124 MB |
+| …second reader (server cache warm) | 91.3 s (no cache) | **25.7 s** (`X-Cache: HIT` ×848) — the 40 Mbit/s floor for 124 MB |
+| …object-store tier only (S3 stub, memory tier off) | — | 25.8 s, 848 PUT / 848 HIT |
+| Viewer loads the whole series by itself, 40 Mbit/s | never (only ±window; MPR load **stalled at 244/848**) | **24.6 s** (outward fill) |
+| Viewer whole series, unthrottled HTTP/2 | 22.6 s, MPR only | **11.8 s**, on open |
+| First pixel, unthrottled | 4.6 s | **3.8 s** |
+| First pixel, 40 Mbit/s | 7.1 s | **3.6 s** |
+| One frame, archive miss → server cache hit | 651 ms → 651 ms | 651 ms → **6 ms** |
+| Bytes per 512² CT frame | 524 KB (as stored) | **148 KB** JPEG-LS lossless (3.5×; GCP measured 3.2×) |
+| Series metadata on the wire | **9.68 MB** JSON, uncompressed | **22 KB** (1.17 MB slim index, gzip); cache hit 5 ms |
+| Requests on open: 1-row QIDO / instance metadata / rail instance lists | 2 / 2 / 5 | **1 / 1 / 3** |
+| Wheel, two quick notches on a cold stack | n → n+2 (n+1 never painted) | n → n+1 → n+2 |
+
+The asked-for ~21 s needs either the cache warm **and** a link faster than
+40 Mbit/s (124 MB at 50 Mbit/s ≈ 20 s), or the converted-bundle path (#79:
+HTJ2K + 8-bit previews on a CDN), which is already in the tree and turns on
+with `DICOM_CDN_*`.
+
+### What changed
+
+- **Transfer syntax** (`lib/frameTransfer.ts`): when the loader asks for
+  "whatever is stored", the proxy asks Cloud Healthcare for lossless JPEG-LS
+  (`DICOMWEB_FRAME_TRANSFER_SYNTAX`, default `jls` on Healthcare). The part's
+  Content-Type carries the syntax; Cornerstone decodes it with CharLS in its
+  worker pool. A 400/406/415/501 falls back to the stored syntax and is
+  remembered per series for 10 min. *GCP's frame transcoding list could not
+  be fetched from this sandbox — the fallback is what makes that safe; verify
+  `X-Frame-Syntax: jls` on production.*
+- **Frame cache** (`lib/frameCache.ts`): in-process LRU (L1, 64 MB default) in front
+  of R2/GCS (L2). The old 25 ms *budget* meant a real bucket (30–80 ms)
+  almost never won; reads are now *hedged* (archive starts after the hedge
+  window, a later cache hit still wins). `X-Cache: HIT | MISS | BYPASS`,
+  `X-Cache-Tier: memory | object` on every response.
+- **Slim series index** (`lib/dicomMetaSlim.ts`): series metadata cut to the
+  tags Cornerstone's wadors provider reads (a test diffs the list against the
+  installed loader), cached, gzip on the wire. Patient name/ID/birth date and
+  accession are not in it.
+- **gzip/brotli** for every other JSON body from `/api/dicomweb`.
+- **Load outward** (`lib/seriesFill.ts`): after the opening ±10, the rest of
+  the series queues nearest-first at prefetch priority, bounded by the
+  decoded cache. Pools: 24 prefetch / 32 interaction on desktop (HTTP/2),
+  6 / 8 on phones. Never re-centred by clearing the queue — a cleared request
+  leaves Cornerstone's load object pending forever.
+- **Duplicates**: the prewarm and the viewer share in-flight JSON
+  (`lib/sharedJsonFetch.ts`), the standalone viewer opens on the slice the
+  prewarm warmed (it opened mid-stack, throwing the warm away), the series
+  rail memoises per series, and share links now prewarm too.
+- **Wheel**: Cornerstone's `debounceIfNotLoaded` merged two steps into one
+  jump while a frame was in flight; it is off, and ±10 prefetch keeps steps
+  local.
+
+### UX fixes, verified in the browser
+
+| bug | cause | check |
+|---|---|---|
+| MPR crosshair doesn't link views | `getReferenceLineDraggableRotatable: () => false` — CrosshairsTool only moves viewports whose lines are controllable **and** draggable-rotatable | click in sagittal → axial 65 → 318 |
+| no 3D / MIP | — | `Stack · MPR · MIP · 3D`; MIP = 15 mm max-intensity slab; 3D = VOLUME_3D with CT-Bone / MR preset, trackball rotate |
+| arrows / PgUp / PgDn don't scroll | Cornerstone's mousedown `preventDefault` stopped the image taking focus; MPR hid the focused element and dropped focus to `<body>` | ↓ +1, PgDn +42 after a click; arrows scroll the touched MPR plane |
+| Escape doesn't close compare | not wired | closes |
+| hidden blank viewport behind MPR | `disableElement` left the stack's full-size canvas in the DOM | 0 hidden canvases in MPR |
+| MPR axial black side bars | full-width axial row | wide panes: axial 2/3 left, coronal/sagittal right |
+| tutor bar ~20 % of height | caption card + dots + mode + mic + hint, stacked | one line, 53 px (5.9 %) |
+| compare repeats the toolbar | one bar per pane | one shared bar, follows the outlined pane |
+| a 401 on load | `/api/me` answered 401 for "signed out" | 200 `{user:null}`; signed-out viewer shows "Sign in to view the images" |
+| (found) 401 burst after a cold start | the pixel gate cached a failed session lookup for 10 s | `null` is never cached when an auth cookie is present |
+
 ## 5. One thing we found that is worth not forgetting
 
 `lib/prefetch.ts`'s `buildPrefetchManifest` returns series order with

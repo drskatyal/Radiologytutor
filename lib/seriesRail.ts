@@ -213,9 +213,30 @@ async function readJson(res: Response): Promise<unknown> {
  * count tag and an early instance search can miss), WADO-RS series metadata
  * is the same document the viewer already used to paint the stack.
  */
-export async function fetchSeriesRailStats(
+// One lookup per series per page open: the rail's effect can run twice for the
+// same list (a re-render while the first lookup is in flight), and each
+// lookup is a full QIDO instance list. Real fetches only — injected fetchers
+// (tests) bypass the memo.
+const RAIL_MEMO_MS = 60_000;
+const railMemo = new Map<string, { at: number; promise: Promise<RailStats> }>();
+
+export function fetchSeriesRailStats(
   series: CaseSeries,
   fetchImpl: typeof fetch = fetch
+): Promise<RailStats> {
+  if (fetchImpl !== fetch) return fetchSeriesRailStatsUncached(series, fetchImpl);
+  const key = seriesInstanceSearchUrl(series);
+  const hit = railMemo.get(key);
+  if (hit && Date.now() - hit.at < RAIL_MEMO_MS) return hit.promise;
+  const promise = fetchSeriesRailStatsUncached(series, fetchImpl);
+  railMemo.set(key, { at: Date.now(), promise });
+  promise.catch(() => railMemo.delete(key));
+  return promise;
+}
+
+async function fetchSeriesRailStatsUncached(
+  series: CaseSeries,
+  fetchImpl: typeof fetch
 ): Promise<RailStats> {
   const init = {
     credentials: "same-origin" as const,

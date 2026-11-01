@@ -1,0 +1,33 @@
+{
+  "label": "before-mpr-40mbps",
+  "slices": 848,
+  "mpr": true,
+  "mbps": 40,
+  "firstPixelMs": 7149,
+  "allFramesMs": null,
+  "framesServed": 244,
+  "frameRequests": 245,
+  "jlsFrames": 0,
+  "frameMB": 128.5,
+  "archiveRoutes": {
+    "qido-1row": 2,
+    "instance-metadata": 2,
+    "frame": 245,
+    "series-metadata": 2,
+    "qido-list": 5,
+    "rendered": 2
+  },
+  "browserRequests": {
+    "qido-1row": 2,
+    "instance-metadata": 2,
+    "frame": 245,
+    "series-metadata": 1,
+    "qido-list": 5,
+    "rendered": 2
+  },
+  "xCache": {},
+  "httpErrors": [],
+  "pageErrors": [
+    "XMLHttpRequest"
+  ]
+}

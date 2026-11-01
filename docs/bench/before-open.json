@@ -1,0 +1,30 @@
+{
+  "label": "before-open",
+  "slices": 848,
+  "mpr": false,
+  "firstPixelMs": 4609,
+  "allFramesMs": null,
+  "framesServed": 26,
+  "frameRequests": 26,
+  "jlsFrames": 0,
+  "frameMB": 13.6,
+  "archiveRoutes": {
+    "qido-1row": 2,
+    "instance-metadata": 2,
+    "frame": 26,
+    "series-metadata": 1,
+    "qido-list": 5,
+    "rendered": 3
+  },
+  "browserRequests": {
+    "qido-1row": 2,
+    "instance-metadata": 2,
+    "frame": 26,
+    "series-metadata": 1,
+    "qido-list": 5,
+    "rendered": 3
+  },
+  "xCache": {},
+  "httpErrors": [],
+  "pageErrors": []
+}

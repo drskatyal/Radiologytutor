@@ -48,18 +48,21 @@ test("a non-finite index leaves the direction alone", () => {
 
 test("travel warm leads with the direction of travel, nearest first", () => {
   const forward = directionalPrefetchIndexes(240, 100, 1);
-  assert.deepEqual(forward, [101, 102, 103, 104, 105, 99]);
+  assert.deepEqual(forward, [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 99, 98]);
   const backward = directionalPrefetchIndexes(240, 100, -1);
-  assert.deepEqual(backward, [99, 98, 97, 96, 95, 101]);
+  assert.deepEqual(backward, [99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 101, 102]);
 });
 
 test("no direction yet warms forward — a stack opens mid-series", () => {
-  assert.deepEqual(directionalPrefetchIndexes(240, 100, 0), [101, 102, 103, 104, 105, 99]);
+  assert.deepEqual(
+    directionalPrefetchIndexes(240, 100, 0),
+    [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 99, 98]
+  );
 });
 
 test("travel warm stays inside the stack at both ends", () => {
-  assert.deepEqual(directionalPrefetchIndexes(10, 0, -1), [1]);
-  assert.deepEqual(directionalPrefetchIndexes(10, 9, 1), [8]);
+  assert.deepEqual(directionalPrefetchIndexes(10, 0, -1), [1, 2]);
+  assert.deepEqual(directionalPrefetchIndexes(10, 9, 1), [8, 7]);
   for (const index of directionalPrefetchIndexes(10, 5, 1)) {
     assert.ok(index >= 0 && index <= 9, `${index} out of stack`);
   }
@@ -74,7 +77,10 @@ test("travel warm never includes the slice the reader is on, and never repeats",
 test("travel warm is small enough to issue on every slice change", () => {
   const indexes = directionalPrefetchIndexes(1200, 600, 1);
   assert.equal(indexes.length, TRAVEL_AHEAD + TRAVEL_BEHIND);
-  assert.ok(indexes.length <= 8, "a per-slice queue must stay cheap");
+  // ±10 around the reader (asked for after the production test): cheap,
+  // because Cornerstone de-dupes an id that is already cached or in flight.
+  assert.ok(indexes.length <= 12, "a per-slice queue must stay cheap");
+  assert.ok(indexes.slice(0, 10).every((i) => i > 600), "the first ten lead the travel");
 });
 
 test("travel warm is a no-op on a single-image stack", () => {

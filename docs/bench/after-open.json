@@ -1,0 +1,39 @@
+{
+  "label": "after-open-unthrottled",
+  "slices": 848,
+  "mpr": false,
+  "mbps": null,
+  "firstPixelMs": 3771,
+  "allFramesMs": 11790,
+  "framesServed": 848,
+  "frameRequests": 848,
+  "jlsFrames": 848,
+  "frameMB": 123.8,
+  "archiveRoutes": {
+    "qido-1row": 1,
+    "instance-metadata": 1,
+    "frame": 848,
+    "series-metadata": 1,
+    "qido-list": 3,
+    "rendered": 3
+  },
+  "browserRequests": {
+    "qido-1row": 1,
+    "instance-metadata": 1,
+    "frame": 849,
+    "series-metadata": 1,
+    "qido-list": 3,
+    "rendered": 3
+  },
+  "xCache": {
+    "qido-1row:BYPASS": 1,
+    "instance-metadata:BYPASS": 1,
+    "frame:MISS": 848,
+    "frame:HIT": 1,
+    "series-metadata:MISS": 1,
+    "qido-list:BYPASS": 3,
+    "rendered:BYPASS": 3
+  },
+  "httpErrors": [],
+  "pageErrors": []
+}

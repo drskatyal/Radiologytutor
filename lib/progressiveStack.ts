@@ -29,6 +29,7 @@ import cornerstoneDICOMImageLoader from "@cornerstonejs/dicom-image-loader";
 import { SeriesBundle, fetchSeriesManifest } from "./dicomCdn/client";
 import { attachBundle } from "./dicomCdn/cornerstoneBridge";
 import { JsonArrayScanner } from "./jsonArrayStream";
+import { fetchJsonShared } from "./sharedJsonFetch";
 import { stackOpenIndex } from "./stackIndex";
 import {
   ACTIVE_PREFETCH_RADIUS,
@@ -128,14 +129,8 @@ async function qidoSopAt(
     includefield: SOP_TAG,
   });
   const url = `${root}/studies/${study}/series/${series}/instances?${params}`;
-  const res = await fetch(url, {
-    signal,
-    credentials: "same-origin",
-    cache: "default",
-    headers: { Accept: JSON_ACCEPT },
-  });
-  if (!res.ok) return null;
-  const rows = (await res.json()) as unknown;
+  // Shared with the page prewarm, which asks for the same row.
+  const rows = await fetchJsonShared(url, { accept: JSON_ACCEPT, signal });
   if (!Array.isArray(rows) || !rows[0]) return null;
   return dicomTagString(rows[0], SOP_TAG) ?? null;
 }
@@ -185,14 +180,8 @@ async function fetchInstanceMetadata(
   const url =
     `${root.replace(/\/$/, "")}/studies/${study}` +
     `/series/${series}/instances/${sop}/metadata`;
-  const res = await fetch(url, {
-    signal,
-    credentials: "same-origin",
-    cache: "force-cache",
-    headers: { Accept: JSON_ACCEPT },
-  });
-  if (!res.ok) return null;
-  const body = (await res.json()) as unknown;
+  const body = await fetchJsonShared(url, { accept: JSON_ACCEPT, signal });
+  if (body == null) return null;
   if (Array.isArray(body)) return body[0] ?? null;
   return body;
 }

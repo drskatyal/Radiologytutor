@@ -7,6 +7,7 @@
 // and pan move the cameras, and the tool redraws the intersection.
 
 import {
+  MIP_SLAB_MM,
   MPR_REFERENCE_LINE,
   cameraLookingAt,
   mprVolumeId,
@@ -56,7 +57,11 @@ export interface MountMprArgs {
     axial: HTMLDivElement;
     coronal: HTMLDivElement;
     sagittal: HTMLDivElement;
+    /** Host for the 3D render. Enabled only when 3D is chosen. */
+    volume3d?: HTMLDivElement | null;
   };
+  /** CT gets a bone preset in 3D; anything else a soft MR preset. */
+  modality?: string | null;
   imageIds: string[];
   /** Stack image to center on. Skipped when that image has no plane anchor. */
   initialImageId?: string;
@@ -70,7 +75,10 @@ export interface MountMprArgs {
   readPlane: (imageId: string) => PlaneSample | null;
 }
 
-const NAV_TOOLS = ["WindowLevel", "Pan", "Zoom", "StackScroll"] as const;
+// Crosshairs leads: in MPR the left button moves the shared centre, so a
+// click in one plane drives the other two (the "linked" views a reader
+// expects). Window/level stays on the toolbar and the keyboard.
+const NAV_TOOLS = ["Crosshairs", "WindowLevel", "Pan", "Zoom", "StackScroll"] as const;
 
 export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHandle> {
   const core = await import("@cornerstonejs/core");
@@ -270,7 +278,11 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
   group.addTool(CrosshairsTool.toolName, {
     getReferenceLineColor: lineColor,
     getReferenceLineControllable: () => true,
-    getReferenceLineDraggableRotatable: () => false,
+    // Must be true for the planes to LINK: CrosshairsTool._jump (click) and
+    // the line drag only move viewports whose lines are controllable AND
+    // draggable-rotatable. With false, clicks and drags in one plane never
+    // moved the others. Rotation handles show only while a line is hovered.
+    getReferenceLineDraggableRotatable: () => true,
     getReferenceLineSlabThicknessControlsOn: () => false,
   });
   for (const Tool of [WindowLevelTool, PanTool, ZoomTool, StackScrollTool]) {
@@ -296,17 +308,20 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
 
   let leftTool: string | null = null;
   const setLeftTool = (name: string) => {
-    const next = (NAV_TOOLS as readonly string[]).includes(name) ? name : "WindowLevel";
+    const next = (NAV_TOOLS as readonly string[]).includes(name) ? name : "Crosshairs";
     const primary = { mouseButton: MouseBindings.Primary };
     if (leftTool && leftTool !== next) {
       group.setToolPassive(leftTool, { removeAllBindings: [primary] });
     }
     group.setToolActive(next, { bindings: [primary] });
     leftTool = next;
+    // Crosshairs off the left button still draw (passive) and follow scroll.
+    if (next !== CrosshairsTool.toolName) group.setToolPassive(CrosshairsTool.toolName);
   };
-  // Passive crosshairs render and follow camera changes without taking the left button.
   group.setToolPassive(CrosshairsTool.toolName);
-  setLeftTool(args.leftTool || "WindowLevel");
+  // A stack tool that has no meaning on a volume (Length, Probe…) falls to
+  // crosshairs, which is what MPR is for.
+  setLeftTool(args.leftTool && (NAV_TOOLS as readonly string[]).includes(args.leftTool) && args.leftTool !== "StackScroll" ? args.leftTool : "Crosshairs");
 
   try {
     SynchronizerManager.destroySynchronizer(ids.voiSyncId);
@@ -344,9 +359,124 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
     element.addEventListener(core.Enums.Events.VOI_MODIFIED, onVoiEvent);
   }
 
+  // --- MIP slab and 3D ------------------------------------------------------
+  type BlendViewport = VolumeViewportLike & {
+    setBlendMode?: (mode: number, filterActorUIDs?: string[], immediate?: boolean) => void;
+    setSlabThickness?: (mm: number) => void;
+    resetSlabThickness?: () => void;
+  };
+  const vrId = `${ids.axial}-3d`;
+  const vrGroupId = `${ids.toolGroupId}-3d`;
+  let render: "mpr" | "mip" | "3d" = "mpr";
+
+  const disable3d = () => {
+    try {
+      ToolGroupManager.destroyToolGroup(vrGroupId);
+    } catch {
+      /* none */
+    }
+    try {
+      if (engine.getViewport(vrId)) engine.disableElement(vrId);
+    } catch {
+      /* already gone */
+    }
+  };
+
+  const setRender = async (mode: "mpr" | "mip" | "3d"): Promise<boolean> => {
+    if (disposed) return false;
+    const blend = core.Enums.BlendModes;
+    if (mode === "3d") {
+      const host = args.elements.volume3d;
+      if (!host) return false;
+      try {
+        if (!engine.getViewport(vrId)) {
+          engine.enableElement({
+            viewportId: vrId,
+            type: core.Enums.ViewportType.VOLUME_3D,
+            element: host,
+            defaultOptions: { background: [0, 0, 0] },
+          });
+          await core.setVolumesForViewports(engine, [{ volumeId }], [vrId], true);
+          const vr = engine.getViewport(vrId) as unknown as {
+            setProperties: (p: { preset?: string }) => void;
+            resetCamera: () => void;
+            render: () => void;
+          };
+          const ct = (args.modality ?? "").toUpperCase() === "CT";
+          vr.setProperties({ preset: ct ? "CT-Bone" : "MR-Default" });
+          vr.resetCamera();
+          const { TrackballRotateTool } = tools;
+          try {
+            addTool(TrackballRotateTool);
+          } catch {
+            /* registered */
+          }
+          const vrGroup = ToolGroupManager.createToolGroup(vrGroupId);
+          if (vrGroup) {
+            vrGroup.addTool(TrackballRotateTool.toolName);
+            vrGroup.addTool(ZoomTool.toolName);
+            vrGroup.addTool(PanTool.toolName);
+            vrGroup.addViewport(vrId, args.renderingEngineId);
+            vrGroup.setToolActive(TrackballRotateTool.toolName, {
+              bindings: [{ mouseButton: MouseBindings.Primary }, { numTouchPoints: 1 }],
+            });
+            vrGroup.setToolActive(ZoomTool.toolName, {
+              bindings: [{ mouseButton: MouseBindings.Secondary }, { mouseButton: MouseBindings.Wheel }, { numTouchPoints: 2 }],
+            });
+            vrGroup.setToolActive(PanTool.toolName, {
+              bindings: [{ mouseButton: MouseBindings.Auxiliary }],
+            });
+          }
+          engine.resize(true, true);
+          vr.render();
+        }
+        render = "3d";
+        return true;
+      } catch (err) {
+        console.warn("RadLearn 3D render unavailable", err);
+        disable3d();
+        return false;
+      }
+    }
+    // Leaving 3D frees its WebGL work.
+    if (render === "3d") disable3d();
+    for (const vp of viewports() as BlendViewport[]) {
+      try {
+        if (mode === "mip") {
+          vp.setBlendMode?.(blend.MAXIMUM_INTENSITY_BLEND);
+          vp.setSlabThickness?.(MIP_SLAB_MM);
+        } else {
+          vp.setBlendMode?.(blend.COMPOSITE);
+          if (vp.resetSlabThickness) vp.resetSlabThickness();
+          else vp.setSlabThickness?.(0.1);
+        }
+        vp.render();
+      } catch {
+        /* actor not ready yet */
+      }
+    }
+    render = mode;
+    return true;
+  };
+
+  const scrollPlane = (plane: "axial" | "coronal" | "sagittal", delta: number) => {
+    if (disposed || !delta) return;
+    const vp = viewportOf(ids[plane]);
+    if (!vp) return;
+    try {
+      core.utilities.scroll(vp as unknown as Parameters<typeof core.utilities.scroll>[0], {
+        delta,
+        volumeId,
+      });
+    } catch {
+      /* camera not ready */
+    }
+  };
+
   const destroy = () => {
     if (disposed) return;
     disposed = true;
+    disable3d();
     axial.removeEventListener(core.Enums.Events.CAMERA_MODIFIED, onCamera);
     for (const element of voiElements) {
       element.removeEventListener(core.Enums.Events.VOI_MODIFIED, onVoiEvent);
@@ -423,5 +553,7 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
         | undefined;
       crosshairs?.computeToolCenter?.();
     },
+    setRender,
+    scrollPlane,
   };
 }

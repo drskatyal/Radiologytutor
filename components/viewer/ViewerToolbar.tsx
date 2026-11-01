@@ -26,6 +26,7 @@ import {
   Eraser,
   Keyboard,
   Layers,
+  LocateFixed,
   Maximize2,
   Minimize2,
   Move,
@@ -46,7 +47,7 @@ import { cn } from "@/components/ui/cn";
 import { CINE_FPS_OPTIONS } from "@/lib/cinePlayer";
 import type { OverlayDensity } from "@/lib/dicomOverlay";
 import { shortcutForTool } from "@/lib/viewerHotkeys";
-import type { MprMode } from "@/lib/mpr";
+import type { MprMode, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
 
@@ -81,7 +82,11 @@ export function toolLabel(name: string): string {
   return PRIMARY_TOOLS.find((t) => t.name === name)?.label ?? name;
 }
 
+/** MPR only: the left button drags the shared centre of all three planes. */
+export const CROSSHAIRS_TOOL: ViewerTool = { name: "Crosshairs", label: "Crosshairs (links the planes)" };
+
 const TOOL_ICONS: Record<string, LucideIcon> = {
+  Crosshairs: LocateFixed,
   WindowLevel: Blend,
   Pan: Move,
   Zoom: ZoomIn,
@@ -194,6 +199,9 @@ export interface ViewerToolbarProps {
   activePreset: string | null;
   presets: WindowPreset[];
   viewMode: MprMode;
+  /** Thin MPR, MIP slab or 3D, once in MPR. */
+  mprRender: MprRender;
+  onMprRender: (mode: MprRender) => void;
   cineOffered: boolean;
   cinePlaying: boolean;
   cineFps: number;
@@ -221,6 +229,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
     activePreset,
     presets,
     viewMode,
+    mprRender,
     cineOffered,
     cinePlaying,
     cineFps,
@@ -270,32 +279,32 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         aria-orientation="horizontal"
         className="flex w-max min-w-full items-center gap-0.5 px-1.5 py-1"
       >
-        {/* Layout */}
+        {/* View: one segmented control, four states. */}
         <div
           role="radiogroup"
-          aria-label="Viewer layout"
+          aria-label="View"
           className="inline-flex shrink-0 items-center rounded-md bg-[#181818] p-0.5"
         >
           {(
             [
-              ["stack", "Stack"],
-              ["mpr", "MPR"],
+              ["stack", "Stack", "Stack view", ["X"]],
+              ["mpr", "MPR", "Three linked planes", ["X"]],
+              ["mip", "MIP", "Maximum-intensity slab (15 mm)", null],
+              ["3d", "3D", "Volume render — drag to rotate", null],
             ] as const
-          ).map(([value, label]) => {
-            const on = viewMode === value;
+          ).map(([value, label, tip, keys]) => {
+            const on =
+              value === "stack" ? viewMode === "stack" : viewMode === "mpr" && mprRender === value;
             return (
-              <Tooltip
-                key={value}
-                label={value === "mpr" ? "Multiplanar reconstruction" : "Stack view"}
-                shortcut={["X"]}
-                container={host}
-              >
+              <Tooltip key={value} label={tip} shortcut={keys ? [...keys] : null} container={host}>
                 <button
                   type="button"
                   role="radio"
                   aria-checked={on}
                   disabled={!ready}
-                  onClick={() => props.onViewMode(value)}
+                  onClick={() =>
+                    value === "stack" ? props.onViewMode("stack") : props.onMprRender(value)
+                  }
                   className={cn(
                     "h-8 rounded px-2.5 text-xs font-semibold tracking-wide [@media(pointer:coarse)]:h-10",
                     pressable,
@@ -311,7 +320,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
 
         <Divider />
 
-        {NAV_TOOLS.map((tool) => (
+        {(viewMode === "mpr" ? [CROSSHAIRS_TOOL, ...NAV_TOOLS] : NAV_TOOLS).map((tool) => (
           <ToolbarButton
             key={tool.name}
             label={tool.label}

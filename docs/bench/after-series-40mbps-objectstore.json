@@ -1,0 +1,33 @@
+{
+  "label": "after-c24-objectstore",
+  "concurrency": 24,
+  "mbps": 40,
+  "runs": [
+    {
+      "pass": "cold",
+      "frames": 848,
+      "ms": 31594,
+      "firstFrameMs": 1659,
+      "mb": 123.9,
+      "xCache": {
+        "MISS": 848
+      },
+      "syntax": {
+        "jls": 848
+      }
+    },
+    {
+      "pass": "repeat",
+      "frames": 848,
+      "ms": 25787,
+      "firstFrameMs": 1321,
+      "mb": 123.9,
+      "xCache": {
+        "HIT": 848
+      },
+      "syntax": {
+        "jls": 848
+      }
+    }
+  ]
+}

@@ -81,6 +81,7 @@ interface StackScrollWheelEvent {
 }
 
 interface StackScrollInstance {
+  configuration?: { debounceIfNotLoaded?: boolean };
   mouseWheelCallback?: (evt: StackScrollWheelEvent) => void;
   _getPixelPerImage?: (viewport: unknown) => number;
   __radlearnScroll?: boolean;
@@ -95,6 +96,14 @@ export function tuneStackScrollTool(tool: unknown): void {
   const instance = tool as StackScrollInstance;
   if (instance.__radlearnScroll) return;
   instance.__radlearnScroll = true;
+
+  // "One slice per wheel step." With Cornerstone's default debounce, a step
+  // whose frame is not decoded yet only moves a TARGET index; the next step
+  // adds to that target and the first slice is never painted — on a 620 ms
+  // archive two quick notches read as one jump of 2. Without the debounce
+  // every step is requested and painted in order (and ±10 prefetch means it
+  // is usually already local).
+  if (instance.configuration) instance.configuration.debounceIfNotLoaded = false;
 
   const state = createWheelScrollState();
   const originalWheel = instance.mouseWheelCallback?.bind(instance);

@@ -4,6 +4,19 @@
 //   node scripts/bench/phantomOrthanc.mjs --port 8042 --study <StudyInstanceUID> --series <SeriesUID>
 //   ORTHANC_URL=http://127.0.0.1:8042 npx next start -p 3123
 //
+// Production-shaped knobs (scripts/bench/viewerLoad.mjs uses them):
+//   --slices 848     axial thin-series length            (default 96)
+//   --matrix 512     rows = columns                      (default 256)
+//   --latency 620    ms added to every DICOMweb request  (default 0) — the
+//                    Cloud Healthcare per-frame time measured in production
+//   --meta-pad 10000 extra bytes per instance in metadata (default 0) — GCP's
+//                    series metadata for an 848-slice CT is ~9.5 MB
+//   GET  /phantom/stats   per-route request counts + frames served; POST resets
+//
+// Frames honour Accept like a transcoding archive: `transfer-syntax=*` or
+// explicit VR LE → raw; `type="image/jls"` / transfer-syntax 1.2.840.10008.1.2.4.80
+// → lossless JPEG-LS (CharLS); anything else → 406.
+//
 // Answers the slice of the Orthanc REST API that lib/orthanc.ts uses to list a
 // case's series (POST /tools/find, GET /studies|/series|/instances/{id}) and
 // the DICOMweb paths the viewer reads through /api/dicomweb (QIDO instances,
@@ -31,7 +44,38 @@ const STUDY_UID = args.get("study") ?? "1.2.826.0.1.3680043.8.498.90000000000000
 const AXIAL_UID = args.get("series") ?? "1.2.826.0.1.3680043.8.498.90000000000000000000000002";
 const ROOT = "1.2.826.0.1.3680043.8.498.9";
 
-const N = 256;
+const N = Number(args.get("matrix") ?? 256);
+const SLICES = Number(args.get("slices") ?? 96);
+const LATENCY_MS = Number(args.get("latency") ?? 0);
+const META_PAD = Number(args.get("meta-pad") ?? 0);
+const JLS_TS = "1.2.840.10008.1.2.4.80";
+const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : null);
+
+// Request accounting for the load benchmark.
+const stats = { started: Date.now(), byRoute: {}, frames: new Set(), frameRequests: 0, jlsFrames: 0, bytesOut: 0, firstFrameAt: 0, lastNewFrameAt: 0 };
+function count(route) {
+  stats.byRoute[route] = (stats.byRoute[route] ?? 0) + 1;
+}
+
+// CharLS (the decoder Cornerstone ships) also encodes. Loaded on first use.
+let charls = null;
+async function jlsEncode(raw) {
+  if (!charls) {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const factory = require(new URL("../../node_modules/@cornerstonejs/codec-charls/dist/charlswasm.js", import.meta.url).pathname);
+    charls = await factory();
+  }
+  const enc = new charls.JpegLSEncoder();
+  const buf = enc.getDecodedBuffer({ width: N, height: N, bitsPerSample: 16, componentCount: 1 });
+  buf.set(new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength));
+  enc.setNearLossless(0);
+  enc.encode();
+  const out = Buffer.from(enc.getEncodedBuffer());
+  enc.delete?.();
+  return out;
+}
+const jlsCache = new Map();
 const FOV = 360; // mm
 const PX = FOV / N;
 const Z_TOP = 250; // mm, apex end
@@ -43,7 +87,7 @@ const SERIES = [
     number: 2,
     description: "CT CHEST 2.5 LUNG",
     plane: "axial",
-    count: 96,
+    count: SLICES,
     thickness: 2.5,
     center: -600,
     width: 1500,
@@ -226,6 +270,7 @@ function dataset(s, i) {
     "00281051": nums("DS", [s.width]),
     "00281052": nums("DS", [0]),
     "00281053": nums("DS", [1]),
+    ...(META_PAD > 0 ? { "00091010": str("LO", "x".repeat(META_PAD)) } : {}),
   };
 }
 
@@ -298,6 +343,16 @@ const seriesById = (id) => SERIES.find((s) => s.id === id);
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname;
+  if (path === "/phantom/stats") {
+    if (req.method === "POST") {
+      Object.assign(stats, { started: Date.now(), byRoute: {}, frames: new Set(), frameRequests: 0, jlsFrames: 0, bytesOut: 0, firstFrameAt: 0, lastNewFrameAt: 0 });
+      res.writeHead(204).end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ...stats, frames: stats.frames.size }));
+    return;
+  }
   try {
     if (req.method === "POST" && path === "/tools/find") {
       const chunks = [];
@@ -349,6 +404,7 @@ const server = createServer(async (req, res) => {
 
     const dw = path.startsWith("/dicom-web/") ? path.slice("/dicom-web".length) : null;
     if (!dw) return json(res, { error: "not found" }, 404);
+    await sleep(LATENCY_MS);
 
     m = /^\/studies\/[^/]+\/series$/.exec(dw);
     if (m) {
@@ -365,6 +421,7 @@ const server = createServer(async (req, res) => {
     }
     m = /^\/studies\/[^/]+\/series\/([^/]+)\/instances$/.exec(dw);
     if (m) {
+      count(url.searchParams.get("limit") === "1" ? "qido-1row" : "qido-list");
       const s = seriesByUid(m[1]);
       if (!s) return json(res, []);
       const offset = Number(url.searchParams.get("offset") ?? 0);
@@ -375,6 +432,7 @@ const server = createServer(async (req, res) => {
     }
     m = /^\/studies\/[^/]+\/series\/([^/]+)\/metadata$/.exec(dw);
     if (m) {
+      count("series-metadata");
       const s = seriesByUid(m[1]);
       if (!s) return json(res, [], 404);
       return json(res, Array.from({ length: s.count }, (_, i) => dataset(s, i)));
@@ -384,22 +442,48 @@ const server = createServer(async (req, res) => {
       const s = seriesByUid(m[1]);
       const i = s ? Number(m[2].slice(s.uid.length + 1)) - 1 : -1;
       if (!s || !(i >= 0 && i < s.count)) return json(res, { error: "no instance" }, 404);
-      if (m[3] === "metadata") return json(res, [dataset(s, i)]);
+      if (m[3] === "metadata") {
+        count("instance-metadata");
+        return json(res, [dataset(s, i)]);
+      }
       if (m[3] === "rendered") {
+        count("rendered");
         res.writeHead(200, { "content-type": "image/png" });
         return res.end(png(s, i));
       }
+      count("frame");
+      const accept = String(req.headers.accept ?? "");
+      const ts = /transfer-syntax=([0-9.*]+)/i.exec(accept)?.[1] ?? "*";
+      const wantsJls = /image\/jls/i.test(accept) || ts === JLS_TS;
+      if (!wantsJls && ts !== "*" && ts !== "1.2.840.10008.1.2.1") {
+        return json(res, { error: `cannot transcode to ${ts}` }, 406);
+      }
+      const key = `${s.id}:${i}`;
+      if (!stats.firstFrameAt) stats.firstFrameAt = Date.now();
+      if (!stats.frames.has(key)) {
+        stats.frames.add(key);
+        stats.lastNewFrameAt = Date.now();
+      }
+      stats.frameRequests += 1;
+      let body = frame(s, i);
+      let partType = "application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1";
+      let type = "application/octet-stream";
+      if (wantsJls) {
+        body = jlsCache.get(key) ?? (await jlsEncode(body));
+        jlsCache.set(key, body);
+        partType = `image/jls; transfer-syntax=${JLS_TS}`;
+        type = "image/jls";
+        stats.jlsFrames += 1;
+      }
+      stats.bytesOut += body.length;
       const boundary = "phantomframe";
       res.writeHead(200, {
-        "content-type": `multipart/related; type="application/octet-stream"; boundary=${boundary}`,
+        "content-type": `multipart/related; type="${type}"; boundary=${boundary}`,
       });
       return res.end(
         Buffer.concat([
-          Buffer.from(
-            `--${boundary}\r\nContent-Type: application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1\r\n\r\n`,
-            "latin1"
-          ),
-          frame(s, i),
+          Buffer.from(`--${boundary}\r\nContent-Type: ${partType}\r\n\r\n`, "latin1"),
+          body,
           Buffer.from(`\r\n--${boundary}--`, "latin1"),
         ])
       );
@@ -410,6 +494,24 @@ const server = createServer(async (req, res) => {
     json(res, { error: String(err) }, 500);
   }
 });
+
+// --warm 1 renders (and JLS-encodes) the thin axial series before listening,
+// so phantom CPU never shows up in a latency benchmark.
+if (args.get("warm") === "1") {
+  const t0 = Date.now();
+  const s0 = SERIES[0];
+  for (let i = 0; i < s0.count; i += 1) {
+    const raw = frame(s0, i);
+    jlsCache.set(`${s0.id}:${i}`, await jlsEncode(raw));
+  }
+  const raw = s0.count * N * N * 2;
+  let jls = 0;
+  for (const b of jlsCache.values()) jls += b.length;
+  console.log(
+    `warmed ${s0.count} frames in ${Date.now() - t0} ms — raw ${(raw / 1e6).toFixed(1)} MB, ` +
+      `JPEG-LS ${(jls / 1e6).toFixed(1)} MB (${(raw / jls).toFixed(2)}x)`
+  );
+}
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`phantom orthanc on http://127.0.0.1:${PORT} — study ${STUDY_UID}`);
