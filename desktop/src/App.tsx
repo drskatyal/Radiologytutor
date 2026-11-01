@@ -881,29 +881,41 @@ export default function App() {
         void openBrowserFiles(Array.from(e.dataTransfer.files));
       }}
     >
-      <input
-        ref={browserFileInput}
-        type="file"
-        multiple
-        className="sr-only"
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          e.target.value = "";
-          void openBrowserFiles(files);
-        }}
-      />
-      <input
-        ref={browserFolderInput}
-        type="file"
-        multiple
-        className="sr-only"
-        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          e.target.value = "";
-          void openBrowserFiles(files);
-        }}
-      />
+      {/* Browser-mode pickers only (the bench / plain-browser fallback). The
+          desktop app opens through native dialogs, so these are not rendered
+          there; where they are, they stay out of the accessibility tree
+          (`hidden`): the visible Open buttons are the controls. */}
+      {!isTauri && (
+        <>
+          <input
+            ref={browserFileInput}
+            type="file"
+            multiple
+            hidden
+            aria-hidden="true"
+            tabIndex={-1}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = "";
+              void openBrowserFiles(files);
+            }}
+          />
+          <input
+            ref={browserFolderInput}
+            type="file"
+            multiple
+            hidden
+            aria-hidden="true"
+            tabIndex={-1}
+            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = "";
+              void openBrowserFiles(files);
+            }}
+          />
+        </>
+      )}
 
       {hasStudy && !distractionFree && (
         <Toolbar
