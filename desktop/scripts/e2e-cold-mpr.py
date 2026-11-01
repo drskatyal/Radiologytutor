@@ -75,7 +75,7 @@ def main() -> int:
         if path not in ("gpu", None):
             problems.append(f"session fell back to {path} rendering on a cold open: {report.get('fallbackWhy')}")
         status = "OK  " if not problems else "FAIL"
-        print(f"{status} cold open #{attempt} → MPR  render={path}  volumeLoadedMs={loaded}")
+        print(f"{status} cold open #{attempt} -> MPR  render={path}  volumeLoadedMs={loaded}")
         for p in problems:
             print("     " + p)
         failures += bool(problems)
