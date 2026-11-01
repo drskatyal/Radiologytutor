@@ -5,13 +5,14 @@
 // any viewport, click to load it in the active one.
 
 import { memo, useEffect, useRef, useState } from "react";
-import { Layers, Film, Box } from "lucide-react";
+import { Layers, Film, Box, FileText } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { Badge } from "@/components/ui/Badge";
 import type { ViewerSeries, ViewerStudy } from "../types";
 import { describeSeries, formatDicomDate, formatPersonName } from "../study";
 import { getEngine } from "./engine";
 import { ensureSuv } from "./suv";
+import { reportsFor, type DicomDocument } from "../documents";
 
 const THUMB = 112;
 
@@ -95,9 +96,12 @@ interface Props {
   compact?: boolean;
   hidePatient?: boolean;
   onOpenSeries: (uid: string) => void;
+  /** Structured reports found with the studies (listed under each study). */
+  documents?: readonly DicomDocument[];
+  onOpenReport?: (report: DicomDocument) => void;
 }
 
-function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries }: Props) {
+function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries, documents = [], onOpenReport }: Props) {
   return (
     <nav aria-label="Series" className="flex h-full flex-col overflow-y-auto overscroll-contain p-2">
       {studies.map((study) => (
@@ -200,6 +204,27 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
               );
             })}
           </ul>
+          {onOpenReport && reportsFor(study, documents).length > 0 && (
+            <ul aria-label="Reports" className="mt-2 flex flex-col gap-0.5">
+              {reportsFor(study, documents).map((doc) => (
+                <li key={doc.sopInstanceUid ?? doc.fileName}>
+                  <button
+                    type="button"
+                    onClick={() => onOpenReport(doc)}
+                    title="Open the structured report"
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-secondary transition-colors",
+                      "hover:bg-elevated hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    )}
+                  >
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">{doc.title}</span>
+                    <span className="shrink-0 text-muted">SR</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       ))}
       {growing && (
