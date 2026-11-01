@@ -20,6 +20,8 @@ export interface ViewerSettings {
   scrollAcceleration: boolean;
   /** MPR and 3D rendered by the native (Rust) core: the volume never enters the webview. */
   nativeMpr: boolean;
+  /** Re-mapped keyboard shortcuts: binding id → key spec ("Mod+Shift+K"). */
+  shortcuts: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: ViewerSettings = {
@@ -34,4 +36,5 @@ export const DEFAULT_SETTINGS: ViewerSettings = {
   scrollSlicesPerNotch: 1,
   scrollDragPx: 0,
   scrollAcceleration: false,
+  shortcuts: {},
 };

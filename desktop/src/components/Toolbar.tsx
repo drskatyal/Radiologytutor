@@ -3,6 +3,8 @@
 
 import { useState, type ReactNode } from "react";
 import {
+  Eraser,
+  Redo2,
   ArrowUpRight,
   Box,
   Circle,
@@ -77,6 +79,7 @@ export interface ToolbarProps {
   onOpen: (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => void;
   onHome: () => void;
   onUndo: () => void;
+  onRedo: () => void;
   onClear: () => void;
   onFullscreen: () => void;
   onHelp: () => void;
@@ -89,6 +92,9 @@ export interface ToolbarProps {
     onMpr: () => void;
     onVolume: () => void;
     onFusion: () => void;
+    /** Quick single-plane reformat of the active viewport's series (null = back to slices). */
+    reformat?: "axial" | "coronal" | "sagittal" | null;
+    onReformat?: (plane: "axial" | "coronal" | "sagittal" | null) => void;
   };
   onExport?: () => void;
   /** Present only when signed in to RadLearn. */
@@ -232,6 +238,9 @@ export function Toolbar(props: ToolbarProps) {
           {m.icon}
         </Tool>
       ))}
+      <Tool label="Eraser (click an annotation to delete it)" shortcut="Shift+E" active={leftTool === "Eraser"} onClick={() => onTool("Eraser")}>
+        <Eraser />
+      </Tool>
       <MenuRoot>
         <MenuTrigger asChild>
           <IconButton
@@ -251,7 +260,8 @@ export function Toolbar(props: ToolbarProps) {
             </MenuItem>
           ))}
           <MenuSeparator />
-          <MenuItem icon={<Undo2 />} shortcut={keyLabel("Mod+Z")} onSelect={props.onUndo}>Undo last measurement</MenuItem>
+          <MenuItem icon={<Undo2 />} shortcut={keyLabel("Mod+Z")} onSelect={props.onUndo}>Undo</MenuItem>
+          <MenuItem icon={<Redo2 />} shortcut={keyLabel("Mod+Y")} onSelect={props.onRedo}>Redo</MenuItem>
           <MenuItem icon={<Trash2 />} shortcut={keyLabel("Mod+Shift+Backspace")} onSelect={props.onClear}>Clear measurements</MenuItem>
         </MenuContent>
       </MenuRoot>
@@ -380,6 +390,29 @@ export function Toolbar(props: ToolbarProps) {
           >
             <Move3d />
           </Tool>
+          {props.advanced.onReformat && (
+            <MenuRoot>
+              <MenuTrigger asChild>
+                <IconButton
+                  aria-label="Reformat the selected viewport"
+                  title="Reformat (coronal / sagittal / slab) in the selected viewport"
+                  size="sm"
+                  disabled={!props.advanced.mprAvailable}
+                  className={cn("h-8 w-8 rounded-md", props.advanced.reformat && "bg-accent-muted/60 text-primary")}
+                >
+                  <Layers3 />
+                </IconButton>
+              </MenuTrigger>
+              <MenuContent>
+                <MenuLabel>Reformat selected viewport</MenuLabel>
+                <MenuItem shortcut={keyLabel("Alt+C")} onSelect={() => props.advanced!.onReformat!("coronal")}>Coronal</MenuItem>
+                <MenuItem shortcut={keyLabel("Alt+S")} onSelect={() => props.advanced!.onReformat!("sagittal")}>Sagittal</MenuItem>
+                <MenuItem shortcut={keyLabel("Alt+A")} onSelect={() => props.advanced!.onReformat!("axial")}>Axial (slab)</MenuItem>
+                <MenuSeparator />
+                <MenuItem shortcut="Esc" onSelect={() => props.advanced!.onReformat!(null)}>Back to slices</MenuItem>
+              </MenuContent>
+            </MenuRoot>
+          )}
           <Tool
             label={props.advanced.view === "3d" ? "Back to images" : "3D volume rendering"}
             shortcut={keyLabel("Mod+Shift+M")}

@@ -47,6 +47,8 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { annotationEditing } from "@flowrad/viewer-core";
+import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
   prefetchImageIndexes,
@@ -693,6 +695,8 @@ export default function CornerstoneViewer({
 
   const [status, setStatus] = useState("Initializing viewer…");
   const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
+  /** Annotation select / delete / erase / label (AnnotationEditLayer). */
+  const [editCtx, setEditCtx] = useState<annotationEditing.EditingContext | null>(null);
   const activeToolRef = useRef(activeTool);
   activeToolRef.current = activeTool;
   /**
@@ -1017,8 +1021,12 @@ export default function CornerstoneViewer({
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
-        ].forEach((T) => tg.addTool(T.toolName));
+        ].forEach((T) =>
+          // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
+          tg.addTool(T.toolName, T === ArrowAnnotateTool ? annotationEditing.arrowAnnotateConfig : undefined)
+        );
         tg.addViewport(viewportId, renderingEngineId);
+        if (elementRef.current) setEditCtx({ core, tools, element: elementRef.current, toolGroupId });
 
         const { MouseBindings } = toolsEnums;
         // Fixed bindings: wheel = scroll, right-drag = zoom, pinch = zoom,
@@ -1066,7 +1074,14 @@ export default function CornerstoneViewer({
             return;
           }
           const primary = { mouseButton: MouseBindings.Primary };
-          if (leftTool && leftTool !== name) {
+          if (name === "Eraser") {
+            // No Cornerstone tool on the left button: the edit layer erases.
+            if (leftTool && leftTool !== name) tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
+            leftTool = name;
+            setActiveTool(name);
+            return;
+          }
+          if (leftTool && leftTool !== name && leftTool !== "Eraser") {
             // Drop only Primary and one-finger from the outgoing tool. Pan/Zoom/
             // Scroll keep their permanent bindings (and stay active);
             // WindowLevel/annotation tools become passive.
@@ -2991,6 +3006,7 @@ export default function CornerstoneViewer({
       detachListeners();
       detachQuality();
       viewportRef.current = null;
+      setEditCtx(null);
       loadedSeriesIndexRef.current = -1;
       // Allow the effect to FULLY re-initialize on a source change (the engine
       // is torn down here). Without this reset a new source would destroy the
@@ -3487,6 +3503,14 @@ export default function CornerstoneViewer({
           role="img"
           data-viewer-tool={activeTool}
         />
+        {!mprLive && (
+          <AnnotationEditLayer
+            ctx={editCtx}
+            seriesImageIds={viewportRef.current?.getImageIds() ?? []}
+            eraser={activeTool === "Eraser"}
+            handleUndoKeys
+          />
+        )}
         {sliceScrollbar}
         {(viewMode === "mpr" || mprLive) && (
           <MprLayout

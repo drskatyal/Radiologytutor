@@ -17,6 +17,7 @@ import { getEngine } from "./engine";
 import { ensureSuv } from "./suv";
 import { reportsFor, type DicomDocument } from "../documents";
 import { isTauri, previewUrlFor } from "../platform";
+import { beginSeriesPointer } from "./seriesDrag";
 
 const THUMB = 112;
 
@@ -133,6 +134,7 @@ interface Props {
 function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries, documents = [], onOpenReport }: Props) {
   return (
     <nav aria-label="Series" className="flex h-full flex-col overflow-y-auto overscroll-contain p-2">
+      <p className="mb-2 px-1 text-[11px] text-muted">Click a series to show it in the selected viewport, or drag it onto any viewport.</p>
       {studies.map((study) => (
         <section key={study.uid} className="mb-3">
           <header className="sticky top-0 z-10 -mx-2 mb-2 border-b border-subtle bg-surface/95 px-3 py-2 backdrop-blur">
@@ -154,21 +156,27 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
             {study.series.map((series) => {
               const cells = onScreen.flatMap((uid, i) => (uid === series.uid ? [i + 1] : []));
               const isActive = series.uid === activeSeriesUid;
-              const drag = (e: React.DragEvent) => {
-                e.dataTransfer.setData("application/x-radlearn-series", series.uid);
-                e.dataTransfer.effectAllowed = "copy";
+              // Pointer-driven drag (seriesDrag.ts): works on Windows, where
+              // the native file drop swallows HTML5 drag-and-drop.
+              let gesture: { wasDrag: () => boolean } | null = null;
+              const label = `${series.modality}${series.number != null ? ` ${series.number}` : ""} · ${describeSeries(series)}`;
+              const press = (e: React.PointerEvent) => {
+                gesture = beginSeriesPointer(e, series.uid, label);
+              };
+              const open = () => {
+                if (gesture?.wasDrag()) return;
+                onOpenSeries(series.uid);
               };
               if (compact)
                 return (
                   <li key={series.uid}>
                     <button
                       type="button"
-                      draggable
-                      onDragStart={drag}
-                      onClick={() => onOpenSeries(series.uid)}
+                      onPointerDown={press}
+                      onClick={open}
                       title={`${describeSeries(series)} — click to show, or drag onto a viewport`}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors",
+                        "flex w-full cursor-grab touch-none items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors active:cursor-grabbing",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                         isActive ? "bg-accent-muted/40 text-primary" : "text-secondary hover:bg-elevated hover:text-primary"
                       )}
@@ -189,12 +197,11 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
                 <li key={series.uid}>
                   <button
                     type="button"
-                    draggable
-                    onDragStart={drag}
-                    onClick={() => onOpenSeries(series.uid)}
+                    onPointerDown={press}
+                    onClick={open}
                     title={`${describeSeries(series)} — click to show, or drag onto a viewport`}
                     className={cn(
-                      "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left transition-colors",
+                      "group flex w-full cursor-grab touch-none flex-col gap-1 rounded-lg border p-1 text-left transition-colors active:cursor-grabbing",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                       isActive
                         ? "border-accent bg-accent-muted/40"
