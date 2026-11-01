@@ -91,17 +91,20 @@ interface Props {
   onScreen: (string | null)[];
   activeSeriesUid: string | null;
   growing: boolean;
+  /** Dense one-line rows instead of thumbnails. */
+  compact?: boolean;
+  hidePatient?: boolean;
   onOpenSeries: (uid: string) => void;
 }
 
-function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, onOpenSeries }: Props) {
+function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries }: Props) {
   return (
     <nav aria-label="Series" className="flex h-full flex-col overflow-y-auto overscroll-contain p-2">
       {studies.map((study) => (
         <section key={study.uid} className="mb-3">
           <header className="sticky top-0 z-10 -mx-2 mb-2 border-b border-subtle bg-surface/95 px-3 py-2 backdrop-blur">
-            <div className="truncate text-xs font-semibold text-primary" title={formatPersonName(study.patient.name)}>
-              {formatPersonName(study.patient.name) || "Unnamed patient"}
+            <div className="truncate text-xs font-semibold text-primary" title={hidePatient ? undefined : formatPersonName(study.patient.name)}>
+              {hidePatient ? "Patient hidden" : formatPersonName(study.patient.name) || "Unnamed patient"}
             </div>
             <div className="truncate text-[11px] text-secondary" title={study.description}>
               {study.description || "Study"}
@@ -114,19 +117,47 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, onOpen
               <span>{study.imageCount.toLocaleString()} im</span>
             </div>
           </header>
-          <ul className="grid grid-cols-2 gap-2">
+          <ul className={compact ? "flex flex-col gap-0.5" : "grid grid-cols-2 gap-2"}>
             {study.series.map((series) => {
               const cells = onScreen.flatMap((uid, i) => (uid === series.uid ? [i + 1] : []));
               const isActive = series.uid === activeSeriesUid;
+              const drag = (e: React.DragEvent) => {
+                e.dataTransfer.setData("application/x-radlearn-series", series.uid);
+                e.dataTransfer.effectAllowed = "copy";
+              };
+              if (compact)
+                return (
+                  <li key={series.uid}>
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={drag}
+                      onClick={() => onOpenSeries(series.uid)}
+                      title={`${describeSeries(series)} — click to show, or drag onto a viewport`}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                        isActive ? "bg-accent-muted/40 text-primary" : "text-secondary hover:bg-elevated hover:text-primary"
+                      )}
+                    >
+                      <span className="w-12 shrink-0 font-semibold tabular-nums text-primary">
+                        {series.modality}
+                        {series.number != null ? ` ${series.number}` : ""}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{describeSeries(series)}</span>
+                      {cells.length > 0 && (
+                        <span className="rounded bg-accent px-1 text-[10px] font-semibold text-accent-foreground tabular-nums">{cells.join(",")}</span>
+                      )}
+                      <span className="shrink-0 text-muted tabular-nums">{series.imageCount}</span>
+                    </button>
+                  </li>
+                );
               return (
                 <li key={series.uid}>
                   <button
                     type="button"
                     draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("application/x-radlearn-series", series.uid);
-                      e.dataTransfer.effectAllowed = "copy";
-                    }}
+                    onDragStart={drag}
                     onClick={() => onOpenSeries(series.uid)}
                     title={`${describeSeries(series)} — click to show, or drag onto a viewport`}
                     className={cn(

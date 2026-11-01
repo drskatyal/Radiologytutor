@@ -1,9 +1,9 @@
 {
   "name": "radlearn-viewer",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "RadLearn Viewer \u2014 free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
+  "description": "FlowRad Viewer \u2014 free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",

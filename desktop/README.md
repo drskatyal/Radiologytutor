@@ -1,4 +1,4 @@
-# RadLearn Viewer (desktop)
+# FlowRad Viewer (desktop)
 
 A free, offline DICOM viewer for Windows, macOS and Linux. Tauri 2 shell (Rust)
 around a Vite + React renderer that reuses the web app's `lib/` (stack ordering,
@@ -80,6 +80,10 @@ RADLEARN_TEST_PACS=localhost:4242 cargo test --manifest-path desktop/src-tauri/C
 python3 desktop/scripts/make-fixtures.py --bench /tmp/fixtures   # every transfer syntax, DICOMDIR, zip, PET/CT
 npx --prefix desktop tauri build --debug --no-bundle
 xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/radlearn-viewer /tmp/fixtures
+# Per-codec decode check: the app's decoders vs pydicom, bit-exact for lossless syntaxes
+xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/radlearn-viewer /tmp/fixtures
+# e2e: a NORMAL launch with a study must put non-blank pixels in the main viewport (also on Windows CI)
+xvfb-run -a python3 desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/radlearn-viewer [study-dir …]
 ```
 
 ## Benchmark
@@ -92,8 +96,22 @@ node desktop/scripts/bench.mjs desktop $B /tmp/fixtures/bench/ct-1200 --runs 5
 node desktop/scripts/bench.mjs browser /tmp/fixtures/ct-phantom     # the web loader, for before/after
 ```
 
-On Windows use the `.exe` path; the `idle` mode reads RSS on Linux and macOS
-(use Task Manager's "Memory" column on Windows).
+On Windows use the `.exe` path. Memory is always the **whole process tree**,
+including WebView2's browser, GPU, renderer and utility processes on Windows:
+working set and private bytes, plus the peak during a `desktop` run.
+
+Bench environment:
+
+| variable | effect |
+|---|---|
+| `RADLEARN_BENCH=1` | print `RADLEARN_BENCH {json}` when the first image is on screen, and `RADLEARN_BENCH_SCAN {json}` from the shell as soon as the scan ends |
+| `RADLEARN_BENCH_EXIT=1` | exit after the report |
+| `RADLEARN_BENCH_PAINT_TIMEOUT_MS` | report without a frame after this long; default 20000; see `paint.timedOut` |
+| `RADLEARN_BENCH_TIMEOUT_MS` | watchdog: print what is known and exit 3; default 120000 |
+| `RADLEARN_BENCH_VIEW=mpr\|3d\|fusion` | report when that volume is built |
+| `RADLEARN_BENCH_PIXELS=1` | include decoded-pixel stats (used by `codec-check.py`) |
+| `RADLEARN_PROBE_AFTER_MS=8000` | on a normal launch, report every viewport's on-screen pixels after that long (`RADLEARN_PROBE {json}`) |
+| `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | Windows: override WebView2 flags to A/B memory experiments, e.g. `--in-process-gpu` |
 
 ## Build installers
 

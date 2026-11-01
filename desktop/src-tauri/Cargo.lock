@@ -3067,7 +3067,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radlearn-viewer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dicom-core",
  "dicom-dictionary-std",
@@ -3088,7 +3088,10 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tempfile",
  "walkdir",
+ "webview2-com",
+ "windows",
  "windows-sys 0.59.0",
  "zip 2.6.1",
 ]

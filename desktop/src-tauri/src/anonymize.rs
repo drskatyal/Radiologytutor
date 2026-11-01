@@ -206,7 +206,7 @@ pub fn anonymize_object(obj: &mut DefaultDicomObject, options: &AnonymizeOptions
         obj,
         tags::DEIDENTIFICATION_METHOD,
         VR::LO,
-        "RadLearn Viewer: PS3.15 basic profile header scrub; pixels not inspected",
+        "FlowRad Viewer: PS3.15 basic profile header scrub; pixels not inspected",
     );
 }
 
@@ -327,5 +327,23 @@ mod tests {
             out.push((study, get_str(&anon, tags::SERIES_INSTANCE_UID).unwrap()));
         }
         assert_eq!(out[0], out[1], "same study/series map to the same new UIDs");
+    }
+}
+
+#[cfg(test)]
+mod uid_tests {
+    use super::UidMap;
+
+    #[test]
+    fn uid_remap_is_consistent_valid_and_unlinkable() {
+        let mut a = UidMap::new();
+        let x1 = a.remap("1.2.840.113619.2.55.3");
+        assert_eq!(x1, a.remap("1.2.840.113619.2.55.3\0"), "same source UID -> same new UID");
+        assert_ne!(x1, a.remap("1.2.840.113619.2.55.4"));
+        assert!(x1.starts_with("2.25.") && x1.len() <= 64 && x1[5..].chars().all(|c| c.is_ascii_digit()));
+        // A separate export (new salt) cannot be joined back to this one.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut b = UidMap::new();
+        assert_ne!(x1, b.remap("1.2.840.113619.2.55.3"));
     }
 }
