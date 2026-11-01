@@ -65,6 +65,43 @@ def make_ct(root: Path, signed: bool) -> Path:
     return out
 
 
+def make_mr(root: Path) -> Path:
+    """Unsigned 16-bit MR (BitsStored 16, values 0-950, no rescale): the kind
+    of series that drew on the non-GPU path on the HP (0.6.0 MRI)."""
+    import numpy as np
+    import pydicom
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
+
+    out = root / "mr-u16"
+    out.mkdir(parents=True, exist_ok=True)
+    study, series = generate_uid(), generate_uid()
+    yy, xx = np.mgrid[0:256, 0:256]
+    head = (xx - 128) ** 2 + (yy - 128) ** 2 < 100**2
+    for i in range(27):
+        meta = FileMetaDataset()
+        meta.MediaStorageSOPClassUID = MRImageStorage
+        meta.MediaStorageSOPInstanceUID = sop = generate_uid()
+        meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds = Dataset()
+        ds.file_meta = meta
+        ds.SOPClassUID, ds.SOPInstanceUID = MRImageStorage, sop
+        ds.StudyInstanceUID, ds.SeriesInstanceUID = study, series
+        ds.PatientName, ds.PatientID, ds.Modality = "E2E^Paint", "E2E", "MR"
+        ds.SeriesNumber, ds.InstanceNumber = 1, i + 1
+        ds.ImagePositionPatient = [-128, -128, -i * 5.0]
+        ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+        ds.PixelSpacing, ds.SliceThickness = [1, 1], 5.0
+        ds.Rows = ds.Columns = 256
+        ds.SamplesPerPixel, ds.PhotometricInterpretation = 1, "MONOCHROME2"
+        ds.BitsAllocated, ds.BitsStored, ds.HighBit = 16, 16, 15
+        ds.PixelRepresentation = 0
+        ds.WindowCenter, ds.WindowWidth = 600, 1200
+        ds.PixelData = np.where(head, 650 + (xx % 300), 0).astype(np.uint16).tobytes()
+        ds.save_as(out / f"MR{i:04d}.dcm", enforce_file_format=True)
+    return out
+
+
 def run(binary: str, study: Path, env: dict[str, str], prefix: str, timeout: int = 120) -> dict:
     proc = subprocess.run(
         [binary, str(study)], env={**os.environ, **env}, capture_output=True, text=True, timeout=timeout
@@ -80,7 +117,7 @@ def main() -> int:
     studies = [Path(p) for p in sys.argv[2:]]
     if not studies:
         root = Path(tempfile.mkdtemp(prefix="radlearn-e2e-"))
-        studies = [make_ct(root, signed=False), make_ct(root, signed=True)]
+        studies = [make_ct(root, signed=False), make_ct(root, signed=True), make_mr(root)]
     failures = 0
     for study in studies:
         try:

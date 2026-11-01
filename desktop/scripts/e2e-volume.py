@@ -92,11 +92,13 @@ def main() -> int:
         # Pixels, not "volume built": every pane must show something bright.
         if len(panes) < want or any((v if v is not None else 0) <= 8 for v in panes.values()):
             problems.append(f"{view} panes blank or missing: {panes}")
-        if path not in ("gpu", None):
-            problems.append(f"session fell back to {path} rendering on a cold open: {report.get('fallbackWhy')}")
+        # MPR and 3D are rendered natively (Rust) and do not depend on the 2D
+        # viewer's render path; report a 2D CPU fallback, don't fail on it
+        # (e2e-paint.py owns the 2D render-path checks).
+        note = f"  (2D viewer fell back to {path}: {report.get('fallbackWhy')})" if path not in ("gpu", None) else ""
         status = "OK  " if not problems else "FAIL"
         painted = report.get("mprPaintedMs" if view == "mpr" else "vrPaintedMs")
-        print(f"{status} cold open #{attempt} -> {view}  render={path}  volumeLoadedMs={loaded}  paintedMs={painted}  panes={panes}")
+        print(f"{status} cold open #{attempt} -> {view}  render={path}  volumeLoadedMs={loaded}  paintedMs={painted}  panes={panes}{note}")
         for p in problems:
             print("     " + p)
         failures += bool(problems)
