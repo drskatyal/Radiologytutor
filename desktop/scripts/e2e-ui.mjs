@@ -124,10 +124,12 @@ if (want("border")) {
   await page.keyboard.press("Shift+Digit2"); // 1×2
   await page.waitForSelector('[data-drop-cell="1"]');
   await settle(500);
+  // The frame layer of each viewport (a real border above the image).
   const outline = async (i) =>
     cell(i).evaluate((el) => {
-      const s = getComputedStyle(el);
-      return { width: s.outlineWidth, color: s.outlineColor, active: el.hasAttribute("data-active-viewport") };
+      const frame = el.querySelector("[data-viewport-frame]");
+      const s = frame ? getComputedStyle(frame) : null;
+      return { width: s?.borderTopWidth ?? "none", color: s?.borderTopColor ?? "none", active: el.hasAttribute("data-active-viewport") };
     });
   const a0 = await outline(0);
   check("border: active viewport has a 3 px coloured outline", a0.active && a0.width === "3px" && !/rgba?\(0, 0, 0|transparent/.test(a0.color), JSON.stringify(a0));

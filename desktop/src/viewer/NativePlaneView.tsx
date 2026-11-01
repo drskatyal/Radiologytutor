@@ -11,7 +11,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
-import { cn } from "@/components/ui/cn";
 import { invoke } from "../platform";
 import type { ViewerSeries } from "../types";
 import {
@@ -25,6 +24,7 @@ import {
   type SlabMode,
   type VolumeInfo,
 } from "./NativeMprView";
+import { ViewportFrame } from "./StackViewport";
 
 const PLANE_LABEL: Record<Plane, string> = {
   axial: "Axial",
@@ -159,19 +159,13 @@ export function NativePlaneView({
 
   return (
     <div
-      className={cn(
-        "relative flex h-full w-full flex-col overflow-hidden bg-imaging outline outline-1 -outline-offset-1",
-        active
-          ? "outline-[3px] -outline-offset-[3px] outline-accent"
-          : "outline-subtle",
-        dropHover &&
-          "outline-[3px] -outline-offset-[3px] outline-accent-bright",
-      )}
+      className="relative flex h-full w-full flex-col overflow-hidden bg-imaging"
       data-drop-cell={cellIndex}
       data-active-viewport={active ? "1" : undefined}
       data-reformat={plane}
       onPointerDownCapture={onActivate}
     >
+      <ViewportFrame active={active} hover={dropHover} />
       {error ? (
         <div
           role="alert"

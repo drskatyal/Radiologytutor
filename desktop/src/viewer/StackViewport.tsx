@@ -527,13 +527,7 @@ function StackViewportImpl({
   return (
     <div
       className={cn(
-        "relative h-full w-full overflow-hidden bg-imaging",
-        "outline outline-1 -outline-offset-1",
-        // Exactly one active viewport, always marked (also in a 1x1 layout):
-        // a 3px accent border where a clicked series loads; the rest thin and
-        // neutral. A series dragged over a viewport lights it brighter.
-        active ? "outline-[3px] -outline-offset-[3px] outline-accent" : "outline-subtle",
-        (dragOver || dropHover) && "outline-[3px] -outline-offset-[3px] outline-accent-bright"
+        "relative h-full w-full overflow-hidden bg-imaging"
       )}
       data-drop-cell={cellIndex}
       data-active-viewport={active ? "1" : undefined}
@@ -571,6 +565,7 @@ function StackViewportImpl({
       onContextMenu={(e) => e.preventDefault()}
     >
       <div ref={elementRef} className="cs-viewport absolute inset-0" data-viewport-id={viewportId} data-has-series={series ? "1" : undefined} />
+      <ViewportFrame active={active} hover={dragOver || !!dropHover} />
       {editCtx && series && (
         <Suspense fallback={null}>
           <AnnotationEditLayer
@@ -716,3 +711,23 @@ function StackViewportImpl({
 }
 
 export const StackViewport = memo(StackViewportImpl);
+
+/**
+ * Exactly one active viewport, always marked (also in a 1x1 layout): a 3 px
+ * accent frame where a clicked series loads; the rest thin and neutral; a
+ * series dragged over a viewport lights it brighter. A real border on its own
+ * layer, drawn above the image (an outline on the cell computed to 0 px in
+ * some engines once keyboard focus moved).
+ */
+export function ViewportFrame({ active, hover = false }: { active: boolean; hover?: boolean }) {
+  return (
+    <div
+      aria-hidden
+      data-viewport-frame={active ? "active" : "idle"}
+      className={cn(
+        "pointer-events-none absolute inset-0 z-30",
+        hover ? "border-[3px] border-accent-bright" : active ? "border-[3px] border-accent" : "border border-subtle"
+      )}
+    />
+  );
+}
