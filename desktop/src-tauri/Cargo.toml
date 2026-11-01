@@ -1,6 +1,6 @@
 [package]
 name = "flowrad-viewer"
-version = "0.5.3"
+version = "0.6.0"
 description = "FlowRad Viewer — a free, offline DICOM viewer for Windows, macOS and Linux"
 authors = ["FlowRad"]
 license = "UNLICENSED"
