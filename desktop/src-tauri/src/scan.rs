@@ -44,6 +44,8 @@ pub struct ScanTimings {
 #[serde(rename_all = "camelCase")]
 pub struct ScanResult {
     pub headers: Vec<Header>,
+    /// Structured reports and key-image notes found alongside the images.
+    pub documents: Vec<crate::documents::Document>,
     pub kind: SourceKind,
     /// Display label for the history list: folder / archive / disc name.
     pub label: String,
@@ -269,6 +271,7 @@ pub fn scan(
     let accepted = AtomicUsize::new(0);
     let hits = AtomicUsize::new(0);
     let parse_started = Instant::now();
+    let documents: Mutex<Vec<crate::documents::Document>> = Mutex::new(Vec::new());
     // Progressive open: headers stream to the renderer in small batches so the
     // first series is on screen while a 2000-file disc is still being read.
     let pending: Mutex<(Vec<Header>, Instant)> = Mutex::new((Vec::new(), Instant::now()));
@@ -303,7 +306,16 @@ pub fn scan(
                         hits.fetch_add(1, Ordering::Relaxed);
                         Some((hit.clone(), true))
                     }
-                    _ => read_header(path).map(|h| (h, false)),
+                    _ => {
+                        let header = read_header(path);
+                        // Not an image: maybe a structured report or key-image note.
+                        if header.is_none() && crate::header::is_sr_candidate(path) {
+                            if let Some(doc) = crate::documents::read_document(path) {
+                                documents.lock().push(doc);
+                            }
+                        }
+                        header.map(|h| (h, false))
+                    }
                 };
                 let result = result.map(|(mut h, hit)| {
                     on_header(&mut h);
@@ -380,6 +392,7 @@ pub fn scan(
 
     let label = paths.first().map(|p| label_for(p)).unwrap_or_default();
     Ok(ScanResult {
+        documents: documents.into_inner(),
         skipped: total.saturating_sub(headers.len()),
         inspected: total,
         cache_hits: hits.load(Ordering::Relaxed),
