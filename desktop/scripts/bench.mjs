@@ -6,7 +6,7 @@
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
 //
-// `desktop` launches the real app with RADLEARN_BENCH=1 RADLEARN_BENCH_EXIT=1
+// `desktop` launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1
 // and the study on the command line; the renderer reports one JSON line
 // (scan, first image painted, scan done) and the app exits. The first run is
 // cold (empty scan cache); the rest are warm (cache hits). `coldstart` times
@@ -37,13 +37,18 @@ const median = (xs) => {
   const s = [...xs].filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
   return s.length ? s[Math.floor(s.length / 2)] : NaN;
 };
+// The app prints "FLOWRAD_BENCH {json}" (builds before 0.5.2: "RADLEARN_BENCH").
+const REPORT = /^(FLOWRAD|RADLEARN)_BENCH /;
+/** Bench switches under both names, so pre-0.5.2 builds can still be compared. */
+const benchEnv = (vars) =>
+  Object.fromEntries(Object.entries(vars).flatMap(([k, v]) => [[`FLOWRAD_${k}`, v], [`RADLEARN_${k}`, v]]));
 const r0 = (x) => (Number.isFinite(x) ? Math.round(x) : x);
 
 function runApp(binary, args, env = {}) {
   return new Promise((resolve, reject) => {
     const started = performance.now();
     const child = spawn(binary, args, {
-      env: { ...process.env, RADLEARN_BENCH: "1", RADLEARN_BENCH_EXIT: "1", ...env },
+      env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_EXIT: "1" }), ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
@@ -66,10 +71,10 @@ function runApp(binary, args, env = {}) {
     }, 120_000);
     child.stdout.on("data", (d) => {
       out += d;
-      const line = out.split("\n").find((l) => l.startsWith("RADLEARN_BENCH "));
+      const line = out.split("\n").find((l) => REPORT.test(l));
       if (line && !child.reported) {
         child.reported = true;
-        const report = JSON.parse(line.slice("RADLEARN_BENCH ".length));
+        const report = JSON.parse(line.replace(REPORT, ""));
         report.externalMs = performance.now() - started;
         clearInterval(sampler);
         const atReport = sample();

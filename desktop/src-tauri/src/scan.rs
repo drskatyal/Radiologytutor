@@ -430,10 +430,10 @@ mod tests {
         assert_eq!(single_child_dir(d.path()), None);
     }
 
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test scan
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test scan
     #[test]
     fn scans_a_disc_via_dicomdir_then_hits_the_cache_without_storing_phi() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
+        let Ok(root) = crate::flowrad_env("FIXTURES") else {
             return;
         };
         let cache = tempfile::tempdir().unwrap();
