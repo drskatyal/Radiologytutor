@@ -87,8 +87,17 @@ async function caller(cookieHeader: string): Promise<Caller | null> {
         }),
       }
     : null;
-  sessionMemo.set(cookieHeader, value);
+  // Never remember "no session" for a request that carries an auth cookie:
+  // a lookup that failed once (cold start, a slow store) would otherwise
+  // 401 every frame of a signed-in reader for the whole TTL. Anonymous
+  // requests are still memoised, so they cannot hammer the session store.
+  if (value || !hasAuthCookie(cookieHeader)) sessionMemo.set(cookieHeader, value);
   return value;
+}
+
+/** Demo or Better Auth session cookie present (names only — never parsed here). */
+export function hasAuthCookie(cookieHeader: string): boolean {
+  return /(?:^|;\s*)(?:flowrad_demo|(?:__Secure-)?better-auth\.[a-z_]+)=/i.test(cookieHeader);
 }
 
 async function publishedStudyUids(orgId: string): Promise<Set<string>> {

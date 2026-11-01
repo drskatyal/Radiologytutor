@@ -24,7 +24,7 @@ browser  →  Cloud Run (Next.js, min instances ≥ 1, project radlearn-app, eur
 2. The server builds the prefetch manifest. Series and instance lists are QIDO-RS against the DICOM store (`lib/orthanc.ts` → `lib/healthcareDicom.ts`). That is metadata, not pixels.
 3. Cornerstone loads series metadata, then frames, all as same-origin `GET /api/dicomweb/studies/{study}/series/{series}/...`. The route is `app/api/dicomweb/[...path]/route.ts`.
 4. The route checks the session, then that the caller's org holds that StudyInstanceUID (unchanged). It does not accept a client-supplied `orgId`.
-5. Frame reads may check the private object cache for at most `FRAME_CACHE_WAIT_MS` (default 25). A slow or empty cache does not sit in front of the first slice. On a miss the route calls the DICOM store and streams the body back.
+5. Frames are requested from the store in lossless JPEG-LS (`DICOMWEB_FRAME_TRANSFER_SYNTAX`, default `jls` on Healthcare; a refusal falls back to the stored syntax per series). Reads check an in-process LRU, then the private object cache; the object read is hedged — after `FRAME_CACHE_HEDGE_MS` (old name `FRAME_CACHE_WAIT_MS`) the store request also starts and whichever answers first wins. Every response carries `X-Cache: HIT | MISS | BYPASS` (+ `X-Cache-Tier`). Series metadata is served as a slim, gzip, cached index (`X-Series-Index`).
 6. Upstream Accept on frames is the Cornerstone wadors value (`multipart/related; type=application/octet-stream; transfer-syntax=*`) unless the client already sent `multipart/related`. That skips Healthcare's transcode. The policy lives in `lib/dicomwebProxy.ts` (the same helper Teach uses so a prefetch 400 cannot be cached). Rendered thumbnails pass through jpeg/png when the client asked for one, otherwise `image/jpeg`.
 7. Successful frame responses are `Cache-Control: private, immutable` plus `Vary: Accept`. **4xx and 5xx are not cached.** A shared cache must not store these bytes.
 8. Cornerstone decodes in up to 4 web workers. The retrieval pool allows 16 interaction requests (the library default is 6). Prefetch (`components/student/prefetch.ts`) warms the slice the stack opens on and a short window around each finding (cap 18, concurrency 3) with that same Accept. It does not pull the first 32 slices of the series.
@@ -105,7 +105,7 @@ Gemini (`generativelanguage.googleapis.com`) is a global API. Same-region Cloud 
 | Startup probe | `GET /` | Cloud Run will not send traffic until the process answers |
 | VPC egress | `all-traffic` until Atlas PSC, then `private-ranges-only` | Atlas IP allowlist vs DICOM not hairpinning through NAT |
 | Public CDN | no | Frames are `Cache-Control: private`. Converted series can go through Cloud CDN with **signed URL prefixes** only: see docs/DICOM_CDN_REPORT.md |
-| Object cache | optional, same region | `R2_ENDPOINT=https://storage.googleapis.com` reuses `lib/r2.ts`. 25 ms budget, then the store |
+| Object cache | optional, same region | `R2_ENDPOINT=https://storage.googleapis.com` reuses `lib/r2.ts`. Hedged read (see 5); `X-Cache` says HIT/MISS |
 
 Raise the DICOM store read quota before a class. A room of students scrolling is a lot of WADO-RS. HTTP 429 is the symptom. Google's conformance statement documents 429; the numeric quota is the project's, so confirm it in Cloud Console rather than guessing a limit here.
 

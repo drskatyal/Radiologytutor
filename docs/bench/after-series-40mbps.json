@@ -1,0 +1,33 @@
+{
+  "label": "after-c24",
+  "concurrency": 24,
+  "mbps": 40,
+  "runs": [
+    {
+      "pass": "cold",
+      "frames": 848,
+      "ms": 33165,
+      "firstFrameMs": 1451,
+      "mb": 123.9,
+      "xCache": {
+        "MISS": 848
+      },
+      "syntax": {
+        "jls": 848
+      }
+    },
+    {
+      "pass": "repeat",
+      "frames": 848,
+      "ms": 25699,
+      "firstFrameMs": 1137,
+      "mb": 123.9,
+      "xCache": {
+        "HIT": 848
+      },
+      "syntax": {
+        "jls": 848
+      }
+    }
+  ]
+}

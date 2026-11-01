@@ -10,6 +10,7 @@ import {
   WHEEL_PIXELS_PER_SLICE,
   createWheelScrollState,
   scaleDragPixelsPerSlice,
+  tuneStackScrollTool,
   takeWheelSlices,
 } from "./scrollSensitivity.ts";
 
@@ -51,4 +52,25 @@ test("drag asks for three times the distance, and never under 8px", () => {
   assert.equal(scaleDragPixelsPerSlice(2), DRAG_MIN_PIXELS_PER_SLICE);
   assert.equal(scaleDragPixelsPerSlice(12), 36);
   assert.equal(scaleDragPixelsPerSlice(Number.NaN), DRAG_MIN_PIXELS_PER_SLICE);
+});
+
+test("each wheel step is painted: the debounce that merged two steps into one jump is off", () => {
+  const calls: number[] = [];
+  const tool = {
+    configuration: { debounceIfNotLoaded: true },
+    mouseWheelCallback: (evt: { detail?: { wheel?: { direction?: number } } }) => {
+      calls.push(evt.detail?.wheel?.direction ?? 0);
+    },
+  };
+  tuneStackScrollTool(tool);
+  assert.equal(tool.configuration.debounceIfNotLoaded, false);
+  // Windows notch (120 px), then a second notch 200 ms later: two single steps.
+  tool.mouseWheelCallback({ detail: { wheel: { pixelY: 120, direction: 1 } } } as never);
+  return new Promise<void>((resolve) =>
+    setTimeout(() => {
+      tool.mouseWheelCallback({ detail: { wheel: { pixelY: 120, direction: 1 } } } as never);
+      assert.deepEqual(calls, [1, 1], "one slice per notch, never two");
+      resolve();
+    }, 200)
+  );
 });

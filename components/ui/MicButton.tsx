@@ -19,6 +19,8 @@ export interface MicButtonProps {
    * one button. A non-empty string becomes the accessible name while idle.
    */
   label?: React.ReactNode;
+  /** `sm` — a 36px disc with the label for screen readers only (slim bars). */
+  size?: "md" | "sm";
   className?: string;
 }
 
@@ -42,7 +44,9 @@ export function MicButton({
   disabled = false,
   label,
   className,
+  size = "md",
 }: MicButtonProps) {
+  const small = size === "sm";
   const reduce = useReducedMotion();
   const isRecording = state === "recording";
   const isProcessing = state === "processing";
@@ -68,7 +72,8 @@ export function MicButton({
         disabled={disabled || isProcessing}
         onClick={handleClick}
         className={cn(
-          "group inline-flex items-center gap-3 rounded-full text-left",
+          "group inline-flex items-center rounded-full text-left",
+          small ? "gap-0" : "gap-3",
           "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
           "disabled:cursor-not-allowed disabled:opacity-60"
         )}
@@ -85,7 +90,8 @@ export function MicButton({
           )}
           <span
             className={cn(
-              "relative flex h-14 w-14 items-center justify-center rounded-full transition duration-200",
+              "relative flex items-center justify-center rounded-full transition duration-200",
+              small ? "h-9 w-9" : "h-14 w-14",
               idle && !reduce && "group-hover:scale-105 group-active:scale-[0.93]",
               isRecording
                 ? "animate-mic-pulse bg-danger text-white"
@@ -97,15 +103,16 @@ export function MicButton({
             {isProcessing ? (
               <Spinner size="md" label="Processing" />
             ) : isRecording ? (
-              <Square className="h-5 w-5 fill-current" strokeWidth={0} />
+              <Square className={cn("fill-current", small ? "h-3.5 w-3.5" : "h-5 w-5")} strokeWidth={0} />
             ) : (
-              <Mic className="h-6 w-6" />
+              <Mic className={small ? "h-4 w-4" : "h-6 w-6"} />
             )}
           </span>
         </span>
         <span
           className={cn(
             "text-sm font-medium tabular-nums",
+            small && "sr-only",
             isRecording ? "text-danger" : "text-secondary"
           )}
         >

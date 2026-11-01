@@ -18,6 +18,20 @@ const POSITION_EPS_MM = 0.05;
 
 export type MprPlane = "axial" | "coronal" | "sagittal";
 export type MprMode = "stack" | "mpr";
+/** How the volume is shown once MPR is on. */
+export type MprRender = "mpr" | "mip" | "3d";
+/** MIP slab thickness, mm. Thick enough to follow a vessel or find a nodule. */
+export const MIP_SLAB_MM = 15;
+
+/** Which plane the keyboard scrolls: the last one the reader touched. */
+export function planeForViewportId(
+  viewportId: string | null | undefined,
+  ids: { axial: string; coronal: string; sagittal: string }
+): MprPlane {
+  if (viewportId === ids.coronal) return "coronal";
+  if (viewportId === ids.sagittal) return "sagittal";
+  return "axial";
+}
 
 export type MprBlockReason = "modality" | "count" | "pixels" | "geometry" | "spacing";
 
@@ -53,6 +67,10 @@ export interface MprSessionHandle {
   resize: () => void;
   setLeftTool: (name: string) => void;
   restoreCrosshairs: () => void;
+  /** Thin MPR, MIP slab, or a 3D volume render (needs `elements.volume3d`). */
+  setRender: (mode: MprRender) => Promise<boolean>;
+  /** Scroll one plane by `delta` slices (keyboard). */
+  scrollPlane: (plane: MprPlane, delta: number) => void;
 }
 
 export type MprAction = "idle" | "teardown" | "mount" | "replace" | "fallback";

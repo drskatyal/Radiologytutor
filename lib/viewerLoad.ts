@@ -9,7 +9,7 @@ import { stackOpenIndex } from "./stackIndex";
 import type { CaseSeries } from "./viewerSource";
 
 /** Neighboring slices prefetched around the current index. Not the whole series. */
-export const ACTIVE_PREFETCH_RADIUS = 8;
+export const ACTIVE_PREFETCH_RADIUS = 10;
 
 export interface OpenSlice {
   /** 0-based index in metadata order. */
