@@ -124,7 +124,7 @@ jobs:
   # MPR 1,200, idle 400, back to baseline); tighten them when a change earns it.
   perf-windows:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       FIRST_IMAGE_MAX_MS: "1100"
       MPR_MAX_MS: "2000"
@@ -133,8 +133,8 @@ jobs:
       COLDSTART_MAX_MS: "900"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
-      LEAK_MAX_MB: "1400"
-      LEAK_ROUND_GROWTH_MAX_MB: "150"
+      LEAK_MAX_MB: "400"
+      LEAK_ROUND_GROWTH_MAX_MB: "100"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -159,8 +159,38 @@ jobs:
         working-directory: desktop
       - name: Synthetic CT, 848 slices (deterministic)
         run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
-      - name: e2e (P0) — MPR draws on a cold, still-streaming open
-        run: python desktop/scripts/e2e-cold-mpr.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
+      # Real-size studies (HP: CT 4,332 images, MRI 10,310 images), synthetic
+      # and deterministic, cached by the generator's hash.
+      - name: Cache large synthetic studies
+        id: bigcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/bigct
+            ${{ runner.temp }}/bigmr
+          key: big-studies-${{ hashFiles('scripts/make-big-study.py', 'scripts/make-test-ct.py') }}
+      - name: Large synthetic CT (4,332 slices) and MRI (10,310 images, 242 series)
+        if: steps.bigcache.outputs.cache-hit != 'true'
+        run: |
+          python scripts/make-big-study.py ct "${{ runner.temp }}/bigct"
+          python scripts/make-big-study.py mri "${{ runner.temp }}/bigmr"
+      # Done = pixels on screen in every MPR pane and in 3D, measured in the
+      # app, from a cold cache while the study is still streaming in.
+      - name: e2e (P0) — MPR and 3D draw on a cold, still-streaming open (848-slice CT)
+        run: python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
+      - name: e2e (P0) — MPR and 3D draw, cold, on the 4,332-slice CT
+        run: python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --runs 1
+      - name: e2e (P0) — MPR and 3D draw, cold, on the 10,310-image MRI (its 3D series)
+        env:
+          E2E_SCAN_DELAY_US: "0"
+        run: python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 1
+      - name: MPR and 3D peak memory on the 4,332-slice CT (whole process tree)
+        shell: bash
+        run: |
+          node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
+          FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
+      - name: Cold open of the 10,310-image MRI (scan + first image)
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2
       - name: Cold start (median of 5, first paint in-process)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
       - name: Open + first image (cold and warm)
@@ -171,7 +201,7 @@ jobs:
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
-      - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×2; whole process tree)
-        run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
+      - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)
+        run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: MPR build time and peak memory (whole process tree)
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}

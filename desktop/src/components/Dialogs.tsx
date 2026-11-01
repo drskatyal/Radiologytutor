@@ -300,8 +300,8 @@ export function SettingsDialog({
             onChange={(v) => onChange({ hidePatient: v })}
           />
           <Toggle
-            label="Fast MPR (native)"
-            description="Builds MPR volumes outside the viewer window: far less memory. Turn off to use the GPU MPR with slab and MIP."
+            label="Native MPR and 3D"
+            description="Builds MPR and 3D from one volume outside the viewer window: far less memory. Turn off for the GPU MPR (slab, MIP) and GPU 3D."
             checked={settings.nativeMpr}
             onChange={(v) => onChange({ nativeMpr: v })}
           />

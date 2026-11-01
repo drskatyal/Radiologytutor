@@ -18,7 +18,7 @@ export interface ViewerSettings {
   scrollDragPx: number;
   /** Quick runs of wheel notches move progressively further. */
   scrollAcceleration: boolean;
-  /** MPR rendered by the native (Rust) core: the volume never enters the webview. */
+  /** MPR and 3D rendered by the native (Rust) core: the volume never enters the webview. */
   nativeMpr: boolean;
 }
 

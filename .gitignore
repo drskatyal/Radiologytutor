@@ -50,3 +50,4 @@ deploy/gcp/terraform/.terraform.lock.hcl
 # Viewer benchmark artifacts (scripts/bench/run.mjs)
 scripts/bench/.build/
 scripts/bench/results/
+__pycache__/

@@ -78,6 +78,7 @@ function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T 
 const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => import("./components/Toolbar"), "Toolbar");
 const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
 const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
+const Native3DView = named<typeof import("./viewer/Native3DView").Native3DView>(() => import("./viewer/Native3DView"), "Native3DView");
 const NativeMprView = named<typeof import("./viewer/NativeMprView").NativeMprView>(() => import("./viewer/NativeMprView"), "NativeMprView");
 const VolumeWorkspace = named<typeof import("./viewer/VolumeWorkspace").VolumeWorkspace>(() => import("./viewer/VolumeWorkspace"), "VolumeWorkspace");
 const ExportDialog = named<typeof import("./components/ExportDialog").ExportDialog>(() => import("./components/ExportDialog"), "ExportDialog");
@@ -154,7 +155,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown };
+    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -487,6 +488,17 @@ export default function App() {
             // Volume benchmark: switch view; the report fires when the volume is loaded.
             bench.current.pendingVolume = report;
             bench.current.volumeT0 = performance.now();
+            // A multi-series study (MRI): use its largest volumetric series.
+            const target = built
+              .flatMap((st) => st.series)
+              .filter((sr) => sr.volumetric)
+              .sort((a, b) => b.imageIds.length - a.imageIds.length)[0];
+            if (target && benchView !== "fusion") {
+              autoHung.current = false;
+              setCells((prev) => prev.map((v, i) => (i === 0 ? target.uid : v)));
+              setActiveCell(0);
+              bench.current.marks.volumeSeriesImages = target.imageIds.length;
+            }
             setView(benchView);
             // A volume that never finishes must still report where it stuck.
             const volumeLimit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
@@ -507,6 +519,7 @@ export default function App() {
                 // Feature on/off leak test: every feature opened and closed, twice.
                 void (async () => {
                   const { runLeakCycle } = await import("./viewer/leakCycle");
+                  const rounds = await invoke<number>("bench_leak_rounds").catch(() => 2);
                   bench.current.marks.leak = await runLeakCycle({
                     setView: (v) =>
                       new Promise<void>((resolve) => {
@@ -524,7 +537,7 @@ export default function App() {
                     setDialog: (d) => setDialog(d),
                     toggleCine: () => activeHandleRef.current()?.toggleCine(),
                     setTool: (t) => setLeftTool(t),
-                  });
+                  }, { rounds });
                   void report();
                 })();
               } else if (bench.current.firstPaint != null && benchView === "interact") {
@@ -1116,6 +1129,29 @@ export default function App() {
                 onVolumeReady={(t) => {
                   bench.current.marks.volumeLoadedMs = t.loadedMs;
                   bench.current.marks.volumeBuildMs = t.shellMs;
+                }}
+                onPainted={(t) => {
+                  // Done = pixels on screen in every pane, not "volume built"
+                  // (0.6.0 built in 0.36 s and never painted on the HP).
+                  bench.current.marks.mprPaintedMs = t.ms;
+                  bench.current.marks.mprPanes = t.maxLum;
+                  const pending = bench.current.pendingVolume;
+                  bench.current.pendingVolume = undefined;
+                  void pending?.();
+                }}
+              />
+            ) : view === "3d" && isTauri && settings.nativeMpr && volumeSeries && nativeMprUnsupported !== volumeSeries.uid ? (
+              <Native3DView
+                series={volumeSeries}
+                onExit={() => setView("grid")}
+                onUnsupported={() => setNativeMprUnsupported(volumeSeries.uid)}
+                onVolumeReady={(t) => {
+                  bench.current.marks.volumeLoadedMs = t.loadedMs;
+                  bench.current.marks.volumeBuildMs = t.shellMs;
+                }}
+                onPainted={(t) => {
+                  bench.current.marks.vrPaintedMs = t.ms;
+                  bench.current.marks.vrPanes = t.maxLum;
                   const pending = bench.current.pendingVolume;
                   bench.current.pendingVolume = undefined;
                   void pending?.();
