@@ -113,10 +113,13 @@ async function benchDesktop(binary, study) {
     const report = await runApp(binary, [study]);
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · first image ${r0(report.firstImagePaintedMs)} ms · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImagePaintedMs)} ms · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
   }
   const warm = reports.slice(1);
+  // The first slice on screen: Rust's instant preview (the full image at the
+  // series window) or the engine's paint, whichever came first.
+  const visible = (r) => Math.min(r.paint?.firstPreviewMs ?? Infinity, r.firstImagePaintedMs ?? Infinity);
   const summary = {
     mode: "desktop",
     study,
@@ -125,12 +128,16 @@ async function benchDesktop(binary, study) {
     cold: {
       rustScanMs: r0(reports[0].rust?.totalMs),
       firstImageMs: r0(reports[0].firstImagePaintedMs),
+      firstVisibleMs: r0(visible(reports[0])),
       allReadyMs: r0(reports[0].scanDoneMs),
     },
     warm: {
       rustScanMs: r0(median(warm.map((r) => r.rust?.totalMs))),
       firstSeriesMs: r0(median(warm.map((r) => r.firstSeriesHungMs))),
       firstImageMs: r0(median(warm.map((r) => r.firstImagePaintedMs))),
+      firstPreviewMs: r0(median(warm.map((r) => r.paint?.firstPreviewMs))),
+      firstVisibleMs: r0(median(warm.map(visible))),
+      maxLongTaskMs: r0(Math.max(...warm.map((r) => r.longTasks?.maxMs ?? 0))),
       allReadyMs: r0(median(warm.map((r) => r.scanDoneMs))),
       engineInitMs: r0(median(warm.map((r) => r.engineInitMs))),
     },
@@ -141,6 +148,12 @@ async function benchDesktop(binary, study) {
   const firstImage = runs > 1 ? summary.warm.firstImageMs : summary.cold.firstImageMs;
   if (!(firstImage <= budget)) {
     console.error(`first-image gate failed: ${firstImage} ms > ${budget} ms`);
+    process.exitCode = 1;
+  }
+  const visibleBudget = flag("max-first-visible-ms", Infinity);
+  const firstVisible = runs > 1 ? summary.warm.firstVisibleMs : summary.cold.firstVisibleMs;
+  if (!(firstVisible <= visibleBudget)) {
+    console.error(`first-visible gate failed: ${firstVisible} ms > ${visibleBudget} ms`);
     process.exitCode = 1;
   }
 }
