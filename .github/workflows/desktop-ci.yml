@@ -8,6 +8,8 @@ on:
       - "desktop/**"
       - "lib/**"
       - "components/ui/**"
+      - "packages/**"
+      - "scripts/make-test-ct.py"
       - ".github/workflows/desktop-*.yml"
   workflow_dispatch:
 
@@ -107,3 +109,46 @@ jobs:
         working-directory: desktop
       - name: e2e — normal launch paints real pixels in the main viewport
         run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/radlearn-viewer.exe
+
+  # Performance gate on WebView2 (the platform readers install on), release
+  # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
+  # build time and MPR peak memory of the whole process tree. Budgets live in
+  # the env block so a change to them is visible in review. Baseline on this
+  # runner (WARP software D3D, 2026-11): first image 721 ms warm / 997 cold,
+  # MPR 5.2 s, peak 2,120 MB (renderer 734, GPU process 1,325). Budgets leave
+  # room for runner noise; tighten them when a change earns it.
+  perf-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      FIRST_IMAGE_MAX_MS: "1300"
+      MPR_MAX_MS: "8000"
+      MPR_MAX_MB: "2600"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pydicom numpy
+      - run: npm ci
+      - run: npm ci --prefix desktop
+      - name: Build the app (release, no installer)
+        run: npx tauri build --no-bundle
+        working-directory: desktop
+      - name: Synthetic CT, 848 slices (deterministic)
+        run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
+      - name: Open + first image (cold and warm)
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/radlearn-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }}
+      - name: MPR build time and peak memory (whole process tree)
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/radlearn-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
