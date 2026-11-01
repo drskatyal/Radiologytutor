@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "flowrad-viewer"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "dicom-core",
  "dicom-dictionary-std",
