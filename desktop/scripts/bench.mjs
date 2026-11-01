@@ -54,7 +54,17 @@ function runApp(binary, args, env = {}) {
       env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_EXIT: "1" }), ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // The app's output: only a tail is kept (for the timeout message) and the
+    // report line is found line by line. Keeping all of it re-split on every
+    // chunk ran the bench out of heap on a 10k-file open.
     let out = "";
+    let pending = "";
+    let bytes = 0;
+    const TAIL = 64 * 1024;
+    const keep = (d) => {
+      bytes += d.length;
+      out = (out + d).slice(-TAIL);
+    };
     // Whole-tree memory: sampled every second, peak kept (private bytes).
     let peak = null;
     const sample = () => {
@@ -73,12 +83,18 @@ function runApp(binary, args, env = {}) {
       reject(new Error(`timed out; output:\n${out}`));
     }, Number(env.FLOWRAD_BENCH_TIMEOUT_MS ?? 120_000) + 5_000);
     child.stdout.on("data", (d) => {
-      out += d;
-      const line = out.split("\n").find((l) => REPORT.test(l));
+      keep(d);
+      pending += d;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      if (pending.length > TAIL && !REPORT.test(pending)) pending = "";
+      const line = lines.find((l) => REPORT.test(l));
       if (line && !child.reported) {
         child.reported = true;
         const report = JSON.parse(line.replace(REPORT, ""));
         report.externalMs = performance.now() - started;
+        report.appOutputKb = Math.round(bytes / 1024);
+        if (bytes > 1 << 20) console.error(`note: the app wrote ${(bytes / 1048576).toFixed(1)} MB to stdout/stderr during this run`);
         clearInterval(sampler);
         const atReport = sample();
         report.tree = atReport && { wsMb: atReport.wsMb, privateMb: atReport.privateMb, processes: atReport.processes.length };
@@ -88,7 +104,7 @@ function runApp(binary, args, env = {}) {
         setTimeout(() => child.kill("SIGKILL"), 3000);
       }
     });
-    child.stderr.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => keep(d));
     child.on("error", reject);
   });
 }
