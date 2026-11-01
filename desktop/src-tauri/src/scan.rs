@@ -290,12 +290,21 @@ pub fn scan(
         }
     };
 
+    // Test hook (e2e "MPR while a cold scan is still streaming"): slow each
+    // file down so a small study streams for seconds, like a cold 4,000-file disc.
+    let throttle = crate::flowrad_env("SCAN_DELAY_US")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_micros);
     let mut headers: Vec<(Header, bool)> = scan_pool().install(|| {
         files
             .par_iter()
             .filter_map(|path| {
                 if cancel.load(Ordering::Relaxed) {
                     return None;
+                }
+                if let Some(d) = throttle {
+                    std::thread::sleep(d);
                 }
                 let key = path.to_string_lossy();
                 let meta = fs::metadata(path).ok();
