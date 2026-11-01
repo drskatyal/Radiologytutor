@@ -54,11 +54,13 @@ export function volumePlaneUrl(
   index: number,
   center: number,
   width: number,
-  maxDim: number
+  maxDim: number,
+  slab: { mode: "off" | "mip" | "minip" | "avg"; mm: number } = { mode: "off", mm: 0 }
 ): string {
   if (!protocolBase) throw new Error("dicom protocol not initialised");
   const r = (n: number) => Math.round(n * 10) / 10;
-  return `${protocolBase.replace(/f\/$/, "v/")}${key}/${plane}/${index}/${r(center)}/${r(width)}/${Math.round(maxDim)}`;
+  const tail = slab.mode === "off" || slab.mm <= 0 ? "" : `/${slab.mode}/${r(slab.mm)}`;
+  return `${protocolBase.replace(/f\/$/, "v/")}${key}/${plane}/${index}/${r(center)}/${r(width)}/${Math.round(maxDim)}${tail}`;
 }
 
 /** A native 3D frame (render3d.rs): volume rendering or MIP from the shared volume. */

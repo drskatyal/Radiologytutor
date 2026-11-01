@@ -361,6 +361,26 @@ fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
 
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// Startup marks (ms since process start), for the cold-start breakdown:
+/// window built (Tauri `build()` returned: window + WebView2 requested), page
+/// navigation started and finished (the webview actually loading the page).
+static MARKS: parking_lot::Mutex<[Option<f64>; 3]> = parking_lot::Mutex::new([None; 3]);
+
+fn mark(i: usize) {
+    if let Some(t) = STARTED.get() {
+        let mut m = MARKS.lock();
+        if m[i].is_none() {
+            m[i] = Some(t.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+}
+
+#[tauri::command]
+fn startup_marks() -> serde_json::Value {
+    let m = *MARKS.lock();
+    serde_json::json!({ "windowBuiltMs": m[0], "navStartMs": m[1], "navDoneMs": m[2] })
+}
+
 /// Milliseconds since the process started — the renderer calls this at first
 /// paint, which is the honest "cold start to usable window" number.
 #[tauri::command]
@@ -403,6 +423,19 @@ fn simulate_blank_gpu() -> bool {
 #[tauri::command]
 fn bench_leak_rounds() -> u32 {
     crate::flowrad_env("LEAK_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).clamp(1, 50)
+}
+
+/// FLOWRAD_BENCH_SLAB=mip:20 (mode:mm): volume views open with that slab.
+#[tauri::command]
+fn bench_slab() -> Option<String> {
+    crate::flowrad_env("BENCH_SLAB").ok()
+}
+
+/// FLOWRAD_BENCH_REFORMAT=coronal|sagittal|axial: the bench opens a quick
+/// reformat in the first viewport instead of the stack.
+#[tauri::command]
+fn bench_reformat() -> Option<String> {
+    crate::flowrad_env("BENCH_REFORMAT").ok()
 }
 
 /// FLOWRAD_DEBUG=1: show the memory HUD from launch.
@@ -556,6 +589,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
+        .on_page_load(|_webview, payload| match payload.event() {
+            tauri::webview::PageLoadEvent::Started => mark(1),
+            tauri::webview::PageLoadEvent::Finished => mark(2),
+        })
         .register_asynchronous_uri_scheme_protocol("dicom", move |_ctx, request, responder| {
             let registry = registry.clone();
             let path = request.uri().path().to_string();
@@ -592,6 +629,8 @@ pub fn run() {
             debug_enabled,
             simulate_blank_gpu,
             bench_leak_rounds,
+            bench_slab,
+            bench_reformat,
             bench_view,
             bench_pixels,
             bench_paint_timeout_ms,
@@ -599,6 +638,7 @@ pub fn run() {
             probe_report,
             set_memory_mode,
             startup_elapsed_ms,
+            startup_marks,
             store::history_list,
             store::history_record,
             store::history_remove,
@@ -617,6 +657,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
+    mark(0);
     // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
     store::migrate_legacy_data(app.handle());
 

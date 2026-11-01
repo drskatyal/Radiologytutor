@@ -19,8 +19,9 @@ import {
 // releaseProxy symbol must match when the manager terminates our workers.
 import * as Comlink from "comlink";
 import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./workerPool";
-import { tuneStackScrollTool } from "@flowrad/viewer-core";
+import { annotationEditing, tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
+import { markPhase } from "../perfWatch";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
@@ -33,7 +34,9 @@ const MB = 1024 * 1024;
  * the study; the ±N travel prefetch (StackViewport) refills it ahead. MPR / 3D raise it to fit their volume for
  * as long as the volume is open (enterVolumeMemory / leaveVolumeMemory).
  */
-const BROWSE_CACHE_BUDGET = 160 * MB;
+const BROWSE_CACHE_BUDGET = 96 * MB;
+/** 2D cache while idle: the slices on screen and a few neighbours. */
+const IDLE_CACHE_BUDGET = 24 * MB;
 let deviceCacheCeiling = 1024 * MB;
 
 type Core = typeof import("@cornerstonejs/core");
@@ -134,7 +137,9 @@ async function createEngine(): Promise<Engine> {
   const steps: Record<string, number> = {};
   engineTimings.steps = steps;
   let mark = performance.now();
+  markPhase("engine: import");
   const step = (name: string) => {
+    markPhase(`engine: after ${name.replace(/Ms$/, "")}`);
     const now = performance.now();
     steps[name] = Math.round(now - mark);
     mark = now;
@@ -155,6 +160,8 @@ async function createEngine(): Promise<Engine> {
   // texture size). One context shares one texture across every pane.
   config.rendering.webGlContextCount = 1;
   await core.init(config as unknown as Parameters<typeof core.init>[0]);
+  // Cursors are ours (toolCursor.ts): Cornerstone's drew one green crosshair for every tool.
+  core.Settings.getRuntimeSettings().set("useCursors", false);
   await tools.init();
   step("coreToolsInitMs");
   // ONE worker at init (the loader would otherwise spawn every instance up
@@ -248,11 +255,8 @@ function buildStackGroup(engine: Engine) {
   const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
   const group = tools.ToolGroupManager.createToolGroup(STACK_GROUP)!;
   for (const name of [...LEFT_TOOLS, "ReferenceLines", "ScaleOverlay"]) group.addTool(name);
-  group.addTool("ArrowAnnotate", {
-    getTextCallback: (done: (text: string) => void) => done(window.prompt("Annotation text") ?? ""),
-    changeTextCallback: (_d: unknown, _e: unknown, done: (text: string) => void) =>
-      done(window.prompt("Annotation text") ?? ""),
-  });
+  // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
+  group.addTool("ArrowAnnotate", annotationEditing.arrowAnnotateConfig);
   group.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
   group.setToolActive("Zoom", {
     bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl }],
@@ -267,33 +271,41 @@ function buildStackGroup(engine: Engine) {
 
 const leftByGroup = new Map<string, string | null>();
 
+/** Not a Cornerstone tool: the left button deletes annotations (AnnotationEditLayer). */
+export const ERASER = "Eraser";
+
 export function setGroupLeftTool(engine: Engine, groupId: string, name: string): void {
   const group = engine.tools.ToolGroupManager.getToolGroup(groupId);
-  if (!group || !group.hasTool(name)) return;
+  if (!group || (name !== ERASER && !group.hasTool(name))) return;
   const { MouseBindings } = bindingsFor(engine);
   const primary = { mouseButton: MouseBindings.Primary };
   const previous = leftByGroup.get(groupId);
-  if (previous && previous !== name) {
+  if (previous && previous !== name && previous !== ERASER && name !== ERASER) {
     // Strip ONLY the left button from the outgoing tool (see lib/toolBindings.ts):
     // setToolActive merges bindings and the first match wins.
     group.setToolPassive(previous, { removeAllBindings: [primary] });
-    if (previous === "StackScroll") {
-      group.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
-    }
-    if (previous === "WindowLevel") {
-      group.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
-    }
-    if (previous === "Pan") {
-      group.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
-    }
-    if (previous === "Zoom") {
-      group.setToolActive("Zoom", {
-        bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: bindingsFor(engine).KeyboardBindings.Ctrl }],
-      });
-    }
+    restoreFixedBindings(engine, group, previous);
+  }
+  if (name === ERASER) {
+    // The left button belongs to no tool: the edit layer takes the clicks.
+    if (previous && previous !== ERASER) group.setToolPassive(previous, { removeAllBindings: [primary] });
+    leftByGroup.set(groupId, ERASER);
+    restoreFixedBindings(engine, group, previous);
+    return;
   }
   group.setToolActive(name, { bindings: [primary] });
   leftByGroup.set(groupId, name);
+}
+
+/** A tool that lost the left button keeps its fixed button (wheel / right / middle / Ctrl+wheel). */
+function restoreFixedBindings(engine: Engine, group: { setToolActive(name: string, o: unknown): void }, previous: string | null | undefined) {
+  const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
+  if (previous === "StackScroll") group.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
+  if (previous === "WindowLevel") group.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
+  if (previous === "Pan") group.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
+  if (previous === "Zoom") {
+    group.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl }] });
+  }
 }
 
 export function addViewportToGroup(engine: Engine, groupId: string, viewportId: string): void {
@@ -485,12 +497,14 @@ export function clearAnnotations(engine: Engine, element?: HTMLDivElement | null
   engine.renderingEngine.render();
 }
 
-export function undoLastAnnotation(engine: Engine): void {
-  const { annotation } = engine.tools;
-  const all = annotation.state.getAllAnnotations();
-  const last = all[all.length - 1];
-  if (last?.annotationUID) annotation.state.removeAnnotation(last.annotationUID);
+/** Undo / redo the last annotation change (draw, move, label, delete, delete-all). */
+export function annotationHistory(engine: Engine, step: "undo" | "redo"): boolean {
+  const memo = engine.core.utilities.HistoryMemo.DefaultHistoryMemo;
+  if (step === "undo" ? !memo.canUndo : !memo.canRedo) return false;
+  if (step === "undo") memo.undo();
+  else memo.redo();
   engine.renderingEngine.render();
+  return true;
 }
 
 // ───────────────────────────── volume groups ─────────────────────────────
@@ -625,6 +639,43 @@ export function enterVolumeMemory(engine: Engine, imageIds: readonly string[], b
   }
   const need = Math.ceil(imageIds.length * bytesPerImage * 1.05) + 32 * MB;
   cache.setMaxCacheSize(Math.min(deviceCacheCeiling, Math.max(BROWSE_CACHE_BUDGET, need)));
+}
+
+/**
+ * A native (Rust) volume view is on screen: the 2D stack is not, so its decoded
+ * images and idle decode workers go now (the 3D peak on the HP was 1.28 GB
+ * with the 2D cache still held). Returning to 2D refills only the slices shown.
+ */
+export function enterNativeVolumeMemory(engine: Engine): void {
+  workerPool?.releaseIdle();
+  const cache = engine.core.cache as unknown as { setMaxCacheSize: (n: number) => void; decacheIfNecessaryUntilBytesAvailable: (n: number) => void };
+  cache.setMaxCacheSize(8 * MB);
+  try {
+    cache.decacheIfNecessaryUntilBytesAvailable(0);
+  } catch {
+    /* nothing to evict */
+  }
+}
+
+/**
+ * Idle with a study open (10 s without input): free idle decode workers (each
+ * holds a WASM decoder heap) and shrink the 2D cache to a small window; any
+ * input restores the browsing budget. Slices left the cache re-decode in a
+ * few ms when the reader scrolls again.
+ */
+export function enterIdleMemory(engine: Engine): void {
+  workerPool?.releaseIdle();
+  const cache = engine.core.cache as unknown as { setMaxCacheSize: (n: number) => void; decacheIfNecessaryUntilBytesAvailable: (n: number) => void };
+  cache.setMaxCacheSize(IDLE_CACHE_BUDGET);
+  try {
+    cache.decacheIfNecessaryUntilBytesAvailable(0);
+  } catch {
+    /* nothing to evict */
+  }
+}
+
+export function leaveIdleMemory(engine: Engine): void {
+  (engine.core.cache as unknown as { setMaxCacheSize: (n: number) => void }).setMaxCacheSize(BROWSE_CACHE_BUDGET);
 }
 
 /** Back to 2D: release volumes and return to the browsing budget. */

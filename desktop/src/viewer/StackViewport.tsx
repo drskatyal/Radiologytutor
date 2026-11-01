@@ -5,7 +5,7 @@
 // streams headers), and the viewport re-stacks in place, keeping the image the
 // reader is looking at.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/Spinner";
 import { clampCineFps, createScrollDirectionState, directionalPrefetchIndexes, trackScrollDirection } from "@flowrad/viewer-core";
@@ -18,6 +18,12 @@ import { voiRangeOf, wwwcOf } from "./presets";
 import { ensureSuv } from "./suv";
 import { isTauri, previewUrlFor } from "../platform";
 import { verifyPainted, type PaintHealth } from "./paintCheck";
+import { markPhase } from "../perfWatch";
+
+// Select / delete / erase / label annotations: loaded with the first image.
+const AnnotationEditLayer = lazy(() =>
+  import("@/components/viewer/AnnotationEditLayer").then((m) => ({ default: m.AnnotationEditLayer }))
+);
 
 /** Window event carrying the 3D cursor's world point to every viewport. */
 const CURSOR_EVENT = "flowrad-3d-cursor";
@@ -28,6 +34,10 @@ export interface StackViewportProps {
   series: ViewerSeries | null;
   study: ViewerStudy | null;
   active: boolean;
+  /** Grid cell index (drop target for series dragged from the list). */
+  cellIndex?: number;
+  /** A series is being dragged over this viewport. */
+  dropHover?: boolean;
   showOverlay: boolean;
   /** True while the scan is still streaming this series in. */
   growing: boolean;
@@ -39,6 +49,10 @@ export interface StackViewportProps {
   hidePatient?: boolean;
   /** Fired when the instant Rust-rendered preview is on screen. */
   onPreview?: () => void;
+  /** Eraser tool: a click deletes the annotation under it. */
+  eraser?: boolean;
+  onAnnotationsDeleted?: (count: number, scope: "one" | "image" | "series") => void;
+  onCopied?: (text: string) => void;
 }
 
 interface Readout extends ViewportReadout {
@@ -61,6 +75,8 @@ function StackViewportImpl({
   series,
   study,
   active,
+  cellIndex,
+  dropHover,
   showOverlay,
   growing,
   onActivate,
@@ -69,6 +85,9 @@ function StackViewportImpl({
   onFirstPaint,
   hidePatient = false,
   onPreview,
+  eraser = false,
+  onAnnotationsDeleted,
+  onCopied,
 }: StackViewportProps) {
   const elementRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -92,6 +111,13 @@ function StackViewportImpl({
   cineRef.current = cine;
   const rafRef = useRef(0);
   const [engineReady, setEngineReady] = useState(false);
+  const editCtx = useMemo(
+    () =>
+      engineReady && engineRef.current && elementRef.current
+        ? { core: engineRef.current.core, tools: engineRef.current.tools, element: elementRef.current, toolGroupId: STACK_GROUP }
+        : null,
+    [engineReady]
+  );
   const readoutRef = useRef<Readout | null>(null);
   readoutRef.current = readout;
 
@@ -291,6 +317,7 @@ function StackViewportImpl({
     ensureSuv(series)
       .then((state) => {
         suv = state;
+        markPhase("viewport: load series");
         return vp.setStack(ids, index);
       })
       .then(() => {
@@ -500,12 +527,10 @@ function StackViewportImpl({
   return (
     <div
       className={cn(
-        "relative h-full w-full overflow-hidden bg-imaging",
-        "outline outline-1 -outline-offset-1",
-        // Exactly one active viewport: a 2px accent border; the rest a thin neutral one.
-        active ? "outline-2 -outline-offset-2 outline-accent" : "outline-subtle",
-        dragOver && "outline-2 outline-accent-bright"
+        "relative h-full w-full overflow-hidden bg-imaging"
       )}
+      data-drop-cell={cellIndex}
+      data-active-viewport={active ? "1" : undefined}
       onPointerDownCapture={(e) => {
         onActivate();
         // 3D cursor: Shift+click links every viewport to this point.
@@ -540,6 +565,23 @@ function StackViewportImpl({
       onContextMenu={(e) => e.preventDefault()}
     >
       <div ref={elementRef} className="cs-viewport absolute inset-0" data-viewport-id={viewportId} data-has-series={series ? "1" : undefined} />
+      <ViewportFrame active={active} hover={dragOver || !!dropHover} />
+      {editCtx && series && (
+        <Suspense fallback={null}>
+          <AnnotationEditLayer
+            ctx={editCtx}
+            seriesImageIds={series.imageIds}
+            eraser={eraser}
+            onDeleted={onAnnotationsDeleted}
+            onCopied={onCopied}
+          />
+        </Suspense>
+      )}
+      {dropHover && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-accent/15">
+          <span className="rounded-md bg-black/75 px-2 py-1 text-xs font-medium text-white">Drop to show here</span>
+        </div>
+      )}
 
       {/* Instant first image: rendered by Rust in a few ms, shown while the
           engine starts, replaced by the real viewport on its first paint. */}
@@ -669,3 +711,23 @@ function StackViewportImpl({
 }
 
 export const StackViewport = memo(StackViewportImpl);
+
+/**
+ * Exactly one active viewport, always marked (also in a 1x1 layout): a 3 px
+ * accent frame where a clicked series loads; the rest thin and neutral; a
+ * series dragged over a viewport lights it brighter. A real border on its own
+ * layer, drawn above the image (an outline on the cell computed to 0 px in
+ * some engines once keyboard focus moved).
+ */
+export function ViewportFrame({ active, hover = false }: { active: boolean; hover?: boolean }) {
+  return (
+    <div
+      aria-hidden
+      data-viewport-frame={active ? "active" : "idle"}
+      className={cn(
+        "pointer-events-none absolute inset-0 z-30",
+        hover ? "border-[3px] border-accent-bright" : active ? "border-[3px] border-accent" : "border border-subtle"
+      )}
+    />
+  );
+}
