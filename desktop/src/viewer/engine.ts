@@ -21,7 +21,15 @@ import { installDatasetTrim } from "./memory";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
-const DESKTOP_CACHE_BUDGET = 1024 * 1024 * 1024;
+const MB = 1024 * 1024;
+/**
+ * Decoded-image budget while reading in 2D: the slices around the reader and a
+ * few series. Kept small because it is what a CT left open costs at idle (HP:
+ * ~1.1 GB with the old 1 GB budget). MPR / 3D raise it to fit their volume for
+ * as long as the volume is open (enterVolumeMemory / leaveVolumeMemory).
+ */
+const BROWSE_CACHE_BUDGET = 384 * MB;
+let deviceCacheCeiling = 1024 * MB;
 
 type Core = typeof import("@cornerstonejs/core");
 type Tools = typeof import("@cornerstonejs/tools");
@@ -112,7 +120,13 @@ async function createEngine(): Promise<Engine> {
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
-  await core.init(coreInitConfig(profile) as Parameters<typeof core.init>[0]);
+  const config = coreInitConfig(profile) as unknown as { rendering: Record<string, unknown> };
+  // One WebGL context instead of Cornerstone's pool of seven: each context
+  // that shows a volume uploads its own copy of the volume texture, and the
+  // MPR panes landed in different contexts (WebView2 GPU process: ~3x the
+  // texture size). One context shares one texture across every pane.
+  config.rendering.webGlContextCount = 1;
+  await core.init(config as unknown as Parameters<typeof core.init>[0]);
   await tools.init();
   // Desktop: the reader is the only workload, so decode on every core (the web
   // viewer leaves a quarter free for the page; lib/viewerRuntime.ts).
@@ -128,7 +142,8 @@ async function createEngine(): Promise<Engine> {
     // Honest now that raw file bytes are released after decode (memory.ts):
     // this budget is close to what the decoded images really hold. LRU
     // eviction keeps a long session from growing past it.
-    core.cache.setMaxCacheSize(Math.min(imageCacheBytes(profile), DESKTOP_CACHE_BUDGET));
+    deviceCacheCeiling = Math.max(BROWSE_CACHE_BUDGET, imageCacheBytes(profile));
+    core.cache.setMaxCacheSize(Math.min(deviceCacheCeiling, BROWSE_CACHE_BUDGET));
   } catch {
     /* library default */
   }
@@ -506,4 +521,46 @@ export function holdVolumes(engine: Engine, keep: string[]): void {
     }
   }
   keep.forEach((id) => heldVolumes.add(id));
+}
+
+/**
+ * Before a volume (MPR, 3D, fusion) loads: drop every decoded image that is not
+ * one of its slices (other series, thumbnails' neighbours, the 2D prefetch) and
+ * raise the budget to fit the volume, so its slices are the only pixels held.
+ * The volume is backed by those cached slices, so this IS the "free the 2D
+ * cache once the volume exists" step: nothing is held twice.
+ */
+export function enterVolumeMemory(engine: Engine, imageIds: readonly string[], bytesPerImage: number): void {
+  const cache = engine.core.cache as unknown as {
+    _imageCache: Map<string, { sharedCacheKey?: string }>;
+    removeImageLoadObject: (id: string, opts?: { force?: boolean }) => void;
+    setMaxCacheSize: (n: number) => void;
+  };
+  const keep = new Set(imageIds);
+  for (const id of [...cache._imageCache.keys()]) {
+    if (keep.has(id)) continue;
+    try {
+      cache.removeImageLoadObject(id, { force: true });
+      engine.core.triggerEvent(engine.core.eventTarget, engine.core.Enums.Events.IMAGE_CACHE_IMAGE_REMOVED, { imageId: id });
+    } catch {
+      /* already gone */
+    }
+  }
+  const need = Math.ceil(imageIds.length * bytesPerImage * 1.05) + 32 * MB;
+  cache.setMaxCacheSize(Math.min(deviceCacheCeiling, Math.max(BROWSE_CACHE_BUDGET, need)));
+}
+
+/** Back to 2D: release volumes and return to the browsing budget. */
+export function leaveVolumeMemory(engine: Engine): void {
+  holdVolumes(engine, []);
+  const cache = engine.core.cache as unknown as {
+    setMaxCacheSize: (n: number) => void;
+    decacheIfNecessaryUntilBytesAvailable: (n: number) => void;
+  };
+  cache.setMaxCacheSize(Math.min(deviceCacheCeiling, BROWSE_CACHE_BUDGET));
+  try {
+    cache.decacheIfNecessaryUntilBytesAvailable(0);
+  } catch {
+    /* nothing to evict */
+  }
 }
