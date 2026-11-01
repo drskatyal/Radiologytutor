@@ -24,3 +24,4 @@ export * from "./viewportVoi";
 export * from "./windowPresets";
 export * from "./hangingProtocols";
 export * from "./positionSync";
+export * from "./curvedMpr";
