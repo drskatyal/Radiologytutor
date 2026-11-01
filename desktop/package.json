@@ -1,7 +1,7 @@
 {
   "name": "radlearn-viewer",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "FlowRad Viewer \u2014 free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
   "scripts": {
