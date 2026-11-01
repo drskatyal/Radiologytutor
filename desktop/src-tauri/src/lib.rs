@@ -390,6 +390,13 @@ async fn process_memory() -> procmem::TreeMem {
     tauri::async_runtime::spawn_blocking(procmem::current_tree).await.unwrap_or(procmem::TreeMem { total_mb: 0, processes: vec![] })
 }
 
+/// Test hook: FLOWRAD_SIMULATE_BLANK_GPU=1 makes the paint check read the GPU
+/// path as black, to exercise the CPU fallback on any machine.
+#[tauri::command]
+fn simulate_blank_gpu() -> bool {
+    crate::flowrad_env("SIMULATE_BLANK_GPU").as_deref() == Ok("1")
+}
+
 /// FLOWRAD_DEBUG=1: show the memory HUD from launch.
 #[tauri::command]
 fn debug_enabled() -> bool {
@@ -564,6 +571,7 @@ pub fn run() {
             volume_build,
             volume_close,
             debug_enabled,
+            simulate_blank_gpu,
             bench_view,
             bench_pixels,
             bench_paint_timeout_ms,
