@@ -22,6 +22,8 @@ export { Skeleton } from "./Skeleton";
 export type { SkeletonProps } from "./Skeleton";
 export { Modal } from "./Modal";
 export type { ModalProps } from "./Modal";
+export { Sheet } from "./Sheet";
+export type { SheetProps } from "./Sheet";
 export { ToastProvider, useToast } from "./Toast";
 export type { ToastOptions } from "./Toast";
 export { Tabs } from "./Tabs";
