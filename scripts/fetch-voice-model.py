@@ -53,8 +53,18 @@ def main() -> int:
     with zipfile.ZipFile(io.BytesIO(data)) as zf, tarfile.open(fileobj=out, mode="w:gz") as tf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         top = os.path.commonprefix(names).split("/")[0]
+        rel = [name[len(top) + 1 :] if top else name for name in names]
+        # Every directory needs its own entry: the recognizer persists the
+        # extracted model to IndexedDB, and that sync fails ("FS error") for a
+        # file whose parent folder was never declared in the archive.
+        dirs = sorted({"/".join(r.split("/")[:i]) for r in rel for i in range(1, r.count("/") + 1)})
+        for d in ["", *dirs]:
+            entry = tarfile.TarInfo(("model/" + d).rstrip("/"))
+            entry.type, entry.mode, entry.mtime = tarfile.DIRTYPE, 0o755, 0
+            tf.addfile(entry)
         for name in sorted(names):
             info = tarfile.TarInfo("model/" + name[len(top) + 1 :] if top else "model/" + name)
+            info.mode = 0o644
             body = zf.read(name)
             info.size = len(body)
             info.mtime = 0
