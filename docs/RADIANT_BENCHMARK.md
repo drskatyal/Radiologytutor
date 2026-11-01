@@ -236,6 +236,27 @@ Trade-offs, stated:
 | 60 fps scroll | **Not yet measured.** |
 | MPR < 1.5 s and < 1.2 GB | **Not met on this box** (3.4 s, 2.4 GB under software GL). Needs the HP's GPU. |
 
+### 1.5.3 Phase A (0.2.1), same box, v0.1.0 vs 0.2.1, release builds
+
+The machine was rebooted between §1.5.2 and this table, so these columns are
+re-measured side by side and are not comparable with §1.5.2.
+
+| | v0.1.0 | 0.2.0 as shipped | 0.2.1 |
+|---|---|---|---|
+| Cold start, median | 827–835 ms | — | **815–822 ms** |
+| First full frame, 4,333-file CT, warm | 908–1,060 ms | **1,421–1,551 ms (regression)** | **1,019–1,042 ms**, verified non-blank |
+| First visible image (Rust preview) | 296–451 ms | 414–466 ms | 416–468 ms |
+| MPR ready, CT 300 × 512² | 1,874 ms | — | 1,758 ms |
+
+**Regression found and fixed before merge.**
+- **Symptom:** 0.2.0 drew its first full frame ~450 ms later than v0.1.0.
+- **Bisect:**
+  - An event-loop lag monitor and timing marks narrowed it to the first `enableElement`: 445 ms, against 36 ms once fixed.
+  - Release A/B builds then traced it to the naturalized-metadata trim. Its dynamic `@cornerstonejs/metadata` import was evaluated on the main thread at exactly that moment.
+- **Why removing it is safe:** the desktop uses the dataset path, so that trim freed nothing.
+- **What remains:** the dataset trim stays.
+- **Web:** the web viewer's latency is not measured in this environment. GCP DICOMweb is unreachable from it, and the renderer's browser fallback runs only under SwiftShader. Phase A's web change is small: `/viewer/local` opens on the protocol's primary series.
+
 ### 1.6 Measure it on the HP (owed)
 
 ```powershell

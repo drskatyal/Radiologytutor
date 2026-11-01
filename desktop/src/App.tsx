@@ -10,7 +10,7 @@ import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
-import type { WindowPreset } from "@/lib/windowPresets";
+import type { WindowPreset } from "@flowrad/viewer-core";
 import {
   appVersion,
   benchEnabled,
@@ -41,7 +41,8 @@ import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/Updates";
 import { useSyncStatus } from "./components/Account";
 import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
-import { setScrollPreferences } from "@/lib/scrollSensitivity";
+import { setScrollPreferences } from "@flowrad/viewer-core";
+import { hangingPlanFor } from "./hanging";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
@@ -53,6 +54,9 @@ import {
   setGroupLeftTool,
   setReferenceSource,
   setScaleOverlay,
+  linkStacksAtCurrent,
+  registerGeometry,
+  setStackOffset,
   setSynchronized,
   STACK_GROUP,
   undoLastAnnotation,
@@ -98,6 +102,8 @@ export default function App() {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [growing, setGrowing] = useState(false);
   const [layout, setLayout] = useState({ rows: 1, cols: 1 });
+  /** The hanging protocol applied on open, shown in the status bar. */
+  const [hangingLabel, setHangingLabel] = useState<string | null>(null);
   const [cells, setCells] = useState<(string | null)[]>([null]);
   const [activeCell, setActiveCell] = useState(0);
   const [maximized, setMaximized] = useState<number | null>(null);
@@ -232,6 +238,7 @@ export default function App() {
     setActiveCell(0);
     setMaximized(null);
     setView("grid");
+    setHangingLabel(null);
   }, []);
 
   const finishOpen = useCallback(
@@ -330,9 +337,25 @@ export default function App() {
         // Progressive open hung whatever streamed in first. If the reader has
         // not touched anything yet, show the study's primary series instead.
         if (autoHung.current) {
-          const study = built[0];
-          const primary = study.series[primarySeriesIndex(study)]?.uid;
-          if (primary) setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)]));
+          // Hanging protocol (CT / MR / projection / current vs prior) from the
+          // viewer core; otherwise the study's primary series alone.
+          const plan = hangingPlanFor(built);
+          if (plan) {
+            setLayout({ rows: plan.rows, cols: plan.cols });
+            setCells(plan.cells);
+            setActiveCell(0);
+            setSyncScroll(plan.syncScroll);
+            setHangingLabel(plan.label);
+            if (plan.compare) {
+              // Prior positions + offset land in the current study's frame.
+              const prior = built.flatMap((st) => st.series).find((x) => x.uid === plan.compare!.priorSeries);
+              if (prior?.imageIds[0]) setStackOffset(prior.imageIds[0], -plan.compare.priorOffsetMm);
+            }
+          } else {
+            const study = built[0];
+            const primary = study.series[primarySeriesIndex(study)]?.uid;
+            if (primary) setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)]));
+          }
         } else {
           hangFirst(built);
         }
@@ -552,6 +575,24 @@ export default function App() {
     };
   }, [leftTool, studies.length]);
 
+  // Slice geometry for sync and the 3D cursor, straight from the header scan.
+  useEffect(() => {
+    for (const study of studies) for (const series of study.series) registerGeometry(series.imageIds, series.headers);
+  }, [studies]);
+
+  /** Sync on = link the visible stacks at what each shows now (PACS-style registration). */
+  const toggleSync = useCallback(() => {
+    setSyncScroll((on) => {
+      if (!on) {
+        void getEngine().then((engine) => {
+          const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
+          if (ids.length > 1) linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
+        });
+      }
+      return !on;
+    });
+  }, [cells, activeCell]);
+
   const visibleCells = useMemo(
     () => cells.map((uid, i) => ({ uid, i })).filter(({ i }) => maximized == null || i === maximized),
     [cells, maximized]
@@ -736,7 +777,7 @@ export default function App() {
         case "toggleAnnotations":
           return setAnnotationsVisible((v) => !v);
         case "toggleSync":
-          return setSyncScroll((v) => !v);
+          return toggleSync();
         case "toggleReferenceLines":
           return setReferenceLines((v) => !v);
         case "toggleBrowser":
@@ -759,7 +800,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, leftTool, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
+    [studies.length, leftTool, toggleSync, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
   );
 
   useEffect(() => {
@@ -858,7 +899,7 @@ export default function App() {
           layout={layout}
           onLayout={applyLayout}
           syncScroll={syncScroll}
-          onToggleSync={() => setSyncScroll((v) => !v)}
+          onToggleSync={toggleSync}
           referenceLines={referenceLines}
           onToggleReferenceLines={() => setReferenceLines((v) => !v)}
           overlay={overlay}
@@ -1039,6 +1080,7 @@ export default function App() {
             {studies.length} {studies.length === 1 ? "study" : "studies"} · {seriesOrder.length} series ·{" "}
             {studies.reduce((n, s) => n + s.imageCount, 0).toLocaleString()} images
           </span>
+          {hangingLabel && <span className="truncate text-secondary" title="Hanging protocol">{hangingLabel}</span>}
           {growing && scanProgress && scanProgress.total > 0 && (
             <span className="flex items-center gap-2 text-secondary">
               <span className="h-1 w-24 overflow-hidden rounded-full bg-overlay">

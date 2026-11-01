@@ -1,7 +1,7 @@
 // Wire types from the Rust shell (desktop/src-tauri/src/header.rs, scan.rs)
 // and the renderer's study model.
 
-import type { LocalInstanceHeader } from "@/lib/localStudy";
+import type { LocalInstanceHeader } from "@flowrad/viewer-core";
 
 /** `Header` in header.rs — a superset of `LocalInstanceHeader`. */
 export interface DesktopHeader extends LocalInstanceHeader {

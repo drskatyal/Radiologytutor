@@ -2,7 +2,7 @@
 // browser and the Playwright smoke test. Delegates to the web viewer's own
 // adapter (`lib/localDicomFiles.ts`) so the two paths cannot drift.
 
-import { openLocalFiles } from "@/lib/localDicomFiles";
+import { openLocalFiles } from "@flowrad/viewer-core";
 import type { DesktopHeader } from "./types";
 
 export async function headersFromBrowserFiles(

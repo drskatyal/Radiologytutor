@@ -26,6 +26,7 @@ import {
 } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import type { ViewerSource } from "@/lib/viewerSource";
+import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
   ssr: false,
@@ -78,6 +79,9 @@ export function LocalStudyViewer() {
         setPhase({ state: "empty", inspected: files.length });
         return;
       }
+      // Open on the series a hanging protocol would read first (CT axial soft
+      // tissue, MR T1/T2…, a radiograph's PA view), not just the first listed.
+      setActiveSeries(primarySeriesIndexByProtocol(result.studies[0]));
       setPhase({ state: "open", result });
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -156,8 +160,9 @@ export function LocalStudyViewer() {
                 <select
                   value={activeStudy}
                   onChange={(event) => {
-                    setActiveStudy(Number(event.target.value));
-                    setActiveSeries(0);
+                    const next = Number(event.target.value);
+                    setActiveStudy(next);
+                    setActiveSeries(result ? primarySeriesIndexByProtocol(result.studies[next]) : 0);
                   }}
                   className="rounded-lg border border-subtle bg-surface px-2 py-1.5 text-sm text-primary"
                 >

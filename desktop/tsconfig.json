@@ -22,6 +22,12 @@
     "paths": {
       "@/*": [
         "../*"
+      ],
+      "@flowrad/viewer-core": [
+        "../packages/viewer-core/src/index.ts"
+      ],
+      "@flowrad/viewer-core/*": [
+        "../packages/viewer-core/src/*"
       ]
     }
   },

@@ -3,7 +3,7 @@
 // offer; other modalities get presets that mean something for them instead of
 // falling back to CT windows (a "Lung" window on an MR is noise).
 
-import { WINDOW_PRESETS, type WindowPreset } from "@/lib/windowPresets";
+import { WINDOW_PRESETS, type WindowPreset } from "@flowrad/viewer-core";
 
 const CT_EXTRA: WindowPreset[] = [
   { id: "ct-mediastinum", label: "Mediastinum", ww: 350, wc: 50, modalities: ["CT"] },
@@ -12,17 +12,18 @@ const CT_EXTRA: WindowPreset[] = [
   { id: "ct-temporal", label: "Temporal bone", ww: 4000, wc: 700, modalities: ["CT"] },
 ];
 
+/** Number keys 1–9 follow this order: the four everyday reads first. */
 const CT_ORDER = [
+  "ct-lung",
+  "ct-bone",
   "ct-brain",
+  "ct-abdomen",
+  "ct-mediastinum",
+  "ct-soft",
+  "ct-liver",
   "ct-subdural",
   "ct-stroke",
-  "ct-lung",
-  "ct-mediastinum",
-  "ct-abdomen",
-  "ct-liver",
-  "ct-bone",
   "ct-angio",
-  "ct-soft",
   "ct-spine",
   "ct-temporal",
 ];

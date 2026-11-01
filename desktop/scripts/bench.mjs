@@ -240,7 +240,11 @@ async function benchBrowser(study) {
   const port = server.address().port;
   // Resolved like CommonJS so a globally installed Playwright (NODE_PATH) works.
   const { chromium } = createRequire(import.meta.url)("playwright");
-  const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"] });
+  const browser = await chromium.launch({
+    // PW_CHROMIUM: a preinstalled Chromium when the pinned Playwright has no browser of its own.
+    executablePath: process.env.PW_CHROMIUM || undefined,
+    args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
+  });
   const files = listFiles(study);
   const results = [];
   for (let i = 0; i < runs; i += 1) {

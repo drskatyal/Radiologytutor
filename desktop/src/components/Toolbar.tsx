@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/components/ui/cn";
-import type { WindowPreset } from "@/lib/windowPresets";
+import type { WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
 import { LAYOUT_SHORTCUTS, isMac } from "../shortcuts";
 

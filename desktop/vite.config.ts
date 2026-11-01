@@ -15,6 +15,8 @@ export default defineConfig({
   clearScreen: false,
   resolve: {
     alias: [
+      { find: /^@flowrad\/viewer-core$/, replacement: `${root}/packages/viewer-core/src/index.ts` },
+      { find: /^@flowrad\/viewer-core\/(.*)$/, replacement: `${root}/packages/viewer-core/src/$1` },
       { find: /^@\/(.*)$/, replacement: `${root}/$1` },
       // components/ui/Breadcrumbs imports next/link; the desktop has no router.
       { find: "next/link", replacement: path.resolve(__dirname, "src/shims/next-link.tsx") },

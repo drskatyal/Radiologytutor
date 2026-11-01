@@ -99,16 +99,39 @@ jobs:
       - name: Azure Artifact Signing CLI
         if: runner.os == 'Windows' && env.HAS_AZURE == 'true'
         run: cargo install trusted-signing-cli --locked
-      - name: App Store Connect API key (notarisation)
+      - name: Apple signing and notarisation (only when configured and valid)
         if: runner.os == 'macOS'
         shell: bash
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
-          if [ -n "$APPLE_API_PRIVATE_KEY" ]; then
-            mkdir -p "$RUNNER_TEMP/apple" && printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/apple/AuthKey.p8"
-            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple/AuthKey.p8" >> "$GITHUB_ENV"
+          # The Tauri CLI tries to import APPLE_CERTIFICATE whenever the variable
+          # exists, so it is exported only when it decodes to a PKCS#12 that opens
+          # with its password. Otherwise the macOS build ships unsigned (Gatekeeper
+          # will ask the user to allow it) instead of failing the whole release.
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::notice::No APPLE_CERTIFICATE secret: building an unsigned macOS app."
+          elif printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12" 2>/dev/null \
+               && openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -noout -legacy 2>/dev/null \
+                  || openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -noout 2>/dev/null; then
+            {
+              echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            } >> "$GITHUB_ENV"
+            if [ -n "$APPLE_API_PRIVATE_KEY" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_ISSUER" ]; then
+              mkdir -p "$RUNNER_TEMP/apple" && printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/apple/AuthKey.p8"
+              { echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple/AuthKey.p8"; echo "APPLE_API_KEY=$APPLE_API_KEY"; echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"; } >> "$GITHUB_ENV"
+            fi
+          else
+            echo "::warning::APPLE_CERTIFICATE is set but is not a base64 PKCS#12 that opens with APPLE_CERTIFICATE_PASSWORD. Building unsigned; re-export the Developer ID Application certificate as .p12 and base64 it."
           fi
+          rm -f "$RUNNER_TEMP/cert.p12"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -116,11 +139,6 @@ jobs:
           RADLEARN_SERVER_URL: ${{ vars.RADLEARN_SERVER_URL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}

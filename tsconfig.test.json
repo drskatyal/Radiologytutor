@@ -2,6 +2,17 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "plugins": []
+    "plugins": [],
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@flowrad/viewer-core": [
+        "./packages/viewer-core/src/index.ts"
+      ],
+      "@flowrad/viewer-core/*": [
+        "./packages/viewer-core/src/*"
+      ]
+    }
   }
 }
