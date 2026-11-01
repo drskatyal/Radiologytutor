@@ -9,12 +9,14 @@ import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/components/ui/cn";
 import { listMedia, type MediaVolume } from "../platform";
 import { prewarmEngine } from "../viewer/engine";
-import type { HistoryEntry } from "../history";
-import { formatDicomDate } from "../study";
+import { searchHistory, type HistoryEntry } from "../history";
+import { formatDicomDate, formatPersonName } from "../study";
 import { isMac } from "../shortcuts";
 
 interface Props {
   history: HistoryEntry[];
+  /** Teaching / screen sharing: no patient names in the list. */
+  hidePatient?: boolean;
   onOpen: (what: "files" | "folder" | "zip" | "dicomdir" | "disc" | "pacs") => void;
   onOpenPaths: (paths: string[], kind?: "disc") => void;
   onForget: (key: string) => void;
@@ -46,17 +48,11 @@ const KIND_ICON = {
   disc: Disc3,
 } as const;
 
-export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp }: Props) {
+export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp, hidePatient = false }: Props) {
   const [media, setMedia] = useState<MediaVolume[] | null>(null);
   const [filter, setFilter] = useState("");
   const needle = filter.trim().toLowerCase();
-  const shown = needle
-    ? history.filter((e) =>
-        [e.description, e.label, e.modalities.join(" "), e.studyDate, formatDicomDate(e.studyDate), ...e.paths]
-          .filter(Boolean)
-          .some((v) => String(v).toLowerCase().includes(needle))
-      )
-    : history;
+  const shown = needle ? searchHistory(history, needle) : history;
   const m = isMac() ? "⌘" : "Ctrl+";
 
   useEffect(() => {
@@ -174,15 +170,17 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
 
         <section aria-label="Recent studies" className="flex min-h-0 flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Recent</h2>
-            {history.length > 3 && (
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Studies <span className="tabular-nums">{history.length > 0 ? `· ${history.length.toLocaleString()}` : ""}</span>
+            </h2>
+            {history.length > 0 && (
               <label className="ml-auto mr-2 flex items-center">
-                <span className="sr-only">Search recent studies</span>
+                <span className="sr-only">Search the local study database</span>
                 <input
                   type="search"
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
-                  placeholder="Search description, modality, date, folder…"
+                  placeholder="Search patient, ID, accession, description, series, date…"
                   className="h-8 w-72 rounded-lg border border-subtle bg-surface px-3 text-xs text-primary placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 />
               </label>
@@ -202,7 +200,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
           ) : (
             <ul className="divide-y divide-subtle overflow-hidden rounded-xl border border-subtle bg-surface">
               {shown.length === 0 && (
-                <li className="px-4 py-6 text-center text-sm text-muted">No recent study matches “{filter}”.</li>
+                <li className="px-4 py-6 text-center text-sm text-muted">No study matches “{filter}”.</li>
               )}
               {shown.map((entry) => {
                 const Icon = KIND_ICON[entry.kind] ?? FolderTree;
@@ -217,6 +215,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
                       <Icon className="h-4 w-4 shrink-0 text-muted" aria-hidden />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-primary">
+                          {entry.patient?.name && !hidePatient ? `${formatPersonName(entry.patient.name)} · ` : ""}
                           {entry.description || entry.label}
                         </span>
                         <span className="block truncate text-xs text-muted tabular-nums">
@@ -245,7 +244,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
             </ul>
           )}
           <p className="text-xs text-muted">
-            History keeps folder paths and study descriptions only — never patient names or images.
+            Your local study database lives only on this computer and never holds images. Search by patient, ID, accession, description, series, date or modality.
           </p>
         </section>
 

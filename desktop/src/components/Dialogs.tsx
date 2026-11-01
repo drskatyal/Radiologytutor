@@ -337,10 +337,16 @@ export function SettingsDialog({
         <section className="py-3">
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Privacy &amp; storage</h3>
           <Toggle
-            label="Remember recently opened studies"
-            description="Keeps folder paths, study descriptions and counts. Never patient names or images."
+            label="Local study database"
+            description="Remembers every study you open (where it is, description, dates, series) so you can search and re-open it. Never images."
             checked={settings.rememberHistory}
             onChange={(v) => onChange({ rememberHistory: v })}
+          />
+          <Toggle
+            label="Include patient name and ID"
+            description="Makes studies searchable by patient. Stored only on this computer; turn off and clear the database to remove them."
+            checked={settings.indexPatients && settings.rememberHistory}
+            onChange={(v) => onChange({ indexPatients: v })}
           />
           <div className="flex items-center justify-between gap-4 py-2">
             <span>

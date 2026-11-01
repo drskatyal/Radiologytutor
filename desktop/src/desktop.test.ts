@@ -247,3 +247,24 @@ test("navigation: arrows and PgUp/PgDn scroll slices; Tab and [ ] switch series"
   assert.deepEqual(resolveShortcut(key("?", { shiftKey: true }), false), { type: "help" });
   assert.deepEqual(resolveShortcut(key("Escape"), false), { type: "escape" });
 });
+
+test("local study database: every query word must match some field, accent- and case-insensitive", async () => {
+  const { searchHistory } = await import("./history");
+  const base = { kind: "folder" as const, studyCount: 1, seriesCount: 3, imageCount: 300, openedAt: "2026-11-01T00:00:00Z" };
+  const entries = [
+    { ...base, key: "a", paths: ["/cd/ct"], label: "ct", description: "CT CHEST", studyDate: "20260115", modalities: ["CT"],
+      seriesDescriptions: ["Lung 1.0", "Mediastinum 3.0"], bodyParts: ["CHEST"], accession: "ACC123",
+      patient: { name: "MÜLLER^JOSÉ", id: "P-77" } },
+    { ...base, key: "b", paths: ["/usb/brain"], label: "brain", description: "MR BRAIN", studyDate: "20250301", modalities: ["MR"],
+      seriesDescriptions: ["t2_flair_tra"] },
+  ];
+  const keys = (q: string) => searchHistory(entries, q).map((e) => e.key);
+  assert.deepEqual(keys(""), ["a", "b"]);
+  assert.deepEqual(keys("muller jose"), ["a"]); // patient name, accents and ^ folded
+  assert.deepEqual(keys("p-77"), ["a"]);
+  assert.deepEqual(keys("2026-01-15"), ["a"]);
+  assert.deepEqual(keys("flair"), ["b"]); // series description
+  assert.deepEqual(keys("ct lung"), ["a"]);
+  assert.deepEqual(keys("ct flair"), []); // all words must match one study
+  assert.deepEqual(keys("acc123"), ["a"]);
+});

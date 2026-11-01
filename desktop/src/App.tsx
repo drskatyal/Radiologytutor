@@ -246,13 +246,13 @@ export default function App() {
       if (built.length === 0) return;
       if (settings.rememberHistory) {
         try {
-          setHistory(await historyRecord(historyEntryFor(opened, built)));
+          setHistory(await historyRecord(historyEntryFor(opened, built, new Date(), { includePatient: settings.indexPatients })));
         } catch {
           /* history is a convenience; never fail an open over it */
         }
       }
     },
-    [settings.rememberHistory]
+    [settings.rememberHistory, settings.indexPatients]
   );
 
   const hangFirst = useCallback((built: ViewerStudy[]) => {
@@ -1012,6 +1012,7 @@ export default function App() {
         ) : (
           <StartScreen
             history={history}
+            hidePatient={settings.hidePatient}
             onOpen={(w) => void openDialog(w)}
             onOpenPaths={(p, kind) => void openPaths(p, kind)}
             onForget={async (key) => setHistory(await historyRemove<HistoryEntry>(key))}
