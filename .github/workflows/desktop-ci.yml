@@ -90,7 +90,11 @@ jobs:
       - name: Playwright Chromium (UI e2e)
         run: npx playwright install --with-deps chromium
       - name: e2e — UI with real mouse and keys (active border, series drag-and-drop, RadiAnt keys, shortcut re-mapping, tool cursors, annotation editing)
-        run: node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/fixtures/ct-phantom" --shots "$RUNNER_TEMP/ui-shots" --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
+        run: |
+          # The CT phantom plus a coronal reformat (reference lines need non-parallel planes).
+          mkdir -p "$RUNNER_TEMP/ui-study" && cp -r "$RUNNER_TEMP/fixtures/ct-phantom/." "$RUNNER_TEMP/ui-study/"
+          python3 desktop/scripts/make-ortho-series.py "$RUNNER_TEMP/fixtures/ct-phantom" "$RUNNER_TEMP/ui-study/coronal"
+          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --shots "$RUNNER_TEMP/ui-shots" --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
       - name: Upload UI e2e screenshots
         if: always()
         uses: actions/upload-artifact@v4
