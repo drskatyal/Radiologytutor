@@ -113,14 +113,17 @@ jobs:
   # Performance gate on WebView2 (the platform readers install on), release
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
   # build time and MPR peak memory of the whole process tree. Budgets live in
-  # the env block so a change to them is visible in review.
+  # the env block so a change to them is visible in review. Baseline on this
+  # runner (WARP software D3D, 2026-11): first image 721 ms warm / 997 cold,
+  # MPR 5.2 s, peak 2,120 MB (renderer 734, GPU process 1,325). Budgets leave
+  # room for runner noise; tighten them when a change earns it.
   perf-windows:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      FIRST_IMAGE_MAX_MS: "99999"
-      MPR_MAX_MS: "99999"
-      MPR_MAX_MB: "99999"
+      FIRST_IMAGE_MAX_MS: "1300"
+      MPR_MAX_MS: "8000"
+      MPR_MAX_MB: "2600"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
