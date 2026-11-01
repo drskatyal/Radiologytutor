@@ -18,6 +18,7 @@ import {
   type PlaneSample,
 } from "./mpr";
 import { tuneStackScrollTool } from "./scrollSensitivity";
+import { applyCutPlane, applyVolumeLook } from "./volume3d";
 import { voiToWwWc, wwWcToVoi } from "./viewportVoi";
 
 type Camera = {
@@ -555,5 +556,13 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
     },
     setRender,
     scrollPlane,
+    setVolumeLook: (preset, surfaceThreshold) => {
+      const vr = engine.getViewport(vrId) as unknown as Parameters<typeof applyVolumeLook>[0] | undefined;
+      if (vr) applyVolumeLook(vr, preset, surfaceThreshold);
+    },
+    setCutPlane: (cut, makePlane) => {
+      const vr = engine.getViewport(vrId) as unknown as Parameters<typeof applyCutPlane>[0] | undefined;
+      if (vr) applyCutPlane(vr, cut, makePlane);
+    },
   };
 }

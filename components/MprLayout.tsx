@@ -117,7 +117,10 @@ export function MprLayout({
   volume3dRef,
   onPlanePointer,
   axialReadout,
+  volume3dControls,
 }: {
+  /** Controls drawn over the 3D view (render look, cut plane). */
+  volume3dControls?: React.ReactNode;
   /** "Im 42 / 240  W 400 L 40" — drawn in the axial plane's corner. */
   axialReadout?: string | null;
   render?: MprRender;
@@ -206,6 +209,11 @@ export function MprLayout({
             <span className="pointer-events-none absolute left-2 top-2 text-[11px] font-semibold uppercase tracking-wide text-white/85 [text-shadow:0_0_3px_rgba(0,0,0,1)]">
               3D · drag to rotate
             </span>
+          ) : null}
+          {show3d && volume3dControls ? (
+            <div className="absolute right-2 top-2 flex items-center gap-2 rounded-md bg-black/70 px-2 py-1 text-[11px] text-white ring-1 ring-white/15">
+              {volume3dControls}
+            </div>
           ) : null}
         </div>
       ) : null}
