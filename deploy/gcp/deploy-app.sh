@@ -47,7 +47,7 @@ done
 
 if [[ "${SKIP_BUILD:-}" != "1" ]]; then
   gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
-  docker build -t "${IMAGE}" "${ROOT}"
+  docker build --build-arg GIT_SHA="$(git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null || true)" -t "${IMAGE}" "${ROOT}"
   docker push "${IMAGE}"
 fi
 

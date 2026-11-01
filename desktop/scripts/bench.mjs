@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // FlowRad Viewer benchmark harness.
 //
-//   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5]
+//   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N]
 //   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
+//   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N]
 //
 // `desktop` launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1
 // and the study on the command line; the renderer reports one JSON line
@@ -128,6 +129,13 @@ async function benchDesktop(binary, study) {
     },
   };
   console.log(JSON.stringify(summary, null, 2));
+  // Gate: warm first image (cold when only one run).
+  const budget = flag("max-first-image-ms", Infinity);
+  const firstImage = runs > 1 ? summary.warm.firstImageMs : summary.cold.firstImageMs;
+  if (!(firstImage <= budget)) {
+    console.error(`first-image gate failed: ${firstImage} ms > ${budget} ms`);
+    process.exitCode = 1;
+  }
 }
 
 async function benchColdStart(binary) {
@@ -281,14 +289,87 @@ async function benchBrowser(study) {
   );
 }
 
+// MPR: open the study straight into MPR (RADLEARN_BENCH_VIEW=mpr), sample the
+// whole process tree every 250 ms through the build AND for --settle seconds
+// after the volume is ready (the texture upload lands after the report), and
+// report build time, peak and settled private memory, per process.
+// --max-mb / --max-ms turn it into a gate: exit 1 when exceeded.
+async function benchMpr(binary, study) {
+  const settle = flag("settle", 6);
+  const maxMb = flag("max-mb", Infinity);
+  const maxMs = flag("max-ms", Infinity);
+  const started = performance.now();
+  const child = spawn(binary, [study], {
+    env: { ...process.env, RADLEARN_BENCH: "1", RADLEARN_BENCH_VIEW: process.env.RADLEARN_BENCH_VIEW ?? "mpr" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  let peak = null;
+  let report = null;
+  const timeline = [];
+  const sample = () => {
+    try {
+      const m = treeMemory(child.pid);
+      if (!peak || m.privateMb > peak.privateMb) peak = m;
+      timeline.push([Math.round(performance.now() - started), m.privateMb, report ? 1 : 0]);
+      return m;
+    } catch {
+      return null;
+    }
+  };
+  const sampler = setInterval(sample, 250);
+  child.stdout.on("data", (d) => {
+    out += d;
+    const line = out.split("\n").find((l) => l.startsWith("RADLEARN_BENCH "));
+    if (line && !report) report = JSON.parse(line.slice("RADLEARN_BENCH ".length));
+  });
+  child.stderr.on("data", (d) => (out += d));
+  const deadline = started + 180_000;
+  while (!report && performance.now() < deadline && child.exitCode == null) await new Promise((r) => setTimeout(r, 100));
+  if (!report) {
+    clearInterval(sampler);
+    child.kill("SIGKILL");
+    throw new Error(`no MPR report; output:\n${out.slice(-2000)}`);
+  }
+  await new Promise((r) => setTimeout(r, settle * 1000));
+  const settled = sample();
+  clearInterval(sampler);
+  child.kill("SIGKILL");
+  const summary = {
+    mode: "mpr",
+    study,
+    images: report.images,
+    volumeLoadedMs: r0(report.volumeLoadedMs),
+    volumeBuildMs: r0(report.volumeBuildMs),
+    peakPrivateMb: peak?.privateMb,
+    settledPrivateMb: settled?.privateMb,
+    imageCacheMb: report.imageCacheMb ?? null,
+    trimmedMb: report.trimmedMb ?? null,
+    trim: report.trim ?? null,
+    jsHeapMb: report.jsHeapMb ?? null,
+    gpu: report.gpu ?? null,
+    peakByProcess: peak?.processes.filter((p) => p.privateMb > 20),
+    ...(process.env.BENCH_TIMELINE ? { timeline } : {}),
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  const over = [];
+  if (summary.peakPrivateMb > maxMb) over.push(`peak ${summary.peakPrivateMb} MB > ${maxMb} MB`);
+  if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
+  if (over.length) {
+    console.error(`MPR gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
 const modes = {
+  mpr: () => benchMpr(positional[0], positional[1]),
   desktop: () => benchDesktop(positional[0], positional[1]),
   coldstart: () => benchColdStart(positional[0]),
   idle: () => benchIdle(positional[0]),
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr …  (see header)");
   process.exit(2);
 }
 await modes[mode]();
