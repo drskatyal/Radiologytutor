@@ -31,55 +31,7 @@ function urlOf(imageId: string): string | null {
   return imageId.slice("wadouri:".length).replace(/&frame=\d+$/, "");
 }
 
-/** Pixel Data is frames → fragments → bytes; count every level. */
-function bytesIn(value: unknown): number {
-  if (Array.isArray(value)) return value.reduce((n: number, v) => n + bytesIn(v), 0);
-  return (value as ArrayBufferView | ArrayBuffer | undefined)?.byteLength ?? 0;
-}
-
-const PIXEL_KEYS = ["PixelData", "FramePixelData", "FloatPixelData", "7FE00010", "7fe00010", "7FE00008", "7fe00008"];
-
-/**
- * Cornerstone v5's default wadouri path keeps each file's pixel bytes inside
- * its NATURALIZED metadata entry, which is never evicted: every slice ever
- * viewed was held twice, forever. After decode, drop the pixel bytes from the
- * entry (the tags stay); on eviction, clear the entry so a reload re-reads
- * the file in full.
- */
-async function installNaturalizedTrim(core: Core): Promise<void> {
-  const md = await import("@cornerstonejs/metadata");
-  const NATURALIZED = md.Enums.MetadataModules.NATURALIZED;
-  const clearQuery = (md.metaData as unknown as { clearQuery?: (type: string, query: string) => void }).clearQuery;
-  if (!clearQuery) return; // without a way to re-read, keep the bytes
-  core.eventTarget.addEventListener(core.Enums.Events.IMAGE_LOADED, (event: Event) => {
-    const imageId = ((event as CustomEvent).detail?.image as { imageId?: string } | undefined)?.imageId;
-    if (!imageId || !urlOf(imageId)) return;
-    const natural = md.metaData.get(NATURALIZED, imageId) as Record<string, unknown> | undefined;
-    if (!natural || natural.__pixelsDropped) return;
-    if (Number(natural.NumberOfFrames ?? 1) > 1) return; // other frames still decode from it
-    let freed = 0;
-    for (const key of PIXEL_KEYS) {
-      const value = natural[key];
-      if (Array.isArray(value)) {
-        freed += bytesIn(value);
-        delete natural[key];
-      }
-    }
-    if (!freed) return;
-    natural.__pixelsDropped = true;
-    memoryStats.trimmedBytes += freed;
-    memoryStats.trimmedImages += 1;
-  });
-  core.eventTarget.addEventListener(core.Enums.Events.IMAGE_CACHE_IMAGE_REMOVED, (event: Event) => {
-    const imageId = (event as CustomEvent).detail?.imageId as string | undefined;
-    if (!imageId || !urlOf(imageId)) return;
-    const natural = md.metaData.get(NATURALIZED, imageId) as Record<string, unknown> | undefined;
-    if (natural?.__pixelsDropped) clearQuery(NATURALIZED, imageId);
-  });
-}
-
 export function installDatasetTrim(core: Core, loader: Loader): void {
-  void installNaturalizedTrim(core).catch(() => undefined);
   const manager = (loader as unknown as { wadouri?: { dataSetCacheManager?: {
     isLoaded(uri: string): boolean;
     unload(uri: string): void;
