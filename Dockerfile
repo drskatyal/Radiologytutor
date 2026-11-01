@@ -28,6 +28,9 @@ RUN npm run build
 
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
+# The commit this image was built from; /api/version reports it.
+ARG GIT_SHA=""
+ENV GIT_SHA=${GIT_SHA}
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
