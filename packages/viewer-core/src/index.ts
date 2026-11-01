@@ -22,3 +22,5 @@ export * from "./sliceScrollbar";
 export * from "./viewerRuntime";
 export * from "./viewportVoi";
 export * from "./windowPresets";
+export * from "./hangingProtocols";
+export * from "./positionSync";

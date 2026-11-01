@@ -11,13 +11,16 @@ import { Spinner } from "@/components/ui/Spinner";
 import { clampCineFps } from "@flowrad/viewer-core";
 import type { DesktopHeader, ViewerSeries, ViewerStudy } from "../types";
 import { formatDicomDate, formatDicomTime, formatPersonName } from "../study";
-import { addViewportToGroup, getEngine, removeViewportFromGroups, STACK_GROUP, type Engine } from "./engine";
+import { addViewportToGroup, getEngine, jumpTo3dPoint, removeViewportFromGroups, STACK_GROUP, type Engine } from "./engine";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "./handles";
 import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
 import { voiRangeOf, wwwcOf } from "./presets";
 import { ensureSuv } from "./suv";
 import { isTauri, previewUrlFor } from "../platform";
 import { verifyPainted, type PaintHealth } from "./paintCheck";
+
+/** Window event carrying the 3D cursor's world point to every viewport. */
+const CURSOR_EVENT = "flowrad-3d-cursor";
 
 export interface StackViewportProps {
   cellKey: string;
@@ -97,6 +100,28 @@ function StackViewportImpl({
       return null;
     }
   }, [viewportId]);
+
+  /** 3D cursor reticle (canvas px), shown briefly after a Shift+click anywhere. */
+  const [reticle, setReticle] = useState<{ x: number; y: number; key: number } | null>(null);
+  useEffect(() => {
+    const onCursor = (event: Event) => {
+      const { world, frame } = (event as CustomEvent<{ world: number[]; frame?: string }>).detail;
+      // The jump is async; place the reticle once this viewport has moved.
+      window.setTimeout(() => {
+        const vp = viewport();
+        if (!vp?.worldToCanvas || (frame && vp.getFrameOfReferenceUID?.() !== frame)) return;
+        const [x, y] = vp.worldToCanvas(world) as number[];
+        if (Number.isFinite(x) && Number.isFinite(y)) setReticle({ x, y, key: Date.now() });
+      }, 60);
+    };
+    window.addEventListener(CURSOR_EVENT, onCursor);
+    return () => window.removeEventListener(CURSOR_EVENT, onCursor);
+  }, [viewport]);
+  useEffect(() => {
+    if (!reticle) return;
+    const t = window.setTimeout(() => setReticle(null), 1500);
+    return () => window.clearTimeout(t);
+  }, [reticle]);
 
   const refreshReadout = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -452,7 +477,21 @@ function StackViewportImpl({
         active ? "outline-2 -outline-offset-2 outline-accent" : "outline-subtle",
         dragOver && "outline-2 outline-accent-bright"
       )}
-      onPointerDownCapture={onActivate}
+      onPointerDownCapture={(e) => {
+        onActivate();
+        // 3D cursor: Shift+click links every viewport to this point.
+        if (e.shiftKey && e.button === 0 && engineRef.current && series) {
+          const vp = viewport();
+          const rect = elementRef.current?.getBoundingClientRect();
+          if (vp?.canvasToWorld && rect) {
+            e.stopPropagation();
+            e.preventDefault();
+            const world = vp.canvasToWorld([e.clientX - rect.left, e.clientY - rect.top]) as number[];
+            jumpTo3dPoint(engineRef.current, viewportId, world);
+            window.dispatchEvent(new CustomEvent(CURSOR_EVENT, { detail: { world, frame: vp.getFrameOfReferenceUID?.() } }));
+          }
+        }
+      }}
       onDoubleClick={onDoubleClick}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("application/x-radlearn-series")) {
@@ -485,6 +524,16 @@ function StackViewportImpl({
           onLoad={onPreview}
           onError={() => setPreviewFailed(series.uid)}
           className="pointer-events-none absolute inset-0 h-full w-full bg-imaging object-contain"
+        />
+      )}
+
+      {reticle && (
+        <span
+          key={reticle.key}
+          aria-hidden
+          className="pointer-events-none absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-warning shadow-[0_0_0_1px_rgba(0,0,0,0.6)] before:absolute before:left-1/2 before:top-[-6px] before:h-[calc(100%+12px)] before:w-px before:-translate-x-1/2 before:bg-warning after:absolute after:left-[-6px] after:top-1/2 after:h-px after:w-[calc(100%+12px)] after:-translate-y-1/2 after:bg-warning"
+          // Dynamic position of the linked point.
+          style={{ left: reticle.x, top: reticle.y }}
         />
       )}
 

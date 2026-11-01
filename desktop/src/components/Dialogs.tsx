@@ -25,7 +25,7 @@ export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () 
   const rows = shortcutSheet();
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
-    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description="Mouse: left = selected tool · wheel = scroll · Ctrl+wheel = zoom · right drag = window/level · middle drag = pan." size="xl">
+    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description="Mouse: left = selected tool · wheel = scroll · Ctrl+wheel = zoom · right drag = window/level · middle drag = pan · Shift+click = 3D cursor (link every viewport to that point)." size="xl">
       <div className="grid max-h-[60vh] grid-cols-1 gap-x-8 gap-y-5 overflow-y-auto pr-1 md:grid-cols-2">
         {groups.map((group) => (
           <section key={group}>
