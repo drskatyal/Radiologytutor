@@ -115,8 +115,11 @@ fn scan_pool() -> &'static rayon::ThreadPool {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
+        // Opening files is the cold cost (Windows: an antivirus callback per
+        // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
+        // it overlaps well: keep many opens in flight, not just one per core.
         rayon::ThreadPoolBuilder::new()
-            .num_threads((cores * 2).clamp(8, 32))
+            .num_threads((cores * 4).clamp(16, 64))
             .thread_name(|i| format!("scan-{i}"))
             .build()
             .expect("scan thread pool")

@@ -17,6 +17,7 @@ mod pet;
 mod preview;
 mod procmem;
 mod volume;
+mod render3d;
 mod scan;
 mod sources;
 mod store;
@@ -397,6 +398,13 @@ fn simulate_blank_gpu() -> bool {
     crate::flowrad_env("SIMULATE_BLANK_GPU").as_deref() == Ok("1")
 }
 
+/// FLOWRAD_LEAK_ROUNDS=N: how many times the headless leak test opens and
+/// closes MPR / 3D and the other features (default 2).
+#[tauri::command]
+fn bench_leak_rounds() -> u32 {
+    crate::flowrad_env("LEAK_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).clamp(1, 50)
+}
+
 /// FLOWRAD_DEBUG=1: show the memory HUD from launch.
 #[tauri::command]
 fn debug_enabled() -> bool {
@@ -436,7 +444,11 @@ fn serve_preview(registry: &Mutex<FileRegistry>, id: &str) -> Response<Vec<u8>> 
 /// `/v/<key>/<plane>/<index>/<center>/<width>/<maxDim>`: one rendered plane
 /// of the native volume (volume.rs).
 fn serve_volume_plane(rest: &str) -> Response<Vec<u8>> {
-    match volume::serve(rest) {
+    serve_png(volume::serve(rest))
+}
+
+fn serve_png(png: Option<Vec<u8>>) -> Response<Vec<u8>> {
+    match png {
         Some(png) => Response::builder()
             .status(StatusCode::OK)
             .header(http_header::CONTENT_TYPE, "image/png")
@@ -461,10 +473,15 @@ async fn volume_build(state: tauri::State<'_, AppState>, file_ids: Vec<u32>) -> 
         .map_err(|e| e.to_string())?
 }
 
-/// Drop the native volume (view closed): its memory goes back at once.
+/// A view of the native volume closed; freed when no view uses it.
 #[tauri::command]
-fn volume_close() {
-    volume::close();
+fn volume_close(key: String) {
+    if let Ok(k) = key.parse::<u64>() {
+        volume::release(k);
+        if volume::current(k).is_none() {
+            render3d::release(k);
+        }
+    }
 }
 
 fn serve_file(registry: &Mutex<FileRegistry>, uri_path: &str) -> Response<Vec<u8>> {
@@ -549,6 +566,8 @@ pub fn run() {
                     serve_preview(&registry, id)
                 } else if let Some(rest) = trimmed.strip_prefix("v/") {
                     serve_volume_plane(rest)
+                } else if let Some(rest) = trimmed.strip_prefix("r/") {
+                    serve_png(render3d::serve(rest))
                 } else {
                     serve_file(&registry, &path)
                 };
@@ -572,6 +591,7 @@ pub fn run() {
             volume_close,
             debug_enabled,
             simulate_blank_gpu,
+            bench_leak_rounds,
             bench_view,
             bench_pixels,
             bench_paint_timeout_ms,

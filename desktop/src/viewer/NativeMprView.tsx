@@ -29,6 +29,16 @@ export interface VolumeInfo {
   window: [number, number] | null;
   bytes: number;
   buildMs: number;
+  /** [in-plane, slice] reduction to fit the memory budget (1 = full resolution). */
+  reduced: [number, number];
+}
+
+/** "Reduced resolution …" note for a volume built under the memory budget, or null. */
+export function reducedNote(v: VolumeInfo): string | null {
+  const [xy, z] = v.reduced ?? [1, 1];
+  if (xy === 1 && z === 1) return null;
+  const parts = [xy > 1 ? `${xy}× in-plane` : null, z > 1 ? `${z} slices averaged` : null].filter(Boolean);
+  return `Reduced resolution to fit memory (${parts.join(", ")})`;
 }
 
 interface Props {
@@ -37,6 +47,8 @@ interface Props {
   /** The native core cannot read this series (e.g. JPEG-LS): use the GPU MPR. */
   onUnsupported?: () => void;
   onVolumeReady?: (t: { shellMs: number; loadedMs: number }) => void;
+  /** Bench: every pane has drawn its first plane (brightest pixel per pane). */
+  onPainted?: (t: { ms: number; maxLum: Record<string, number> }) => void;
 }
 
 const PLANES: { plane: Plane; label: string }[] = [
@@ -68,33 +80,66 @@ function crosshair(info: VolumeInfo, plane: Plane, at: Record<Plane, number>): [
   return [(at.coronal + 0.5) / ny, top(at.axial)];
 }
 
-/** Latest-wins image loading: no flicker, never a queue of stale planes. */
-function usePlaneImage(url: string | null): { src: string | null; failed: boolean } {
+/** Brightest pixel of a decoded image (0–255): the "is anything drawn" check. */
+function maxLuminance(img: HTMLImageElement): number {
+  const c = document.createElement("canvas");
+  c.width = c.height = 48;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return -1;
+  let d: Uint8ClampedArray;
+  try {
+    ctx.drawImage(img, 0, 0, 48, 48);
+    d = ctx.getImageData(0, 0, 48, 48).data;
+  } catch {
+    return -1; // tainted canvas: unknown, not blank
+  }
+  let max = 0;
+  for (let i = 0; i < d.length; i += 4) max = Math.max(max, d[i]);
+  return max;
+}
+
+/**
+ * Latest-wins image loading: no flicker, never a queue of stale planes. A
+ * failed plane (the volume is being rebuilt) is retried, 3 times, backing off.
+ */
+export function usePlaneImage(url: string | null, onLoaded?: (maxLum: number) => void): { src: string | null; failed: boolean } {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const busy = useRef(false);
   const wanted = useRef<string | null>(null);
+  const tries = useRef(0);
+  const loadedCb = useRef(onLoaded);
+  loadedCb.current = onLoaded;
   const load = useCallback(() => {
     const next = wanted.current;
     if (!next || busy.current) return;
     busy.current = true;
     const img = new Image();
     img.decoding = "async";
+    // The protocol answers with Access-Control-Allow-Origin: *; anonymous CORS
+    // keeps the pixels readable for the paint check.
+    img.crossOrigin = "anonymous";
     img.onload = () => {
       busy.current = false;
+      tries.current = 0;
       setSrc(next);
       setFailed(false);
+      loadedCb.current?.(maxLuminance(img));
       if (wanted.current !== next) load();
     };
     img.onerror = () => {
       busy.current = false;
-      setFailed(true);
-      if (wanted.current !== next) load();
+      if (wanted.current !== next) return load();
+      if (tries.current < 3) {
+        tries.current += 1;
+        window.setTimeout(load, 150 * tries.current);
+      } else setFailed(true);
     };
     img.src = next;
   }, []);
   useEffect(() => {
     wanted.current = url;
+    tries.current = 0;
     load();
   }, [url, load]);
   return { src, failed };
@@ -113,6 +158,7 @@ function Pane({
   onWindow,
   onPoint,
   onReset,
+  onPainted,
 }: {
   info: VolumeInfo;
   plane: Plane;
@@ -126,6 +172,7 @@ function Pane({
   onWindow: (dCenter: number, dWidth: number) => void;
   onPoint: (fx: number, fy: number) => void;
   onReset: () => void;
+  onPainted?: (maxLum: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
@@ -142,7 +189,7 @@ function Pane({
   const rect = { w: mmW * scale, h: mmH * scale, x: (size[0] - mmW * scale) / 2, y: (size[1] - mmH * scale) / 2 };
   const maxDim = Math.min(1024, Math.max(128, Math.ceil(Math.max(rect.w, rect.h) * (window.devicePixelRatio || 1))));
   const url = scale ? volumePlaneUrl(info.key, plane, at[plane], center, width, maxDim) : null;
-  const { src, failed } = usePlaneImage(url);
+  const { src, failed } = usePlaneImage(url, onPainted);
   const [cx, cy] = crosshair(info, plane, at);
 
   const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
@@ -225,33 +272,60 @@ function Pane({
   );
 }
 
-export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady }: Props) {
+export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted }: Props) {
   const [info, setInfo] = useState<VolumeInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [at, setAt] = useState<Record<Plane, number>>({ axial: 0, coronal: 0, sagittal: 0 });
   const [voi, setVoi] = useState<{ center: number; width: number }>({ center: 40, width: 400 });
   const [active, setActive] = useState<Plane>("axial");
-  const fileIds = useMemo(() => series.headers.map((h) => h.fileId), [series]);
+  // Keyed on the SET of files, not the series object: a cold open rebuilds the
+  // study list (new objects, same files) and must not rebuild the volume.
+  const filesKey = useMemo(() => series.headers.map((h) => h.fileId).sort((a, b) => a - b).join(","), [series]);
+  const fileIds = useMemo(() => (filesKey ? filesKey.split(",").map(Number) : []), [filesKey]);
+  const seriesRef = useRef(series);
+  seriesRef.current = series;
+  const opened = useRef(0);
+  const painted = useRef<Record<string, number>>({});
+  const paintedCb = useRef(onPainted);
+  paintedCb.current = onPainted;
+  const readyCb = useRef(onVolumeReady);
+  readyCb.current = onVolumeReady;
+  const notePaint = (plane: Plane, lum: number) => {
+    if (plane in painted.current) return;
+    painted.current[plane] = lum;
+    if (Object.keys(painted.current).length === 3) {
+      paintedCb.current?.({ ms: performance.now() - opened.current, maxLum: { ...painted.current } });
+    }
+  };
 
   const reset = useCallback((v: VolumeInfo) => {
     setAt({ axial: Math.floor(v.dims[2] / 2), coronal: Math.floor(v.dims[1] / 2), sagittal: Math.floor(v.dims[0] / 2) });
-    const h = series.headers[Math.floor(series.headers.length / 2)];
+    const headers = seriesRef.current.headers;
+    const h = headers[Math.floor(headers.length / 2)];
     if (h?.windowWidth && h.windowWidth > 1 && h.windowCenter != null) setVoi({ center: h.windowCenter, width: h.windowWidth });
     else if (v.window) setVoi({ center: v.window[0], width: v.window[1] });
     else setVoi({ center: (v.min + v.max) / 2, width: Math.max(1, v.max - v.min) });
-  }, [series]);
+  }, []);
 
   useEffect(() => {
     let live = true;
+    let key: string | null = null;
     const started = performance.now();
+    opened.current = started;
+    painted.current = {};
     setInfo(null);
     setError(null);
     invoke<VolumeInfo>("volume_build", { fileIds })
       .then((v) => {
-        if (!live) return;
+        key = v.key;
+        if (!live) {
+          // Unmounted while building: hand the volume back.
+          void invoke("volume_close", { key }).catch(() => undefined);
+          return;
+        }
         reset(v);
         setInfo(v);
-        onVolumeReady?.({ shellMs: v.buildMs, loadedMs: performance.now() - started });
+        readyCb.current?.({ shellMs: v.buildMs, loadedMs: performance.now() - started });
       })
       .catch((e) => {
         if (!live) return;
@@ -260,11 +334,11 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady }: 
       });
     return () => {
       live = false;
-      void invoke("volume_close").catch(() => undefined);
+      if (key) void invoke("volume_close", { key }).catch(() => undefined);
     };
-    // onVolumeReady is a bench hook; the volume depends on the files only.
+    // The volume depends on the set of files only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileIds, reset]);
+  }, [filesKey, reset]);
 
   const scroll = (plane: Plane, delta: number) =>
     info && setAt((a) => ({ ...a, [plane]: Math.max(0, Math.min(depthOf(info, plane) - 1, a[plane] + delta)) }));
@@ -294,6 +368,7 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady }: 
             W {Math.round(voi.width)} · L {Math.round(voi.center)} · {info.dims[0]}×{info.dims[1]}×{info.dims[2]}
           </span>
         )}
+        {info && reducedNote(info) && <span className="text-xs text-warning">{reducedNote(info)}</span>}
         <span className="flex-1" />
         {info && (
           <Button size="sm" variant="ghost" onClick={() => reset(info)} leadingIcon={<RotateCcw className="h-4 w-4" />}>
@@ -329,6 +404,7 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady }: 
               onWindow={(dc, dw) => setVoi((v) => ({ center: v.center + dc, width: Math.max(1, v.width + dw) }))}
               onPoint={(fx, fy) => point(plane, fx, fy)}
               onReset={() => reset(info)}
+              onPainted={(lum) => notePaint(plane, lum)}
             />
           ))}
           <div className="flex items-center justify-center p-4 text-center text-xs text-white/50">
