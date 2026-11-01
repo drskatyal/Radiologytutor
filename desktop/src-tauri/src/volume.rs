@@ -41,6 +41,7 @@ impl Plane {
 }
 
 pub struct Volume {
+    // (fields are read by render3d too)
     pub key: u64,
     /// columns (x), rows (y), slices (z)
     pub dims: [usize; 3],
@@ -50,6 +51,8 @@ pub struct Volume {
     pub min: i16,
     pub max: i16,
     pub window: Option<(f64, f64)>,
+    /// [in-plane, slice] reduction factors (1 = full resolution).
+    pub reduced: [usize; 2],
 }
 
 #[derive(Serialize)]
@@ -65,16 +68,63 @@ pub struct VolumeInfo {
     pub bytes: usize,
     #[serde(rename = "buildMs")]
     pub build_ms: f64,
+    /// [in-plane, slice] reduction to fit the memory budget (1 = full resolution).
+    pub reduced: [usize; 2],
 }
 
-static CURRENT: Mutex<Option<Arc<Volume>>> = Mutex::new(None);
+/// The one volume held, with the number of views using it. A view that opens
+/// the same series again shares it; it is freed when the last view closes.
+/// (Unkeyed close used to race a re-render's rebuild: the old view's close
+/// landed after the new build and freed the volume the panes then asked for,
+/// so MPR stayed blank. HP, 0.6.0, uncached study.)
+static CURRENT: Mutex<Option<(Arc<Volume>, usize)>> = Mutex::new(None);
+/// Builds run one at a time (a second request for the same series waits and
+/// then shares the first one's volume).
+static BUILD: Mutex<()> = Mutex::new(());
 
 pub fn current(key: u64) -> Option<Arc<Volume>> {
-    CURRENT.lock().as_ref().filter(|v| v.key == key).cloned()
+    CURRENT.lock().as_ref().filter(|(v, _)| v.key == key).map(|(v, _)| v.clone())
 }
 
+/// One view of `key` is gone; free the volume when none is left.
+pub fn release(key: u64) {
+    let mut cur = CURRENT.lock();
+    if let Some((v, refs)) = cur.as_mut() {
+        if v.key == key {
+            *refs = refs.saturating_sub(1);
+            if *refs == 0 {
+                *cur = None;
+            }
+        }
+    }
+}
+
+/// Drop whatever is held (tests, study closed).
 pub fn close() {
     *CURRENT.lock() = None;
+}
+
+pub fn key_of(paths: &[PathBuf]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut sorted: Vec<&PathBuf> = paths.iter().collect();
+    sorted.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    sorted.hash(&mut h);
+    h.finish()
+}
+
+fn info_of(v: &Volume, build_ms: f64) -> VolumeInfo {
+    VolumeInfo {
+        key: v.key.to_string(),
+        dims: v.dims,
+        spacing: v.spacing,
+        min: v.min,
+        max: v.max,
+        window: v.window,
+        bytes: v.data.len() * 2,
+        build_ms,
+        reduced: v.reduced,
+    }
 }
 
 struct SliceHeader {
@@ -223,10 +273,45 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// Bytes one volume may hold: `FLOWRAD_VOLUME_BUDGET_MB`, else 25% of RAM,
+/// capped at 768 MB so MPR / 3D stay under the 1.2 GB process-tree gate.
+pub fn budget_bytes() -> usize {
+    if let Some(mb) = crate::flowrad_env("VOLUME_BUDGET_MB").ok().and_then(|v| v.parse::<usize>().ok()) {
+        return mb << 20;
+    }
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let quarter = (sys.total_memory() as usize) / 4;
+    quarter.clamp(256 << 20, 768 << 20)
+}
+
+/// Smallest reduction that fits `budget`: average slice pairs first (thin
+/// slices lose least), then 2x2 in-plane, then more of both.
+pub fn reduction(cols: usize, rows: usize, slices: usize, budget: usize) -> (usize, usize) {
+    let bytes = |xy: usize, z: usize| (cols / xy) * (rows / xy) * (slices / z) * 2;
+    for (xy, z) in [(1, 1), (1, 2), (2, 1), (2, 2), (2, 3), (2, 4), (4, 2), (4, 4)] {
+        if slices / z >= 3 && bytes(xy, z) <= budget {
+            return (xy, z);
+        }
+    }
+    (4, 4)
+}
+
 pub fn build(paths: Vec<PathBuf>) -> Result<VolumeInfo, String> {
     let started = std::time::Instant::now();
-    // Free the previous volume BEFORE allocating the next one.
-    close();
+    let _one_at_a_time = BUILD.lock();
+    let key = key_of(&paths);
+    {
+        let mut cur = CURRENT.lock();
+        if let Some((v, refs)) = cur.as_mut() {
+            if v.key == key {
+                *refs += 1;
+                return Ok(info_of(v, 0.0));
+            }
+        }
+        // Free the previous volume BEFORE allocating the next one.
+        *cur = None;
+    }
     if paths.len() < 3 {
         return Err("A volume needs at least three slices.".into());
     }
@@ -242,38 +327,63 @@ pub fn build(paths: Vec<PathBuf>) -> Result<VolumeInfo, String> {
     gaps.sort_by(f64::total_cmp);
     let dz = gaps.get(gaps.len() / 2).copied().unwrap_or(1.0).abs().max(1e-3);
     let n = rows * cols;
-    // The one allocation: the 16-bit volume. Each slice decodes into its slot.
-    let mut data = vec![0i16; n * slices.len()];
-    data.par_chunks_mut(n)
-        .zip(slices.par_iter())
-        .map(|(dst, s)| decode_into(s, dst))
-        .collect::<Result<(), String>>()?;
+    // Hard memory budget (Phase 2): a series bigger than the budget is built at
+    // reduced resolution instead of pushing the machine into swap.
+    let (step_xy, step_z) = reduction(cols, rows, slices.len(), budget_bytes());
+    let (ocols, orows) = (cols / step_xy, rows / step_xy);
+    let depth = slices.len() / step_z;
+    let on = ocols * orows;
+    // The one big allocation: the 16-bit volume. Each output slice is decoded
+    // (and, when reduced, box-averaged) straight into its slot.
+    let mut data = vec![0i16; on * depth];
+    if step_xy == 1 && step_z == 1 {
+        data.par_chunks_mut(n)
+            .zip(slices.par_iter())
+            .map(|(dst, s)| decode_into(s, dst))
+            .collect::<Result<(), String>>()?;
+    } else {
+        data.par_chunks_mut(on)
+            .enumerate()
+            .map(|(j, dst)| {
+                let mut acc = vec![0i32; on];
+                let mut src = vec![0i16; n];
+                for s in &slices[j * step_z..(j + 1) * step_z] {
+                    decode_into(s, &mut src)?;
+                    for y in 0..orows {
+                        for x in 0..ocols {
+                            let mut sum = 0i32;
+                            for dy in 0..step_xy {
+                                let row = &src[(y * step_xy + dy) * cols + x * step_xy..][..step_xy];
+                                sum += row.iter().map(|&v| v as i32).sum::<i32>();
+                            }
+                            acc[y * ocols + x] += sum;
+                        }
+                    }
+                }
+                let div = (step_xy * step_xy * step_z) as i32;
+                for (o, a) in dst.iter_mut().zip(&acc) {
+                    *o = (a / div) as i16;
+                }
+                Ok(())
+            })
+            .collect::<Result<(), String>>()?;
+    }
     let window = slices[slices.len() / 2].window;
-    let spacing = [slices[0].spacing[0], slices[0].spacing[1], dz];
-    let depth = slices.len();
+    let spacing = [
+        slices[0].spacing[0] * step_xy as f64,
+        slices[0].spacing[1] * step_xy as f64,
+        dz * step_z as f64,
+    ];
+    let (cols, rows) = (ocols, orows);
+    let reduced = [step_xy, step_z];
     drop(slices);
     let (min, max) = data.par_iter().fold(|| (i16::MAX, i16::MIN), |(a, b), &v| (a.min(v), b.max(v))).reduce(
         || (i16::MAX, i16::MIN),
         |(a, b), (c, d)| (a.min(c), b.max(d)),
     );
-    let key = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        paths.hash(&mut h);
-        h.finish()
-    };
-    let volume = Arc::new(Volume { key, dims: [cols, rows, depth], spacing, data, min, max, window });
-    let info = VolumeInfo {
-        key: key.to_string(),
-        dims: volume.dims,
-        spacing,
-        min,
-        max,
-        window,
-        bytes: volume.data.len() * 2,
-        build_ms: started.elapsed().as_secs_f64() * 1000.0,
-    };
-    *CURRENT.lock() = Some(volume);
+    let volume = Arc::new(Volume { key, dims: [cols, rows, depth], spacing, data, min, max, window, reduced });
+    let info = info_of(&volume, started.elapsed().as_secs_f64() * 1000.0);
+    *CURRENT.lock() = Some((volume, 1));
     Ok(info)
 }
 
@@ -354,6 +464,10 @@ pub fn serve(rest: &str) -> Option<Vec<u8>> {
     png(w, h, &grey)
 }
 
+/// Tests that build share the one global volume: run them one at a time.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,7 +481,7 @@ mod tests {
                 }
             }
         }
-        Volume { key: 1, dims: [nx, ny, nz], spacing: [1.0, 1.0, 2.0], data, min: 0, max: ((nz - 1) * 100) as i16, window: None }
+        Volume { key: 1, dims: [nx, ny, nz], spacing: [1.0, 1.0, 2.0], data, min: 0, max: ((nz - 1) * 100) as i16, window: None, reduced: [1, 1] }
     }
 
     #[test]
@@ -388,6 +502,15 @@ mod tests {
     }
 
     #[test]
+    fn reduction_fits_the_budget_least_lossy_first() {
+        let mb = 1 << 20;
+        assert_eq!(reduction(512, 512, 848, 768 * mb), (1, 1), "424 MB fits");
+        assert_eq!(reduction(512, 512, 2000, 768 * mb), (1, 2), "1 GB: average slice pairs");
+        assert_eq!(reduction(512, 512, 4332, 768 * mb), (2, 1), "2.2 GB: 2x2 in-plane");
+        assert_eq!(reduction(1024, 1024, 4332, 768 * mb), (2, 3), "9 GB: 2x2 in-plane, slices in threes");
+    }
+
+    #[test]
     fn caps_the_long_side() {
         let v = synthetic(512, 512, 10);
         let (w, h, _) = render(&v, Plane::Axial, 0, 0.0, 400.0, 256);
@@ -400,6 +523,7 @@ mod real {
     /// FLOWRAD_TEST_CT=/path/to/ct848 cargo test --release volume::real -- --nocapture
     #[test]
     fn builds_a_real_ct() {
+        let _serial = super::TEST_LOCK.lock();
         let Ok(dir) = crate::flowrad_env("TEST_CT") else { return };
         let paths: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
         let info = super::build(paths).expect("builds");
@@ -423,6 +547,7 @@ mod codecs {
     /// Every transfer syntax builds the same volume as the uncompressed one.
     #[test]
     fn every_transfer_syntax_builds() {
+        let _serial = super::TEST_LOCK.lock();
         let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let root = std::path::Path::new(&root).join("ts");
         let mut results = vec![];
@@ -439,5 +564,30 @@ mod codecs {
             eprintln!("{r}");
         }
         super::close();
+    }
+}
+
+#[cfg(test)]
+mod sharing {
+    /// Two views of one series share the volume; it lives until the last closes.
+    /// A stale close (key of another series) never frees the current one.
+    #[test]
+    fn refcounted_by_key() {
+        let _serial = super::TEST_LOCK.lock();
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
+        let dir = std::path::Path::new(&root).join("ts").join("explicit-le");
+        let paths: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
+        let a = super::build(paths.clone()).unwrap();
+        let mut reversed = paths.clone();
+        reversed.reverse();
+        let b = super::build(reversed).unwrap();
+        assert_eq!(a.key, b.key, "same files in any order = same volume");
+        let key: u64 = a.key.parse().unwrap();
+        super::release(key ^ 1);
+        assert!(super::current(key).is_some(), "a stale close of another key is ignored");
+        super::release(key);
+        assert!(super::current(key).is_some(), "still one view open");
+        super::release(key);
+        assert!(super::current(key).is_none(), "freed with the last view");
     }
 }
