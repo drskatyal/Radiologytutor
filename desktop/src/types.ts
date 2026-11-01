@@ -59,6 +59,8 @@ export interface ScanResult {
   usedDicomdir: boolean;
   warnings: string[];
   timings: { listMs: number; parseMs: number; totalMs: number };
+  /** Structured reports and key-image notes found alongside the images. */
+  documents?: import("./documents").DicomDocument[];
 }
 
 export interface PatientInfo {

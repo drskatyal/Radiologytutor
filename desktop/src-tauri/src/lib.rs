@@ -10,6 +10,7 @@
 //! (sign-in required, off by default).
 
 mod anonymize;
+mod documents;
 mod header;
 mod pacs;
 mod pet;

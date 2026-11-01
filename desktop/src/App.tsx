@@ -43,6 +43,7 @@ import { useSyncStatus } from "./components/Account";
 import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
 import { setScrollPreferences } from "@flowrad/viewer-core";
 import { hangingPlanFor } from "./hanging";
+import { withKeyImageSeries, type DicomDocument } from "./documents";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
@@ -81,6 +82,7 @@ const PacsDialog = named<typeof import("./components/PacsDialog").PacsDialog>(()
 const UpdatePrompt = named<typeof import("./components/Updates").UpdatePrompt>(() => import("./components/Updates"), "UpdatePrompt");
 const AccountSection = named<typeof import("./components/Account").AccountSection>(() => import("./components/Account"), "AccountSection");
 const SendToRadLearnDialog = named<typeof import("./components/Account").SendToRadLearnDialog>(() => import("./components/Account"), "SendToRadLearnDialog");
+const ReportDialog = named<typeof import("./components/ReportDialog").ReportDialog>(() => import("./components/ReportDialog"), "ReportDialog");
 const ShortcutsDialog = named<typeof import("./components/Dialogs").ShortcutsDialog>(() => import("./components/Dialogs"), "ShortcutsDialog");
 const CustomWindowDialog = named<typeof import("./components/Dialogs").CustomWindowDialog>(() => import("./components/Dialogs"), "CustomWindowDialog");
 const DiscPickerDialog = named<typeof import("./components/Dialogs").DiscPickerDialog>(() => import("./components/Dialogs"), "DiscPickerDialog");
@@ -117,6 +119,9 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState<"grid" | VolumeMode>("grid");
   const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export" | "pacs" | "send">(null);
+  /** Structured reports and key-image notes from the open study; the report being read. */
+  const [documents, setDocuments] = useState<DicomDocument[]>([]);
+  const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
   const updater = useUpdater(settings.checkUpdates);
   const sync = useSyncStatus();
@@ -239,6 +244,8 @@ export default function App() {
     setMaximized(null);
     setView("grid");
     setHangingLabel(null);
+    setDocuments([]);
+    setOpenReport(null);
   }, []);
 
   const finishOpen = useCallback(
@@ -319,7 +326,10 @@ export default function App() {
         if (seq !== openSeq.current) return;
         window.clearTimeout(timer);
         const headers = result.headers.map((h) => ({ ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` }));
-        const built = buildStudies(headers);
+        const docs = result.documents ?? [];
+        // Key-image notes become series of the images they select.
+        const built = withKeyImageSeries(buildStudies(headers), docs);
+        setDocuments(docs);
         setStudies(built);
         setGrowing(false);
         setScan(null);
@@ -949,6 +959,8 @@ export default function App() {
                   activeSeriesUid={activeSeriesUid}
                   growing={growing}
                   compact={settings.compactSeries}
+                  documents={documents}
+                  onOpenReport={setOpenReport}
                   hidePatient={settings.hidePatient}
                   onOpenSeries={(uid) => showSeries(uid)}
                 />
@@ -1140,6 +1152,7 @@ export default function App() {
         study={active?.study ?? null}
       />
       )}
+      {openReport && <ReportDialog report={openReport} onClose={() => setOpenReport(null)} />}
       {dialog === "settings" && (
       <SettingsDialog
         open={dialog === "settings"}

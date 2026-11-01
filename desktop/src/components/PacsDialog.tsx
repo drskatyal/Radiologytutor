@@ -183,7 +183,7 @@ export function PacsDialog({ open, onClose, onRetrieved }: { open: boolean; onCl
               <Field label="Name">{(f) => <Input {...f} value={editing.name} placeholder="Hospital PACS" onChange={(e) => setEditing({ ...editing, name: e.target.value })} />}</Field>
               {editing.kind === "dicomweb" ? (
                 <>
-                  <Field label="DICOMweb root URL">{(f) => <Input {...f} value={editing.url} placeholder="https://pacs.example.org/dicom-web" onChange={(e) => setEditing({ ...editing, url: e.target.value.trim() })} />}</Field>
+                  <Field label="DICOMweb root URL" hint="Google Cloud Healthcare: https://healthcare.googleapis.com/v1/projects/…/locations/…/datasets/…/dicomStores/…/dicomWeb, with a bearer token from gcloud auth print-access-token.">{(f) => <Input {...f} value={editing.url} placeholder="https://pacs.example.org/dicom-web" onChange={(e) => setEditing({ ...editing, url: e.target.value.trim() })} />}</Field>
                   <Field label="Username (optional)">{(f) => <Input {...f} value={editing.username ?? ""} onChange={(e) => setEditing({ ...editing, username: e.target.value })} />}</Field>
                   <Field label={editing.username ? "Password" : "Bearer token (optional)"} hint="Kept in memory for this session only.">
                     {(f) => <Input {...f} type="password" value={secret} onChange={(e) => setSecret(e.target.value)} />}

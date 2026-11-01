@@ -1320,6 +1320,91 @@ def write_ts_variants(root: Path, stored: np.ndarray, notes: dict) -> None:
 # CD media, archive, real files
 # --------------------------------------------------------------------------------------
 
+def build_documents(root: Path, images: Path) -> None:
+    """A Comprehensive SR (measurements + finding text) and a Key Object
+    Selection note, both pointing at images of the 5 mm CT series, so the
+    viewer's SR / key-image reading is tested on files a PACS would hand over."""
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.sequence import Sequence
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    out = root / "documents"
+    out.mkdir(parents=True, exist_ok=True)
+    refs = sorted(images.glob("*"))[:3]
+    ref_ds = [pydicom.dcmread(str(f), stop_before_pixels=True) for f in refs]
+    first = ref_ds[0]
+
+    def code(value, scheme, meaning):
+        c = Dataset()
+        c.CodeValue, c.CodingSchemeDesignator, c.CodeMeaning = value, scheme, meaning
+        return c
+
+    def image_item(d):
+        item = Dataset()
+        item.RelationshipType, item.ValueType = "CONTAINS", "IMAGE"
+        r = Dataset()
+        r.ReferencedSOPClassUID, r.ReferencedSOPInstanceUID = d.SOPClassUID, d.SOPInstanceUID
+        item.ReferencedSOPSequence = Sequence([r])
+        return item
+
+    def base(sop_class, series_number, description):
+        meta = FileMetaDataset()
+        meta.MediaStorageSOPClassUID = sop_class
+        meta.MediaStorageSOPInstanceUID = sop = generate_uid()
+        meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds = Dataset()
+        ds.file_meta = meta
+        ds.SOPClassUID, ds.SOPInstanceUID = sop_class, sop
+        for tag in ("PatientName", "PatientID", "StudyInstanceUID", "StudyDate", "StudyTime", "AccessionNumber", "StudyID"):
+            if tag in first:
+                setattr(ds, tag, getattr(first, tag))
+        ds.SeriesInstanceUID, ds.SeriesNumber, ds.SeriesDescription = generate_uid(), series_number, description
+        ds.Modality = "SR" if sop_class != KO_CLASS else "KO"
+        ds.InstanceNumber, ds.ContentDate, ds.ContentTime = 1, first.get("StudyDate", "20240115"), "100000"
+        ds.ValueType, ds.ContinuityOfContent = "CONTAINER", "SEPARATE"
+        return ds
+
+    # Comprehensive SR: a measurement report.
+    sr = base(SR_CLASS, 90, "Measurement report")
+    sr.ConceptNameCodeSequence = Sequence([code("126000", "DCM", "Imaging Measurement Report")])
+    finding = Dataset()
+    finding.RelationshipType, finding.ValueType = "CONTAINS", "TEXT"
+    finding.ConceptNameCodeSequence = Sequence([code("121071", "DCM", "Finding")])
+    finding.TextValue = "Right lower lobe nodule, solid."
+    num = Dataset()
+    num.RelationshipType, num.ValueType = "CONTAINS", "NUM"
+    num.ConceptNameCodeSequence = Sequence([code("410668003", "SCT", "Length")])
+    mv = Dataset()
+    mv.NumericValue = "12.4"
+    mv.MeasurementUnitsCodeSequence = Sequence([code("mm", "UCUM", "millimeter")])
+    num.MeasuredValueSequence = Sequence([mv])
+    site = Dataset()
+    site.RelationshipType, site.ValueType = "HAS CONCEPT MOD", "CODE"
+    site.ConceptNameCodeSequence = Sequence([code("363698007", "SCT", "Finding Site")])
+    site.ConceptCodeSequence = Sequence([code("41224006", "SCT", "Lower lobe of right lung")])
+    group = Dataset()
+    group.RelationshipType, group.ValueType = "CONTAINS", "CONTAINER"
+    group.ConceptNameCodeSequence = Sequence([code("125007", "DCM", "Measurement Group")])
+    group.ContinuityOfContent = "SEPARATE"
+    group.ContentSequence = Sequence([finding, num, site, image_item(ref_ds[1])])
+    sr.ContentSequence = Sequence([group])
+    sr.save_as(out / "SR_measurements.dcm", enforce_file_format=True)
+
+    # Key Object Selection: two key images.
+    ko = base(KO_CLASS, 91, "Key images")
+    ko.ConceptNameCodeSequence = Sequence([code("113000", "DCM", "Of Interest")])
+    note = Dataset()
+    note.RelationshipType, note.ValueType = "CONTAINS", "TEXT"
+    note.ConceptNameCodeSequence = Sequence([code("113012", "DCM", "Key Object Description")])
+    note.TextValue = "Nodule and adjacent slice."
+    ko.ContentSequence = Sequence([note, image_item(ref_ds[1]), image_item(ref_ds[2])])
+    ko.save_as(out / "KO_key_images.dcm", enforce_file_format=True)
+
+
+SR_CLASS = "1.2.840.10008.5.1.4.1.1.88.33"
+KO_CLASS = "1.2.840.10008.5.1.4.1.1.88.59"
+
+
 def build_cd_media(root: Path, ct5: Path, mr: Path) -> None:
     cd = root / "cd-media"
     if cd.exists():
@@ -1589,7 +1674,7 @@ def main() -> int:
     t0 = time.time()
     root = Path(args.out).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    managed = ["ct-phantom", "pet-phantom", "mr-brain", "ts", "multiframe", "cd-media", "archives"]
+    managed = ["ct-phantom", "pet-phantom", "mr-brain", "ts", "multiframe", "cd-media", "archives", "documents"]
     if args.bench:
         managed.append("bench")
     for m in managed:
@@ -1636,6 +1721,10 @@ def main() -> int:
     log("cd-media + DICOMDIR ...")
     build_cd_media(root, root / "ct-phantom" / "axial-5mm", root / "mr-brain")
     build_zip(root)
+
+    # ---- SR + key-image note (non-image objects the viewer reads)
+    log("structured report + key-image note ...")
+    build_documents(root, root / "ct-phantom" / "axial-5mm")
 
     # ---- real files
     if args.no_download:

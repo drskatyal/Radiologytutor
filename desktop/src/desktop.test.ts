@@ -11,6 +11,7 @@ import type { DesktopHeader } from "./types";
 import { sanitizePetMeta } from "./viewer/suv";
 import { buildMjpegAvi, exportBaseName } from "./viewer/exporter";
 import { pixelStats } from "./viewer/pixelStats";
+import { withKeyImageSeries, reportsFor, type DicomDocument } from "./documents";
 import { calculateSUVScalingFactors } from "@cornerstonejs/calculate-suv";
 
 const key = (k: string, extra: Partial<KeyLike> = {}): KeyLike => ({ key: k, ...extra });
@@ -267,4 +268,21 @@ test("local study database: every query word must match some field, accent- and 
   assert.deepEqual(keys("ct lung"), ["a"]);
   assert.deepEqual(keys("ct flair"), []); // all words must match one study
   assert.deepEqual(keys("acc123"), ["a"]);
+});
+
+test("key-image notes become a KO series of exactly the referenced images; SRs list per study", () => {
+  const studies = buildStudies([1, 2, 3].map((n) => ct(n * 5, n, { sopInstanceUID: `sop.${n}` })));
+  const doc = (kind: "sr" | "ko", refs: string[], study = "1.2.3"): DicomDocument => ({
+    kind, fileName: `/s/${kind}`, studyInstanceUid: study, sopInstanceUid: `${kind}.1`, title: kind === "ko" ? "Key images" : "Report", lines: ["x"], references: refs,
+  });
+  const ko = doc("ko", ["sop.3", "sop.1", "missing"]);
+  const sr = doc("sr", ["sop.2"]);
+  const [study] = withKeyImageSeries(studies, [ko, sr, doc("ko", ["sop.1"], "other.study")]);
+  assert.equal(study.series.length, 2, "one KO series added, the other-study note ignored");
+  const kos = study.series[0];
+  assert.equal(kos.modality, "KO");
+  assert.equal(kos.imageCount, 2);
+  assert.deepEqual(kos.headers.map((h) => h.sopInstanceUID), ["sop.3", "sop.1"], "note order kept");
+  assert.equal(withKeyImageSeries(studies, [sr]), studies, "no notes: unchanged");
+  assert.deepEqual(reportsFor(study, [ko, sr]), [sr]);
 });
