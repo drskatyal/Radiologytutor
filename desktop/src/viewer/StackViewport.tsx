@@ -8,7 +8,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/Spinner";
-import { clampCineFps } from "@flowrad/viewer-core";
+import { clampCineFps, createScrollDirectionState, directionalPrefetchIndexes, trackScrollDirection } from "@flowrad/viewer-core";
 import type { DesktopHeader, ViewerSeries, ViewerStudy } from "../types";
 import { formatDicomDate, formatDicomTime, formatPersonName } from "../study";
 import { addViewportToGroup, getEngine, jumpTo3dPoint, removeViewportFromGroups, STACK_GROUP, type Engine } from "./engine";
@@ -79,6 +79,11 @@ function StackViewportImpl({
   const [loading, setLoading] = useState(false);
   /** Series whose first Cornerstone frame is on screen; until then the preview shows. */
   const [paintedUid, setPaintedUid] = useState<string | null>(null);
+  // The series whose first paint has been verified. Kept apart from
+  // `sameSeries`: a streaming scan can grow the stack before the first
+  // setStack resolves, and that first check is then superseded, so growth
+  // must re-run it until one completes (or the bench never sees a paint).
+  const verifiedUidRef = useRef<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -186,8 +191,31 @@ function StackViewportImpl({
       addViewportToGroup(engine, STACK_GROUP, viewportId);
       const Events = core.Enums.Events;
       const onRender = () => refreshReadout();
+      // ±N prefetch: a few slices in the direction of travel (and two behind),
+      // never the whole series. The cache budget keeps it a window.
+      const travel = createScrollDirectionState();
+      const onNewImage = () => {
+        onRender();
+        const vp = engine.renderingEngine.getViewport(viewportId) as unknown as
+          | { getImageIds(): string[]; getCurrentImageIdIndex(): number }
+          | undefined;
+        if (!vp) return;
+        const ids = vp.getImageIds();
+        const at = vp.getCurrentImageIdIndex();
+        for (const i of directionalPrefetchIndexes(ids.length, at, trackScrollDirection(travel, at))) {
+          const id = ids[i];
+          if (!id || core.cache.getImageLoadObject(id)) continue;
+          try {
+            void Promise.resolve(
+              core.imageLoader.loadAndCacheImage(id, { priority: -5, requestType: core.Enums.RequestType.Prefetch })
+            ).catch(() => undefined);
+          } catch {
+            /* not registered yet */
+          }
+        }
+      };
       element.addEventListener(Events.IMAGE_RENDERED, onRender);
-      element.addEventListener(Events.STACK_NEW_IMAGE, onRender);
+      element.addEventListener(Events.STACK_NEW_IMAGE, onNewImage);
       element.addEventListener(Events.VOI_MODIFIED, onRender);
       element.addEventListener(Events.CAMERA_MODIFIED, onRender);
       resizeObserver = new ResizeObserver(() => {
@@ -280,12 +308,13 @@ function StackViewportImpl({
           }
         }
         vp.render();
-        if (!sameSeries) {
+        if (verifiedUidRef.current !== series.uid) {
           // Never call it painted until real pixels are on screen: a GPU path
           // that renders black (some drivers' 16-bit textures) falls back to
           // CPU rendering here instead of leaving the reader a black box.
           void verifyPainted(engineRef.current, vp, elementRef.current, ids, index).then((health) => {
-            if (loadedRef.current?.ids !== ids) return;
+            if (loadedRef.current?.ids !== ids || verifiedUidRef.current === series.uid) return;
+            verifiedUidRef.current = series.uid;
             onFirstPaint?.(performance.now() - started, health);
             setPaintedUid(series.uid);
           });

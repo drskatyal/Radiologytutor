@@ -66,17 +66,17 @@ jobs:
       - name: Rust tests
         working-directory: desktop/src-tauri
         env:
-          RADLEARN_FIXTURES: ${{ runner.temp }}/fixtures
+          FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
         run: cargo test --lib
       - name: Build the app (debug, embedded renderer)
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
       - name: Open every fixture in the real app
-        run: xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/radlearn-viewer "$RUNNER_TEMP/fixtures"
+        run: xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/flowrad-viewer "$RUNNER_TEMP/fixtures"
       - name: Per-codec decode check (app decoders vs pydicom, bit-exact for lossless)
-        run: xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/radlearn-viewer "$RUNNER_TEMP/fixtures"
+        run: xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/flowrad-viewer "$RUNNER_TEMP/fixtures"
       - name: e2e — normal launch paints real pixels in the main viewport
-        run: xvfb-run -a python3 desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/radlearn-viewer
+        run: xvfb-run -a python3 desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer
 
   # The blank-viewport bug was Windows-only (WebView2). Same e2e, on WebView2.
   windows-e2e:
@@ -108,22 +108,31 @@ jobs:
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
       - name: e2e — normal launch paints real pixels in the main viewport
-        run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/radlearn-viewer.exe
+        run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer.exe
 
   # Performance gate on WebView2 (the platform readers install on), release
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
   # build time and MPR peak memory of the whole process tree. Budgets live in
   # the env block so a change to them is visible in review. Baseline on this
-  # runner (WARP software D3D, 2026-11): first image 721 ms warm / 997 cold,
-  # MPR 5.2 s, peak 2,120 MB (renderer 734, GPU process 1,325). Budgets leave
-  # room for runner noise; tighten them when a change earns it.
+  # runner (WARP software D3D, 2026-11, e384a4f): cold start 644 ms, first
+  # image 591-635 warm / 898 cold, MPR 4.8 s peak 2,108 MB (renderer 746, GPU
+  # 1,301), idle CT 258 MB, frames p95 15.7 ms (0 dropped), input->render p95
+  # 28 ms, leak test +1,153 MB once / +27 MB per round. Budgets = measured plus
+  # runner noise, ratcheted toward the targets (cold 500, first image 300 warm,
+  # MPR 1,200, idle 400, back to baseline); tighten them when a change earns it.
   perf-windows:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      FIRST_IMAGE_MAX_MS: "1300"
+      FIRST_IMAGE_MAX_MS: "1100"
       MPR_MAX_MS: "8000"
-      MPR_MAX_MB: "2600"
+      MPR_MAX_MB: "2400"
+      IDLE_MAX_MB: "400"
+      COLDSTART_MAX_MS: "900"
+      FRAME_P95_MAX_MS: "33"
+      DROPPED_MAX: "3"
+      LEAK_MAX_MB: "1400"
+      LEAK_ROUND_GROWTH_MAX_MB: "150"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -148,7 +157,17 @@ jobs:
         working-directory: desktop
       - name: Synthetic CT, 848 slices (deterministic)
         run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
+      - name: Cold start (median of 5, first paint in-process)
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
       - name: Open + first image (cold and warm)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/radlearn-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }}
+      - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
+        env:
+          FLOWRAD_BENCH_VIEW: grid
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
+      - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
+        run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
+      - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×2; whole process tree)
+        run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: MPR build time and peak memory (whole process tree)
-        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/radlearn-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}

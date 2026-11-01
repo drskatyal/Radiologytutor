@@ -286,3 +286,15 @@ test("key-image notes become a KO series of exactly the referenced images; SRs l
   assert.equal(withKeyImageSeries(studies, [sr]), studies, "no notes: unchanged");
   assert.deepEqual(reportsFor(study, [ko, sr]), [sr]);
 });
+
+test("shortcut labels: words on Windows/Linux (no ⇧ ⌥ ⌫ that render as '?'), glyphs on macOS", async () => {
+  const { keyLabel } = await import("./shortcuts");
+  assert.equal(keyLabel("Shift+Q", false), "Shift+Q");
+  assert.equal(keyLabel("Mod+Shift+M", false), "Ctrl+Shift+M");
+  assert.equal(keyLabel("Mod+Alt+O", false), "Ctrl+Alt+O");
+  assert.equal(keyLabel("Mod+Shift+Backspace", false), "Ctrl+Shift+Backspace");
+  assert.equal(keyLabel("Mod+Shift+M", true), "⌘⇧M");
+  for (const spec of ["Shift+Q", "Mod+Shift+M", "Mod+Alt+O", "Mod+Shift+Backspace", "Mod+Shift+F12"]) {
+    assert.doesNotMatch(keyLabel(spec, false), /[⇧⌥⌫⌘]/, spec);
+  }
+});
