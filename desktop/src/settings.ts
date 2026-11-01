@@ -18,6 +18,8 @@ export interface ViewerSettings {
   scrollDragPx: number;
   /** Quick runs of wheel notches move progressively further. */
   scrollAcceleration: boolean;
+  /** MPR rendered by the native (Rust) core: the volume never enters the webview. */
+  nativeMpr: boolean;
 }
 
 export const DEFAULT_SETTINGS: ViewerSettings = {
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: ViewerSettings = {
   indexPatients: true,
   hidePatient: false,
   compactSeries: false,
+  nativeMpr: true,
   scrollSlicesPerNotch: 1,
   scrollDragPx: 0,
   scrollAcceleration: false,

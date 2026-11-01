@@ -299,6 +299,12 @@ export function SettingsDialog({
             checked={settings.hidePatient}
             onChange={(v) => onChange({ hidePatient: v })}
           />
+          <Toggle
+            label="Fast MPR (native)"
+            description="Builds MPR volumes outside the viewer window: far less memory. Turn off to use the GPU MPR with slab and MIP."
+            checked={settings.nativeMpr}
+            onChange={(v) => onChange({ nativeMpr: v })}
+          />
           <Toggle label="Compact series list" description="One line per series instead of thumbnails." checked={settings.compactSeries} onChange={(v) => onChange({ compactSeries: v })} />
         </section>
         <section className="py-3">
