@@ -23,6 +23,8 @@ export interface Sample {
   cacheMb: number | null;
   volumes: number;
   workers: number;
+  /** Largest processes of the tree (which one grows). */
+  top: { name: string; mb: number }[];
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -32,7 +34,9 @@ async function sample(label: string, settleMs: number): Promise<Sample> {
   const engine = enginePeek();
   const cache = engine?.core.cache as unknown as { getCacheSize?: () => number; getVolumes?: () => unknown[] } | undefined;
   const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
-  const tree = await invoke<{ totalMb: number }>("process_memory").catch(() => ({ totalMb: 0 }));
+  const tree = await invoke<{ totalMb: number; processes: { name: string; mb: number }[] }>("process_memory").catch(
+    () => ({ totalMb: 0, processes: [] })
+  );
   return {
     label,
     treeMb: tree.totalMb,
@@ -40,6 +44,7 @@ async function sample(label: string, settleMs: number): Promise<Sample> {
     cacheMb: cache?.getCacheSize ? Math.round(cache.getCacheSize() / 1048576) : null,
     volumes: cache?.getVolumes?.().length ?? 0,
     workers: decodeWorkers().live,
+    top: tree.processes.slice(0, 4),
   };
 }
 

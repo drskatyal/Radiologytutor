@@ -547,9 +547,48 @@ export function ensureVolumeGroups(engine: Engine): void {
 /** Volume ids currently held, so a new MPR releases the previous volume's memory. */
 const heldVolumes = new Set<string>();
 
+/**
+ * Free a volume's GPU texture and voxel buffers. Cornerstone's
+ * removeVolumeLoadObject drops the vtkImageData but never destroys the
+ * volume: its vtkStreamingOpenGLTexture (the whole volume, ~424 MB for an
+ * 848-slice CT) stayed allocated in the GPU process, and every MPR / 3D open
+ * built a new one (leak test on WebView2: +1.7 GB per open/close round). vtk
+ * only deletes a GL texture when handed the render window that owns it, which
+ * ImageVolume.destroy() does not pass; with one shared WebGL context that is
+ * the pool's only render window.
+ */
+export function releaseVolumeGpu(engine: Engine, volumeId: string): void {
+  type Tex = { getHandle?(): unknown; releaseGraphicsResources(rw?: unknown): void; delete(): void };
+  const volume = engine.core.cache.getVolume(volumeId) as unknown as
+    | { vtkOpenGLTexture?: Tex; voxelManager?: { clear?(): void } }
+    | undefined;
+  const texture = volume?.vtkOpenGLTexture;
+  if (!volume || !texture) return;
+  const pool = (engine.renderingEngine as unknown as {
+    contextPool?: { getAllContexts(): { context?: { getOpenGLRenderWindow?(): unknown } }[] };
+  }).contextPool;
+  for (const ctx of pool?.getAllContexts() ?? []) {
+    const rw = ctx.context?.getOpenGLRenderWindow?.();
+    if (!rw || !texture.getHandle?.()) continue;
+    try {
+      texture.releaseGraphicsResources(rw);
+    } catch {
+      /* context lost: the driver frees it */
+    }
+  }
+  try {
+    texture.delete();
+    volume.voxelManager?.clear?.();
+  } catch {
+    /* already freed */
+  }
+  volume.vtkOpenGLTexture = undefined;
+}
+
 export function holdVolumes(engine: Engine, keep: string[]): void {
   for (const id of [...heldVolumes]) {
     if (!keep.includes(id)) {
+      releaseVolumeGpu(engine, id);
       try {
         engine.core.cache.removeVolumeLoadObject(id);
       } catch {
