@@ -5,17 +5,20 @@
 // Engine knobs come from `lib/viewerRuntime.ts`, the same functions the web
 // viewer and the benchmark harness use.
 //
-// The engine is imported lazily: the start screen must paint before a single
-// byte of Cornerstone is parsed (cold start budget < 0.5 s), and it is
-// pre-warmed in idle time right after first paint.
+// The engine is imported lazily: nothing of Cornerstone loads until the reader
+// opens something (cold start budget < 0.5 s). Its modules are pre-warmed only
+// on intent: hovering a recent study, or dragging files over the window.
 
 import {
   coreInitConfig,
   detectDeviceProfile,
   imageCacheBytes,
   retrievalPoolSizes,
-  webWorkerCount,
 } from "@flowrad/viewer-core";
+// Same copy Cornerstone's worker manager uses (hoisted root dependency): its
+// releaseProxy symbol must match when the manager terminates our workers.
+import * as Comlink from "comlink";
+import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./workerPool";
 import { tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
@@ -25,10 +28,12 @@ const MB = 1024 * 1024;
 /**
  * Decoded-image budget while reading in 2D: the slices around the reader and a
  * few series. Kept small because it is what a CT left open costs at idle (HP:
- * ~1.1 GB with the old 1 GB budget). MPR / 3D raise it to fit their volume for
+ * ~1.1 GB with the old 1 GB budget; the idle target is 400 MB for the whole
+ * process tree). ~300 CT slices of 512²: a ±N window plus recent series, not
+ * the study; the ±N travel prefetch (StackViewport) refills it ahead. MPR / 3D raise it to fit their volume for
  * as long as the volume is open (enterVolumeMemory / leaveVolumeMemory).
  */
-const BROWSE_CACHE_BUDGET = 384 * MB;
+const BROWSE_CACHE_BUDGET = 160 * MB;
 let deviceCacheCeiling = 1024 * MB;
 
 type Core = typeof import("@cornerstonejs/core");
@@ -82,6 +87,12 @@ export const MEASUREMENT_TOOLS = [
 ];
 
 let enginePromise: Promise<Engine> | null = null;
+let workerPool: PoolHandle | null = null;
+
+/** Live decode workers and a way to free the idle ones (memory HUD, teardown). */
+export function decodeWorkers(): { live: number; releaseIdle(): void } {
+  return { live: workerPool?.live() ?? 0, releaseIdle: () => workerPool?.releaseIdle() };
+}
 
 /** Start loading the engine chunks without initialising (idle pre-warm). */
 export function prewarmEngine(): void {
@@ -91,7 +102,13 @@ export function prewarmEngine(): void {
 }
 
 /** Wall-clock cost of the last engine init, for the benchmark report. */
-export const engineTimings: { initMs?: number } = {};
+export const engineTimings: {
+  initMs?: number;
+  startAt?: number;
+  readyAt?: number;
+  /** Split of initMs: module import/parse, core+tools init, loader init. */
+  steps?: Record<string, number>;
+} = {};
 
 let engineReady: Engine | null = null;
 /** The engine if it is already initialised, without starting it. */
@@ -102,8 +119,10 @@ export function enginePeek(): Engine | null {
 export function getEngine(): Promise<Engine> {
   if (!enginePromise) {
     const t0 = performance.now();
+    engineTimings.startAt = t0;
     enginePromise = createEngine().then((e) => {
-      engineTimings.initMs = performance.now() - t0;
+      engineTimings.readyAt = performance.now();
+      engineTimings.initMs = engineTimings.readyAt - t0;
       engineReady = e;
       return e;
     });
@@ -112,11 +131,20 @@ export function getEngine(): Promise<Engine> {
 }
 
 async function createEngine(): Promise<Engine> {
+  const steps: Record<string, number> = {};
+  engineTimings.steps = steps;
+  let mark = performance.now();
+  const step = (name: string) => {
+    const now = performance.now();
+    steps[name] = Math.round(now - mark);
+    mark = now;
+  };
   const [core, tools, loader] = await Promise.all([
     import("@cornerstonejs/core"),
     import("@cornerstonejs/tools"),
     import("@cornerstonejs/dicom-image-loader"),
   ]);
+  step("importMs");
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
@@ -128,16 +156,25 @@ async function createEngine(): Promise<Engine> {
   config.rendering.webGlContextCount = 1;
   await core.init(config as unknown as Parameters<typeof core.init>[0]);
   await tools.init();
-  // Desktop: the reader is the only workload, so decode on every core (the web
-  // viewer leaves a quarter free for the page; lib/viewerRuntime.ts).
+  step("coreToolsInitMs");
+  // ONE worker at init (the loader would otherwise spawn every instance up
+  // front and never free them); workerPool.ts widens it to a lazy pool of
+  // cores − 2 that spawns on demand and reaps idle workers.
   // Legacy dataset path: the metadata tags are read from a dicom-parser dataset
   // that memory.ts trims to its header after decode. The default (naturalized)
   // path pins every file's full bytes in a metadata store for the session.
   await loader.init({
-    maxWebWorkers: Math.max(webWorkerCount(profile), Math.min(profile.cores, 12)),
+    maxWebWorkers: 1,
     useLegacyMetadataProvider: true,
   } as Parameters<typeof loader.init>[0]);
+  workerPool = installLazyWorkerPool(
+    (core as unknown as { getWebWorkerManager(): unknown }).getWebWorkerManager(),
+    "dicomImageLoader",
+    decodePoolSize(profile.cores),
+    (w) => Comlink.wrap(w)
+  );
   installDatasetTrim(core, loader);
+  step("loaderInitMs");
   try {
     // Honest now that raw file bytes are released after decode (memory.ts):
     // this budget is close to what the decoded images really hold. LRU
@@ -190,6 +227,7 @@ async function createEngine(): Promise<Engine> {
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);
+  step("toolsAndEngineMs");
   return engine;
 }
 
@@ -553,6 +591,8 @@ export function enterVolumeMemory(engine: Engine, imageIds: readonly string[], b
 /** Back to 2D: release volumes and return to the browsing budget. */
 export function leaveVolumeMemory(engine: Engine): void {
   holdVolumes(engine, []);
+  // The volume load ran every decode worker; free the idle ones now.
+  workerPool?.releaseIdle();
   const cache = engine.core.cache as unknown as {
     setMaxCacheSize: (n: number) => void;
     decacheIfNecessaryUntilBytesAvailable: (n: number) => void;

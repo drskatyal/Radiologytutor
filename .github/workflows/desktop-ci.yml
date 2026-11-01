@@ -128,6 +128,8 @@ jobs:
       COLDSTART_MAX_MS: "99999"
       FRAME_P95_MAX_MS: "99999"
       DROPPED_MAX: "99999"
+      LEAK_MAX_MB: "99999"
+      LEAK_ROUND_GROWTH_MAX_MB: "99999"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -162,5 +164,7 @@ jobs:
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
+      - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×2; whole process tree)
+        run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: MPR build time and peak memory (whole process tree)
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
