@@ -6,6 +6,8 @@ export interface ViewerSettings {
   rememberHistory: boolean;
   checkUpdates: boolean;
   scaleBar: boolean;
+  /** Local study database: also store patient name and ID (on this computer only) so they can be searched. */
+  indexPatients: boolean;
   /** Teaching / screen-sharing: hide patient name, ID and birth date everywhere on screen. */
   hidePatient: boolean;
   /** Series browser as a dense text list instead of thumbnails. */
@@ -23,6 +25,7 @@ export const DEFAULT_SETTINGS: ViewerSettings = {
   rememberHistory: true,
   checkUpdates: true,
   scaleBar: false,
+  indexPatients: true,
   hidePatient: false,
   compactSeries: false,
   scrollSlicesPerNotch: 1,
