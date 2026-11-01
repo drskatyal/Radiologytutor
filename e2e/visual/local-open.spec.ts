@@ -1,6 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 // P0 regression: on /viewer/local "Choose a folder" and "Choose files" did
@@ -35,33 +34,44 @@ async function clickOpensChooser(page: Page, name: string) {
   return chooser;
 }
 
-for (const viewport of SIZES) {
-  test(`file pickers open at ${viewport.width}×${viewport.height} with the cookie notice showing`, async ({ browser }) => {
-    const context = await browser.newContext({ viewport });
-    const page = await context.newPage();
-    // Turn on chooser interception before any click: Playwright enables it
-    // lazily on the first waitForEvent, which can race the click itself.
-    page.on("filechooser", () => undefined);
-    await page.goto("/viewer/local");
-    await expect(page.getByText("uses a session cookie")).toBeVisible();
-
-    const folder = await clickOpensChooser(page, "Choose a folder");
-    expect(folder.isMultiple()).toBe(true);
-    expect(await folder.element().getAttribute("webkitdirectory"), "folder picker").not.toBeNull();
-    // Close it (the browser allows one chooser at a time) with an empty folder: nothing loads.
-    await folder.setFiles(fs.mkdtempSync(path.join(os.tmpdir(), "empty-study-")));
-
-    const files = await clickOpensChooser(page, "Choose files");
-    expect(files.isMultiple()).toBe(true);
-    expect(await files.element().getAttribute("webkitdirectory"), "files picker").toBeNull();
-    await files.setFiles([]);
-
-    // The notice still works and still takes its own click.
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByText("uses a session cookie")).toBeHidden();
-    await context.close();
-  });
+/** A fresh first-visit page (cookie notice showing) with chooser interception on. */
+async function openFresh(browser: Browser, viewport: { width: number; height: number }, javaScriptEnabled = true) {
+  const context = await browser.newContext({ viewport, javaScriptEnabled });
+  const page = await context.newPage();
+  // Turn on chooser interception before any click: Playwright enables it
+  // lazily on the first waitForEvent, which can race the click itself.
+  page.on("filechooser", () => undefined);
+  await page.goto("/viewer/local");
+  return { context, page };
 }
+
+// Each picker is opened on its own page, so no chooser ever has to be closed
+// (closing a directory chooser needs directory-upload support the CI browser
+// may lack).
+for (const viewport of SIZES) {
+  for (const [name, directory] of [
+    ["Choose a folder", true],
+    ["Choose files", false],
+  ] as const) {
+    test(`"${name}" opens a file chooser at ${viewport.width}×${viewport.height} with the cookie notice showing`, async ({ browser }) => {
+      const { context, page } = await openFresh(browser, viewport);
+      await expect(page.getByText("uses a session cookie")).toBeVisible();
+      const chooser = await clickOpensChooser(page, name);
+      expect(chooser.isMultiple()).toBe(true);
+      const attr = await chooser.element().getAttribute("webkitdirectory");
+      if (directory) expect(attr, "folder picker").not.toBeNull();
+      else expect(attr, "files picker").toBeNull();
+      await context.close();
+    });
+  }
+}
+
+test("the cookie notice still takes its own click", async ({ browser }) => {
+  const { context, page } = await openFresh(browser, { width: 1366, height: 600 });
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText("uses a session cookie")).toBeHidden();
+  await context.close();
+});
 
 test("dropping study files on the drop zone opens the study", async ({ page }) => {
   test.skip(!process.env.TEST_CT_DIR, "TEST_CT_DIR is not set (scripts/make-test-ct.py)");
@@ -85,19 +95,17 @@ test("dropping study files on the drop zone opens the study", async ({ page }) =
   await expect(page.getByText(`${names.length} images`).first()).toBeVisible();
 });
 
-test("pickers open with no script on the click path (before hydration, or with JS off)", async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 1366, height: 600 }, javaScriptEnabled: false });
-  const page = await context.newPage();
-  page.on("filechooser", () => undefined);
-  await page.goto("/viewer/local");
-  for (const name of ["Choose a folder", "Choose files"]) {
-    const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 5_000 }), page.getByRole("button", { name }).click()]);
+for (const name of ["Choose a folder", "Choose files"]) {
+  test(`"${name}" opens with no script on the click path (before hydration, or with JS off)`, async ({ browser }) => {
+    const { context, page } = await openFresh(browser, { width: 1366, height: 600 }, false);
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser", { timeout: 5_000 }),
+      page.getByRole("button", { name }).click(),
+    ]);
     expect(chooser.isMultiple()).toBe(true);
-    if (name === "Choose a folder") await chooser.setFiles(fs.mkdtempSync(path.join(os.tmpdir(), "empty-study-")));
-    else await chooser.setFiles([]);
-  }
-  await context.close();
-});
+    await context.close();
+  });
+}
 
 test("keyboard: Enter on the focused picker opens it", async ({ page }) => {
   page.on("filechooser", () => undefined);
