@@ -47,6 +47,20 @@ export function previewUrlFor(fileId: number): string {
   return `${protocolBase.replace(/f\/$/, "p/")}${fileId}`;
 }
 
+/** One plane of the native (Rust) volume, windowed, as a PNG (volume.rs). */
+export function volumePlaneUrl(
+  key: string,
+  plane: "axial" | "coronal" | "sagittal",
+  index: number,
+  center: number,
+  width: number,
+  maxDim: number
+): string {
+  if (!protocolBase) throw new Error("dicom protocol not initialised");
+  const r = (n: number) => Math.round(n * 10) / 10;
+  return `${protocolBase.replace(/f\/$/, "v/")}${key}/${plane}/${index}/${r(center)}/${r(width)}/${Math.round(maxDim)}`;
+}
+
 export async function listen<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
   if (!isTauri) return () => {};
   const { listen } = await import("@tauri-apps/api/event");
