@@ -1,7 +1,10 @@
 // Series browser: studies → series cards with decoded thumbnails.
 //
-// Thumbnails decode the middle image at thumbnail priority, one at a time, so
-// they never compete with the image the reader is looking at. Drag a card onto
+// Desktop thumbnails are rendered by Rust at thumbnail size (`/p/<id>/<px>`):
+// a few KB PNG, no decode in the renderer and no engine start. Compressed or
+// colour files (Rust declines) fall back to a Cornerstone decode of the middle
+// image at thumbnail priority, one at a time, so they never compete with the
+// image the reader is looking at. Drag a card onto
 // any viewport, click to load it in the active one.
 
 import { memo, useEffect, useRef, useState } from "react";
@@ -13,6 +16,7 @@ import { describeSeries, formatDicomDate, formatPersonName } from "../study";
 import { getEngine } from "./engine";
 import { ensureSuv } from "./suv";
 import { reportsFor, type DicomDocument } from "../documents";
+import { isTauri, previewUrlFor } from "../platform";
 
 const THUMB = 112;
 
@@ -24,6 +28,14 @@ function enqueue(task: () => Promise<void>): void {
 
 const thumbCache = new Map<string, string>();
 
+function safePreviewUrl(fileId: number, px: number): string | null {
+  try {
+    return `${previewUrlFor(fileId)}/${px}`;
+  } catch {
+    return null;
+  }
+}
+
 function Thumbnail({ series }: { series: ViewerSeries }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const middle = series.imageIds[Math.floor(series.imageIds.length / 2)];
@@ -31,9 +43,12 @@ function Thumbnail({ series }: { series: ViewerSeries }) {
     middle && thumbCache.has(middle) ? "ready" : "loading"
   );
   const [src, setSrc] = useState<string | null>(middle ? thumbCache.get(middle) ?? null : null);
+  const header = series.headers[Math.floor(series.headers.length / 2)];
+  const [nativeFailed, setNativeFailed] = useState(false);
+  const native = isTauri && header && !nativeFailed && !src ? safePreviewUrl(header.fileId, THUMB * 2) : null;
 
   useEffect(() => {
-    if (!middle || thumbCache.has(middle)) return;
+    if (native || !middle || thumbCache.has(middle)) return;
     let cancelled = false;
     enqueue(async () => {
       if (cancelled || !canvasRef.current) return;
@@ -65,11 +80,21 @@ function Thumbnail({ series }: { series: ViewerSeries }) {
     return () => {
       cancelled = true;
     };
-  }, [middle]);
+  }, [middle, native]);
 
   return (
     <div className="relative aspect-square w-full overflow-hidden rounded-md bg-imaging">
-      {src ? (
+      {native ? (
+        <img
+          src={native}
+          alt=""
+          className="h-full w-full object-contain"
+          draggable={false}
+          decoding="async"
+          onLoad={() => setState("ready")}
+          onError={() => setNativeFailed(true)}
+        />
+      ) : src ? (
         <img src={src} alt="" className="h-full w-full object-contain" draggable={false} />
       ) : (
         <canvas ref={canvasRef} width={THUMB} height={THUMB} className="h-full w-full object-contain" />

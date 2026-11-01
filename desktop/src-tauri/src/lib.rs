@@ -15,6 +15,7 @@ mod header;
 mod pacs;
 mod pet;
 mod preview;
+mod procmem;
 mod scan;
 mod sources;
 mod store;
@@ -382,6 +383,18 @@ fn bench_pixels() -> bool {
     crate::flowrad_env("BENCH_PIXELS").as_deref() == Ok("1")
 }
 
+/// Whole process-tree memory (debug HUD, leak test).
+#[tauri::command]
+async fn process_memory() -> procmem::TreeMem {
+    tauri::async_runtime::spawn_blocking(procmem::current_tree).await.unwrap_or(procmem::TreeMem { total_mb: 0, processes: vec![] })
+}
+
+/// FLOWRAD_DEBUG=1: show the memory HUD from launch.
+#[tauri::command]
+fn debug_enabled() -> bool {
+    crate::flowrad_env("DEBUG").as_deref() == Ok("1")
+}
+
 #[tauri::command]
 fn bench_enabled() -> bool {
     bench_on()
@@ -389,11 +402,14 @@ fn bench_enabled() -> bool {
 
 /// `/p/<id>`: instant-preview PNG of a registered file (see preview.rs).
 fn serve_preview(registry: &Mutex<FileRegistry>, id: &str) -> Response<Vec<u8>> {
-    let path = id
-        .parse::<u32>()
-        .ok()
+    // `<id>` full size, `<id>/<maxDim>` a thumbnail.
+    let mut parts = id.split('/');
+    let path = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
         .and_then(|id| registry.lock().paths.get(id as usize).cloned());
-    match path.and_then(|p| preview::render_png(&p)) {
+    let max_dim = parts.next().and_then(|s| s.parse::<usize>().ok()).map(|m| m.clamp(16, 1024));
+    match path.and_then(|p| preview::render_png_sized(&p, max_dim)) {
         Some(png) => Response::builder()
             .status(StatusCode::OK)
             .header(http_header::CONTENT_TYPE, "image/png")
@@ -505,6 +521,8 @@ pub fn run() {
             clear_cache,
             bench_report,
             bench_enabled,
+            process_memory,
+            debug_enabled,
             bench_view,
             bench_pixels,
             bench_paint_timeout_ms,

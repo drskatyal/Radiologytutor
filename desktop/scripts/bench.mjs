@@ -71,7 +71,7 @@ function runApp(binary, args, env = {}) {
       clearInterval(sampler);
       child.kill("SIGKILL");
       reject(new Error(`timed out; output:\n${out}`));
-    }, 120_000);
+    }, Number(env.FLOWRAD_BENCH_TIMEOUT_MS ?? 120_000) + 5_000);
     child.stdout.on("data", (d) => {
       out += d;
       const line = out.split("\n").find((l) => REPORT.test(l));
@@ -182,6 +182,35 @@ async function benchInteract(binary, study) {
   if (i.frames.over33 > maxDropped) over.push(`${i.frames.over33} dropped frames (> 33 ms) > ${maxDropped}`);
   if (over.length) {
     console.error(`frame-time gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * Feature on/off leak test: CT open in 2D, every feature (MPR, 3D, cine,
+ * tools, export, settings, PACS) opened and closed twice; the app samples its
+ * whole process tree (working set) at baseline and after each round.
+ *   --max-leak-mb N          final − baseline
+ *   --max-round-growth-mb N  last round − first round (a steady leak)
+ *   --max-idle-mb N          baseline (CT open, idle) — the 400 MB target
+ *   --max-long-tasks N       main-thread tasks over 50 ms during the run
+ */
+async function benchLeak(binary, study) {
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "leak", BENCH_TIMEOUT_MS: "300000" }));
+  const leak = report.leak;
+  if (!leak) throw new Error("no leak report");
+  console.log(JSON.stringify({ mode: "leak", study, ...leak, longTasks: report.longTasks ?? leak.longTasks }, null, 2));
+  const over = [];
+  const gate = (name, value, label) => {
+    const max = flag(name, Infinity);
+    if (value > max) over.push(`${label} ${value} > ${max}`);
+  };
+  gate("max-leak-mb", leak.leakMb, "leak MB");
+  gate("max-round-growth-mb", leak.roundGrowthMb, "round-over-round growth MB");
+  gate("max-idle-mb", leak.baselineMb, "idle MB (CT open)");
+  gate("max-long-tasks", (report.longTasks ?? leak.longTasks)?.count ?? 0, "long tasks");
+  if (over.length) {
+    console.error(`leak gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
   }
 }
@@ -394,6 +423,7 @@ async function benchMpr(binary, study) {
 
 const modes = {
   interact: () => benchInteract(positional[0], positional[1]),
+  leak: () => benchLeak(positional[0], positional[1]),
   mpr: () => benchMpr(positional[0], positional[1]),
   desktop: () => benchDesktop(positional[0], positional[1]),
   coldstart: () => benchColdStart(positional[0]),
@@ -401,7 +431,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak …  (see header)");
   process.exit(2);
 }
 await modes[mode]();
