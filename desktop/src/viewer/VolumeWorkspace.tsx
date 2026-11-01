@@ -109,6 +109,10 @@ interface PaneReadout {
   edges?: EdgeLabels;
 }
 
+/** Bench diagnostics: the volume load's stages, newest last. */
+export const volumeStages: string[] = [];
+export const volumeProgress = { frames: 0, total: 0 };
+
 export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, onExit, onVolumeReady }: Props) {
   const panes = useMemo(() => panesFor(mode), [mode]);
   const elements = useRef<Record<string, HTMLDivElement | null>>({});
@@ -182,6 +186,8 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
     let disposed = false;
     const cleanups: (() => void)[] = [];
     const started = performance.now();
+    const stage = (name: string) => volumeStages.push(`${name}@${Math.round(performance.now() - started)}`);
+    stage(`mount ${ctVolumeId.slice(-12)} n=${series.imageIds.length}`);
     (async () => {
       try {
         const engine = await getEngine();
@@ -200,13 +206,15 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
           [...series.imageIds, ...(petSeries?.imageIds ?? [])],
           Math.max(bytesPer(series, 2), bytesPer(petSeries, 4))
         );
+        stage("create");
         const volume = await core.volumeLoader.createAndCacheVolume(ctVolumeId, { imageIds: series.imageIds });
+        stage("created");
         const ptVolume =
           petSeries && ptVolumeId
             ? await core.volumeLoader.createAndCacheVolume(ptVolumeId, { imageIds: petSeries.imageIds })
             : null;
         holdVolumes(engine, [ctVolumeId, ...(ptVolumeId ? [ptVolumeId] : [])]);
-        if (disposed) return;
+        if (disposed) return stage("disposed");
 
         const total = series.imageIds.length + (petSeries?.imageIds.length ?? 0);
         let loadedFrames = 0;
@@ -214,6 +222,7 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
           const d = (e as CustomEvent).detail as { volumeId?: string; framesProcessed?: number; numberOfFrames?: number };
           if (d?.volumeId !== ctVolumeId && d?.volumeId !== ptVolumeId) return;
           loadedFrames += 1;
+          volumeProgress.frames = loadedFrames;
           // Whole percents only: 1,200 slices must not mean 1,200 React renders.
           const pct = Math.floor((100 * loadedFrames) / total);
           if (pct !== Math.floor((100 * (loadedFrames - 1)) / total)) setProgress(Math.min(1, pct / 100));
@@ -249,10 +258,14 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
         // pane (the 3D ray cast included) on each decoded slice: measured on
         // software GL, 300 slices took 67 s attached vs 1.9 s detached.
         const loadStarted = performance.now();
+        stage("load");
+        volumeProgress.frames = 0;
+        volumeProgress.total = total;
         await Promise.all([
           new Promise<void>((r) => (volume.load ? volume.load(() => r()) : r())),
           ptVolume ? new Promise<void>((r) => (ptVolume.load ? ptVolume.load(() => r()) : r())) : Promise.resolve(),
         ]);
+        stage("loaded");
         if (disposed) return;
         const loadMs = performance.now() - loadStarted;
         setProgress(1);
@@ -287,15 +300,24 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
         cleanups.push(() => tools.SynchronizerManager.destroySynchronizer(voiSync.id));
 
         setReady(true);
+        stage("ready");
         onVolumeReady?.({ shellMs: loadMs, loadedMs: performance.now() - started });
         engine.renderingEngine.renderViewports(panes.map((p) => p.id));
         panes.forEach((p) => refresh(p.id));
       } catch (e) {
-        if (!disposed) setError(e instanceof Error ? e.message : String(e));
+        stage(`error ${e instanceof Error ? e.message : String(e)}`);
+        const message = e instanceof Error ? e.message : String(e);
+        if (!disposed)
+          setError(
+            /CPU Fallback/i.test(message)
+              ? "MPR and 3D need the graphics card, and this computer's graphics driver drew blank images, so the viewer is using software rendering. Update the graphics driver and reopen the study."
+              : message
+          );
       }
     })();
     return () => {
       disposed = true;
+      stage("unmount");
       cleanups.forEach((fn) => fn());
       const engine = engineRef.current;
       if (engine) {

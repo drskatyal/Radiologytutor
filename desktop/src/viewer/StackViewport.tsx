@@ -312,7 +312,7 @@ function StackViewportImpl({
           // Never call it painted until real pixels are on screen: a GPU path
           // that renders black (some drivers' 16-bit textures) falls back to
           // CPU rendering here instead of leaving the reader a black box.
-          void verifyPainted(engineRef.current, vp, elementRef.current, ids, index).then((health) => {
+          void verifyPainted(engineRef.current, vp, elementRef.current, ids, index, () => loadedRef.current?.ids === ids).then((health) => {
             if (loadedRef.current?.ids !== ids || verifiedUidRef.current === series.uid) return;
             verifiedUidRef.current = series.uid;
             onFirstPaint?.(performance.now() - started, health);

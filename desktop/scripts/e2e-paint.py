@@ -92,6 +92,13 @@ def main() -> int:
                 problems.append(f"normal launch: blank viewport {probe.get('viewports')}")
             if not vp.get("nonBlank"):
                 problems.append(f"bench launch: blank viewport {vp}")
+            # A driver that draws black: the CPU fallback must have the image
+            # on screen by the same probe time.
+            blank = run(binary, study, {"FLOWRAD_PROBE_AFTER_MS": "8000", "FLOWRAD_SIMULATE_BLANK_GPU": "1"}, "FLOWRAD_PROBE")
+            if not blank.get("nonBlank") or blank.get("renderPath") != "cpu-fallback":
+                problems.append(
+                    f"black GPU: fallback not on screen by 8 s (render={blank.get('renderPath')}, viewports={blank.get('viewports')})"
+                )
             status = "OK  " if not problems else "FAIL"
             path = probe.get("renderPath") or vp.get("renderPath")
             print(f"{status} {study.name}  render={path}  maxLum={[v.get('maxLum') for v in probe.get('viewports', [])]}")

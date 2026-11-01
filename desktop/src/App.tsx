@@ -151,7 +151,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown };
+    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -462,6 +462,7 @@ export default function App() {
                 focused: document.hasFocus(),
               },
               viewport: paintHealth.last ?? null,
+              ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
               gpu: gpuInfo(),
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
               ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
@@ -484,6 +485,16 @@ export default function App() {
             bench.current.pendingVolume = report;
             bench.current.volumeT0 = performance.now();
             setView(benchView);
+            // A volume that never finishes must still report where it stuck.
+            const volumeLimit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
+            window.setTimeout(() => {
+              if (!bench.current.pendingVolume) return;
+              bench.current.pendingVolume = undefined;
+              void import("./viewer/VolumeWorkspace").then(({ volumeStages, volumeProgress }) => {
+                bench.current.marks.volumeStuck = { stages: volumeStages, ...volumeProgress };
+                void report(true);
+              });
+            }, volumeLimit * 2);
           } else {
             // Wait for the first pixel, but not forever.
             const limit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
@@ -1073,7 +1084,28 @@ export default function App() {
                 />
               </aside>
             )}
-            {view !== "grid" && (view === "fusion" ? fusionPair : volumeSeries) ? (
+            {view !== "grid" && growing ? (
+              // A volume is built once, from the complete series. While a cold
+              // scan is still streaming files in, every batch changes the image
+              // list (and the volume id), which used to restart the build on
+              // every batch so it never drew (HP: MPR on an uncached 4,332-file
+              // CT timed out).
+              <section
+                aria-label="Waiting for the study to finish loading"
+                aria-busy="true"
+                className="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-imaging text-sm text-white/70"
+              >
+                <Spinner label={view === "3d" ? "Preparing 3D" : view === "fusion" ? "Preparing fusion" : "Preparing MPR"} />
+                <p className="tabular-nums">
+                  {scanProgress && scanProgress.total > 0
+                    ? `Reading the study: ${scanProgress.read.toLocaleString()} of ${scanProgress.total.toLocaleString()} files`
+                    : "Reading the study…"}
+                </p>
+                <Button variant="secondary" size="sm" onClick={() => setView("grid")}>
+                  Back to 2D
+                </Button>
+              </section>
+            ) : view !== "grid" && (view === "fusion" ? fusionPair : volumeSeries) ? (
               <VolumeWorkspace
                 key={view}
                 mode={view}

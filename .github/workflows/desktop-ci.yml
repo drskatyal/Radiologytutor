@@ -157,6 +157,8 @@ jobs:
         working-directory: desktop
       - name: Synthetic CT, 848 slices (deterministic)
         run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
+      - name: e2e (P0) — MPR draws on a cold, still-streaming open
+        run: python desktop/scripts/e2e-cold-mpr.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
       - name: Cold start (median of 5, first paint in-process)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
       - name: Open + first image (cold and warm)
