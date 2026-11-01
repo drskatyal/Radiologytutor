@@ -41,7 +41,10 @@ jobs:
       - name: Unit tests
         run: npm test
       - name: Production build
-        run: npm run build
+        # next/font downloads Google Fonts at build time; a bad response from
+        # Google (seen on runners) fails the build with a parse error. Retry
+        # once after a pause: a real compile error fails both attempts.
+        run: npm run build || { echo "::warning::build failed, retrying once (next/font download)"; sleep 20; npm run build; }
       - name: Synthetic CT (deterministic)
         run: |
           pip install pydicom numpy
