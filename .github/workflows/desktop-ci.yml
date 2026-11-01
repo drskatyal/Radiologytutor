@@ -124,6 +124,7 @@ jobs:
       FIRST_IMAGE_MAX_MS: "1300"
       MPR_MAX_MS: "8000"
       MPR_MAX_MB: "2600"
+      IDLE_MAX_MB: "99999"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -150,5 +151,9 @@ jobs:
         run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
       - name: Open + first image (cold and warm)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }}
+      - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
+        env:
+          FLOWRAD_BENCH_VIEW: grid
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
       - name: MPR build time and peak memory (whole process tree)
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}

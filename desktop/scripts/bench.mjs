@@ -5,7 +5,8 @@
 //   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
-//   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N]
+//   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N] [--max-settled-mb N]
+//   (FLOWRAD_BENCH_VIEW=grid: the study open in 2D instead, i.e. idle memory with a study open)
 //
 // `desktop` launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1
 // and the study on the command line; the renderer reports one JSON line
@@ -289,7 +290,7 @@ async function benchBrowser(study) {
   );
 }
 
-// MPR: open the study straight into MPR (RADLEARN_BENCH_VIEW=mpr), sample the
+// MPR: open the study straight into MPR (FLOWRAD_BENCH_VIEW=mpr), sample the
 // whole process tree every 250 ms through the build AND for --settle seconds
 // after the volume is ready (the texture upload lands after the report), and
 // report build time, peak and settled private memory, per process.
@@ -298,9 +299,10 @@ async function benchMpr(binary, study) {
   const settle = flag("settle", 6);
   const maxMb = flag("max-mb", Infinity);
   const maxMs = flag("max-ms", Infinity);
+  const maxSettledMb = flag("max-settled-mb", Infinity);
   const started = performance.now();
   const child = spawn(binary, [study], {
-    env: { ...process.env, RADLEARN_BENCH: "1", RADLEARN_BENCH_VIEW: process.env.RADLEARN_BENCH_VIEW ?? "mpr" },
+    env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: process.env.FLOWRAD_BENCH_VIEW ?? process.env.RADLEARN_BENCH_VIEW ?? "mpr" }) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -320,8 +322,8 @@ async function benchMpr(binary, study) {
   const sampler = setInterval(sample, 250);
   child.stdout.on("data", (d) => {
     out += d;
-    const line = out.split("\n").find((l) => l.startsWith("RADLEARN_BENCH "));
-    if (line && !report) report = JSON.parse(line.slice("RADLEARN_BENCH ".length));
+    const line = out.split("\n").find((l) => REPORT.test(l));
+    if (line && !report) report = JSON.parse(line.replace(REPORT, ""));
   });
   child.stderr.on("data", (d) => (out += d));
   const deadline = started + 180_000;
@@ -355,6 +357,7 @@ async function benchMpr(binary, study) {
   const over = [];
   if (summary.peakPrivateMb > maxMb) over.push(`peak ${summary.peakPrivateMb} MB > ${maxMb} MB`);
   if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
+  if (summary.settledPrivateMb > maxSettledMb) over.push(`settled ${summary.settledPrivateMb} MB > ${maxSettledMb} MB`);
   if (over.length) {
     console.error(`MPR gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
