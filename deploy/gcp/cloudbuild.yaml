@@ -23,6 +23,8 @@ steps:
     name: gcr.io/cloud-builders/docker
     args:
       - build
+      - --build-arg
+      - GIT_SHA=$SHORT_SHA
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$SHORT_SHA
       - -t
