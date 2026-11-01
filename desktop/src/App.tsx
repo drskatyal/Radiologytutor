@@ -78,6 +78,7 @@ function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T 
 const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => import("./components/Toolbar"), "Toolbar");
 const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
 const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
+const NativeMprView = named<typeof import("./viewer/NativeMprView").NativeMprView>(() => import("./viewer/NativeMprView"), "NativeMprView");
 const VolumeWorkspace = named<typeof import("./viewer/VolumeWorkspace").VolumeWorkspace>(() => import("./viewer/VolumeWorkspace"), "VolumeWorkspace");
 const ExportDialog = named<typeof import("./components/ExportDialog").ExportDialog>(() => import("./components/ExportDialog"), "ExportDialog");
 const PacsDialog = named<typeof import("./components/PacsDialog").PacsDialog>(() => import("./components/PacsDialog"), "PacsDialog");
@@ -136,6 +137,8 @@ export default function App() {
   const autoHung = useRef(true);
   // Debug memory HUD: FLOWRAD_DEBUG=1 at launch, or Ctrl+Alt+Shift+M.
   const [hud, setHud] = useState(false);
+  /** Series the native MPR cannot decode (falls back to the GPU MPR). */
+  const [nativeMprUnsupported, setNativeMprUnsupported] = useState<string | null>(null);
   useEffect(() => {
     if (isTauri) void invoke<boolean>("debug_enabled").then((on) => on && setHud(true), () => undefined);
     const onKey = (e: KeyboardEvent) => {
@@ -1105,6 +1108,19 @@ export default function App() {
                   Back to 2D
                 </Button>
               </section>
+            ) : view === "mpr" && isTauri && settings.nativeMpr && volumeSeries && nativeMprUnsupported !== volumeSeries.uid ? (
+              <NativeMprView
+                series={volumeSeries}
+                onExit={() => setView("grid")}
+                onUnsupported={() => setNativeMprUnsupported(volumeSeries.uid)}
+                onVolumeReady={(t) => {
+                  bench.current.marks.volumeLoadedMs = t.loadedMs;
+                  bench.current.marks.volumeBuildMs = t.shellMs;
+                  const pending = bench.current.pendingVolume;
+                  bench.current.pendingVolume = undefined;
+                  void pending?.();
+                }}
+              />
             ) : view !== "grid" && (view === "fusion" ? fusionPair : volumeSeries) ? (
               <VolumeWorkspace
                 key={view}

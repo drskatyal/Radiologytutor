@@ -16,6 +16,7 @@ mod pacs;
 mod pet;
 mod preview;
 mod procmem;
+mod volume;
 mod scan;
 mod sources;
 mod store;
@@ -425,6 +426,40 @@ fn serve_preview(registry: &Mutex<FileRegistry>, id: &str) -> Response<Vec<u8>> 
     }
 }
 
+/// `/v/<key>/<plane>/<index>/<center>/<width>/<maxDim>`: one rendered plane
+/// of the native volume (volume.rs).
+fn serve_volume_plane(rest: &str) -> Response<Vec<u8>> {
+    match volume::serve(rest) {
+        Some(png) => Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "image/png")
+            .header(http_header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(http_header::CACHE_CONTROL, "no-store")
+            .body(png)
+            .unwrap(),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(http_header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(Vec::new())
+            .unwrap(),
+    }
+}
+
+/// Build the native volume of a series (file ids in any order) in Rust.
+#[tauri::command]
+async fn volume_build(state: tauri::State<'_, AppState>, file_ids: Vec<u32>) -> Result<volume::VolumeInfo, String> {
+    let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().flatten().collect();
+    tauri::async_runtime::spawn_blocking(move || volume::build(paths))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Drop the native volume (view closed): its memory goes back at once.
+#[tauri::command]
+fn volume_close() {
+    volume::close();
+}
+
 fn serve_file(registry: &Mutex<FileRegistry>, uri_path: &str) -> Response<Vec<u8>> {
     let not_found = || {
         Response::builder()
@@ -502,9 +537,13 @@ pub fn run() {
             let path = request.uri().path().to_string();
             // Disc reads can take tens of ms; never block the webview thread.
             std::thread::spawn(move || {
-                let response = match path.trim_start_matches('/').strip_prefix("p/") {
-                    Some(id) => serve_preview(&registry, id),
-                    None => serve_file(&registry, &path),
+                let trimmed = path.trim_start_matches('/');
+                let response = if let Some(id) = trimmed.strip_prefix("p/") {
+                    serve_preview(&registry, id)
+                } else if let Some(rest) = trimmed.strip_prefix("v/") {
+                    serve_volume_plane(rest)
+                } else {
+                    serve_file(&registry, &path)
                 };
                 responder.respond(response)
             });
@@ -522,6 +561,8 @@ pub fn run() {
             bench_report,
             bench_enabled,
             process_memory,
+            volume_build,
+            volume_close,
             debug_enabled,
             bench_view,
             bench_pixels,
