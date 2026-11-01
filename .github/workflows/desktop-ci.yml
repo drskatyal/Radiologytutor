@@ -114,22 +114,25 @@ jobs:
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
   # build time and MPR peak memory of the whole process tree. Budgets live in
   # the env block so a change to them is visible in review. Baseline on this
-  # runner (WARP software D3D, 2026-11): first image 721 ms warm / 997 cold,
-  # MPR 5.2 s, peak 2,120 MB (renderer 734, GPU process 1,325). Budgets leave
-  # room for runner noise; tighten them when a change earns it.
+  # runner (WARP software D3D, 2026-11, e384a4f): cold start 644 ms, first
+  # image 591-635 warm / 898 cold, MPR 4.8 s peak 2,108 MB (renderer 746, GPU
+  # 1,301), idle CT 258 MB, frames p95 15.7 ms (0 dropped), input->render p95
+  # 28 ms, leak test +1,153 MB once / +27 MB per round. Budgets = measured plus
+  # runner noise, ratcheted toward the targets (cold 500, first image 300 warm,
+  # MPR 1,200, idle 400, back to baseline); tighten them when a change earns it.
   perf-windows:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      FIRST_IMAGE_MAX_MS: "1300"
+      FIRST_IMAGE_MAX_MS: "1100"
       MPR_MAX_MS: "8000"
-      MPR_MAX_MB: "2600"
-      IDLE_MAX_MB: "99999"
-      COLDSTART_MAX_MS: "99999"
-      FRAME_P95_MAX_MS: "99999"
-      DROPPED_MAX: "99999"
-      LEAK_MAX_MB: "99999"
-      LEAK_ROUND_GROWTH_MAX_MB: "99999"
+      MPR_MAX_MB: "2400"
+      IDLE_MAX_MB: "400"
+      COLDSTART_MAX_MS: "900"
+      FRAME_P95_MAX_MS: "33"
+      DROPPED_MAX: "3"
+      LEAK_MAX_MB: "1400"
+      LEAK_ROUND_GROWTH_MAX_MB: "150"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
