@@ -38,7 +38,7 @@ percent-encoding = "2"
 png = "0.18"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart", "json", "stream"] }
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
-dicom-pixeldata = { version = "0.10", default-features = false, features = ["jpeg", "openjp2", "rle", "rayon"] }
+dicom-pixeldata = { version = "0.10", default-features = false, features = ["jpeg", "openjpeg-sys", "rle", "rayon"] }
 memmap2 = "0.9"
 
 [profile.release]
