@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
+  <!-- FlowRad "Owl Scan" - hand-hinted 20 px master (one ring + pupil per eye, no ticks).
+       Every white pixel is a whole-pixel run on the 20x20 grid ("+": 50% hint pixels
+       that anti-alias the silhouette by hand). Render at exactly 20 px; never scale. -->
+  <rect width="20" height="20" rx="4.5" fill="#0F4D3A"/>
+  <path fill="#fff" shape-rendering="crispEdges" d="M3 2h1v1h-1zM16 2h1v1h-1zM3 3h2v1h-2zM15 3h2v1h-2zM3 4h4v1h-4zM13 4h4v1h-4zM3 5h6v1h-6zM11 5h6v1h-6zM3 6h14v1h-14zM3 7h2v1h-2zM8 7h4v1h-4zM15 7h2v1h-2zM3 8h1v1h-1zM9 8h2v1h-2zM16 8h1v1h-1zM3 9h1v1h-1zM6 9h1v1h-1zM9 9h2v1h-2zM13 9h1v1h-1zM16 9h1v1h-1zM3 10h1v1h-1zM9 10h2v1h-2zM16 10h1v1h-1zM3 11h2v1h-2zM8 11h4v1h-4zM15 11h2v1h-2zM3 12h6v1h-6zM11 12h6v1h-6zM4 13h5v1h-5zM11 13h5v1h-5zM5 14h4v1h-4zM11 14h4v1h-4zM6 15h8v1h-8zM8 16h4v1h-4z"/>
+  <path fill="#fff" fill-opacity=".5" shape-rendering="crispEdges" d="M9 14h2v1h-2zM9 17h2v1h-2z"/>
+</svg>

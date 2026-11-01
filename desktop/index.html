@@ -5,13 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FlowRad Viewer</title>
     <style>
-      /* Splash: painted by the webview before any JS runs; React replaces #root's children. */
+      /* Splash: painted by the webview before any JS runs; React replaces #root's children.
+         The FlowRad "Owl Scan" mark (white, inline SVG, same geometry as public/brand/splash-mark.svg)
+         sits above the product name. No fonts, no requests. */
       html, body { margin: 0; height: 100%; background: #0b0d10; }
       #root:empty::before {
         content: "FlowRad Viewer";
         position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+        box-sizing: border-box; padding-top: 64px;
+        background: no-repeat center calc(50% - 20px) / 56px 53px
+          url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='150 146 724 684'><path fill='%23fff' fill-rule='evenodd' d='M512 296C436 262 300 232 170 150C196 226 160 300 156 432C152 610 318 758 512 826C706 758 872 610 868 432C864 300 828 226 854 150C724 232 588 262 512 296ZM192 450A156 156 0 1 1 504 450A156 156 0 1 1 192 450ZM234 450A114 114 0 1 1 462 450A114 114 0 1 1 234 450ZM260 450A88 88 0 1 1 436 450A88 88 0 1 1 260 450ZM314 450A34 34 0 1 1 382 450A34 34 0 1 1 314 450ZM520 450A156 156 0 1 1 832 450A156 156 0 1 1 520 450ZM562 450A114 114 0 1 1 790 450A114 114 0 1 1 562 450ZM588 450A88 88 0 1 1 764 450A88 88 0 1 1 588 450ZM642 450A34 34 0 1 1 710 450A34 34 0 1 1 642 450ZM512 538L558 600L512 708L466 600Z'/></svg>");
         font: 600 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-        letter-spacing: 0.18em; text-transform: uppercase; color: #8ea2ff;
+        letter-spacing: 0.18em; text-transform: uppercase; color: #a9c4b9;
       }
     </style>
   </head>

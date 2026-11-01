@@ -36,6 +36,16 @@ export const metadata: Metadata = {
       "Teach radiology on the DICOM study. Record a case once. Registrars replay it with an AI tutor that drives scroll, window, and zoom.",
     type: "website",
   },
+  // Listed in full: once `icons` is set, Next 14 stops emitting the file-based
+  // app/icon.svg link, so the SVG favicon is named here alongside the .ico
+  // (hinted 16/32/48) and the apple touch icon.
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
+  },
 };
 
 export default function RootLayout({

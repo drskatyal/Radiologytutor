@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- FlowRad "Owl Scan" - hand-hinted 24 px master (two gantry rings + pupil per eye).
+       Every white pixel is a whole-pixel run on the 24x24 grid ("+": 50% hint pixels
+       that anti-alias the silhouette by hand). Render at exactly 24 px; never scale. -->
+  <rect width="24" height="24" rx="5" fill="#0F4D3A"/>
+  <path fill="#fff" shape-rendering="crispEdges" d="M3 3h1v1h-1zM20 3h1v1h-1zM3 4h2v1h-2zM19 4h2v1h-2zM3 5h4v1h-4zM17 5h4v1h-4zM3 6h6v1h-6zM15 6h6v1h-6zM3 7h8v1h-8zM13 7h8v1h-8zM3 8h3v1h-3zM9 8h6v1h-6zM18 8h3v1h-3zM3 9h2v1h-2zM6 9h3v1h-3zM10 9h4v1h-4zM15 9h3v1h-3zM19 9h2v1h-2zM3 10h1v1h-1zM5 10h1v1h-1zM9 10h1v1h-1zM11 10h2v1h-2zM14 10h1v1h-1zM18 10h1v1h-1zM20 10h1v1h-1zM3 11h1v1h-1zM5 11h1v1h-1zM7 11h1v1h-1zM9 11h1v1h-1zM11 11h2v1h-2zM14 11h1v1h-1zM16 11h1v1h-1zM18 11h1v1h-1zM20 11h1v1h-1zM3 12h1v1h-1zM5 12h1v1h-1zM9 12h1v1h-1zM11 12h2v1h-2zM14 12h1v1h-1zM18 12h1v1h-1zM20 12h1v1h-1zM3 13h2v1h-2zM6 13h3v1h-3zM10 13h4v1h-4zM15 13h3v1h-3zM19 13h2v1h-2zM3 14h3v1h-3zM9 14h2v1h-2zM13 14h2v1h-2zM18 14h3v1h-3zM4 15h7v1h-7zM13 15h7v1h-7zM5 16h6v1h-6zM13 16h6v1h-6zM6 17h5v1h-5zM13 17h5v1h-5zM7 18h10v1h-10zM9 19h6v1h-6z"/>
+  <path fill="#fff" fill-opacity=".5" shape-rendering="crispEdges" d="M11 17h2v1h-2zM11 20h2v1h-2z"/>
+</svg>
