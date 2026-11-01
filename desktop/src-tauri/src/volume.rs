@@ -391,7 +391,99 @@ pub fn build(paths: Vec<PathBuf>) -> Result<VolumeInfo, String> {
 /// resampled linearly to the in-plane spacing) and the long side at most
 /// `max_dim`. Coronal / sagittal put the last slice (the most "normal-ward",
 /// head for a feet-first-sorted axial stack) at the top.
+/// Slab projection across a plane's own axis (RadiAnt-style thick slab).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slab {
+    Off,
+    Mip,
+    MinIp,
+    Avg,
+}
+
+impl Slab {
+    pub fn parse(s: &str) -> Option<Slab> {
+        match s {
+            "off" => Some(Slab::Off),
+            "mip" => Some(Slab::Mip),
+            "minip" => Some(Slab::MinIp),
+            "avg" => Some(Slab::Avg),
+            _ => None,
+        }
+    }
+}
+
+/// A single plane (no slab); the tests' shorthand for `render_slab`.
+#[cfg(test)]
 pub fn render(v: &Volume, plane: Plane, index: usize, center: f64, width: f64, max_dim: usize) -> (usize, usize, Vec<u8>) {
+    render_slab(v, plane, index, center, width, max_dim, Slab::Off, 0.0)
+}
+
+/// One plane, optionally as a slab of `thickness_mm` centred on `index`
+/// (MIP / MinIP / average along the plane's own axis).
+#[allow(clippy::too_many_arguments)]
+pub fn render_slab(
+    v: &Volume,
+    plane: Plane,
+    index: usize,
+    center: f64,
+    width: f64,
+    max_dim: usize,
+    slab: Slab,
+    thickness_mm: f64,
+) -> (usize, usize, Vec<u8>) {
+    let [_, _, _] = v.dims;
+    // Voxels each side of the centre along the plane's axis.
+    let axis_mm = match plane {
+        Plane::Axial => v.spacing[2],
+        Plane::Coronal => v.spacing[1],
+        Plane::Sagittal => v.spacing[0],
+    };
+    let half = if slab == Slab::Off { 0 } else { ((thickness_mm / axis_mm.max(1e-3)) / 2.0).round() as isize };
+    let depth = match plane {
+        Plane::Axial => v.dims[2],
+        Plane::Coronal => v.dims[1],
+        Plane::Sagittal => v.dims[0],
+    } as isize;
+    let lo = (index as isize - half).max(0) as usize;
+    let hi = (index as isize + half).min(depth - 1) as usize;
+    if half == 0 {
+        return render_one(v, plane, index, center, width, max_dim, &|f| f(index));
+    }
+    let combine = move |f: &dyn Fn(usize) -> f64| -> f64 {
+        let mut acc = match slab {
+            Slab::Mip => f64::MIN,
+            Slab::MinIp => f64::MAX,
+            _ => 0.0,
+        };
+        for i in lo..=hi {
+            let val = f(i);
+            acc = match slab {
+                Slab::Mip => acc.max(val),
+                Slab::MinIp => acc.min(val),
+                _ => acc + val,
+            };
+        }
+        if slab == Slab::Avg {
+            acc / (hi - lo + 1) as f64
+        } else {
+            acc
+        }
+    };
+    render_one(v, plane, index, center, width, max_dim, &combine)
+}
+
+/// The plane renderer: `reduce` turns "value at slice i of the plane's axis"
+/// into the pixel value (one slice, or a slab projection).
+#[allow(clippy::too_many_arguments)]
+fn render_one(
+    v: &Volume,
+    plane: Plane,
+    _index: usize,
+    center: f64,
+    width: f64,
+    max_dim: usize,
+    reduce: &(dyn Fn(&dyn Fn(usize) -> f64) -> f64 + Sync),
+) -> (usize, usize, Vec<u8>) {
     let [nx, ny, nz] = v.dims;
     let [sx, sy, sz] = v.spacing;
     let lower = center - width / 2.0;
@@ -415,7 +507,7 @@ pub fn render(v: &Volume, plane: Plane, index: usize, center: f64, width: f64, m
                 Plane::Axial => {
                     let x = ((u / sx) as usize).min(nx - 1);
                     let y = ((t / sy) as usize).min(ny - 1);
-                    at(x, y, index.min(nz - 1))
+                    reduce(&|i| at(x, y, i.min(nz - 1)))
                 }
                 Plane::Coronal | Plane::Sagittal => {
                     // Top of the image = last slice.
@@ -423,12 +515,19 @@ pub fn render(v: &Volume, plane: Plane, index: usize, center: f64, width: f64, m
                     let z0 = zf.floor() as usize;
                     let z1 = (z0 + 1).min(nz - 1);
                     let f = zf - z0 as f64;
-                    let (x, y) = if plane == Plane::Coronal {
-                        (((u / sx) as usize).min(nx - 1), index.min(ny - 1))
+                    if plane == Plane::Coronal {
+                        let x = ((u / sx) as usize).min(nx - 1);
+                        reduce(&|i| {
+                            let y = i.min(ny - 1);
+                            at(x, y, z0) * (1.0 - f) + at(x, y, z1) * f
+                        })
                     } else {
-                        (index.min(nx - 1), ((u / sy) as usize).min(ny - 1))
-                    };
-                    at(x, y, z0) * (1.0 - f) + at(x, y, z1) * f
+                        let y = ((u / sy) as usize).min(ny - 1);
+                        reduce(&|i| {
+                            let x = i.min(nx - 1);
+                            at(x, y, z0) * (1.0 - f) + at(x, y, z1) * f
+                        })
+                    }
                 }
             };
             *o = grey(val);
@@ -459,8 +558,11 @@ pub fn serve(rest: &str) -> Option<Vec<u8>> {
     let center: f64 = p.next()?.parse().ok()?;
     let width: f64 = p.next()?.parse().ok()?;
     let max_dim: usize = p.next().and_then(|s| s.parse().ok()).unwrap_or(1024).clamp(16, 4096);
+    // Optional `/<off|mip|minip|avg>/<thickness mm>`.
+    let slab = p.next().and_then(Slab::parse).unwrap_or(Slab::Off);
+    let thickness: f64 = p.next().and_then(|s| s.parse().ok()).unwrap_or(0.0f64).clamp(0.0, 500.0);
     let v = current(key)?;
-    let (w, h, grey) = render(&v, plane, index, center, width, max_dim);
+    let (w, h, grey) = render_slab(&v, plane, index, center, width, max_dim, slab, thickness);
     png(w, h, &grey)
 }
 
@@ -508,6 +610,22 @@ mod tests {
         assert_eq!(reduction(512, 512, 2000, 768 * mb), (1, 2), "1 GB: average slice pairs");
         assert_eq!(reduction(512, 512, 4332, 768 * mb), (2, 1), "2.2 GB: 2x2 in-plane");
         assert_eq!(reduction(1024, 1024, 4332, 768 * mb), (2, 3), "9 GB: 2x2 in-plane, slices in threes");
+    }
+
+    #[test]
+    fn slab_mip_minip_avg_along_the_plane_axis() {
+        // Slices hold 0, 100, 200, 300 (z * 100), 2 mm apart.
+        let v = synthetic(8, 8, 4);
+        let px = |slab, mm| render_slab(&v, Plane::Axial, 1, 150.0, 300.0, 64, slab, mm).2[0];
+        let single = px(Slab::Off, 0.0); // slice 1 = 100
+        let mip = px(Slab::Mip, 4.0); // slices 0..2 -> 200
+        let minip = px(Slab::MinIp, 4.0); // -> 0
+        let avg = px(Slab::Avg, 4.0); // -> 100
+        assert!(mip > single && single > minip, "mip {mip} single {single} minip {minip}");
+        assert_eq!(avg, single, "average of 0,100,200 is the middle slice");
+        // Coronal slab runs along y: constant along y here, so MIP = single.
+        let c = |slab| render_slab(&v, Plane::Coronal, 4, 150.0, 300.0, 64, slab, 4.0).2;
+        assert_eq!(c(Slab::Mip), c(Slab::Off));
     }
 
     #[test]
