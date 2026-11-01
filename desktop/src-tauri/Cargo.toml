@@ -1,6 +1,6 @@
 [package]
 name = "radlearn-viewer"
-version = "0.2.2"
+version = "0.3.0"
 description = "FlowRad Viewer — a free, offline DICOM viewer for Windows, macOS and Linux"
 authors = ["FlowRad"]
 license = "UNLICENSED"
