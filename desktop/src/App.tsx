@@ -221,6 +221,15 @@ export default function App() {
   const activeSeriesUid = cells[activeCell] ?? null;
   const active = activeSeriesUid ? seriesByUid.get(activeSeriesUid) : undefined;
   const presets = useMemo(() => windowPresetsFor(active?.series.modality ?? ""), [active?.series.modality]);
+  /** Every file of the study on screen (images once each, plus its reports and key-image notes), for Send to PACS. */
+  const sendableStudy = useMemo(() => {
+    const study = active?.study;
+    if (!study) return null;
+    const files = new Set<string>();
+    for (const series of study.series) for (const h of series.headers) if (h.fileName) files.add(h.fileName);
+    for (const d of documents) if (!d.studyInstanceUid || d.studyInstanceUid === study.uid) files.add(d.fileName);
+    return { label: study.description || "Untitled study", files: [...files] };
+  }, [active?.study, documents]);
   const volumeSeries = active?.series.volumetric ? active.series : null;
   /** PET/CT pair from the active study: the active CT (or the largest CT volume) and the largest PET volume. */
   const fusionPair = useMemo(() => {
@@ -1141,6 +1150,7 @@ export default function App() {
         open={dialog === "pacs"}
         onClose={() => setDialog(null)}
         onRetrieved={(folder, label) => void openPaths([folder], "folder", `PACS · ${label}`)}
+        sendable={sendableStudy}
       />
       )}
       {dialog === "export" && (

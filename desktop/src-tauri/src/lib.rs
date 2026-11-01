@@ -516,6 +516,7 @@ pub fn run() {
             pacs::pacs_echo,
             pacs::pacs_find,
             pacs::pacs_retrieve,
+            pacs::pacs_send,
             sync::sync_status,
             sync::sync_sign_in,
             sync::sync_sign_out,
