@@ -24,16 +24,20 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   ChevronUp,
+  ExternalLink,
   FileArchive,
   FolderOpen,
   HardDrive,
   Layers,
+  Link2,
   Maximize2,
   Minimize2,
   ShieldCheck,
   Sparkles,
+  Unlink,
   X,
 } from "lucide-react";
+import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { Button, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
@@ -136,6 +140,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const stageRef = useRef<HTMLDivElement>(null);
   const swipeRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const viewerControls = useRef<CornerstoneControls | null>(null);
+  /** The files opened here, handed to popped-out windows. */
+  const [openedFiles, setOpenedFiles] = useState<File[] | null>(null);
+  /** Pop-out: the series to show once its files are read. */
+  const wantSeries = useRef<string | null>(null);
+  const [popOutNote, setPopOutNote] = useState<string | null>(null);
   /**
    * Chromium's `<input webkitdirectory>` asks "Upload N files to this site?" —
    * the opposite of what this page promises. Where the File System Access
@@ -326,6 +335,17 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           // Open on the series a hanging protocol would read first.
           setActiveSeries(primarySeriesIndexByProtocol(result.studies[0]));
         }
+        // A popped-out window opens on the series it was popped out with.
+        const wanted = wantSeries.current;
+        wantSeries.current = null;
+        const at = wanted
+          ? result.studies.flatMap((st, si) => st.series.map((se, i) => ({ si, i, uid: se.seriesInstanceUID }))).find((x) => x.uid === wanted)
+          : undefined;
+        if (at) {
+          setActiveStudy(at.si);
+          setActiveSeries(at.i);
+        }
+        setOpenedFiles(files);
         setPhase({ state: "open", result, pinned: located ? pinnedNow : null });
       } catch (error) {
         rejectFull(new Error("failed"));
@@ -379,6 +399,17 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
   const pinnedIsActive =
     !!pinned && (phase.state === "reading" || !!series?.instances.some((i) => i.fileName === pinned.fileName));
+
+  const popOut = usePopOutWindows({
+    files: openedFiles,
+    series,
+    studyUid: study?.studyInstanceUID ?? null,
+    controls: viewerControls,
+    onHandoff: (h) => {
+      wantSeries.current = h.seriesUid;
+      void ingest(h.files);
+    },
+  });
 
   const source = useMemo<ViewerSource | null>(() => {
     // The paint-first source stays the SAME object through the swap so the
@@ -513,6 +544,35 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               expanded && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
           >
+            {/* Wide screens: open this series in another browser window (drag it to another monitor). */}
+            {!expanded && phase.state === "open" && (
+              <div className="mb-2 hidden items-center gap-2 lg:flex">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  leadingIcon={<ExternalLink className="h-4 w-4" aria-hidden />}
+                  onClick={() => setPopOutNote(popOut.popOut() ? "Opened in a new window. Drag it to another monitor." : "The browser blocked the new window. Allow pop-ups for this site.")}
+                >
+                  Pop out to new window
+                </Button>
+                {popOut.hasOtherWindows && (
+                  <Button
+                    size="sm"
+                    variant={popOut.linked ? "primary" : "secondary"}
+                    aria-pressed={popOut.linked}
+                    leadingIcon={popOut.linked ? <Link2 className="h-4 w-4" aria-hidden /> : <Unlink className="h-4 w-4" aria-hidden />}
+                    onClick={popOut.toggleLinked}
+                  >
+                    {popOut.linked ? "Windows linked" : "Windows unlinked"}
+                  </Button>
+                )}
+                {popOutNote && (
+                  <span role="status" className="truncate text-xs text-secondary">
+                    {popOutNote}
+                  </span>
+                )}
+              </div>
+            )}
             {/* Phone bar: which series, the drawer, fullscreen. Desktop has the side panel. */}
             <div
               className={cn(
@@ -560,6 +620,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 source={source}
                 modality={modality}
                 controls={viewerControls}
+                onEvent={popOut.onViewerEvent}
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp

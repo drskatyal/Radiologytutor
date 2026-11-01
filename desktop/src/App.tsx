@@ -809,6 +809,9 @@ export default function App() {
     if (!isTauri) return;
     let off: (() => void)[] = [];
     (async () => {
+      // A secondary window (another monitor) shows what its opener hands it:
+      // no launch paths, no start-screen warm-up, no cold-start report.
+      if (isSecondaryWindow) return;
       const initial = await takeLaunchPaths();
       // A study on the command line opens at once. The engine is NOT
       // pre-imported here: its ~3 MB parse on the main thread would delay the

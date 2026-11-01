@@ -239,7 +239,7 @@ async function benchInteract(binary, study) {
 async function benchMultiWindow(binary, study) {
   const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "multiwindow", BENCH_TIMEOUT_MS: String(240_000) }));
   const mw = report.multiWindow;
-  if (!mw) throw new Error("no multi-window report");
+  if (!mw) throw new Error(`no multi-window report (marks: ${Object.keys(report).join(", ")}; timedOut: ${report.timedOut ?? "?"})`);
   console.log(JSON.stringify({ mode: "multiwindow", study, ...mw, longTasks: report.longTasks }, null, 2));
   const over = [];
   if (!mw.ok) over.push(`a window did not open / paint / follow: ${JSON.stringify(mw.runs)}`);
