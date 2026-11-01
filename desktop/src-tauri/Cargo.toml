@@ -1,6 +1,6 @@
 [package]
 name = "flowrad-viewer"
-version = "0.5.3"
+version = "0.6.0"
 description = "FlowRad Viewer — a free, offline DICOM viewer for Windows, macOS and Linux"
 authors = ["FlowRad"]
 license = "UNLICENSED"
@@ -38,6 +38,8 @@ percent-encoding = "2"
 png = "0.18"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart", "json", "stream"] }
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
+dicom-pixeldata = { version = "0.10", default-features = false, features = ["jpeg", "openjpeg-sys", "rle", "rayon"] }
+memmap2 = "0.9"
 
 [profile.release]
 codegen-units = 1
