@@ -119,6 +119,7 @@ impl Header {
 
 /// Does this file start like DICOM Part 10? "DICM" at 128, or at 0 for the
 /// preamble-less files some anonymisers write. Mirrors `hasDicomMagic`.
+#[cfg(test)]
 pub fn has_dicom_magic(path: &Path) -> bool {
     let mut buf = [0u8; MAGIC_PROBE];
     let Ok(mut file) = File::open(path) else {

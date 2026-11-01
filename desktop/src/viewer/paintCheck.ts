@@ -61,9 +61,21 @@ export async function verifyPainted(
   index: number
 ): Promise<PaintHealth> {
   const cpu = () => !!engine?.core.getShouldUseCPURendering?.();
-  const check = async (): Promise<PaintHealth> => {
-    await nextFrame();
-    await nextFrame();
+  // Sample the moment Cornerstone says it drew (IMAGE_RENDERED), not a fixed
+  // number of frames later; a frame is the fallback for a hidden window.
+  const rendered = () =>
+    new Promise<void>((resolve) => {
+      if (!element || !engine) return void nextFrame().then(resolve);
+      const done = () => {
+        element.removeEventListener(engine.core.Enums.Events.IMAGE_RENDERED, done);
+        resolve();
+      };
+      element.addEventListener(engine.core.Enums.Events.IMAGE_RENDERED, done);
+      setTimeout(done, 250);
+    });
+  const check = async (first: boolean): Promise<PaintHealth> => {
+    // The first render may already have happened; if the canvas has pixels now, done.
+    if (!first || !(sampleCanvas(element) ?? 0)) await rendered();
     const maxLum = sampleCanvas(element) ?? 0;
     const visible = engine ? expectVisible(engine, vp, ids[index]) : true;
     return {
@@ -73,15 +85,16 @@ export async function verifyPainted(
       renderPath: paintHealth.fellBack ? "cpu-fallback" : cpu() ? "cpu" : "gpu",
     };
   };
-  let health = await check();
+  let health = await check(true);
   if (engine && !health.nonBlank && health.expectVisible && !cpu()) {
     console.warn("RadLearn: the GPU path painted a blank viewport; switching to CPU rendering.", health);
     paintHealth.fellBack = true;
     try {
       engine.core.setUseCPURendering(true);
       await vp.setStack(ids, index);
+      const again = check(false);
       vp.render();
-      health = await check();
+      health = await again;
     } catch (error) {
       console.error("RadLearn: CPU fallback failed", error);
     }

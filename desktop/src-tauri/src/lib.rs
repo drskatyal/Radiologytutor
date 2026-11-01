@@ -1,4 +1,4 @@
-//! RadLearn Viewer — the Tauri shell.
+//! FlowRad Viewer — the Tauri shell.
 //!
 //! The shell's whole job (docs/DESKTOP_PLAN.md §2): native open dialogs,
 //! walking folders / DICOMDIR / zip / discs, parsing headers fast, and handing
@@ -521,7 +521,7 @@ pub fn run() {
             sync::sync_upload_study,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building RadLearn Viewer");
+        .expect("error while building FlowRad Viewer");
 
     app.run(|_handle, _event| {
         // macOS delivers Finder "Open with…" and dock drops as an event, not argv.

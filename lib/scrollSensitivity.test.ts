@@ -52,3 +52,25 @@ test("drag asks for three times the distance, and never under 8px", () => {
   assert.equal(scaleDragPixelsPerSlice(12), 36);
   assert.equal(scaleDragPixelsPerSlice(Number.NaN), DRAG_MIN_PIXELS_PER_SLICE);
 });
+
+test("scroll preferences: defaults keep one slice per notch and automatic drag", async () => {
+  const m = await import("./scrollSensitivity");
+  const d = m.DEFAULT_SCROLL_PREFERENCES;
+  assert.equal(m.slicesForNotch(d, 1), 1);
+  assert.equal(m.slicesForNotch(d, 9), 1);
+  assert.equal(m.dragPixelsPerSlice(2, d), m.scaleDragPixelsPerSlice(2));
+});
+
+test("scroll preferences: slices per notch, fixed drag, acceleration", async () => {
+  const m = await import("./scrollSensitivity");
+  const p = { slicesPerNotch: 3, dragPixelsPerSlice: 12, acceleration: true };
+  assert.equal(m.slicesForNotch(p, 1), 3);
+  assert.equal(m.slicesForNotch(p, 2), 3);
+  assert.equal(m.slicesForNotch(p, 3), 6);
+  assert.equal(m.slicesForNotch(p, 20), 12); // capped at 4×
+  assert.equal(m.dragPixelsPerSlice(2, p), 12);
+  m.setScrollPreferences({ slicesPerNotch: 99, dragPixelsPerSlice: 0.1 });
+  assert.equal(m.getScrollPreferences().slicesPerNotch, 10);
+  assert.equal(m.getScrollPreferences().dragPixelsPerSlice, 1);
+  m.setScrollPreferences(m.DEFAULT_SCROLL_PREFERENCES);
+});

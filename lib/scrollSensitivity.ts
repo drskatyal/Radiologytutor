@@ -74,6 +74,62 @@ export function scaleDragPixelsPerSlice(cornerstonePixels: number): number {
   return Math.max(DRAG_MIN_PIXELS_PER_SLICE, base * DRAG_DISTANCE_MULTIPLIER);
 }
 
+/**
+ * Reader-adjustable scroll feel (FlowRad Viewer Settings). Defaults reproduce
+ * the behaviour above exactly, so callers that never set them are unchanged.
+ */
+export interface ScrollPreferences {
+  /** Slices per wheel notch (1–10). */
+  slicesPerNotch: number;
+  /** Pixels of drag per slice; null = automatic (scaled to the series length). */
+  dragPixelsPerSlice: number | null;
+  /** Faster notches in a quick run move more slices (up to 4×). */
+  acceleration: boolean;
+}
+
+export const DEFAULT_SCROLL_PREFERENCES: ScrollPreferences = {
+  slicesPerNotch: 1,
+  dragPixelsPerSlice: null,
+  acceleration: false,
+};
+
+const prefs: ScrollPreferences = { ...DEFAULT_SCROLL_PREFERENCES };
+
+export function setScrollPreferences(next: Partial<ScrollPreferences>): void {
+  if (next.slicesPerNotch != null && Number.isFinite(next.slicesPerNotch)) {
+    prefs.slicesPerNotch = Math.min(10, Math.max(1, Math.round(next.slicesPerNotch)));
+  }
+  if (next.dragPixelsPerSlice !== undefined) {
+    prefs.dragPixelsPerSlice =
+      next.dragPixelsPerSlice == null || !Number.isFinite(next.dragPixelsPerSlice)
+        ? null
+        : Math.min(60, Math.max(1, next.dragPixelsPerSlice));
+  }
+  if (next.acceleration != null) prefs.acceleration = next.acceleration;
+}
+
+export function getScrollPreferences(): ScrollPreferences {
+  return { ...prefs };
+}
+
+/** Notches closer together than this count as one accelerating run. */
+export const ACCELERATION_WINDOW_MS = 140;
+
+/**
+ * Slices for one notch, given the run so far. With acceleration off this is
+ * always `slicesPerNotch`; on, the 3rd, 5th and 7th quick notch in a row add
+ * one more multiple each (1×, 1×, 2×, 2×, 3×, 3×, 4×…).
+ */
+export function slicesForNotch(p: ScrollPreferences, runLength: number): number {
+  const factor = p.acceleration ? Math.min(4, 1 + Math.floor(Math.max(0, runLength - 1) / 2)) : 1;
+  return p.slicesPerNotch * factor;
+}
+
+/** Drag distance per slice under the current preferences. */
+export function dragPixelsPerSlice(cornerstonePixels: number, p: ScrollPreferences = prefs): number {
+  return p.dragPixelsPerSlice ?? scaleDragPixelsPerSlice(cornerstonePixels);
+}
+
 interface StackScrollWheelEvent {
   detail?: {
     wheel?: { pixelY?: number; direction?: number; spinY?: number };
@@ -97,11 +153,12 @@ export function tuneStackScrollTool(tool: unknown): void {
   instance.__radlearnScroll = true;
 
   const state = createWheelScrollState();
+  let run = { last: Number.NEGATIVE_INFINITY, length: 0 };
   const originalWheel = instance.mouseWheelCallback?.bind(instance);
   const originalPixels = instance._getPixelPerImage?.bind(instance);
 
   if (originalPixels) {
-    instance._getPixelPerImage = (viewport) => scaleDragPixelsPerSlice(originalPixels(viewport));
+    instance._getPixelPerImage = (viewport) => dragPixelsPerSlice(originalPixels(viewport));
   }
 
   if (!originalWheel) return;
@@ -120,6 +177,8 @@ export function tuneStackScrollTool(tool: unknown): void {
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     const steps = takeWheelSlices(state, pixelY, now);
     if (steps === 0 || !wheel) return;
+    run = now - run.last < ACCELERATION_WINDOW_MS ? { last: now, length: run.length + 1 } : { last: now, length: 1 };
+    const count = Math.abs(steps) * slicesForNotch(prefs, run.length);
     const sign = Math.sign(steps);
     const forged: StackScrollWheelEvent = {
       ...evt,
@@ -128,6 +187,6 @@ export function tuneStackScrollTool(tool: unknown): void {
         wheel: { ...wheel, direction: sign, spinY: sign, pixelY },
       },
     };
-    for (let i = 0; i < Math.abs(steps); i += 1) originalWheel(forged);
+    for (let i = 0; i < count; i += 1) originalWheel(forged);
   };
 }

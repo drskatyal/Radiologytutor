@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ──────────────────────────────────────────────────────────────────────────
-   RadLearn Viewer — reading-room tokens.
+   FlowRad Viewer — reading-room tokens.
 
    Same token NAMES as the web app (app/globals.css), dark VALUES: a reading
    room is dim, and a bright chrome next to a black viewport costs contrast

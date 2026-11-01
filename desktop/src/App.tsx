@@ -1,4 +1,4 @@
-// RadLearn Viewer — the window.
+// FlowRad Viewer — the window.
 //
 // Owns: what is open (studies, source), how it is hung (layout, which series in
 // which cell), the left-button tool, view toggles, and the open flow. The
@@ -41,11 +41,13 @@ import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/Updates";
 import { useSyncStatus } from "./components/Account";
 import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
+import { setScrollPreferences } from "@/lib/scrollSensitivity";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
   clearAnnotations,
   engineTimings,
+  enginePeek,
   getEngine,
   prewarmEngine,
   setGroupLeftTool,
@@ -59,6 +61,7 @@ import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
 import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
+import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -181,6 +184,15 @@ export default function App() {
     );
     return () => window.clearTimeout(timer);
   }, [nothingOpen]);
+
+  // Scroll feel is read by the StackScroll tool on every wheel / drag event.
+  useEffect(() => {
+    setScrollPreferences({
+      slicesPerNotch: settings.scrollSlicesPerNotch,
+      dragPixelsPerSlice: settings.scrollDragPx > 0 ? settings.scrollDragPx : null,
+      acceleration: settings.scrollAcceleration,
+    });
+  }, [settings.scrollSlicesPerNotch, settings.scrollDragPx, settings.scrollAcceleration]);
 
   const updateSettings = useCallback((patch: Partial<ViewerSettings>) => {
     setSettings((s) => ({ ...s, ...patch }));
@@ -362,6 +374,9 @@ export default function App() {
                 focused: document.hasFocus(),
               },
               viewport: paintHealth.last ?? null,
+              gpu: gpuInfo(),
+              trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
+              ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
               engineInitMs: engineTimings.initMs,
               processUptimeMs: startup,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
@@ -642,7 +657,18 @@ export default function App() {
           return void toggleFullscreen();
         case "distractionFree":
           return setDistractionFree((v) => !v);
-        case "escape":
+        case "escape": {
+          // 1) a measurement being drawn → cancel it; 2) a tool other than
+          // browsing → back to browsing; 3) then leave modes / full screen.
+          const element = handle?.element;
+          if (element && enginePeek()) {
+            const cancelled = enginePeek()!.tools.cancelActiveManipulations(element);
+            if (cancelled) return;
+          }
+          if (leftTool !== "StackScroll" && view === "grid") {
+            setLeftTool("StackScroll");
+            return;
+          }
           if (view !== "grid") {
             setView("grid");
             return;
@@ -656,6 +682,7 @@ export default function App() {
             });
           }
           return;
+        }
       }
       if (!studies.length) return;
       switch (action.type) {
@@ -732,7 +759,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
+    [studies.length, leftTool, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView]
   );
 
   useEffect(() => {
@@ -740,6 +767,8 @@ export default function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
       if (dialog) return;
+      // Tab switches series only from the image; on a control it still moves focus.
+      if (e.key === "Tab" && target && target !== document.body && target.closest("button, a, [role=menuitem], [tabindex]")) return;
       const action = resolveShortcut(e);
       if (!action) return;
       e.preventDefault();
@@ -878,6 +907,8 @@ export default function App() {
                   onScreen={cells}
                   activeSeriesUid={activeSeriesUid}
                   growing={growing}
+                  compact={settings.compactSeries}
+                  hidePatient={settings.hidePatient}
                   onOpenSeries={(uid) => showSeries(uid)}
                 />
               </aside>
@@ -921,6 +952,7 @@ export default function App() {
                     study={entry?.study ?? null}
                     active={i === activeCell && cells.length > 1}
                     showOverlay={overlay}
+                    hidePatient={settings.hidePatient}
                     growing={growing}
                     onActivate={() => {
                       autoHung.current = false;

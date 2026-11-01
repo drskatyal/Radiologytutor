@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RadLearn Viewer",
-  "version": "0.1.0",
-  "identifier": "app.radlearn.viewer",
+  "productName": "FlowRad Viewer",
+  "version": "0.2.0",
+  "identifier": "app.flowrad.viewer",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "RadLearn Viewer",
+        "title": "FlowRad Viewer",
         "width": 1440,
         "height": 900,
         "minWidth": 960,
@@ -45,7 +45,7 @@
     "publisher": "FlowRad",
     "category": "Medical",
     "shortDescription": "Free offline DICOM viewer",
-    "longDescription": "RadLearn Viewer opens DICOM studies from folders, DICOMDIR, zip archives and CD/DVD media, entirely offline. Not for diagnostic use.",
+    "longDescription": "FlowRad Viewer opens DICOM studies from folders, DICOMDIR, zip archives and CD/DVD media, entirely offline. Not for diagnostic use.",
     "copyright": "© FlowRad. Not for diagnostic use.",
     "icon": [
       "icons/32x32.png",

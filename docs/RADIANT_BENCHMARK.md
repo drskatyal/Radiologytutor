@@ -1,4 +1,6 @@
-# RadLearn Viewer vs RadiAnt DICOM Viewer
+# FlowRad Viewer vs RadiAnt DICOM Viewer
+
+_The desktop app is now **FlowRad Viewer** (formerly "RadLearn Viewer"); RadLearn is the teaching mode and cloud._
 
 Date: 2026-10-31. Branch `claude/desktop-viewer`. Updated at each milestone.
 
@@ -177,12 +179,71 @@ Trade-offs, stated:
 - **A second problem:** Cornerstone's `createLocalVolume` then stalled.
 - **Verdict:** reverted rather than shipped. Worth re-testing on WebView2 and WKWebView, whose custom-scheme throughput may be far higher, once the HP and a Mac are available.
 
+### 1.5.2 Fix pass after the first HP results (v0.1.0 → this build)
+
+**First real-hardware numbers.** These are v0.1.0 on Sanyam's HP (Core Ultra 7 256V, 16 GB, Windows 11):
+
+| | measured |
+|---|---|
+| Cold start | 520 ms first run; 1.29 s on a later run, while memory was being sampled |
+| Idle, whole process tree | ~400 MB working set, ~205 MB private (7 processes) |
+| CT first slice | 1.21 s; reopened 0.68 s |
+| MPR build | 3.97 s, peak 3.3 GB private |
+| MRI, 10,310 files | scan 15.8 s, of which 15.2 s parsing |
+| Normal launch with a study argument | **main viewport blank (P0)** |
+
+**Same Linux box before and after** (4 cores, Xvfb, software GL), v0.1.0 against this build. The study is a synthetic CT: 4,333 files, 17 series, an 848-slice largest series, 2.2 GB, plus one stray non-DICOM file.
+
+| | v0.1.0 | this build | what changed |
+|---|---|---|---|
+| Header parse, 4,333 files (cold) | 1,069 ms | **841 ms** | one open per file (magic, stat and parse on one handle) on a dedicated pool with 2× the cores. On Windows each open also pays an antivirus callback, so the gain there should be larger. |
+| Scan done | 1,297 ms | **1,035 ms** | same |
+| First image visible (Rust preview) | 159 ms | **121 ms** | |
+| First full-fidelity frame | 948 ms | **845 ms**, *verified non-blank* | the check samples on Cornerstone's render event, not after fixed frames |
+| Reopen (scan cache), scan done | 256 ms | 247 ms | |
+| Cold start, median of 5 | 802 ms | **742 ms** | toasts (Radix + framer-motion, ~⅓ of the start bundle) load on first use; render no longer waits for protocol init; static splash |
+| Idle tree, private, after 8 s | 143 MB | **131 MB** | Linux has no WebView2 memory-target knob |
+| MPR 848 × 512², build | 3.9 s | 3.4–3.8 s | |
+| MPR peak, tree private | 2.33 GB | 2.38 GB (settled: 2.21 → 2.21 GB) | **No change on this box.** The decoded cache is 425 MB of Int16. The rest is the WebGL texture and the driver's copies under software GL. **Must be measured on the HP.** |
+
+**Fixed.**
+- **P0, blank viewport.**
+  - After the first render of each series, the app samples the on-screen canvas. If it is blank while the image has contrast inside the window, it switches to CPU rendering and draws again.
+  - "First paint" now means real pixels on screen.
+  - The fallback was tested by forcing the GPU sample blank: both CT variants recovered via `cpu-fallback`.
+  - `desktop/scripts/e2e-paint.py` asserts non-blank pixels after a **normal** launch, and also in bench mode. It runs on Linux and on a new **windows-latest (WebView2)** CI job. Both pass on the GPU path. The fixture matrix also asserts it.
+- **Bench never hanging.**
+  - The shell prints `RADLEARN_BENCH_SCAN` the moment a scan ends.
+  - Paint is a separate field, `paint.{firstImagePaintedMs,timedOut,visibility}`; the renderer waits at most `RADLEARN_BENCH_PAINT_TIMEOUT_MS`.
+  - A watchdog, `RADLEARN_BENCH_TIMEOUT_MS`, prints what is known and exits with status 3.
+  - A stray non-DICOM file is rejected by its magic bytes on the same single open, so it cannot stall the scan (the synthetic study above includes one).
+- **Decoded-image memory is now honest.**
+  - Cornerstone v5's default loader keeps every file's full bytes in a metadata store that is never evicted.
+  - The desktop now uses the dataset path and trims each dataset to its header once decoded: 432 MB released on the 848-slice series.
+  - The 2D cache has a 1 GB LRU budget.
+  - All 21 codec checks are still bit-exact, the 18 fixtures paint, and MPR, 3D and fusion all build.
+- **Windows idle footprint (needs the HP to confirm).**
+  - WebView2 `MemoryUsageTargetLevel=Low` while nothing is open.
+  - WebView2 arguments: no spare renderer, `--renderer-process-limit=1`, no background networking or component updates.
+  - `bench.mjs` now reports the **whole process tree** on Windows (working set and private bytes per process, with each process's `--type`), plus the peak during a run.
+
+**Merge gates: honest status.**
+
+| gate | status |
+|---|---|
+| Cold start < 500 ms | **Not met on this box** (742 ms; WebKitGTK alone takes ~0.6 s before our JS). Needs the HP. |
+| First image < 300 ms | **Met for the instant preview** (121 ms). The full Cornerstone frame is 845 ms here. |
+| 60 fps scroll | **Not yet measured.** |
+| MPR < 1.5 s and < 1.2 GB | **Not met on this box** (3.4 s, 2.4 GB under software GL). Needs the HP's GPU. |
+
 ### 1.6 Measure it on the HP (owed)
 
 ```powershell
 npm ci; npm ci --prefix desktop
 npm --prefix desktop run tauri build -- --no-bundle
 node desktop/scripts/bench.mjs coldstart desktop\src-tauri\target\release\radlearn-viewer.exe --runs 6
+node desktop/scripts/bench.mjs idle desktop\src-tauri\target\release\radlearn-viewer.exe --seconds 8   # whole WebView2 tree
+python desktop\scripts\e2e-paint.py desktop\src-tauri\target\release\radlearn-viewer.exe C:\path\to\real-ct
 python desktop\scripts\make-fixtures.py --bench C:\fixtures
 node desktop/scripts/bench.mjs desktop desktop\src-tauri\target\release\radlearn-viewer.exe C:\fixtures\bench\ct-1200
 ```

@@ -206,7 +206,7 @@ pub fn anonymize_object(obj: &mut DefaultDicomObject, options: &AnonymizeOptions
         obj,
         tags::DEIDENTIFICATION_METHOD,
         VR::LO,
-        "RadLearn Viewer: PS3.15 basic profile header scrub; pixels not inspected",
+        "FlowRad Viewer: PS3.15 basic profile header scrub; pixels not inspected",
     );
 }
 

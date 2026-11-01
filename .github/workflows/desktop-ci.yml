@@ -1,4 +1,4 @@
-# RadLearn Viewer (desktop/) — checks on every PR that touches the desktop app
+# FlowRad Viewer (desktop/) — checks on every PR that touches the desktop app
 # or the shared code it imports (lib/, components/ui/).
 name: desktop-ci
 

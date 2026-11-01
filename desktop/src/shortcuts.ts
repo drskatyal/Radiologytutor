@@ -102,7 +102,8 @@ export const BINDINGS: Binding[] = [
   // Tools (left mouse button)
   tool("b", "StackScroll", "Browse slices"),
   tool("w", "WindowLevel", "Window / level"),
-  tool("m", "Pan", "Move (pan)"),
+  tool("p", "Pan", "Pan"),
+  tool("m", "Length", "Measure (length)"),
   tool("z", "Zoom", "Zoom"),
   tool("l", "Length", "Length"),
   tool("a", "Angle", "Angle"),
@@ -110,24 +111,25 @@ export const BINDINGS: Binding[] = [
   tool("e", "EllipticalROI", "Ellipse ROI (mean / SD / area)"),
   tool("r", "RectangleROI", "Rectangle ROI"),
   tool("o", "CircleROI", "Circle ROI"),
-  tool("p", "PlanarFreehandROI", "Freehand ROI (pen)"),
+  tool("n", "PlanarFreehandROI", "Freehand ROI"),
   tool("x", "Probe", "Pixel value probe"),
   tool("y", "ArrowAnnotate", "Arrow with label"),
   tool("d", "Bidirectional", "Bidirectional (long / short axis)"),
   tool("g", "Magnify", "Magnifying glass"),
 
   // Navigate
-  { keys: "↑ / ↓", does: "Previous / next image", group: "Navigate", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "ArrowUp"), action: { type: "slice", delta: -1 } },
-  { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "ArrowDown"), action: { type: "slice", delta: 1 } },
+  { keys: "↑ / ↓  ← / →", does: "Previous / next image", group: "Navigate", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "ArrowUp", "ArrowLeft"), action: { type: "slice", delta: -1 } },
+  { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "ArrowDown", "ArrowRight"), action: { type: "slice", delta: 1 } },
   { keys: "PgUp / PgDn", does: "Jump 10 images", group: "Navigate", match: (e, m) => plain(e, m) && (keyIs(e, "PageUp") || (!!e.shiftKey && keyIs(e, "ArrowUp"))), action: { type: "slice", delta: -10 } },
   { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && (keyIs(e, "PageDown") || (!!e.shiftKey && keyIs(e, "ArrowDown"))), action: { type: "slice", delta: 10 } },
   { keys: "Home / End", does: "First / last image", group: "Navigate", match: (e, m) => plain(e, m) && keyIs(e, "Home"), action: { type: "sliceEdge", where: "first" } },
   { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && keyIs(e, "End"), action: { type: "sliceEdge", where: "last" } },
-  { keys: "← / →", does: "Previous / next series", group: "Navigate", match: (e, m) => plain(e, m) && keyIs(e, "ArrowLeft"), action: { type: "series", delta: -1 } },
-  { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && keyIs(e, "ArrowRight"), action: { type: "series", delta: 1 } },
+  { keys: "[ / ]", does: "Previous / next series", group: "Navigate", match: (e, m) => plain(e, m) && e.key === "[", action: { type: "series", delta: -1 } },
+  { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && e.key === "]", action: { type: "series", delta: 1 } },
+  { keys: "Tab / Shift+Tab", does: "Next / previous series", group: "Navigate", match: (e, m) => plain(e, m) && e.key === "Tab", action: { type: "series", delta: 1 } },
   { keys: "Space", does: "Play / pause cine", group: "Navigate", match: (e, m) => plain(e, m) && e.key === " ", action: { type: "cine" } },
-  { keys: "[ / ]", does: "Cine slower / faster", group: "Navigate", match: (e, m) => plain(e, m) && e.key === "[", action: { type: "cineFps", delta: -5 } },
-  { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && e.key === "]", action: { type: "cineFps", delta: 5 } },
+  { keys: "Shift+[ / Shift+]", does: "Cine slower / faster", group: "Navigate", match: (e, m) => plain(e, m) && (e.key === "{" || (!!e.shiftKey && e.key === "[")), action: { type: "cineFps", delta: -5 } },
+  { keys: "", does: "", group: "Navigate", match: (e, m) => plain(e, m) && (e.key === "}" || (!!e.shiftKey && e.key === "]")), action: { type: "cineFps", delta: 5 } },
 
   // Zoom / pan (RadiAnt)
   { keys: "Mod+0", does: "Fit to window", group: "View", match: (e, m) => m && !e.shiftKey && digit(e) === 0, action: { type: "zoomTo", scale: "fit" } },
@@ -145,13 +147,13 @@ export const BINDINGS: Binding[] = [
   { keys: "H / V", does: "Flip horizontal / vertical", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "h"), action: { type: "flip", axis: "h" } },
   { keys: "", does: "", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "v"), action: { type: "flip", axis: "v" } },
   { keys: "Q / Shift+Q", does: "Rotate 90° right / left", group: "View", match: (e, m) => plain(e, m) && keyIs(e, "q"), action: { type: "rotate", degrees: 90 } },
-  { keys: "Esc", does: "Reset view · leave full screen", group: "View", match: (e) => e.key === "Escape", action: { type: "escape" } },
+  { keys: "Esc", does: "Cancel the tool / drawing · leave full screen", group: "View", match: (e) => e.key === "Escape", action: { type: "escape" } },
   { keys: "Backspace", does: "Reset zoom, pan, window, rotation", group: "View", match: (e, m) => plain(e, m) && keyIs(e, "Backspace"), action: { type: "reset" } },
   { keys: "Mod+Shift+F12", does: "Show / hide DICOM overlay", group: "View", match: (e, m) => m && !!e.shiftKey && e.key === "F12", action: { type: "toggleOverlay" } },
   { keys: "F12", does: "Show / hide annotations", group: "View", match: (e, m) => !m && e.key === "F12", action: { type: "toggleAnnotations" } },
   { keys: "F", does: "Full screen", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "f"), action: { type: "fullscreen" } },
   { keys: "Shift+Alt+Enter", does: "Distraction-free reading", group: "View", match: (e) => !!e.shiftKey && !!e.altKey && e.key === "Enter", action: { type: "distractionFree" } },
-  { keys: "Tab", does: "Show / hide series browser", group: "View", match: (e, m) => plain(e, m) && e.key === "Tab", action: { type: "toggleBrowser" } },
+  { keys: "Mod+B", does: "Show / hide series browser", group: "View", match: (e, m) => m && !e.shiftKey && keyIs(e, "b"), action: { type: "toggleBrowser" } },
 
   // Window
   { keys: "1 … 9", does: "Window presets (by modality)", group: "Window", match: (e, m) => plain(e, m) && !e.shiftKey && digit(e) >= 1 && digit(e) <= 9, action: { type: "preset", ordinal: 1 } },
@@ -200,6 +202,7 @@ export function resolveShortcut(e: KeyLike, mac = isMac()): ShortcutAction | nul
     if (action.type === "preset") return { type: "preset", ordinal: digit(e) };
     if (action.type === "layout") return { type: "layout", ...LAYOUT_SHORTCUTS[digit(e) - 1] };
     if (action.type === "rotate" && e.shiftKey) return { type: "rotate", degrees: -90 };
+    if (action.type === "series" && e.key === "Tab" && e.shiftKey) return { type: "series", delta: -1 };
     return action;
   }
   return null;

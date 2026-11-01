@@ -32,6 +32,8 @@ export interface StackViewportProps {
   onDropSeries: (seriesUid: string) => void;
   onDoubleClick: () => void;
   onFirstPaint?: (ms: number, health: PaintHealth) => void;
+  /** Teaching / screen sharing: no name, ID or birth date in the overlay. */
+  hidePatient?: boolean;
   /** Fired when the instant Rust-rendered preview is on screen. */
   onPreview?: () => void;
 }
@@ -62,6 +64,7 @@ function StackViewportImpl({
   onDropSeries,
   onDoubleClick,
   onFirstPaint,
+  hidePatient = false,
   onPreview,
 }: StackViewportProps) {
   const elementRef = useRef<HTMLDivElement>(null);
@@ -422,11 +425,12 @@ function StackViewportImpl({
   const patientLine = useMemo(() => {
     const p = study?.patient;
     if (!p) return [];
+    if (hidePatient) return ["Patient hidden", [p.sex, p.age].filter(Boolean).join(" · ")].filter(Boolean);
     return [
       formatPersonName(p.name) || "Unnamed patient",
       [p.id, p.sex, p.age || formatDicomDate(p.birthDate)].filter(Boolean).join(" · "),
     ];
-  }, [study]);
+  }, [study, hidePatient]);
 
   const count = series?.imageIds.length ?? 0;
   const index = readout?.index ?? 0;
@@ -444,7 +448,8 @@ function StackViewportImpl({
       className={cn(
         "relative h-full w-full overflow-hidden bg-imaging",
         "outline outline-1 -outline-offset-1",
-        active ? "outline-accent" : "outline-subtle",
+        // Exactly one active viewport: a 2px accent border; the rest a thin neutral one.
+        active ? "outline-2 -outline-offset-2 outline-accent" : "outline-subtle",
         dragOver && "outline-2 outline-accent-bright"
       )}
       onPointerDownCapture={onActivate}

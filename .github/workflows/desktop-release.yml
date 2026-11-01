@@ -1,4 +1,4 @@
-# RadLearn Viewer release: Windows (.msi + .exe), macOS (universal .dmg),
+# FlowRad Viewer release: Windows (.msi + .exe), macOS (universal .dmg),
 # Linux (.AppImage + .deb), plus the signed updater manifest (latest.json),
 # attached to a DRAFT GitHub release. Nothing is published automatically.
 #
@@ -92,7 +92,7 @@ jobs:
           }
           if (process.env.IS_WINDOWS === "true" && process.env.HAS_AZURE === "true") {
             const e = process.env;
-            c.bundle.windows.signCommand = `trusted-signing-cli -e ${e.AZURE_SIGNING_ENDPOINT} -a ${e.AZURE_SIGNING_ACCOUNT} -c ${e.AZURE_SIGNING_PROFILE} -d "RadLearn Viewer" %1`;
+            c.bundle.windows.signCommand = `trusted-signing-cli -e ${e.AZURE_SIGNING_ENDPOINT} -a ${e.AZURE_SIGNING_ACCOUNT} -c ${e.AZURE_SIGNING_PROFILE} -d "FlowRad Viewer" %1`;
           }
           fs.writeFileSync(p, JSON.stringify(c, null, 2));
           JS
@@ -127,7 +127,7 @@ jobs:
         with:
           projectPath: desktop
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'desktop-v__VERSION__' }}
-          releaseName: "RadLearn Viewer v__VERSION__"
+          releaseName: "FlowRad Viewer v__VERSION__"
           releaseBody: |
             Free, offline DICOM viewer for Windows, macOS and Linux. Not for diagnostic use.
             See docs/RADIANT_BENCHMARK.md for what is in this build.
