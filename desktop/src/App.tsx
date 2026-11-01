@@ -50,6 +50,7 @@ import {
   clearAnnotations,
   engineTimings,
   enginePeek,
+  leaveVolumeMemory,
   getEngine,
   prewarmEngine,
   setGroupLeftTool,
@@ -221,6 +222,14 @@ export default function App() {
   const activeSeriesUid = cells[activeCell] ?? null;
   const active = activeSeriesUid ? seriesByUid.get(activeSeriesUid) : undefined;
   const presets = useMemo(() => windowPresetsFor(active?.series.modality ?? ""), [active?.series.modality]);
+  // Back in 2D: release the volume and return to the browsing cache budget,
+  // so a study left open idles small (viewer/engine.ts).
+  useEffect(() => {
+    if (view !== "grid") return;
+    const engine = enginePeek();
+    if (engine) leaveVolumeMemory(engine);
+  }, [view]);
+
   /** Every file of the study on screen (images once each, plus its reports and key-image notes), for Send to PACS. */
   const sendableStudy = useMemo(() => {
     const study = active?.study;
