@@ -92,10 +92,10 @@ pub fn read_pet(path: &Path) -> Option<PetMeta> {
 mod tests {
     use super::read_pet;
 
-    /// RADLEARN_FIXTURES=… cargo test pet (make-fixtures.py: 370 MBq F-18, 75 kg).
+    /// FLOWRAD_FIXTURES=… cargo test pet (make-fixtures.py: 370 MBq F-18, 75 kg).
     #[test]
     fn reads_suv_tags_from_the_pet_phantom() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let mut found = 0;
         let mut stack = vec![std::path::Path::new(&root).join("pet-phantom")];
         while let Some(dir) = stack.pop() {

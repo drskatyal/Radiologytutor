@@ -51,7 +51,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/components/ui/cn";
 import type { WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
-import { LAYOUT_SHORTCUTS, isMac } from "../shortcuts";
+import { LAYOUT_SHORTCUTS, keyLabel } from "../shortcuts";
 
 export interface ToolbarProps {
   leftTool: string;
@@ -97,7 +97,7 @@ export interface ToolbarProps {
   volumeView?: boolean;
 }
 
-const mod = isMac() ? "⌘" : "Ctrl+";
+
 
 /** Hover to size a grid (up to 4 × 4), click to apply. Arrow keys work too. */
 function GridPicker({ current, onPick }: { current: { rows: number; cols: number }; onPick: (rows: number, cols: number) => void }) {
@@ -201,13 +201,13 @@ export function Toolbar(props: ToolbarProps) {
         </MenuTrigger>
         <MenuContent>
           <MenuLabel>Open</MenuLabel>
-          <MenuItem icon={<FolderTree />} shortcut={`${mod}⇧O`} onSelect={() => props.onOpen("folder")}>Folder…</MenuItem>
-          <MenuItem icon={<Files />} shortcut={`${mod}O`} onSelect={() => props.onOpen("files")}>Files…</MenuItem>
-          <MenuItem icon={<FileArchive />} shortcut={`${mod}⇧Z`} onSelect={() => props.onOpen("zip")}>Zip archive…</MenuItem>
+          <MenuItem icon={<FolderTree />} shortcut={keyLabel("Mod+Shift+O")} onSelect={() => props.onOpen("folder")}>Folder…</MenuItem>
+          <MenuItem icon={<Files />} shortcut={keyLabel("Mod+O")} onSelect={() => props.onOpen("files")}>Files…</MenuItem>
+          <MenuItem icon={<FileArchive />} shortcut={keyLabel("Mod+Shift+Z")} onSelect={() => props.onOpen("zip")}>Zip archive…</MenuItem>
           <MenuItem icon={<FolderTree />} onSelect={() => props.onOpen("dicomdir")}>DICOMDIR…</MenuItem>
-          <MenuItem icon={<Disc3 />} shortcut={`${mod}⌥O`} onSelect={() => props.onOpen("disc")}>CD / DVD / USB…</MenuItem>
+          <MenuItem icon={<Disc3 />} shortcut={keyLabel("Mod+Alt+O")} onSelect={() => props.onOpen("disc")}>CD / DVD / USB…</MenuItem>
           <MenuSeparator />
-          <MenuItem icon={<Network />} shortcut={`${mod}⇧P`} onSelect={() => props.onOpen("pacs")}>PACS…</MenuItem>
+          <MenuItem icon={<Network />} shortcut={keyLabel("Mod+Shift+P")} onSelect={() => props.onOpen("pacs")}>PACS…</MenuItem>
         </MenuContent>
       </MenuRoot>
       <Divider />
@@ -223,7 +223,7 @@ export function Toolbar(props: ToolbarProps) {
       <Tool label="Pan" shortcut="P · middle drag" active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
         <Hand />
       </Tool>
-      <Tool label="Zoom" shortcut={`Z · ${mod}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
+      <Tool label="Zoom" shortcut={`Z · ${keyLabel("Mod+")}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
         <ZoomIn />
       </Tool>
       <Divider />
@@ -251,8 +251,8 @@ export function Toolbar(props: ToolbarProps) {
             </MenuItem>
           ))}
           <MenuSeparator />
-          <MenuItem icon={<Undo2 />} shortcut={`${mod}Z`} onSelect={props.onUndo}>Undo last measurement</MenuItem>
-          <MenuItem icon={<Trash2 />} shortcut={`${mod}⇧⌫`} onSelect={props.onClear}>Clear measurements</MenuItem>
+          <MenuItem icon={<Undo2 />} shortcut={keyLabel("Mod+Z")} onSelect={props.onUndo}>Undo last measurement</MenuItem>
+          <MenuItem icon={<Trash2 />} shortcut={keyLabel("Mod+Shift+Backspace")} onSelect={props.onClear}>Clear measurements</MenuItem>
         </MenuContent>
       </MenuRoot>
       <Divider />
@@ -280,11 +280,11 @@ export function Toolbar(props: ToolbarProps) {
             </MenuItem>
           ))}
           <MenuSeparator />
-          <MenuItem shortcut={`${mod}F11`} onSelect={props.onCustomWindow}>Custom W / L…</MenuItem>
+          <MenuItem shortcut={keyLabel("Mod+F11")} onSelect={props.onCustomWindow}>Custom W / L…</MenuItem>
           <MenuItem shortcut="I" onSelect={props.onInvert}>Invert</MenuItem>
         </MenuContent>
       </MenuRoot>
-      <Tool label="Rotate left" shortcut="⇧Q" onClick={() => props.onRotate(-90)}>
+      <Tool label="Rotate left" shortcut={keyLabel("Shift+Q")} onClick={() => props.onRotate(-90)}>
         <RotateCcw />
       </Tool>
       <Tool label="Rotate right" shortcut="Q" onClick={() => props.onRotate(90)}>
@@ -297,7 +297,7 @@ export function Toolbar(props: ToolbarProps) {
 
       <MenuRoot>
         <MenuTrigger asChild>
-          <IconButton aria-label="Layout" title="Layout · ⇧1–7" size="sm" className="h-8 w-8 rounded-md">
+          <IconButton aria-label="Layout" title={`Layout · ${keyLabel("Shift+")}1–7`} size="sm" className="h-8 w-8 rounded-md">
             <LayoutGrid />
           </IconButton>
         </MenuTrigger>
@@ -311,7 +311,7 @@ export function Toolbar(props: ToolbarProps) {
                   key={`${l.rows}x${l.cols}`}
                   type="button"
                   onClick={() => props.onLayout(l.rows, l.cols)}
-                  title={`${l.rows} × ${l.cols}  ·  ⇧${i + 1}`}
+                  title={`${l.rows} × ${l.cols}  ·  ${keyLabel("Shift+")}${i + 1}`}
                   aria-pressed={current}
                   className={cn(
                     "grid aspect-square w-11 gap-0.5 rounded-md border p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
@@ -334,7 +334,7 @@ export function Toolbar(props: ToolbarProps) {
       <Tool label="Synchronise scrolling" shortcut="F5" active={props.syncScroll} onClick={props.onToggleSync}>
         <Link2 />
       </Tool>
-      <Tool label="Reference lines" shortcut={`${mod}F12`} active={props.referenceLines} onClick={props.onToggleReferenceLines}>
+      <Tool label="Reference lines" shortcut={keyLabel("Mod+F12")} active={props.referenceLines} onClick={props.onToggleReferenceLines}>
         <Columns2 />
       </Tool>
       <Divider />
@@ -373,7 +373,7 @@ export function Toolbar(props: ToolbarProps) {
           <Divider />
           <Tool
             label={props.advanced.view === "mpr" ? "Back to images" : "MPR"}
-            shortcut={`${mod}M`}
+            shortcut={keyLabel("Mod+M")}
             active={props.advanced.view === "mpr"}
             disabled={!props.advanced.mprAvailable}
             onClick={props.advanced.onMpr}
@@ -382,7 +382,7 @@ export function Toolbar(props: ToolbarProps) {
           </Tool>
           <Tool
             label={props.advanced.view === "3d" ? "Back to images" : "3D volume rendering"}
-            shortcut={`${mod}⇧M`}
+            shortcut={keyLabel("Mod+Shift+M")}
             active={props.advanced.view === "3d"}
             disabled={!props.advanced.mprAvailable}
             onClick={props.advanced.onVolume}
@@ -391,7 +391,7 @@ export function Toolbar(props: ToolbarProps) {
           </Tool>
           <Tool
             label={props.advanced.view === "fusion" ? "Back to images" : "PET / CT fusion"}
-            shortcut={`${mod}⇧F`}
+            shortcut={keyLabel("Mod+Shift+F")}
             active={props.advanced.view === "fusion"}
             disabled={!props.advanced.fusionAvailable}
             onClick={props.advanced.onFusion}
@@ -408,11 +408,11 @@ export function Toolbar(props: ToolbarProps) {
           </Tool>
         )}
         {props.onExport && (
-          <Tool label="Export" shortcut={`${mod}E`} onClick={props.onExport}>
+          <Tool label="Export" shortcut={keyLabel("Mod+E")} onClick={props.onExport}>
             <Download />
           </Tool>
         )}
-        <Tool label={props.overlay ? "Hide overlay" : "Show overlay"} shortcut={`${mod}⇧F12`} active={!props.overlay} onClick={props.onToggleOverlay}>
+        <Tool label={props.overlay ? "Hide overlay" : "Show overlay"} shortcut={keyLabel("Mod+Shift+F12")} active={!props.overlay} onClick={props.onToggleOverlay}>
           {props.overlay ? <Eye /> : <EyeOff />}
         </Tool>
         <Tool label="Full screen" shortcut="F" onClick={props.onFullscreen}>

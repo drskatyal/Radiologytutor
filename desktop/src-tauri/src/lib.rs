@@ -15,6 +15,7 @@ mod header;
 mod pacs;
 mod pet;
 mod preview;
+mod procmem;
 mod scan;
 mod sources;
 mod store;
@@ -222,8 +223,14 @@ extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+/// A `FLOWRAD_<name>` environment switch, falling back to the pre-rename
+/// `RADLEARN_<name>` so older scripts and notes keep working.
+pub(crate) fn flowrad_env(name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(format!("FLOWRAD_{name}")).or_else(|_| std::env::var(format!("RADLEARN_{name}")))
+}
+
 fn bench_on() -> bool {
-    std::env::var("RADLEARN_BENCH").as_deref() == Ok("1")
+    crate::flowrad_env("BENCH").as_deref() == Ok("1")
 }
 
 /// The last scan's numbers, for the watchdog line.
@@ -254,18 +261,18 @@ fn bench_scan_line(result: &ScanResult) {
         "rust": result.timings,
         "processUptimeMs": startup_elapsed_ms(),
     });
-    println!("RADLEARN_BENCH_SCAN {line}");
+    println!("FLOWRAD_BENCH_SCAN {line}");
     *LAST_SCAN.lock() = Some(line);
 }
 
-/// `RADLEARN_BENCH_EXIT=1` must never leave a benchmark hanging: if the
-/// renderer has not reported by `RADLEARN_BENCH_TIMEOUT_MS` (default 120 s),
+/// `FLOWRAD_BENCH_EXIT=1` must never leave a benchmark hanging: if the
+/// renderer has not reported by `FLOWRAD_BENCH_TIMEOUT_MS` (default 120 s),
 /// print what the shell knows and exit with status 3.
 fn start_bench_watchdog() {
-    if !bench_on() || std::env::var("RADLEARN_BENCH_EXIT").as_deref() != Ok("1") {
+    if !bench_on() || crate::flowrad_env("BENCH_EXIT").as_deref() != Ok("1") {
         return;
     }
-    let ms = std::env::var("RADLEARN_BENCH_TIMEOUT_MS")
+    let ms = crate::flowrad_env("BENCH_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(120_000u64);
@@ -277,33 +284,33 @@ fn start_bench_watchdog() {
             "scan": LAST_SCAN.lock().clone(),
             "note": "the renderer never reported; scan numbers (if any) come from the shell",
         });
-        println!("RADLEARN_BENCH {line}");
+        println!("FLOWRAD_BENCH {line}");
         std::process::exit(3);
     });
 }
 
-/// End-to-end paint probe (`RADLEARN_PROBE_AFTER_MS=8000`): on an otherwise
+/// End-to-end paint probe (`FLOWRAD_PROBE_AFTER_MS=8000`): on an otherwise
 /// NORMAL launch (no bench hooks), the renderer samples every viewport's
 /// on-screen pixels after that long and reports them here; used by
 /// `desktop/scripts/e2e-paint.py` to assert the main viewport is not blank.
 #[tauri::command]
 fn probe_after_ms() -> Option<u64> {
-    std::env::var("RADLEARN_PROBE_AFTER_MS")
+    crate::flowrad_env("PROBE_AFTER_MS")
         .ok()
         .and_then(|v| v.parse().ok())
 }
 
 #[tauri::command]
 fn probe_report(app: tauri::AppHandle, report: serde_json::Value) {
-    println!("RADLEARN_PROBE {report}");
+    println!("FLOWRAD_PROBE {report}");
     app.exit(0);
 }
 
 /// How long the renderer waits for a first frame before reporting without
-/// one (`RADLEARN_BENCH_PAINT_TIMEOUT_MS`, default 20 s).
+/// one (`FLOWRAD_BENCH_PAINT_TIMEOUT_MS`, default 20 s).
 #[tauri::command]
 fn bench_paint_timeout_ms() -> u64 {
-    std::env::var("RADLEARN_BENCH_PAINT_TIMEOUT_MS")
+    crate::flowrad_env("BENCH_PAINT_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(20_000)
@@ -339,13 +346,13 @@ fn set_memory_mode(window: tauri::WebviewWindow, low: bool) {
     let _ = (window, low);
 }
 
-/// Benchmark hook: `RADLEARN_BENCH=1` makes the renderer report its timings
+/// Benchmark hook: `FLOWRAD_BENCH=1` makes the renderer report its timings
 /// here; they go to stdout as one JSON line, and the app exits when
-/// `RADLEARN_BENCH_EXIT=1`. Used by `desktop/scripts/bench.mjs`.
+/// `FLOWRAD_BENCH_EXIT=1`. Used by `desktop/scripts/bench.mjs`.
 #[tauri::command]
 fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
-    println!("RADLEARN_BENCH {}", report);
-    if std::env::var("RADLEARN_BENCH_EXIT").as_deref() == Ok("1") {
+    println!("FLOWRAD_BENCH {}", report);
+    if crate::flowrad_env("BENCH_EXIT").as_deref() == Ok("1") {
         app.exit(0);
     }
 }
@@ -362,18 +369,30 @@ fn startup_elapsed_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// `RADLEARN_BENCH_VIEW=mpr|3d|fusion`: switch to that view once the study is open.
+/// `FLOWRAD_BENCH_VIEW=mpr|3d|fusion`: switch to that view once the study is open.
 #[tauri::command]
 fn bench_view() -> Option<String> {
-    std::env::var("RADLEARN_BENCH_VIEW").ok()
+    crate::flowrad_env("BENCH_VIEW").ok()
 }
 
-/// `RADLEARN_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
+/// `FLOWRAD_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
 /// image in the bench report, so a script can check every codec against an
 /// independent decoder (`desktop/scripts/codec-check.py`).
 #[tauri::command]
 fn bench_pixels() -> bool {
-    std::env::var("RADLEARN_BENCH_PIXELS").as_deref() == Ok("1")
+    crate::flowrad_env("BENCH_PIXELS").as_deref() == Ok("1")
+}
+
+/// Whole process-tree memory (debug HUD, leak test).
+#[tauri::command]
+async fn process_memory() -> procmem::TreeMem {
+    tauri::async_runtime::spawn_blocking(procmem::current_tree).await.unwrap_or(procmem::TreeMem { total_mb: 0, processes: vec![] })
+}
+
+/// FLOWRAD_DEBUG=1: show the memory HUD from launch.
+#[tauri::command]
+fn debug_enabled() -> bool {
+    crate::flowrad_env("DEBUG").as_deref() == Ok("1")
 }
 
 #[tauri::command]
@@ -383,11 +402,14 @@ fn bench_enabled() -> bool {
 
 /// `/p/<id>`: instant-preview PNG of a registered file (see preview.rs).
 fn serve_preview(registry: &Mutex<FileRegistry>, id: &str) -> Response<Vec<u8>> {
-    let path = id
-        .parse::<u32>()
-        .ok()
+    // `<id>` full size, `<id>/<maxDim>` a thumbnail.
+    let mut parts = id.split('/');
+    let path = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
         .and_then(|id| registry.lock().paths.get(id as usize).cloned());
-    match path.and_then(|p| preview::render_png(&p)) {
+    let max_dim = parts.next().and_then(|s| s.parse::<usize>().ok()).map(|m| m.clamp(16, 1024));
+    match path.and_then(|p| preview::render_png_sized(&p, max_dim)) {
         Some(png) => Response::builder()
             .status(StatusCode::OK)
             .header(http_header::CONTENT_TYPE, "image/png")
@@ -499,6 +521,8 @@ pub fn run() {
             clear_cache,
             bench_report,
             bench_enabled,
+            process_memory,
+            debug_enabled,
             bench_view,
             bench_pixels,
             bench_paint_timeout_ms,
@@ -524,6 +548,8 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
+    // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
+    store::migrate_legacy_data(app.handle());
 
     app.run(|_handle, _event| {
         // macOS delivers Finder "Open with…" and dock drops as an event, not argv.
@@ -547,10 +573,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test inflates
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test inflates
     #[test]
     fn inflates_deflated_explicit_le() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
+        let Ok(root) = crate::flowrad_env("FIXTURES") else {
             return;
         };
         let dir = std::path::Path::new(&root).join("ts/deflated-le");

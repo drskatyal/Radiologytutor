@@ -5,23 +5,36 @@
 // Engine knobs come from `lib/viewerRuntime.ts`, the same functions the web
 // viewer and the benchmark harness use.
 //
-// The engine is imported lazily: the start screen must paint before a single
-// byte of Cornerstone is parsed (cold start budget < 0.5 s), and it is
-// pre-warmed in idle time right after first paint.
+// The engine is imported lazily: nothing of Cornerstone loads until the reader
+// opens something (cold start budget < 0.5 s). Its modules are pre-warmed only
+// on intent: hovering a recent study, or dragging files over the window.
 
 import {
   coreInitConfig,
   detectDeviceProfile,
   imageCacheBytes,
   retrievalPoolSizes,
-  webWorkerCount,
 } from "@flowrad/viewer-core";
+// Same copy Cornerstone's worker manager uses (hoisted root dependency): its
+// releaseProxy symbol must match when the manager terminates our workers.
+import * as Comlink from "comlink";
+import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./workerPool";
 import { tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
-const DESKTOP_CACHE_BUDGET = 1024 * 1024 * 1024;
+const MB = 1024 * 1024;
+/**
+ * Decoded-image budget while reading in 2D: the slices around the reader and a
+ * few series. Kept small because it is what a CT left open costs at idle (HP:
+ * ~1.1 GB with the old 1 GB budget; the idle target is 400 MB for the whole
+ * process tree). ~300 CT slices of 512²: a ±N window plus recent series, not
+ * the study; the ±N travel prefetch (StackViewport) refills it ahead. MPR / 3D raise it to fit their volume for
+ * as long as the volume is open (enterVolumeMemory / leaveVolumeMemory).
+ */
+const BROWSE_CACHE_BUDGET = 160 * MB;
+let deviceCacheCeiling = 1024 * MB;
 
 type Core = typeof import("@cornerstonejs/core");
 type Tools = typeof import("@cornerstonejs/tools");
@@ -74,6 +87,12 @@ export const MEASUREMENT_TOOLS = [
 ];
 
 let enginePromise: Promise<Engine> | null = null;
+let workerPool: PoolHandle | null = null;
+
+/** Live decode workers and a way to free the idle ones (memory HUD, teardown). */
+export function decodeWorkers(): { live: number; releaseIdle(): void } {
+  return { live: workerPool?.live() ?? 0, releaseIdle: () => workerPool?.releaseIdle() };
+}
 
 /** Start loading the engine chunks without initialising (idle pre-warm). */
 export function prewarmEngine(): void {
@@ -83,7 +102,13 @@ export function prewarmEngine(): void {
 }
 
 /** Wall-clock cost of the last engine init, for the benchmark report. */
-export const engineTimings: { initMs?: number } = {};
+export const engineTimings: {
+  initMs?: number;
+  startAt?: number;
+  readyAt?: number;
+  /** Split of initMs: module import/parse, core+tools init, loader init. */
+  steps?: Record<string, number>;
+} = {};
 
 let engineReady: Engine | null = null;
 /** The engine if it is already initialised, without starting it. */
@@ -94,8 +119,10 @@ export function enginePeek(): Engine | null {
 export function getEngine(): Promise<Engine> {
   if (!enginePromise) {
     const t0 = performance.now();
+    engineTimings.startAt = t0;
     enginePromise = createEngine().then((e) => {
-      engineTimings.initMs = performance.now() - t0;
+      engineTimings.readyAt = performance.now();
+      engineTimings.initMs = engineTimings.readyAt - t0;
       engineReady = e;
       return e;
     });
@@ -104,31 +131,56 @@ export function getEngine(): Promise<Engine> {
 }
 
 async function createEngine(): Promise<Engine> {
+  const steps: Record<string, number> = {};
+  engineTimings.steps = steps;
+  let mark = performance.now();
+  const step = (name: string) => {
+    const now = performance.now();
+    steps[name] = Math.round(now - mark);
+    mark = now;
+  };
   const [core, tools, loader] = await Promise.all([
     import("@cornerstonejs/core"),
     import("@cornerstonejs/tools"),
     import("@cornerstonejs/dicom-image-loader"),
   ]);
+  step("importMs");
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
-  await core.init(coreInitConfig(profile) as Parameters<typeof core.init>[0]);
+  const config = coreInitConfig(profile) as unknown as { rendering: Record<string, unknown> };
+  // One WebGL context instead of Cornerstone's pool of seven: each context
+  // that shows a volume uploads its own copy of the volume texture, and the
+  // MPR panes landed in different contexts (WebView2 GPU process: ~3x the
+  // texture size). One context shares one texture across every pane.
+  config.rendering.webGlContextCount = 1;
+  await core.init(config as unknown as Parameters<typeof core.init>[0]);
   await tools.init();
-  // Desktop: the reader is the only workload, so decode on every core (the web
-  // viewer leaves a quarter free for the page; lib/viewerRuntime.ts).
+  step("coreToolsInitMs");
+  // ONE worker at init (the loader would otherwise spawn every instance up
+  // front and never free them); workerPool.ts widens it to a lazy pool of
+  // cores − 2 that spawns on demand and reaps idle workers.
   // Legacy dataset path: the metadata tags are read from a dicom-parser dataset
   // that memory.ts trims to its header after decode. The default (naturalized)
   // path pins every file's full bytes in a metadata store for the session.
   await loader.init({
-    maxWebWorkers: Math.max(webWorkerCount(profile), Math.min(profile.cores, 12)),
+    maxWebWorkers: 1,
     useLegacyMetadataProvider: true,
   } as Parameters<typeof loader.init>[0]);
+  workerPool = installLazyWorkerPool(
+    (core as unknown as { getWebWorkerManager(): unknown }).getWebWorkerManager(),
+    "dicomImageLoader",
+    decodePoolSize(profile.cores),
+    (w) => Comlink.wrap(w)
+  );
   installDatasetTrim(core, loader);
+  step("loaderInitMs");
   try {
     // Honest now that raw file bytes are released after decode (memory.ts):
     // this budget is close to what the decoded images really hold. LRU
     // eviction keeps a long session from growing past it.
-    core.cache.setMaxCacheSize(Math.min(imageCacheBytes(profile), DESKTOP_CACHE_BUDGET));
+    deviceCacheCeiling = Math.max(BROWSE_CACHE_BUDGET, imageCacheBytes(profile));
+    core.cache.setMaxCacheSize(Math.min(deviceCacheCeiling, BROWSE_CACHE_BUDGET));
   } catch {
     /* library default */
   }
@@ -175,6 +227,7 @@ async function createEngine(): Promise<Engine> {
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);
+  step("toolsAndEngineMs");
   return engine;
 }
 
@@ -494,9 +547,48 @@ export function ensureVolumeGroups(engine: Engine): void {
 /** Volume ids currently held, so a new MPR releases the previous volume's memory. */
 const heldVolumes = new Set<string>();
 
+/**
+ * Free a volume's GPU texture and voxel buffers. Cornerstone's
+ * removeVolumeLoadObject drops the vtkImageData but never destroys the
+ * volume: its vtkStreamingOpenGLTexture (the whole volume, ~424 MB for an
+ * 848-slice CT) stayed allocated in the GPU process, and every MPR / 3D open
+ * built a new one (leak test on WebView2: +1.7 GB per open/close round). vtk
+ * only deletes a GL texture when handed the render window that owns it, which
+ * ImageVolume.destroy() does not pass; with one shared WebGL context that is
+ * the pool's only render window.
+ */
+export function releaseVolumeGpu(engine: Engine, volumeId: string): void {
+  type Tex = { getHandle?(): unknown; releaseGraphicsResources(rw?: unknown): void; delete(): void };
+  const volume = engine.core.cache.getVolume(volumeId) as unknown as
+    | { vtkOpenGLTexture?: Tex; voxelManager?: { clear?(): void } }
+    | undefined;
+  const texture = volume?.vtkOpenGLTexture;
+  if (!volume || !texture) return;
+  const pool = (engine.renderingEngine as unknown as {
+    contextPool?: { getAllContexts(): { context?: { getOpenGLRenderWindow?(): unknown } }[] };
+  }).contextPool;
+  for (const ctx of pool?.getAllContexts() ?? []) {
+    const rw = ctx.context?.getOpenGLRenderWindow?.();
+    if (!rw || !texture.getHandle?.()) continue;
+    try {
+      texture.releaseGraphicsResources(rw);
+    } catch {
+      /* context lost: the driver frees it */
+    }
+  }
+  try {
+    texture.delete();
+    volume.voxelManager?.clear?.();
+  } catch {
+    /* already freed */
+  }
+  volume.vtkOpenGLTexture = undefined;
+}
+
 export function holdVolumes(engine: Engine, keep: string[]): void {
   for (const id of [...heldVolumes]) {
     if (!keep.includes(id)) {
+      releaseVolumeGpu(engine, id);
       try {
         engine.core.cache.removeVolumeLoadObject(id);
       } catch {
@@ -506,4 +598,48 @@ export function holdVolumes(engine: Engine, keep: string[]): void {
     }
   }
   keep.forEach((id) => heldVolumes.add(id));
+}
+
+/**
+ * Before a volume (MPR, 3D, fusion) loads: drop every decoded image that is not
+ * one of its slices (other series, thumbnails' neighbours, the 2D prefetch) and
+ * raise the budget to fit the volume, so its slices are the only pixels held.
+ * The volume is backed by those cached slices, so this IS the "free the 2D
+ * cache once the volume exists" step: nothing is held twice.
+ */
+export function enterVolumeMemory(engine: Engine, imageIds: readonly string[], bytesPerImage: number): void {
+  const cache = engine.core.cache as unknown as {
+    _imageCache: Map<string, { sharedCacheKey?: string }>;
+    removeImageLoadObject: (id: string, opts?: { force?: boolean }) => void;
+    setMaxCacheSize: (n: number) => void;
+  };
+  const keep = new Set(imageIds);
+  for (const id of [...cache._imageCache.keys()]) {
+    if (keep.has(id)) continue;
+    try {
+      cache.removeImageLoadObject(id, { force: true });
+      engine.core.triggerEvent(engine.core.eventTarget, engine.core.Enums.Events.IMAGE_CACHE_IMAGE_REMOVED, { imageId: id });
+    } catch {
+      /* already gone */
+    }
+  }
+  const need = Math.ceil(imageIds.length * bytesPerImage * 1.05) + 32 * MB;
+  cache.setMaxCacheSize(Math.min(deviceCacheCeiling, Math.max(BROWSE_CACHE_BUDGET, need)));
+}
+
+/** Back to 2D: release volumes and return to the browsing budget. */
+export function leaveVolumeMemory(engine: Engine): void {
+  holdVolumes(engine, []);
+  // The volume load ran every decode worker; free the idle ones now.
+  workerPool?.releaseIdle();
+  const cache = engine.core.cache as unknown as {
+    setMaxCacheSize: (n: number) => void;
+    decacheIfNecessaryUntilBytesAvailable: (n: number) => void;
+  };
+  cache.setMaxCacheSize(Math.min(deviceCacheCeiling, BROWSE_CACHE_BUDGET));
+  try {
+    cache.decacheIfNecessaryUntilBytesAvailable(0);
+  } catch {
+    /* nothing to evict */
+  }
 }

@@ -901,11 +901,11 @@ mod tests {
     use super::*;
 
     /// Against a live PACS (e.g. Orthanc with AE TESTPACS on 4242 that knows
-    /// RADLEARN at 127.0.0.1:11112): RADLEARN_TEST_PACS=localhost:4242 cargo test dimse
+    /// RADLEARN at 127.0.0.1:11112): FLOWRAD_TEST_PACS=localhost:4242 cargo test dimse
     #[test]
     fn dimse_echo_find_move_against_a_live_pacs() {
-        let Ok(addr) = std::env::var("RADLEARN_TEST_PACS") else {
-            eprintln!("skipped: set RADLEARN_TEST_PACS=host:port");
+        let Ok(addr) = crate::flowrad_env("TEST_PACS") else {
+            eprintln!("skipped: set FLOWRAD_TEST_PACS=host:port");
             return;
         };
         let (host, port) = addr.split_once(':').unwrap();
@@ -962,7 +962,7 @@ mod tests {
     /// C-STORE round trip against our own storage SCP (no external PACS needed).
     #[test]
     fn c_store_round_trip_through_local_scp() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let src = std::path::Path::new(&root).join("ct-phantom/axial-5mm");
         let mut files: Vec<PathBuf> = std::fs::read_dir(&src).unwrap().flatten().map(|e| e.path()).take(5).collect();
         // Every transfer syntax fixture goes as-is (the SCP accepts them all): no transcoding.
@@ -987,12 +987,12 @@ mod tests {
     }
 
     /// Against a third-party SCP, e.g. dcmtk: storescp -aet TESTPACS +xa 4242
-    /// RADLEARN_TEST_STORESCP=localhost:4242 RADLEARN_FIXTURES=… cargo test c_store_to
+    /// FLOWRAD_TEST_STORESCP=localhost:4242 FLOWRAD_FIXTURES=… cargo test c_store_to
     #[test]
     fn c_store_to_an_external_scp() {
-        let (Ok(addr), Ok(root)) = (std::env::var("RADLEARN_TEST_STORESCP"), std::env::var("RADLEARN_FIXTURES")) else { return };
+        let (Ok(addr), Ok(root)) = (crate::flowrad_env("TEST_STORESCP"), crate::flowrad_env("FIXTURES")) else { return };
         let (host, port) = addr.split_once(':').unwrap();
-        let only = std::env::var("RADLEARN_TEST_STORE_ONLY").ok();
+        let only = crate::flowrad_env("TEST_STORE_ONLY").ok();
         let mut files = Vec::new();
         for sub in ["ct-phantom/axial-5mm", "ts", "documents"] {
             files.extend(walk_files(&std::path::Path::new(&root).join(sub)).into_iter().filter(|p| file_meta(p).is_some()));

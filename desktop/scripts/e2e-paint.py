@@ -3,7 +3,7 @@
 pixels in the main viewport, and keep them there?
 
 Launches the built app the way a user does (a study path as the argument, no
-bench hooks), waits RADLEARN_PROBE_AFTER_MS, and reads back what every viewport
+bench hooks), waits FLOWRAD_PROBE_AFTER_MS, and reads back what every viewport
 holding a series shows on screen. Fails if any of them is blank.
 
 Each source runs twice: a plain launch (the reported Windows bug: thumbnails
@@ -84,8 +84,8 @@ def main() -> int:
     failures = 0
     for study in studies:
         try:
-            probe = run(binary, study, {"RADLEARN_PROBE_AFTER_MS": "8000"}, "RADLEARN_PROBE")
-            bench = run(binary, study, {"RADLEARN_BENCH": "1", "RADLEARN_BENCH_EXIT": "1"}, "RADLEARN_BENCH")
+            probe = run(binary, study, {"FLOWRAD_PROBE_AFTER_MS": "8000"}, "FLOWRAD_PROBE")
+            bench = run(binary, study, {"FLOWRAD_BENCH": "1", "FLOWRAD_BENCH_EXIT": "1"}, "FLOWRAD_BENCH")
             vp = bench.get("viewport") or {}
             problems = []
             if not probe.get("nonBlank"):

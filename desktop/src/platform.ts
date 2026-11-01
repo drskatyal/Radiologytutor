@@ -229,7 +229,7 @@ export async function benchEnabled(): Promise<boolean> {
 
 export async function benchReport(report: Record<string, unknown>): Promise<void> {
   if (!isTauri) {
-    console.info("RADLEARN_BENCH", JSON.stringify(report));
+    console.info("FLOWRAD_BENCH", JSON.stringify(report));
     (window as unknown as { __radlearnBench?: unknown }).__radlearnBench = report;
     return;
   }
