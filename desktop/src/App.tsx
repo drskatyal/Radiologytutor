@@ -159,7 +159,7 @@ export default function App() {
     // viewer must stay small. It warms on intent instead — an open dialog, a
     // drag over the window, a hover on a recent study — which is always
     // hundreds of ms before the first pixel is needed.
-    // e2e paint probe (RADLEARN_PROBE_AFTER_MS): a normal launch, then report
+    // e2e paint probe (FLOWRAD_PROBE_AFTER_MS): a normal launch, then report
     // what every viewport actually shows. desktop/scripts/e2e-paint.py.
     if (isTauri)
       invoke<number | null>("probe_after_ms").then((ms) => {
@@ -391,7 +391,7 @@ export default function App() {
         if (bench.current.enabled) {
           // Scan numbers are reported whether or not a frame ever paints (a
           // locked or minimised window may never paint); paint is its own field.
-          // The shell also prints RADLEARN_BENCH_SCAN the moment the scan ends,
+          // The shell also prints FLOWRAD_BENCH_SCAN the moment the scan ends,
           // and a watchdog line if nothing is reported at all.
           const report = async (paintTimedOut = false) => {
             const startup = await invoke<number>("startup_elapsed_ms").catch(() => 0);

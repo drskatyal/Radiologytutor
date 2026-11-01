@@ -1075,6 +1075,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowrad-viewer"
+version = "0.5.1"
+dependencies = [
+ "dicom-core",
+ "dicom-dictionary-std",
+ "dicom-encoding",
+ "dicom-object",
+ "dicom-transfer-syntax-registry",
+ "dicom-ul",
+ "futures-util",
+ "parking_lot",
+ "percent-encoding",
+ "png",
+ "rayon",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "tempfile",
+ "walkdir",
+ "webview2-com",
+ "windows",
+ "windows-sys 0.59.0",
+ "zip 2.6.1",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3064,37 +3095,6 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "radlearn-viewer"
-version = "0.5.1"
-dependencies = [
- "dicom-core",
- "dicom-dictionary-std",
- "dicom-encoding",
- "dicom-object",
- "dicom-transfer-syntax-registry",
- "dicom-ul",
- "futures-util",
- "parking_lot",
- "percent-encoding",
- "png",
- "rayon",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "tempfile",
- "walkdir",
- "webview2-com",
- "windows",
- "windows-sys 0.59.0",
- "zip 2.6.1",
-]
 
 [[package]]
 name = "rand"

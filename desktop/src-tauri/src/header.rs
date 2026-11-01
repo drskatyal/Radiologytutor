@@ -417,10 +417,10 @@ mod tests {
         assert_eq!(back.patient_name.as_deref(), Some("DOE^JANE"));
     }
 
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test header
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test header
     #[test]
     fn reads_identity_geometry_and_skips_non_images() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
+        let Ok(root) = crate::flowrad_env("FIXTURES") else {
             return;
         };
         let root = Path::new(&root);

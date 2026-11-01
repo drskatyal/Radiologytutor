@@ -84,10 +84,10 @@ pub fn render_png(path: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test preview
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test preview
     #[test]
     fn renders_uncompressed_and_skips_compressed() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let root = std::path::Path::new(&root);
         let first = |dir: &str| {
             let mut v: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().flatten().map(|e| e.path()).collect();

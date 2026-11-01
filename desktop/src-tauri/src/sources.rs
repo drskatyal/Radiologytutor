@@ -348,10 +348,10 @@ mod tests {
         assert!(is_dicomdir_name(Path::new("/media/cd/DICOMDIR")));
     }
 
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test sources
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test sources
     #[test]
     fn dicomdir_resolves_every_referenced_image_on_the_disc_layout() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let (files, missing) = dicomdir_files(&Path::new(&root).join("cd-media/DICOMDIR")).unwrap();
         assert_eq!(missing, 0);
         assert_eq!(files.len(), 84);
