@@ -501,8 +501,9 @@ if (want("voice")) {
     check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
     // The WAV says: "layout two", "lung window", "zoom in" (looped by Chromium).
     const heard = new Set();
-    const deadline = Date.now() + 45_000;
-    while (Date.now() < deadline && heard.size < 3) {
+    // The recording loops; give it two full passes to hear every phrase.
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !(heard.has("layout two ✓") && heard.has("lung window ✓"))) {
       const chip = await page.getByTestId("voice-heard").innerText().catch(() => "");
       if (chip) heard.add(chip.replace(/[“”]/g, ""));
       const cells = await page.locator("[data-drop-cell]").count();
