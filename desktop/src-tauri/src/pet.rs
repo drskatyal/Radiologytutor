@@ -87,3 +87,34 @@ pub fn read_pet(path: &Path) -> Option<PetMeta> {
     }
     Some(meta)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::read_pet;
+
+    /// RADLEARN_FIXTURES=… cargo test pet (make-fixtures.py: 370 MBq F-18, 75 kg).
+    #[test]
+    fn reads_suv_tags_from_the_pet_phantom() {
+        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let mut found = 0;
+        let mut stack = vec![std::path::Path::new(&root).join("pet-phantom")];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let Some(m) = read_pet(&p) else { continue };
+                let Some(dose) = m.radionuclide_total_dose else { continue }; // the CT half
+                assert!((dose - 370e6).abs() < 1.0, "dose {dose}");
+                assert!((m.radionuclide_half_life.unwrap() - 6586.2).abs() < 0.01);
+                assert_eq!(m.patient_weight, Some(75.0));
+                assert_eq!(m.units.as_deref(), Some("BQML"));
+                assert!(m.radiopharmaceutical_start_time.is_some() || m.radiopharmaceutical_start_date_time.is_some());
+                found += 1;
+            }
+        }
+        assert!(found > 0, "no PET instances in the fixture");
+    }
+}

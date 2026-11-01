@@ -6,7 +6,7 @@
 // session only, never written to disk.
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Network, Plus, Search, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, Network, Plus, Search, Send, Trash2, XCircle } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -60,7 +60,29 @@ function dateRange(preset: string): string | undefined {
 
 const SELECT = "h-9 rounded-lg border border-strong bg-elevated px-2 text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
-export function PacsDialog({ open, onClose, onRetrieved }: { open: boolean; onClose: () => void; onRetrieved: (folder: string, label: string) => void }) {
+/** The study on screen, offered for "Send to PACS". */
+export interface SendableStudy {
+  label: string;
+  files: string[];
+}
+
+interface SendSummary {
+  sent: number;
+  failed: number;
+  errors: string[];
+}
+
+export function PacsDialog({
+  open,
+  onClose,
+  onRetrieved,
+  sendable,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onRetrieved: (folder: string, label: string) => void;
+  sendable?: SendableStudy | null;
+}) {
   const { toast } = useToast();
   const [nodes, setNodes] = useState<PacsNodeConfig[]>([]);
   const [nodeId, setNodeId] = useState<string>("");
@@ -71,6 +93,7 @@ export function PacsDialog({ open, onClose, onRetrieved }: { open: boolean; onCl
   const [rows, setRows] = useState<StudyRow[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [retrieving, setRetrieving] = useState<{ uid: string; received: number; total?: number } | null>(null);
+  const [sending, setSending] = useState<{ sent: number; total: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -160,6 +183,30 @@ export function PacsDialog({ open, onClose, onRetrieved }: { open: boolean; onCl
     }
   };
 
+  const send = async () => {
+    if (!node || !sendable || sending) return;
+    setSending({ sent: 0, total: sendable.files.length });
+    const off = await listen<{ sent: number; total: number }>("pacs-send-progress", (p) => setSending(p));
+    try {
+      const r = await invoke<SendSummary>("pacs_send", { node: toWire(node), files: sendable.files });
+      if (r.failed === 0) {
+        toast({ title: `Sent ${r.sent.toLocaleString()} file${r.sent === 1 ? "" : "s"} to ${node.name}`, variant: "success" });
+      } else {
+        toast({
+          title: r.sent ? `Sent ${r.sent.toLocaleString()}, ${r.failed.toLocaleString()} failed` : "Nothing was sent",
+          description: r.errors.join("\n"),
+          variant: r.sent ? "warning" : "danger",
+          duration: 12000,
+        });
+      }
+    } catch (e) {
+      toast({ title: "Send failed", description: String(e), variant: "danger", duration: 10000 });
+    } finally {
+      off();
+      setSending(null);
+    }
+  };
+
   return (
     <Modal open={open} onClose={onClose} title="PACS" description="Query and retrieve from a PACS. Studies are copied to this computer and open like a local folder." size="2xl">
       <div className="flex max-h-[68vh] flex-col gap-4 overflow-y-auto pr-1 text-sm">
@@ -241,6 +288,25 @@ export function PacsDialog({ open, onClose, onRetrieved }: { open: boolean; onCl
                 Add PACS
               </Button>
             </span>
+          </section>
+        )}
+
+        {node && !editing && sendable && sendable.files.length > 0 && (
+          <section aria-label="Send to PACS" className="flex items-center gap-3 rounded-lg border border-subtle bg-surface px-3 py-2">
+            <Send className="h-4 w-4 shrink-0 text-secondary" aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-secondary" title={sendable.label}>
+              Open study: <span className="text-primary">{sendable.label}</span> · <span className="tabular-nums">{sendable.files.length.toLocaleString()}</span> files
+            </span>
+            {sending ? (
+              <span className="flex items-center gap-2 text-xs tabular-nums text-secondary">
+                <Spinner size="sm" label="Sending" />
+                {sending.sent.toLocaleString()} / {sending.total.toLocaleString()}
+              </span>
+            ) : (
+              <Button size="sm" variant="secondary" onClick={send} disabled={!!retrieving}>
+                Send to {node.name}
+              </Button>
+            )}
           </section>
         )}
 
