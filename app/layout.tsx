@@ -38,7 +38,7 @@ export const metadata: Metadata = {
   },
   // Listed in full: once `icons` is set, Next 14 stops emitting the file-based
   // app/icon.svg link, so the SVG favicon is named here alongside the .ico
-  // (hinted 16/32/48) and the apple touch icon.
+  // (16/32/48) and the apple touch icon.
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },
