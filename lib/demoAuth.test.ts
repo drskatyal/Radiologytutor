@@ -157,36 +157,16 @@ test("Continue as demo still mints the platform super-admin outside production",
   }
 });
 
-test("production demo auth keeps author and student apart, and still refuses super-admin", async () => {
+async function withProdDemo(cap: string | undefined, run: () => Promise<void>) {
   const previousNode = process.env.NODE_ENV;
   const previousFlag = process.env.DEMO_AUTH_ENABLED;
   const previousCap = process.env.DEMO_AUTH_MAX_ROLE;
   process.env.NODE_ENV = "production";
   process.env.DEMO_AUTH_ENABLED = "1";
-  delete process.env.DEMO_AUTH_MAX_ROLE;
+  if (cap === undefined) delete process.env.DEMO_AUTH_MAX_ROLE;
+  else process.env.DEMO_AUTH_MAX_ROLE = cap;
   try {
-    const author = await postDemo("author");
-    assert.equal(author.status, 200, author.body.error);
-    assert.equal(author.body.user?.id, "user_teacher");
-    assert.equal(author.body.user?.email, "teacher@flowrad.local");
-    assert.equal(author.body.user?.membershipRole, "author");
-    assert.equal(author.body.user?.name, "Dr. Priya Katyal");
-    assert.notEqual(author.body.user?.platformRole, "super_admin");
-
-    const student = await postDemo("student");
-    assert.equal(student.body.user?.id, "user_student");
-    assert.equal(student.body.user?.membershipRole, "student");
-    assert.equal(student.body.user?.name, "Demo Student");
-
-    const implicit = await postDemo("super_admin");
-    assert.equal(implicit.body.user?.platformRole ?? null, null);
-    assert.notEqual(implicit.body.user?.platformRole, "super_admin");
-    assert.equal(implicit.body.user?.membershipRole, "student");
-    assert.equal(implicit.body.user?.id, "user_student");
-
-    const empty = await postDemo();
-    assert.equal(empty.body.user?.id, "user_student");
-    assert.notEqual(empty.body.user?.platformRole, "super_admin");
+    await run();
   } finally {
     process.env.NODE_ENV = previousNode;
     if (previousFlag === undefined) delete process.env.DEMO_AUTH_ENABLED;
@@ -194,23 +174,63 @@ test("production demo auth keeps author and student apart, and still refuses sup
     if (previousCap === undefined) delete process.env.DEMO_AUTH_MAX_ROLE;
     else process.env.DEMO_AUTH_MAX_ROLE = previousCap;
   }
+}
+
+// P0: production let any anonymous visitor POST {role:"author"} and become an
+// author in the shared demo org — drafts and registered studies exposed.
+test("production refuses anonymous author / admin demo with 403 and sets no cookie", async () => {
+  await withProdDemo(undefined, async () => {
+    for (const role of ["author", "teacher", "super_admin", "admin", "owner"]) {
+      const res = await postDemo(role);
+      assert.equal(res.status, 403, `${role} must be refused`);
+      assert.equal(res.body.user, undefined, role);
+      assert.equal(cookieSub(res.cookie), null, `${role} must not get a demo cookie`);
+    }
+  });
 });
 
-test("DEMO_AUTH_MAX_ROLE=student still locks Teacher demo to a learner", async () => {
-  const previousNode = process.env.NODE_ENV;
-  const previousFlag = process.env.DEMO_AUTH_ENABLED;
+test("no environment knob re-opens elevated demo in production", async () => {
+  for (const cap of ["author", "super_admin", " author "]) {
+    await withProdDemo(cap, async () => {
+      const res = await postDemo("author");
+      assert.equal(res.status, 403, `DEMO_AUTH_MAX_ROLE=${cap}`);
+    });
+  }
+});
+
+test("production still offers the student demo, explicitly or by empty body", async () => {
+  await withProdDemo(undefined, async () => {
+    const student = await postDemo("student");
+    assert.equal(student.status, 200, student.body.error);
+    assert.equal(student.body.user?.id, "user_student");
+    assert.equal(student.body.user?.membershipRole, "student");
+    assert.equal(cookieSub(student.cookie), "user_student");
+
+    const empty = await postDemo();
+    assert.equal(empty.status, 200, empty.body.error);
+    assert.equal(empty.body.user?.id, "user_student");
+    assert.notEqual(empty.body.user?.platformRole, "super_admin");
+  });
+});
+
+test("a teacher/admin demo cookie minted before the lockdown no longer resolves in production", async () => {
+  const { demoIdentityAllowed } = await import("./auth.ts");
+  await withProdDemo(undefined, async () => {
+    assert.equal(demoIdentityAllowed("user_teacher"), false);
+    assert.equal(demoIdentityAllowed("user_demo"), false);
+    assert.equal(demoIdentityAllowed("user_student"), true);
+  });
+  assert.equal(demoIdentityAllowed("user_teacher"), true, "local dev keeps every persona");
+});
+
+test("DEMO_AUTH_MAX_ROLE=student locks the dev Teacher demo to a learner", async () => {
   const previousCap = process.env.DEMO_AUTH_MAX_ROLE;
-  process.env.NODE_ENV = "production";
-  process.env.DEMO_AUTH_ENABLED = "1";
   process.env.DEMO_AUTH_MAX_ROLE = "student";
   try {
     const author = await postDemo("author");
     assert.equal(author.body.user?.membershipRole, "student");
     assert.equal(author.body.user?.id, "user_student");
   } finally {
-    process.env.NODE_ENV = previousNode;
-    if (previousFlag === undefined) delete process.env.DEMO_AUTH_ENABLED;
-    else process.env.DEMO_AUTH_ENABLED = previousFlag;
     if (previousCap === undefined) delete process.env.DEMO_AUTH_MAX_ROLE;
     else process.env.DEMO_AUTH_MAX_ROLE = previousCap;
   }

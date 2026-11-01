@@ -25,9 +25,9 @@
 // turns these indexes into load requests.
 
 /** Slices warmed ahead of the reader while a scroll is in progress. */
-export const TRAVEL_AHEAD = 5;
+export const TRAVEL_AHEAD = 10;
 /** Slices kept behind the reader while travelling (for a direction reversal). */
-export const TRAVEL_BEHIND = 1;
+export const TRAVEL_BEHIND = 2;
 
 /**
  * Pause-warm radius for a series of `count` images.

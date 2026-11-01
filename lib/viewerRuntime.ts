@@ -126,8 +126,12 @@ export interface RetrievalPoolSizes {
 }
 
 export function retrievalPoolSizes(profile: DeviceProfile): RetrievalPoolSizes {
-  if (profile.isMobile) return { interaction: 6, thumbnail: 1, prefetch: 2 };
-  return { interaction: 16, thumbnail: 2, prefetch: 4 };
+  // HTTP/2 multiplexes these over one connection, and a Cloud Healthcare
+  // frame costs ~620 ms however many are in flight, so throughput is
+  // concurrency-bound: 848 slices × 0.62 s ÷ 24 ≈ 22 s for a whole series.
+  // Interaction keeps the larger pool so a scroll never queues behind a fill.
+  if (profile.isMobile) return { interaction: 8, thumbnail: 1, prefetch: 6 };
+  return { interaction: 32, thumbnail: 2, prefetch: 24 };
 }
 
 /** The subset of Cornerstone's init config we set. Shape, not a library type. */

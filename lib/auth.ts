@@ -9,6 +9,7 @@
 // fallback — MONGODB_URI must come from Secret Manager. A signed demo cookie
 // additionally lets "Continue as demo" work even when the memory adapter is empty.
 
+import { elevatedDemoAvailable } from "./demoEntry";
 import { createHmac, timingSafeEqual } from "crypto";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "better-auth/adapters/mongodb";
@@ -293,6 +294,9 @@ async function readDemoSession(): Promise<AppSession | null> {
     if (!raw) return null;
     const userId = verifyDemoToken(raw);
     if (!userId) return null;
+    // A teacher/admin demo cookie minted before the production lockdown is
+    // still signed and unexpired. It must not resolve to an author session.
+    if (!demoIdentityAllowed(userId)) return null;
     await ensureDemoIdentity();
     const user = await getUser(userId);
     if (!user) return null;
@@ -436,8 +440,11 @@ export function demoAuthEnabled(): boolean {
  * personas are handled in `clampDemoRole` and are not collapsed into this cap.
  */
 export function maxDemoRole(): DemoRole {
-  if (process.env.NODE_ENV !== "production") return "super_admin";
-  return process.env.DEMO_AUTH_MAX_ROLE?.trim() === "author" ? "author" : "student";
+  if (!elevatedDemoAvailable()) return "student";
+  const cap = process.env.DEMO_AUTH_MAX_ROLE?.trim();
+  if (cap === "student") return "student";
+  if (cap === "author") return "author";
+  return "super_admin";
 }
 
 const DEMO_ROLE_RANK: Record<DemoRole, number> = {
@@ -460,18 +467,35 @@ const DEMO_ROLE_RANK: Record<DemoRole, number> = {
  */
 export function clampDemoRole(requested: DemoRole): DemoRole {
   const cap = maxDemoRole();
-  if (
-    requested === "author" &&
-    cap === "student" &&
-    process.env.DEMO_AUTH_MAX_ROLE?.trim() !== "student"
-  ) {
-    return "author";
-  }
   return DEMO_ROLE_RANK[requested] > DEMO_ROLE_RANK[cap] ? cap : requested;
 }
 
+/**
+ * Role the demo route may hand to THIS request, or null to refuse.
+ *
+ * Production: an explicit request above student is refused outright (403),
+ * not silently downgraded — the caller asked for a role it cannot have. An
+ * empty body ("Continue as demo") is the student persona.
+ */
+export function demoRoleForRequest(
+  requested: DemoRole,
+  explicit: boolean
+): DemoRole | null {
+  if (!elevatedDemoAvailable()) {
+    if (requested === "student" || !explicit) return "student";
+    return null;
+  }
+  return clampDemoRole(requested);
+}
+
+/** Demo identities that may still resolve to a session on this deployment. */
+export function demoIdentityAllowed(userId: string): boolean {
+  return elevatedDemoAvailable() || userId === DEMO_STUDENT_USER_ID;
+}
+
 export async function createDemoSessionResponse(
-  requestedRole: DemoRole = "super_admin"
+  requestedRole: DemoRole = "super_admin",
+  explicit = false
 ): Promise<NextResponse> {
   if (!demoAuthEnabled()) {
     return NextResponse.json(
@@ -479,7 +503,16 @@ export async function createDemoSessionResponse(
       { status: 404 }
     );
   }
-  const role = clampDemoRole(requestedRole);
+  const role = demoRoleForRequest(requestedRole, explicit);
+  if (!role) {
+    return NextResponse.json(
+      {
+        error:
+          "Teacher and admin demos are off on this deployment. Create an account to author cases.",
+      },
+      { status: 403 }
+    );
+  }
   await ensureDemoIdentity();
   const userId =
     role === "student"

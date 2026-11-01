@@ -20,7 +20,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
-import { Badge, Button, IconButton, Kbd, MicButton, Tabs } from "@/components/ui";
+import { Badge, Button, IconButton, MicButton, Tabs } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
@@ -39,7 +39,6 @@ import { TutorChat } from "./TutorChat";
 import { CheckInCard } from "./CheckInCard";
 import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
-import { TutorCaption } from "./TutorCaption";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
 import { ImagingLayout } from "@/components/viewer/ImagingLayout";
@@ -195,6 +194,7 @@ export default function StudentSession({
     prev: s.prev,
     reveal: s.revealCurrent,
     compare: s.toggleCompare,
+    compareOpen: s.compareOpen,
     examMode: s.examMode,
   });
   hotkeyRef.current = {
@@ -214,6 +214,7 @@ export default function StudentSession({
     prev: s.prev,
     reveal: s.revealCurrent,
     compare: s.toggleCompare,
+    compareOpen: s.compareOpen,
     examMode: s.examMode,
   };
   useEffect(() => {
@@ -247,6 +248,8 @@ export default function StudentSession({
       if (e.key === "Escape") {
         setKeysOpen(false);
         setRailOpen(false);
+        // Escape backs out of compare too — the one-key undo a reader expects.
+        if (hotkeyRef.current.compareOpen) hotkeyRef.current.compare();
         return;
       }
       const k = e.key.toLowerCase();
@@ -320,29 +323,6 @@ export default function StudentSession({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [compareSourceKey]
   );
-
-  const dockHint =
-    intent === "exam" ? (
-      s.locateMode ? (
-        <>
-          Click the image to locate · <Kbd>Space</Kbd> to talk
-        </>
-      ) : (
-        <>
-          Exam mode · <Kbd>Space</Kbd> to talk · Ask or answer
-        </>
-      )
-    ) : s.checkIn ? (
-      <>
-        Check-in — answer in the tutor rail · <Kbd>Space</Kbd> interrupts
-      </>
-    ) : s.tourActive ? (
-      <>
-        Teaching — the viewer follows the tutor · <Kbd>Space</Kbd> interrupts
-      </>
-    ) : (
-      <>Tour paused · Continue teaching or ask a question</>
-    );
 
   return (
     <div className="flex h-dvh max-h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-canvas">
@@ -656,27 +636,73 @@ export default function StudentSession({
       </aside>
       </div>
 
-      <footer className="z-30 shrink-0 border-t border-subtle bg-surface px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2.5">
-          <TutorCaption
-            text={captionText}
-            revealed={!s.examMode || activeRevealed}
-            modeLabel={
-              intent === "exam"
+      {/* One slim line while reading (was ~20% of the height): mode, the
+          tutor's current sentence (click for the full transcript), progress,
+          and the mic. The image keeps the room. */}
+      <footer className="z-30 shrink-0 border-t border-subtle bg-surface px-2 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-1">
+        {s.checkIn && !railOpen && (
+          <div className="mx-auto mb-1 w-full max-w-3xl">
+            <CheckInCard
+              prompt={s.checkIn.prompt}
+              options={s.checkIn.options}
+              onSelect={s.answerCheckIn}
+            />
+          </div>
+        )}
+        <div className="flex h-11 w-full min-w-0 items-center gap-2">
+          <div
+            role="group"
+            aria-label="Session mode"
+            className="flex shrink-0 items-center rounded-md border border-subtle bg-elevated p-0.5"
+          >
+            {(
+              [
+                ["teach", "Teach"],
+                ["exam", "Exam"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={intent === value}
+                onClick={() => setIntent(value)}
+                className={cn(
+                  "h-8 rounded px-2.5 text-xs font-semibold transition-[transform,background-color,color] duration-75 active:scale-[0.96]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                  intent === value
+                    ? "bg-accent text-accent-foreground"
+                    : "text-secondary hover:text-primary"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={openAsk}
+            title={captionText}
+            aria-label={`Open tutor transcript. ${captionText}`}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left hover:bg-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          >
+            <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              {intent === "exam"
                 ? "Examiner"
                 : mode === "reporting"
-                  ? "Report coach"
+                  ? "Report"
                   : s.tourActive
                     ? "Teaching"
-                    : "Attending"
-            }
-            sources={lastAssistant?.sources}
-            className="self-stretch"
-          />
+                    : "Attending"}
+            </span>
+            <span role="status" aria-live="polite" className="min-w-0 truncate text-sm text-primary">
+              {captionText}
+            </span>
+          </button>
 
           {hasFindings && (
             <div
-              className="flex max-w-full items-center gap-0.5 overflow-x-auto"
+              className="flex shrink-0 items-center max-sm:hidden"
               role="group"
               aria-label="Finding progress"
             >
@@ -688,12 +714,12 @@ export default function StudentSession({
                   aria-current={i === s.activeIndex ? "true" : undefined}
                   disabled={s.busy}
                   onClick={() => s.goTo(i)}
-                  className="flex h-8 min-w-8 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  className="flex h-8 min-w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
                 >
                   <span
                     className={cn(
-                      "h-1.5 rounded-full",
-                      i === s.activeIndex ? "w-5 bg-accent" : "w-1.5 bg-strong"
+                      "h-1.5 rounded-full transition-all duration-150",
+                      i === s.activeIndex ? "w-4 bg-accent" : "w-1.5 bg-strong"
                     )}
                   />
                 </button>
@@ -701,107 +727,64 @@ export default function StudentSession({
             </div>
           )}
 
-          {s.checkIn && !railOpen && (
-            <CheckInCard
-              prompt={s.checkIn.prompt}
-              options={s.checkIn.options}
-              onSelect={s.answerCheckIn}
-            />
-          )}
-
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <div className="flex items-center rounded-lg border border-subtle bg-elevated p-1">
-              <button
-                type="button"
-                aria-pressed={intent === "teach"}
-                onClick={() => setIntent("teach")}
-                className={cn(
-                  "h-9 rounded-md px-3 text-sm font-medium transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-                  intent === "teach"
-                    ? "bg-accent text-accent-foreground"
-                    : "text-secondary hover:text-primary"
-                )}
+          {s.examMode && hasFindings && (
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
+                onClick={s.sayDontKnow}
+                disabled={s.busy}
               >
-                Teach me the case
-              </button>
-              <button
-                type="button"
-                aria-pressed={intent === "exam"}
-                onClick={() => setIntent("exam")}
-                className={cn(
-                  "h-9 rounded-md px-3 text-sm font-medium transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-                  intent === "exam"
-                    ? "bg-accent text-accent-foreground"
-                    : "text-secondary hover:text-primary"
-                )}
-              >
-                Examiner
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={openAsk}
-                aria-label="Open tutor transcript"
-                className="flex h-11 items-center gap-2 rounded-lg px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-              >
-                <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
-                <span className="hidden text-sm font-medium text-secondary sm:inline">
-                  {ORB_TAGLINE[s.orbState]}
-                </span>
-              </button>
-              <MicButton
-                state={s.micState}
-                onStart={s.onMicStart}
-                onStop={s.onMicStop}
-                disabled={!s.micSupported || (s.busy && s.micState === "idle")}
-                label={
-                  s.liveStatus === "connecting"
-                    ? "Connecting…"
-                    : s.liveStatus === "open"
-                      ? "End session"
-                      : "Open microphone"
-                }
-              />
-              {s.examMode && hasFindings && (
-                <>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
-                    onClick={s.sayDontKnow}
-                    disabled={s.busy}
-                  >
-                    Don&apos;t know
-                  </Button>
-                  {!activeRevealed && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      leadingIcon={<Eye className="h-3.5 w-3.5" />}
-                      onClick={s.revealCurrent}
-                      disabled={s.busy}
-                    >
-                      Reveal
-                    </Button>
-                  )}
-                </>
+                <span className="max-md:sr-only">Don&apos;t know</span>
+              </Button>
+              {!activeRevealed && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  leadingIcon={<Eye className="h-3.5 w-3.5" />}
+                  onClick={s.revealCurrent}
+                  disabled={s.busy}
+                >
+                  <span className="max-md:sr-only">Reveal</span>
+                </Button>
               )}
             </div>
-          </div>
-
-          <p className="max-w-full text-center text-xs text-secondary">
-            <span className="max-lg:hidden">{dockHint} · </span>
-            Drag scrolls the stack · pinch zooms · <Kbd>?</Kbd>
-          </p>
-          {tutorVoice?.cloned && (
-            <p className="text-center text-xs text-secondary">
-              Tutor voice is a synthetic clone modeled on {tutorVoice.authorName}.
-            </p>
           )}
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {tutorVoice?.cloned && (
+              <span
+                title={`Tutor voice is a synthetic clone modeled on ${tutorVoice.authorName}.`}
+                className="rounded border border-subtle px-1 text-[10px] font-medium uppercase tracking-wide text-muted max-sm:hidden"
+              >
+                AI voice
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={openAsk}
+              aria-label={`Tutor: ${ORB_TAGLINE[s.orbState]}`}
+              title={ORB_TAGLINE[s.orbState]}
+              className="flex h-9 w-9 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            >
+              <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
+            </button>
+            <MicButton
+              size="sm"
+              state={s.micState}
+              onStart={s.onMicStart}
+              onStop={s.onMicStop}
+              disabled={!s.micSupported || (s.busy && s.micState === "idle")}
+              label={
+                s.liveStatus === "connecting"
+                  ? "Connecting…"
+                  : s.liveStatus === "open"
+                    ? "End session"
+                    : "Open microphone"
+              }
+            />
+          </div>
         </div>
       </footer>
 

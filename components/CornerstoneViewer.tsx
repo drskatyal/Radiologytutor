@@ -68,6 +68,7 @@ import {
   webWorkerCount,
 } from "../lib/viewerRuntime";
 import { NEIGHBOR_PREFETCH_DELAY_MS, tuneStackScrollTool } from "../lib/scrollSensitivity";
+import { fillBudget, outwardOrder } from "../lib/seriesFill";
 import { stackOpenIndex } from "../lib/stackIndex";
 import type { OpenSlice } from "../lib/viewerLoad";
 import {
@@ -188,6 +189,8 @@ import {
   nextMprAction,
   planesFromMetadata,
   type MprMode,
+  type MprPlane,
+  type MprRender,
   type MprSessionHandle,
   type PlaneSample,
 } from "../lib/mpr";
@@ -551,7 +554,10 @@ export default function CornerstoneViewer({
   active = true,
   onActivate,
   initialWindow = null,
+  paneLabel,
 }: {
+  /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
+  paneLabel?: string;
   source?: ViewerSource;
   /**
    * Multi-series case rail. When provided, the viewport loads
@@ -755,6 +761,12 @@ export default function CornerstoneViewer({
   // real wadors/uploaded studies before their plane metadata had resolved.
   const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
   const [viewMode, setViewMode] = useState<MprMode>("stack");
+  // Thin MPR, MIP slab or 3D once the volume is up (lib/mprSession.ts).
+  const [mprRender, setMprRender] = useState<MprRender>("mpr");
+  const mprRenderRef = useRef<MprRender>("mpr");
+  mprRenderRef.current = mprRender;
+  // The plane the reader last touched; arrow keys scroll that one.
+  const activePlaneRef = useRef<MprPlane>("axial");
   const [cinePlaying, setCinePlaying] = useState(false);
   const [cineFps, setCineFps] = useState(initialCineFps(null));
   const cineWrap: CineWrap = "loop";
@@ -772,6 +784,7 @@ export default function CornerstoneViewer({
   const enterMprRef = useRef<() => Promise<void>>(async () => {});
   const exitMprRef = useRef<() => Promise<void>>(async () => {});
   const axialRef = useRef<HTMLDivElement>(null);
+  const volume3dRef = useRef<HTMLDivElement>(null);
   const coronalRef = useRef<HTMLDivElement>(null);
   const sagittalRef = useRef<HTMLDivElement>(null);
 
@@ -1039,6 +1052,14 @@ export default function CornerstoneViewer({
         // (The same algorithm is modelled + unit-tested in lib/toolBindings.ts.)
         let leftTool: string | null = null;
         const setLeftTool = (name: string) => {
+          // Crosshairs exist only on the MPR planes. The stack keeps its own
+          // left tool so leaving MPR puts it back.
+          if (name === "Crosshairs") {
+            if (!mprSessionRef.current) return;
+            mprSessionRef.current.setLeftTool(name);
+            setActiveTool(name);
+            return;
+          }
           const primary = { mouseButton: MouseBindings.Primary };
           if (leftTool && leftTool !== name) {
             // Drop only Primary and one-finger from the outgoing tool. Pan/Zoom/
@@ -1298,6 +1319,31 @@ export default function CornerstoneViewer({
             );
           }, NEIGHBOR_PREFETCH_DELAY_MS);
         };
+        // Whole-series background fill (lib/seriesFill.ts): once per series,
+        // outward from the opening slice, at prefetch priority, bounded by the
+        // decoded cache. Never re-centred by clearing the queue — a cleared
+        // request leaves its image load object pending in Cornerstone's cache
+        // forever, and that slice would never paint.
+        const filledSeries = new Set<string>();
+        const startSeriesFill = (seriesUID: string, center: number) => {
+          const ids = stackIdsRef.current;
+          if (disposed || ids.length < 2 || filledSeries.has(seriesUID)) return;
+          filledSeries.add(seriesUID);
+          let bytesPerSlice = 512 * 512 * 2;
+          try {
+            const px = core.metaData.get("imagePixelModule", ids[center] ?? ids[0] ?? "") as
+              | { rows?: number; columns?: number; bitsAllocated?: number; samplesPerPixel?: number }
+              | undefined;
+            if (px?.rows && px?.columns) {
+              bytesPerSlice =
+                px.rows * px.columns * Math.max(1, (px.bitsAllocated ?? 16) / 8) * (px.samplesPerPixel ?? 1);
+            }
+          } catch {
+            /* keep the 512² estimate */
+          }
+          const budget = fillBudget(ids.length, bytesPerSlice, imageCacheBytes(deviceProfile));
+          prefetchImageIndexes(ids, outwardOrder(ids.length, center, budget));
+        };
         let pixelMarked = false;
         // Mark first pixel only after setStack resolves. IMAGE_RENDERED also
         // fires for an empty enable/resize, and treating that as paint hid
@@ -1330,6 +1376,8 @@ export default function CornerstoneViewer({
           publishSeriesImageCount(seriesUID, ids.length);
           markViewerSeriesReady(activeNav, seriesUID, ids.length);
           prefetchAround(openIndex);
+          // The ±10 neighbours queue first; the fill follows them.
+          window.setTimeout(() => startSeriesFill(seriesUID, openIndex), NEIGHBOR_PREFETCH_DELAY_MS);
           setStacking(false);
           setStatus(`${ids.length} image${ids.length === 1 ? "" : "s"} loaded`);
         };
@@ -1823,6 +1871,11 @@ export default function CornerstoneViewer({
           } catch {
             /* already disabled */
           }
+          // disableElement stops rendering but leaves the stack's canvas (and
+          // its backing store) in the DOM, hidden behind the MPR planes — a
+          // full-size blank viewport the GPU kept around. resumeStack's
+          // enableElement rebuilds it.
+          elementRef.current?.querySelectorAll(".viewport-element").forEach((node) => node.remove());
           viewportRef.current = null;
         };
 
@@ -1906,7 +1959,8 @@ export default function CornerstoneViewer({
             session = await mountMprSession({
               renderingEngineId,
               instanceId,
-              elements: { axial, coronal, sagittal },
+              elements: { axial, coronal, sagittal, volume3d: volume3dRef.current },
+              modality: modalityRef.current ?? null,
               imageIds: mprHeld?.imageIds ?? ids,
               initialImageId: imageId,
               voi: pinnedVoi ?? heldVoi,
@@ -1960,6 +2014,15 @@ export default function CornerstoneViewer({
           mprSessionRef.current = session;
           setMprLive(true);
           setMprLoading(false);
+          // MPR's left button is the linked crosshair unless the reader had
+          // window/level, pan or zoom picked (the session made the same call).
+          setActiveTool(
+            leftTool && ["WindowLevel", "Pan", "Zoom"].includes(leftTool) ? leftTool : "Crosshairs"
+          );
+          if (mprRenderRef.current !== "mpr") {
+            const ok = await session.setRender(mprRenderRef.current);
+            if (!ok) setMprRender("mpr");
+          }
           publishReadout();
           // The grid was visibility:hidden while the viewports attached.
           // Resize once it is shown so the canvases match the laid-out planes.
@@ -2018,6 +2081,8 @@ export default function CornerstoneViewer({
           destroyMprSession();
           if (!disposed) {
             setMprLive(false);
+            setMprRender("mpr");
+            if (leftTool) setActiveTool(leftTool);
             setMprLoading(false);
             if (viewModeRef.current === "stack") setMprNotice(null);
           }
@@ -2959,6 +3024,22 @@ export default function CornerstoneViewer({
     void enterMprRef.current();
   }, [viewMode, ready]);
 
+  // MIP / 3D on the live volume. 3D needs a WebGL2 volume pipeline; when it
+  // cannot start, fall back to thin MPR and say why.
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session) return;
+    let cancelled = false;
+    void session.setRender(mprRender).then((ok) => {
+      if (cancelled || ok) return;
+      setMprRender("mpr");
+      flash("3D isn't available on this device");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mprRender, mprLive, flash]);
+
   // --- Cine ----------------------------------------------------------------
   // A cardiac loop, a dynamic contrast series and a fluoro run are unreadable
   // one frame at a time, and "spin the wheel fast" is not an answer
@@ -3058,9 +3139,15 @@ export default function CornerstoneViewer({
         return;
       case "slice":
         setCinePlaying(false);
+        if (mprShowing) {
+          // MPR: the plane the reader last touched (axial until then).
+          mprSessionRef.current?.scrollPlane(activePlaneRef.current, action.delta);
+          return;
+        }
         setSliceRef.current((current) => current + action.delta);
         return;
       case "sliceAbsolute":
+        if (mprShowing) return;
         setCinePlaying(false);
         setSliceRef.current((_current, count) =>
           action.where === "first" ? 0 : Math.max(0, count - 1)
@@ -3136,6 +3223,23 @@ export default function CornerstoneViewer({
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
   const mprShowing = mprLive || (viewMode === "mpr" && mprLoading);
+  // Keep the keyboard on the viewer across Stack ↔ MPR. Hiding the focused
+  // stack element drops focus to <body>, so the next X (or arrow) went
+  // nowhere until the reader clicked the image again.
+  const focusSyncArmed = useRef(false);
+  useEffect(() => {
+    // Not on mount: only a Stack ↔ MPR switch moves focus.
+    if (!focusSyncArmed.current) {
+      focusSyncArmed.current = true;
+      return;
+    }
+    const active = document.activeElement;
+    const wrapper = pressGuardRef.current;
+    const lost = !active || active === document.body;
+    if (!wrapper || !(lost || wrapper.contains(active))) return;
+    const host = mprShowing ? wrapper : elementRef.current;
+    if (host && active !== host) host.focus({ preventScroll: true });
+  }, [mprShowing]);
   useEffect(() => {
     onViewModeChange?.(mprShowing ? "mpr" : "stack");
   }, [mprShowing, onViewModeChange]);
@@ -3165,6 +3269,11 @@ export default function CornerstoneViewer({
       activePreset={activePreset}
       presets={presets}
       viewMode={viewMode}
+      mprRender={mprRender}
+      onMprRender={(mode) => {
+        setMprRender(mode);
+        if (viewMode !== "mpr") setViewMode("mpr");
+      }}
       cineOffered={cineOffered}
       cinePlaying={cinePlaying}
       cineFps={cineFps}
@@ -3270,7 +3379,7 @@ export default function CornerstoneViewer({
         ? `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}, window ${readout.ww}, level ${readout.wc}`
         : `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}`;
 
-  const corners = overlayCorners(
+  const corners: ReturnType<typeof overlayCorners> = overlayCorners(
     readout?.meta,
     readout
       ? {
@@ -3290,6 +3399,7 @@ export default function CornerstoneViewer({
       : null,
     overlay
   );
+  if (paneLabel) corners.topLeft.unshift(paneLabel.toUpperCase());
   // Orientation letters only on the stack: the MPR planes carry their own.
   const markers =
     overlay !== "off" && !mprShowing ? orientationMarkers(readout?.meta?.imageOrientationPatient) : null;
@@ -3314,7 +3424,20 @@ export default function CornerstoneViewer({
     >
       <div
         ref={pressGuardRef}
+        // Keys land here whether the stack or the MPR grid is showing. A
+        // click must focus the viewer: Cornerstone's own mousedown handler
+        // calls preventDefault, which stops the browser focusing the image,
+        // so arrow keys and PageUp/PageDown silently did nothing.
+        tabIndex={-1}
+        onKeyDown={onViewerKeyDown}
+        onPointerDown={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest("[role=dialog], button, input, select, a")) return;
+          const host = mprShowing ? pressGuardRef.current : elementRef.current;
+          if (host && document.activeElement !== host) host.focus({ preventScroll: true });
+        }}
         className={cn(
+          "outline-none",
           "relative",
           docked && !sharedBar && "w-full",
           (edge || sharedBar) && "min-h-0 flex-1",
@@ -3341,7 +3464,6 @@ export default function CornerstoneViewer({
           // scoped to the image instead of fighting the session's global keys,
           // and so the viewer is operable without a mouse at all.
           tabIndex={mprLive ? -1 : 0}
-          onKeyDown={onViewerKeyDown}
           aria-label={
             sliceCount > 0
               ? `DICOM viewer, image ${readout?.slice ?? 1} of ${sliceCount}. ` +
@@ -3363,6 +3485,18 @@ export default function CornerstoneViewer({
             loading={mprLoading}
             notice={mprNotice}
             framed={docked && !sharedBar && mprLive}
+            render={mprRender}
+            volume3dRef={volume3dRef}
+            onPlanePointer={(plane) => {
+              activePlaneRef.current = plane;
+            }}
+            axialReadout={
+              readout && mprLive
+                ? `Im ${readout.slice} / ${readout.count}${
+                    windowLine(readout.ww, readout.wc) ? `   ${windowLine(readout.ww, readout.wc)}` : ""
+                  }`
+                : null
+            }
             showLabels={overlay !== "off"}
           />
         )}
@@ -3374,18 +3508,27 @@ export default function CornerstoneViewer({
             label={readoutLabel}
           />
         )}
-        {readout && ready && mprShowing && overlay !== "off" && (
-          // MPR: one compact line in the axial pane's corner. The planes
-          // already carry their names and the crosshair colors.
-          <p
-            className="pointer-events-none absolute right-2 top-2 z-10 text-[11px] font-medium tabular-nums text-white/90 [text-shadow:0_0_3px_rgba(0,0,0,1)] sm:text-xs"
-            aria-label={readoutLabel}
-          >
-            {`Im ${readout.slice} / ${readout.count}`}
-            {windowLine(readout.ww, readout.wc) ? `   ${windowLine(readout.ww, readout.wc)}` : ""}
-          </p>
-        )}
-        {!ready && !painted && (
+
+        {!ready && /\b401\b/.test(status) ? (
+          // Signed out on a page whose pixels need a session: say so, and
+          // offer the way in, instead of a raw "Series metadata 401".
+          <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
+            <div className="max-w-xs rounded-lg bg-[#181818] px-4 py-3 text-center text-sm text-white ring-1 ring-white/10">
+              <p className="font-medium">Sign in to view the images</p>
+              <p className="mt-1 text-xs text-white/65">
+                Studies stream only to a signed-in reader or a share link.
+              </p>
+              <a
+                href={`/sign-in?next=${encodeURIComponent(
+                  typeof window === "undefined" ? "/" : window.location.pathname + window.location.search
+                )}`}
+                className="mt-3 inline-flex h-9 items-center rounded-md bg-accent px-3 text-xs font-semibold text-accent-foreground transition-[transform,filter] duration-75 hover:brightness-110 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+              >
+                Sign in
+              </a>
+            </div>
+          </div>
+        ) : !ready && !painted && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <span className="flex items-center gap-2 rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/10">
               {status.startsWith("Error") ? null : (

@@ -88,6 +88,7 @@ export default async function CasePage({
         sharePath={share ? sharePath(share.id) : null}
         sharedLink={false}
         namedStudy={studyUidsForCase(caseData).length > 0}
+        openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
       />
       </>
     );

@@ -8,6 +8,8 @@
 //   1. A case-share cookie (`/s/[token]`) grants only the study UIDs that one
 //      case names — no account, no archive-wide search.
 //   2. Otherwise a signed-in session, and its active org must own the study.
+//      A learner additionally needs a PUBLISHED case of that org to name the
+//      study (lib/studyAccessPolicy.ts) — drafts' studies are author-only.
 //
 // Never trusts a client-supplied orgId. Answers are memoised briefly because
 // the DICOMweb route runs once per FRAME (lib/ttlMemo.ts):
@@ -21,12 +23,25 @@
 
 import type { NextRequest } from "next/server";
 import { getSession } from "@/lib/auth";
-import { DEFAULT_ORG_ID, getStudyByUID, resolveShareAccess } from "@/lib/cases";
-import { SHARE_COOKIE, isShareToken, shareGrantsStudy } from "@/lib/caseShare";
+import { canAccessOrgResource } from "@/lib/authRoles";
+import {
+  DEFAULT_ORG_ID,
+  getStudyByUID,
+  listCasesForOrg,
+  resolveShareAccess,
+} from "@/lib/cases";
+import {
+  SHARE_COOKIE,
+  isShareToken,
+  shareGrantsStudy,
+  studyUidsForCase,
+} from "@/lib/caseShare";
+import { studyReadAllowed } from "@/lib/studyAccessPolicy";
 import { createTtlMemo } from "@/lib/ttlMemo";
 
 const SESSION_TTL_MS = Number(process.env.DICOMWEB_SESSION_TTL_MS ?? 10_000);
-const sessionMemo = createTtlMemo<string | null>({
+type Caller = { orgId: string; canAuthor: boolean };
+const sessionMemo = createTtlMemo<Caller | null>({
   ttlMs: SESSION_TTL_MS,
   maxEntries: 2_000,
 });
@@ -35,6 +50,8 @@ const shareMemo = createTtlMemo<{ studyUids: string[] | null; orgId: string }>({
   maxEntries: 5_000,
 });
 const ownershipMemo = createTtlMemo<boolean>({ ttlMs: 60_000, maxEntries: 5_000 });
+/** Study UIDs named by an org's published cases (60 s; unpublish lags ≤ 60 s). */
+const publishedMemo = createTtlMemo<Set<string>>({ ttlMs: 60_000, maxEntries: 500 });
 
 /** Live share → org + study allowlist. Null study list means the token is dead. */
 async function shareAllows(token: string, studyUid: string): Promise<string | null> {
@@ -56,13 +73,40 @@ async function shareAllows(token: string, studyUid: string): Promise<string | nu
  * Active org for the caller, or null when there is no session. Resolves the
  * session ONCE (a Better Auth read plus a domain-user read).
  */
-async function callerOrgId(cookieHeader: string): Promise<string | null> {
+async function caller(cookieHeader: string): Promise<Caller | null> {
   const hit = sessionMemo.get(cookieHeader);
   if (hit !== undefined) return hit;
   const session = await getSession();
-  const orgId = session ? session.user.activeOrgId || DEFAULT_ORG_ID : null;
-  sessionMemo.set(cookieHeader, orgId);
-  return orgId;
+  const value: Caller | null = session
+    ? {
+        orgId: session.user.activeOrgId || DEFAULT_ORG_ID,
+        canAuthor: canAccessOrgResource({
+          platformRole: session.user.platformRole,
+          membershipRole: session.user.membershipRole,
+          need: "author",
+        }),
+      }
+    : null;
+  // Never remember "no session" for a request that carries an auth cookie:
+  // a lookup that failed once (cold start, a slow store) would otherwise
+  // 401 every frame of a signed-in reader for the whole TTL. Anonymous
+  // requests are still memoised, so they cannot hammer the session store.
+  if (value || !hasAuthCookie(cookieHeader)) sessionMemo.set(cookieHeader, value);
+  return value;
+}
+
+/** Demo or Better Auth session cookie present (names only — never parsed here). */
+export function hasAuthCookie(cookieHeader: string): boolean {
+  return /(?:^|;\s*)(?:flowrad_demo|(?:__Secure-)?better-auth\.[a-z_]+)=/i.test(cookieHeader);
+}
+
+async function publishedStudyUids(orgId: string): Promise<Set<string>> {
+  const hit = publishedMemo.get(orgId);
+  if (hit) return hit;
+  const cases = await listCasesForOrg(orgId, { status: "published" });
+  const uids = new Set(cases.flatMap((c) => studyUidsForCase(c)));
+  publishedMemo.set(orgId, uids);
+  return uids;
 }
 
 async function orgOwnsStudy(orgId: string, studyUid: string): Promise<boolean> {
@@ -84,11 +128,20 @@ export async function authorizeStudyRead(req: NextRequest, studyUid: string): Pr
   // cookie must not block a signed-in reader of a different study.
   const shareToken = req.cookies.get(SHARE_COOKIE)?.value;
   const shareOrg = shareToken ? await shareAllows(shareToken, studyUid) : null;
-  let orgId = shareOrg;
-  if (!orgId) {
-    orgId = await callerOrgId(req.headers.get("cookie") ?? "");
-    if (!orgId) return { ok: false, status: 401 };
+  if (shareOrg) {
+    if (!(await orgOwnsStudy(shareOrg, studyUid))) return { ok: false, status: 404 };
+    return { ok: true, orgId: shareOrg };
   }
-  if (!(await orgOwnsStudy(orgId, studyUid))) return { ok: false, status: 404 };
-  return { ok: true, orgId };
+  const who = await caller(req.headers.get("cookie") ?? "");
+  if (!who) return { ok: false, status: 401 };
+  const owns = await orgOwnsStudy(who.orgId, studyUid);
+  const allowed = studyReadAllowed({
+    canAuthor: who.canAuthor,
+    orgOwnsStudy: owns,
+    publishedStudyUids: owns && !who.canAuthor ? await publishedStudyUids(who.orgId) : new Set(),
+    studyUid,
+  });
+  // 404, not 403: do not confirm a draft's study exists to a learner.
+  if (!allowed) return { ok: false, status: 404 };
+  return { ok: true, orgId: who.orgId };
 }
