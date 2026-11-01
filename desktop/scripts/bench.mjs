@@ -194,9 +194,10 @@ async function benchInteract(binary, study) {
  *   --max-round-growth-mb N  last round − first round (a steady leak)
  *   --max-idle-mb N          baseline (CT open, idle) — the 400 MB target
  *   --max-long-tasks N       main-thread tasks over 50 ms during the run
+ *   --rounds N               open/close cycles (default 2; FLOWRAD_LEAK_ROUNDS)
  */
 async function benchLeak(binary, study) {
-  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "leak", BENCH_TIMEOUT_MS: "300000" }));
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "leak", BENCH_TIMEOUT_MS: String(120_000 + 40_000 * flag("rounds", 2)), LEAK_ROUNDS: String(flag("rounds", 2)) }));
   const leak = report.leak;
   if (!leak) throw new Error("no leak report");
   console.log(JSON.stringify({ mode: "leak", study, ...leak, longTasks: report.longTasks ?? leak.longTasks }, null, 2));

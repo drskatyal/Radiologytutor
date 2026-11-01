@@ -36,7 +36,7 @@ function safePreviewUrl(fileId: number, px: number): string | null {
   }
 }
 
-function Thumbnail({ series }: { series: ViewerSeries }) {
+function Thumbnail({ series, deferred }: { series: ViewerSeries; deferred: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const middle = series.imageIds[Math.floor(series.imageIds.length / 2)];
   const [state, setState] = useState<"loading" | "ready" | "error">(
@@ -45,10 +45,13 @@ function Thumbnail({ series }: { series: ViewerSeries }) {
   const [src, setSrc] = useState<string | null>(middle ? thumbCache.get(middle) ?? null : null);
   const header = series.headers[Math.floor(series.headers.length / 2)];
   const [nativeFailed, setNativeFailed] = useState(false);
-  const native = isTauri && header && !nativeFailed && !src ? safePreviewUrl(header.fileId, THUMB * 2) : null;
+  // While the scan is still reading files, thumbnails wait: each one reads a
+  // whole file, and hundreds of MRI series competing with the scan for the
+  // disk made a cold 10,310-image open 3.9 s slower (HP, 0.6.0).
+  const native = isTauri && header && !nativeFailed && !src && !deferred ? safePreviewUrl(header.fileId, THUMB * 2) : null;
 
   useEffect(() => {
-    if (native || !middle || thumbCache.has(middle)) return;
+    if (deferred || native || !middle || thumbCache.has(middle)) return;
     let cancelled = false;
     enqueue(async () => {
       if (cancelled || !canvasRef.current) return;
@@ -80,7 +83,7 @@ function Thumbnail({ series }: { series: ViewerSeries }) {
     return () => {
       cancelled = true;
     };
-  }, [middle, native]);
+  }, [middle, native, deferred]);
 
   return (
     <div className="relative aspect-square w-full overflow-hidden rounded-md bg-imaging">
@@ -91,6 +94,7 @@ function Thumbnail({ series }: { series: ViewerSeries }) {
           className="h-full w-full object-contain"
           draggable={false}
           decoding="async"
+          loading="lazy"
           onLoad={() => setState("ready")}
           onError={() => setNativeFailed(true)}
         />
@@ -200,7 +204,7 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
                     )}
                   >
                     <div className="relative">
-                      <Thumbnail series={series} />
+                      <Thumbnail series={series} deferred={growing} />
                       <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[10px] font-semibold text-white tabular-nums">
                         {series.modality}
                         {series.number != null ? ` ${series.number}` : ""}

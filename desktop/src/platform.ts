@@ -61,6 +61,21 @@ export function volumePlaneUrl(
   return `${protocolBase.replace(/f\/$/, "v/")}${key}/${plane}/${index}/${r(center)}/${r(width)}/${Math.round(maxDim)}`;
 }
 
+/** A native 3D frame (render3d.rs): volume rendering or MIP from the shared volume. */
+export function render3dUrl(
+  key: string,
+  mode: "bone" | "soft" | "mip",
+  view: { yaw: number; pitch: number; zoom: number },
+  center: number,
+  width: number,
+  size: number,
+  fast: boolean
+): string {
+  if (!protocolBase) throw new Error("dicom protocol not initialised");
+  const r = (n: number, d = 100) => Math.round(n * d) / d;
+  return `${protocolBase.replace(/f\/$/, "r/")}${key}/${mode}/${r(view.yaw)}/${r(view.pitch)}/${r(view.zoom)}/${r(center, 10)}/${r(width, 10)}/${Math.round(size)}/${fast ? 1 : 0}`;
+}
+
 export async function listen<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
   if (!isTauri) return () => {};
   const { listen } = await import("@tauri-apps/api/event");
