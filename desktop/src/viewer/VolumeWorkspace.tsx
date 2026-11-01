@@ -33,6 +33,7 @@ import { formatPersonName } from "../study";
 import {
   ENGINE_ID,
   ensureVolumeGroups,
+  enterVolumeMemory,
   getEngine,
   holdVolumes,
   MIP_GROUP,
@@ -190,6 +191,15 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
         ensureVolumeGroups(engine);
         if (petSeries) setSuvState(await ensureSuv(petSeries));
 
+        // Only this volume's slices stay decoded (other series, the 2D
+        // prefetch go), and the budget grows to fit it.
+        const bytesPer = (sr: ViewerSeries | null | undefined, bytes: number) =>
+          sr ? (sr.headers[0]?.rows ?? 512) * (sr.headers[0]?.columns ?? 512) * bytes : 0;
+        enterVolumeMemory(
+          engine,
+          [...series.imageIds, ...(petSeries?.imageIds ?? [])],
+          Math.max(bytesPer(series, 2), bytesPer(petSeries, 4))
+        );
         const volume = await core.volumeLoader.createAndCacheVolume(ctVolumeId, { imageIds: series.imageIds });
         const ptVolume =
           petSeries && ptVolumeId

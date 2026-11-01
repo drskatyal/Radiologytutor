@@ -24,6 +24,33 @@ fn int(obj: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<i64> {
 
 /// Encode the first frame as a PNG, or None when this file is not a cheap case.
 pub fn render_png(path: &Path) -> Option<Vec<u8>> {
+    render_png_sized(path, None)
+}
+
+/// Box-downsample `gray` (rows × cols) so the long side is at most `max_dim`.
+pub fn downsample(gray: &[u8], rows: usize, cols: usize, max_dim: usize) -> (Vec<u8>, usize, usize) {
+    let step = rows.max(cols).div_ceil(max_dim.max(1)).max(1);
+    if step == 1 {
+        return (gray.to_vec(), rows, cols);
+    }
+    let (r2, c2) = (rows / step, cols / step);
+    let mut out = Vec::with_capacity(r2 * c2);
+    for y in 0..r2 {
+        for x in 0..c2 {
+            let mut sum = 0u32;
+            for dy in 0..step {
+                let row = &gray[(y * step + dy) * cols + x * step..][..step];
+                sum += row.iter().map(|&v| v as u32).sum::<u32>();
+            }
+            out.push((sum / (step * step) as u32) as u8);
+        }
+    }
+    (out, r2, c2)
+}
+
+/// As render_png, with the long side capped at `max_dim` (series thumbnails:
+/// a few KB instead of a decoded full-size slice in the renderer).
+pub fn render_png_sized(path: &Path, max_dim: Option<usize>) -> Option<Vec<u8>> {
     let obj = open_file(path).ok()?;
     let ts = obj.meta().transfer_syntax().trim_end_matches('\0').to_string();
     if !UNCOMPRESSED.contains(&ts.as_str()) || int(&obj, tags::SAMPLES_PER_PIXEL).unwrap_or(1) != 1 {
@@ -70,6 +97,10 @@ pub fn render_png(path: &Path) -> Option<Vec<u8>> {
             if invert { 255 - g } else { g }
         })
         .collect();
+    let (gray, rows, cols) = match max_dim {
+        Some(m) => downsample(&gray, rows, cols, m),
+        None => (gray, rows, cols),
+    };
     let mut out = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut out, cols as u32, rows as u32);
@@ -84,10 +115,20 @@ pub fn render_png(path: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test preview
+    #[test]
+    fn downsample_box_averages_to_the_cap() {
+        let gray: Vec<u8> = (0..16).map(|i| (i * 10) as u8).collect(); // 4×4
+        let (out, r, c) = super::downsample(&gray, 4, 4, 2);
+        assert_eq!((r, c), (2, 2));
+        assert_eq!(out[0], ((0 + 10 + 40 + 50) / 4) as u8);
+        let (same, r, c) = super::downsample(&gray, 4, 4, 8);
+        assert_eq!((r, c, same.len()), (4, 4, 16));
+    }
+
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test preview
     #[test]
     fn renders_uncompressed_and_skips_compressed() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let root = std::path::Path::new(&root);
         let first = |dir: &str| {
             let mut v: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().flatten().map(|e| e.path()).collect();

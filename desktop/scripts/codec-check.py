@@ -3,7 +3,7 @@
 
 For every source (each transfer-syntax fixture, the multiframe clip, and each
 real pydicom sample file) this opens it in the built app with
-RADLEARN_BENCH_PIXELS=1, takes the decoded-pixel statistics the app reports for
+FLOWRAD_BENCH_PIXELS=1, takes the decoded-pixel statistics the app reports for
 its first image (Cornerstone's WASM codecs, in the WebView), decodes the SAME
 file and frame with pydicom (pylibjpeg / OpenJPEG / CharLS / RLE / imagecodecs),
 and compares:
@@ -29,12 +29,12 @@ LOSSY = {"1.2.840.10008.1.2.4.50", "1.2.840.10008.1.2.4.51", "1.2.840.10008.1.2.
 
 
 def app_stats(binary: str, source: Path) -> dict:
-    env = dict(os.environ, RADLEARN_BENCH="1", RADLEARN_BENCH_EXIT="1", RADLEARN_BENCH_PIXELS="1")
+    env = dict(os.environ, FLOWRAD_BENCH="1", FLOWRAD_BENCH_EXIT="1", FLOWRAD_BENCH_PIXELS="1")
     out = subprocess.run([binary, str(source)], env=env, capture_output=True, text=True, timeout=90).stdout
-    line = next((l for l in out.splitlines() if l.startswith("RADLEARN_BENCH ")), None)
+    line = next((l for l in out.splitlines() if l.startswith(("FLOWRAD_BENCH ", "RADLEARN_BENCH "))), None)
     if not line:
         raise RuntimeError("the app reported nothing (no first paint)")
-    report = json.loads(line[len("RADLEARN_BENCH "):])
+    report = json.loads(line.split(" ", 1)[1])
     px = report.get("pixels")
     if not px or "error" in px:
         raise RuntimeError(f"no pixel stats: {px}")

@@ -11,7 +11,7 @@ import { listMedia, type MediaVolume } from "../platform";
 import { prewarmEngine } from "../viewer/engine";
 import { searchHistory, type HistoryEntry } from "../history";
 import { formatDicomDate, formatPersonName } from "../study";
-import { isMac } from "../shortcuts";
+import { keyLabel } from "../shortcuts";
 
 interface Props {
   history: HistoryEntry[];
@@ -53,7 +53,6 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
   const [filter, setFilter] = useState("");
   const needle = filter.trim().toLowerCase();
   const shown = needle ? searchHistory(history, needle) : history;
-  const m = isMac() ? "⌘" : "Ctrl+";
 
   useEffect(() => {
     let alive = true;
@@ -101,11 +100,11 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
 
         <section aria-label="Open" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           {[
-            { what: "folder" as const, label: "Folder", hint: `${m}⇧O`, icon: FolderOpen, primary: true },
-            { what: "files" as const, label: "Files", hint: `${m}O`, icon: Files },
-            { what: "zip" as const, label: "Zip archive", hint: `${m}⇧Z`, icon: FileArchive },
+            { what: "folder" as const, label: "Folder", hint: keyLabel("Mod+Shift+O"), icon: FolderOpen, primary: true },
+            { what: "files" as const, label: "Files", hint: keyLabel("Mod+O"), icon: Files },
+            { what: "zip" as const, label: "Zip archive", hint: keyLabel("Mod+Shift+Z"), icon: FileArchive },
             { what: "dicomdir" as const, label: "DICOMDIR", hint: "", icon: FolderTree },
-            { what: "pacs" as const, label: "PACS", hint: `${m}⇧P`, icon: Network },
+            { what: "pacs" as const, label: "PACS", hint: keyLabel("Mod+Shift+P"), icon: Network },
           ].map((item) => (
             <button
               key={item.what}
@@ -132,7 +131,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Discs &amp; USB</h2>
             <Button size="sm" variant="ghost" onClick={() => onOpen("disc")} leadingIcon={<Disc3 className="h-4 w-4" />}>
-              Choose a drive… <Kbd className="ml-1">{m}⌥O</Kbd>
+              Choose a drive… <Kbd className="ml-1">{keyLabel("Mod+Alt+O")}</Kbd>
             </Button>
           </div>
           {media === null ? (

@@ -290,11 +290,11 @@ mod tests {
     use super::*;
 
     /// Needs fixtures from `desktop/scripts/make-fixtures.py`:
-    /// RADLEARN_FIXTURES=/tmp/fixtures cargo test anonymize
+    /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test anonymize
     #[test]
     fn anonymize_scrubs_identity_and_remaps_uids_consistently() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else {
-            eprintln!("skipped: set RADLEARN_FIXTURES");
+        let Ok(root) = crate::flowrad_env("FIXTURES") else {
+            eprintln!("skipped: set FLOWRAD_FIXTURES");
             return;
         };
         let dir = std::path::Path::new(&root).join("ct-phantom");

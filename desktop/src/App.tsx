@@ -50,6 +50,7 @@ import {
   clearAnnotations,
   engineTimings,
   enginePeek,
+  leaveVolumeMemory,
   getEngine,
   prewarmEngine,
   setGroupLeftTool,
@@ -67,6 +68,7 @@ import { hangSeries } from "./layout";
 import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
+import { longTasks } from "./perfWatch";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -86,6 +88,7 @@ const ReportDialog = named<typeof import("./components/ReportDialog").ReportDial
 const ShortcutsDialog = named<typeof import("./components/Dialogs").ShortcutsDialog>(() => import("./components/Dialogs"), "ShortcutsDialog");
 const CustomWindowDialog = named<typeof import("./components/Dialogs").CustomWindowDialog>(() => import("./components/Dialogs"), "CustomWindowDialog");
 const DiscPickerDialog = named<typeof import("./components/Dialogs").DiscPickerDialog>(() => import("./components/Dialogs"), "DiscPickerDialog");
+const MemoryHud = named<typeof import("./components/MemoryHud").MemoryHud>(() => import("./components/MemoryHud"), "MemoryHud");
 const SettingsDialog = named<typeof import("./components/Dialogs").SettingsDialog>(() => import("./components/Dialogs"), "SettingsDialog");
 
 type ScanState = { label: string; progress: ScanProgress | null } | null;
@@ -131,11 +134,24 @@ export default function App() {
   const openSeq = useRef(0);
   /** True until the reader changes what is on screen; lets the final scan re-hang the primary series. */
   const autoHung = useRef(true);
+  // Debug memory HUD: FLOWRAD_DEBUG=1 at launch, or Ctrl+Alt+Shift+M.
+  const [hud, setHud] = useState(false);
+  useEffect(() => {
+    if (isTauri) void invoke<boolean>("debug_enabled").then((on) => on && setHud(true), () => undefined);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.altKey && e.shiftKey && e.code === "KeyM") {
+        e.preventDefault();
+        setHud((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const bench = useRef<{
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number>;
+    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -159,7 +175,7 @@ export default function App() {
     // viewer must stay small. It warms on intent instead — an open dialog, a
     // drag over the window, a hover on a recent study — which is always
     // hundreds of ms before the first pixel is needed.
-    // e2e paint probe (RADLEARN_PROBE_AFTER_MS): a normal launch, then report
+    // e2e paint probe (FLOWRAD_PROBE_AFTER_MS): a normal launch, then report
     // what every viewport actually shows. desktop/scripts/e2e-paint.py.
     if (isTauri)
       invoke<number | null>("probe_after_ms").then((ms) => {
@@ -187,6 +203,8 @@ export default function App() {
   // (WebView2's Low memory-usage target on Windows; a no-op elsewhere). The
   // moment a study starts opening it goes back to Normal.
   const nothingOpen = studies.length === 0 && scan == null;
+  const nothingOpenRef = useRef(nothingOpen);
+  nothingOpenRef.current = nothingOpen;
   useEffect(() => {
     if (!isTauri) return;
     const timer = window.setTimeout(
@@ -221,6 +239,30 @@ export default function App() {
   const activeSeriesUid = cells[activeCell] ?? null;
   const active = activeSeriesUid ? seriesByUid.get(activeSeriesUid) : undefined;
   const presets = useMemo(() => windowPresetsFor(active?.series.modality ?? ""), [active?.series.modality]);
+  // Back in 2D: release the volume and return to the browsing cache budget,
+  // so a study left open idles small (viewer/engine.ts).
+  useEffect(() => {
+    if (view !== "grid") return;
+    const engine = enginePeek();
+    if (!engine) return;
+    leaveVolumeMemory(engine);
+    // Give the freed volume back to the OS: a short Low memory-target pulse
+    // makes WebView2 trim the renderer and GPU process (a no-op elsewhere).
+    if (!isTauri) return;
+    void invoke("set_memory_mode", { low: true }).catch(() => undefined);
+    const timer = window.setTimeout(() => void invoke("set_memory_mode", { low: false }).catch(() => undefined), 2000);
+    return () => window.clearTimeout(timer);
+  }, [view]);
+
+  // Hidden or minimised: hold the Low memory target until the reader is back.
+  useEffect(() => {
+    if (!isTauri) return;
+    const onVisibility = () =>
+      void invoke("set_memory_mode", { low: document.hidden || nothingOpenRef.current }).catch(() => undefined);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   /** Every file of the study on screen (images once each, plus its reports and key-image notes), for Send to PACS. */
   const sendableStudy = useMemo(() => {
     const study = active?.study;
@@ -242,6 +284,9 @@ export default function App() {
     return ct && pt ? { ct, pt } : null;
   }, [active]);
   const activeHandle = () => getHandle(cellKey(activeCell));
+  // Latest values for the bench leak driver (it outlives this render).
+  const activeHandleRef = useRef(activeHandle);
+  activeHandleRef.current = activeHandle;
 
   // ───────────── open flow ─────────────
   const resetWorkspace = useCallback(() => {
@@ -283,9 +328,10 @@ export default function App() {
   const openPaths = useCallback(
     async (paths: string[], kindHint?: SourceKind, labelOverride?: string) => {
       if (!paths.length) return;
-      // The engine is NOT started here: parsing ~3 MB of Cornerstone on the
-      // main thread would delay hanging the series and its instant preview.
-      // The viewport starts it once the preview is on screen.
+      // The engine is NOT started here, not even its module import: parsing
+      // ~3 MB of Cornerstone on the main thread delays hanging the series and
+      // its instant preview (measured: preview 165 → 540 ms). The viewport
+      // starts it once the preview is on screen.
       if (!isTauri) {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
@@ -391,7 +437,7 @@ export default function App() {
         if (bench.current.enabled) {
           // Scan numbers are reported whether or not a frame ever paints (a
           // locked or minimised window may never paint); paint is its own field.
-          // The shell also prints RADLEARN_BENCH_SCAN the moment the scan ends,
+          // The shell also prints FLOWRAD_BENCH_SCAN the moment the scan ends,
           // and a watchdog line if nothing is reported at all.
           const report = async (paintTimedOut = false) => {
             const startup = await invoke<number>("startup_elapsed_ms").catch(() => 0);
@@ -420,6 +466,11 @@ export default function App() {
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
               ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
               engineInitMs: engineTimings.initMs,
+              // Relative to the open: when the engine started and was ready.
+              engineStartMs: engineTimings.startAt != null ? Math.round(engineTimings.startAt - bench.current.t0) : undefined,
+              engineSteps: engineTimings.steps,
+              longTasks: { count: longTasks.count, maxMs: longTasks.maxMs, totalMs: longTasks.totalMs },
+              engineReadyMs: engineTimings.readyAt != null ? Math.round(engineTimings.readyAt - bench.current.t0) : undefined,
               processUptimeMs: startup,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
               ...((await invoke<boolean>("bench_pixels").catch(() => false))
@@ -438,7 +489,42 @@ export default function App() {
             const limit = await invoke<number>("bench_paint_timeout_ms").catch(() => 20_000);
             const deadline = performance.now() + limit;
             const waitPaint = () => {
-              if (bench.current.firstPaint != null) void report();
+              if (bench.current.firstPaint != null && benchView === "leak") {
+                // Feature on/off leak test: every feature opened and closed, twice.
+                void (async () => {
+                  const { runLeakCycle } = await import("./viewer/leakCycle");
+                  bench.current.marks.leak = await runLeakCycle({
+                    setView: (v) =>
+                      new Promise<void>((resolve) => {
+                        if (v === "grid") {
+                          setView("grid");
+                          return void window.setTimeout(resolve, 300);
+                        }
+                        const timeout = window.setTimeout(resolve, 60_000);
+                        bench.current.pendingVolume = async () => {
+                          window.clearTimeout(timeout);
+                          resolve();
+                        };
+                        setView(v);
+                      }),
+                    setDialog: (d) => setDialog(d),
+                    toggleCine: () => activeHandleRef.current()?.toggleCine(),
+                    setTool: (t) => setLeftTool(t),
+                  });
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "interact") {
+                // Frame-time profile of scroll / zoom / W-L on the main stack.
+                void (async () => {
+                  const engine = enginePeek();
+                  const vp = engine?.renderingEngine.getViewport(viewportIdFor(0));
+                  if (engine && vp) {
+                    const { profileInteraction } = await import("./viewer/frameProfile");
+                    bench.current.marks.interaction = await profileInteraction(engine.core, vp);
+                  }
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null) void report();
               else if (performance.now() > deadline) void report(true);
               else window.setTimeout(waitPaint, 20);
             };
@@ -881,29 +967,41 @@ export default function App() {
         void openBrowserFiles(Array.from(e.dataTransfer.files));
       }}
     >
-      <input
-        ref={browserFileInput}
-        type="file"
-        multiple
-        className="sr-only"
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          e.target.value = "";
-          void openBrowserFiles(files);
-        }}
-      />
-      <input
-        ref={browserFolderInput}
-        type="file"
-        multiple
-        className="sr-only"
-        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          e.target.value = "";
-          void openBrowserFiles(files);
-        }}
-      />
+      {/* Browser-mode pickers only (the bench / plain-browser fallback). The
+          desktop app opens through native dialogs, so these are not rendered
+          there; where they are, they stay out of the accessibility tree
+          (`hidden`): the visible Open buttons are the controls. */}
+      {!isTauri && (
+        <>
+          <input
+            ref={browserFileInput}
+            type="file"
+            multiple
+            hidden
+            aria-hidden="true"
+            tabIndex={-1}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = "";
+              void openBrowserFiles(files);
+            }}
+          />
+          <input
+            ref={browserFolderInput}
+            type="file"
+            multiple
+            hidden
+            aria-hidden="true"
+            tabIndex={-1}
+            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = "";
+              void openBrowserFiles(files);
+            }}
+          />
+        </>
+      )}
 
       {hasStudy && !distractionFree && (
         <Toolbar
@@ -1119,6 +1217,7 @@ export default function App() {
       )}
 
       <Suspense fallback={null}>
+      {hud && <MemoryHud onClose={() => setHud(false)} />}
       {dialog === "help" && (
       <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} />
       )}

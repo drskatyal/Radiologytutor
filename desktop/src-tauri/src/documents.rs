@@ -131,10 +131,10 @@ pub fn read_document(path: &Path) -> Option<Document> {
 mod tests {
     use super::read_document;
 
-    /// RADLEARN_FIXTURES=… cargo test documents (desktop/scripts/make-fixtures.py builds documents/).
+    /// FLOWRAD_FIXTURES=… cargo test documents (desktop/scripts/make-fixtures.py builds documents/).
     #[test]
     fn reads_structured_report_and_key_image_note() {
-        let Ok(root) = std::env::var("RADLEARN_FIXTURES") else { return };
+        let Ok(root) = crate::flowrad_env("FIXTURES") else { return };
         let dir = std::path::Path::new(&root).join("documents");
         let sr = read_document(&dir.join("SR_measurements.dcm")).expect("SR");
         assert_eq!(sr.kind, "sr");

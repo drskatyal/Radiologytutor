@@ -178,6 +178,19 @@ export const BINDINGS: Binding[] = [
   { keys: "F1 / ?", does: "Keyboard shortcuts", group: "Advanced", match: (e) => e.key === "F1" || e.key === "?", action: { type: "help" } },
 ];
 
+/**
+ * A shortcut spec ("Mod+Shift+M", "Shift+Q", "Mod+Shift+Backspace") in the
+ * platform's words: ⌘ ⇧ ⌥ ⌫ on macOS, "Ctrl+Shift+M" elsewhere. Windows and
+ * Linux UI fonts (and native tooltips) lack ⇧/⌥/⌫, which then render as "?".
+ */
+export function keyLabel(spec: string, mac = isMac()): string {
+  return spec
+    .replace(/Mod\+/g, mac ? "⌘" : "Ctrl+")
+    .replace(/Alt\+/g, mac ? "⌥" : "Alt+")
+    .replace(/Shift\+/g, mac ? "⇧" : "Shift+")
+    .replace(/Backspace/g, mac ? "⌫" : "Backspace");
+}
+
 export function isMac(): boolean {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }
@@ -213,6 +226,6 @@ export function shortcutSheet(mac = isMac()): { group: Binding["group"]; keys: s
   return BINDINGS.filter((b) => b.keys).map((b) => ({
     group: b.group,
     does: b.does,
-    keys: b.keys.replace(/Mod\+/g, mac ? "⌘" : "Ctrl+").replace(/Alt\+/g, mac ? "⌥" : "Alt+").replace(/Shift\+/g, mac ? "⇧" : "Shift+"),
+    keys: keyLabel(b.keys, mac),
   }));
 }
