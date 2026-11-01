@@ -24,6 +24,7 @@ import {
   initProtocol,
   invoke,
   isTauri,
+  previewUrlFor,
   listen,
   pickFiles,
   pickFolder,
@@ -394,6 +395,17 @@ export default function App() {
       if (prev.some(Boolean) || built.length === 0) return prev;
       const study = built[0];
       const first = study.series[primarySeriesIndex(study)];
+      // Ask Rust for the instant preview now, while the viewport chunk loads:
+      // the <img> it renders then comes from the webview's memory cache.
+      if (first && isTauri && first.headers[0]) {
+        try {
+          const img = new Image();
+          img.decoding = "async";
+          img.src = previewUrlFor(first.headers[0].fileId);
+        } catch {
+          /* protocol not ready: the viewport asks itself */
+        }
+      }
       return first ? [first.uid, ...prev.slice(1)] : prev;
     });
   }, []);
@@ -746,10 +758,10 @@ export default function App() {
     let off: (() => void)[] = [];
     (async () => {
       const initial = await takeLaunchPaths();
-      // A study on the command line: fetch and compile the engine while Rust
-      // scans (warm first slice on the HP was ~0.5 s, mostly engine start).
+      // A study on the command line opens at once. The engine is NOT
+      // pre-imported here: its ~3 MB parse on the main thread would delay the
+      // instant preview (see openPaths); the viewport starts it after.
       if (initial.length) {
-        prewarmEngine();
         void openPaths(initial);
       } else {
         // Start screen: compile the engine in idle time so the first open does
