@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { ChevronUp, FolderOpen, HardDrive, Layers, Maximize2, Minimize2, ShieldCheck } from "lucide-react";
+import { ChevronUp, FileText, FolderOpen, HardDrive, Layers, Maximize2, Minimize2, ShieldCheck } from "lucide-react";
 import { Button, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
@@ -27,7 +27,8 @@ import {
 } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import type { ViewerSource } from "@/lib/viewerSource";
-import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
+import { primarySeriesIndexByProtocol, reportsForStudy, type DicomDocument } from "@flowrad/viewer-core";
+import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { hapticTick, isSwipeUp } from "@/lib/sheetGesture";
 import { NARROW_LAYOUT_MEDIA, requestStageFullscreen } from "@/lib/viewerLayout";
@@ -70,6 +71,8 @@ export function LocalStudyViewer() {
   /** Phones: the series list is a bottom drawer, and the stage can go fullscreen. */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  /** The structured report being read (dialog), if any. */
+  const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const swipeRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const viewerControls = useRef<CornerstoneControls | null>(null);
@@ -216,6 +219,7 @@ export function LocalStudyViewer() {
                   setActiveSeries(primarySeriesIndexByProtocol(result.studies[next]));
                 }}
                 onSeries={pickSeries}
+                onOpenReport={setOpenReport}
               />
               <div className="mt-auto flex flex-col gap-2 border-t border-subtle pt-3">
                 <p className="flex items-start gap-1.5 text-xs text-secondary">
@@ -335,6 +339,10 @@ export function LocalStudyViewer() {
                 setActiveSeries(primarySeriesIndexByProtocol(result.studies[next]));
               }}
               onSeries={pickSeries}
+              onOpenReport={(doc) => {
+                setDrawerOpen(false);
+                setOpenReport(doc);
+              }}
               hideHeading
             />
             <div className="mt-3 flex flex-col gap-2 border-t border-subtle pt-3">
@@ -347,6 +355,7 @@ export function LocalStudyViewer() {
               </FilePickerButton>
             </div>
           </Sheet>
+          <StructuredReportDialog report={openReport} onClose={() => setOpenReport(null)} />
         </div>
       ) : (
         <div
@@ -428,6 +437,7 @@ function SeriesList({
   activeSeries,
   onStudy,
   onSeries,
+  onOpenReport,
   hideHeading = false,
 }: {
   result: LocalOpenResult;
@@ -436,8 +446,11 @@ function SeriesList({
   activeSeries: number;
   onStudy: (index: number) => void;
   onSeries: (index: number) => void;
+  /** Structured reports in this study open here. */
+  onOpenReport: (report: DicomDocument) => void;
   hideHeading?: boolean;
 }) {
+  const reports = reportsForStudy(study.studyInstanceUID, result.documents);
   return (
     <div className="flex flex-col gap-3">
       {!hideHeading && (
@@ -490,6 +503,29 @@ function SeriesList({
           </li>
         ))}
       </ul>
+      {reports.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h3 className="px-2 text-[11px] font-semibold uppercase tracking-wide text-muted">Reports</h3>
+          <ul aria-label="Reports" className="flex flex-col gap-1">
+            {reports.map((doc) => (
+              <li key={doc.sopInstanceUid ?? doc.fileName}>
+                <button
+                  type="button"
+                  onClick={() => onOpenReport(doc)}
+                  className={cn(
+                    "flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-secondary transition-colors",
+                    "hover:bg-elevated/60 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  )}
+                >
+                  <FileText className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate font-medium">{doc.title}</span>
+                  <span className="shrink-0 text-muted">SR</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
