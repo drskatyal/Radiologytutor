@@ -13,10 +13,11 @@
 // network call, no archive, and no account. When this moves into a Tauri
 // shell the only part that changes is where the file list comes from.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { ChevronUp, FileText, FolderOpen, HardDrive, Layers, Maximize2, Minimize2, ShieldCheck } from "lucide-react";
 import { Button, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
+import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import {
   openLocalFiles,
@@ -63,6 +64,10 @@ export function LocalStudyViewer() {
   const abortRef = useRef<AbortController | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // The pickers are <label for> these inputs (FilePickerButton), so opening a
+  // chooser never depends on a click handler.
+  const folderInputId = useId();
+  const fileInputId = useId();
   /** Phones: the series list is a bottom drawer, and the stage can go fullscreen. */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -173,6 +178,7 @@ export function LocalStudyViewer() {
   return (
     <div className="flex flex-col gap-4">
       <input
+        id={folderInputId}
         ref={folderInputRef}
         type="file"
         multiple
@@ -187,6 +193,7 @@ export function LocalStudyViewer() {
         }}
       />
       <input
+        id={fileInputId}
         ref={fileInputRef}
         type="file"
         multiple
@@ -219,9 +226,9 @@ export function LocalStudyViewer() {
                   <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" aria-hidden />
                   These files stay on this computer. Nothing is uploaded.
                 </p>
-                <Button size="sm" variant="secondary" onClick={() => folderInputRef.current?.click()}>
+                <FilePickerButton inputId={folderInputId} size="sm" variant="secondary">
                   Open another folder
-                </Button>
+                </FilePickerButton>
               </div>
             </div>
           </Panel>
@@ -343,22 +350,18 @@ export function LocalStudyViewer() {
                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" aria-hidden />
                 These files stay on this device. Nothing is uploaded.
               </p>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  setDrawerOpen(false);
-                  fileInputRef.current?.click();
-                }}
-              >
+              <FilePickerButton inputId={fileInputId} size="sm" variant="secondary" onClick={() => setDrawerOpen(false)}>
                 Open other files
-              </Button>
+              </FilePickerButton>
             </div>
           </Sheet>
           <StructuredReportDialog report={openReport} onClose={() => setOpenReport(null)} />
         </div>
       ) : (
         <div
+          data-testid="local-dropzone"
+          role="region"
+          aria-label="Drop a study folder or files here"
           onDragOver={(event) => {
             event.preventDefault();
             setDragging(true);
@@ -410,13 +413,12 @@ export function LocalStudyViewer() {
               }
               action={
                 <div className="flex flex-wrap items-center justify-center gap-2">
-                  <Button onClick={() => folderInputRef.current?.click()}>
-                    <FolderOpen className="h-4 w-4" aria-hidden />
+                  <FilePickerButton inputId={folderInputId} leadingIcon={<FolderOpen aria-hidden />}>
                     Choose a folder
-                  </Button>
-                  <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
+                  </FilePickerButton>
+                  <FilePickerButton inputId={fileInputId} variant="secondary">
                     Choose files
-                  </Button>
+                  </FilePickerButton>
                 </div>
               }
             />
