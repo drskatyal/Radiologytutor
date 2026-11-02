@@ -22,7 +22,7 @@ import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./worker
 import { annotationEditing, tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { markPhase } from "../perfWatch";
-import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
+import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack, type XVec3 as Vec3 } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
 const MB = 1024 * 1024;
@@ -98,6 +98,23 @@ export function decodeWorkers(): { live: number; releaseIdle(): void } {
 }
 
 /** Start loading the engine chunks without initialising (idle pre-warm). */
+let preloaded = false;
+/**
+ * Fetch + compile the engine's chunks without running them (modulepreload),
+ * from the list vite.config.ts writes into the page. Cheap to call often.
+ */
+export function preloadEngineChunks(): void {
+  if (preloaded || typeof document === "undefined") return;
+  preloaded = true;
+  const list = document.querySelector<HTMLMetaElement>('meta[name="flowrad-engine-chunks"]')?.content;
+  for (const href of list?.split(" ").filter(Boolean) ?? []) {
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+}
+
 export function prewarmEngine(): void {
   void import("@cornerstonejs/core");
   void import("@cornerstonejs/tools");
@@ -133,6 +150,23 @@ export function getEngine(): Promise<Engine> {
   return enginePromise;
 }
 
+/**
+ * Give the main thread back between engine-init steps. Each step resumed as
+ * a microtask of the last, so module evaluation, core/tools init, loader init
+ * and tool registration ran as ONE long task (Windows HP: 66–225 ms freezes
+ * at "engine startup"). A macrotask boundary lets input, the instant preview
+ * and paint run in between.
+ */
+function yieldToMain(): Promise<void> {
+  const scheduler = (globalThis as unknown as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    channel.port2.postMessage(null);
+  });
+}
+
 async function createEngine(): Promise<Engine> {
   const steps: Record<string, number> = {};
   engineTimings.steps = steps;
@@ -144,12 +178,17 @@ async function createEngine(): Promise<Engine> {
     steps[name] = Math.round(now - mark);
     mark = now;
   };
-  const [core, tools, loader] = await Promise.all([
-    import("@cornerstonejs/core"),
-    import("@cornerstonejs/tools"),
-    import("@cornerstonejs/dicom-image-loader"),
-  ]);
+  // Fetch + compile all three in parallel; each evaluates in its own task.
+  const coreP = import("@cornerstonejs/core");
+  const toolsP = import("@cornerstonejs/tools");
+  const loaderP = import("@cornerstonejs/dicom-image-loader");
+  const core = await coreP;
+  await yieldToMain();
+  const tools = await toolsP;
+  await yieldToMain();
+  const loader = await loaderP;
   step("importMs");
+  await yieldToMain();
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
@@ -162,8 +201,10 @@ async function createEngine(): Promise<Engine> {
   await core.init(config as unknown as Parameters<typeof core.init>[0]);
   // Cursors are ours (toolCursor.ts): Cornerstone's drew one green crosshair for every tool.
   core.Settings.getRuntimeSettings().set("useCursors", false);
+  await yieldToMain();
   await tools.init();
   step("coreToolsInitMs");
+  await yieldToMain();
   // ONE worker at init (the loader would otherwise spawn every instance up
   // front and never free them); workerPool.ts widens it to a lazy pool of
   // cores − 2 that spawns on demand and reaps idle workers.
@@ -182,6 +223,7 @@ async function createEngine(): Promise<Engine> {
   );
   installDatasetTrim(core, loader);
   step("loaderInitMs");
+  await yieldToMain();
   try {
     // Honest now that raw file bytes are released after decode (memory.ts):
     // this budget is close to what the decoded images really hold. LRU
@@ -231,6 +273,7 @@ async function createEngine(): Promise<Engine> {
     }
   }
 
+  await yieldToMain();
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);
@@ -374,6 +417,11 @@ type AnyViewport = any;
 
 /** Registration offsets (mm) by a stack's first imageId: prior studies. */
 const stackOffsets = new Map<string, number>();
+/** A stack's registration offset (mm), keyed by its first imageId. */
+export function getStackOffset(firstImageId: string): number | undefined {
+  return stackOffsets.get(firstImageId);
+}
+
 export function setStackOffset(firstImageId: string, offsetMm: number | null): void {
   if (offsetMm == null) stackOffsets.delete(firstImageId);
   else stackOffsets.set(firstImageId, offsetMm);
@@ -451,6 +499,44 @@ export function linkStacksAtCurrent(engine: Engine, viewportIds: string[], refer
  * 3D cursor: send every other stack viewport in the same frame of reference
  * to the slice nearest `world` (mm, patient). Returns how many moved.
  */
+// ── across windows (multiWindow.ts carries these between webviews) ──
+
+/** Where a stack viewport is, in the shared frame (position + registration offset), for other windows. */
+export function slicePosition(engine: Engine, viewportId: string): { frame: string; normal: [number, number, number]; z: number } | null {
+  const vp = engine.renderingEngine.getViewport(viewportId) as AnyViewport | undefined;
+  const stack = vp ? syncStackOf(engine, vp) : null;
+  const frame: string | undefined = vp?.getFrameOfReferenceUID?.();
+  if (!vp || !stack?.normal || !frame) return null;
+  const z = stack.positions[vp.getCurrentImageIdIndex()];
+  if (!Number.isFinite(z)) return null;
+  return { frame, normal: [stack.normal[0], stack.normal[1], stack.normal[2]], z: z + (stack.offsetMm ?? 0) };
+}
+
+/** Another window scrolled to `z`: move this window's parallel stacks of the same frame there. */
+export function applyRemoteSlice(engine: Engine, viewportIds: readonly string[], at: { frame: string; normal: readonly number[]; z: number }): void {
+  for (const id of viewportIds) {
+    const vp = engine.renderingEngine.getViewport(id) as AnyViewport | undefined;
+    if (!vp || vp.getFrameOfReferenceUID?.() !== at.frame) continue;
+    const stack = syncStackOf(engine, vp);
+    const n = stack?.normal;
+    if (!stack || !n || Math.abs(n[0] * at.normal[0] + n[1] * at.normal[1] + n[2] * at.normal[2]) < 0.95) continue;
+    const index = nearestIndex(stack.positions, at.z - (stack.offsetMm ?? 0));
+    if (index >= 0 && index !== vp.getCurrentImageIdIndex()) void vp.setImageIdIndex(index);
+  }
+}
+
+/** The visible image plane's corners (world mm), for reference lines in other windows. */
+export function viewportCorners(engine: Engine, viewportId: string): { frame: string; corners: [Vec3, Vec3, Vec3, Vec3] } | null {
+  const vp = engine.renderingEngine.getViewport(viewportId) as AnyViewport | undefined;
+  const frame: string | undefined = vp?.getFrameOfReferenceUID?.();
+  const canvas: HTMLCanvasElement | undefined = vp?.canvas;
+  if (!vp || !frame || !canvas?.clientWidth) return null;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const at = (x: number, y: number) => vp.canvasToWorld([x, y]) as Vec3;
+  return { frame, corners: [at(0, 0), at(w, 0), at(w, h), at(0, h)] };
+}
+
 export function jumpTo3dPoint(engine: Engine, sourceViewportId: string, world: readonly number[]): number {
   const source = engine.renderingEngine.getViewport(sourceViewportId);
   const frame = source?.getFrameOfReferenceUID?.();

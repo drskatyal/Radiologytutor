@@ -41,7 +41,7 @@ interface Props {
   onActivate: () => void;
   onClose: () => void;
   /** Slab mode change from outside (shortcut); bumps when it changes. */
-  slabCommand?: { mode?: SlabMode; deltaMm?: number; seq: number };
+  slabCommand?: { mode?: SlabMode; deltaMm?: number; mm?: number; seq: number };
   initialSlab?: Slab;
   /** Bench: the plane is on screen (brightest pixel). */
   onPainted?: (t: {
@@ -145,6 +145,10 @@ export function NativePlaneView({
       setSlab((s) => ({ mode, mm: mode === "off" ? 0 : s.mm || 10 }));
     }
     if (slabCommand.deltaMm) changeSlab(slabCommand.deltaMm);
+    if (slabCommand.mm) {
+      const mm = Math.max(1, Math.min(SLAB_MAX_MM, slabCommand.mm));
+      setSlab((s) => ({ mode: s.mode === "off" ? "mip" : s.mode, mm }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slabCommand?.seq]);
 
@@ -159,6 +163,7 @@ export function NativePlaneView({
 
   return (
     <div
+      data-native-transparent
       className="relative flex h-full w-full flex-col overflow-hidden bg-imaging"
       data-drop-cell={cellIndex}
       data-active-viewport={active ? "1" : undefined}

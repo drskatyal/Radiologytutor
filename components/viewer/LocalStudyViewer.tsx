@@ -24,16 +24,20 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   ChevronUp,
+  ExternalLink,
   FileArchive,
   FolderOpen,
   HardDrive,
   Layers,
+  Link2,
   Maximize2,
   Minimize2,
   ShieldCheck,
   Sparkles,
+  Unlink,
   X,
 } from "lucide-react";
+import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { Button, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
@@ -45,13 +49,16 @@ import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
 import {
   ingestLocalFiles,
   prewarmLocalIngest,
+  applyLocalCacheBudget,
+  localMetadataEntryCount,
+  localRawBytesHeld,
   releaseLocalImages,
   type FirstLocalImage,
   type LocalIngestResult,
 } from "@flowrad/viewer-core/localIngest";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { hapticTick, isSwipeUp } from "@/lib/sheetGesture";
-import { NARROW_LAYOUT_MEDIA, requestStageFullscreen } from "@/lib/viewerLayout";
+import { EDGE_TOOLBAR_PX, NARROW_LAYOUT_MEDIA, READING_SERIES_ASIDE_PX, requestStageFullscreen } from "@/lib/viewerLayout";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
   ssr: false,
@@ -86,6 +93,7 @@ const SIGNUP_PROMPT_KEY = "flowrad.viewer.signupPrompt.dismissed";
 export const FILES_RECEIVED_MARK = "flowrad:viewer:files-received";
 export const FIRST_IMAGE_REGISTERED_MARK = "flowrad:viewer:first-image-registered";
 export const STUDY_PARSED_MARK = "flowrad:viewer:study-parsed";
+export const FIRST_IMAGE_DECODED_MARK = "flowrad:viewer:first-image-decoded";
 
 function formatCount(n: number): string {
   return n.toLocaleString();
@@ -113,6 +121,10 @@ export interface ViewerMemoryStats {
   cacheBytes: number;
   maxCacheBytes: number;
   openFiles: number;
+  /** Local images still holding a NATURALIZED metadata entry (raw file bytes). */
+  metadataEntries: number;
+  /** Raw Part 10 bytes the loader holds beside the decoded cache. */
+  rawBytes: number;
 }
 
 type DirectoryPickerWindow = Window & {
@@ -134,8 +146,14 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const swipeRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const viewerControls = useRef<CornerstoneControls | null>(null);
+  /** The files opened here, handed to popped-out windows. */
+  const [openedFiles, setOpenedFiles] = useState<File[] | null>(null);
+  /** Pop-out: the series to show once its files are read. */
+  const wantSeries = useRef<string | null>(null);
+  const [popOutNote, setPopOutNote] = useState<string | null>(null);
   /**
    * Chromium's `<input webkitdirectory>` asks "Upload N files to this site?" —
    * the opposite of what this page promises. Where the File System Access
@@ -144,6 +162,23 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
    */
   const [nativeFolderPicker, setNativeFolderPicker] = useState(false);
   const [signupDismissed, setSignupDismissed] = useState(true);
+
+  /**
+   * Where the first study's image will draw, from the reading-room layout:
+   * the page's viewer area (the parent's padding box — /viewer drops that
+   * padding once a stage mounts) minus the series aside on wide screens and
+   * the edge toolbar. Only a hint for the engine warm: a miss costs one GL
+   * buffer resize on the first drop.
+   */
+  const expectedStageSize = useCallback((): { width: number; height: number } | undefined => {
+    const root = rootRef.current?.parentElement;
+    if (!reading || !root) return undefined;
+    const narrow = window.matchMedia(NARROW_LAYOUT_MEDIA).matches;
+    return {
+      width: root.clientWidth - (narrow ? 0 : READING_SERIES_ASIDE_PX),
+      height: root.clientHeight - EDGE_TOOLBAR_PX,
+    };
+  }, [reading]);
 
   useEffect(() => {
     if (reading && typeof (window as DirectoryPickerWindow).showDirectoryPicker === "function") {
@@ -159,18 +194,30 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     const idle =
       (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
         .requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1));
+    // The reading room keeps its warmed engine across Close study, so a
+    // second study opens as fast as the first (released on unmount).
+    let releaseEngine: (() => void) | null = null;
+    let unmounted = false;
     idle(
       () => {
         prewarmLocalIngest();
         // The viewer component and an initialised engine (decode workers
         // booted, codecs registered) — ~0.4 s off the first image.
         void import("@/components/CornerstoneViewer")
-          .then((module) => module.prewarmViewerEngine())
+          .then((module) => {
+            if (unmounted) return;
+            if (reading) releaseEngine = module.holdViewerEngine();
+            module.prewarmViewerEngine(expectedStageSize());
+          })
           .catch(() => undefined);
       },
       { timeout: 500 }
     );
-  }, [reading]);
+    return () => {
+      unmounted = true;
+      releaseEngine?.();
+    };
+  }, [reading, expectedStageSize]);
 
   // Numbers only, for the perf gate and support: how much decoded imaging the
   // tab holds against its cap. Never an identifier or a pixel.
@@ -182,6 +229,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         cacheBytes: core.cache.getCacheSize(),
         maxCacheBytes: core.cache.getMaxCacheSize(),
         openFiles: registeredRef.current.length,
+        metadataEntries: await localMetadataEntryCount(),
+        rawBytes: await localRawBytesHeld(),
       };
     };
     return () => {
@@ -189,17 +238,22 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     };
   }, []);
 
-  const release = useCallback(() => {
+  const release = useCallback((): Promise<void> => {
     const ids = registeredRef.current;
     registeredRef.current = [];
-    if (ids.length > 0) void releaseLocalImages(ids).catch(() => undefined);
+    if (ids.length === 0) return Promise.resolve();
+    // Freed back to the page's pre-open footprint, then re-warmed (fresh,
+    // empty header workers) so the next drop is as fast as the first.
+    return releaseLocalImages(ids)
+      .then(() => prewarmLocalIngest())
+      .catch(() => undefined);
   }, []);
 
   // Leaving the page frees the study (SPA navigation away included).
   useEffect(
     () => () => {
       abortRef.current?.abort();
-      release();
+      void release();
     },
     [release]
   );
@@ -250,14 +304,31 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     setDrawerOpen(false);
     setExpanded(false);
     setPhase({ state: "idle" });
-    release();
-  }, [release]);
+    // Close recycles the decode workers (their heaps are the study's memory).
+    // Once that is done, boot the fresh ones and re-prime the GL context on
+    // idle — the same synthetic warm as page load — so a second study opens
+    // as fast as the first.
+    void release().then(() => {
+      if (!reading) return;
+      const idle =
+        (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+          .requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1));
+      idle(
+        () => {
+          void import("@/components/CornerstoneViewer")
+            .then((module) => module.rewarmViewerEngine(expectedStageSize()))
+            .catch(() => undefined);
+        },
+        { timeout: 500 }
+      );
+    });
+  }, [release, reading, expectedStageSize]);
 
   const ingest = useCallback(
     async (files: File[]) => {
       mark(FILES_RECEIVED_MARK);
       abortRef.current?.abort();
-      release();
+      void release();
       const controller = new AbortController();
       abortRef.current = controller;
       setActiveStudy(0);
@@ -277,6 +348,20 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       const onFirstImage = (first: FirstLocalImage) => {
         if (controller.signal.aborted) return;
         mark(FIRST_IMAGE_REGISTERED_MARK);
+        // Decode the first image NOW, while React mounts the viewer (~70 ms)
+        // and the viewport asks for its stack. Cornerstone dedupes loads by
+        // imageId, so the viewport's own request picks this one up in flight
+        // or from the cache. For a compressed study this also starts the one
+        // codec its transfer syntax needs (JPEG 2000 → OpenJPEG) — still on
+        // demand, just ~200 ms sooner. Local files only; nothing leaves the page.
+        const firstId = first.imageIds[0];
+        void import("@/components/CornerstoneViewer")
+          .then((module) => module.ensureViewerEngine())
+          .then(({ core }) => {
+            if (controller.signal.aborted) return;
+            return core.imageLoader.loadAndCacheImage(firstId).then(() => mark(FIRST_IMAGE_DECODED_MARK));
+          })
+          .catch(() => undefined); // the viewport retries and reports its own error
         pinned = {
           fileName: first.fileName,
           modality: first.header.modality,
@@ -301,7 +386,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         });
         registeredRef.current = result.registeredIds;
         if (controller.signal.aborted) {
-          release();
+          void release();
           rejectFull(new Error("aborted"));
           return;
         }
@@ -326,11 +411,29 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           // Open on the series a hanging protocol would read first.
           setActiveSeries(primarySeriesIndexByProtocol(result.studies[0]));
         }
+        // A popped-out window opens on the series it was popped out with.
+        const wanted = wantSeries.current;
+        wantSeries.current = null;
+        const at = wanted
+          ? result.studies.flatMap((st, si) => st.series.map((se, i) => ({ si, i, uid: se.seriesInstanceUID }))).find((x) => x.uid === wanted)
+          : undefined;
+        if (at) {
+          setActiveStudy(at.si);
+          setActiveSeries(at.i);
+        }
+        setOpenedFiles(files);
         setPhase({ state: "open", result, pinned: located ? pinnedNow : null });
+        // Decoded + raw must fit the device budget, not decoded alone (see
+        // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
+        const headers = result.studies.flatMap((study) => study.series.flatMap((series) => series.instances));
+        void import("@/components/CornerstoneViewer")
+          .then((module) => module.ensureViewerEngine())
+          .then(() => (controller.signal.aborted ? 0 : applyLocalCacheBudget(headers)))
+          .catch(() => undefined);
       } catch (error) {
         rejectFull(new Error("failed"));
         if (controller.signal.aborted) return;
-        release();
+        void release();
         setPhase({
           state: "error",
           message: error instanceof Error ? error.message : "The files could not be read.",
@@ -379,6 +482,17 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
   const pinnedIsActive =
     !!pinned && (phase.state === "reading" || !!series?.instances.some((i) => i.fileName === pinned.fileName));
+
+  const popOut = usePopOutWindows({
+    files: openedFiles,
+    series,
+    studyUid: study?.studyInstanceUID ?? null,
+    controls: viewerControls,
+    onHandoff: (h) => {
+      wantSeries.current = h.seriesUid;
+      void ingest(h.files);
+    },
+  });
 
   const source = useMemo<ViewerSource | null>(() => {
     // The paint-first source stays the SAME object through the swap so the
@@ -453,7 +567,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   );
 
   return (
-    <div className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
+    <div ref={rootRef} className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
       <input
         id={folderInputId}
         type="file"
@@ -513,6 +627,35 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               expanded && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
           >
+            {/* Wide screens: open this series in another browser window (drag it to another monitor). */}
+            {!expanded && phase.state === "open" && (
+              <div className="mb-2 hidden items-center gap-2 lg:flex">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  leadingIcon={<ExternalLink className="h-4 w-4" aria-hidden />}
+                  onClick={() => setPopOutNote(popOut.popOut() ? "Opened in a new window. Drag it to another monitor." : "The browser blocked the new window. Allow pop-ups for this site.")}
+                >
+                  Pop out to new window
+                </Button>
+                {popOut.hasOtherWindows && (
+                  <Button
+                    size="sm"
+                    variant={popOut.linked ? "primary" : "secondary"}
+                    aria-pressed={popOut.linked}
+                    leadingIcon={popOut.linked ? <Link2 className="h-4 w-4" aria-hidden /> : <Unlink className="h-4 w-4" aria-hidden />}
+                    onClick={popOut.toggleLinked}
+                  >
+                    {popOut.linked ? "Windows linked" : "Windows unlinked"}
+                  </Button>
+                )}
+                {popOutNote && (
+                  <span role="status" className="truncate text-xs text-secondary">
+                    {popOutNote}
+                  </span>
+                )}
+              </div>
+            )}
             {/* Phone bar: which series, the drawer, fullscreen. Desktop has the side panel. */}
             <div
               className={cn(
@@ -560,6 +703,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 source={source}
                 modality={modality}
                 controls={viewerControls}
+                onEvent={popOut.onViewerEvent}
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp

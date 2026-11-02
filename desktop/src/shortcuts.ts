@@ -41,6 +41,8 @@ export type ShortcutAction =
   | { type: "undoAnnotation" }
   | { type: "redoAnnotation" }
   | { type: "voice" }
+  /** Open the active viewport (or the whole layout) in a window on the next monitor. */
+  | { type: "sendToMonitor"; scope: "viewport" | "layout" }
   | { type: "clearAnnotations" }
   | { type: "export" }
   | { type: "mpr" }
@@ -183,6 +185,8 @@ export const BINDINGS: Binding[] = [
   { keys: "F5", does: "Synchronise scrolling (by position)", group: "Layout", match: (e) => e.key === "F5" && !e.shiftKey && !e.altKey, action: { type: "toggleSync" } },
   { id: "sync.voi", keys: "Shift+F5", does: "Synchronise window / level", group: "Layout", match: (e) => e.key === "F5" && !!e.shiftKey && !e.altKey, action: { type: "toggleSyncVoi" } },
   { id: "sync.zoom", keys: "Alt+F5", does: "Synchronise zoom and pan", group: "Layout", match: (e) => e.key === "F5" && !!e.altKey && !e.shiftKey, action: { type: "toggleSyncZoom" } },
+  { id: "window.sendViewport", keys: "Mod+Shift+N", does: "Open the active viewport in a window on the next monitor", group: "Layout", match: (e, m) => m && !!e.shiftKey && !e.altKey && keyIs(e, "n"), action: { type: "sendToMonitor", scope: "viewport" } },
+  { id: "window.sendLayout", keys: "Mod+Alt+N", does: "Send the whole layout to a window on the next monitor", group: "Layout", match: (e, m) => m && !!e.altKey && !e.shiftKey && (e.code === "KeyN" || keyIs(e, "n")), action: { type: "sendToMonitor", scope: "layout" } },
   { id: "sync.link", keys: "Mod+Shift+L", does: "Link viewports at what they show now (register a prior / other FOV)", group: "Layout", match: (e, m) => m && !!e.shiftKey && keyIs(e, "l"), action: { type: "linkAtCurrent" } },
   { keys: "Mod+F12", does: "Reference lines", group: "Layout", match: (e, m) => m && !e.shiftKey && e.key === "F12", action: { type: "toggleReferenceLines" } },
 
@@ -220,6 +224,21 @@ export function keyLabel(spec: string, mac = isMac()): string {
     .replace(/Alt\+/g, mac ? "⌥" : "Alt+")
     .replace(/Shift\+/g, mac ? "⇧" : "Shift+")
     .replace(/Backspace/g, mac ? "⌫" : "Backspace");
+}
+
+/** The key shown for an action (the reader's re-mapping wins), e.g. "Shift+4". */
+export function keysForAction(action: ShortcutAction, overrides: ShortcutOverrides = {}, mac = isMac()): string | undefined {
+  // Ranges share one display row ("1 … 9", "Shift+1 … 7"): name the one key.
+  if (action.type === "preset") return action.ordinal >= 1 && action.ordinal <= 9 ? String(action.ordinal) : undefined;
+  if (action.type === "layout") {
+    const i = LAYOUT_SHORTCUTS.findIndex((l) => l.rows === action.rows && l.cols === action.cols);
+    return i >= 0 ? keyLabel(`Shift+${i + 1}`, mac) : undefined;
+  }
+  const want = JSON.stringify(action);
+  const b = BINDINGS.find((x) => x.keys && JSON.stringify(x.action) === want);
+  if (!b) return undefined;
+  const spec = (b.id && overrides[b.id]) || b.keys;
+  return keyLabel(spec, mac);
 }
 
 export function isMac(): boolean {

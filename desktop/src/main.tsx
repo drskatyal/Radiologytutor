@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ToastProvider } from "./toast";
 import App from "./App";
@@ -18,10 +18,33 @@ if (isTauri) {
 // needs it, and opening a study awaits it (`protocolReady`).
 void initProtocol();
 watchLongTasks();
+// Phase 2 spike (FLOWRAD_NATIVE=1 + FLOWRAD_BENCH_VIEW=native-spike): the
+// native-renderer test view instead of the app. Asked after the first render,
+// so a normal start never waits on it.
+const NativeSpike = lazy(() => import("./native/NativeSpike"));
+function Root() {
+  const [spike, setSpike] = useState(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    void Promise.all([
+      invoke<{ enabled: boolean }>("native_status").catch(() => null),
+      invoke<string | null>("bench_view").catch(() => null),
+    ]).then(([native, view]) => setSpike(!!native?.enabled && view === "native-spike"));
+  }, []);
+  if (spike) {
+    return (
+      <Suspense fallback={null}>
+        <NativeSpike />
+      </Suspense>
+    );
+  }
+  return <App />;
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ToastProvider>
-      <App />
+      <Root />
     </ToastProvider>
   </StrictMode>
 );

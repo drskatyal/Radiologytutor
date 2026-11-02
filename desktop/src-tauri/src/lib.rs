@@ -12,11 +12,15 @@
 mod anonymize;
 mod documents;
 mod header;
+mod image_store;
+mod native;
+mod native_view;
 mod pacs;
 mod pet;
 mod preview;
 mod procmem;
 mod volume;
+mod viewer_windows;
 mod render3d;
 mod scan;
 mod sources;
@@ -232,7 +236,38 @@ pub(crate) fn flowrad_env(name: &str) -> Result<String, std::env::VarError> {
 }
 
 fn bench_on() -> bool {
-    crate::flowrad_env("BENCH").as_deref() == Ok("1")
+    crate::flowrad_env("BENCH").as_deref() == Ok("1") || crate::flowrad_env("LEAK_ROUNDS").is_ok()
+}
+
+/// The release exe is a GUI-subsystem binary on Windows: its stdout goes
+/// nowhere when it is started from a terminal, so `FLOWRAD_BENCH=1` printed
+/// nothing on a real machine. When any bench/probe hook is on, attach to the
+/// parent console (no-op when stdout is already redirected, e.g. bench.mjs).
+fn attach_bench_console() {
+    #[cfg(windows)]
+    if bench_on() || crate::flowrad_env("PROBE_AFTER_MS").is_ok() {
+        // SAFETY: plain Win32 call; failure (no parent console) is harmless.
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(
+                windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+            );
+        }
+    }
+}
+
+/// Every bench line is also appended to a file, so a run started from
+/// Explorer or a shortcut still leaves its numbers behind:
+/// `FLOWRAD_BENCH_OUT` if set, else `flowrad-bench.jsonl` in the temp dir.
+fn bench_emit(prefix: &str, value: &serde_json::Value) {
+    let line = format!("{prefix} {value}");
+    println!("{line}");
+    let path = crate::flowrad_env("BENCH_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("flowrad-bench.jsonl"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 /// The last scan's numbers, for the watchdog line.
@@ -263,7 +298,7 @@ fn bench_scan_line(result: &ScanResult) {
         "rust": result.timings,
         "processUptimeMs": startup_elapsed_ms(),
     });
-    println!("FLOWRAD_BENCH_SCAN {line}");
+    bench_emit("FLOWRAD_BENCH_SCAN", &line);
     *LAST_SCAN.lock() = Some(line);
 }
 
@@ -286,7 +321,7 @@ fn start_bench_watchdog() {
             "scan": LAST_SCAN.lock().clone(),
             "note": "the renderer never reported; scan numbers (if any) come from the shell",
         });
-        println!("FLOWRAD_BENCH {line}");
+        bench_emit("FLOWRAD_BENCH", &line);
         std::process::exit(3);
     });
 }
@@ -304,7 +339,7 @@ fn probe_after_ms() -> Option<u64> {
 
 #[tauri::command]
 fn probe_report(app: tauri::AppHandle, report: serde_json::Value) {
-    println!("FLOWRAD_PROBE {report}");
+    bench_emit("FLOWRAD_PROBE", &report);
     app.exit(0);
 }
 
@@ -353,7 +388,7 @@ fn set_memory_mode(window: tauri::WebviewWindow, low: bool) {
 /// `FLOWRAD_BENCH_EXIT=1`. Used by `desktop/scripts/bench.mjs`.
 #[tauri::command]
 fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
-    println!("FLOWRAD_BENCH {}", report);
+    bench_emit("FLOWRAD_BENCH", &report);
     if crate::flowrad_env("BENCH_EXIT").as_deref() == Ok("1") {
         app.exit(0);
     }
@@ -375,10 +410,19 @@ fn mark(i: usize) {
     }
 }
 
+/// Native mode: when Rust first presented a frame in the window (before
+/// WebView2 has loaded the page), ms since process start.
+static NATIVE_FIRST_PAINT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
-    serde_json::json!({ "windowBuiltMs": m[0], "navStartMs": m[1], "navDoneMs": m[2] })
+    serde_json::json!({
+        "windowBuiltMs": m[0],
+        "navStartMs": m[1],
+        "navDoneMs": m[2],
+        "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+    })
 }
 
 /// Milliseconds since the process started — the renderer calls this at first
@@ -394,7 +438,11 @@ fn startup_elapsed_ms() -> f64 {
 /// `FLOWRAD_BENCH_VIEW=mpr|3d|fusion`: switch to that view once the study is open.
 #[tauri::command]
 fn bench_view() -> Option<String> {
-    crate::flowrad_env("BENCH_VIEW").ok()
+    // FLOWRAD_LEAK_ROUNDS alone used to do nothing (it only sized a leak run
+    // that BENCH_VIEW=leak had to request); asking for rounds now asks for it.
+    crate::flowrad_env("BENCH_VIEW")
+        .ok()
+        .or_else(|| crate::flowrad_env("LEAK_ROUNDS").ok().map(|_| "leak".to_string()))
 }
 
 /// `FLOWRAD_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
@@ -409,6 +457,218 @@ fn bench_pixels() -> bool {
 #[tauri::command]
 async fn process_memory() -> procmem::TreeMem {
     tauri::async_runtime::spawn_blocking(procmem::current_tree).await.unwrap_or(procmem::TreeMem { total_mb: 0, processes: vec![] })
+}
+
+// ───────────── Phase 2 native renderer (native.rs, FLOWRAD_NATIVE=1) ─────────────
+
+#[tauri::command]
+fn native_status(native: tauri::State<'_, native::Shared>) -> native::NativeStatus {
+    native.status()
+}
+
+/// Create the GPU surface under the page and make the webview transparent.
+#[tauri::command]
+async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) -> Result<native::NativeStatus, String> {
+    if !native::enabled() {
+        return Ok(native.status());
+    }
+    // One native surface, on the main window. Viewer windows on other
+    // monitors keep the JS renderer (their own surfaces are a follow-up).
+    if window.label() != "main" {
+        return Ok(native::NativeStatus { enabled: false, ..Default::default() });
+    }
+    let status = native.init(&window).await;
+    if status.ready {
+        // Where the page draws nothing, the native surface shows through.
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let origin = window.inner_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
+        native.set_window_facts(origin, scale);
+    }
+    Ok(native.status())
+}
+
+/// The page's viewport rectangles (CSS px); draws a frame. Returns its CPU ms.
+#[tauri::command]
+async fn native_set_cells(window: tauri::WebviewWindow, cells: Vec<native::Cell>, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    native.set_cells(cells);
+    let scale = window.scale_factor().unwrap_or(1.0);
+    if let Ok(size) = window.inner_size() {
+        native.resize(size.width, size.height);
+    }
+    if let Ok(p) = window.inner_position() {
+        native.set_window_facts((p.x, p.y), scale);
+    }
+    native.render(scale)
+}
+
+/// Window / level of the test image (stored units); draws a frame.
+#[tauri::command]
+async fn native_set_wl(window: tauri::WebviewWindow, center: f32, width: f32, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    native.set_wl(center, width);
+    native.render(window.scale_factor().unwrap_or(1.0))
+}
+
+/// P2.1: open the study given on the command line natively (its largest
+/// series), decode + draw the first slice. Times from the call and from
+/// process start, so the bench has a native "first image".
+#[tauri::command]
+async fn native_open_launch_study(window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) -> Result<serde_json::Value, String> {
+    let started = std::time::Instant::now();
+    let roots: Vec<PathBuf> = launch_args().into_iter().map(PathBuf::from).collect();
+    if roots.is_empty() {
+        return Err("no study on the command line".into());
+    }
+    let series = tauri::async_runtime::spawn_blocking(move || native::largest_series(&roots)).await.map_err(|e| e.to_string())?;
+    if series.is_empty() {
+        return Err("no DICOM images found".into());
+    }
+    let listed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let shown = native.open_series(series, window.scale_factor().unwrap_or(1.0))?;
+    Ok(serde_json::json!({
+        "listMs": listed_ms,
+        "firstImageMs": started.elapsed().as_secs_f64() * 1000.0,
+        "firstImageSinceStartMs": startup_elapsed_ms(),
+        "first": shown,
+    }))
+}
+
+/// P2.1: scroll the native series by `delta` slices.
+#[tauri::command]
+async fn native_scroll(window: tauri::WebviewWindow, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
+    native.scroll_spike(delta, window.scale_factor().unwrap_or(1.0))
+}
+
+/// P2.1: close the native series: texture and decoded slices freed.
+#[tauri::command]
+fn native_close(native: tauri::State<'_, native::Shared>) {
+    native.close_all();
+}
+
+// ───────────── P2.2: native viewports in the app (one per layout cell) ─────────────
+
+/// Every layout cell's rectangle (CSS px); cells not listed are freed. Draws.
+#[tauri::command]
+async fn native_layout(window: tauri::WebviewWindow, cells: Vec<native::CellRect>, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    native.set_layout(cells);
+    if let Ok(size) = window.inner_size() {
+        native.resize(size.width, size.height);
+    }
+    native.render(window.scale_factor().unwrap_or(1.0))
+}
+
+/// Show a series (the app's file ids, display order) in a cell.
+#[tauri::command]
+async fn native_cell_series(
+    window: tauri::WebviewWindow,
+    id: String,
+    file_ids: Vec<u32>,
+    index: usize,
+    state: tauri::State<'_, AppState>,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::ShowResult, String> {
+    // Only files the user opened (the registry), like the dicom:// protocol.
+    let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().collect::<Option<Vec<_>>>().ok_or("unknown file id")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    tauri::async_runtime::spawn_blocking({
+        let native = native.inner().clone();
+        move || native.set_series(&id, paths, index, scale)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Change a cell's view: slice, window/level, zoom, pan, rotation, flip, invert.
+#[tauri::command]
+async fn native_cell_view(
+    window: tauri::WebviewWindow,
+    id: String,
+    patch: native_view::ViewPatch,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::ShowResult, String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.update_view(&id, patch, scale)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.scroll(&id, delta, scale)).await.map_err(|e| e.to_string())?
+}
+
+/// P2.4: a plane / slab of the built Rust volume in a native cell.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn native_cell_plane(
+    window: tauri::WebviewWindow,
+    id: String,
+    key: String,
+    plane: String,
+    index: usize,
+    slab: Option<String>,
+    mm: Option<f64>,
+    max_dim: Option<usize>,
+    wl: Option<(f32, f32)>,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::ShowResult, String> {
+    let key: u64 = key.parse().map_err(|_| "bad volume key")?;
+    let plane = volume::Plane::parse(&plane).ok_or("bad plane")?;
+    let slab = slab.as_deref().and_then(volume::Slab::parse).unwrap_or(volume::Slab::Off);
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.set_plane(&id, key, plane, index, slab, mm.unwrap_or(0.0), max_dim.unwrap_or(1024), wl, scale))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// P2.5: a 3D frame of the built Rust volume into a native cell.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn native_cell_render3d(
+    window: tauri::WebviewWindow,
+    id: String,
+    key: String,
+    mode: String,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    center: f32,
+    width: f32,
+    size: usize,
+    fast: bool,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::Render3dResult, String> {
+    let key: u64 = key.parse().map_err(|_| "bad volume key")?;
+    let mode = render3d::Mode::parse(&mode).ok_or("bad 3D mode")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.show_render3d(&id, key, mode, yaw, pitch, zoom, center, width, size, fast, scale))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn native_cell_close(id: String, native: tauri::State<'_, native::Shared>) {
+    native.close_cell(&id);
+}
+
+/// P2.3: ROI statistics on a cell's current slice (image px coordinates).
+#[tauri::command]
+fn native_roi_stats(id: String, shape: native::RoiShape, native: tauri::State<'_, native::Shared>) -> Option<native::RoiStats> {
+    native.roi_stats(&id, &shape)
+}
+
+/// The image pixel and its value under a cell point (CSS px), or null.
+#[tauri::command]
+fn native_pick(id: String, x: f32, y: f32, native: tauri::State<'_, native::Shared>) -> Option<serde_json::Value> {
+    native.pick(&id, x, y).map(|(col, row, value)| serde_json::json!({ "col": col, "row": row, "value": value }))
+}
+
+#[tauri::command]
+fn native_store_stats(native: tauri::State<'_, native::Shared>) -> image_store::StoreStats {
+    native.store().stats()
 }
 
 /// Test hook: FLOWRAD_SIMULATE_BLANK_GPU=1 makes the paint check read the GPU
@@ -579,6 +839,7 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    attach_bench_console();
     let state = AppState::default();
     *state.launch_paths.lock() = launch_args();
     start_bench_watchdog();
@@ -589,6 +850,24 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
+        .manage(viewer_windows::WindowHandoff::default())
+        .manage(native::Shared::default())
+        // Closing the main window ends the session: viewer windows on other
+        // monitors go with it (their webviews and memory with them).
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::Destroyed = event {
+                    window.app_handle().exit(0);
+                }
+                // Native surface follows the window (no-op until it exists).
+                if let tauri::WindowEvent::Resized(size) = event {
+                    if let Some(native) = window.app_handle().try_state::<native::Shared>() {
+                        native.resize(size.width, size.height);
+                        let _ = native.render(window.scale_factor().unwrap_or(1.0));
+                    }
+                }
+            }
+        })
         .on_page_load(|_webview, payload| match payload.event() {
             tauri::webview::PageLoadEvent::Started => mark(1),
             tauri::webview::PageLoadEvent::Finished => mark(2),
@@ -654,10 +933,51 @@ pub fn run() {
             sync::sync_sign_in,
             sync::sync_sign_out,
             sync::sync_upload_study,
+            viewer_windows::list_monitors,
+            viewer_windows::window_monitor,
+            viewer_windows::open_viewer_window,
+            viewer_windows::take_window_payload,
+            viewer_windows::viewer_windows,
+            viewer_windows::close_viewer_window,
+            native_status,
+            native_init,
+            native_set_cells,
+            native_set_wl,
+            native_open_launch_study,
+            native_scroll,
+            native_close,
+            native_store_stats,
+            native_layout,
+            native_cell_series,
+            native_cell_view,
+            native_cell_scroll,
+            native_cell_close,
+            native_pick,
+            native_roi_stats,
+            native_cell_plane,
+            native_cell_render3d,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
     mark(0);
+    // Native mode (Phase 2): the GPU surface paints the window at once, while
+    // WebView2 is still starting; the webview is transparent over it.
+    if native::enabled() {
+        if let (Some(window), Some(native)) = (app.get_webview_window("main"), app.try_state::<native::Shared>()) {
+            let native = native.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let status = native.init(&window).await;
+                if status.ready {
+                    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    if native.render(window.scale_factor().unwrap_or(1.0)).is_ok() {
+                        if let Some(t) = STARTED.get() {
+                            let _ = NATIVE_FIRST_PAINT.set(t.elapsed().as_secs_f64() * 1000.0);
+                        }
+                    }
+                }
+            });
+        }
+    }
     // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
     store::migrate_legacy_data(app.handle());
 

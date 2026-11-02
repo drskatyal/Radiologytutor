@@ -29,7 +29,15 @@ const MR_DIR = process.env.TEST_MR_DIR;
 const OUT_DIR = path.join(__dirname, "..", "..", "test-results", "perf");
 const OUT_FILE = path.join(OUT_DIR, "free-viewer.json");
 
-const FIRST_IMAGE_BUDGET_MS = Number(process.env.FIRST_IMAGE_BUDGET_MS ?? 1000);
+/**
+ * First image = drop → the frame actually drawn (IMAGE_RENDERED), not the
+ * render request. Product targets: < 300 ms in a warm tab, < 500 ms on a
+ * freshly launched browser. CI renders in software GL on a shared runner, so
+ * the warm gate keeps 100 ms of headroom over the target; the cold gate is
+ * the target itself, on the median of the launches.
+ */
+const FIRST_IMAGE_BUDGET_MS = Number(process.env.FIRST_IMAGE_BUDGET_MS ?? 400);
+const COLD_FIRST_IMAGE_MEDIAN_BUDGET_MS = Number(process.env.COLD_FIRST_IMAGE_BUDGET_MS ?? 500);
 const LONG_TASK_BUDGET_MS = 50;
 /** 60 fps on a real GPU. */
 const FRAME_P95_BUDGET_MS = 20;
@@ -41,6 +49,18 @@ const FRAME_P95_BUDGET_MS = 20;
  */
 const FRAME_P95_SOFTWARE_GPU_BUDGET_MS = 34;
 const SCROLL_STEPS = 240;
+/** Fresh-browser launches for the cold first-image gate. */
+const COLD_RUNS = 3;
+/**
+ * Close study must give the memory back. Renderer + GPU resident memory has
+ * to return to the level measured on the dropzone before the drop (engine,
+ * workers and GL context already warm), within this slack for allocator and
+ * JIT noise — a 263 MB study left behind would miss it by ~5×.
+ */
+const CLOSE_RSS_TOLERANCE_MB = 64;
+const CLOSE_SETTLE_MS = 30_000;
+/** viewerRuntime.ts imageCacheBytes for a 2 GB device (deviceMemory ≤ 2). */
+const DEVICE_BUDGET_2GB_MB = 256;
 
 // Chromium with a GPU accelerates 2D canvases by default, so the viewer's
 // WebGL → 2D-canvas copy is a GPU blit. Headless Chromium on a GPU-less runner
@@ -120,9 +140,13 @@ function watchPrivacy(page: Page) {
 async function marks(page: Page) {
   return page.evaluate(() => {
     const all = performance.getEntriesByType("mark");
-    const at = (name: string) => all.find((m) => m.name === name)?.startTime ?? null;
+    // The LATEST mark of each kind: a test can open, close and reopen.
+    const at = (name: string) => all.filter((m) => m.name === name).pop()?.startTime ?? null;
     const received = at("flowrad:viewer:files-received");
-    const pixel = all.find((m) => m.name.startsWith("radlearn:first-pixel:") && m.startTime >= (received ?? 0));
+    // The frame actually drawn (IMAGE_RENDERED), not the render request.
+    const pixel =
+      all.find((m) => m.name.startsWith("radlearn:first-rendered:") && m.startTime >= (received ?? 0)) ??
+      all.find((m) => m.name.startsWith("radlearn:first-pixel:") && m.startTime >= (received ?? 0));
     const ready = all.find((m) => m.name.startsWith("radlearn:series-ready:") && m.startTime >= (received ?? 0));
     return {
       received,
@@ -151,7 +175,17 @@ async function centreLuma(page: Page): Promise<number> {
 }
 
 async function measureFirstImage(page: Page) {
-  await expect.poll(async () => (await marks(page)).firstPixel, { timeout: 30_000, intervals: [25] }).not.toBeNull();
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const all = performance.getEntriesByType("mark");
+          const received = all.filter((m) => m.name === "flowrad:viewer:files-received").pop()?.startTime ?? 0;
+          return all.some((m) => m.name.startsWith("radlearn:first-rendered:") && m.startTime >= received);
+        }),
+      { timeout: 30_000, intervals: [25] }
+    )
+    .toBe(true);
   await expect.poll(() => centreLuma(page), { timeout: 10_000, intervals: [25] }).toBeGreaterThan(30);
   const m = await marks(page);
   return {
@@ -228,7 +262,7 @@ async function gpuRenderer(page: Page): Promise<string> {
 
 async function viewerStats(page: Page) {
   return page.evaluate(async () => {
-    const w = window as unknown as { __flowradViewerStats?: () => Promise<{ cacheBytes: number; maxCacheBytes: number; openFiles: number }> };
+    const w = window as unknown as { __flowradViewerStats?: () => Promise<{ cacheBytes: number; maxCacheBytes: number; openFiles: number; metadataEntries: number; rawBytes: number }> };
     return w.__flowradViewerStats ? w.__flowradViewerStats() : null;
   });
 }
@@ -279,6 +313,42 @@ test("public, no sign-in: /viewer renders the dropzone with the privacy line and
   await page.screenshot({ path: path.join(OUT_DIR, "01-dropzone.png") });
 });
 
+test("cold browser: first image within budget on a freshly launched browser (no shader or GPU cache)", async ({ playwright }) => {
+  test.skip(!CT_DIR, "TEST_CT_LARGE_DIR is not set");
+  test.setTimeout(180_000);
+  // Every other test shares one browser, so its GPU process has already
+  // compiled the image shaders. A real visitor's first drop does not: launch a
+  // fresh browser per run. The prewarm (CornerstoneViewer prewarmViewerEngine)
+  // must have compiled them on the dropzone, in idle time, before the drop.
+  const runs: number[] = [];
+  for (let run = 0; run < COLD_RUNS; run += 1) {
+    const browser = await playwright.chromium.launch({
+      ...(process.env.PW_CHROMIUM_PATH ? { executablePath: process.env.PW_CHROMIUM_PATH } : {}),
+      args: [...(process.env.PW_CHROMIUM_PATH ? ["--headless", "--no-sandbox"] : []), ...GPU_CANVAS_FLAGS],
+    });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      await page.goto(`http://127.0.0.1:${process.env.VISUAL_PORT ?? 3100}/viewer`);
+      await expect(page.getByTestId("local-dropzone")).toBeVisible();
+      await page.waitForTimeout(2500); // a visitor choosing a folder
+      await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
+      runs.push((await measureFirstImage(page)).firstImageMs);
+    } finally {
+      await browser.close();
+    }
+  }
+  const sorted = [...runs].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  record("coldFirstImage", {
+    runs,
+    medianMs: median,
+    maxMs: sorted[sorted.length - 1],
+    medianBudgetMs: COLD_FIRST_IMAGE_MEDIAN_BUDGET_MS,
+  });
+  console.log(`cold-browser first image: ${runs.join(", ")} ms (median ${median})`);
+  expect(median, "median first image on a freshly launched browser").toBeLessThanOrEqual(COLD_FIRST_IMAGE_MEDIAN_BUDGET_MS);
+});
+
 test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({ page, browser }) => {
   test.skip(!CT_DIR, "TEST_CT_LARGE_DIR is not set (scripts/make-test-ct.py --slices 520)");
   test.setTimeout(240_000);
@@ -309,14 +379,30 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   const heapOpen = await jsHeapMb(cdp);
   const rssOpen = await rendererRssMb(browser);
 
+  const closedAt = Date.now();
   await page.getByRole("button", { name: "Close study" }).first().click();
   await expect(page.getByTestId("local-dropzone")).toBeVisible();
-  await page.waitForTimeout(500);
-  await cdp.send("HeapProfiler.collectGarbage").catch(() => undefined);
-  await page.waitForTimeout(500);
+  // Regression gate (close → back to the pre-open footprint). No forced GC:
+  // a user's tab only gets the collector's natural schedule, so poll.
+  let rssClosed = await rendererRssMb(browser);
+  if (rssIdle != null) {
+    const deadline = Date.now() + CLOSE_SETTLE_MS;
+    while (rssClosed != null && rssClosed > rssIdle + CLOSE_RSS_TOLERANCE_MB && Date.now() < deadline) {
+      await page.waitForTimeout(500);
+      rssClosed = await rendererRssMb(browser);
+    }
+  }
+  const closeSettleMs = Date.now() - closedAt;
   const statsClosed = await viewerStats(page);
   const heapClosed = await jsHeapMb(cdp);
-  const rssClosed = await rendererRssMb(browser);
+
+  // Reopen after close: the recycled decode/header workers must serve the
+  // next study as fast as the first one.
+  await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
+  const reopen = await measureFirstImage(page);
+  await waitParsed(page);
+  await page.getByRole("button", { name: "Close study" }).first().click();
+  await expect(page.getByTestId("local-dropzone")).toBeVisible();
   const wasm = privacy.wasmFetched();
   const violations = privacy.violations();
 
@@ -330,17 +416,20 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
       cacheCapMb: stats ? Math.round(stats.maxCacheBytes / 1048576) : null,
       cacheAfterCloseMb: statsClosed ? Math.round(statsClosed.cacheBytes / 1048576) : null,
       filesAfterClose: statsClosed?.openFiles ?? null,
+      metadataEntriesAfterClose: statsClosed?.metadataEntries ?? null,
+      closeSettleMs,
       jsHeapOpenMb: heapOpen,
       jsHeapClosedMb: heapClosed,
       rendererRssIdleMb: rssIdle,
       rendererRssOpenMb: rssOpen,
       rendererRssClosedMb: rssClosed,
     },
+    reopenFirstImageMs: reopen.firstImageMs,
     wasmFetched: wasm,
     requestsAfterDrop: privacy.requestCount(),
     privacyViolations: violations,
   };
-  record("ct520", result);
+  record("ct520", { ...result, firstImageBudgetMs: FIRST_IMAGE_BUDGET_MS });
   console.log(JSON.stringify(result, null, 2));
 
   expect(violations, "privacy: no data leaves the page").toEqual([]);
@@ -352,9 +441,17 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   expect(wasm, "uncompressed CT must not load any WASM codec").toEqual([]);
   expect(statsClosed?.cacheBytes, "Close study frees the decoded cache").toBe(0);
   expect(statsClosed?.openFiles, "Close study drops every file handle").toBe(0);
+  expect(statsClosed?.metadataEntries, "Close study drops every cached Part 10 buffer (NATURALIZED metadata)").toBe(0);
+  if (rssIdle != null && rssClosed != null) {
+    expect(
+      rssClosed,
+      `renderer + GPU memory returns to the pre-open baseline (${rssIdle} MB + ${CLOSE_RSS_TOLERANCE_MB} MB) within ${CLOSE_SETTLE_MS / 1000} s of Close study`
+    ).toBeLessThanOrEqual(rssIdle + CLOSE_RSS_TOLERANCE_MB);
+  }
+  expect(reopen.firstImageMs, "first image when reopening after Close study").toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
 });
 
-test("memory cap: a 2 GB device scrolls all 520 slices under its cap (eviction), then frees on close", async ({ browser }) => {
+test("memory cap: a 2 GB device scrolls all 520 slices with decoded + raw under its budget, then frees on close", async ({ browser }) => {
   test.skip(!CT_DIR, "TEST_CT_LARGE_DIR is not set");
   test.setTimeout(240_000);
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -363,42 +460,77 @@ test("memory cap: a 2 GB device scrolls all 520 slices under its cap (eviction),
   });
   const page = await context.newPage();
   await page.goto("/viewer");
+  await page.waitForTimeout(1500);
+  const rssIdle = await rendererRssMb(browser);
   await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
   await measureFirstImage(page);
   await waitParsed(page);
-  let peak = 0;
+  let peakDecoded = 0;
+  let peakResident = 0;
+  let peakRss = 0;
   let cap = 0;
-  // Scroll end to end, sampling the cache: it must evict, never exceed the cap.
+  // Scroll end to end, sampling: the decoded cache must evict, and decoded +
+  // the raw Part 10 files the loader keeps beside it must fit the DEVICE
+  // budget — not just the decoded cap (lib/localMemoryBudget.ts).
+  const sample = async () => {
+    const s = await viewerStats(page);
+    if (s) {
+      peakDecoded = Math.max(peakDecoded, s.cacheBytes);
+      peakResident = Math.max(peakResident, s.cacheBytes + s.rawBytes);
+      cap = s.maxCacheBytes;
+    }
+    const rss = await rendererRssMb(browser);
+    if (rss != null) peakRss = Math.max(peakRss, rss);
+  };
   const canvas = page.locator("canvas").first();
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   for (let pass = 0; pass < 2; pass += 1) {
     for (let i = 0; i < 540; i += 1) {
       await page.mouse.wheel(0, pass === 0 ? 120 : -120);
-      if (i % 30 === 0) {
-        const s = await viewerStats(page);
-        if (s) {
-          peak = Math.max(peak, s.cacheBytes);
-          cap = s.maxCacheBytes;
-        }
-      }
+      if (i % 30 === 0) await sample();
     }
     await page.waitForTimeout(1500);
-    const s = await viewerStats(page);
-    if (s) peak = Math.max(peak, s.cacheBytes);
+    await sample();
   }
   await expect.poll(() => centreLuma(page)).toBeGreaterThan(30); // still painting: the tab survived
+  // Scroll back over evicted slices: they reload from the file and paint.
+  for (let i = 0; i < 40; i += 1) await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(800);
+  await expect.poll(() => centreLuma(page)).toBeGreaterThan(30);
+  const closeClickedAt = await page.evaluate(() => performance.now());
   await page.getByRole("button", { name: "Close study" }).first().click();
+  // Close re-warms the engine on idle with a synthetic 16×16 frame that it
+  // caches and then releases. Sample once that warm has finished, so the
+  // gate checks both: the study is gone AND the warm left nothing behind.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (since) => performance.getEntriesByName("flowrad:viewer:engine-warm").some((m) => m.startTime > since),
+          closeClickedAt
+        ),
+      { timeout: 15_000, intervals: [50] }
+    )
+    .toBe(true);
   const closed = await viewerStats(page);
+  const deviceBudget = DEVICE_BUDGET_2GB_MB * 1048576;
   record("memoryCap", {
     emulatedDeviceMemoryGb: 2,
+    deviceBudgetMb: DEVICE_BUDGET_2GB_MB,
     cacheCapMb: Math.round(cap / 1048576),
-    cachePeakMb: Math.round(peak / 1048576),
+    cachePeakMb: Math.round(peakDecoded / 1048576),
+    residentPeakMb: Math.round(peakResident / 1048576),
+    rendererRssIdleMb: rssIdle,
+    rendererRssPeakMb: peakRss || null,
     cacheAfterCloseMb: closed ? Math.round(closed.cacheBytes / 1048576) : null,
+    rawAfterCloseMb: closed ? Math.round(closed.rawBytes / 1048576) : null,
   });
   expect(cap).toBeGreaterThan(0);
-  expect(peak, "decoded cache stays under the device cap").toBeLessThanOrEqual(cap);
+  expect(peakDecoded, "decoded cache stays under its cap").toBeLessThanOrEqual(cap);
+  expect(peakResident, "decoded + raw files stay inside the 2 GB device budget").toBeLessThanOrEqual(deviceBudget);
   expect(closed?.cacheBytes).toBe(0);
+  expect(closed?.rawBytes).toBe(0);
   await context.close();
 });
 
@@ -444,7 +576,7 @@ test("MR multi-series JPEG 2000 as a ZIP: first image, series switch, lazy codec
     requestsAfterDrop: privacy.requestCount(),
     privacyViolations: violations,
   };
-  record("mrZip", result);
+  record("mrZip", { ...result, firstImageBudgetMs: FIRST_IMAGE_BUDGET_MS });
   console.log(JSON.stringify(result, null, 2));
 
   expect(violations, "privacy: no data leaves the page").toEqual([]);

@@ -37,6 +37,8 @@
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
+import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
+import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
 import {
   useCallback,
   useEffect,
@@ -50,10 +52,14 @@ import {
 import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import { imageMenu } from "@flowrad/viewer-core";
+import { shortcutForTool } from "../lib/viewerHotkeys";
+import dynamicImport from "next/dynamic";
 import type { VoiceState } from "./viewer/voice/voiceSession";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
+  fillImageIndexes,
   prefetchImageIndexes,
   prefetchNeighborImageIds,
   startProgressiveWadorsLoad,
@@ -83,6 +89,7 @@ import {
 } from "../lib/viewerSession";
 import {
   markViewerFirstPixel,
+  markViewerFirstRendered,
   markViewerFirstPreview,
   markViewerFullQuality,
   markViewerNavigation,
@@ -221,6 +228,24 @@ function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrom
   if (chrome) return chrome;
   return showToolbar ? "dock" : "off";
 }
+
+/** The DICOM tags viewer loads on first use. */
+const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
+
+/** Tools in the right-click menu, in order. */
+const WEB_MENU_TOOLS = [
+  { id: "StackScroll", label: "Scroll" },
+  { id: "WindowLevel", label: "Window / level" },
+  { id: "Zoom", label: "Zoom" },
+  { id: "Pan", label: "Pan" },
+  { id: "Length", label: "Length" },
+  { id: "Angle", label: "Angle" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Eraser", label: "Eraser" },
+];
 
 const ANNOTATION_TOOL_NAMES = new Set(
   PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
@@ -567,21 +592,57 @@ let contextWarm: Promise<void> | null = null;
  * disabled again, so the user's viewport finds the context already built.
  * Skipped when a viewer is already mounted.
  */
-export function prewarmViewerEngine(): void {
+export function prewarmViewerEngine(stage?: { width: number; height: number }): void {
+  if (!contextWarm) markEngineWarm("flowrad:viewer:engine-warm-start");
   contextWarm ??= ensureViewerEngine()
-    .then(async ({ core }) => {
+    .then(async ({ core, loader }) => {
+      markEngineWarm("flowrad:viewer:engine-ready");
+      sharedCore = core as unknown as EngineHost;
       if (viewportEngineRegistry.size > 0) return;
       const engine = await obtainSharedEngine(core as unknown as EngineHost);
       const element = document.createElement("div");
-      // DOM API, not JSX: a throwaway off-screen host, never painted.
-      element.style.cssText = "position:fixed;left:-10000px;top:0;width:64px;height:64px;";
+      // DOM API, not JSX: a throwaway off-screen host, never painted. Sized
+      // like the stage the first study will open in (the caller's hint, else
+      // the window), so the pool context's GL drawing buffer is allocated at
+      // its real size now: a size change on the first drop reallocates it,
+      // ~70 ms of main thread in software GL.
+      const width = Math.max(64, Math.round(stage?.width ?? window.innerWidth));
+      const height = Math.max(64, Math.round(stage?.height ?? window.innerHeight));
+      element.style.cssText = `position:fixed;left:-${width + 100}px;top:0;width:${width}px;height:${height}px;pointer-events:none;`;
       element.setAttribute("aria-hidden", "true");
       document.body.appendChild(element);
       const viewportId = "flowrad-context-warm";
+      const wadouri = (loader.default ?? loader).wadouri as unknown as {
+        fileManager: { add(file: File): string; remove(index: number): void };
+      };
+      const warmIds: string[] = [];
+      const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       try {
         engine.enableElement({ viewportId, type: core.Enums.ViewportType.STACK, element });
-        (engine.getViewport(viewportId) as { render?: () => void } | undefined)?.render?.();
-        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        const vp = engine.getViewport(viewportId) as
+          | { render?: () => void; setStack?: (ids: string[], index?: number) => Promise<unknown> }
+          | undefined;
+        // Render a real Part 10 file through the SAME path a dropped study
+        // takes (wadouri file loader → NATURALIZED metadata → rescale → float
+        // texture → shaders). Everything paid once per page is paid here, in
+        // idle time: vtk's norm16 capability probe (a throwaway WebGL context,
+        // ~0.45 s in software GL), the float-texture extensions on the pool
+        // context (~0.4 s), texture formats and shader programs. A synthetic
+        // image from createAndCacheLocalImage never reached vtk's texture
+        // path, so it warmed none of this. The files are 16×16 gradients
+        // built in memory (syntheticDicom.ts): no patient, no network.
+        for (const kind of ["ct", "mr"] as const) {
+          if (!vp?.setStack) break;
+          const bytes = syntheticDicomBytes({ kind });
+          const file = new File([bytes.buffer as ArrayBuffer], `flowrad-warm-${kind}.dcm`, {
+            type: "application/dicom",
+          });
+          const id = wadouri.fileManager.add(file);
+          warmIds.push(id);
+          await vp.setStack([id], 0);
+          vp.render?.();
+          await frame();
+        }
       } finally {
         try {
           engine.disableElement(viewportId);
@@ -589,9 +650,40 @@ export function prewarmViewerEngine(): void {
           /* engine torn down meanwhile */
         }
         element.remove();
+        // Gone without a trace: decoded frames, parsed metadata, file handles.
+        if (warmIds.length > 0) await releaseLocalImages(warmIds, { recycleWorkers: false }).catch(() => undefined);
+        markEngineWarm("flowrad:viewer:engine-warm");
       }
     })
     .catch(() => undefined);
+}
+
+/**
+ * Warm again after a study closed: Close recycles the decode workers, so the
+ * next drop would boot them (and re-prime the pool context) on its critical
+ * path. No-op while a viewer is mounted or a warm is still running.
+ */
+export function rewarmViewerEngine(stage?: { width: number; height: number }): void {
+  if (viewportEngineRegistry.size > 0) return;
+  const running = contextWarm;
+  if (!running) {
+    prewarmViewerEngine(stage);
+    return;
+  }
+  void running.then(() => {
+    if (contextWarm !== running || viewportEngineRegistry.size > 0) return;
+    contextWarm = null;
+    prewarmViewerEngine(stage);
+  });
+}
+
+/** User Timing marks for the prewarm (timings only; read by the perf gate). */
+function markEngineWarm(name: string): void {
+  try {
+    performance.mark(name);
+  } catch {
+    /* best-effort */
+  }
 }
 
 type SharedEngine = {
@@ -639,9 +731,31 @@ async function obtainSharedEngine(core: EngineHost): Promise<SharedEngine> {
   return engine;
 }
 
+/**
+ * Pages that hold the engine warm between studies (the free viewer: drop,
+ * close, drop again). While any hold is live the last viewport's unmount
+ * disables its element instead of destroying the engine, so the next study
+ * skips rebuilding the WebGL context pool, its extensions and shaders
+ * (~0.5 s). The warmed engine is part of the page's idle baseline — it exists
+ * before the first drop — so keeping it does not hold any study's memory.
+ */
+let engineHolds = 0;
+
+/** Keep the shared engine across studies; call the returned release on unmount. */
+export function holdViewerEngine(): () => void {
+  engineHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    engineHolds -= 1;
+    if (engineHolds === 0 && sharedCore) destroySharedEngineIfIdle(liveSharedEngine(sharedCore));
+  };
+}
+
 function destroySharedEngineIfIdle(engine: SharedEngine | null | undefined) {
   if (!engine || engine.hasBeenDestroyed) return;
-  if (viewportEngineRegistry.size > 0) return;
+  if (viewportEngineRegistry.size > 0 || engineHolds > 0) return;
   try {
     engine.destroy();
   } catch {
@@ -923,6 +1037,7 @@ export default function CornerstoneViewer({
   useEffect(() => {
     let disposed = false;
     let prefetchTimer = 0;
+    let disposeFill: () => void = () => {};
     let detachListeners: () => void = () => {};
     let detachQuality: () => void = () => {};
     let resizeObserver: ResizeObserver | null = null;
@@ -1409,6 +1524,10 @@ export default function CornerstoneViewer({
         // request leaves its image load object pending in Cornerstone's cache
         // forever, and that slice would never paint.
         const filledSeries = new Set<string>();
+        // Stops every series' fill when this viewer goes (Close study, a new
+        // drop, navigation): a closed study must not keep reading and decoding.
+        const fillAbort = new AbortController();
+        disposeFill = () => fillAbort.abort();
         const startSeriesFill = (seriesUID: string, center: number) => {
           const ids = stackIdsRef.current;
           if (disposed || ids.length < 2 || filledSeries.has(seriesUID)) return;
@@ -1425,8 +1544,18 @@ export default function CornerstoneViewer({
           } catch {
             /* keep the 512² estimate */
           }
-          const budget = fillBudget(ids.length, bytesPerSlice, imageCacheBytes(deviceProfile));
-          prefetchImageIndexes(ids, outwardOrder(ids.length, center, budget));
+          // The cache's CURRENT cap, not the device default: a local study
+          // lowers it so decoded + raw files fit (localMemoryBudget.ts), and a
+          // fill sized past the cap only reads files it will evict.
+          let cacheCap = imageCacheBytes(deviceProfile);
+          try {
+            const current = core.cache.getMaxCacheSize();
+            if (Number.isFinite(current) && current > 0) cacheCap = Math.min(cacheCap, current);
+          } catch {
+            /* older core: keep the device budget */
+          }
+          const budget = fillBudget(ids.length, bytesPerSlice, cacheCap);
+          fillImageIndexes(ids, outwardOrder(ids.length, center, budget), { signal: fillAbort.signal });
         };
         let pixelMarked = false;
         // Mark first pixel only after setStack resolves. IMAGE_RENDERED also
@@ -1439,6 +1568,17 @@ export default function CornerstoneViewer({
           if (vp?.getCurrentImageId && !imageId) return;
           pixelMarked = true;
           markViewerFirstPixel(activeNav, seriesUID);
+          // `first-pixel` is when the stack resolved and a render was asked
+          // for; the frame itself is drawn on a later animation frame (and in
+          // software GL that draw can take hundreds of ms). IMAGE_RENDERED
+          // fires once it is actually on the canvas: that is what a reader sees.
+          const renderedNav = activeNav;
+          const renderedEl = elementRef.current;
+          const onRendered = () => {
+            renderedEl?.removeEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered as EventListener);
+            markViewerFirstRendered(renderedNav);
+          };
+          renderedEl?.addEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered as EventListener);
           markViewerPixels(instanceId);
           setPainted(true);
           setStatus((prev) => (prev.startsWith("Error") ? prev : "Loading stack…"));
@@ -3077,6 +3217,7 @@ export default function CornerstoneViewer({
       exitMprRef.current = async () => {};
       window.clearTimeout(readoutTimerRef.current);
       window.clearTimeout(prefetchTimer);
+      disposeFill();
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
       if (viewRaf) cancelAnimationFrame(viewRaf);
       viewListeners.clear();
@@ -3098,8 +3239,8 @@ export default function CornerstoneViewer({
       const engine = sharedCore?.getRenderingEngine(SHARED_RENDERING_ENGINE_ID);
       if (!engine || engine.hasBeenDestroyed) return;
       try {
-        if (plan.destroyEngine) engine.destroy();
-        else if (plan.disableViewport && engine.getViewport(viewportId)) {
+        if (plan.destroyEngine && engineHolds === 0) engine.destroy();
+        else if ((plan.destroyEngine || plan.disableViewport) && engine.getViewport(viewportId)) {
           engine.disableElement(viewportId);
         }
       } catch {
@@ -3328,6 +3469,134 @@ export default function CornerstoneViewer({
         return;
       case "help":
         setHelpOpen((open) => !open);
+        return;
+    }
+  };
+
+  // ── Right-click / long-press menu (shared @flowrad/viewer-core contextMenu) ──
+  const [tagsImageId, setTagsImageId] = useState<string | null>(null);
+  const [annotationsHidden, setAnnotationsHidden] = useState(false);
+  const webMenuShortcut = (command: string): string | undefined => {
+    const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
+    if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
+    if (head === "preset") {
+      if (arg === "auto") return "Shift+0";
+      const i = presets.findIndex((p) => p.id === arg);
+      return i >= 0 && i < 9 ? `Shift+${i + 1}` : undefined;
+    }
+    return ({ invert: "I", reset: "0", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
+  };
+  const webImageMenu = () =>
+    imageMenu({
+      modality,
+      tools: WEB_MENU_TOOLS,
+      activeTool,
+      presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
+      inverted,
+      links: { scroll: false, voi: false, zoom: false },
+      referenceLines: false,
+      overlay: overlay !== "off",
+      annotations: !annotationsHidden,
+      cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
+      slab: null,
+      layout: null,
+      can: { mpr: ready && sliceCount >= 3, copyImage: true, saveImage: true, tags: true, links: false },
+      shortcut: webMenuShortcut,
+    });
+  const viewportCanvas = () => elementRef.current?.querySelector("canvas") ?? null;
+  const runWebMenuCommand = (command: string) => {
+    const at = command.indexOf(":");
+    const head = at < 0 ? command : command.slice(0, at);
+    const arg = at < 0 ? "" : command.slice(at + 1);
+    const vp = viewportRef.current as unknown as {
+      resetCamera?: () => void;
+      setZoom?: (z: number) => void;
+      getCamera?: () => { flipHorizontal?: boolean; flipVertical?: boolean };
+      setCamera?: (c: Record<string, unknown>) => void;
+      getViewPresentation?: () => { rotation?: number };
+      setViewPresentation?: (p: Record<string, unknown>) => void;
+      getCurrentImageId?: () => string;
+      render?: () => void;
+    } | null;
+    switch (head) {
+      case "tool":
+        return runViewerAction({ type: "tool", tool: arg });
+      case "preset": {
+        if (arg === "auto") return runViewerAction({ type: "preset", ordinal: 0 });
+        const i = presets.findIndex((p) => p.id === arg);
+        return i >= 0 ? runViewerAction({ type: "preset", ordinal: i + 1 }) : undefined;
+      }
+      case "invert":
+      case "reset":
+      case "cine":
+      case "overlay":
+      case "mpr":
+        return runViewerAction({ type: head } as ViewerHotkeyAction);
+      case "zoom":
+        if (arg === "fit") vp?.resetCamera?.();
+        else vp?.setZoom?.(Number(arg));
+        return vp?.render?.();
+      case "rotate": {
+        const now = vp?.getViewPresentation?.()?.rotation ?? 0;
+        vp?.setViewPresentation?.({ rotation: (now + Number(arg) + 360) % 360 });
+        return vp?.render?.();
+      }
+      case "flip": {
+        const cam = vp?.getCamera?.() ?? {};
+        vp?.setCamera?.(arg === "v" ? { flipVertical: !cam.flipVertical } : { flipHorizontal: !cam.flipHorizontal });
+        return vp?.render?.();
+      }
+      case "fps":
+        return setCineFps(clampCineFps(Number(arg)));
+      case "annotations": {
+        const hide = !annotationsHidden;
+        setAnnotationsHidden(hide);
+        void import("@cornerstonejs/tools").then((t) => {
+          for (const a of t.annotation.state.getAllAnnotations()) if (a.annotationUID) t.annotation.visibility.setAnnotationVisibility(a.annotationUID, !hide);
+          vp?.render?.();
+        });
+        return flash(hide ? "Annotations hidden" : "Annotations shown");
+      }
+      case "copyImage": {
+        const canvas = viewportCanvas();
+        if (!canvas) return;
+        canvas.toBlob(async (blob) => {
+          try {
+            if (!blob || typeof ClipboardItem !== "function") throw new Error("unsupported");
+            await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+            flash("Image copied (pixels only)");
+          } catch {
+            flash("Copy not supported here: use Save as PNG");
+          }
+        }, "image/png");
+        return;
+      }
+      case "save": {
+        const canvas = viewportCanvas();
+        if (!canvas) return;
+        const type = arg === "jpeg" ? "image/jpeg" : "image/png";
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) return;
+            // Pixels only (no overlay text), and a name without patient details.
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `${(modality || "image").toLowerCase()}-image-${Date.now().toString(36)}.${arg === "jpeg" ? "jpg" : "png"}`;
+            a.click();
+            window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+            flash("Saved (anonymised)");
+          },
+          type,
+          0.92
+        );
+        return;
+      }
+      case "tags": {
+        const id = vp?.getCurrentImageId?.();
+        if (id) setTagsImageId(id);
+        return;
+      }
+      default:
         return;
     }
   };
@@ -3662,7 +3931,13 @@ export default function CornerstoneViewer({
             seriesImageIds={viewportRef.current?.getImageIds() ?? []}
             eraser={activeTool === "Eraser"}
             handleUndoKeys
+            imageMenu={webImageMenu}
+            onCommand={runWebMenuCommand}
+            menuShortcut={(id) => (id === "ann:delete" ? "Del" : undefined)}
           />
+        )}
+        {tagsImageId && (
+          <DicomTagsDialog open onClose={() => setTagsImageId(null)} imageId={tagsImageId} description={modality ? `${modality} · current image` : undefined} />
         )}
         {sliceScrollbar}
         {(viewMode === "mpr" || mprLive) && (
