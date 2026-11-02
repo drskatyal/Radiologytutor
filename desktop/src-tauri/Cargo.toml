@@ -79,6 +79,8 @@ block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
 # proc_pid_rusage: the process's physical footprint (commit_mb on macOS).
 libc = "0.2"
+# MTLDevice currentAllocatedSize for the close report (Metal has no wgpu allocator report).
+objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLDevice"] }
 
 [dev-dependencies]
 tempfile = "3"

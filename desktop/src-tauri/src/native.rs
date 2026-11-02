@@ -69,6 +69,9 @@ pub struct NativeStatus {
     pub backend: Option<String>,
     pub error: Option<String>,
     pub init_ms: Option<f64>,
+    /// macOS: of `init_ms`, time spent waiting for the main thread to create
+    /// the surface (it is busy while WKWebView loads the page).
+    pub surface_wait_ms: Option<f64>,
     /// Last frame: CPU time to record + submit (not GPU time).
     pub last_frame_ms: Option<f64>,
     pub frames: u64,
@@ -386,6 +389,7 @@ impl Native {
                 s.backend = Some(backend);
                 s.error = None;
                 s.init_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                s.surface_wait_ms = SURFACE_WAIT_MS.lock().take();
             }
             Err(e) => self.status.lock().error = Some(e),
         }
@@ -631,6 +635,12 @@ impl Native {
             if let Some(r) = gpu.device.generate_allocator_report() {
                 report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
                 report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
+            }
+            // Metal has no allocator report: the device's own count of every
+            // resource it holds (on Apple silicon this is in our footprint).
+            #[cfg(target_os = "macos")]
+            if report.gpu_allocated_mb.is_none() {
+                report.gpu_allocated_mb = metal_allocated_mb(&gpu.device);
             }
         }
         report
@@ -1153,6 +1163,20 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
     }
 }
 
+/// macOS: MB of GPU resources the Metal device holds (MTLDevice
+/// currentAllocatedSize), for the close report.
+#[cfg(target_os = "macos")]
+fn metal_allocated_mb(device: &wgpu::Device) -> Option<f64> {
+    use objc2_metal::MTLDevice;
+    // SAFETY: only reads a counter; the device outlives the guard.
+    let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }?;
+    Some((hal.raw_device().currentAllocatedSize() as f64 / 1_048_576.0 * 10.0).round() / 10.0)
+}
+
+/// macOS: the last surface creation's wait for the main thread, ms (reported
+/// in the status; the bench prints it with the first image).
+static SURFACE_WAIT_MS: parking_lot::Mutex<Option<f64>> = parking_lot::Mutex::new(None);
+
 /// The window's surface. macOS: creating it attaches a CAMetalLayer to the
 /// window's NSView, and AppKit views are main-thread only (raw-window-metal
 /// panics elsewhere: "can only access NSView on the main thread"), so it is
@@ -1168,12 +1192,15 @@ fn create_surface(instance: &wgpu::Instance, window: &tauri::WebviewWindow) -> R
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let (instance, target) = (instance.clone(), window.as_ref().window());
+        let asked = Instant::now();
         window
             .run_on_main_thread(move || {
                 let _ = tx.send(instance.create_surface(target).map_err(|e| format!("surface: {e}")));
             })
             .map_err(|e| format!("surface: main thread unavailable: {e}"))?;
-        rx.recv().map_err(|e| format!("surface: main thread dropped the request: {e}"))?
+        let surface = rx.recv().map_err(|e| format!("surface: main thread dropped the request: {e}"))?;
+        *SURFACE_WAIT_MS.lock() = Some(asked.elapsed().as_secs_f64() * 1000.0);
+        surface
     }
     #[cfg(not(target_os = "macos"))]
     instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))

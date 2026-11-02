@@ -536,8 +536,12 @@ jobs:
       - name: Gate — open + first image (cold and warm), no long tasks
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms "$FIRST_IMAGE_MAX_MS" --max-first-visible-ms "$FIRST_VISIBLE_MAX_MS" --max-long-task-ms "$OPEN_LONG_TASK_MAX_MS" --require-gpu
-      - name: Gate — idle with the CT open (after 20 s)
+      # 2D (grid view), as perf-windows' "Idle memory with the CT open in 2D":
+      # without the view the bench opens MPR, which has its own gate below.
+      - name: Gate — idle with the CT open in 2D (after 20 s)
         if: ${{ !cancelled() }}
+        env:
+          FLOWRAD_BENCH_VIEW: grid
         run: node desktop/scripts/bench.mjs mpr "$APP" "$RUNNER_TEMP/ct848" --settle 20 --max-settled-mb "$IDLE_MAX_MB" --max-settled-private-mb "$CT_OPEN_PRIVATE_MAX_MB"
       - name: Gate — memory back on close (empty app → CT open → 30 s after close)
         if: ${{ !cancelled() }}

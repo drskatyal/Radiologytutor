@@ -162,7 +162,7 @@ async function benchDesktop(binary, study) {
     if (!Number.isFinite(report.firstImageMs)) report.firstImageMs = null;
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"}${report.native?.initMs != null ? ` (native init ${r0(report.native.initMs)} ms${report.native.surfaceWaitMs != null ? `, main-thread wait ${r0(report.native.surfaceWaitMs)}` : ""})` : ""} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
   }
   if (discarded.length) console.error(`${discarded.length} run(s) discarded and repeated on the WARP runner: ${JSON.stringify(discarded)}`);
@@ -296,7 +296,8 @@ async function benchInteract(binary, study) {
   // Freeze during interaction: the slowest single step of scroll, zoom, W/L.
   const maxStep = flag("max-interaction-ms", Infinity);
   const slowest = Math.max(i.frames.max ?? 0, ...["scroll", "zoom", "windowLevel"].map((k) => i[k].max ?? 0));
-  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms`);
+  const where = i.slowest ? ` (${i.slowest.kind} step ${i.slowest.step}: Rust ${i.slowest.rustMs} ms = decode ${i.slowest.decodeMs} + frame ${i.slowest.frameMs})` : "";
+  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms${where}`);
   if (over.length) {
     console.error(`frame-time gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
