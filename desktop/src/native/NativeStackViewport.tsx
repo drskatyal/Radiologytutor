@@ -1,0 +1,348 @@
+// Phase 2, P2.2 (docs/NATIVE_RENDERER.md): a 2D viewport drawn by the native
+// renderer. Same props and the same imperative handle as StackViewport, so
+// App, the toolbar, keyboard, voice and the series browser drive it unchanged.
+//
+// The element is a transparent hole in the page: Rust draws the slice under
+// it (cell rect via nativeLayout), the page draws the overlay text, the
+// active frame and (P2.3) annotations on top. Input lands here and goes to
+// Rust as view changes, coalesced to one call in flight per viewport.
+//
+// P2.2 covers display and navigation: slices (wheel, drag, keys, cine),
+// window/level, zoom, pan, rotate, flip, invert, reset. Measurement and
+// annotation tools arrive in P2.3; until then, picking one of them in a native
+// viewport says so instead of doing nothing.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getScrollPreferences, slicesForNotch } from "@flowrad/viewer-core";
+import { cn } from "@/components/ui/cn";
+import { Spinner } from "@/components/ui/Spinner";
+import { invoke } from "../platform";
+import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
+import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
+import { noteActivity } from "../activity";
+import { registerNativeCell } from "./nativeLayout";
+import type { NativeTransform, NativeView } from "./transform";
+
+export interface NativeShow {
+  index: number;
+  count: number;
+  cached: boolean;
+  decodeMs: number;
+  frameMs: number;
+  totalMs: number;
+  rows: number;
+  cols: number;
+  window: [number, number];
+  view: NativeView;
+  transform: NativeTransform;
+  defaultWindow: [number, number] | null;
+}
+
+type Patch = Partial<{
+  index: number;
+  wl: [number, number];
+  zoom: number;
+  pan: [number, number];
+  rotation: number;
+  flipH: boolean;
+  flipV: boolean;
+  invert: boolean;
+  resetCamera: boolean;
+}>;
+
+/** Navigation tools the native viewport handles itself (P2.2). */
+const NAV_TOOLS = new Set(["WindowLevel", "Pan", "Zoom", "StackScroll"]);
+
+interface Props extends StackViewportProps {
+  /** The app's left-button tool. */
+  tool?: string;
+}
+
+export default function NativeStackViewport({
+  cellKey,
+  viewportId,
+  series,
+  active,
+  cellIndex,
+  dropHover,
+  showOverlay,
+  hidePatient = false,
+  onActivate,
+  onDropSeries,
+  onDoubleClick,
+  onFirstPaint,
+  tool = "StackScroll",
+}: Props) {
+  const elementRef = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState<NativeShow | null>(null);
+  const shownRef = useRef<NativeShow | null>(null);
+  shownRef.current = shown;
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [cine, setCine] = useState({ playing: false, fps: 15 });
+  const cineRef = useRef(cine);
+  cineRef.current = cine;
+
+  // Register the cell's rectangle with the native layout.
+  useEffect(() => {
+    const el = elementRef.current;
+    if (!el) return;
+    return registerNativeCell(cellKey, el);
+  }, [cellKey]);
+
+  // ── one view change in flight; later ones coalesce into the next ──
+  const pending = useRef<Patch | null>(null);
+  const inflight = useRef(false);
+  const waiters = useRef<(() => void)[]>([]);
+  const pump = useCallback(async () => {
+    if (inflight.current || !pending.current) return;
+    const patch = pending.current;
+    pending.current = null;
+    inflight.current = true;
+    const done = waiters.current.splice(0);
+    try {
+      const r = await invoke<NativeShow>("native_cell_view", { id: cellKey, patch });
+      setShown(r);
+      noteActivity();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      inflight.current = false;
+      done.forEach((d) => d());
+      if (pending.current) void pump();
+    }
+  }, [cellKey]);
+  const change = useCallback(
+    (patch: Patch): Promise<void> => {
+      pending.current = { ...(pending.current ?? {}), ...patch };
+      const p = new Promise<void>((resolve) => waiters.current.push(resolve));
+      void pump();
+      return p;
+    },
+    [pump]
+  );
+
+  // ── the series ──
+  useEffect(() => {
+    if (!series || series.headers.length === 0) {
+      setShown(null);
+      return;
+    }
+    let cancelled = false;
+    const started = performance.now();
+    setLoading(true);
+    setError(null);
+    void invoke<NativeShow>("native_cell_series", {
+      id: cellKey,
+      fileIds: series.headers.map((h) => h.fileId),
+      index: 0,
+    })
+      .then((r) => {
+        if (cancelled) return;
+        setShown(r);
+        setLoading(false);
+        noteActivity();
+        // Native paint: the frame was presented when the call returned. Blank
+        // detection on this path is the e2e's screen grab, not a canvas readback.
+        onFirstPaint?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setLoading(false);
+        setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+    // A growing series re-sends its full list (the same cell keeps its slice).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cellKey, series?.uid, series?.headers.length]);
+
+  const count = shown?.count ?? 0;
+  const goTo = useCallback((i: number) => change({ index: Math.max(0, Math.min(count - 1, i)) }), [change, count]);
+  const step = useCallback((d: number) => goTo((shownRef.current?.index ?? 0) + d), [goTo]);
+
+  // ── cine ──
+  useEffect(() => {
+    if (!cine.playing || count < 2) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      if (now - last >= 1000 / cineRef.current.fps) {
+        last = now;
+        const at = shownRef.current?.index ?? 0;
+        void change({ index: (at + 1) % count });
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [cine.playing, count, change]);
+
+  // ── the imperative handle (toolbar, keyboard, voice, export) ──
+  const readout = useMemo<ViewportReadout | null>(() => {
+    if (!shown || !series) return null;
+    return {
+      index: shown.index,
+      count: shown.count,
+      ww: shown.window[1],
+      wc: shown.window[0],
+      zoom: shown.view.zoom,
+      rotation: shown.view.rotation,
+    };
+  }, [shown, series]);
+  const readoutRef = useRef(readout);
+  readoutRef.current = readout;
+
+  useEffect(() => {
+    const el = elementRef.current;
+    if (!el) return;
+    const handle: ViewportHandle = {
+      viewportId,
+      element: el,
+      seriesUid: series?.uid ?? null,
+      setVoi: (ww, wc) => void change({ wl: [wc, ww] }),
+      resetVoi: () => {
+        const d = shownRef.current?.defaultWindow;
+        if (d) void change({ wl: [d[0], d[1]] });
+      },
+      invert: () => void change({ invert: !shownRef.current?.view.invert }),
+      zoomTo: (scale) => void change({ zoom: scale === "fit" ? 1 : scale, ...(scale === "fit" ? { pan: [0, 0] as [number, number] } : {}) }),
+      zoomBy: (f) => void change({ zoom: (shownRef.current?.view.zoom ?? 1) * f }),
+      pan: (dx, dy) => {
+        const p = shownRef.current?.view.pan ?? [0, 0];
+        void change({ pan: [p[0] + dx, p[1] + dy] });
+      },
+      rotate: (deg) => void change({ rotation: (((shownRef.current?.view.rotation ?? 0) + deg) % 360 + 360) % 360 }),
+      flip: (axis) => void change(axis === "h" ? { flipH: !shownRef.current?.view.flipH } : { flipV: !shownRef.current?.view.flipV }),
+      reset: () => {
+        const d = shownRef.current?.defaultWindow;
+        void change({ resetCamera: true, ...(d ? { wl: [d[0], d[1]] as [number, number] } : {}) });
+      },
+      step: (d) => void step(d),
+      goTo: (where) => void goTo(where === "first" ? 0 : where === "last" ? count - 1 : where),
+      toggleCine: () => setCine((c) => ({ ...c, playing: !c.playing })),
+      setCineFps: (fps) => setCine((c) => ({ ...c, fps: Math.max(1, Math.min(60, fps)) })),
+      cine: () => cineRef.current,
+      readout: () => readoutRef.current,
+      renderFrame: (i) => change({ index: i }),
+    };
+    return registerHandle(cellKey, handle);
+  }, [cellKey, viewportId, series?.uid, change, step, goTo, count]);
+
+  // ── input: wheel scrolls; left = the app's tool; right = zoom; middle = pan ──
+  const notchRun = useRef({ at: 0, n: 0 });
+  const onWheel = (e: React.WheelEvent) => {
+    if (!shown) return;
+    const now = performance.now();
+    const run = now - notchRun.current.at < 140 ? notchRun.current.n + 1 : 1;
+    notchRun.current = { at: now, n: run };
+    void step(Math.sign(e.deltaY) * slicesForNotch(getScrollPreferences(), run));
+  };
+  const drag = useRef<{ x: number; y: number; button: number; start: NativeShow; acc: number } | null>(null);
+  const onPointerDown = (e: React.PointerEvent) => {
+    onActivate();
+    if (!shown) return;
+    if (e.button === 0 && !NAV_TOOLS.has(tool)) {
+      setNotice(`${tool.replace(/([a-z])([A-Z])/g, "$1 $2")} arrives with the native tools (P2.3).`);
+      return;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { x: e.clientX, y: e.clientY, button: e.button, start: shown, acc: 0 };
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    const mode = d.button === 2 ? "Zoom" : d.button === 1 ? "Pan" : tool;
+    const v = d.start.view;
+    if (mode === "WindowLevel") {
+      const k = Math.max(1, v.wl[1] / 256);
+      void change({ wl: [v.wl[0] + dy * k, Math.max(1, v.wl[1] + dx * k)] });
+    } else if (mode === "Pan") {
+      void change({ pan: [v.pan[0] + dx, v.pan[1] + dy] });
+    } else if (mode === "Zoom") {
+      void change({ zoom: v.zoom * Math.exp(-dy / 200) });
+    } else if (mode === "StackScroll") {
+      const per = getScrollPreferences().dragPixelsPerSlice ?? Math.max(2, 400 / Math.max(count, 1));
+      const target = d.start.index + Math.trunc(dy / per);
+      if (target !== d.acc) {
+        d.acc = target;
+        void goTo(target);
+      }
+    }
+  };
+  const endDrag = () => {
+    drag.current = null;
+  };
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 2500);
+    return () => window.clearTimeout(t);
+  }, [notice]);
+
+  const header = series?.headers[shown?.index ?? 0];
+  return (
+    <div
+      ref={elementRef}
+      data-native-viewport
+      data-drop-cell={cellIndex}
+      data-viewport-id={viewportId}
+      role="img"
+      aria-label={series ? `${series.description || "Series"}, image ${(shown?.index ?? 0) + 1} of ${count}` : "Empty viewport"}
+      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", tool === "Pan" ? "cursor-grab" : "cursor-crosshair")}
+      onWheel={onWheel}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onContextMenu={(e) => e.preventDefault()}
+      onDoubleClick={onDoubleClick}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        const uid = e.dataTransfer.getData("application/x-flowrad-series") || e.dataTransfer.getData("text/plain");
+        if (uid) onDropSeries(uid);
+      }}
+    >
+      {showOverlay && shown && series && (
+        <>
+          <div className="pointer-events-none absolute left-2 top-2 space-y-0.5 text-[11px] leading-tight text-white/85 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
+            {!hidePatient && header?.patientName && <div className="font-medium">{String(header.patientName).replace(/\^/g, " ")}</div>}
+            <div>{series.description || `Series ${series.number ?? ""}`}</div>
+          </div>
+          <div className="pointer-events-none absolute bottom-2 left-2 space-y-0.5 text-[11px] tabular-nums leading-tight text-white/85 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
+            <div>
+              Im {shown.index + 1} / {shown.count}
+            </div>
+            <div>
+              W {Math.round(shown.window[1])} L {Math.round(shown.window[0])}
+            </div>
+          </div>
+          <div className="pointer-events-none absolute bottom-2 right-2 text-[11px] tabular-nums text-white/70 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
+            Zoom {shown.view.zoom.toFixed(2)}× · native
+          </div>
+        </>
+      )}
+      {loading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <Spinner label="Loading the series" />
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="absolute inset-x-3 top-1/2 -translate-y-1/2 rounded-md bg-black/80 p-3 text-center text-xs text-danger">
+          This series could not be shown natively: {error}
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="pointer-events-none absolute inset-x-0 top-2 mx-auto w-fit rounded-md bg-black/80 px-2 py-1 text-xs text-white">
+          {notice}
+        </div>
+      )}
+      {!series && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted">Drop a series here</div>}
+      <ViewportFrame active={active} hover={dropHover} />
+    </div>
+  );
+}
