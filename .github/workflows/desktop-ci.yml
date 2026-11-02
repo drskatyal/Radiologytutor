@@ -262,6 +262,13 @@ jobs:
       LEAK_MAX_MB: "400"
       WINDOW_LEAK_MAX_MB: "60"
       LEAK_ROUND_GROWTH_MAX_MB: "100"
+      # 0.8.2 (HP 0.8.1: empty app 362 MB private, CT open 473-497, closed
+      # +90 MB): PRIVATE bytes, whole tree. The CT open gate is the HP's own
+      # 400 MB; the empty-app gate is this runner's floor (~190 MB on WARP)
+      # with headroom; a closed study must give back all but 30 MB.
+      BASELINE_PRIVATE_MAX_MB: "240"
+      CT_OPEN_PRIVATE_MAX_MB: "400"
+      CLOSE_DELTA_MAX_MB: "30"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -288,10 +295,10 @@ jobs:
       # whole tree with only the UI in the webview (no image engine) — then the
       # same with the native wgpu surface and its test image, then the
       # compositing e2e (native pixels under the transparent page, page on top).
-      - name: P2.0 — WebView2 UI floor (start screen, native mode, whole tree, after 10 s)
+      - name: P2.0 — WebView2 UI floor (start screen, native mode, whole tree, after 10 s; private gated)
         env:
           FLOWRAD_NATIVE: "1"
-        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10 --max-private-mb ${{ env.BASELINE_PRIVATE_MAX_MB }}
       - name: P2.0 — floor + native surface (spike view, whole tree, after 10 s)
         env:
           FLOWRAD_NATIVE: "1"
@@ -390,7 +397,7 @@ jobs:
       - name: Gate — idle after a COLD open, native mode (848-slice CT; no scan cache, OS file cache dropped; whole tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
-        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --require-no-engine --cold
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --max-settled-private-mb ${{ env.CT_OPEN_PRIVATE_MAX_MB }} --require-no-engine --cold
       - name: Idle after a COLD open of the 10,310-image MRI, native mode (whole tree, after 20 s; informational)
         env:
           FLOWRAD_BENCH_VIEW: grid
@@ -402,7 +409,9 @@ jobs:
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
-        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --max-settled-private-mb ${{ env.CT_OPEN_PRIVATE_MAX_MB }}
+      - name: Gate — private bytes over a study's life (empty app, CT open, 30 s after closing it; whole tree)
+        run: node desktop/scripts/bench.mjs close desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --after-close 30 --max-baseline-private-mb ${{ env.BASELINE_PRIVATE_MAX_MB }} --max-open-private-mb ${{ env.CT_OPEN_PRIVATE_MAX_MB }} --max-close-delta-mb ${{ env.CLOSE_DELTA_MAX_MB }}
       # Informational A/B (never fails the job): WebView2 process model vs
       # idle and MPR memory. The flags are the app's own plus one variant.
       - name: A/B — WebView2 process model vs idle / MPR memory / cold start (informational)

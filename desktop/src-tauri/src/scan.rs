@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::header::{mtime_secs, read_header, Header};
 use crate::sources::{
-    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, walk_folder, SourceKind,
+    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, stamp_of, walk_folder_stamped, SourceKind,
+    Stamp,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,15 +153,31 @@ fn label_for(path: &Path) -> String {
 }
 
 /// Expand the selection into candidate files. Returns the files, the kind of
-/// source, whether a DICOMDIR drove the listing, and any warnings.
+/// source, whether a DICOMDIR drove the listing, the size / mtime the folder
+/// walk already knows (saves a stat per file), and any warnings.
 fn list_candidates(
     paths: &[PathBuf],
     cache_dir: &Path,
     warnings: &mut Vec<String>,
-) -> (Vec<PathBuf>, SourceKind, bool) {
+) -> (Vec<PathBuf>, SourceKind, bool, HashMap<PathBuf, Stamp>) {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut kind = SourceKind::Files;
     let mut used_dicomdir = false;
+    let stamps: std::cell::RefCell<HashMap<PathBuf, Stamp>> = Default::default();
+    let walk_folder = |dir: &Path| -> Vec<PathBuf> {
+        let listed = walk_folder_stamped(dir);
+        let mut st = stamps.borrow_mut();
+        st.reserve(listed.len());
+        listed
+            .into_iter()
+            .map(|(p, stamp)| {
+                if let Some(stamp) = stamp {
+                    st.insert(p.clone(), stamp);
+                }
+                p
+            })
+            .collect()
+    };
 
     let expand_dir = |dir: &Path, out: &mut Vec<PathBuf>, warnings: &mut Vec<String>| -> bool {
         if let Some(index) = find_dicomdir(dir) {
@@ -239,7 +256,7 @@ fn list_candidates(
     }
     let mut seen = HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
-    (out, kind, used_dicomdir)
+    (out, kind, used_dicomdir, stamps.into_inner())
 }
 
 pub fn scan(
@@ -258,7 +275,7 @@ pub fn scan(
         accepted: 0,
         total: 0,
     });
-    let (files, kind, used_dicomdir) = list_candidates(paths, cache_dir, &mut warnings);
+    let (files, kind, used_dicomdir, stamps) = list_candidates(paths, cache_dir, &mut warnings);
     let list_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let cache_key = paths
@@ -310,9 +327,11 @@ pub fn scan(
                     std::thread::sleep(d);
                 }
                 let key = path.to_string_lossy();
-                let meta = fs::metadata(path).ok();
-                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let mtime = meta.as_ref().map(mtime_secs).unwrap_or(0);
+                let (size, mtime) = stamps
+                    .get(path)
+                    .copied()
+                    .or_else(|| fs::metadata(path).ok().map(|m| stamp_of(&m)))
+                    .unwrap_or((0, 0));
                 let result = match cached.get(key.as_ref()) {
                     Some(hit) if hit.size_bytes == size && hit.mtime == mtime => {
                         hits.fetch_add(1, Ordering::Relaxed);

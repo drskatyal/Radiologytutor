@@ -150,6 +150,48 @@ pub fn walk_folder(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Size and modification time (whole seconds) of a listed file: the scan
+/// cache's validity key.
+pub type Stamp = (u64, u64);
+
+pub fn stamp_of(meta: &fs::Metadata) -> Stamp {
+    (meta.len(), crate::header::mtime_secs(meta))
+}
+
+/// `walk_folder` plus each file's `Stamp`, taken from the directory listing.
+///
+/// Cold-scan cost on Windows is dominated by path lookups (each one an
+/// open through the filesystem filter stack, antivirus included). The old
+/// walk followed links, which stats every entry by path, and the scan then
+/// stat'ed every file again for its cache key: two lookups per file before
+/// the one open that reads it. Here links are not followed by default (an
+/// entry that IS a link is resolved on its own, as before) and on Windows
+/// `DirEntry::metadata` comes from the listing itself, with no syscall.
+pub fn walk_folder_stamped(dir: &Path) -> Vec<(PathBuf, Option<Stamp>)> {
+    let mut out = Vec::new();
+    let entries = WalkDir::new(dir).follow_links(false).into_iter().filter_entry(|e| {
+        // Hidden folders (`.git`, `.Trashes`, `__MACOSX` resource forks).
+        let name = e.file_name().to_string_lossy();
+        e.depth() == 0 || !(name.starts_with('.') || name == "__MACOSX")
+    });
+    for e in entries.flatten() {
+        if e.path_is_symlink() {
+            match fs::metadata(e.path()) {
+                Ok(m) if m.is_dir() => out.extend(walk_folder(e.path()).into_iter().map(|p| (p, None))),
+                Ok(m) if m.is_file() && !is_obviously_not_dicom(e.path()) => out.push((e.into_path(), Some(stamp_of(&m)))),
+                _ => {}
+            }
+            continue;
+        }
+        if !e.file_type().is_file() || is_obviously_not_dicom(e.path()) {
+            continue;
+        }
+        let stamp = e.metadata().ok().map(|m| stamp_of(&m));
+        out.push((e.into_path(), stamp));
+    }
+    out
+}
+
 /// Extract a zip into `dest` (once — an existing complete extraction is
 /// reused, which is what makes re-opening a 600 MB archive instant).
 pub fn extract_zip(archive: &Path, dest: &Path) -> Result<PathBuf, String> {
@@ -283,6 +325,39 @@ pub fn list_media() -> Vec<MediaVolume> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn stamped_walk_lists_like_walk_folder_with_the_files_stamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        fs::write(root.join("a/one.dcm"), vec![0u8; 300]).unwrap();
+        fs::write(root.join("a/b/two"), vec![0u8; 7]).unwrap();
+        fs::write(root.join(".hidden/skip.dcm"), b"x").unwrap();
+        #[cfg(unix)]
+        {
+            // A linked folder is still followed, as before.
+            fs::create_dir_all(root.join("elsewhere")).unwrap();
+            fs::write(root.join("elsewhere/three.dcm"), vec![0u8; 5]).unwrap();
+            std::os::unix::fs::symlink(root.join("elsewhere"), root.join("a/link")).unwrap();
+        }
+        let mut stamped = walk_folder_stamped(root);
+        stamped.sort();
+        let mut plain = walk_folder(root);
+        plain.sort();
+        let mut paths: Vec<PathBuf> = stamped.iter().map(|(p, _)| p.clone()).collect();
+        paths.sort();
+        assert_eq!(paths, plain);
+        assert!(!paths.iter().any(|p| p.to_string_lossy().contains(".hidden")));
+        for (p, stamp) in &stamped {
+            if let Some(stamp) = stamp {
+                assert_eq!(*stamp, stamp_of(&fs::metadata(p).unwrap()), "{}", p.display());
+            }
+        }
+        let one = stamped.iter().find(|(p, _)| p.ends_with("a/one.dcm")).unwrap();
+        assert_eq!(one.1.map(|s| s.0), Some(300));
+    }
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
         let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
