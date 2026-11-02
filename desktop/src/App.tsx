@@ -268,7 +268,7 @@ export default function App() {
   const rawOpen = useRef<{ headers?: DesktopHeader[]; documents?: unknown[]; files?: File[] }>({});
   const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
-  const updater = useUpdater(settings.checkUpdates);
+  const updater = useUpdater(settings.checkUpdates, scan !== null);
   const sync = useSyncStatus();
   const [, setTick] = useState(0);
   const browserFileInput = useRef<HTMLInputElement>(null);
@@ -2709,8 +2709,11 @@ export default function App() {
               <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Updates</h3>
               <label className="flex cursor-pointer items-start justify-between gap-4 py-2">
                 <span>
-                  <span className="block text-sm font-medium text-primary">Check for updates on launch</span>
-                  <span className="block text-xs text-muted">Asks before installing. Never updates silently.</span>
+                  <span className="block text-sm font-medium text-primary">Check for updates automatically</span>
+                  <span className="block text-xs text-muted">
+                    On launch and every few hours. Updates download in the background and install only when you restart. Only the update
+                    check is sent: no study, patient or personal data.
+                  </span>
                 </span>
                 <input
                   type="checkbox"
@@ -2726,7 +2729,7 @@ export default function App() {
                     : updater.status.state === "current"
                       ? "You have the latest version."
                       : updater.status.state === "available"
-                        ? `Version ${updater.status.update.version} is available.`
+                        ? `Version ${updater.status.update.version} is ready: restart to install.`
                         : updater.status.state === "unavailable"
                           ? updater.status.reason
                           : ""}
