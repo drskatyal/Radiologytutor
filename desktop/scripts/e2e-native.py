@@ -92,7 +92,14 @@ def app_mode(exe: str, study: str, out_dir: Path) -> None:
         native, cell = report.get("native") or {}, report.get("nativeCell")
         print(json.dumps({k: report.get(k) for k in ("firstImagePaintedMs", "native", "nativeCell", "nativeStore", "longTasks")}, indent=2, default=str))
         if not native.get("ready"):
-            fail(f"app mode: native renderer not ready: {native.get('error')}")
+            # Say why: the whole report (which view, which watchdog fired) and the
+            # app's last output lines, not just the renderer's error field.
+            fail(
+                f"app mode: native renderer not ready: {native.get('error')}\n"
+                + json.dumps(report, indent=2, default=str)
+                + "\n--- app output (last 40 lines) ---\n"
+                + "\n".join(tail)
+            )
         if not cell:
             fail("app mode: no native viewport on screen (the series went to the JS path?)")
         time.sleep(0.8)
