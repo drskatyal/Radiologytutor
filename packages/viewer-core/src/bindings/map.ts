@@ -56,31 +56,53 @@ function byId(table: BindingTable): Map<string, BindingCommand> {
   return new Map(table.map((c) => [c.id, c]));
 }
 
-/** command id → its effective inputs (normalized), in table order. */
-export function effectiveInputs(table: BindingTable, overrides: BindingOverrides = {}): Map<string, string[]> {
-  const claimed = new Set<string>();
-  for (const c of table) {
-    const own = overrides[c.id];
-    if (own) for (const s of own) claimed.add(normalizeSpec(s));
-  }
-  const out = new Map<string, string[]>();
-  for (const c of table) {
-    const own = overrides[c.id];
-    const specs = own
-      ? own.map(normalizeSpec)
-      : c.defaults.map(normalizeSpec).filter((s) => !claimed.has(s));
-    out.set(c.id, [...new Set(specs)]);
-  }
-  return out;
+const NO_OVERRIDES: BindingOverrides = Object.freeze({});
+
+// Effective maps are pure functions of (table, overrides), and both are
+// replaced, never mutated, on a change. Toolbars, menus and sheets ask on
+// every render, so the result is cached per pair: one computation per
+// bindings change instead of hundreds per render (the desktop toolbar alone
+// asks for every tool's key). Results are shared: callers must not mutate them.
+const effectiveCache = new WeakMap<BindingTable, WeakMap<BindingOverrides, Map<string, string[]>>>();
+const indexCache = new WeakMap<BindingTable, WeakMap<BindingOverrides, Map<string, string>>>();
+
+function cached<V>(cache: WeakMap<BindingTable, WeakMap<BindingOverrides, V>>, table: BindingTable, overrides: BindingOverrides, make: () => V): V {
+  let byOverrides = cache.get(table);
+  if (!byOverrides) cache.set(table, (byOverrides = new WeakMap()));
+  let v = byOverrides.get(overrides);
+  if (v === undefined) byOverrides.set(overrides, (v = make()));
+  return v;
 }
 
-/** input spec → command id. The first command in table order wins a tie. */
-export function inputIndex(table: BindingTable, overrides: BindingOverrides = {}): Map<string, string> {
-  const index = new Map<string, string>();
-  for (const [id, specs] of effectiveInputs(table, overrides)) {
-    for (const s of specs) if (!index.has(s)) index.set(s, id);
-  }
-  return index;
+/** command id → its effective inputs (normalized), in table order. Shared: do not mutate. */
+export function effectiveInputs(table: BindingTable, overrides: BindingOverrides = NO_OVERRIDES): Map<string, string[]> {
+  return cached(effectiveCache, table, overrides, () => {
+    const claimed = new Set<string>();
+    for (const c of table) {
+      const own = overrides[c.id];
+      if (own) for (const s of own) claimed.add(normalizeSpec(s));
+    }
+    const out = new Map<string, string[]>();
+    for (const c of table) {
+      const own = overrides[c.id];
+      const specs = own
+        ? own.map(normalizeSpec)
+        : c.defaults.map(normalizeSpec).filter((s) => !claimed.has(s));
+      out.set(c.id, [...new Set(specs)]);
+    }
+    return out;
+  });
+}
+
+/** input spec → command id. The first command in table order wins a tie. Shared: do not mutate. */
+export function inputIndex(table: BindingTable, overrides: BindingOverrides = NO_OVERRIDES): Map<string, string> {
+  return cached(indexCache, table, overrides, () => {
+    const index = new Map<string, string>();
+    for (const [id, specs] of effectiveInputs(table, overrides)) {
+      for (const s of specs) if (!index.has(s)) index.set(s, id);
+    }
+    return index;
+  });
 }
 
 /** The command an input fires, if any. */
