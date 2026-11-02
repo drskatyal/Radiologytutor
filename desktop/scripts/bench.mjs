@@ -356,7 +356,15 @@ async function benchIdle(binary) {
   await new Promise((r) => setTimeout(r, seconds * 1000));
   const mem = treeMemory(child.pid);
   child.kill("SIGKILL");
-  console.log(JSON.stringify({ mode: "idle", afterSeconds: seconds, tree: mem }, null, 2));
+  // The app's own process vs the webview's (browser, renderer, GPU, utility):
+  // the WebView2 UI floor is the second number (docs/NATIVE_RENDERER.md, P2.0).
+  const app = mem.processes[0];
+  const webviewWs = mem.wsMb - (app?.wsMb ?? 0);
+  const view = process.env.FLOWRAD_BENCH_VIEW ?? "start screen";
+  console.error(
+    `IDLE (${view}${process.env.FLOWRAD_NATIVE === "1" ? ", native" : ""}): whole tree ${mem.wsMb} MB working set (private ${mem.privateMb}) · app ${app?.wsMb ?? "?"} MB · webview ${webviewWs} MB · ${mem.processes.length} processes: ${mem.processes.map((p) => `${p.type ?? p.name} ${p.wsMb}`).join(", ")}`
+  );
+  console.log(JSON.stringify({ mode: "idle", view, afterSeconds: seconds, appWsMb: app?.wsMb ?? null, webviewWsMb: webviewWs, tree: mem }, null, 2));
 }
 
 function listFiles(dir) {

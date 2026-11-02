@@ -40,6 +40,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 dicom-pixeldata = { version = "0.10", default-features = false, features = ["jpeg", "openjpeg-sys", "rle", "rayon"] }
 memmap2 = "0.9"
+# Phase 2 native renderer (FLOWRAD_NATIVE=1): DX12 on Windows, Metal on macOS, Vulkan/GL on Linux.
+wgpu = "30"
 
 [profile.release]
 codegen-units = 1
