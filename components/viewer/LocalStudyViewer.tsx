@@ -47,7 +47,7 @@ import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
-import { primarySeriesIndexByProtocol, thumbnailImageId } from "@flowrad/viewer-core";
+import { primarySeriesIndexByProtocol, stopParkedVoice, thumbnailImageId } from "@flowrad/viewer-core";
 import { createLocalThumbnailer, type LocalThumbnailer } from "@flowrad/viewer-core/localThumbnails";
 import { LocalSeriesThumb } from "@/components/viewer/LocalSeriesThumb";
 import {
@@ -177,8 +177,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [firstImageUp, setFirstImageUp] = useState(false);
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
-  // Voice commands stay on across series (each series mounts its own viewer).
+  // Voice commands stay on across series (each series mounts its own viewer,
+  // which hands the live microphone session to the next: voiceHandoff.ts).
   const [voiceOn, setVoiceOn] = useState(false);
+  // Leaving the viewer: a session parked mid-handoff must not keep the mic.
+  // After a tick, so the unmounting viewer has parked it first.
+  useEffect(() => () => void setTimeout(stopParkedVoice, 0), []);
   const [dragging, setDragging] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   /** Every registered `dicomfile:` id of the open study — freed on close. */
