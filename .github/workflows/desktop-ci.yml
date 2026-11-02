@@ -73,6 +73,11 @@ jobs:
         env:
           FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
         run: cargo test --lib
+      - name: P2.1 — native decode of every transfer-syntax fixture (Rust image core)
+        working-directory: desktop/src-tauri
+        env:
+          FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
+        run: cargo test --lib fixture_matrix -- --ignored --nocapture
       - name: Build the app (debug, embedded renderer)
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
@@ -134,8 +139,23 @@ jobs:
       - name: Build the app (debug, embedded renderer)
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
-      - name: e2e — normal launch paints real pixels in the main viewport
+      # The JS renderer stays as the fallback after the P2.6 cutover (no GPU
+      # adapter, FLOWRAD_NATIVE=0, colour / multi-frame series): this test
+      # reads its canvases back and exercises its CPU fallback, so it pins it.
+      - name: e2e — normal launch paints real pixels in the main viewport (JS renderer, the fallback)
+        env:
+          FLOWRAD_NATIVE: "0"
+          # WARP runner: an unforced CPU-fallback launch is discarded and
+          # repeated (max 2, logged); the check itself is unchanged.
+          FLOWRAD_BENCH_WARP_RETRY: "1"
         run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer.exe
+      # The default after the cutover: the native renderer, checked on screen.
+      - run: pip install pillow
+      - name: e2e — normal launch paints the slice natively (screen grab, default renderer)
+        shell: bash
+        run: |
+          python scripts/make-test-ct.py "$RUNNER_TEMP/ct40" --slices 40
+          python desktop/scripts/e2e-native.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$RUNNER_TEMP/native-shots" --study "$RUNNER_TEMP/ct40"
 
   # Performance gate on WebView2 (the platform readers install on), release
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
@@ -149,6 +169,45 @@ jobs:
   # the MPR gate is now the 1,200 MB target itself. Budgets = measured plus
   # runner noise, ratcheted toward the targets (cold 500, first image 300 warm,
   # MPR 1,200, idle 400, back to baseline); tighten them when a change earns it.
+  # The x64 installer for this exact commit, for benching on real hardware
+  # (the HP): the runners have no GPU. Unsigned, no updater artifacts; the
+  # release workflow still makes the signed draft releases.
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm ci --prefix desktop
+      - name: Voice model (bundled, as in a release)
+        shell: bash
+        run: python scripts/fetch-voice-model.py && python scripts/fetch-voice-model.py --check
+      - name: Build the x64 installer (NSIS setup.exe)
+        working-directory: desktop
+        shell: bash
+        run: npx tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Upload setup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowrad-viewer-setup-x64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
   perf-windows:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -159,7 +218,22 @@ jobs:
       MPR_MAX_MS: "2000"
       MPR_MAX_MB: "1200"
       IDLE_MAX_MB: "400"
+      # WARP (software GPU) on the runner: a JS-renderer run that falls back to
+      # the CPU or hits a long one-time engine task is discarded and repeated
+      # (max 2, logged); thresholds unchanged. Never set on the HP.
+      FLOWRAD_BENCH_WARP_RETRY: "1"
+      # CI runner: WebView2 alone takes ~0.4-0.5 s before our page loads, so CI
+      # gates the app's own share (window build + page load -> first paint)
+      # and keeps the total as a backstop. The 500 ms total is checked on real
+      # hardware (HP) before a release is published.
       COLDSTART_MAX_MS: "900"
+      COLDSTART_APP_MAX_MS: "150"
+      # Freezes, split (CI runner renders with WARP, a software GPU):
+      # interaction (scroll / W-L / zoom steps) <= 50 ms; one-time open and
+      # start-up tasks (engine start, first render, series list) <= 150 ms.
+      # The strict <= 50 ms everywhere is checked on real hardware (HP).
+      INTERACTION_MAX_MS: "50"
+      OPEN_LONG_TASK_MAX_MS: "150"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
@@ -181,12 +255,39 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pydicom numpy
+      - run: pip install pydicom numpy pillow
       - run: npm ci
       - run: npm ci --prefix desktop
       - name: Build the app (release, no installer)
         run: npx tauri build --no-bundle
         working-directory: desktop
+      # Phase 2 (docs/NATIVE_RENDERER.md), P2.0: the WebView2 UI floor — the
+      # whole tree with only the UI in the webview (no image engine) — then the
+      # same with the native wgpu surface and its test image, then the
+      # compositing e2e (native pixels under the transparent page, page on top).
+      - name: P2.0 — WebView2 UI floor (start screen, native mode, whole tree, after 10 s)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+      - name: P2.0 — floor + native surface (spike view, whole tree, after 10 s)
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_BENCH_VIEW: native-spike
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+      - name: P2.1 — cold start in native mode (native first paint before WebView2 loads; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5
+      - name: P2.0 e2e — native wgpu surface under a transparent WebView2 (screen grab)
+        run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots"
+      - name: Upload the P2.0 screen grab
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-spike-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/native-shots
+          if-no-files-found: warn
+          retention-days: 14
       - name: Synthetic CT, 848 slices (deterministic)
         run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
       # Real-size studies (HP: CT 4,332 images, MRI 10,310 images), synthetic
@@ -227,17 +328,72 @@ jobs:
           node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2
-      - name: Cold start (median of 5, first paint in-process)
-        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }}
+      - name: P2.1 — native renderer on the 848-slice CT (first image, scroll, whole tree; informational)
+        run: node desktop/scripts/bench.mjs native desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3
+      - name: P2.2 e2e — the app's first viewport drawn natively (848-slice CT, screen grab)
+        run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots" --study "${{ runner.temp }}/ct848"
+      - name: P2.3 e2e — every native tool draws and measures (Length, ROIs with Rust stats, probe, undo / redo)
+        run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots" --study "${{ runner.temp }}/ct848" --tools
+      - name: P2.4 e2e — MPR, slabs and quick reformat drawn natively (848-slice CT)
+        env:
+          FLOWRAD_NATIVE: "1"
+        shell: bash
+        run: |
+          python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --view mpr --slab mip:20 --runs 1
+          python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --view reformat --runs 1
+      - name: P2.5 e2e — MPR and 3D draw natively on a cold open (848-slice CT)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 1
+      - name: P2.5 — 3D peak and settled memory, native mode (whole process tree; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_BENCH_VIEW: 3d
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 8
+      - name: P2.4 — MPR peak and settled memory, native mode (whole process tree; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 8
+      - name: P2.2 — app open + first image, native mode (cold and warm; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3
+      - name: P2.2 — idle with the CT open, native mode (whole process tree working set, after 20 s; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_BENCH_VIEW: grid
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20
+      - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }} --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }} --require-gpu
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
+      # Informational A/B (never fails the job): WebView2 process model vs
+      # idle and MPR memory. The flags are the app's own plus one variant.
+      - name: A/B — WebView2 process model vs idle / MPR memory / cold start (informational)
+        continue-on-error: true
+        shell: bash
+        env:
+          FLOWRAD_BENCH_VIEW: grid
+        run: |
+          # Keep going when a variant fails (no report = that flag set breaks the app).
+          set +e +o pipefail
+          base=$(node -p "require('./desktop/src-tauri/tauri.conf.json').app.windows[0].additionalBrowserArgs")
+          exe=desktop/src-tauri/target/release/flowrad-viewer.exe
+          for variant in "" "--in-process-gpu" "--enable-features=NetworkServiceInProcess2" "--in-process-gpu --enable-features=NetworkServiceInProcess2"; do
+            echo "::group::variant: ${variant:-app defaults}"
+            export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="$base $variant" VARIANT="${variant:-defaults}"
+            FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=grid timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" --settle 20 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`IDLE ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`IDLE ${process.env.VARIANT||"defaults"}: settled ws ${r.settledWsMb} MB private ${r.settledPrivateMb} MB, ${r.processes} processes`)})'
+            FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=mpr timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`MPR  ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`MPR  ${process.env.VARIANT||"defaults"}: peak ws ${r.peakWsMb} MB private ${r.peakPrivateMb} MB, ${r.processes} processes`)})'
+            timeout 150 node desktop/scripts/bench.mjs coldstart $exe --runs 3 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.indexOf("{")<0){console.log(`COLD ${process.env.VARIANT}: no report`);return}const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.env.VARIANT||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})'
+            echo "::endgroup::"
+          done
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
-        run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
+        run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }} --max-interaction-ms ${{ env.INTERACTION_MAX_MS }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)
         run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: Gate — multi-monitor (a second viewer window opens, paints, follows; closing it returns memory)

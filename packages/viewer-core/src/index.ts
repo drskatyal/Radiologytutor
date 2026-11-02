@@ -12,6 +12,7 @@ export * from "./hangingLayout";
 export * from "./localDicomFiles";
 export * from "./localStudy";
 export * from "./zipArchive";
+export * from "./localMemoryBudget";
 export * from "./safeLog";
 export * from "./mpr";
 export * from "./mprSession";

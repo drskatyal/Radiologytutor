@@ -73,6 +73,15 @@
     user-select: none;
     -webkit-user-select: none;
   }
+  /* Phase 2 native renderer: the GPU surface under the page shows through. */
+  html.native-transparent,
+  html.native-transparent body,
+  html.native-transparent .bg-canvas,
+  html.native-transparent [data-native-grid],
+  html.native-transparent [data-native-transparent] {
+    /* Rust clears to the canvas colour (#0B0D10) under the page. */
+    background: transparent;
+  }
   input,
   textarea,
   select {

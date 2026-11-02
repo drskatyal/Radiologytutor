@@ -46,6 +46,9 @@ export interface LocalInstanceHeader {
   columns?: number;
   /** (0002,0010). Decides which decoder (and WASM codec) a frame needs. */
   transferSyntaxUID?: string;
+  /** (0028,0002) and (0028,0100): with rows × columns, the decoded size. */
+  samplesPerPixel?: number;
+  bitsAllocated?: number;
 }
 
 export interface LocalSeries {
@@ -207,12 +210,15 @@ export function groupLocalStudies(
   headers: readonly LocalInstanceHeader[]
 ): LocalStudy[] {
   const studies = new Map<string, LocalStudy>();
+  // Series by study + UID: a linear find per header was ~1.2M compares for a
+  // 10,310-image MRI (242 series) and showed up as a 60 ms freeze per rebuild.
+  const seriesIndex = new Map<string, LocalStudy["series"][number]>();
 
   for (const header of headers) {
     const studyUid = header.studyInstanceUID?.trim() || "local.unknown.study";
-    const folder = header.fileName.split(/[\\/]/).slice(0, -1).join("/");
     const seriesUid =
-      header.seriesInstanceUID?.trim() || `local.unknown.series:${folder || "root"}`;
+      header.seriesInstanceUID?.trim() ||
+      `local.unknown.series:${header.fileName.split(/[\\/]/).slice(0, -1).join("/") || "root"}`;
 
     let study = studies.get(studyUid);
     if (!study) {
@@ -228,7 +234,8 @@ export function groupLocalStudies(
     study.description ||= header.studyDescription;
     study.studyDate ||= header.studyDate;
 
-    let series = study.series.find((entry) => entry.seriesInstanceUID === seriesUid);
+    const seriesKey = `${studyUid}\u0000${seriesUid}`;
+    let series = seriesIndex.get(seriesKey);
     if (!series) {
       series = {
         seriesInstanceUID: seriesUid,
@@ -240,6 +247,7 @@ export function groupLocalStudies(
         imageCount: 0,
       };
       study.series.push(series);
+      seriesIndex.set(seriesKey, series);
     }
     series.modality ||= header.modality;
     series.description ||= header.seriesDescription;
