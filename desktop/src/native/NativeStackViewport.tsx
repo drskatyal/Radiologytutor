@@ -7,10 +7,10 @@
 // active frame and (P2.3) annotations on top. Input lands here and goes to
 // Rust as view changes, coalesced to one call in flight per viewport.
 //
-// P2.2 covers display and navigation: slices (wheel, drag, keys, cine),
-// window/level, zoom, pan, rotate, flip, invert, reset. Measurement and
-// annotation tools arrive in P2.3; until then, picking one of them in a native
-// viewport says so instead of doing nothing.
+// Display and navigation (P2.2): slices (wheel, drag, keys, cine), window/
+// level, zoom, pan, rotate, flip, invert, reset. Tools (P2.3): every
+// measurement / ROI / probe / arrow / eraser tool on an SVG layer
+// (NativeAnnotationLayer), and Magnify as a second native viewport at 3×.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getScrollPreferences, slicesForNotch } from "@flowrad/viewer-core";
@@ -20,8 +20,9 @@ import { invoke } from "../platform";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
-import { registerNativeCell } from "./nativeLayout";
-import type { NativeTransform, NativeView } from "./transform";
+import { registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
+import { toCell, toImage, transformFor, type NativeTransform, type NativeView } from "./transform";
+import NativeAnnotationLayer, { isAnnotationTool } from "./NativeAnnotationLayer";
 
 export interface NativeShow {
   index: number;
@@ -71,6 +72,7 @@ export default function NativeStackViewport({
   onDropSeries,
   onDoubleClick,
   onFirstPaint,
+  onAnnotationsDeleted,
   tool = "StackScroll",
 }: Props) {
   const elementRef = useRef<HTMLDivElement>(null);
@@ -244,14 +246,18 @@ export default function NativeStackViewport({
   const onPointerDown = (e: React.PointerEvent) => {
     onActivate();
     if (!shown) return;
-    if (e.button === 0 && !NAV_TOOLS.has(tool)) {
-      setNotice(`${tool.replace(/([a-z])([A-Z])/g, "$1 $2")} arrives with the native tools (P2.3).`);
+    if (e.button === 0 && tool === "Magnify") {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      startLens(e);
       return;
     }
+    // Annotation tools are handled by the annotation layer (it stops the event).
+    if (e.button === 0 && !NAV_TOOLS.has(tool)) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY, button: e.button, start: shown, acc: 0 };
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    if (lens) moveLens(e);
     const d = drag.current;
     if (!d) return;
     const dx = e.clientX - d.x;
@@ -276,7 +282,55 @@ export default function NativeStackViewport({
   };
   const endDrag = () => {
     drag.current = null;
+    setLens(null);
   };
+
+  // ── Magnify: a 160 px lens, a second native viewport at 3× the cell's scale ──
+  const LENS = 160;
+  const [lens, setLens] = useState<{ x: number; y: number } | null>(null);
+  const lensRef = useRef<HTMLDivElement>(null);
+  const lensId = `${cellKey}:lens`;
+  const lensView = (cx: number, cy: number) => {
+    const s = shownRef.current;
+    if (!s) return null;
+    const q = toImage(s.transform, cx, cy);
+    const turned = s.view.rotation % 180 === 90;
+    const [iw, ih] = turned ? [s.rows, s.cols] : [s.cols, s.rows];
+    const zoom = (3 * s.transform.scale) / Math.min(LENS / iw, LENS / ih);
+    const t0 = transformFor({ ...s.view, zoom, pan: [0, 0] }, s.cols, s.rows, LENS, LENS);
+    const c0 = toCell(t0, q[0], q[1]);
+    return { ...s.view, zoom, pan: [LENS / 2 - c0[0], LENS / 2 - c0[1]] as [number, number] };
+  };
+  const local = (e: React.PointerEvent) => {
+    const r = elementRef.current!.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top] as const;
+  };
+  const startLens = (e: React.PointerEvent) => {
+    if (!series || !shownRef.current) return;
+    const [x, y] = local(e);
+    setLens({ x, y });
+    const v = lensView(x, y);
+    void invoke("native_cell_series", { id: lensId, fileIds: series.headers.map((h) => h.fileId), index: shownRef.current.index }).then(
+      () => v && invoke("native_cell_view", { id: lensId, patch: { wl: v.wl, zoom: v.zoom, pan: v.pan, rotation: v.rotation, flipH: v.flipH, flipV: v.flipV, invert: v.invert } }),
+      () => undefined
+    );
+  };
+  const moveLens = (e: React.PointerEvent) => {
+    const [x, y] = local(e);
+    setLens({ x, y });
+    const v = lensView(x, y);
+    if (v) void invoke("native_cell_view", { id: lensId, patch: { zoom: v.zoom, pan: v.pan } }).catch(() => undefined);
+  };
+  // The lens moves without resizing: re-send the layout on every move.
+  useEffect(() => {
+    if (lens) scheduleNativeLayout();
+  }, [lens]);
+  useEffect(() => {
+    if (!lens || !lensRef.current) return;
+    return registerNativeCell(lensId, lensRef.current);
+    // Registered once per press; moves only reposition the element.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!lens, lensId]);
 
   useEffect(() => {
     if (!notice) return;
@@ -326,6 +380,27 @@ export default function NativeStackViewport({
           </div>
         </>
       )}
+      {shown && series && (
+        <NativeAnnotationLayer
+          cellKey={cellKey}
+          seriesUid={series.uid}
+          imageIndex={shown.index}
+          transform={shown.transform}
+          spacing={pixelSpacingOf(header)}
+          tool={tool}
+          active={active}
+          onDeleted={(n) => n > 0 && onAnnotationsDeleted?.(n, "one")}
+        />
+      )}
+      {lens && (
+        <div
+          ref={lensRef}
+          aria-hidden
+          className="pointer-events-none absolute z-20 rounded-md border-2 border-white/80 shadow-lg"
+          // Dynamic: the lens follows the pointer.
+          style={{ left: lens.x - LENS / 2, top: lens.y - LENS / 2, width: LENS, height: LENS }}
+        />
+      )}
       {loading && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <Spinner label="Loading the series" />
@@ -345,4 +420,10 @@ export default function NativeStackViewport({
       <ViewportFrame active={active} hover={dropHover} />
     </div>
   );
+}
+
+/** DICOM Pixel Spacing [row, column] mm, or 1 mm when the file has none. */
+function pixelSpacingOf(h: { pixelSpacing?: number[] } | undefined): [number, number] {
+  const p = h?.pixelSpacing;
+  return p && p.length >= 2 && p[0] > 0 && p[1] > 0 ? [p[0], p[1]] : [1, 1];
 }

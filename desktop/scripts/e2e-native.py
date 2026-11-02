@@ -95,6 +95,35 @@ def app_mode(exe: str, study: str, out_dir: Path) -> None:
         proc.kill()
 
 
+def tools_mode(exe: str, study: str) -> None:
+    """P2.3: the real tools drawn through pointer events on the native viewport."""
+    env = {**os.environ, "FLOWRAD_NATIVE": "1", "FLOWRAD_BENCH": "1", "FLOWRAD_BENCH_VIEW": "native-tools"}
+    env.pop("FLOWRAD_BENCH_EXIT", None)
+    proc, report, tail = run_report(exe, env, [study])
+    try:
+        if report is None:
+            fail("tools: no bench report\n" + "\n".join(tail))
+        t = report.get("nativeTools") or {}
+        print(json.dumps(t, indent=2, default=str))
+        a = t.get("annotations") or {}
+        checks = [
+            ("Length drawn and measured", (a.get("Length") or {}).get("text", "").endswith("mm")),
+            ("Ellipse ROI has Rust statistics", ((a.get("EllipticalROI") or {}).get("stats") or {}).get("pixels", 0) > 0),
+            ("Rectangle ROI has Rust statistics", ((a.get("RectangleROI") or {}).get("stats") or {}).get("pixels", 0) > 0),
+            ("Probe reads a value", (a.get("Probe") or {}).get("value") is not None),
+            ("undo removes one, redo restores it", t.get("count") == 4 and t.get("afterUndo") == 3 and t.get("afterRedo") == 4),
+            ("annotations are drawn over the native image", (t.get("drawnOnScreen") or 0) >= 4),
+        ]
+        bad = 0
+        for name, ok in checks:
+            print(f"{'PASS' if ok else 'FAIL'}  tools: {name}")
+            bad += 0 if ok else 1
+        if bad:
+            sys.exit(1)
+    finally:
+        proc.kill()
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -105,7 +134,10 @@ def main() -> None:
         rest = [a for k, a in enumerate(sys.argv) if k not in (i, i + 1)]
         out = Path(rest[2] if len(rest) > 2 else ".")
         out.mkdir(parents=True, exist_ok=True)
-        app_mode(rest[1], study, out)
+        if "--tools" in rest:
+            tools_mode(rest[1], study)
+        else:
+            app_mode(rest[1], study, out)
         return
     exe = sys.argv[1]
     out_dir = Path(sys.argv[2] if len(sys.argv) > 2 else ".")
