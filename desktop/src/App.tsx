@@ -471,6 +471,9 @@ export default function App() {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
       }
+      // Compile the engine while Rust scans: at the first series it was too
+      // late (warm first image 433-470 -> 604-623 ms on perf-windows).
+      preloadEngineChunks();
       const seq = ++openSeq.current;
       const t0 = performance.now();
       bench.current.t0 = t0;
