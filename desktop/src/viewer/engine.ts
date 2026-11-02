@@ -225,12 +225,6 @@ async function createEngine(): Promise<Engine> {
     steps[name] = Math.round(now - mark);
     mark = now;
   };
-  // dcmjs (+ xmlbuilder2) is ~40% of Cornerstone core's module graph and all
-  // of it evaluated in the core import's single task (54-114 ms 'engine:
-  // import' on perf-windows). Evaluating it first, on its own, splits that.
-  await import("dcmjs");
-  step("dcmjsMs");
-  await yieldToMain();
   // Fetch + compile all three in parallel; each evaluates in its own task.
   const coreP = import("@cornerstonejs/core");
   const toolsP = import("@cornerstonejs/tools");
