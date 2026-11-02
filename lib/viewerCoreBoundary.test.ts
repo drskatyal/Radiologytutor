@@ -8,7 +8,8 @@ const ROOT = path.join(__dirname, "..", "packages", "viewer-core", "src");
 const ALLOWED = [/^\.\.?\//, /^@cornerstonejs\//, /^dicom-parser$/];
 
 test("@flowrad/viewer-core imports only itself and imaging libraries", () => {
-  const files = readdirSync(ROOT).filter((f) => f.endsWith(".ts"));
+  const files = (readdirSync(ROOT, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts"));
+  assert.ok(files.some((f) => f.startsWith(`bindings${path.sep}`)), "sub-folders (bindings/) are checked too");
   assert.ok(files.length >= 19, "the core has its modules");
   for (const file of files) {
     const src = readFileSync(path.join(ROOT, file), "utf8");

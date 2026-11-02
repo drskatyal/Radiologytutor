@@ -9,6 +9,7 @@
 // arrow keys scroll the active pane, double-click resets.
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { dragModeFor, resolveWheel } from "./mouseBindings";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Slider } from "@/components/ui/Slider";
@@ -260,8 +261,11 @@ export function Pane({
         e.preventDefault();
       }}
       onWheel={(e) => {
-        // Ctrl+wheel: slab thickness (Shift: ×5); plain wheel pages the slab.
-        if (e.ctrlKey || e.metaKey) {
+        // Tilt notches are commands (bindings, App); the vertical wheel follows
+        // the bindings: Ctrl+wheel = slab thickness by default (Shift: ×5).
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+        const action = resolveWheel({ ctrl: e.ctrlKey || e.metaKey, alt: e.altKey })?.command;
+        if (action === "slab" || action === "zoom") {
           e.preventDefault();
           onSlab((e.deltaY > 0 ? -1 : 1) * (e.shiftKey ? 5 : 1));
         } else onScroll((e.deltaY > 0 ? 1 : -1) * (e.shiftKey ? 5 : 1));
@@ -282,6 +286,9 @@ export function Pane({
         if (d.button === 2) rightMoved.current = true;
         d.x = e.clientX;
         d.y = e.clientY;
+        // Left drag windows here (a click places the crosshair); other buttons
+        // window only where the bindings say so (default: right drag).
+        if (d.button !== 0 && dragModeFor(d.button, "", { ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey }) !== "WindowLevel") return;
         onWindow(dy * 2, dx * 4);
       }}
       onPointerUp={(e) => {

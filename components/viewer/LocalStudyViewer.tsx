@@ -19,6 +19,7 @@
 // nothing from a header is logged, and there is no analytics on this surface.
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
+import { useViewerBindings } from "./useViewerBindings";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -79,6 +80,8 @@ import {
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
 const VIEWER_CHUNK_ERROR_EVENT = "flowrad:viewer-chunk-error";
+/** How long "Updating viewer, reloading…" shows before the recovery reload. */
+const RECOVERY_NOTICE_MS = 1500;
 
 /** Stands in for the viewer when its code could not be fetched: calm, not an error. */
 function ViewerCodeUnavailable() {
@@ -165,6 +168,9 @@ type DirectoryPickerWindow = Window & {
 };
 
 export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) {
+  // Mouse & keyboard bindings: the local copy, and the signed-in copy fetched
+  // now — before any study is opened (no request may follow a drop).
+  useViewerBindings({ account: true });
   const reading = tone === "reading";
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   // Series panel (reading room): collapsible to a rail, remembered per device.
@@ -575,10 +581,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     const slice = viewerControls.current?.getStartState?.().sliceIndex;
     const place: Record<string, number> = { study: activeStudy, series: activeSeries };
     if (typeof slice === "number" && slice >= 0) place.slice = slice;
-    // A beat so "Updating viewer, reloading…" is actually seen.
+    // Long enough that "Updating viewer, reloading…" is actually read (and
+    // seen by anything that samples the screen about once a second): 400 ms
+    // was a flash, and the e2e caught it only when the chunk failure landed
+    // inside its first fast polls.
     window.setTimeout(() => {
       if (!reloadForChunkError(phase.state === "open" || phase.state === "reading" ? place : undefined)) setRecovery("failed");
-    }, 400);
+    }, RECOVERY_NOTICE_MS);
   }, [activeStudy, activeSeries, phase.state]);
   const recoverRef = useRef(recoverFromChunkError);
   recoverRef.current = recoverFromChunkError;

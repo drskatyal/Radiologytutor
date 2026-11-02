@@ -40,7 +40,8 @@ import { headersFromBrowserFiles } from "./browserSource";
 import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
-import { keyLabel, keysForAction, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { inputIndex, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
 import { useSyncStatus } from "./components/syncStatus";
@@ -328,8 +329,19 @@ export default function App() {
     appVersion().then(setVersion, () => setVersion("dev"));
     settingsGet<ViewerSettings>().then((s) => {
       const merged = { ...DEFAULT_SETTINGS, ...s };
+      // ≤ 0.8.1 kept re-mapped keys as `shortcuts` (id → spec): carry them over once.
+      setLiveBindings(merged.bindings ?? {});
       setSettings(merged);
       setOverlay(merged.showOverlay);
+      if (merged.shortcuts && Object.keys(merged.shortcuts).length && !Object.keys(merged.bindings ?? {}).length) {
+        // Rare, once: loaded only for a reader upgrading with re-mapped keys.
+        void import("@flowrad/viewer-core/bindings/storage").then(({ migrateShortcutOverrides }) => {
+          const bindings = migrateShortcutOverrides(merged.shortcuts, DESKTOP_COMMANDS);
+          setLiveBindings(bindings);
+          setSettings((cur) => ({ ...cur, bindings, shortcuts: {} }));
+          void settingsSet<ViewerSettings>({ bindings, shortcuts: {} });
+        });
+      }
     });
     historyList<HistoryEntry>().then(setHistory, () => setHistory([]));
     benchEnabled().then((on) => (bench.current.enabled = on));
@@ -393,6 +405,8 @@ export default function App() {
   }, [settings.scrollSlicesPerNotch, settings.scrollDragPx, settings.scrollAcceleration]);
 
   const updateSettings = useCallback((patch: Partial<ViewerSettings>) => {
+    // Bindings apply to every viewport, tooltip and sheet at once.
+    if (patch.bindings) setLiveBindings(patch.bindings);
     setSettings((s) => ({ ...s, ...patch }));
     if (patch.showOverlay != null) setOverlay(patch.showOverlay);
     void settingsSet<ViewerSettings>(patch);
@@ -1212,7 +1226,7 @@ export default function App() {
       if (scope === "one") return;
       toast({
         title: `${count} annotation${count === 1 ? "" : "s"} deleted ${scope === "image" ? "from this image" : "from the series"}`,
-        description: `${keyLabel("Mod+Z")} brings ${count === 1 ? "it" : "them"} back.`,
+        description: `${keysForAction({ type: "undoAnnotation" }) ?? "Undo"} brings ${count === 1 ? "it" : "them"} back.`,
         variant: "info",
       });
     },
@@ -1962,11 +1976,11 @@ export default function App() {
         },
         shortcut: (id) => {
           const a = commandAction(id, cellPresets);
-          return a ? keysForAction(a, settings.shortcuts) : undefined;
+          return a ? keysForAction(a, settings.bindings) : undefined;
         },
       });
     },
-    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts, distractionFree, seriesPanel.collapsed]
+    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.bindings, distractionFree, seriesPanel.collapsed]
   );
   const annotationShortcut = useCallback(
     (id: MenuCommand) => (id === "ann:delete" ? "Del" : undefined),
@@ -2085,14 +2099,52 @@ export default function App() {
       if (dialog) return;
       // Tab switches series only from the image; on a control it still moves focus.
       if (e.key === "Tab" && target && target !== document.body && target.closest("button, a, [role=menuitem], [tabindex]")) return;
-      const action = resolveShortcut(e, undefined, settings.shortcuts);
+      const action = resolveShortcut(e, undefined, settings.bindings);
       if (!action) return;
       e.preventDefault();
       runAction(action);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runAction, dialog, settings.shortcuts]);
+  }, [runAction, dialog, settings.bindings]);
+
+  // Mouse buttons (middle, back / forward, any extra button of a gaming or
+  // programmable mouse) and wheel tilt bound to commands in Settings. Only
+  // inside the viewports; browser defaults are suppressed only when bound.
+  // Loaded with the first study (not at startup).
+  // Attached once per open study: the handler reads the current action and
+  // bindings through refs, so streaming scan batches (which change runAction)
+  // don't re-attach it on every render.
+  const studyOpen = studies.length > 0;
+  const runActionRef = useRef(runAction);
+  runActionRef.current = runAction;
+  const bindingsRef = useRef(settings.bindings);
+  bindingsRef.current = settings.bindings;
+  useEffect(() => {
+    if (dialog || !studyOpen) return;
+    let detach: (() => void) | null = null;
+    let gone = false;
+    void import("@flowrad/viewer-core/bindings/dom").then(({ attachMouseCommands }) => {
+      if (gone) return;
+      detach = attachMouseCommands(window, {
+        within: (t) => {
+          const el = t instanceof Element ? t : null;
+          return !!el?.closest("main") && !el.closest("aside, [role=menu], [role=dialog], button, input, textarea, select, [data-series-panel]");
+        },
+        isBound: (spec) => inputIndex(DESKTOP_COMMANDS, bindingsRef.current ?? {}).has(normalizeSpec(spec)),
+        run: (spec) => {
+          const action = resolveInput(spec, bindingsRef.current ?? {});
+          if (!action) return false;
+          runActionRef.current(action);
+          return true;
+        },
+      });
+    });
+    return () => {
+      gone = true;
+      detach?.();
+    };
+  }, [dialog, studyOpen]);
 
   const goHome = useCallback(() => {
     openSeq.current += 1;
@@ -2203,7 +2255,7 @@ export default function App() {
       />
       {hasStudy && !distractionFree && (
         <Toolbar
-          shortcuts={settings.shortcuts}
+          shortcuts={settings.bindings}
           leftTool={leftTool}
           onTool={setLeftTool}
           presets={presets}
@@ -2282,7 +2334,7 @@ export default function App() {
                 tone="surface"
                 collapsed={seriesPanel.collapsed}
                 onToggle={seriesPanel.toggle}
-                shortcut={[keyLabel("Mod+B")]}
+                shortcut={[keysForAction({ type: "toggleBrowser" }) ?? ""]}
                 widthClassName="w-[244px]"
               >
                 <SeriesBrowser
@@ -2589,7 +2641,7 @@ export default function App() {
         </div>
       )}
       {dialog === "help" && (
-      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.shortcuts} />
+      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.bindings} />
       )}
       {dialog === "window" && (
       <CustomWindowDialog

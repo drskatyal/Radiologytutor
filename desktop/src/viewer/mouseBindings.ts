@@ -1,14 +1,30 @@
-// Default mouse gestures: ONE table read by every viewport (native and JS),
-// the toolbar tooltips and the F1 sheet, so they cannot disagree again (HP
-// 0.8.1: the sheet said "right drag = window/level", native zoomed).
-//
-// Shaped for the customisable-bindings follow-up (docs/BINDINGS_DESIGN.md:
-// MouseBinding { button, gesture, mods, command }, resolveMouse / resolveWheel):
-// that feature layers the reader's overrides over MOUSE_DEFAULTS and
-// WHEEL_DEFAULTS without touching the call sites.
-//
-// The JS engine binds the same buttons in engine.ts (MouseBindings.Secondary →
-// WindowLevel, Auxiliary → Pan); desktop.test.ts checks it against this table.
+// Mouse gestures for every desktop viewport (native and JS), the toolbar
+// tooltips and the F1 sheet. A thin adapter over the shared bindings engine
+// (@flowrad/viewer-core/bindings, docs/BINDINGS_DESIGN.md): the RadiAnt preset
+// layered with the reader's overrides from Settings › Mouse & Keyboard, read
+// live, so a rebind applies to every viewport at once and the sheet can never
+// disagree with the hands (HP 0.8.1: the sheet said "right drag = window/
+// level", native zoomed).
+
+import {
+  DRAG_COMMANDS,
+  dragRules,
+  dragToolFor,
+  effectiveInputs,
+  getLiveBindings,
+  inputKind,
+  inputLabel,
+  isMac,
+  keyLabel,
+  liveBindingsVersion,
+  wheelActionFor,
+  wheelRules,
+  type BindingOverrides,
+  type DragRule,
+  type WheelAction,
+  type WheelRule,
+} from "@flowrad/viewer-core/bindings";
+import { DESKTOP_COMMANDS } from "../shortcuts";
 
 export interface MouseMods {
   ctrl?: boolean;
@@ -16,75 +32,92 @@ export interface MouseMods {
   alt?: boolean;
 }
 
-/** A drag gesture → a navigation tool. Button 0 drags the selected tool. */
+/** A drag gesture → a navigation tool (button 0 drags the selected tool). */
 export interface MouseBinding {
-  /** PointerEvent.button: 1 middle, 2 right (3 / 4 back / forward). */
+  /** PointerEvent.button: 1 middle, 2 right, 3 / 4 back / forward, 5+ extra. */
   button: number;
   gesture: "drag";
   mods: MouseMods;
-  command: "WindowLevel" | "Pan" | "Zoom";
-  /** For the F1 sheet / tooltips. */
-  label: string;
+  command: "WindowLevel" | "Pan" | "Zoom" | "StackScroll";
 }
 
 export interface WheelBinding {
   mods: MouseMods;
-  command: "scroll" | "slab" | "zoom";
-  label: string;
+  command: WheelAction;
 }
 
-/** Most specific first: Ctrl+right before right. */
-export const MOUSE_DEFAULTS: readonly MouseBinding[] = [
-  { button: 2, gesture: "drag", mods: { ctrl: true }, command: "Zoom", label: "zoom" },
-  { button: 2, gesture: "drag", mods: {}, command: "WindowLevel", label: "window/level" },
-  { button: 1, gesture: "drag", mods: {}, command: "Pan", label: "pan" },
-];
+const toMods = (m: DragRule["mods"]): MouseMods => ({ ...(m.mod && { ctrl: true }), ...(m.shift && { shift: true }), ...(m.alt && { alt: true }) });
 
-/** Ctrl+wheel: slab thickness in a reformat / MPR, zoom on a plain image. */
-export const WHEEL_DEFAULTS: readonly WheelBinding[] = [
-  { mods: { ctrl: true }, command: "slab", label: "zoom (slab thickness in a reformat)" },
-  { mods: {}, command: "scroll", label: "scroll" },
-];
+let cache: { version: number; overrides: BindingOverrides; drags: DragRule[]; wheels: WheelRule[] } | null = null;
+function rules(overrides?: BindingOverrides) {
+  if (overrides) return { drags: dragRules(DESKTOP_COMMANDS, overrides), wheels: wheelRules(DESKTOP_COMMANDS, overrides) };
+  const v = liveBindingsVersion();
+  if (!cache || cache.version !== v) {
+    const o = getLiveBindings();
+    cache = { version: v, overrides: o, drags: dragRules(DESKTOP_COMMANDS, o), wheels: wheelRules(DESKTOP_COMMANDS, o) };
+  }
+  return cache;
+}
 
-const modsMatch = (want: MouseMods, got: MouseMods) =>
-  !!want.ctrl === !!got.ctrl && !!want.shift === !!got.shift && !!want.alt === !!got.alt;
+/** The effective drag bindings (most specific first). */
+export function mouseBindings(overrides?: BindingOverrides): MouseBinding[] {
+  return rules(overrides).drags.map((r) => ({ button: r.button, gesture: "drag", mods: toMods(r.mods), command: r.tool }));
+}
+
+/** The effective wheel bindings (most specific first). */
+export function wheelBindings(overrides?: BindingOverrides): WheelBinding[] {
+  return rules(overrides).wheels.map((r) => ({ mods: toMods(r.mods), command: r.action }));
+}
+
+const asEvent = (m: MouseMods) => ({ ctrlKey: !!m.ctrl, shiftKey: !!m.shift, altKey: !!m.alt });
 
 /** The binding a drag with this button + modifiers fires, if any. */
-export function resolveMouse(button: number, gesture: "drag", mods: MouseMods = {}, table: readonly MouseBinding[] = MOUSE_DEFAULTS): MouseBinding | undefined {
-  // An exact modifier match wins; otherwise the button's plain binding.
-  return (
-    table.find((b) => b.button === button && b.gesture === gesture && modsMatch(b.mods, mods)) ??
-    table.find((b) => b.button === button && b.gesture === gesture && !b.mods.ctrl && !b.mods.shift && !b.mods.alt)
-  );
+export function resolveMouse(button: number, mods: MouseMods = {}, overrides?: BindingOverrides): MouseBinding["command"] | undefined {
+  return dragToolFor(rules(overrides).drags, button, asEvent(mods));
 }
 
-export function resolveWheel(mods: MouseMods = {}, table: readonly WheelBinding[] = WHEEL_DEFAULTS): WheelBinding | undefined {
-  return table.find((b) => modsMatch(b.mods, mods)) ?? table.find((b) => !b.mods.ctrl && !b.mods.shift && !b.mods.alt);
+export function resolveWheel(mods: MouseMods = {}, overrides?: BindingOverrides): WheelBinding | undefined {
+  const command = wheelActionFor(rules(overrides).wheels, asEvent(mods));
+  return command ? { mods, command } : undefined;
 }
 
-/** The tool a drag drives: a bound button's command, else (left) the selected tool. */
-export function dragModeFor(button: number, leftTool: string, mods: MouseMods = {}): string {
+/**
+ * The tool a drag drives: left = the selected tool; another button = the
+ * drag tool bound to it, or "" (no drag) when it has none, so an extra
+ * button's click stays free for the command bound to it.
+ */
+export function dragModeFor(button: number, leftTool: string, mods: MouseMods = {}, overrides?: BindingOverrides): string {
   if (button === 0) return leftTool;
-  return resolveMouse(button, "drag", mods)?.command ?? leftTool;
+  return resolveMouse(button, mods, overrides) ?? "";
 }
 
-const BUTTON_WORDS: Record<number, string> = { 1: "middle", 2: "right", 3: "back", 4: "forward" };
-
-function gestureWords(b: MouseBinding, modWord: (m: MouseMods) => string): string {
-  return `${modWord(b.mods)}${BUTTON_WORDS[b.button] ?? `button ${b.button}`} drag`;
+/** Tooltip suffix for a tool ("Right drag"), from its plain binding if it has one. */
+export function mouseHintFor(tool: string, overrides: BindingOverrides = getLiveBindings(), mac = isMac()): string | undefined {
+  const id = Object.keys(DRAG_COMMANDS).find((k) => DRAG_COMMANDS[k] === tool);
+  if (!id) return undefined;
+  const drags = (effectiveInputs(DESKTOP_COMMANDS, overrides).get(id) ?? []).filter((s) => inputKind(s) === "drag");
+  const best = drags.find((s) => !s.includes("+")) ?? drags[0];
+  return best ? inputLabel(best, mac) : undefined;
 }
 
-const plainMods = (m: MouseMods) => `${m.ctrl ? "Ctrl+" : ""}${m.alt ? "Alt+" : ""}${m.shift ? "Shift+" : ""}`;
+const WHEEL_WORDS: Record<WheelAction, string> = { scroll: "scroll", zoom: "zoom", slab: "zoom (slab thickness in a reformat)" };
+const DRAG_WORDS: Record<string, string> = { WindowLevel: "window/level", Pan: "pan", Zoom: "zoom", StackScroll: "browse slices" };
 
-/** Tooltip suffix for a tool ("right drag"), from its plain (unmodified) binding. */
-export function mouseHintFor(tool: string, modWord: (m: MouseMods) => string = plainMods): string | undefined {
-  const b = MOUSE_DEFAULTS.find((x) => x.command === tool && !x.mods.ctrl && !x.mods.shift && !x.mods.alt) ?? MOUSE_DEFAULTS.find((x) => x.command === tool);
-  return b ? gestureWords(b, modWord) : undefined;
-}
-
-/** The F1 sheet's mouse line; `modWord` renders modifiers ("Ctrl+" / "⌘"). */
-export function mouseSheetLine(modWord: (m: MouseMods) => string = plainMods): string {
-  const wheel = WHEEL_DEFAULTS.map((w) => `${modWord(w.mods)}wheel = ${w.label}`).reverse();
-  const drags = MOUSE_DEFAULTS.map((b) => `${gestureWords(b, modWord)} = ${b.label}`).reverse();
-  return ["Mouse: left = selected tool", ...wheel, ...drags, "right click = image menu", "Shift+click = 3D cursor."].join(" · ");
+/** The F1 sheet's mouse line, from the effective bindings. */
+export function mouseSheetLine(overrides: BindingOverrides = getLiveBindings(), mac = isMac()): string {
+  const eff = effectiveInputs(DESKTOP_COMMANDS, overrides);
+  const parts: string[] = ["Mouse: left = selected tool"];
+  for (const [id, specs] of eff) {
+    const tool = DRAG_COMMANDS[id];
+    for (const s of specs) {
+      const kind = inputKind(s);
+      if (kind === "drag" && tool) parts.push(`${inputLabel(s, mac)} = ${DRAG_WORDS[tool]}`);
+    }
+  }
+  for (const w of wheelBindings(overrides)) {
+    const mods = keyLabel(`${w.mods.ctrl ? "Mod+" : ""}${w.mods.alt ? "Alt+" : ""}${w.mods.shift ? "Shift+" : ""}`, mac);
+    parts.push(`${mods}wheel = ${WHEEL_WORDS[w.command]}`);
+  }
+  parts.push("right click = image menu", "Shift+click = 3D cursor.");
+  return parts.join(" · ");
 }

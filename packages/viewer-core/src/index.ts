@@ -38,4 +38,5 @@ export * from "./viewOrientation";
 export * from "./seriesPanel";
 export * from "./dicomTags";
 export * from "./voiceSession";
+export * from "./bindings";
 export * from "./voiceHandoff";

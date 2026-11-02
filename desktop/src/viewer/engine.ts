@@ -22,7 +22,8 @@ import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./worker
 import { annotationEditing, tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { markPhase } from "../perfWatch";
-import { MOUSE_DEFAULTS, WHEEL_DEFAULTS } from "./mouseBindings";
+import { mouseBindings, wheelBindings, type MouseMods } from "./mouseBindings";
+import { subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack, type XVec3 as Vec3 } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
@@ -288,29 +289,72 @@ function bindingsFor(engine: Engine) {
 }
 
 /**
- * A navigation tool's fixed (non-left) bindings, read from the shared gesture
- * table (mouseBindings.ts MOUSE_DEFAULTS / WHEEL_DEFAULTS) so the JS path and
- * the native viewports cannot drift apart: right = window / level, middle =
- * pan, Ctrl+right = zoom, wheel = slice, Ctrl+wheel = zoom.
+ * A navigation tool's fixed (non-left) bindings, read from the live bindings
+ * (mouseBindings.ts: the RadiAnt preset + the reader's Settings) so the JS
+ * path and the native viewports cannot drift apart. Default: right = window /
+ * level, middle = pan, Ctrl+right = zoom, wheel = slice, Ctrl+wheel = zoom.
+ * The engine knows buttons 1–4 (middle, right, back, forward); higher buttons
+ * drive the native viewports only.
  */
 function fixedBindings(engine: Engine, tool: string): { mouseButton: number; modifierKey?: number }[] {
   const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
-  const button: Record<number, number> = { 1: MouseBindings.Auxiliary, 2: MouseBindings.Secondary };
-  const mod = (m: { ctrl?: boolean; shift?: boolean; alt?: boolean }) =>
-    m.ctrl ? KeyboardBindings.Ctrl : m.shift ? KeyboardBindings.Shift : m.alt ? KeyboardBindings.Alt : undefined;
+  const button: Record<number, number> = {
+    1: MouseBindings.Auxiliary,
+    2: MouseBindings.Secondary,
+    3: MouseBindings.Fourth_Button,
+    4: MouseBindings.Fifth_Button,
+  };
+  const kb = KeyboardBindings as unknown as Record<string, number | undefined>;
+  const mod = (m: MouseMods) => {
+    const name = `${m.shift ? "Shift" : ""}${m.ctrl ? "Ctrl" : ""}${m.alt ? "Alt" : ""}`;
+    return name ? kb[name] : undefined;
+  };
   const out: { mouseButton: number; modifierKey?: number }[] = [];
-  for (const b of MOUSE_DEFAULTS) {
+  for (const b of mouseBindings()) {
     if (b.command !== tool || button[b.button] === undefined) continue;
     const modifierKey = mod(b.mods);
+    if (modifierKey === undefined && (b.mods.ctrl || b.mods.shift || b.mods.alt)) continue;
     out.push(modifierKey === undefined ? { mouseButton: button[b.button] } : { mouseButton: button[b.button], modifierKey });
   }
-  for (const w of WHEEL_DEFAULTS) {
+  for (const w of wheelBindings()) {
     const wheelTool = w.command === "scroll" ? "StackScroll" : "Zoom"; // a stack has no slab: Ctrl+wheel zooms
     if (wheelTool !== tool) continue;
     const modifierKey = mod(w.mods);
+    if (modifierKey === undefined && (w.mods.ctrl || w.mods.shift || w.mods.alt)) continue;
     out.push(modifierKey === undefined ? { mouseButton: MouseBindings.Wheel } : { mouseButton: MouseBindings.Wheel, modifierKey });
   }
   return out;
+}
+
+/** What each group's fixed tools hold now, so a rebind can strip exactly those. */
+const appliedFixed = new Map<string, Map<string, { mouseButton: number; modifierKey?: number }[]>>();
+
+function applyFixed(engine: Engine, groupId: string): void {
+  const group = engine.tools.ToolGroupManager.getToolGroup(groupId);
+  if (!group) return;
+  const held = appliedFixed.get(groupId) ?? new Map<string, { mouseButton: number; modifierKey?: number }[]>();
+  const { MouseBindings } = bindingsFor(engine);
+  const left = leftByGroup.get(groupId);
+  for (const name of FIXED_TOOLS) {
+    if (!group.hasTool(name)) continue;
+    const old = held.get(name);
+    if (old?.length) group.setToolPassive(name, { removeAllBindings: old });
+    const next = fixedBindings(engine, name);
+    const bindings = left === name ? [{ mouseButton: MouseBindings.Primary }, ...next] : next;
+    if (bindings.length) group.setToolActive(name, { bindings });
+    held.set(name, next);
+  }
+  appliedFixed.set(groupId, held);
+}
+
+let rebindSubscribed = false;
+/** Settings › Mouse & Keyboard changed: every JS-path group takes the new buttons at once. */
+function followLiveBindings(engine: Engine): void {
+  if (rebindSubscribed) return;
+  rebindSubscribed = true;
+  subscribeLiveBindings(() => {
+    for (const id of [STACK_GROUP, MPR_GROUP]) applyFixed(engine, id);
+  });
 }
 
 const FIXED_TOOLS = ["StackScroll", "Zoom", "WindowLevel", "Pan"] as const;
@@ -322,7 +366,8 @@ function buildStackGroup(engine: Engine) {
   for (const name of [...LEFT_TOOLS, "ReferenceLines", "ScaleOverlay"]) group.addTool(name);
   // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
   group.addTool("ArrowAnnotate", annotationEditing.arrowAnnotateConfig);
-  for (const name of FIXED_TOOLS) group.setToolActive(name, { bindings: fixedBindings(engine, name) });
+  applyFixed(engine, STACK_GROUP);
+  followLiveBindings(engine);
   for (const name of MEASUREMENT_TOOLS) group.setToolPassive(name);
   tuneStackScrollTool(group.getToolInstance("StackScroll"));
   leftByGroup.set(STACK_GROUP, null);
@@ -359,7 +404,9 @@ export function setGroupLeftTool(engine: Engine, groupId: string, name: string):
 
 /** A tool that lost the left button keeps its fixed button (wheel / right / middle / Ctrl+wheel). */
 function restoreFixedBindings(engine: Engine, group: { setToolActive(name: string, o: unknown): void }, previous: string | null | undefined) {
-  if (previous && (FIXED_TOOLS as readonly string[]).includes(previous)) group.setToolActive(previous, { bindings: fixedBindings(engine, previous) });
+  if (!previous || !(FIXED_TOOLS as readonly string[]).includes(previous)) return;
+  const bindings = fixedBindings(engine, previous);
+  if (bindings.length) group.setToolActive(previous, { bindings });
 }
 
 export function addViewportToGroup(engine: Engine, groupId: string, viewportId: string): void {
@@ -632,12 +679,11 @@ export function ensureVolumeGroups(engine: Engine): void {
     });
     for (const name of ["StackScroll", "WindowLevel", "Pan", "Zoom", "Length", "EllipticalROI", "Probe"]) g.addTool(name);
     g.setToolActive("Crosshairs", { bindings: [{ mouseButton: MouseBindings.Primary }] });
-    g.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
-    g.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
-    g.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
-    g.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl }] });
     for (const name of ["Length", "EllipticalROI", "Probe"]) g.setToolPassive(name);
     leftByGroup.set(MPR_GROUP, "Crosshairs");
+    // Wheel / right / middle / Ctrl+wheel from the live bindings, as on the stack.
+    applyFixed(engine, MPR_GROUP);
+    followLiveBindings(engine);
   }
   if (!tools.ToolGroupManager.getToolGroup(MIP_GROUP)) {
     const g = tools.ToolGroupManager.createToolGroup(MIP_GROUP)!;

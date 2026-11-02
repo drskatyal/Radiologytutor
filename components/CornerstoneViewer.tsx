@@ -24,8 +24,10 @@
 //     drives the viewport via the imperative handle. A corner readout (slice,
 //     window/level) stays — that is viewport state, not a tool.
 //
-// Mouse: wheel = scroll, right-drag = zoom, middle-drag = pan. The LEFT button
-// runs whichever tool is picked in the toolbar (window/level by default).
+// Mouse (Settings › Mouse & Keyboard, docs/BINDINGS_DESIGN.md; RadiAnt preset):
+// wheel = scroll, right-drag = window/level, Ctrl+right-drag = zoom,
+// middle-drag = pan, Mouse 4 / 5 = previous / next series. The LEFT button runs
+// whichever tool is picked in the toolbar (window/level by default).
 //
 // RECORD/REPLAY: pass `onEvent` to receive an ordered stream of viewer state
 // changes (slice / voi / camera / invert / annotation) read straight off the
@@ -133,7 +135,10 @@ import {
   type CineWrap,
 } from "../lib/cinePlayer";
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
-import { isTextTarget, resolveViewerHotkey, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
+import { isTextTarget, resolveViewerHotkey, resolveViewerInput, WEB_COMMANDS, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
+import { viewerFixedBindings } from "../lib/viewerMouseBindings";
+import { attachMouseCommands, inputIndex, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
+import { useViewerBindings } from "./viewer/useViewerBindings";
 import {
   ORIENTATION_COMMANDS,
   isOrientationCommand,
@@ -996,6 +1001,9 @@ export default function CornerstoneViewer({
   const [previewing, setPreviewing] = useState(false);
   const previewingRef = useRef(false);
   const pressGuardRef = useRef<HTMLDivElement>(null);
+  /** Live mouse-binding subscription of the current tool group (Settings › Mouse & Keyboard). */
+  const bindingsUnsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => bindingsUnsubRef.current?.(), []);
   const [ready, setReady] = useState(false);
   /** True once any frame has been drawn. The loading chip moves off the anatomy. */
   const [painted, setPainted] = useState(false);
@@ -1041,6 +1049,8 @@ export default function CornerstoneViewer({
     });
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
+  // Mouse & keyboard bindings (local copy; the page shell syncs the account).
+  const { overrides: viewerBindings } = useViewerBindings();
   // On-screen confirmation for key presses. Cleared after a beat.
   const [hud, setHud] = useState<string | null>(null);
   const hudTimerRef = useRef(0);
@@ -1273,21 +1283,29 @@ export default function CornerstoneViewer({
         if (elementRef.current) setEditCtx({ core, tools, element: elementRef.current, toolGroupId });
 
         const { MouseBindings } = toolsEnums;
-        // Fixed bindings: wheel = scroll, right-drag = zoom, pinch = zoom,
-        // middle = pan. These never move to another tool.
+        // Fixed bindings from the reader's mouse bindings (default: wheel =
+        // scroll, right-drag = window/level, Ctrl+right-drag = zoom, middle =
+        // pan) plus pinch = zoom. They never move with the left-button tool and
+        // are re-applied live when Settings › Mouse & Keyboard changes.
         // One-finger drag follows the selected tool (same as the left button),
         // modelled in lib/toolBindings.ts.
         const touchPrimary = { numTouchPoints: 1 };
         const touchPinch = { numTouchPoints: 2 };
-        tg.setToolActive(StackScrollTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Wheel }],
-        });
-        tg.setToolActive(ZoomTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Secondary }, touchPinch],
-        });
-        tg.setToolActive(PanTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Auxiliary }],
-        });
+        const fixedFor = (name: string) => {
+          const list = viewerFixedBindings(toolsEnums, name);
+          return name === ZoomTool.toolName ? [...list, touchPinch] : list;
+        };
+        const appliedFixed = new Map<string, unknown[]>();
+        const applyFixed = () => {
+          for (const name of [StackScrollTool.toolName, ZoomTool.toolName, PanTool.toolName, WindowLevelTool.toolName]) {
+            const old = appliedFixed.get(name);
+            if (old?.length) tg.setToolPassive(name, { removeAllBindings: old as never });
+            const next = fixedFor(name);
+            const bindings = name === leftTool ? [{ mouseButton: MouseBindings.Primary }, touchPrimary, ...next] : next;
+            if (bindings.length) tg.setToolActive(name, { bindings });
+            appliedFixed.set(name, next);
+          }
+        };
 
         // Left (Primary) button: whichever tool is picked in the toolbar.
         //
@@ -1320,22 +1338,31 @@ export default function CornerstoneViewer({
           const primary = { mouseButton: MouseBindings.Primary };
           if (name === "Eraser") {
             // No Cornerstone tool on the left button: the edit layer erases.
-            if (leftTool && leftTool !== name) tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
+            if (leftTool && leftTool !== name) {
+              tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
+              const keep = appliedFixed.get(leftTool);
+              if (keep?.length) tg.setToolActive(leftTool, { bindings: keep as never });
+            }
             leftTool = name;
             setActiveTool(name);
             return;
           }
           if (leftTool && leftTool !== name && leftTool !== "Eraser") {
-            // Drop only Primary and one-finger from the outgoing tool. Pan/Zoom/
-            // Scroll keep their permanent bindings (and stay active);
-            // WindowLevel/annotation tools become passive.
+            // Drop only Primary and one-finger from the outgoing tool; a tool
+            // with a fixed mouse binding (right-drag W/L, middle pan, wheel)
+            // stays active on it, annotation tools become passive.
             tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
+            const keep = appliedFixed.get(leftTool);
+            if (keep?.length) tg.setToolActive(leftTool, { bindings: keep as never });
           }
           tg.setToolActive(name, { bindings: [primary, touchPrimary] });
           leftTool = name;
           mprSessionRef.current?.setLeftTool(name);
           setActiveTool(name);
         };
+        applyFixed();
+        bindingsUnsubRef.current?.();
+        bindingsUnsubRef.current = subscribeLiveBindings(applyFixed);
         const requested = defaultToolRef.current;
         setLeftTool(requested && requested.length > 0 ? requested : "WindowLevel");
         setLeftToolRef.current = setLeftTool;
@@ -3298,6 +3325,13 @@ export default function CornerstoneViewer({
       detachListeners();
       detachQuality();
       viewportRef.current = null;
+      // The live mouse-binding subscription closes over this run's tool group
+      // and the whole setup scope (viewport, stack, engine handles): drop it
+      // with the engine, not only on unmount — the free viewer keeps this
+      // component mounted after "Close study", so it held a closed study's
+      // engine objects alive (+40 MB renderer RSS after close).
+      bindingsUnsubRef.current?.();
+      bindingsUnsubRef.current = null;
       setEditCtx(null);
       loadedSeriesIndexRef.current = -1;
       // Allow the effect to FULLY re-initialize on a source change (the engine
@@ -3546,8 +3580,33 @@ export default function CornerstoneViewer({
       case "orient":
         applyOrientation(action.command);
         return;
+      case "series":
+        voiceActionRef.current({ type: "series", delta: action.delta });
+        return;
     }
   };
+
+  // Mouse buttons (middle, back / forward, any extra button of a gaming or
+  // programmable mouse) and wheel tilt bound to commands in Settings › Mouse
+  // & Keyboard. Scoped to this viewer; browser defaults (back / forward
+  // navigation) are suppressed only for bound inputs.
+  const runViewerActionRef = useRef(runViewerAction);
+  runViewerActionRef.current = runViewerAction;
+  useEffect(() => {
+    const host = elementRef.current;
+    if (!host) return;
+    const index = inputIndex(WEB_COMMANDS, viewerBindings);
+    return attachMouseCommands(host, {
+      within: () => true,
+      isBound: (spec) => index.has(normalizeSpec(spec)),
+      run: (spec) => {
+        const action = resolveViewerInput(spec, viewerBindings);
+        if (!action) return false;
+        runViewerActionRef.current(action);
+        return true;
+      },
+    });
+  }, [viewerBindings]);
 
   /**
    * Rotate / flip the stack (per viewport; display only). Flips are the
@@ -4285,7 +4344,7 @@ export default function CornerstoneViewer({
           </p>
         )}
         <ViewerHud text={hud} />
-        <ViewerHelp open={helpOpen} onClose={closeHelp} />
+        <ViewerHelp open={helpOpen} onClose={closeHelp} overrides={viewerBindings} />
         <VoiceStatus
           className="absolute right-3 top-3 z-30"
           state={voice.state}
