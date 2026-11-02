@@ -275,9 +275,6 @@ async function createEngine(): Promise<Engine> {
 
   await yieldToMain();
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
-  // The constructor creates the engine's WebGL context (its own task):
-  // give the main thread back before tools and the first render.
-  await yieldToMain();
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);
   step("toolsAndEngineMs");
