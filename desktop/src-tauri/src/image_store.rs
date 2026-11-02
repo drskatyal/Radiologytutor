@@ -124,6 +124,14 @@ impl ImageStore {
 
     /// The slice, decoding it on a miss (on the caller's thread).
     pub fn get(&self, path: &Path) -> Result<Arc<Slice>, String> {
+        self.get_in(path, self.epoch.load(Ordering::SeqCst))
+    }
+
+    /// `get` on behalf of work that began in study `epoch` (warm, prefetch).
+    /// The decode is cached only if no close has happened since then: the
+    /// epoch is taken when the work was QUEUED, not when it runs, and checked
+    /// again under the cache lock that `clear` holds while it bumps it.
+    fn get_in(&self, path: &Path, epoch: u64) -> Result<Arc<Slice>, String> {
         if let Some(s) = self.peek(path) {
             return Ok(s);
         }
@@ -142,15 +150,12 @@ impl ImageStore {
             }
             busy.insert(path.to_path_buf());
         }
-        let epoch = self.epoch.load(Ordering::SeqCst);
         let started = Instant::now();
         let decoded = decode_slice(path).map(Arc::new);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         if let Ok(slice) = &decoded {
             // Closed meanwhile: the caller gets its slice, the cache keeps nothing.
-            if self.epoch.load(Ordering::SeqCst) == epoch {
-                self.insert(path, slice.clone(), ms);
-            }
+            self.insert(path, slice.clone(), ms, epoch);
         }
         self.inflight.lock().remove(path);
         self.decoded.notify_all();
@@ -165,14 +170,19 @@ impl ImageStore {
             let store = self.clone();
             rayon::spawn(move || {
                 if store.epoch.load(Ordering::SeqCst) == epoch {
-                    let _ = store.get(&path);
+                    let _ = store.get_in(&path, epoch);
                 }
             });
         }
     }
 
-    fn insert(&self, path: &Path, slice: Arc<Slice>, decode_ms: f64) {
+    fn insert(&self, path: &Path, slice: Arc<Slice>, decode_ms: f64, epoch: u64) {
         let mut g = self.inner.lock();
+        // `clear` bumps the epoch while holding this lock, so this check and
+        // the insert below are atomic with respect to a close.
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            return;
+        }
         g.stats.misses += 1;
         g.stats.decode_ms_total += decode_ms;
         g.stats.decode_ms_max = g.stats.decode_ms_max.max(decode_ms);
@@ -207,6 +217,7 @@ impl ImageStore {
     /// A later call supersedes this one: its unstarted work is dropped.
     pub fn prefetch(self: &Arc<Self>, paths: Vec<PathBuf>) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let epoch = self.epoch.load(Ordering::SeqCst);
         // Never prefetch more than the budget can hold (assume the first slice's size).
         let store = self.clone();
         rayon::spawn(move || {
@@ -217,7 +228,7 @@ impl ImageStore {
                 }
                 if let Some(s) = store.peek(&path) {
                     planned += s.bytes();
-                } else if let Ok(s) = store.get(&path) {
+                } else if let Ok(s) = store.get_in(&path, epoch) {
                     planned += s.bytes();
                 }
                 if planned >= store.budget / 2 {
