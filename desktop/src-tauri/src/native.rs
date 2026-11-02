@@ -1153,9 +1153,35 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
     }
 }
 
+/// The window's surface. macOS: creating it attaches a CAMetalLayer to the
+/// window's NSView, and AppKit views are main-thread only (raw-window-metal
+/// panics elsewhere: "can only access NSView on the main thread"), so it is
+/// created on the main thread and handed back. Configuring, acquiring and
+/// presenting touch only the layer, which wgpu-hal does off the main thread.
+/// Windows / Linux: created here, as before.
+fn create_surface(instance: &wgpu::Instance, window: &tauri::WebviewWindow) -> Result<wgpu::Surface<'static>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Already on the main thread: create it directly (waiting would deadlock).
+        if objc2::MainThreadMarker::new().is_some() {
+            return instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (instance, target) = (instance.clone(), window.as_ref().window());
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(instance.create_surface(target).map_err(|e| format!("surface: {e}")));
+            })
+            .map_err(|e| format!("surface: main thread unavailable: {e}"))?;
+        rx.recv().map_err(|e| format!("surface: main thread dropped the request: {e}"))?
+    }
+    #[cfg(not(target_os = "macos"))]
+    instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))
+}
+
 fn finish_warm(window: &tauri::WebviewWindow, warm: Warm) -> Result<(Gpu, String, String), String> {
     let Warm { instance, adapter, device, queue, pipes } = warm;
-    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    let surface = create_surface(&instance, window)?;
     if !adapter.is_surface_supported(&surface) {
         return Err("adapter cannot present to this window".into());
     }
@@ -1164,7 +1190,7 @@ fn finish_warm(window: &tauri::WebviewWindow, warm: Warm) -> Result<(Gpu, String
 
 async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backends>) -> Result<(Gpu, String, String), String> {
     let instance = new_instance(force);
-    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    let surface = create_surface(&instance, window)?;
     let (adapter, device, queue) = request_device(&instance, Some(&surface)).await?;
     finish(window, &adapter, surface, device, queue, None)
 }
