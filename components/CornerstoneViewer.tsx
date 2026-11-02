@@ -3325,6 +3325,13 @@ export default function CornerstoneViewer({
       detachListeners();
       detachQuality();
       viewportRef.current = null;
+      // The live mouse-binding subscription closes over this run's tool group
+      // and the whole setup scope (viewport, stack, engine handles): drop it
+      // with the engine, not only on unmount — the free viewer keeps this
+      // component mounted after "Close study", so it held a closed study's
+      // engine objects alive (+40 MB renderer RSS after close).
+      bindingsUnsubRef.current?.();
+      bindingsUnsubRef.current = null;
       setEditCtx(null);
       loadedSeriesIndexRef.current = -1;
       // Allow the effect to FULLY re-initialize on a source change (the engine
