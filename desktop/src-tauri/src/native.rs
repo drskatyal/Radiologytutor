@@ -591,6 +591,12 @@ impl Native {
         if let Some(store) = self.store.get() {
             store.clear();
         }
+        // wgpu destroys dropped textures / buffers only once the GPU is done
+        // with them, on a later poll: wait for that now rather than at the
+        // next frame (none may come on the home screen).
+        if let Some(gpu) = self.gpu.lock().as_ref() {
+            let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+        }
     }
 
     /// Image pixel value under a cell point (CSS px), modality units.
@@ -961,44 +967,109 @@ pub fn largest_series(roots: &[PathBuf]) -> Vec<PathBuf> {
     rows.into_iter().map(|r| r.3).collect()
 }
 
-async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
-    match create_gpu_on(window, None).await {
-        Ok(gpu) => Ok(gpu),
-        // No usable D3D12 adapter: every primary backend before giving up.
-        Err(e) if cfg!(target_os = "windows") => create_gpu_on(window, Some(wgpu::Backends::PRIMARY)).await.map_err(|e2| format!("{e}; {e2}")),
-        Err(e) => Err(e),
+/// The device half of the engine, built before the window exists.
+///
+/// Cold, most of native start-up is the D3D12 runtime and driver loading and
+/// the shaders compiling (the HP: ~2 s after a cache clear). None of that
+/// needs a surface, so `prewarm` does it on its own thread from the first line
+/// of `run()`, in parallel with WebView2 starting; `init` then only creates
+/// the surface and configures it.
+struct Warm {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipes: Pipes,
+}
+
+/// Pipelines and the bind-group layouts they use, for one surface format.
+struct Pipes {
+    format: wgpu::TextureFormat,
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    pipeline_rgba: wgpu::RenderPipeline,
+    layout_rgba: wgpu::BindGroupLayout,
+    test_view: wgpu::TextureView,
+}
+
+/// What DX12 / Vulkan swap chains offer first (non-sRGB); a surface that
+/// wants another format just rebuilds the pipelines.
+const LIKELY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
+type WarmJob = std::thread::JoinHandle<Result<Warm, String>>;
+static WARM: std::sync::Mutex<Option<WarmJob>> = std::sync::Mutex::new(None);
+
+/// How long the background device build took (ms), for the startup report.
+pub static WARM_MS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Start building the device and pipelines now, off the main thread. Call
+/// once, before the Tauri builder. No-op when native mode is off.
+pub fn prewarm() {
+    if !enabled() {
+        return;
+    }
+    let job = std::thread::Builder::new().name("flowrad-gpu-warm".into()).spawn(|| {
+        let started = Instant::now();
+        let instance = new_instance(None);
+        let warm = futures_util::FutureExt::now_or_never(Box::pin(async {
+            let (adapter, device, queue) = request_device(&instance, None).await?;
+            let pipes = build_pipes(&device, &queue, LIKELY_FORMAT);
+            Ok::<_, String>((adapter, device, queue, pipes))
+        }));
+        let r = match warm {
+            Some(Ok((adapter, device, queue, pipes))) => Ok(Warm { instance, adapter, device, queue, pipes }),
+            Some(Err(e)) => Err(e),
+            // Native wgpu resolves these futures synchronously; if a backend
+            // ever does not, `init` builds everything itself.
+            None => Err("adapter request did not complete synchronously".into()),
+        };
+        let _ = WARM_MS.set(started.elapsed().as_secs_f64() * 1000.0);
+        r
+    });
+    if let Ok(job) = job {
+        *WARM.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
     }
 }
 
-async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backends>) -> Result<(Gpu, String, String), String> {
-    let size = window.inner_size().map_err(|e| e.to_string())?;
+fn take_warm() -> Option<WarmJob> {
+    WARM.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+fn backends_for(force: Option<wgpu::Backends>) -> wgpu::Backends {
     // Windows: Direct3D 12 only. With PRIMARY the Vulkan loader and the
     // vendor's Vulkan driver (the HP's Intel Arc picked Vulkan) load too: tens
     // to hundreds of ms on the startup path, competing with WebView2 for the
     // loader lock, plus the driver's own resident memory. FLOWRAD_WGPU_BACKENDS
     // (e.g. "vulkan", "dx12,vulkan") overrides for diagnosis.
-    let backends = force
+    force
         .or_else(|| {
             std::env::var("FLOWRAD_WGPU_BACKENDS")
                 .ok()
                 .map(|s| wgpu::Backends::from_comma_list(&s))
                 .filter(|b| !b.is_empty())
         })
-        .unwrap_or(if cfg!(target_os = "windows") { wgpu::Backends::DX12 } else { wgpu::Backends::PRIMARY });
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
+        .unwrap_or(if cfg!(target_os = "windows") { wgpu::Backends::DX12 } else { wgpu::Backends::PRIMARY })
+}
+
+fn new_instance(force: Option<wgpu::Backends>) -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: backends_for(force),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    })
+}
+
+async fn request_device(
+    instance: &wgpu::Instance,
+    surface: Option<&wgpu::Surface<'static>>,
+) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), String> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
+            compatible_surface: surface,
             ..Default::default()
         })
         .await
         .map_err(|e| format!("adapter: {e}"))?;
-    let info = adapter.get_info();
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("flowrad-native"),
@@ -1011,8 +1082,57 @@ async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backen
         })
         .await
         .map_err(|e| format!("device: {e}"))?;
-    let caps = surface.get_capabilities(&adapter);
-    let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+    Ok((adapter, device, queue))
+}
+
+async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
+    // The device built in the background at launch, when it suits this window.
+    if let Some(job) = take_warm() {
+        let joined = tauri::async_runtime::spawn_blocking(move || job.join()).await;
+        if let Ok(Ok(Ok(warm))) = joined {
+            match finish_warm(window, warm) {
+                Ok(gpu) => return Ok(gpu),
+                Err(e) => eprintln!("flowrad: warm device unusable ({e}); creating a new one"),
+            }
+        }
+    }
+    match create_gpu_on(window, None).await {
+        Ok(gpu) => Ok(gpu),
+        // No usable D3D12 adapter: every primary backend before giving up.
+        Err(e) if cfg!(target_os = "windows") => create_gpu_on(window, Some(wgpu::Backends::PRIMARY)).await.map_err(|e2| format!("{e}; {e2}")),
+        Err(e) => Err(e),
+    }
+}
+
+fn finish_warm(window: &tauri::WebviewWindow, warm: Warm) -> Result<(Gpu, String, String), String> {
+    let Warm { instance, adapter, device, queue, pipes } = warm;
+    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    if !adapter.is_surface_supported(&surface) {
+        return Err("adapter cannot present to this window".into());
+    }
+    finish(window, &adapter, surface, device, queue, Some(pipes))
+}
+
+async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backends>) -> Result<(Gpu, String, String), String> {
+    let instance = new_instance(force);
+    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    let (adapter, device, queue) = request_device(&instance, Some(&surface)).await?;
+    finish(window, &adapter, surface, device, queue, None)
+}
+
+/// Configure the surface; reuse pipelines already built for its format.
+fn finish(
+    window: &tauri::WebviewWindow,
+    adapter: &wgpu::Adapter,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipes: Option<Pipes>,
+) -> Result<(Gpu, String, String), String> {
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let info = adapter.get_info();
+    let caps = surface.get_capabilities(adapter);
+    let format = *caps.formats.iter().find(|f| !f.is_srgb()).or(caps.formats.first()).ok_or("surface offers no formats")?;
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -1028,7 +1148,19 @@ async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backen
         view_formats: vec![],
     };
     surface.configure(&device, &config);
+    let pipes = match pipes {
+        Some(p) if p.format == format => p,
+        _ => build_pipes(&device, &queue, format),
+    };
+    let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_view, .. } = pipes;
+    Ok((
+        Gpu { surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_view },
+        info.name,
+        format!("{:?}", info.backend),
+    ))
+}
 
+fn build_pipes(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Pipes {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test image"),
         size: wgpu::Extent3d { width: TEST_SIZE, height: TEST_SIZE, depth_or_array_layers: 1 },
@@ -1134,11 +1266,7 @@ async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backen
         multiview_mask: None,
         cache: None,
     });
-    Ok((
-        Gpu { surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_view },
-        info.name,
-        format!("{:?}", info.backend),
-    ))
+    Pipes { format, pipeline, layout, pipeline_rgba, layout_rgba, test_view }
 }
 
 #[cfg(test)]

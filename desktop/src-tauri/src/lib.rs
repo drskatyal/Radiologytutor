@@ -39,6 +39,31 @@ use tauri::{Emitter, Manager};
 
 use crate::scan::ScanResult;
 
+/// mimalloc: decommits freed pages (purge) instead of keeping them committed
+/// like the Windows process heap, so private bytes fall back after a study is
+/// closed or a scan's per-thread buffers are dropped. Also faster for the
+/// scan's many small header allocations.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Hand freed memory back to the OS now (study closed, scan finished):
+/// mimalloc's free pages on every thread, then the process heap that the
+/// system DLLs (D3D, WebView2 host) allocate from.
+pub(crate) fn release_memory() {
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+        HeapCompact(GetProcessHeap(), 0);
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
 /// Files the user opened this session. The `dicom://` protocol serves by index
 /// into this list, so the renderer can never name an arbitrary path.
 #[derive(Default)]
@@ -118,12 +143,9 @@ async fn scan_sources(
         if bench_on() {
             bench_scan_line(&result);
         }
-        // A 4,000-file scan parses on every core; glibc keeps each thread's
-        // arena afterwards. Hand the slack back so an open study stays lean.
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            malloc_trim(0);
-        }
+        // A 4,000-file scan parses on every core; each thread keeps its
+        // pages afterwards. Hand the slack back so an open study stays lean.
+        release_memory();
         Ok(result)
     })
     .await
@@ -422,6 +444,7 @@ fn startup_marks() -> serde_json::Value {
         "navStartMs": m[1],
         "navDoneMs": m[2],
         "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+        "gpuWarmMs": native::WARM_MS.get(),
     })
 }
 
@@ -443,6 +466,13 @@ fn bench_view() -> Option<String> {
     crate::flowrad_env("BENCH_VIEW")
         .ok()
         .or_else(|| crate::flowrad_env("LEAK_ROUNDS").ok().map(|_| "leak".to_string()))
+}
+
+/// `FLOWRAD_BENCH_VIEW=close`: how long the study stays open (settled
+/// sample) before the app closes it (`FLOWRAD_BENCH_CLOSE_AFTER_MS`, default 20 s).
+#[tauri::command]
+fn bench_close_after_ms() -> u64 {
+    crate::flowrad_env("BENCH_CLOSE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000)
 }
 
 /// `FLOWRAD_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
@@ -552,10 +582,26 @@ async fn native_scroll(window: tauri::WebviewWindow, delta: i64, native: tauri::
     native.scroll_spike(delta, window.scale_factor().unwrap_or(1.0))
 }
 
+/// Study open: decode the slices the first viewport is about to ask for
+/// while React mounts it, so `native_cell_series` finds them decoded.
+#[tauri::command]
+fn native_warm(file_ids: Vec<u32>, state: tauri::State<'_, AppState>, native: tauri::State<'_, native::Shared>) {
+    if !native::enabled() {
+        return;
+    }
+    let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().flatten().collect();
+    native.store().warm(paths);
+}
+
 /// P2.1: close the native series: texture and decoded slices freed.
 #[tauri::command]
 fn native_close(native: tauri::State<'_, native::Shared>) {
+    // Study closed: every viewport, decoded slice and GPU texture, then the
+    // allocator's slack (reformat volumes are freed by their views' unmount,
+    // volume_close). Back to the empty-app footprint (bench `close` gate:
+    // within 30 MB of baseline).
     native.close_all();
+    release_memory();
 }
 
 // ───────────── P2.2: native viewports in the app (one per layout cell) ─────────────
@@ -852,6 +898,9 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    // The GPU device and pipelines build on their own thread from here, in
+    // parallel with WebView2 starting (native.rs `prewarm`).
+    native::prewarm();
     attach_bench_console();
     let state = AppState::default();
     *state.launch_paths.lock() = launch_args();
@@ -924,6 +973,7 @@ pub fn run() {
             bench_slab,
             bench_reformat,
             bench_view,
+            bench_close_after_ms,
             bench_voice_wav,
             bench_pixels,
             bench_paint_timeout_ms,
@@ -960,6 +1010,7 @@ pub fn run() {
             native_open_launch_study,
             native_scroll,
             native_close,
+            native_warm,
             native_store_stats,
             native_layout,
             native_cell_series,
