@@ -308,6 +308,31 @@ mod tests {
         assert_eq!(store.stats().used_mb, 0.0);
     }
 
+    /// FLOWRAD_FIXTURES=<make-fixtures.py output> cargo test fixture_matrix -- --ignored --nocapture
+    /// Decodes the first file of every transfer-syntax fixture natively.
+    #[test]
+    #[ignore]
+    fn fixture_matrix() {
+        let root = PathBuf::from(std::env::var("FLOWRAD_FIXTURES").expect("FLOWRAD_FIXTURES"));
+        let mut failed = vec![];
+        for dir in std::fs::read_dir(root.join("ts")).unwrap().filter_map(Result::ok) {
+            let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir.path()).into_iter().filter_map(Result::ok).filter(|e| e.file_type().is_file()).map(|e| e.into_path()).collect();
+            files.sort();
+            let Some(f) = files.first() else { continue };
+            match decode_slice(f) {
+                Ok(s) => {
+                    let (lo, hi) = s.data.iter().fold((i16::MAX, i16::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+                    eprintln!("OK   {:<22} {}x{} range {lo}..{hi}", dir.file_name().to_string_lossy(), s.cols, s.rows);
+                }
+                Err(e) => {
+                    eprintln!("FAIL {:<22} {e}", dir.file_name().to_string_lossy());
+                    failed.push(dir.file_name());
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{failed:?}");
+    }
+
     #[test]
     fn prefetch_fills_the_cache_in_the_background() {
         let d = tmp("prefetch");
