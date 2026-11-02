@@ -360,7 +360,13 @@ function StackViewportImpl({
           // CPU rendering here instead of leaving the reader a black box.
           void verifyPainted(engineRef.current, vp, elementRef.current, ids, index, () => loadedRef.current?.ids === ids).then((health) => {
             if (element && Events) element.removeEventListener(Events.IMAGE_RENDERED, onRendered);
-            if (loadedRef.current?.ids !== ids || verifiedUidRef.current === series.uid) return;
+            // A series that grew while this check ran (a scan still streaming)
+            // is the same image on screen: a non-blank result still counts.
+            // (It used to be dropped, so 'first image' on a 10k MRI waited for
+            // the whole series to finish arriving: 0.95-2.8 s warm on CI.)
+            const superseded = loadedRef.current?.ids !== ids;
+            if (verifiedUidRef.current === series.uid) return;
+            if (superseded && !(loadedRef.current?.uid === series.uid && health.nonBlank)) return;
             verifiedUidRef.current = series.uid;
             // A blank GPU paint that fell back to the CPU path is "painted" only now.
             const at = health.nonBlank && renderedAt != null && health.renderPath !== "cpu-fallback" ? renderedAt : performance.now();
