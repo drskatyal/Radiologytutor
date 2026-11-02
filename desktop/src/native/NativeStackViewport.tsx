@@ -358,6 +358,8 @@ export default function NativeStackViewport({
     <div
       ref={elementRef}
       data-native-viewport
+      // Image <-> cell mapping valid (after the cell's first layout reached Rust).
+      data-native-ready={shown && shown.transform.scale > 0 ? "1" : undefined}
       data-drop-cell={cellIndex}
       data-viewport-id={viewportId}
       role="img"
