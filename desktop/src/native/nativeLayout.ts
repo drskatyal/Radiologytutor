@@ -7,6 +7,7 @@ import { invoke } from "../platform";
 
 const cells = new Map<string, HTMLElement>();
 let scheduled = 0;
+const applied = new Set<() => void>();
 
 function flush() {
   scheduled = 0;
@@ -14,7 +15,21 @@ function flush() {
     const r = el.getBoundingClientRect();
     return { id, x: r.left, y: r.top, w: r.width, h: r.height };
   });
-  void invoke("native_layout", { cells: rects }).catch(() => undefined);
+  void invoke("native_layout", { cells: rects }).then(
+    () => applied.forEach((fn) => fn()),
+    () => undefined
+  );
+}
+
+/**
+ * Called after Rust has applied a new layout. A viewport whose size changed
+ * refreshes its view then: the image <-> cell transform Rust returns depends
+ * on the cell size (a series shown before its first layout came back with a
+ * 0 x 0 cell, so overlays and tools mapped to NaN until the next change).
+ */
+export function onNativeLayoutApplied(fn: () => void): () => void {
+  applied.add(fn);
+  return () => applied.delete(fn);
 }
 
 export function scheduleNativeLayout(): void {
