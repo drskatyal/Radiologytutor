@@ -82,6 +82,8 @@ struct CellGpu {
     /// (path, texture) of the slice uploaded, None = the test image.
     texture: Option<(PathBuf, wgpu::Texture)>,
     dims: (usize, usize),
+    /// The texture is an RGBA8 colour frame (3D), drawn with the colour pipeline.
+    rgba: bool,
 }
 
 /// P2.4: a plane (or slab) of the Rust volume (volume.rs) as a cell's source.
@@ -112,6 +114,9 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    /// P2.5: colour frames (3D): RGBA8 texture, no window / level.
+    pipeline_rgba: wgpu::RenderPipeline,
+    layout_rgba: wgpu::BindGroupLayout,
     test_view: wgpu::TextureView,
 }
 
@@ -180,6 +185,33 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   var g = clamp((s - lo) / max(u.wl.y, 1.0), 0.0, 1.0);
   if (u.xf.w > 0.5) { g = 1.0 - g; }
   return vec4(g, g, g, 1.0);
+}
+"#;
+
+/// P2.5: the colour pipeline (3D frames): same geometry, no window / level.
+const SHADER_RGBA: &str = r#"
+struct U { rect: vec4<f32>, wl: vec4<f32>, xf: vec4<f32>, rot: vec4<f32>, dims: vec4<f32> };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var img: texture_2d<f32>;
+
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
+  var corners = array<vec2<f32>, 6>(vec2(0.,0.), vec2(1.,0.), vec2(0.,1.), vec2(0.,1.), vec2(1.,0.), vec2(1.,1.));
+  let c = corners[i];
+  let px = u.rect.xy + c * u.rect.zw;
+  var o: VOut;
+  o.pos = vec4(px.x / u.wl.z * 2.0 - 1.0, 1.0 - px.y / u.wl.w * 2.0, 0.0, 1.0);
+  o.uv = c;
+  return o;
+}
+
+@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
+  let d = v.uv * u.rect.zw - u.xf.yz;
+  let f = vec2(u.rot.x * d.x + u.rot.y * d.y, -u.rot.y * d.x + u.rot.x * d.y);
+  let q = vec2(f.x * u.rot.z, f.y * u.rot.w) / u.xf.x + u.dims.xy * 0.5;
+  if (q.x < 0.0 || q.y < 0.0 || q.x >= u.dims.x || q.y >= u.dims.y) { return vec4(0.0, 0.0, 0.0, 1.0); }
+  return vec4(textureLoad(img, vec2<i32>(q), 0).rgb, 1.0);
 }
 "#;
 
@@ -284,6 +316,17 @@ pub fn roi_stats(s: &Slice, shape: &RoiShape) -> RoiStats {
     }
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Render3dResult {
+    pub w: usize,
+    pub h: usize,
+    pub render_ms: f64,
+    pub frame_ms: f64,
+    /// Brightest channel value (0–255) in the frame: "is anything drawn".
+    pub max_lum: u8,
+}
+
 /// A window over the slice's data range, for files without one.
 fn data_window(s: &Slice) -> (f64, f64) {
     let (lo, hi) = s.data.iter().fold((i16::MAX, i16::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
@@ -334,6 +377,86 @@ impl Native {
                 gpu.surface.configure(&gpu.device, &gpu.config);
             }
         }
+    }
+
+    /// P2.5: a 3D rendering (volume rendering / MIP of the built volume,
+    /// ray-cast in Rust on every core) drawn into cell `id` as an RGBA frame:
+    /// no PNG encode, no browser decode, no copy in WebView2's GPU process.
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_render3d(
+        &self,
+        id: &str,
+        key: u64,
+        mode: crate::render3d::Mode,
+        yaw: f32,
+        pitch: f32,
+        zoom: f32,
+        center: f32,
+        width: f32,
+        size: usize,
+        fast: bool,
+        scale: f64,
+    ) -> Result<Render3dResult, String> {
+        let started = Instant::now();
+        let v = crate::volume::current(key).ok_or("the volume is not built")?;
+        let f = crate::render3d::render(&v, mode, yaw, pitch, zoom, center, width, size.clamp(32, 2048), fast);
+        let render_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let max_lum = f.rgb.iter().copied().max().unwrap_or(0);
+        {
+            let mut cells = self.cells.lock();
+            let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], plane: None, view: View::default(), gpu: None });
+            c.series.clear();
+            c.plane = None;
+            c.view = View::default();
+        }
+        self.upload_rgba(id, f.w, f.h, &f.rgb)?;
+        let frame_ms = self.render(scale)?;
+        Ok(Render3dResult { w: f.w, h: f.h, render_ms, frame_ms, max_lum })
+    }
+
+    fn upload_rgba(&self, id: &str, w: usize, h: usize, rgb: &[u8]) -> Result<(), String> {
+        let guard = self.gpu.lock();
+        let gpu = guard.as_ref().ok_or("native renderer not initialised")?;
+        let mut cells = self.cells.lock();
+        let c = cells.get_mut(id).ok_or("no such viewport")?;
+        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
+        let size = wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 };
+        let reuse = cg.texture.take().filter(|(_, t)| cg.rgba && t.width() == size.width && t.height() == size.height).map(|(_, t)| t);
+        let fresh = reuse.is_none();
+        let texture = reuse.unwrap_or_else(|| {
+            gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("3d frame"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        });
+        let rgba: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            &rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 4), rows_per_image: Some(size.height) },
+            size,
+        );
+        if fresh || !cg.rgba {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            cg.bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("3d"),
+                layout: &gpu.layout_rgba,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: cg.uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                ],
+            });
+        }
+        cg.rgba = true;
+        cg.texture = Some((PathBuf::from("3d"), texture));
+        cg.dims = (w, h);
+        Ok(())
     }
 
     pub fn set_window_facts(&self, origin: (i32, i32), scale: f64) {
@@ -629,11 +752,12 @@ impl Native {
         let mut cells = self.cells.lock();
         let c = cells.get_mut(id).ok_or("no such viewport")?;
         let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
-        if cg.texture.as_ref().is_some_and(|(p, _)| p == path) {
+        if !cg.rgba && cg.texture.as_ref().is_some_and(|(p, _)| p == path) {
             return Ok(());
         }
         let size = wgpu::Extent3d { width: slice.cols as u32, height: slice.rows as u32, depth_or_array_layers: 1 };
-        let reuse = cg.texture.take().filter(|(_, t)| t.width() == size.width && t.height() == size.height).map(|(_, t)| t);
+        let was_rgba = std::mem::replace(&mut cg.rgba, false);
+        let reuse = cg.texture.take().filter(|(_, t)| !was_rgba && t.width() == size.width && t.height() == size.height).map(|(_, t)| t);
         let fresh = reuse.is_none();
         let texture = reuse.unwrap_or_else(|| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -740,6 +864,7 @@ impl Native {
                     continue;
                 }
                 pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                pass.set_pipeline(if cg.rgba { &gpu.pipeline_rgba } else { &gpu.pipeline });
                 pass.set_bind_group(0, &cg.bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
@@ -785,7 +910,7 @@ fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::TextureView) -> CellGpu {
         mapped_at_creation: false,
     });
     let bind_group = bind_group(gpu, &uniforms, initial);
-    CellGpu { uniforms, bind_group, texture: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize) }
+    CellGpu { uniforms, bind_group, texture: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize), rgba: false }
 }
 
 /// P2.1 bench / spike: the DICOM files under `roots`, grouped by series, the
@@ -933,8 +1058,51 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
         multiview_mask: None,
         cache: None,
     });
+    let layout_rgba = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("cell rgba"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    });
+    let shader_rgba = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cell rgba"), source: wgpu::ShaderSource::Wgsl(SHADER_RGBA.into()) });
+    let pipeline_layout_rgba = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("cell rgba"),
+        bind_group_layouts: &[Some(&layout_rgba)],
+        ..Default::default()
+    });
+    let pipeline_rgba = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("cell rgba"),
+        layout: Some(&pipeline_layout_rgba),
+        vertex: wgpu::VertexState { module: &shader_rgba, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader_rgba,
+            entry_point: Some("fs"),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
     Ok((
-        Gpu { surface, device, queue, config, pipeline, layout, test_view },
+        Gpu { surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_view },
         info.name,
         format!("{:?}", info.backend),
     ))
