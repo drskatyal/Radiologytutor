@@ -6,6 +6,9 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { viteCommonjs } from "@originjs/vite-plugin-commonjs";
 import path from "node:path";
+import { readFileSync } from "node:fs";
+
+const appVersion = (JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 const root = path.resolve(__dirname, "..");
 
@@ -15,6 +18,42 @@ const root = path.resolve(__dirname, "..");
  * opens — but its ~3 MB no longer has to be fetched and compiled on the
  * critical path between the instant preview and the first real image.
  */
+/**
+ * Cornerstone's core.init() creates three throwaway WebGL contexts in one task
+ * (two norm16 texture probes + a "has WebGL" check): an engine-startup freeze.
+ * Let it take a result the app already has (engine.ts runs the probes one per
+ * task and caches them), and expose its own probe so the result is identical.
+ * Fails the build if a Cornerstone upgrade changes these lines.
+ */
+function cornerstoneGpuProbeSeam(): Plugin {
+  const edits: Record<string, [string, string][]> = {
+    "@cornerstonejs/core/dist/esm/init.js": [
+      ["canUseNorm16Texture = _hasNorm16TextureSupport();", "canUseNorm16Texture = globalThis.__flowradGpu?.norm16 ?? _hasNorm16TextureSupport();"],
+      ["const hasWebGLContext = _hasActiveWebGLContext();", "const hasWebGLContext = globalThis.__flowradGpu?.webgl ?? _hasActiveWebGLContext();"],
+    ],
+    "@cornerstonejs/core/dist/esm/utilities/textureSupport.js": [
+      [
+        "function main({",
+        "globalThis.__flowradNorm16Probe = (linear) => main({ ext: 'EXT_texture_norm16', filterType: linear ? 'LINEAR' : 'NEAREST', texData: new Int16Array([32767, 2e3, 3e3, 4e3, 5e3, 16784, 7e3, 8e3, 9e3, 32767]), internalFormat: (gl, ext) => ext.R16_SNORM_EXT, glDataType: (gl) => gl.SHORT });\nfunction main({",
+      ],
+    ],
+  };
+  return {
+    name: "flowrad-cornerstone-gpu-probe",
+    enforce: "pre",
+    transform(code, id) {
+      const key = Object.keys(edits).find((k) => id.replace(/\\/g, "/").endsWith(k));
+      if (!key) return null;
+      let out = code;
+      for (const [from, to] of edits[key]) {
+        if (!out.includes(from)) this.error(`cornerstone GPU probe seam: "${from}" not found in ${key} (Cornerstone changed?)`);
+        out = out.replace(from, to);
+      }
+      return { code: out, map: null };
+    },
+  };
+}
+
 function preloadEngineChunks(): Plugin {
   const engine = /node_modules\/@cornerstonejs\/(core|tools|dicom-image-loader)\//;
   return {
@@ -56,7 +95,9 @@ function preloadEngineChunks(): Plugin {
 
 export default defineConfig({
   root: __dirname,
-  plugins: [react(), viteCommonjs(), preloadEngineChunks()],
+  // Keys the cached GPU probe (engine.ts): a new build probes again.
+  define: { "import.meta.env.VITE_APP_VERSION": JSON.stringify(appVersion) },
+  plugins: [react(), viteCommonjs(), cornerstoneGpuProbeSeam(), preloadEngineChunks()],
   clearScreen: false,
   resolve: {
     alias: [
