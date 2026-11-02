@@ -127,22 +127,22 @@ fn info_of(v: &Volume, build_ms: f64) -> VolumeInfo {
     }
 }
 
-struct SliceHeader {
-    path: PathBuf,
-    position: [f64; 3],
-    rows: usize,
-    cols: usize,
-    spacing: [f64; 2],
-    orientation: [f64; 6],
-    window: Option<(f64, f64)>,
-    bits: i64,
-    signed: bool,
-    slope: f64,
-    intercept: f64,
-    ts: String,
+pub(crate) struct SliceHeader {
+    pub(crate) path: PathBuf,
+    pub(crate) position: [f64; 3],
+    pub(crate) rows: usize,
+    pub(crate) cols: usize,
+    pub(crate) spacing: [f64; 2],
+    pub(crate) orientation: [f64; 6],
+    pub(crate) window: Option<(f64, f64)>,
+    pub(crate) bits: i64,
+    pub(crate) signed: bool,
+    pub(crate) slope: f64,
+    pub(crate) intercept: f64,
+    pub(crate) ts: String,
 }
 
-fn num(obj: &DefaultDicomObject, tag: dicom_core::Tag, i: usize) -> Option<f64> {
+pub(crate) fn num(obj: &DefaultDicomObject, tag: dicom_core::Tag, i: usize) -> Option<f64> {
     let e = obj.element_opt(tag).ok()??;
     if let Ok(v) = e.to_multi_float64() {
         return v.get(i).copied();
@@ -150,7 +150,7 @@ fn num(obj: &DefaultDicomObject, tag: dicom_core::Tag, i: usize) -> Option<f64> 
     e.to_str().ok()?.split('\\').nth(i)?.trim().parse().ok()
 }
 
-fn int(obj: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<i64> {
+pub(crate) fn int(obj: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<i64> {
     obj.element_opt(tag).ok()?.and_then(|e| e.to_int::<i64>().ok())
 }
 
@@ -223,7 +223,7 @@ fn read_header(path: &Path) -> Result<SliceHeader, String> {
 
 /// Pass 2: decode one slice straight into its slot of the volume (no
 /// per-slice buffer for the common uncompressed case).
-fn decode_into(h: &SliceHeader, dst: &mut [i16]) -> Result<(), String> {
+pub(crate) fn decode_into(h: &SliceHeader, dst: &mut [i16]) -> Result<(), String> {
     let n = dst.len();
     let clamp = |v: f64| v.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
     let (slope, intercept, signed) = (h.slope, h.intercept, h.signed);

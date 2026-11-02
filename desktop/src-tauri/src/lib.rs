@@ -12,6 +12,7 @@
 mod anonymize;
 mod documents;
 mod header;
+mod image_store;
 mod native;
 mod pacs;
 mod pet;
@@ -408,10 +409,19 @@ fn mark(i: usize) {
     }
 }
 
+/// Native mode: when Rust first presented a frame in the window (before
+/// WebView2 has loaded the page), ms since process start.
+static NATIVE_FIRST_PAINT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
-    serde_json::json!({ "windowBuiltMs": m[0], "navStartMs": m[1], "navDoneMs": m[2] })
+    serde_json::json!({
+        "windowBuiltMs": m[0],
+        "navStartMs": m[1],
+        "navDoneMs": m[2],
+        "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+    })
 }
 
 /// Milliseconds since the process started — the renderer calls this at first
@@ -491,6 +501,47 @@ async fn native_set_cells(window: tauri::WebviewWindow, cells: Vec<native::Cell>
 async fn native_set_wl(window: tauri::WebviewWindow, center: f32, width: f32, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
     native.set_wl(center, width);
     native.render(window.scale_factor().unwrap_or(1.0))
+}
+
+/// P2.1: open the study given on the command line natively (its largest
+/// series), decode + draw the first slice. Times from the call and from
+/// process start, so the bench has a native "first image".
+#[tauri::command]
+async fn native_open_launch_study(window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) -> Result<serde_json::Value, String> {
+    let started = std::time::Instant::now();
+    let roots: Vec<PathBuf> = launch_args().into_iter().map(PathBuf::from).collect();
+    if roots.is_empty() {
+        return Err("no study on the command line".into());
+    }
+    let series = tauri::async_runtime::spawn_blocking(move || native::largest_series(&roots)).await.map_err(|e| e.to_string())?;
+    if series.is_empty() {
+        return Err("no DICOM images found".into());
+    }
+    let listed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let shown = native.open_series(series, window.scale_factor().unwrap_or(1.0))?;
+    Ok(serde_json::json!({
+        "listMs": listed_ms,
+        "firstImageMs": started.elapsed().as_secs_f64() * 1000.0,
+        "firstImageSinceStartMs": startup_elapsed_ms(),
+        "first": shown,
+    }))
+}
+
+/// P2.1: scroll the native series by `delta` slices.
+#[tauri::command]
+async fn native_scroll(window: tauri::WebviewWindow, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
+    native.scroll(delta, window.scale_factor().unwrap_or(1.0))
+}
+
+/// P2.1: close the native series: texture and decoded slices freed.
+#[tauri::command]
+fn native_close(native: tauri::State<'_, native::Shared>) {
+    native.close_series();
+}
+
+#[tauri::command]
+fn native_store_stats(native: tauri::State<'_, native::Shared>) -> image_store::StoreStats {
+    native.store().stats()
 }
 
 /// Test hook: FLOWRAD_SIMULATE_BLANK_GPU=1 makes the paint check read the GPU
@@ -765,10 +816,32 @@ pub fn run() {
             native_init,
             native_set_cells,
             native_set_wl,
+            native_open_launch_study,
+            native_scroll,
+            native_close,
+            native_store_stats,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
     mark(0);
+    // Native mode (Phase 2): the GPU surface paints the window at once, while
+    // WebView2 is still starting; the webview is transparent over it.
+    if native::enabled() {
+        if let (Some(window), Some(native)) = (app.get_webview_window("main"), app.try_state::<native::Shared>()) {
+            let native = native.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let status = native.init(&window).await;
+                if status.ready {
+                    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    if native.render(window.scale_factor().unwrap_or(1.0)).is_ok() {
+                        if let Some(t) = STARTED.get() {
+                            let _ = NATIVE_FIRST_PAINT.set(t.elapsed().as_secs_f64() * 1000.0);
+                        }
+                    }
+                }
+            });
+        }
+    }
     // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
     store::migrate_legacy_data(app.handle());
 
