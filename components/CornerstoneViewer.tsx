@@ -1437,7 +1437,17 @@ export default function CornerstoneViewer({
           } catch {
             /* keep the 512² estimate */
           }
-          const budget = fillBudget(ids.length, bytesPerSlice, imageCacheBytes(deviceProfile));
+          // The cache's CURRENT cap, not the device default: a local study
+          // lowers it so decoded + raw files fit (localMemoryBudget.ts), and a
+          // fill sized past the cap only reads files it will evict.
+          let cacheCap = imageCacheBytes(deviceProfile);
+          try {
+            const current = core.cache.getMaxCacheSize();
+            if (Number.isFinite(current) && current > 0) cacheCap = Math.min(cacheCap, current);
+          } catch {
+            /* older core: keep the device budget */
+          }
+          const budget = fillBudget(ids.length, bytesPerSlice, cacheCap);
           prefetchImageIndexes(ids, outwardOrder(ids.length, center, budget));
         };
         let pixelMarked = false;
