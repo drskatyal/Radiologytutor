@@ -57,7 +57,8 @@ import { shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
 import { VoiceStatus } from "./viewer/voice/VoiceStatus";
-import type { VoiceAction } from "@flowrad/viewer-core";
+import type { VoiceAction, VoiceSink, VoiceSinkBox } from "@flowrad/viewer-core";
+import { adoptParkedVoice, parkVoice, stopParkedVoice } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
   fillImageIndexes,
@@ -3774,6 +3775,37 @@ export default function CornerstoneViewer({
   };
   const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  // What this viewer does with a session's callbacks. The session calls them
+  // through a box (voiceHandoff.ts), so when "next series" remounts the viewer
+  // the next one ADOPTS the live session instead of starting a new one, which
+  // left the reader several seconds deaf right after every series change.
+  const voiceHandlersRef = useRef<VoiceSink | null>(null);
+  voiceHandlersRef.current = {
+    onAction: (action, heard) => {
+      flash(`“${heard}”`);
+      voiceActionRef.current(action);
+    },
+    onUnrecognized: (heard) => flash(`“${heard}” ?`),
+    onProgress: setVoiceProgress,
+    onState: (state, detail) => {
+      voiceStateRef.current = state;
+      setVoice({ state });
+      if (state === "error") setVoiceError(detail ?? null);
+      if (state === "off" || state === "error") voiceSessionRef.current = null;
+      // The reader's choice, so the next series' viewer keeps it (not an unmount).
+      if (!unmountingRef.current && (state === "listening" || state === "off" || state === "error")) {
+        onVoiceChangeRef.current?.(state === "listening");
+      }
+    },
+  };
+  const voiceSink = useRef<VoiceSink>({
+    onAction: (action, heard) => voiceHandlersRef.current?.onAction(action, heard),
+    onUnrecognized: (heard) => voiceHandlersRef.current?.onUnrecognized(heard),
+    onProgress: (progress) => voiceHandlersRef.current?.onProgress(progress),
+    onState: (state, detail) => voiceHandlersRef.current?.onState(state, detail),
+  }).current;
+  const voiceBoxRef = useRef<VoiceSinkBox | null>(null);
+  const voiceStateRef = useRef<VoiceState>("off");
   const toggleVoice = async () => {
     if (voiceSessionRef.current || voice.state === "loading") {
       voiceSessionRef.current?.stop();
@@ -3781,6 +3813,10 @@ export default function CornerstoneViewer({
       setVoice({ state: "off" });
       return;
     }
+    // Never two microphones: a session parked by the previous viewer goes.
+    stopParkedVoice();
+    const box: VoiceSinkBox = { current: voiceSink };
+    voiceBoxRef.current = box;
     setVoiceError(null);
     setVoiceProgress(null);
     // Show the loading card at once, before the session module arrives.
@@ -3799,21 +3835,10 @@ export default function CornerstoneViewer({
       },
       modelUrl: mod.VOICE_MODEL_URL,
       workerUrl: mod.VOICE_WORKER_URL,
-      onAction: (action, heard) => {
-        flash(`“${heard}”`);
-        voiceActionRef.current(action);
-      },
-      onUnrecognized: (heard) => flash(`“${heard}” ?`),
-      onProgress: setVoiceProgress,
-      onState: (state, detail) => {
-        setVoice({ state });
-        if (state === "error") setVoiceError(detail ?? null);
-        if (state === "off" || state === "error") voiceSessionRef.current = null;
-        // The reader's choice, so the next series' viewer keeps it (not an unmount).
-        if (!unmountingRef.current && (state === "listening" || state === "off" || state === "error")) {
-          onVoiceChangeRef.current?.(state === "listening");
-        }
-      },
+      onAction: (action, heard) => box.current.onAction(action, heard),
+      onUnrecognized: (heard) => box.current.onUnrecognized(heard),
+      onProgress: (progress) => box.current.onProgress(progress),
+      onState: (state, detail) => box.current.onState(state, detail),
     });
   };
   const unmountingRef = useRef(false);
@@ -3822,7 +3847,12 @@ export default function CornerstoneViewer({
   useEffect(
     () => () => {
       unmountingRef.current = true;
-      voiceSessionRef.current?.stop();
+      const session = voiceSessionRef.current;
+      const box = voiceBoxRef.current;
+      // A host that keeps voice across series hands a LISTENING session to the
+      // next viewer; anything else (loading, no such host) stops as before.
+      if (session && box && onVoiceChangeRef.current && voiceStateRef.current === "listening") parkVoice(session, box);
+      else session?.stop();
     },
     []
   );
@@ -3832,7 +3862,18 @@ export default function CornerstoneViewer({
   useEffect(() => {
     if (!ready || !canVoice || !voiceOn || voiceResumedRef.current) return;
     voiceResumedRef.current = true;
-    if (!voiceSessionRef.current) void toggleVoice();
+    if (voiceSessionRef.current) return;
+    const adopted = adoptParkedVoice(voiceSink);
+    if (!adopted) {
+      void toggleVoice();
+      return;
+    }
+    voiceSessionRef.current = adopted.session;
+    voiceBoxRef.current = adopted.box;
+    voiceStateRef.current = "listening";
+    setVoice({ state: "listening" });
+    // Commands heard while no viewer was mounted ("next series … zoom in").
+    for (const { action, heard } of adopted.heard) voiceSink.onAction(action, heard);
     // Once per mount; toggleVoice reads current state itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, canVoice, voiceOn]);
