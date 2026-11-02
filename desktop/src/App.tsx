@@ -41,7 +41,7 @@ import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } fro
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
-import { attachMouseCommands, inputIndex, migrateShortcutOverrides, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
+import { inputIndex, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
 import { useSyncStatus } from "./components/syncStatus";
@@ -330,14 +330,18 @@ export default function App() {
     settingsGet<ViewerSettings>().then((s) => {
       const merged = { ...DEFAULT_SETTINGS, ...s };
       // ≤ 0.8.1 kept re-mapped keys as `shortcuts` (id → spec): carry them over once.
-      if (merged.shortcuts && Object.keys(merged.shortcuts).length && !Object.keys(merged.bindings ?? {}).length) {
-        merged.bindings = migrateShortcutOverrides(merged.shortcuts, DESKTOP_COMMANDS);
-        merged.shortcuts = {};
-        void settingsSet<ViewerSettings>({ bindings: merged.bindings, shortcuts: {} });
-      }
       setLiveBindings(merged.bindings ?? {});
       setSettings(merged);
       setOverlay(merged.showOverlay);
+      if (merged.shortcuts && Object.keys(merged.shortcuts).length && !Object.keys(merged.bindings ?? {}).length) {
+        // Rare, once: loaded only for a reader upgrading with re-mapped keys.
+        void import("@flowrad/viewer-core/bindings/storage").then(({ migrateShortcutOverrides }) => {
+          const bindings = migrateShortcutOverrides(merged.shortcuts, DESKTOP_COMMANDS);
+          setLiveBindings(bindings);
+          setSettings((cur) => ({ ...cur, bindings, shortcuts: {} }));
+          void settingsSet<ViewerSettings>({ bindings, shortcuts: {} });
+        });
+      }
     });
     historyList<HistoryEntry>().then(setHistory, () => setHistory([]));
     benchEnabled().then((on) => (bench.current.enabled = on));
@@ -2081,10 +2085,16 @@ export default function App() {
   // Mouse buttons (middle, back / forward, any extra button of a gaming or
   // programmable mouse) and wheel tilt bound to commands in Settings. Only
   // inside the viewports; browser defaults are suppressed only when bound.
+  // Loaded with the first study (not at startup).
+  const studyOpen = studies.length > 0;
   useEffect(() => {
-    if (dialog) return;
+    if (dialog || !studyOpen) return;
     const index = inputIndex(DESKTOP_COMMANDS, settings.bindings ?? {});
-    return attachMouseCommands(window, {
+    let detach: (() => void) | null = null;
+    let gone = false;
+    void import("@flowrad/viewer-core/bindings/dom").then(({ attachMouseCommands }) => {
+      if (gone) return;
+      detach = attachMouseCommands(window, {
       within: (t) => {
         const el = t instanceof Element ? t : null;
         return !!el?.closest("main") && !el.closest("aside, [role=menu], [role=dialog], button, input, textarea, select, [data-series-panel]");
@@ -2096,8 +2106,13 @@ export default function App() {
         runAction(action);
         return true;
       },
+      });
     });
-  }, [runAction, dialog, settings.bindings]);
+    return () => {
+      gone = true;
+      detach?.();
+    };
+  }, [runAction, dialog, settings.bindings, studyOpen]);
 
   const goHome = useCallback(() => {
     openSeq.current += 1;
