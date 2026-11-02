@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   examFallbackStem,
   formatFindingsContext,
+  formatSeriesCatalog,
   teachingSystemPrompt,
 } from "./teachingPrompt.ts";
 import type { Finding } from "./types.ts";
@@ -92,6 +93,8 @@ test("formatFindingsContext includes reading digest when a track was captured", 
   assert.match(ctx, /read=5s/);
   assert.match(ctx, /scroll\(/);
   assert.match(ctx, /windowed\(/);
+  assert.match(ctx, /guide=\[/);
+  assert.match(ctx, /scroll→5/);
 });
 
 test("tutor prompt teaches interactively — not a tape of the recording", () => {
@@ -121,4 +124,60 @@ test("examFallbackStem does not name the finding", () => {
   const stem = examFallbackStem(1);
   assert.doesNotMatch(stem, /caudate/i);
   assert.match(stem, /don't know/i);
+});
+
+test("socratic and viva prompts state the hint ladder for this turn", () => {
+  const socratic = teachingSystemPrompt({
+    caseTitle: "BBMRI",
+    modality: "MR",
+    mode: "socratic",
+    findingsContext: formatFindingsContext(findings),
+    currentFindingId: "f1",
+    hintLevel: 1,
+  });
+  assert.match(socratic, /level 0/i);
+  assert.match(socratic, /level 1/i);
+  assert.match(socratic, /level 2/i);
+  assert.match(socratic, /level 3/i);
+  assert.match(socratic, /this turn is level 1/i);
+  assert.match(socratic, /same finding/i);
+  assert.match(socratic, /location line/i);
+  assert.match(socratic, /do not say the diagnosis/i);
+  assert.match(socratic, /mimic/i);
+  assert.match(socratic, /Never invent anatomy/);
+
+  const viva = teachingSystemPrompt({
+    caseTitle: "BBMRI",
+    modality: "MR",
+    mode: "viva",
+    findingsContext: formatFindingsContext(findings),
+    hintLevel: 2,
+  });
+  assert.match(viva, /this turn is level 2/i);
+  assert.match(viva, /show me/i);
+  assert.match(viva, /do not say the diagnosis/i);
+});
+
+test("series catalog is the only set_series allowlist the prompt names", () => {
+  const catalog = formatSeriesCatalog([
+    {
+      seriesInstanceUID: "1.2.840.flair",
+      modality: "MR",
+      description: "Ax FLAIR",
+      instanceCount: 40,
+    },
+  ]);
+  assert.match(catalog, /uid=1\.2\.840\.flair/);
+  assert.match(catalog, /Ax FLAIR/);
+  assert.match(catalog, /Never invent a SeriesInstanceUID/);
+  const prompt = teachingSystemPrompt({
+    caseTitle: "Brain MRI",
+    modality: "MR",
+    mode: "guided",
+    findingsContext: formatFindingsContext(findings),
+    seriesCatalog: catalog,
+  });
+  assert.match(prompt, /set_series/);
+  assert.match(prompt, /uid=1\.2\.840\.flair/);
+  assert.match(prompt, /drive\.series/);
 });

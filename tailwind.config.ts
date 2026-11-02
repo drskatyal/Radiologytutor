@@ -2,10 +2,10 @@ import type { Config } from "tailwindcss";
 import animate from "tailwindcss-animate";
 
 /**
- * FlowRad Learn design tokens.
+ * RadLearn design tokens.
  *
- * Clinical reading-room: warm charcoal, film-marker amber accent, no glow
- * washes. Imaging surfaces stay pure black (`bg-imaging`).
+ * Paper canvas, white surfaces, cobalt signal. Imaging stays pure black
+ * (`bg-imaging`). `ease-draw` is cubic-bezier(0.22, 1, 0.36, 1).
  */
 const config: Config = {
   darkMode: "class",
@@ -18,6 +18,14 @@ const config: Config = {
         elevated: "rgb(var(--elevated) / <alpha-value>)",
         overlay: "rgb(var(--overlay) / <alpha-value>)",
         imaging: "#000000",
+        // Tutor ink on the image. Authored marks are marker yellow; a mark at
+        // a learner's tap is rose. Cards are solid near-black so they read on
+        // any window. Keep in sync with INK in lib/inkStroke.ts.
+        ink: {
+          DEFAULT: "#FFD447",
+          uncertain: "#FF8FD8",
+        },
+        annotation: "#0B0B0C",
         primary: "rgb(var(--text-primary) / <alpha-value>)",
         secondary: "rgb(var(--text-secondary) / <alpha-value>)",
         muted: "rgb(var(--text-muted) / <alpha-value>)",
@@ -56,13 +64,8 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: [
-          "var(--font-display)",
-          "ui-serif",
-          "Georgia",
-          "Times New Roman",
-          "serif",
-        ],
+        display: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        hand: ["var(--font-hand)", "ui-rounded", "cursive"],
       },
       letterSpacing: {
         tightest: "-0.02em",
@@ -74,19 +77,16 @@ const config: Config = {
         "3xl": "1.25rem",
       },
       boxShadow: {
-        sm: "0 1px 2px 0 rgb(0 0 0 / 0.35)",
-        md: "0 4px 12px -2px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.3)",
-        lg: "0 12px 28px -8px rgb(0 0 0 / 0.5), 0 4px 8px -4px rgb(0 0 0 / 0.35)",
+        sm: "0 1px 2px 0 rgb(18 18 18 / 0.06)",
+        md: "0 8px 24px -8px rgb(18 18 18 / 0.12)",
+        lg: "0 24px 48px -16px rgb(18 18 18 / 0.16)",
         focus: "0 0 0 3px rgb(var(--accent) / 0.3)",
         glow: "0 0 0 1px rgb(var(--accent) / 0.4)",
+        annotation: "0 18px 40px -12px rgb(0 0 0 / 0.85), 0 0 0 1px rgb(255 255 255 / 0.09)",
       },
-      backgroundImage: {
-        "accent-sheen":
-          "linear-gradient(180deg, rgb(var(--accent-bright)), rgb(var(--accent)))",
-        "surface-fade":
-          "linear-gradient(180deg, rgb(var(--elevated)), rgb(var(--surface)))",
-        "grid-faint":
-          "linear-gradient(rgb(var(--border-subtle) / 0.45) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--border-subtle) / 0.45) 1px, transparent 1px)",
+      backgroundImage: {},
+      transitionTimingFunction: {
+        draw: "cubic-bezier(0.22, 1, 0.36, 1)",
       },
       keyframes: {
         "marker-pulse": {
@@ -129,15 +129,25 @@ const config: Config = {
         shimmer: {
           "100%": { transform: "translateX(100%)" },
         },
+        "slice-drift": {
+          "0%, 100%": { transform: "translateY(0)" },
+          "50%": { transform: "translateY(-8px)" },
+        },
+        "voice-level": {
+          "0%, 100%": { transform: "scaleY(0.4)" },
+          "50%": { transform: "scaleY(1)" },
+        },
       },
       animation: {
         "marker-pulse": "marker-pulse 1.6s infinite",
-        "fade-in": "fade-in 0.4s ease-out",
-        "fade-up": "fade-up 0.25s ease-out",
+        "fade-in": "fade-in 0.5s cubic-bezier(0.22, 1, 0.36, 1)",
+        "fade-up": "fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1)",
         "mic-pulse": "mic-pulse 1.5s infinite",
-        "overlay-in": "overlay-in 0.15s ease-out",
-        "modal-in": "modal-in 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+        "overlay-in": "overlay-in 0.3s cubic-bezier(0.22, 1, 0.36, 1)",
+        "modal-in": "modal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1)",
         shimmer: "shimmer 1.6s infinite",
+        "slice-drift": "slice-drift 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite",
+        "voice-level": "voice-level 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite",
       },
     },
   },

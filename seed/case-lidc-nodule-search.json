@@ -1,0 +1,378 @@
+{
+  "id": "case-lidc-nodule-search",
+  "caseId": "case-lidc-nodule-search",
+  "title": "LIDC chest CT — systematic lung nodule search",
+  "modality": "CT",
+  "pacsbinBaseUrl": "/cornerstone",
+  "findings": [
+    {
+      "label": "Lung window — start mid-chest",
+      "description": "Set a narrow lung window (approx. W 1500 / L -600). Begin at the carina and scroll inferiorly through both lungs.",
+      "teachingPoints": [
+        "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
+        "Do not chase mediastinum until both lungs are surveyed."
+      ],
+      "reportGold": "Narrow lung window (W 1500 / L -600). Both lungs surveyed from the carina inferiorly before the mediastinum.",
+      "reportMustMention": ["1500", "-600", "both lungs", "carina"],
+      "state": " ",
+      "marker": {
+        "x_pct": 0.52,
+        "y_pct": 0.42,
+        "shape": "circle"
+      },
+      "order": 1,
+      "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+      "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+      "sliceIndex": 34,
+      "windowWidth": 1500,
+      "windowCenter": -600,
+      "teachingGuide": {
+        "durationMs": 1600,
+        "start": {
+          "sliceIndex": 0,
+          "ww": 400,
+          "wc": 40
+        },
+        "beats": [
+          {
+            "t": 200,
+            "act": "orient",
+            "actions": [
+              {
+                "type": "scroll",
+                "sliceIndex": 34,
+                "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463"
+              }
+            ],
+            "say": "Follow the stack."
+          },
+          {
+            "t": 600,
+            "act": "search",
+            "actions": [
+              {
+                "type": "window",
+                "ww": 1500,
+                "wc": -600
+              }
+            ],
+            "say": "Lung windows, 1500 over -600. Air and vessels read here; soft tissue hides them."
+          },
+          {
+            "t": 1000,
+            "act": "lean-in",
+            "actions": [
+              {
+                "type": "zoom",
+                "zoom": 2.2,
+                "pan": [
+                  0,
+                  0
+                ]
+              }
+            ],
+            "say": "Lean in, about 2.2 times. Stay on this slice and look at the edge."
+          },
+          {
+            "t": 1400,
+            "act": "commit",
+            "actions": [
+              {
+                "type": "point",
+                "x": 0.52,
+                "y": 0.42
+              }
+            ],
+            "say": "Look here."
+          },
+          {
+            "t": 1402,
+            "act": "pearl",
+            "actions": [],
+            "say": "Set a narrow lung window (approx. W 1500 / L -600). Begin at the carina and scroll inferiorly through both lungs. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe. Do not chase mediastinum until both lungs are surveyed."
+          }
+        ]
+      },
+      "id": "f_caselidcno_1"
+    },
+    {
+      "label": "Peripheral nodule survey",
+      "description": "On lung windows scrutinise the periphery for round opacities. In the left upper lobe apex a small solid nodule is present on one slice and gone on the slices above and below, so it is a nodule, not a vessel on end.",
+      "teachingPoints": [
+        "Scroll through the nodule — if it runs on as a tube it is a vessel; a nodule appears and disappears.",
+        "Note solid vs subsolid density before measuring."
+      ],
+      "landmark": "left lung apex",
+      "reportGold": "Periphery checked on lung windows for round opacities. A true nodule is distinguished from a vessel on end on adjacent slices. Density is noted as solid or subsolid before measuring.",
+      "reportMustMention": ["round opacities", "nodule", "vessel", "solid", "subsolid"],
+      "state": " ",
+      "marker": {
+        "x_pct": 0.68,
+        "y_pct": 0.494,
+        "shape": "circle"
+      },
+      "measurements": [
+        {
+          "id": "m_lidc_n2",
+          "kind": "ellipse",
+          "sliceIndex": 6,
+          "handles": [
+            [
+              0.6751,
+              0.4873
+            ],
+            [
+              0.6849,
+              0.501
+            ]
+          ],
+          "label": "LIDC reader extent"
+        }
+      ],
+      "order": 2,
+      "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+      "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+      "sliceIndex": 6,
+      "windowWidth": 1500,
+      "windowCenter": -600,
+      "teachingGuide": {
+        "durationMs": 1600,
+        "start": {
+          "sliceIndex": 0,
+          "ww": 1500,
+          "wc": -600
+        },
+        "beats": [
+          {
+            "t": 200,
+            "act": "orient",
+            "actions": [
+              {
+                "type": "scroll",
+                "sliceIndex": 6,
+                "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463"
+              }
+            ],
+            "say": "Follow the stack."
+          },
+          {
+            "t": 600,
+            "act": "search",
+            "actions": [
+              {
+                "type": "window",
+                "ww": 1500,
+                "wc": -600
+              }
+            ],
+            "say": "Lung windows, 1500 over -600. Air and vessels read here; soft tissue hides them."
+          },
+          {
+            "t": 1000,
+            "act": "lean-in",
+            "actions": [
+              {
+                "type": "zoom",
+                "zoom": 2.2,
+                "pan": [
+                  0,
+                  0
+                ]
+              }
+            ],
+            "say": "Lean in, about 2.2 times. Stay on this slice and look at the edge."
+          },
+          {
+            "t": 1400,
+            "act": "commit",
+            "actions": [
+              {
+                "type": "point",
+                "x": 0.68,
+                "y": 0.494
+              }
+            ],
+            "say": "Look here."
+          },
+          {
+            "t": 1402,
+            "act": "pearl",
+            "actions": [],
+            "say": "On lung windows scrutinise the periphery for round opacities. In the left upper lobe apex a small solid nodule is present on one slice and gone on the slices above and below, so it is a nodule, not a vessel on end. Scroll through the nodule — if it runs on as a tube it is a vessel; a nodule appears and disappears. Note solid vs subsolid density before measuring."
+          }
+        ]
+      },
+      "anchors": [
+        {
+          "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+          "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+          "sliceIndex": 6,
+          "windowWidth": 1500,
+          "windowCenter": -600,
+          "marker": {
+            "x_pct": 0.68,
+            "y_pct": 0.494,
+            "shape": "circle"
+          },
+          "viewportRole": "primary",
+          "studyRole": "current"
+        },
+        {
+          "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+          "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+          "sliceIndex": 4,
+          "windowWidth": 1500,
+          "windowCenter": -600,
+          "zoom": 1,
+          "pan": [
+            0,
+            0
+          ],
+          "marker": {
+            "x_pct": 0.68,
+            "y_pct": 0.494,
+            "shape": "circle"
+          },
+          "viewportRole": "secondary",
+          "studyRole": "current"
+        }
+      ],
+      "id": "f_caselidcno_2"
+    },
+    {
+      "label": "Mediastinal window pass",
+      "description": "Switch to mediastinal windows for a quick pass through hila and mediastinum, then return to lung windows for a second peripheral sweep.",
+      "teachingPoints": [
+        "Two-pass reading reduces missed apical or posterior nodules.",
+        "Finish with an impression that separates actionable nodules from benign calcified granulomas."
+      ],
+      "reportGold": "Mediastinal windows through the hila and mediastinum, then a second peripheral sweep on lung windows. Impression separates actionable nodules from benign calcified granulomas.",
+      "reportMustMention": ["mediastinal", "hila", "calcified granulomas"],
+      "state": " ",
+      "marker": {
+        "x_pct": 0.48,
+        "y_pct": 0.38,
+        "shape": "circle"
+      },
+      "order": 3,
+      "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+      "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+      "sliceIndex": 64,
+      "windowWidth": 400,
+      "windowCenter": 40,
+      "teachingGuide": {
+        "durationMs": 1600,
+        "start": {
+          "sliceIndex": 56,
+          "ww": 400,
+          "wc": 40
+        },
+        "beats": [
+          {
+            "t": 200,
+            "act": "orient",
+            "actions": [
+              {
+                "type": "scroll",
+                "sliceIndex": 64,
+                "seriesInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463"
+              }
+            ],
+            "say": "Follow the stack."
+          },
+          {
+            "t": 600,
+            "act": "search",
+            "actions": [
+              {
+                "type": "window",
+                "ww": 400,
+                "wc": 40
+              }
+            ],
+            "say": "Soft-tissue windows, 400 over 40. Notice what the lung window was hiding."
+          },
+          {
+            "t": 1000,
+            "act": "lean-in",
+            "actions": [
+              {
+                "type": "zoom",
+                "zoom": 2.2,
+                "pan": [
+                  0,
+                  0
+                ]
+              }
+            ],
+            "say": "Lean in, about 2.2 times. Stay on this slice and look at the edge."
+          },
+          {
+            "t": 1400,
+            "act": "commit",
+            "actions": [
+              {
+                "type": "point",
+                "x": 0.48,
+                "y": 0.38
+              }
+            ],
+            "say": "Look here."
+          },
+          {
+            "t": 1402,
+            "act": "pearl",
+            "actions": [],
+            "say": "Switch to mediastinal windows for a quick pass through hila and mediastinum, then return to lung windows for a second peripheral sweep. Two-pass reading reduces missed apical or posterior nodules. Finish with an impression that separates actionable nodules from benign calcified granulomas."
+          }
+        ]
+      },
+      "id": "f_caselidcno_3"
+    }
+  ],
+  "orgId": "org_demo",
+  "patientId": "pat_lidc_nodule",
+  "status": "published",
+  "specialty": "Chest",
+  "difficulty": "intermediate",
+  "system": "Chest",
+  "tags": [
+    "LIDC",
+    "lung nodule",
+    "screening",
+    "registrar"
+  ],
+  "authorId": "auth_demo",
+  "studyRefs": [
+    {
+      "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+      "seriesInstanceUIDs": [
+        "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463"
+      ],
+      "role": "current",
+      "order": 0
+    }
+  ],
+  "clinicalHistory": "Screening chest CT from the LIDC-IDRI public research collection. No acute symptoms — practise a registrar search pattern for pulmonary nodules.",
+  "technique": "Diagnostic chest CT (CAP 5 mm, soft kernel) — TCIA LIDC-IDRI.",
+  "primaryDiagnosis": "Teaching search — characterize nodules if present",
+  "differentials": [
+    "Benign granuloma",
+    "Primary lung cancer",
+    "Metastasis"
+  ],
+  "targetLevel": "registrar",
+  "learningObjectives": [
+    "Scroll the chest CT in one direction with lung windows before calling a nodule.",
+    "Compare nodule density (solid vs ground-glass vs part-solid) and short-axis measure.",
+    "Describe a concise reporting line for an incidental nodule."
+  ],
+  "discussion": "Imaging from the NCI LIDC-IDRI collection (CC BY 3.0). Teaching narrative aligns with open Radiopaedia lung nodule articles — Radiopaedia does not provide bulk DICOM export, so pixels are sourced from TCIA.",
+  "references": [
+    "TCIA LIDC-IDRI — https://www.cancerimagingarchive.net/collection/lidc-idri/",
+    "Radiopaedia — Pulmonary nodule (https://radiopaedia.org/articles/pulmonary-nodule-1)",
+    "Radiopaedia — Fleischner guidelines overview (https://radiopaedia.org/articles/fleischner-society-pulmonary-nodule-recommendations-1)"
+  ],
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}

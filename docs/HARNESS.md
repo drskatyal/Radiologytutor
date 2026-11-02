@@ -98,6 +98,8 @@ Defined once in `lib/harness/tools.ts`, consumed by Gemini tutor calls:
 | `next_in_tour` / `prev_in_tour` | Advance tour order |
 | `set_window` | Adaptive WW/WC |
 | `point_to` | Laser to finding marker or `[0,1]` |
+| `play_guide` | Perform the attending script (orient → search → lean-in → commit → pearl). Gemini TTS speaks each say line. The dense log is not replayed. |
+| `scroll_to` / `zoom_to` / `set_invert` / `draw_annotation` | One authored step. `zoom_to` is the nodule lean-in (alias `set_zoom` maps to the same action) |
 
 Speech and tools are interleaved (`lib/performancePlan.ts`) so the registrar
 hears and sees the report unfold together.
@@ -119,19 +121,30 @@ ElevenLabs clone, Gemini Live — the harness contract stays:
 | Module | Role |
 |--------|------|
 | `docs/HARNESS.md` | This document |
-| `lib/harness/` | Merge + tool registry (the harness core) |
+| `lib/harness/` | Merge, tool registry, tutor eval (`tutorEval.ts`) |
+| `docs/TUTOR_EVAL.md` | Pass/fail bar, including human-teacher fidelity |
+| `npm run eval:tutor` | Scorecard: text-only scores 0; the reference zooms and is taught |
 | `lib/captureSession.ts` | Time ↔ track queries (`sliceNearTime`, …) |
-| `lib/readingDigest.ts` | Track → compact tutor context |
+| `lib/readingDigest.ts` | Track → compact stats line |
+| `lib/teachingGuide.ts` | Track + narration → ordered teach script |
+| `lib/replay.ts` | Author QA replay and learner `playTeachingGuide` |
 | `lib/recorder.ts` / `useRecordReplay` | Shared authoring clock |
 | `components/author/ContinuousCapture.tsx` | Speak-once demonstration UI |
 | `components/student/*` | Registrar teammate UI (Teach / Exam / Report) |
 
 ## Done vs next
 
-**Done:** viewer computer, tool calling (`lib/harness/tools`), structure schemas,
-timestamped tracks, `mergeCaptureDemonstration` → Findings + durable
-`CaptureSession` (`POST /api/cases/[id]/capture-sessions`), ContinuousCapture
-wired through the merge, Teach loop, report coach, voice adapters.
+**Done:** viewer computer, tool calling (`lib/harness/tools`, including
+`zoom_to` / `set_zoom` and `play_guide`), structure schemas, timestamped
+tracks, `mergeCaptureDemonstration` → Findings + durable `CaptureSession`
+(`POST /api/cases/[id]/capture-sessions`), ContinuousCapture wired through
+the merge, Teach loop, report coach, voice adapters.
+
+**Done (eval):** `fixtures/tutor-eval/` + `lib/harness/tutorEval.ts`. A turn
+that only talks scores 0. The reference drives scroll → window → `zoom_to`
+when the teacher zoomed → point, then names the finding. That is a hard
+pass and fidelity taught. Zoom after the laser, or a `show_finding` that
+never zooms the nodule, fails.
 
 **Next (deepen the harness):** richer observation tools (expose digest/meas as
 tool results), time-cropped audio per finding, Live duplex as default when TTS

@@ -7,7 +7,9 @@
 // It is deliberately self-contained: nothing here is imported unless a DB is
 // actually configured (`MONGODB_URI` set). Connecting is LAZY — we never touch
 // the network at import/build time, so `npm run build` and `npm test` work with
-// no database (the JSON-on-volume store remains the default/fallback).
+// no database (the JSON-on-volume store remains the dev/test fallback).
+// Cloud Run (K_SERVICE) is not allowed to use that fallback — see
+// assertCloudRunMongo in lib/durableStore.ts.
 //
 // Singleton connection: serverless platforms (and Next.js hot-reload in dev)
 // re-evaluate modules frequently. To avoid a connection storm we cache the
@@ -156,6 +158,7 @@ export function ensureIndexes(): Promise<void> {
           db.collection("attempts").createIndex({ userId: 1, courseId: 1 }),
           db.collection("deidReports").createIndex({ orgId: 1 }),
           db.collection("deidReports").createIndex({ studyInstanceUID: 1 }),
+          db.collection("caseShares").createIndex({ orgId: 1, caseId: 1 }),
         ]);
       } catch {
         // Indexes are an optimization; never block reads/writes if they fail.

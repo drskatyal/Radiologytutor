@@ -1,8 +1,8 @@
 import { cn } from "@/components/ui/cn";
 
 /**
- * Imaging-led visual for catalog rows — film black plane with modality
- * windowing wash. Not a card; the visual anchor for case lists.
+ * Case thumbnail: a short stack, then a black viewport.
+ * The viewport is the study. The page around it stays paper.
  */
 export function FilmPlane({
   modality,
@@ -15,50 +15,20 @@ export function FilmPlane({
 }) {
   const label = (modality || "DX").slice(0, 4).toUpperCase();
   return (
-    <div
-      className={cn(
-        "relative overflow-hidden bg-imaging",
-        "ring-1 ring-inset ring-white/5",
-        className
-      )}
-    >
-      {/* Windowing gradient — CT/MR reading-room atmosphere */}
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 opacity-90"
-        style={{
-          backgroundImage: [
-            "radial-gradient(ellipse 80% 60% at 35% 40%, rgb(90 95 100 / 0.35), transparent 60%)",
-            "radial-gradient(ellipse 50% 40% at 70% 65%, rgb(var(--accent) / 0.08), transparent 55%)",
-            "linear-gradient(180deg, rgb(18 18 18) 0%, rgb(0 0 0) 100%)",
-          ].join(", "),
-        }}
-      />
-      {/* Faint scan grid */}
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 opacity-[0.07]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgb(255 255 255 / 0.5) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 0.5) 1px, transparent 1px)",
-          backgroundSize: "12px 12px",
-        }}
-      />
-      {/* Reticle */}
-      <svg
-        aria-hidden="true"
-        className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 text-secondary/40"
-        viewBox="0 0 40 40"
-        fill="none"
-      >
-        <circle cx="20" cy="20" r="14" stroke="currentColor" strokeWidth="0.8" />
-        <path d="M20 4v6M20 30v6M4 20h6M30 20h6" stroke="currentColor" strokeWidth="0.9" />
-        <circle cx="20" cy="20" r="2.5" stroke="currentColor" strokeWidth="1" />
-      </svg>
-      <span className="absolute bottom-1.5 left-2 font-mono text-[10px] font-medium tracking-wider text-secondary/70">
-        {label}
-      </span>
-      {children}
+    <div className={cn("relative", className)}>
+      <div aria-hidden="true" className="absolute inset-x-2 top-0 h-3/4 rounded-md bg-overlay" />
+      <div aria-hidden="true" className="absolute inset-x-1 top-1 h-3/4 rounded-md bg-strong/30" />
+      <div className="absolute inset-x-0 bottom-0 top-2 overflow-hidden rounded-md bg-imaging">
+        <svg viewBox="0 0 112 72" className="h-full w-full" aria-hidden="true">
+          <ellipse cx="54" cy="36" rx="30" ry="20" fill="#2C2C2C" />
+          <ellipse cx="64" cy="32" rx="12" ry="8" fill="#3A3A3A" />
+          <rect x="70" y="26" width="12" height="6" rx="1.5" fill="rgb(var(--accent))" />
+        </svg>
+        <span className="absolute bottom-1 left-1 text-xs font-semibold tracking-tight text-white">
+          {label}
+        </span>
+        {children}
+      </div>
     </div>
   );
 }

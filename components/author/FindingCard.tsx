@@ -26,6 +26,7 @@ import {
   validateDraft,
   type FindingDraft,
 } from "./lib";
+import { LandmarkField } from "./LandmarkField";
 import { RestructureDialog } from "./RestructureDialog";
 import {
   ChevronDownIcon,
@@ -137,12 +138,16 @@ export function FindingCard({
 
   function applyProposal(next: StructuredFinding) {
     // Drop into edit mode pre-filled with the AI proposal; the author reviews
-    // and presses Save to persist (one consistent save path).
-    setDraft({
+    // and presses Save to persist (one consistent save path). Keep the level
+    // they already typed — restructuring does not invent a landmark.
+    setDraft((d) => ({
       label: next.label,
       description: next.description,
       teachingPoints: [...next.teachingPoints],
-    });
+      landmark: d.landmark,
+      reportGold: d.reportGold ?? "",
+      reportMustMention: d.reportMustMention ?? [],
+    }));
     setEditing(true);
     requestAnimationFrame(() => labelRef.current?.focus());
   }
@@ -237,6 +242,19 @@ export function FindingCard({
                   Flow · {finding.keyframes!.length}
                 </Badge>
               )}
+              {finding.teachingGuide && finding.teachingGuide.beats.length > 0 && (
+                <Badge
+                  variant="accent"
+                  className="tabular-nums"
+                  title={finding.teachingGuide.beats
+                    .map((beat) => beat.act)
+                    .filter(Boolean)
+                    .join(" → ")}
+                >
+                  {finding.teachingGuide.beats.length} teach{" "}
+                  {finding.teachingGuide.beats.length === 1 ? "beat" : "beats"}
+                </Badge>
+              )}
               {justSaved && (
                 <Badge variant="success" className="animate-fade-in">
                   <CheckIcon />
@@ -303,6 +321,54 @@ export function FindingCard({
                   value={draft.description}
                   onChange={(e) =>
                     setDraft((d) => ({ ...d, description: e.target.value }))
+                  }
+                />
+              )}
+            </Field>
+
+            <LandmarkField
+              value={draft.landmark ?? ""}
+              error={errors.landmark}
+              onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+            />
+
+            <Field
+              label="Report gold"
+              error={errors.reportGold}
+              hint={
+                errors.reportGold
+                  ? undefined
+                  : "Sentence a passing report must cover. Blank grades from the description."
+              }
+            >
+              {(p) => (
+                <Textarea
+                  {...p}
+                  rows={2}
+                  maxLength={LIMITS.reportGold}
+                  placeholder="Gold report line for this finding…"
+                  value={draft.reportGold ?? ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, reportGold: e.target.value }))}
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Rubric phrases"
+              error={errors.reportMustMention}
+              hint="One phrase per line, taken from the gold line. The grader cannot add findings beyond these."
+            >
+              {(p) => (
+                <Textarea
+                  {...p}
+                  rows={3}
+                  placeholder={"1500\nboth lungs"}
+                  value={(draft.reportMustMention ?? []).join("\n")}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      reportMustMention: e.target.value.split("\n").slice(0, LIMITS.reportPhrases),
+                    }))
                   }
                 />
               )}
@@ -402,6 +468,24 @@ export function FindingCard({
               <p className="text-sm italic text-muted">No description yet.</p>
             )}
 
+            {finding.reportGold?.trim() && (
+              <div>
+                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                  Report gold
+                </p>
+                <p className="text-sm leading-relaxed text-secondary">{finding.reportGold.trim()}</p>
+                {(finding.reportMustMention ?? []).filter((phrase) => phrase.trim()).length > 0 && (
+                  <p className="mt-1 text-xs leading-snug text-muted">
+                    Must mention:{" "}
+                    {(finding.reportMustMention ?? [])
+                      .map((phrase) => phrase.trim())
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                )}
+              </div>
+            )}
+
             {finding.teachingPoints.length > 0 && (
               <div>
                 <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
@@ -440,7 +524,7 @@ export function FindingCard({
                   onClick={() => onPreview(finding.id)}
                   title="Open this finding in the student player"
                 >
-                  Preview
+                  Test as student
                 </Button>
               )}
               <Button
@@ -470,6 +554,17 @@ export function FindingCard({
 
 /** Read-only summary of the finding's marker + viewer/keyframe state. */
 function ViewerSummary({ finding }: { finding: Finding }) {
+  if (
+    !finding.marker ||
+    !Number.isFinite(finding.marker.x_pct) ||
+    !Number.isFinite(finding.marker.y_pct)
+  ) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-subtle bg-surface/60 px-3 py-2">
+        <span className="text-[11px] text-muted">No pointer in this take</span>
+      </div>
+    );
+  }
   const mx = Math.round(finding.marker.x_pct * 100);
   const my = Math.round(finding.marker.y_pct * 100);
   const kf = finding.keyframes?.length ?? (finding.state ? 1 : 0);
@@ -491,6 +586,11 @@ function ViewerSummary({ finding }: { finding: Finding }) {
       {dur && (
         <Badge variant="neutral" title="Flow duration">
           {dur}s flow
+        </Badge>
+      )}
+      {finding.landmark?.trim() && (
+        <Badge variant="neutral" title="Said if the learner is off this slice">
+          Level · {finding.landmark.trim()}
         </Badge>
       )}
       {!finding.state && (

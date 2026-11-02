@@ -1,0 +1,34 @@
+{
+  "label": "before-c24",
+  "concurrency": 24,
+  "mbps": 40,
+  "runs": [
+    {
+      "pass": "cold",
+      "frames": 848,
+      "ms": 90868,
+      "firstFrameMs": 3438,
+      "mb": 444.7,
+      "xCache": {
+        "none": 848
+      },
+      "syntax": {
+        "n/a": 848
+      }
+    },
+    {
+      "pass": "repeat",
+      "frames": 848,
+      "ms": 91277,
+      "firstFrameMs": 3558,
+      "mb": 444.7,
+      "xCache": {
+        "none": 848
+      },
+      "syntax": {
+        "n/a": 848
+      }
+    }
+  ]
+}
+

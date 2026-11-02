@@ -3,36 +3,34 @@
 // SeriesNavigator — the PACS series rail.
 //
 // A vertical list of the case's series (Pacsbin-style). Each card shows a cover
-// thumbnail (the series' first frame, rendered straight from the WADO-RS proxy),
+// thumbnail (the series' middle slice, rendered straight from the WADO-RS proxy),
 // modality + description + image count. Clicking a card loads that series into
 // the main viewport; the active series is highlighted. Fully keyboard-driven
 // (roving list of real <button>s, Up/Down to move, Enter/Space to select).
 //
 // Design-system only: tokens, lucide icons, calm/dense reading-room look. The
 // thumbnail uses a tiny rendered JPEG (96px) from /api/dicomweb so we don't
-// stand up a second Cornerstone canvas per series.
+// stand up a second Cornerstone canvas per series. Covers are withheld until
+// the caller says the main image is up (`thumbPending`).
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ImageOff, Layers, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
-import type { CaseSeries } from "@/lib/viewerSource";
+import { seriesThumbUrl, type RailEntry } from "@/lib/seriesRail";
 
-/** WADO-RS rendered cover for a series' first instance (small JPEG via proxy). */
-function thumbUrl(s: CaseSeries): string | null {
-  if (!s.thumbnailInstanceUID) return null;
-  return (
-    `${s.wadoRsRoot}/studies/${encodeURIComponent(s.studyInstanceUID)}` +
-    `/series/${encodeURIComponent(s.seriesInstanceUID)}` +
-    `/instances/${encodeURIComponent(s.thumbnailInstanceUID)}/rendered?viewport=96,96`
-  );
-}
-
-function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }) {
-  const url = thumbUrl(series);
+function SeriesThumb({ series, active }: { series: RailEntry; active: boolean }) {
+  const url = series.thumbPending ? null : seriesThumbUrl(series);
+  const [seen, setSeen] = useState(url);
   const [state, setState] = useState<"loading" | "loaded" | "error">(
     url ? "loading" : "error"
   );
+  // The cover SOP arrives after the main image. Reset the load state with it
+  // or a withheld thumb stays on the broken-image icon.
+  if (url !== seen) {
+    setSeen(url);
+    setState(url ? "loading" : "error");
+  }
 
   return (
     <div
@@ -46,7 +44,7 @@ function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }
         <img
           src={url}
           alt=""
-          loading="lazy"
+          loading="eager"
           className={cn(
             "h-full w-full object-cover transition-opacity duration-200",
             state === "loaded" ? "opacity-100" : "opacity-0"
@@ -55,14 +53,14 @@ function SeriesThumb({ series, active }: { series: CaseSeries; active: boolean }
           onError={() => setState("error")}
         />
       )}
-      {url && state === "loading" && (
+      {(series.thumbPending || (url && state === "loading")) && (
         <Loader2
-          className="absolute h-4 w-4 animate-spin text-muted"
+          className="absolute h-4 w-4 animate-spin text-white/80"
           aria-hidden="true"
         />
       )}
-      {state === "error" && (
-        <ImageOff className="h-5 w-5 text-muted" aria-hidden="true" />
+      {!series.thumbPending && state === "error" && (
+        <ImageOff className="h-5 w-5 text-white/80" aria-hidden="true" />
       )}
     </div>
   );
@@ -74,8 +72,10 @@ export function SeriesNavigator({
   onSelect,
   loading = false,
   className,
+  headerAccessory,
+  appearance = "paper",
 }: {
-  series: CaseSeries[];
+  series: RailEntry[];
   /** Index of the series currently in the viewport. */
   activeIndex: number;
   /** Load a series into the main viewport (by index). */
@@ -83,7 +83,12 @@ export function SeriesNavigator({
   /** Show a skeleton rail while series resolve. */
   loading?: boolean;
   className?: string;
+  /** Collapse control, kept in the header row so it does not cover thumbnails. */
+  headerAccessory?: ReactNode;
+  /** Dark chrome sits on the black viewport (narrow, fullscreen, exam overlay). */
+  appearance?: "paper" | "dark";
 }) {
+  const dark = appearance === "dark";
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Roving keyboard navigation across the rail.
@@ -103,20 +108,44 @@ export function SeriesNavigator({
     <nav
       aria-label="Series"
       className={cn(
-        "flex h-full min-h-0 flex-col border-subtle bg-surface",
+        "flex h-full min-h-0 flex-col",
+        dark ? "border-white/10 bg-[#121212] text-white" : "border-subtle bg-surface",
         className
       )}
     >
-      <div className="flex items-center gap-2 border-b border-subtle px-3 py-2.5">
-        <Layers className="h-4 w-4 text-muted" aria-hidden="true" />
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-secondary">
+      <div
+        className={cn(
+          "flex min-h-11 items-center gap-2 border-b px-2 py-1",
+          dark ? "border-white/10" : "border-subtle"
+        )}
+      >
+        <Layers
+          className={cn("h-4 w-4 shrink-0", dark ? "text-white/70" : "text-muted")}
+          aria-hidden="true"
+        />
+        <h2
+          className={cn(
+            "text-xs font-semibold uppercase tracking-wide",
+            dark ? "text-white/80" : "text-secondary"
+          )}
+        >
           Series
         </h2>
-        {!loading && series.length > 0 && (
-          <span className="ml-auto rounded-full bg-elevated px-2 py-0.5 text-[11px] tabular-nums text-muted">
-            {series.length}
-          </span>
-        )}
+        {(!loading && series.length > 0) || headerAccessory ? (
+          <div className="ml-auto flex items-center gap-1.5">
+            {!loading && series.length > 0 && (
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                  dark ? "bg-white/10 text-white/70" : "bg-elevated text-muted"
+                )}
+              >
+                {series.length}
+              </span>
+            )}
+            {headerAccessory}
+          </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -125,7 +154,10 @@ export function SeriesNavigator({
             {Array.from({ length: 4 }).map((_, i) => (
               <li
                 key={i}
-                className="flex items-center gap-3 rounded-lg border border-subtle bg-elevated/40 p-2"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg border p-2",
+                  dark ? "border-white/10 bg-white/5" : "border-subtle bg-elevated/40"
+                )}
               >
                 <div className="h-14 w-14 shrink-0 animate-pulse rounded-md bg-elevated" />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -137,8 +169,10 @@ export function SeriesNavigator({
           </ul>
         ) : series.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 py-8 text-center">
-            <ImageOff className="h-6 w-6 text-muted" aria-hidden="true" />
-            <p className="text-xs text-muted">No series available for this case.</p>
+            <ImageOff className={cn("h-6 w-6", dark ? "text-white/70" : "text-muted")} aria-hidden="true" />
+            <p className={cn("text-xs", dark ? "text-white/70" : "text-muted")}>
+              No series available for this case.
+            </p>
           </div>
         ) : (
           <ul className="flex flex-col gap-1.5">
@@ -155,15 +189,22 @@ export function SeriesNavigator({
                     }}
                     type="button"
                     aria-current={active ? "true" : undefined}
-                    aria-label={`${title}${s.modality ? `, ${s.modality}` : ""}, ${s.instanceCount} image${s.instanceCount === 1 ? "" : "s"}`}
+                    aria-label={
+                      s.countPending
+                        ? `${title}${s.modality ? `, ${s.modality}` : ""}, image count loading`
+                        : `${title}${s.modality ? `, ${s.modality}` : ""}, ${s.instanceCount} image${s.instanceCount === 1 ? "" : "s"}`
+                    }
+                    title={title}
                     onClick={() => onSelect(i)}
                     onKeyDown={(e) => onKeyDown(e, i)}
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors",
+                      "flex min-h-11 w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
                       active
-                        ? "border-accent/50 bg-accent/10"
-                        : "border-subtle bg-elevated/40 hover:border-strong hover:bg-elevated"
+                        ? "border-accent/50 bg-accent/15"
+                        : dark
+                          ? "border-white/10 bg-white/5 hover:border-white/25 hover:bg-white/10"
+                          : "border-subtle bg-elevated/40 hover:border-strong hover:bg-elevated"
                     )}
                   >
                     <SeriesThumb series={s} active={active} />
@@ -171,20 +212,38 @@ export function SeriesNavigator({
                       <span
                         className={cn(
                           "truncate text-sm font-medium",
-                          active ? "text-primary" : "text-secondary"
+                          dark
+                            ? active
+                              ? "text-white"
+                              : "text-white/80"
+                            : active
+                              ? "text-primary"
+                              : "text-secondary"
                         )}
                       >
                         {title}
                       </span>
-                      <span className="flex flex-wrap items-center gap-1.5 text-[11px] tabular-nums text-muted">
+                      <span
+                        className={cn(
+                          "flex flex-wrap items-center gap-1.5 text-[11px] tabular-nums",
+                          dark ? "text-white/65" : "text-muted"
+                        )}
+                      >
                         {s.modality && (
                           <Badge variant={active ? "accent" : "neutral"}>
                             {s.modality}
                           </Badge>
                         )}
-                        <span>
-                          {s.instanceCount} image{s.instanceCount === 1 ? "" : "s"}
-                        </span>
+                        {s.countPending ? (
+                          <span
+                            className="inline-block h-2.5 w-12 animate-pulse rounded bg-elevated"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <span>
+                            {s.instanceCount} image{s.instanceCount === 1 ? "" : "s"}
+                          </span>
+                        )}
                         {s.seriesNumber != null && <span>· #{s.seriesNumber}</span>}
                       </span>
                     </span>

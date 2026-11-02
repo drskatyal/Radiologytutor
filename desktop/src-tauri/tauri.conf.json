@@ -1,0 +1,112 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FlowRad Viewer",
+  "version": "0.7.1",
+  "identifier": "app.flowrad.viewer",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "FlowRad Viewer",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "backgroundColor": "#0B0D10",
+        "dragDropEnabled": true,
+        "center": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,OptimizationHints,MediaRouter,AutofillServerCommunication,InterestFeedContentSuggestions --renderer-process-limit=1 --no-proxy-server --disable-background-networking --disable-component-update --disable-domain-reliability --no-pings --disable-sync"
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "'self' ipc: http://ipc.localhost dicom: http://dicom.localhost",
+        "img-src": "'self' data: blob: dicom: http://dicom.localhost",
+        "media-src": "'self' blob:",
+        "worker-src": "'self' blob:",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "publisher": "FlowRad",
+    "category": "Medical",
+    "shortDescription": "Free offline DICOM viewer",
+    "longDescription": "FlowRad Viewer opens DICOM studies from folders, DICOMDIR, zip archives and CD/DVD media, entirely offline. Not for diagnostic use.",
+    "copyright": "© FlowRad. Not for diagnostic use.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "dcm",
+          "dicom",
+          "dic"
+        ],
+        "name": "DICOM image",
+        "description": "DICOM medical image",
+        "role": "Viewer",
+        "mimeType": "application/dicom"
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "headerImage": "icons/installer/nsis-header.bmp",
+        "sidebarImage": "icons/installer/nsis-sidebar.bmp",
+        "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "language": "en-US"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true,
+      "dmg": {
+        "windowSize": {
+          "width": 600,
+          "height": 380
+        }
+      }
+    },
+    "linux": {
+      "deb": {
+        "section": "science"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACED_IN_CI_BY_TAURI_UPDATER_PUBKEY",
+      "endpoints": [
+        "https://github.com/drskatyal/Radiologytutor/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

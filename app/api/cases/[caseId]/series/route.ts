@@ -1,16 +1,17 @@
 // GET /api/cases/[caseId]/series -> the case's series rail (CaseSeries[]).
 //
-// Resolves every series the case can show (across its studies) from Orthanc via
-// lib/orthanc.ts, ordered finding-first. Returns `{ series: [], hasImaging }`.
-// When imaging can't be resolved (Orthanc off / study missing) `series` is
-// empty and `hasImaging` is false, so the client falls back to the bundled
-// single-series sample. Used by the author capture surface to show the same
-// SeriesNavigator the student sees (the student page resolves this server-side).
+// Background rail enrichment. The case page does not wait on this: it renders
+// from study/series UIDs already on the case, and the client merges this
+// response (descriptions, positive DICOMweb counts) without moving the series
+// already on screen. Returns `{ series: [], hasImaging }`. Empty means imaging
+// could not be listed, and the client may fall back to the bundled sample
+// only when the case itself has no series UIDs.
 
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
-import { getCaseForOrg } from "@/lib/cases";
+import { SHARE_COOKIE } from "@/lib/caseShare";
+import { getCaseForOrg, resolveShareAccess } from "@/lib/cases";
 import { resolveCaseSeries } from "@/lib/prefetch";
 
 export const runtime = "nodejs";
@@ -18,14 +19,18 @@ export const dynamic = "force-dynamic";
 
 const WADO_RS_ROOT = "/api/dicomweb";
 
-export async function GET(_req: NextRequest, { params }: { params: { caseId: string } }) {
-  const orgId = await activeOrgId();
+export async function GET(req: NextRequest, { params }: { params: { caseId: string } }) {
+  const shareToken = req.cookies.get(SHARE_COOKIE)?.value;
+  const shared = shareToken ? await resolveShareAccess(shareToken) : null;
+  const viaShare = shared?.caseId === params.caseId ? shared : null;
+
+  const orgId = viaShare?.orgId ?? (await activeOrgId());
   const c = await getCaseForOrg(orgId, params.caseId);
   if (!c) {
     return NextResponse.json({ error: "Case not found" }, { status: 404 });
   }
 
-  if (c.status !== "published") {
+  if (c.status !== "published" && !viaShare) {
     const session = await getSession();
     const canSeeDraft =
       session &&

@@ -9,6 +9,26 @@ export type ViewerSource =
       wadoRsRoot: string;
       StudyInstanceUID: string;
       SeriesInstanceUID: string;
+    }
+  /**
+   * A stack already resolved to imageIds — local files opened from disk
+   * (`lib/localDicomFiles.ts`, `dicomfile:` ids), where there is no archive to
+   * query and no URL to template. `key` identifies the stack so the viewer can
+   * tell one local series from another without comparing a 1200-id array.
+   */
+  | {
+      kind: "imageIds";
+      key: string;
+      imageIds: string[];
+      /**
+       * Progressive open (the free local viewer). `imageIds` is what can paint
+       * NOW — usually one slice — and `full` resolves with the whole ordered
+       * stack once every header is parsed. The viewer paints the preview, then
+       * swaps to the full stack in place (no remount), keeping the slice on
+       * screen. Keep the source object stable across the swap: `viewerSourceKey`
+       * includes the preview length.
+       */
+      full?: Promise<{ imageIds: string[]; openIndex: number }>;
     };
 
 // Bundled open sample: pydicom's emri_small (MR, 10 frames, uncompressed),
@@ -47,8 +67,12 @@ export interface CaseSeries {
   modality?: string;
   description?: string;
   seriesNumber?: number;
-  /** Number of instances (slices/frames) in the series. */
-  instanceCount: number;
+  /**
+   * Number of instances in the series when DICOMweb (or the archive) has
+   * reported a positive count. Missing or zero is unknown — the rail must
+   * not render "0 images" from a stale tag.
+   */
+  instanceCount?: number;
   /** SOP Instance UID of a cover/first frame — enough for a thumbnail. */
   thumbnailInstanceUID?: string;
   /** WADO-RS root the viewer/thumbnail fetch through (our same-origin proxy). */
@@ -86,4 +110,20 @@ export function caseSeriesToSource(s: CaseSeries): ViewerSource {
     StudyInstanceUID: s.studyInstanceUID,
     SeriesInstanceUID: s.seriesInstanceUID,
   };
+}
+
+/**
+ * Content identity of a viewer source. `caseSeriesToSource` allocates a new
+ * object on every call; two equal keys are the same stack and must not reload
+ * the engine. A reload opens at the mid-slice default and drops a seated
+ * compare landing.
+ */
+export function viewerSourceKey(source: ViewerSource): string {
+  if (source.kind === "wadouri") {
+    return `wadouri\0${source.url}\0${source.frames}`;
+  }
+  if (source.kind === "imageIds") {
+    return `imageIds\0${source.key}\0${source.imageIds.length}`;
+  }
+  return `wadors\0${source.wadoRsRoot}\0${source.StudyInstanceUID}\0${source.SeriesInstanceUID}`;
 }

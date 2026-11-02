@@ -6,8 +6,9 @@
 // registrar how to report. Dock = voice + Teach/Exam intent. Rail is optional
 // transcript / finding spine. Capture tracks arm the model; they are not a tape.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  Box,
   ChevronLeft,
   ChevronRight,
   Columns2,
@@ -18,31 +19,38 @@ import {
   MessageCircle,
   PanelRightClose,
   PanelRightOpen,
-  Pause,
-  Play,
 } from "lucide-react";
-import { Badge, Button, IconButton, Kbd, MicButton, Tabs } from "@/components/ui";
+import { Badge, Button, IconButton, MicButton, Tabs } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import { caseSeriesToSource } from "@/lib/viewerSource";
+import { lastTeacherSlice } from "@/lib/viewerLoad";
+import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import type { PrefetchManifest } from "@/lib/prefetch";
+import {
+  examinerCaptionTurn,
+  examinerVisibleTurns,
+  findingStepLabel,
+} from "@/lib/examLocate";
 import { StudentViewer } from "./StudentViewer";
 import { FindingCards } from "./FindingCards";
 import { TutorChat } from "./TutorChat";
+import { CheckInCard } from "./CheckInCard";
 import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
-import { TutorCaption } from "./TutorCaption";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
-import { SeriesNavigator } from "@/components/viewer/SeriesNavigator";
+import { ImagingLayout } from "@/components/viewer/ImagingLayout";
+import { AnatomyPanel } from "./AnatomyPanel";
+import { NARROW_LAYOUT_MEDIA } from "@/lib/viewerLayout";
 import { ReportCoach } from "./ReportCoach";
 
 type PanelTab = "lesson" | "ask";
 type Intent = "teach" | "exam";
 
 const ORB_TAGLINE: Record<OrbState, string> = {
-  idle: "Ready — hold mic or Space",
+  idle: "Open the microphone to start",
   listening: "Listening…",
   thinking: "Thinking…",
   searching: "Searching sources…",
@@ -61,6 +69,7 @@ export default function StudentSession({
   imagingResolved,
   tutorVoice,
   courseId,
+  initialIntent = "teach",
 }: {
   caseData: CaseData;
   source: ViewerSource;
@@ -71,14 +80,49 @@ export default function StudentSession({
   tutorVoice?: { authorName: string; cloned: boolean } | null;
   /** When opened from a course curriculum — mark complete at end of Teach tour. */
   courseId?: string | null;
+  /** Test-as-student handoff. Examiner opens the viva; Teach me stays guided. */
+  initialIntent?: "teach" | "exam";
 }) {
   // Teach is the product: autonomous attending. Exam = viva.
-  const [mode, setMode] = useState<SessionMode>("guided");
+  const [mode, setMode] = useState<SessionMode>(initialIntent === "exam" ? "viva" : "guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
+  // Closed until measured. Opening both this drawer and the series rail on a
+  // phone covers the image completely.
   const [railOpen, setRailOpen] = useState(false);
+  const tutorChosen = useRef(false);
   const [keysOpen, setKeysOpen] = useState(false);
-  const s = useStudentSession(caseData, mode, series, { courseId });
+  const [anatomyOpen, setAnatomyOpen] = useState(false);
+  const hinted = series;
+  const resolved = useResolvedSeries(caseData.caseId, hinted);
+  const rail = resolved.series;
+  const imagingLive =
+    resolved.imagingLive || (imagingResolved && hinted.some((item) => item.studyInstanceUID));
+  const showViewer = rail.length > 0 && (hinted.length > 0 || resolved.settled);
+  const liveSource = useMemo(
+    () => (rail[0] ? caseSeriesToSource(rail[0]) : source),
+    [rail, source]
+  );
+  const openSlice = useMemo(
+    () => lastTeacherSlice(caseData.findings, rail[0]?.seriesInstanceUID) ?? null,
+    [caseData.findings, rail]
+  );
+  const s = useStudentSession(caseData, mode, rail, { courseId });
   const intent = intentFromMode(mode);
+
+  useLayoutEffect(() => {
+    const mq = window.matchMedia(NARROW_LAYOUT_MEDIA);
+    const apply = () => {
+      if (!tutorChosen.current) {
+        setRailOpen(!mq.matches);
+        tutorChosen.current = true;
+        return;
+      }
+      if (mq.matches) setRailOpen(false);
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
 
   const openAsk = useCallback(() => {
     setRailOpen(true);
@@ -105,15 +149,22 @@ export default function StudentSession({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on intent edge
   }, [intent, s.ready]);
 
+  // The question lives in the rail. Open it when the attending asks, and
+  // keep the viewer on the anchor — the choices are text, not a click target.
+  useEffect(() => {
+    if (!s.checkIn) return;
+    setRailOpen(true);
+    setPanel("ask");
+  }, [s.checkIn]);
+
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
   const onSeriesChange = useCallback(
     (uid: string) => {
-      const idx = series.findIndex((x) => x.seriesInstanceUID === uid);
+      const idx = rail.findIndex((x) => x.seriesInstanceUID === uid);
       if (idx >= 0) setActiveSeriesIndex(idx);
     },
-    [series]
+    [rail]
   );
-  const showNavigator = series.length > 1;
 
   const typingRef = useRef(false);
   const onTypingFocus = useCallback(() => {
@@ -131,24 +182,39 @@ export default function StudentSession({
   const heldRef = useRef(false);
   const hotkeyRef = useRef({
     busy: s.busy,
+    speaking: s.phase === "speaking",
     recording: s.micState === "recording",
+    liveOpen: s.liveStatus !== "closed",
+    micSupported: s.micSupported,
     start: s.onMicStart,
     stop: s.onMicStop,
+    bargeIn: s.pauseTour,
+    awaitingAnswer: Boolean(s.checkIn),
     next: s.skip,
     prev: s.prev,
     reveal: s.revealCurrent,
     compare: s.toggleCompare,
+    compareOpen: s.compareOpen,
     examMode: s.examMode,
   });
   hotkeyRef.current = {
     busy: s.busy,
+    speaking: s.phase === "speaking",
     recording: s.micState === "recording",
+    liveOpen: s.liveStatus !== "closed",
+    micSupported: s.micSupported,
     start: s.onMicStart,
     stop: s.onMicStop,
+    bargeIn: () => {
+      s.pauseTour();
+      s.onStopSpeaking();
+    },
+    awaitingAnswer: Boolean(s.checkIn),
     next: s.skip,
     prev: s.prev,
     reveal: s.revealCurrent,
     compare: s.toggleCompare,
+    compareOpen: s.compareOpen,
     examMode: s.examMode,
   };
   useEffect(() => {
@@ -160,12 +226,18 @@ export default function StudentSession({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingRef.current || isTextTarget(e.target)) return;
-      if (e.code === "Space" && !e.repeat && s.micSupported) {
+        if (e.code === "Space" && !e.repeat) {
+        const keys = hotkeyRef.current;
         e.preventDefault();
-        if (!heldRef.current && !hotkeyRef.current.busy) {
-          heldRef.current = true;
-          void hotkeyRef.current.start();
+        if (!keys.micSupported) return;
+        // The session stays open until the mic control hangs up. Releasing
+        // Space must not end it. A second press while the attending is
+        // speaking takes the floor.
+        if (keys.liveOpen) {
+          if (keys.speaking) keys.bargeIn();
+          return;
         }
+        void keys.start();
         return;
       }
       if (e.key === "?" ) {
@@ -176,6 +248,8 @@ export default function StudentSession({
       if (e.key === "Escape") {
         setKeysOpen(false);
         setRailOpen(false);
+        // Escape backs out of compare too — the one-key undo a reader expects.
+        if (hotkeyRef.current.compareOpen) hotkeyRef.current.compare();
         return;
       }
       const k = e.key.toLowerCase();
@@ -197,10 +271,7 @@ export default function StudentSession({
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === "Space" && heldRef.current) {
-        heldRef.current = false;
-        void hotkeyRef.current.stop();
-      }
+      if (e.code === "Space") heldRef.current = false;
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -216,55 +287,182 @@ export default function StudentSession({
   const activeRevealed = activeFinding
     ? s.revealedIds.includes(activeFinding.id)
     : false;
-  const lastAssistant = useMemo(() => {
-    for (let i = s.turns.length - 1; i >= 0; i--) {
-      if (s.turns[i].role === "assistant" && !s.turns[i].error) return s.turns[i];
-    }
-    return null;
-  }, [s.turns]);
-  const waitingForTeach =
-    intent === "teach" &&
-    s.ready &&
-    !s.locateHint &&
-    !lastAssistant?.text &&
-    (s.phase === "thinking" || s.phase === "idle");
+  const transcriptFloor = intent === "exam" ? s.examCaptionFloor : 0;
+  // The rail and the footer caption share one slice. A floor that only the
+  // footer honored left the Teach line ("Follow the stack…") under Examiner.
+  const visibleTurns = useMemo(
+    () => examinerVisibleTurns(s.turns, transcriptFloor),
+    [s.turns, transcriptFloor]
+  );
+  const lastAssistant = useMemo(
+    () => examinerCaptionTurn(visibleTurns, 0),
+    [visibleTurns]
+  );
   const captionText =
     s.locateHint ||
     lastAssistant?.text ||
-    (waitingForTeach ? "Attending is seating the first finding…" : "");
-  const stepLabel =
-    hasFindings && s.activeIndex >= 0
-      ? `${s.activeIndex + 1} / ${s.orderedFindings.length}`
-      : undefined;
+    (s.liveStatus === "connecting"
+      ? "Connecting the attending…"
+      : s.liveStatus === "closed" && s.ready
+        ? "Scroll freely. Open the microphone to start."
+        : "");
+  const stepLabel = findingStepLabel(s.activeIndex, s.orderedFindings.length);
 
   const compareSeries =
-    s.compareOpen && series[s.secondarySeriesIndex]
-      ? series[s.secondarySeriesIndex]
+    s.compareOpen && rail[s.secondarySeriesIndex]
+      ? rail[s.secondarySeriesIndex]
       : null;
-
-  const dockHint =
-    intent === "exam"
-      ? s.locateMode
-        ? "Click the image to locate · Space to talk"
-        : "Exam mode · Space to talk · Ask or answer"
-      : s.tourActive
-        ? "Teaching — viewer follows the tutor · Space to interrupt"
-        : "Tour paused · Continue teaching or ask a question";
+  // A fresh object every render reloads the compare stack at the mid-slice
+  // default (33/65 soft-tissue on LIDC) and drops the secondary landing.
+  const compareSourceKey = compareSeries
+    ? `${compareSeries.wadoRsRoot}\0${compareSeries.studyInstanceUID}\0${compareSeries.seriesInstanceUID}`
+    : "";
+  const compareSource = useMemo(
+    () => (compareSeries ? caseSeriesToSource(compareSeries) : null),
+    // The key is the series identity. compareSeries is the object for that key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [compareSourceKey]
+  );
 
   return (
-    <div className="relative h-screen bg-imaging">
-      <div
-        className={cn(
-          "absolute inset-0 transition-[right] duration-300",
-          railOpen ? "md:right-[380px]" : "right-0",
-          showNavigator ? "md:left-[56px]" : "left-0"
-        )}
-      >
-        <StudentViewer
-          source={source}
-          series={series}
+    <div className="flex h-dvh max-h-dvh w-full min-w-0 max-w-full flex-col overflow-hidden bg-canvas">
+      <header className="z-30 flex shrink-0 flex-col border-b border-subtle bg-surface pt-[env(safe-area-inset-top)]">
+        <div className="flex min-h-12 min-w-0 flex-wrap items-center justify-between gap-2 px-2 py-2 sm:px-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <a
+              href="/library"
+              className="inline-flex h-11 shrink-0 items-center rounded-lg px-2.5 text-sm font-medium text-secondary hover:bg-overlay hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            >
+              Library
+            </a>
+            <h1 className="truncate font-display text-base font-semibold text-primary">
+              {caseData.title}
+            </h1>
+            <Badge variant="neutral" className="hidden sm:inline-flex">
+              {caseData.modality}
+            </Badge>
+            {stepLabel && (
+              <Badge variant="accent" className="shrink-0 tabular-nums">
+                Finding {stepLabel}
+              </Badge>
+            )}
+            {intent === "exam" && s.vivaScore.total > 0 && (
+              <Badge variant="neutral" className="hidden shrink-0 tabular-nums md:inline-flex">
+                Located {s.vivaScore.located}/{s.vivaScore.total}
+              </Badge>
+            )}
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1">
+            <IconButton
+              aria-label={anatomyOpen ? "Hide 3D anatomy" : "Show in 3D"}
+              size="md"
+              className="h-11 w-11"
+              variant={anatomyOpen ? "primary" : "secondary"}
+              onClick={() => setAnatomyOpen((open) => !open)}
+            >
+              <Box className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label={s.compareOpen ? "Close compare" : "Open compare"}
+              size="md"
+              className="h-11 w-11"
+              variant={s.compareOpen ? "primary" : "secondary"}
+              onClick={s.toggleCompare}
+            >
+              <Columns2 className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Keyboard shortcuts"
+              size="md"
+              className="h-11 w-11"
+              variant="secondary"
+              onClick={() => setKeysOpen(true)}
+            >
+              <Keyboard className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Previous finding"
+              size="md"
+              className="h-11 w-11"
+              variant="secondary"
+              disabled={!hasFindings || s.activeIndex <= 0 || s.busy}
+              onClick={s.prev}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Next finding"
+              size="md"
+              className="h-11 w-11"
+              variant="secondary"
+              disabled={
+                !hasFindings ||
+                s.activeIndex >= s.orderedFindings.length - 1 ||
+                s.busy
+              }
+              onClick={s.skip}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label={railOpen ? "Collapse tutor rail" : "Open tutor rail"}
+              size="md"
+              className="h-11 w-11"
+              variant="secondary"
+              onClick={() => setRailOpen((o) => !o)}
+            >
+              {railOpen ? (
+                <PanelRightClose className="h-4 w-4" />
+              ) : (
+                <PanelRightOpen className="h-4 w-4" />
+              )}
+            </IconButton>
+          </div>
+        </div>
+      </header>
+
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <div
+          className={cn(
+            "relative min-h-0 min-w-0 flex-1 bg-imaging",
+            railOpen && "lg:mr-[380px]"
+          )}
+        >
+          <ImagingLayout
+            fill
+            series={rail}
+            seriesLoading={resolved.loading && rail.length === 0}
+            listedSeries={manifest?.series}
+            mainImageReady={s.ready}
+            activeIndex={activeSeriesIndex}
+            onSelectSeries={(index) => {
+              const uid = rail[index]?.seriesInstanceUID;
+              if (uid) onSeriesChange(uid);
+            }}
+            className="absolute inset-0"
+            fullscreenDock={
+              <MicButton
+                state={s.micState}
+                onStart={s.onMicStart}
+                onStop={s.onMicStop}
+                disabled={!s.micSupported || (s.busy && s.micState === "idle")}
+                label={
+                  s.liveStatus === "connecting"
+                    ? "Connecting…"
+                    : s.liveStatus === "open"
+                      ? "End session"
+                      : "Open microphone"
+                }
+              />
+            }
+          >
+            {showViewer ? (
+            <StudentViewer
+          source={liveSource}
+          series={rail}
           activeSeriesIndex={activeSeriesIndex}
           onSeriesChange={onSeriesChange}
+          openSlice={openSlice}
           modality={caseData.modality}
           controls={s.controls}
           overlay={s.overlay}
@@ -272,29 +470,29 @@ export default function StudentSession({
           marker={s.marker}
           markerVisible={
             s.markerVisible &&
-            imagingResolved &&
+            imagingLive &&
             (!s.examMode || activeRevealed)
           }
           measurements={s.measurements}
           measurementsVisible={
             s.measurementsVisible &&
-            imagingResolved &&
+            imagingLive &&
             (!s.examMode || activeRevealed)
           }
           replaying={s.replaying || s.pointing}
           ready={s.ready}
-          locateMode={s.locateMode && imagingResolved}
+          locateMode={s.locateMode && imagingLive}
           onLocateClick={s.onLocateClick}
+          sketches={s.sketches}
+          onImagePoint={s.noteImagePoint}
           secondary={
             s.compareOpen
               ? {
-                  source: compareSeries
-                    ? caseSeriesToSource(compareSeries)
-                    : source,
-                  series: series.length > 0 ? series : undefined,
+                  source: compareSource ?? liveSource,
+                  series: rail.length > 0 ? rail : undefined,
                   activeSeriesIndex: s.secondarySeriesIndex,
                   onSeriesChange: (uid) => {
-                    const idx = series.findIndex((x) => x.seriesInstanceUID === uid);
+                    const idx = rail.findIndex((x) => x.seriesInstanceUID === uid);
                     if (idx >= 0) s.setSecondarySeriesIndex(idx);
                   },
                   controls: s.secondaryControls,
@@ -303,7 +501,7 @@ export default function StudentSession({
                   marker: s.secondaryMarker,
                   markerVisible:
                     s.secondaryMarkerVisible &&
-                    imagingResolved &&
+                    imagingLive &&
                     (!s.examMode || activeRevealed),
                   ready: s.secondaryReady,
                   instanceId: "compare",
@@ -311,257 +509,44 @@ export default function StudentSession({
                 }
               : null
           }
-        />
-      </div>
-
-      {showNavigator && (
-        <div className="absolute bottom-0 left-0 top-0 z-20 hidden w-14 border-r border-subtle/60 bg-canvas/80 backdrop-blur md:block">
-          <SeriesNavigator
-            series={series}
-            activeIndex={activeSeriesIndex}
-            onSelect={(i) => {
-              const uid = series[i]?.seriesInstanceUID;
-              if (uid) onSeriesChange(uid);
-            }}
-          />
-        </div>
-      )}
-
-      {/* Top HUD — above viewer chrome so Library is always clickable */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between gap-3 p-3">
-        <div className="pointer-events-auto flex min-w-0 flex-wrap items-center gap-2">
-          <a
-            href="/library"
-            className="inline-flex items-center rounded-md border border-subtle bg-elevated px-2.5 py-1.5 text-xs font-medium text-secondary hover:text-primary"
-          >
-            Library
-          </a>
-          <Badge variant="neutral" className="max-w-[14rem] truncate sm:max-w-xs">
-            {caseData.title}
-          </Badge>
-          <Badge variant="neutral">{caseData.modality}</Badge>
-          {stepLabel && (
-            <Badge variant="accent" className="tabular-nums">
-              Finding {stepLabel}
-            </Badge>
-          )}
-          {intent === "exam" && s.vivaScore.total > 0 && (
-            <Badge variant="neutral" className="tabular-nums">
-              Located {s.vivaScore.located}/{s.vivaScore.total}
-            </Badge>
-          )}
-        </div>
-        <div className="pointer-events-auto flex items-center gap-1">
-          <IconButton
-            aria-label={s.compareOpen ? "Close compare" : "Open compare"}
-            size="sm"
-            variant={s.compareOpen ? "primary" : "secondary"}
-            onClick={s.toggleCompare}
-          >
-            <Columns2 className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label="Keyboard shortcuts"
-            size="sm"
-            variant="secondary"
-            onClick={() => setKeysOpen(true)}
-          >
-            <Keyboard className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label="Previous finding"
-            size="sm"
-            variant="secondary"
-            disabled={!hasFindings || s.activeIndex <= 0 || s.busy}
-            onClick={s.prev}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label="Next finding"
-            size="sm"
-            variant="secondary"
-            disabled={
-              !hasFindings ||
-              s.activeIndex >= s.orderedFindings.length - 1 ||
-              s.busy
-            }
-            onClick={s.skip}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            aria-label={railOpen ? "Collapse tutor rail" : "Open tutor rail"}
-            size="sm"
-            variant="secondary"
-            onClick={() => setRailOpen((o) => !o)}
-          >
-            {railOpen ? (
-              <PanelRightClose className="h-4 w-4" />
-            ) : (
-              <PanelRightOpen className="h-4 w-4" />
-            )}
-          </IconButton>
-        </div>
-      </div>
-
-      <TutorCaption
-        text={captionText}
-        stepLabel={stepLabel}
-        revealed={!s.examMode || activeRevealed}
-        modeLabel={
-          intent === "exam"
-            ? "Examiner"
-            : mode === "reporting"
-              ? "Report coach"
-              : s.tourActive
-                ? "Teaching"
-                : "Attending"
-        }
-        sources={lastAssistant?.sources}
-      />
-
-      {tutorVoice?.cloned && (
-        <p className="pointer-events-none absolute inset-x-0 top-12 z-20 px-4 text-center text-[10px] text-muted/80 sm:top-14">
-          Tutor voice is a synthetic clone modeled on {tutorVoice.authorName}.
-        </p>
-      )}
-
-      {/* Bottom dock — above caption so Teach/Exam always receive clicks */}
-      <div className="absolute inset-x-0 bottom-0 z-40 flex justify-center p-4">
-        <div className="flex max-w-xl flex-col items-center gap-2">
-          {hasFindings && (
-            <div className="flex items-center gap-1.5" aria-label="Finding progress">
-              {s.orderedFindings.map((f, i) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  aria-label={`Finding ${i + 1}`}
-                  aria-current={i === s.activeIndex}
-                  disabled={s.busy}
-                  onClick={() => s.goTo(i)}
-                  className={cn(
-                    "h-1.5 rounded-full transition-all",
-                    i === s.activeIndex
-                      ? "w-6 bg-accent"
-                      : "w-1.5 bg-strong/70 hover:bg-accent/60"
-                  )}
-                />
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center gap-1 rounded-md border border-subtle bg-elevated p-1">
-            <button
-              type="button"
-              onClick={() => setIntent("teach")}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                intent === "teach"
-                  ? "bg-accent text-accent-foreground"
-                  : "text-secondary hover:text-primary"
-              )}
-            >
-              Teach
-            </button>
-            <button
-              type="button"
-              onClick={() => setIntent("exam")}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                intent === "exam"
-                  ? "bg-accent text-accent-foreground"
-                  : "text-secondary hover:text-primary"
-              )}
-            >
-              Exam
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3 rounded-md border border-subtle bg-elevated px-4 py-2.5 shadow-md">
-            <button
-              type="button"
-              onClick={openAsk}
-              aria-label="Open tutor transcript"
-              className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-            >
-              <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
-              <span className="hidden text-xs font-medium text-secondary sm:inline">
-                {ORB_TAGLINE[s.orbState]}
-              </span>
-            </button>
-            <MicButton
-              state={s.micState}
-              onStart={s.onMicStart}
-              onStop={s.onMicStop}
-              disabled={!s.micSupported || (s.busy && s.micState === "idle")}
-              label={
-                s.micState === "recording"
-                  ? "Release to send"
-                  : s.micState === "processing"
-                    ? "…"
-                    : "Hold to speak"
-              }
             />
-            {intent === "teach" && !s.tourActive && s.ready && (
-              <Button
-                size="sm"
-                variant="secondary"
-                leadingIcon={<Play className="h-3.5 w-3.5" />}
-                onClick={s.resumeTour}
-                disabled={s.busy}
-              >
-                Continue
-              </Button>
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
+                  Loading study…
+                </span>
+              </div>
             )}
-            {intent === "teach" && s.tourActive && s.phase === "speaking" && (
-              <Button
-                size="sm"
-                variant="ghost"
-                leadingIcon={<Pause className="h-3.5 w-3.5" />}
-                onClick={() => {
-                  s.pauseTour();
-                  s.onStopSpeaking();
-                }}
-              >
-                Pause
-              </Button>
-            )}
-            {s.examMode && hasFindings && (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
-                  onClick={s.sayDontKnow}
-                  disabled={s.busy}
-                >
-                  Don&apos;t know
-                </Button>
-                {!activeRevealed && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    leadingIcon={<Eye className="h-3.5 w-3.5" />}
-                    onClick={s.revealCurrent}
-                    disabled={s.busy}
-                  >
-                    Reveal
-                  </Button>
-                )}
-              </>
-            )}
-          </div>
-          <p className="text-[10px] text-muted">
-            {dockHint} · <Kbd>?</Kbd> keys
-          </p>
+          </ImagingLayout>
+          {anatomyOpen && (
+            <AnatomyPanel
+              caseId={caseData.caseId}
+              findingId={
+                s.activeIndex >= 0
+                  ? s.orderedFindings[s.activeIndex]?.id
+                  : s.orderedFindings[0]?.id
+              }
+              findingLabel={
+                s.activeIndex >= 0
+                  ? s.orderedFindings[s.activeIndex]?.label
+                  : s.orderedFindings[0]?.label
+              }
+              findingAnchor={
+                s.activeIndex >= 0 ? s.orderedFindings[s.activeIndex] : s.orderedFindings[0]
+              }
+              onClose={() => setAnatomyOpen(false)}
+            />
+          )}
         </div>
-      </div>
 
       <aside
         className={cn(
-          "absolute bottom-0 right-0 top-0 z-40 flex w-full max-w-[380px] flex-col border-l border-subtle bg-surface/95 shadow-lg backdrop-blur transition-transform duration-300 md:w-[380px]",
-          railOpen ? "translate-x-0" : "translate-x-full"
+          "absolute z-40 flex flex-col bg-surface/95 shadow-lg backdrop-blur transition-transform duration-300",
+          "max-lg:inset-x-0 max-lg:bottom-0 max-lg:top-auto max-lg:h-[min(52dvh,24rem)] max-lg:w-full max-lg:border-t max-lg:border-subtle",
+          "lg:inset-y-0 lg:right-0 lg:w-[380px] lg:border-l lg:border-subtle",
+          railOpen
+            ? "translate-x-0 translate-y-0"
+            : "pointer-events-none max-lg:translate-y-full lg:translate-x-full"
         )}
         aria-hidden={!railOpen}
       >
@@ -580,27 +565,6 @@ export default function StudentSession({
           >
             <PanelRightClose className="h-4 w-4" />
           </IconButton>
-        </div>
-
-        <div className="border-b border-subtle px-3 py-2.5">
-          <Tabs
-            items={[
-              { value: "guided", label: "Teach" },
-              { value: "reporting", label: "Report" },
-              { value: "socratic", label: "Socratic" },
-              { value: "free", label: "Free" },
-              { value: "viva", label: "Viva" },
-            ]}
-            value={mode}
-            onValueChange={(v) => {
-              const next = v as SessionMode;
-              setMode(next);
-              setPanel("ask");
-              if (next === "reporting" || next === "guided" || next === "viva") {
-                setRailOpen(true);
-              }
-            }}
-          />
         </div>
 
         <div className="border-b border-subtle px-3 py-2">
@@ -627,7 +591,7 @@ export default function StudentSession({
         <div className={cn("min-h-0 flex-1 flex-col", panel === "lesson" ? "flex" : "hidden")}>
           <FindingCards
             findings={s.orderedFindings}
-            series={series}
+            series={rail}
             caseModality={caseData.modality}
             activeIndex={s.activeIndex}
             replaying={s.replaying || s.pointing}
@@ -649,7 +613,7 @@ export default function StudentSession({
             />
           )}
           <TutorChat
-            turns={s.turns}
+            turns={visibleTurns}
             phase={s.phase}
             orbState={s.orbState}
             micState={s.micState}
@@ -665,9 +629,165 @@ export default function StudentSession({
             onTypingFocus={onTypingFocus}
             onTypingBlur={onTypingBlur}
             hideMic
+            checkIn={s.checkIn}
+            onAnswerCheckIn={s.answerCheckIn}
           />
         </div>
       </aside>
+      </div>
+
+      {/* One slim line while reading (was ~20% of the height): mode, the
+          tutor's current sentence (click for the full transcript), progress,
+          and the mic. The image keeps the room. */}
+      <footer className="z-30 shrink-0 border-t border-subtle bg-surface px-2 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-1">
+        {s.checkIn && !railOpen && (
+          <div className="mx-auto mb-1 w-full max-w-3xl">
+            <CheckInCard
+              prompt={s.checkIn.prompt}
+              options={s.checkIn.options}
+              onSelect={s.answerCheckIn}
+            />
+          </div>
+        )}
+        <div className="flex h-11 w-full min-w-0 items-center gap-2">
+          <div
+            role="group"
+            aria-label="Session mode"
+            className="flex shrink-0 items-center rounded-md border border-subtle bg-elevated p-0.5"
+          >
+            {(
+              [
+                ["teach", "Teach"],
+                ["exam", "Exam"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={intent === value}
+                onClick={() => setIntent(value)}
+                className={cn(
+                  "h-8 rounded px-2.5 text-xs font-semibold transition-[transform,background-color,color] duration-75 active:scale-[0.96]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                  intent === value
+                    ? "bg-accent text-accent-foreground"
+                    : "text-secondary hover:text-primary"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={openAsk}
+            title={captionText}
+            aria-label={`Open tutor transcript. ${captionText}`}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left hover:bg-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          >
+            <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              {intent === "exam"
+                ? "Examiner"
+                : mode === "reporting"
+                  ? "Report"
+                  : s.tourActive
+                    ? "Teaching"
+                    : "Attending"}
+            </span>
+            <span role="status" aria-live="polite" className="min-w-0 truncate text-sm text-primary">
+              {captionText}
+            </span>
+          </button>
+
+          {hasFindings && (
+            <div
+              className="flex shrink-0 items-center max-sm:hidden"
+              role="group"
+              aria-label="Finding progress"
+            >
+              {s.orderedFindings.map((f, i) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  aria-label={`Finding ${i + 1}: ${f.label || "untitled"}`}
+                  aria-current={i === s.activeIndex ? "true" : undefined}
+                  disabled={s.busy}
+                  onClick={() => s.goTo(i)}
+                  className="flex h-8 min-w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 rounded-full transition-all duration-150",
+                      i === s.activeIndex ? "w-4 bg-accent" : "w-1.5 bg-strong"
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {s.examMode && hasFindings && (
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                leadingIcon={<HelpCircle className="h-3.5 w-3.5" />}
+                onClick={s.sayDontKnow}
+                disabled={s.busy}
+              >
+                <span className="max-md:sr-only">Don&apos;t know</span>
+              </Button>
+              {!activeRevealed && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  leadingIcon={<Eye className="h-3.5 w-3.5" />}
+                  onClick={s.revealCurrent}
+                  disabled={s.busy}
+                >
+                  <span className="max-md:sr-only">Reveal</span>
+                </Button>
+              )}
+            </div>
+          )}
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {tutorVoice?.cloned && (
+              <span
+                title={`Tutor voice is a synthetic clone modeled on ${tutorVoice.authorName}.`}
+                className="rounded border border-subtle px-1 text-[10px] font-medium uppercase tracking-wide text-muted max-sm:hidden"
+              >
+                AI voice
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={openAsk}
+              aria-label={`Tutor: ${ORB_TAGLINE[s.orbState]}`}
+              title={ORB_TAGLINE[s.orbState]}
+              className="flex h-9 w-9 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            >
+              <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
+            </button>
+            <MicButton
+              size="sm"
+              state={s.micState}
+              onStart={s.onMicStart}
+              onStop={s.onMicStop}
+              disabled={!s.micSupported || (s.busy && s.micState === "idle")}
+              label={
+                s.liveStatus === "connecting"
+                  ? "Connecting…"
+                  : s.liveStatus === "open"
+                    ? "End session"
+                    : "Open microphone"
+              }
+            />
+          </div>
+        </div>
+      </footer>
+
 
       <HotkeysOverlay open={keysOpen} onClose={() => setKeysOpen(false)} />
     </div>

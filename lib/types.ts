@@ -16,6 +16,8 @@
 // URL and we keep its `state` blob verbatim (lossless, no re-encoding needed to
 // replay). We decode it server-side only when the AI needs to know what's shown.
 
+import type { LiveTeachingPack } from "./liveTeachingPack";
+
 export type MarkerShape = "circle" | "arrow";
 
 /** One viewport tile inside Pacsbin's decoded state (for inspection / AI).
@@ -65,7 +67,9 @@ export type FindingMeasurementKind =
   | "length"
   | "ellipse"
   | "probe"
-  | "bidirectional";
+  | "bidirectional"
+  | "arrow"
+  | "angle";
 
 export interface FindingMeasurement {
   id: string;
@@ -101,7 +105,8 @@ export interface FindingAnchor {
   sopInstanceUID?: string;
   /** 0-based stack index within the series (Cornerstone imageId index). */
   sliceIndex?: number;
-  marker: Marker;
+  /** Present when the log sampled a pointer. A compare pane can land without one. */
+  marker?: Marker;
   /**
    * Display VOI at the moment this landing was authored (DICOM WW/WC semantics).
    * Required so students in bone window still see a lung-window nodule when the
@@ -109,6 +114,10 @@ export interface FindingAnchor {
    */
   windowWidth?: number;
   windowCenter?: number;
+  /** Parallel-scale zoom at pin time (1 = fit). Absent = leave the pane's camera. */
+  zoom?: number;
+  /** Pan in viewport CSS pixels at pin time. */
+  pan?: [number, number];
   /** Which pane in a multi-viewport layout (Phase 2). */
   viewportRole?: "primary" | "secondary" | "compare";
   /** Chronology role when the case spans studies. */
@@ -149,9 +158,38 @@ export interface Keyframe {
 //
 // While the teacher records we capture an ORDERED, timestamped log of viewer
 // state (scroll/window/zoom/pan/annotation/cursor) plus optional narration.
-// That log ARMS the AI tutor (lib/readingDigest.ts); it is not a student-facing
-// cassette. Author Studio may exact-replay for capture QA only.
+// The dense log arms the tutor (reading digest) and author QA replay.
+// Learners follow a cleaned TeachingGuide built from this log — not the mic tape.
 // ============================================================================
+
+/**
+ * A measurement or markup stroke in normalized overlay space.
+ * `from`/`to` stay required so older arrow/circle replays keep working.
+ * `tool` + `handles` carry Length / ROI / Arrow / Probe / Angle when the
+ * stroke came from a Cornerstone tool.
+ */
+export interface RecordedAnnotation {
+  shape: MarkerShape;
+  /** Normalized [0,1]. First handle (or the only point for a probe). */
+  from: [number, number];
+  /** Normalized [0,1]. Last handle. */
+  to: [number, number];
+  /** Cornerstone tool name: Length, EllipticalROI, RectangleROI, Probe, ArrowAnnotate, Angle. */
+  tool?: string;
+  /** Every handle in normalized [0,1], in tool order. */
+  handles?: Array<[number, number]>;
+  /** Stack index the stroke was drawn on. */
+  sliceIndex?: number;
+  annotationUID?: string;
+  label?: string;
+  lengthMm?: number;
+  meanHu?: number;
+  maxHu?: number;
+  minHu?: number;
+  stdHu?: number;
+  areaMm2?: number;
+  unit?: string;
+}
 
 /** A single timestamped viewer state change (`t` = ms from record start). */
 export type RecordedEvent =
@@ -164,12 +202,23 @@ export type RecordedEvent =
   // replay the navigator + stack switch to it. Absent in older single-series
   // recordings — they simply never emit it and stay on their one series.
   | { t: number; type: "series"; seriesInstanceUID: string }
+  | ({ t: number; type: "annotation" } & RecordedAnnotation)
+  /**
+   * Compare pane at this instant. `open: false` closes it. Slice, window,
+   * series, and pointer are whatever the teacher had on that pane — never
+   * filled in later by the model.
+   */
   | {
       t: number;
-      type: "annotation";
-      shape: MarkerShape;
-      from: [number, number]; // normalized [0,1]
-      to: [number, number];
+      type: "compare";
+      open: boolean;
+      seriesInstanceUID?: string;
+      sliceIndex?: number;
+      ww?: number;
+      wc?: number;
+      /** Normalized [0,1] pointer on the compare pane, when one was sampled. */
+      x?: number;
+      y?: number;
     };
 
 /** Event shape before the recorder stamps it with a timestamp. */
@@ -180,18 +229,107 @@ export type ViewerEvent =
   | { type: "invert"; value: boolean }
   | { type: "cursor"; x: number; y: number }
   | { type: "series"; seriesInstanceUID: string }
-  | { type: "annotation"; shape: MarkerShape; from: [number, number]; to: [number, number] };
+  | ({ type: "annotation" } & RecordedAnnotation)
+  | {
+      type: "compare";
+      open: boolean;
+      seriesInstanceUID?: string;
+      sliceIndex?: number;
+      ww?: number;
+      wc?: number;
+      x?: number;
+      y?: number;
+    };
+
+/** One viewer move inside a cleaned teach script. */
+export type TeachViewerAction =
+  | { type: "scroll"; sliceIndex: number; seriesInstanceUID?: string }
+  | { type: "window"; ww: number; wc: number }
+  | { type: "zoom"; zoom: number; pan: [number, number] }
+  | { type: "invert"; value: boolean }
+  | { type: "point"; x: number; y: number }
+  | { type: "pause"; ms: number }
+  | ({ type: "annotate" } & RecordedAnnotation);
+
+/**
+ * Pedagogical role of a teach beat. The student hears these in order:
+ * orient → search → lean-in → commit → pearl. Absent on guides saved
+ * before this field existed.
+ */
+export type TeachAct = "orient" | "search" | "lean-in" | "commit" | "pearl";
+
+/** One beat of a teach script: viewer moves plus an optional spoken line. */
+export interface TeachBeat {
+  /** ms on the finding's track clock. */
+  t: number;
+  actions: TeachViewerAction[];
+  /** Spoken line that plays with these actions. */
+  say?: string;
+  /** Which attending act this beat is. Pearl names the finding; earlier acts do not. */
+  act?: TeachAct;
+  /**
+   * Pause for a text check-in before this beat's reveal. When no beat sets
+   * this, the commit act is the decision. Options are words, not coordinates.
+   */
+  decision?: boolean;
+}
+
+/**
+ * A slice of the teacher's speech on the track clock.
+ * `estimated` times come from the transcription model listening to the take.
+ * `proportional` times split the verbatim transcript by word count — a
+ * constant-speech-rate assumption, not a forced aligner. Pauses are not detected.
+ */
+export interface NarrationSpan {
+  tStartMs: number;
+  tEndMs: number;
+  text: string;
+}
+
+/**
+ * Ordered teach script a consultant would walk: where to scroll, which
+ * window, when to zoom, where to hold, what to point at, what to measure,
+ * and the line to say with that move. Built from a RecordedTrack plus the
+ * structured narration. The student session performs it on the teacher's
+ * clock — not the dense event tape and not the microphone audio.
+ */
+export interface TeachingGuide {
+  durationMs: number;
+  /** Viewport to prime before the first beat. */
+  start: { sliceIndex: number; ww?: number; wc?: number };
+  beats: TeachBeat[];
+  /**
+   * Set when this script was rebuilt from a `voice: "notes"` track.
+   * Orient names the stored slice (spoken as that index plus one). Playback
+   * lands the orient scroll with that sentence.
+   */
+  voice?: "notes";
+}
 
 /** One finding's recorded demonstration: ordered events + optional narration.
- * Used to arm the tutor (reading digest) and for author QA replay — not as a
- * student-facing tape of the teacher's mic. */
+ * The dense log arms the tutor and author QA replay. Learners follow
+ * `TeachingGuide`, not this tape and not the teacher's microphone. */
 export interface RecordedTrack {
   durationMs: number;
   /** The starting viewer state (slice index + W/L) so replay can prime it. */
   start: { sliceIndex: number; ww?: number; wc?: number };
   events: RecordedEvent[];
-  /** URL/key of the teacher's narration audio (their real voice). */
+  /** URL/key of the teacher's narration audio (their real voice). Learners do not play this. */
   audioUrl?: string;
+  /**
+   * Transcript slices on this track's clock. The teach script reads them when
+   * it rebuilds; the dense events are not themselves the spoken lines.
+   */
+  narration?: NarrationSpan[];
+  /**
+   * `notes` means Teach speaks the author's notes instead of the look-cue
+   * script. Click-to-annotate sets it on a synthetic landing. Speak-once sets
+   * it on the captured viewer track when the microphone produced no usable
+   * audio. Say lines come from the label, description, teaching points, and
+   * the landed slice, window, zoom, and marker. The spoken slice is 1-based,
+   * matching Studio. A real microphone take leaves this unset.
+   */
+  voice?: "notes";
 }
 
 export interface Finding {
@@ -206,6 +344,12 @@ export interface Finding {
   keyframes?: Keyframe[];
   /** Self-hosted record/replay: ordered state-change log + narration audio. */
   track?: RecordedTrack;
+  /**
+   * Cleaned teach script derived from `track` (scroll → window → zoom → point
+   * → draw, with narration beats). The student session plays this live.
+   * Optional so older findings still load; rebuilt from `track` when absent.
+   */
+  teachingGuide?: TeachingGuide;
   durationMs?: number;
   /** Default guided-tour sequence (search-pattern order). */
   order: number;
@@ -218,8 +362,18 @@ export interface Finding {
   sopInstanceUIDs?: string[];
   /** Exact SOP for the primary landing (when known). */
   sopInstanceUID?: string;
-  /** 0-based slice index for the primary landing. */
+  /**
+   * 0-based Cornerstone image index for the primary landing.
+   * Studio labels and notes Teach speech show this plus one (`displaySliceNumber`).
+   * Scroll actions keep this stored index.
+   */
   sliceIndex?: number;
+  /**
+   * Anatomical level to say if the learner is off this finding's slice
+   * (e.g. "carina"). Not the diagnosis — the tour withholds `label` until
+   * the pearl. Optional; older findings omit it.
+   */
+  landmark?: string;
   /**
    * Window width / center (VOI) at authoring time — same semantics as DICOM
    * Window Center/Width (0028,1050)/(0028,1051). Applied with an eased tween
@@ -242,6 +396,16 @@ export interface Finding {
   captureSessionId?: string;
   tStartMs?: number;
   tEndMs?: number;
+  /**
+   * Gold structured-report sentence for this finding. Report grading uses it
+   * instead of the teaching script. Optional; older findings omit it.
+   */
+  reportGold?: string;
+  /**
+   * Short phrases the report must include for this finding, copied from the
+   * authored gold. The grader may not add findings beyond this list.
+   */
+  reportMustMention?: string[];
 }
 
 export interface CaseData {
@@ -305,6 +469,12 @@ export interface CaseData {
    */
   captureSessions?: CaptureSession[];
 
+  /**
+   * What Gemini Live teaches from. Prose comes from compile; drive anchors are
+   * rebuilt from findings whenever the case is read. Optional on older cases.
+   */
+  liveTeachingPack?: LiveTeachingPack;
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -314,6 +484,11 @@ export interface StructuredFinding {
   label: string;
   description: string;
   teachingPoints: string[];
+  /**
+   * Anatomical level the tour may name before the diagnosis (no article),
+   * e.g. "carina". Optional. The learner hint withholds the finding label.
+   */
+  landmark?: string;
 }
 
 /**
@@ -328,12 +503,34 @@ export interface StructuredSessionFinding extends StructuredFinding {
   /** Suggested marker from nearest cursor sample in-range (may be absent). */
   suggestedMarker?: Marker;
   suggestedSliceIndex?: number;
+  /**
+   * Flash prose for the Live teaching pack. Coordinates are not accepted here —
+   * drive anchors are filled from the recorded track and the saved finding.
+   */
+  whatToNotice?: string;
+  pearl?: string;
+  mimics?: string[];
+  /** 1 = most urgent. The pack sorts findings by this. */
+  clinicalImportance?: number;
+  whyClinicallyFirst?: string;
+  reportLine?: string;
+  /**
+   * Cleaned teach script for this segment's slice of the track. Preview only —
+   * mergeCapture rebuilds it onto the Finding at save time.
+   */
+  teachingGuide?: TeachingGuide;
 }
 
 /** Full continuous-session structure response. */
 export interface StructuredSession {
   transcript: string;
   findings: StructuredSessionFinding[];
+  /**
+   * Flash prose plus drive anchors from the viewer log. Provisional finding
+   * ids (`seg_N`) until the take is saved. Live loads the saved pack, not this
+   * preview, and never receives the recording.
+   */
+  liveTeachingPack?: LiveTeachingPack;
 }
 
 // ============================================================================
@@ -718,6 +915,20 @@ export interface Case extends CaseData {
   studyRefs?: CaseStudyRef[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Unguessable viewer link for one case. The token is the record id.
+ * Possession of a live token is read access to that case's studies.
+ * `revokedAt` kills the link; the row stays so a rotated token cannot be reused.
+ */
+export interface CaseShare {
+  id: string;
+  orgId: string;
+  caseId: string;
+  createdBy: string;
+  createdAt: string;
+  revokedAt?: string;
 }
 
 // ============================================================================

@@ -3,7 +3,7 @@
 // Normalized finding marker rendered over the viewer. Position is stored as
 // [0,1] percentages (lib/types Marker) so it's resolution-independent; only the
 // computed left/top use inline style (allowed for truly dynamic values per
-// CLAUDE.md §0). Pulses with the accent token; fades in on reveal.
+// CLAUDE.md §0). Tutor ink (no blue on the image); fades in on reveal.
 
 import { ArrowDown } from "lucide-react";
 import { cn } from "@/components/ui";
@@ -30,7 +30,7 @@ export function FindingMarker({
         aria-hidden="true"
       >
         <ArrowDown
-          className="h-9 w-7 text-accent drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+          className="h-9 w-7 text-ink drop-shadow-[0_0_1px_#000] drop-shadow-[0_1px_2px_#000]"
           strokeWidth={2.5}
           aria-hidden="true"
         />
@@ -39,13 +39,15 @@ export function FindingMarker({
   }
 
   return (
-    <div
-      className={cn(
-        "pointer-events-none absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent transition-opacity duration-500 ease-out",
-        visible ? "animate-marker-pulse opacity-100" : "opacity-0"
-      )}
-      style={position}
-      aria-hidden="true"
-    />
+      <div
+        className={cn(
+          "pointer-events-none absolute h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_#000,0_0_0_4px_#FFD447,0_0_14px_2px_rgb(255_212_71/0.45)] transition-opacity duration-500 ease-out",
+          visible ? "opacity-100" : "opacity-0"
+        )}
+        style={position}
+        aria-hidden="true"
+      >
+        <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1px_#000]" />
+      </div>
   );
 }

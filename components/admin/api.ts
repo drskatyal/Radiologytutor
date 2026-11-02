@@ -230,6 +230,7 @@ export interface UpdateCaseInput extends CaseDetailsInput {
   system?: BodySystem | null;
   tags?: string[];
   authorId?: string | null;
+  liveTeachingPack?: Case["liveTeachingPack"];
 }
 
 export async function updateCase(
@@ -318,6 +319,8 @@ export function uploadDicomBatch(
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve({
           stored: data.stored ?? 0,
+          duplicates: data.duplicates ?? 0,
+          deidentified: data.deidentified ?? 0,
           series: data.series ?? [],
           failed: data.failed ?? [],
           skipped: data.skipped ?? [],

@@ -9,9 +9,20 @@
 //   - rendering the Courses/Continue rails + the filtered, animated grid.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { CircleAlert, Filter, GraduationCap, LayoutGrid, Search, SlidersHorizontal, Users, X } from "lucide-react";
+import {
+  Funnel,
+  MagnifyingGlass,
+  SlidersHorizontal,
+  SquaresFour,
+  WarningCircle,
+  X,
+} from "@phosphor-icons/react";
+import { TeachMotif } from "@/components/brand/TeachMotif";
+import { TeachStage } from "@/components/marketing/TeachStage";
+import { DemoEntryButton } from "@/components/auth/AuthButtons";
 import {
   Badge,
   Button,
@@ -52,7 +63,18 @@ function readQuery(params: URLSearchParams): CatalogQuery {
   return q;
 }
 
-export function Catalog({ initial }: { initial: CatalogResponse }) {
+export function Catalog({
+  initial,
+  teachHref = "/sign-up",
+  uploadHref = "/sign-up",
+  demoEntry = false,
+}: {
+  initial: CatalogResponse;
+  teachHref?: string;
+  uploadHref?: string;
+  /** Signed out, and demo auth is on. Passed from the server — never assumed here. */
+  demoEntry?: boolean;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -151,41 +173,27 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
 
   // Rails only show in the unfiltered view (a clean library landing).
   const showRails = activeCount === 0 && !query.q;
+  const libraryBare =
+    showRails &&
+    data.courses.length === 0 &&
+    data.authors.length === 0 &&
+    data.playlists.length === 0 &&
+    data.cases.length === 0;
+
+  if (libraryBare && !loading && !error) {
+    return (
+      <LibraryStart teachHref={teachHref} uploadHref={uploadHref} demoEntry={demoEntry} />
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">
       {showRails && (
         <>
-          {data.courses.length === 0 ? (
-            <section id="courses" className="flex scroll-mt-24 flex-col gap-4">
-              <SectionHeading
-                icon={<GraduationCap aria-hidden="true" />}
-                title="Courses"
-                description="Multi-case teaching sequences, taught end to end."
-              />
-              <EmptyState
-                icon={<GraduationCap aria-hidden="true" />}
-                title="No courses yet"
-                description="Published teaching sequences will appear here."
-              />
-            </section>
-          ) : (
+          {data.courses.length > 0 && (
             <CoursesRail id="courses" courses={data.courses} authorById={authorById} />
           )}
-          {data.authors.length === 0 ? (
-            <section id="teachers" className="flex scroll-mt-24 flex-col gap-4">
-              <SectionHeading
-                icon={<Users aria-hidden="true" />}
-                title="Teachers"
-                description="Radiologists publishing on FlowRad."
-              />
-              <EmptyState
-                icon={<Users aria-hidden="true" />}
-                title="No teachers yet"
-                description="Author profiles will appear here once educators publish."
-              />
-            </section>
-          ) : (
+          {data.authors.length > 0 && (
             <TeachersRail
               id="teachers"
               authors={data.authors}
@@ -201,8 +209,9 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-[220px] flex-1">
-            <Search
+            <MagnifyingGlass
               aria-hidden="true"
+              weight="regular"
               className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
             />
             <Input
@@ -215,7 +224,7 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
             />
           </div>
           <div className="flex items-center gap-2">
-            <SlidersHorizontal className="h-4 w-4 text-muted" aria-hidden="true" />
+            <SlidersHorizontal className="h-4 w-4 text-muted" weight="regular" aria-hidden="true" />
             <Select
               value={query.sort ?? "recent"}
               onChange={(e) => setFilter("sort", e.target.value === "recent" ? undefined : e.target.value)}
@@ -232,8 +241,8 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted">
-            <Filter className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="inline-flex items-center gap-2 text-xs font-medium text-muted">
+            <Funnel className="h-4 w-4" weight="regular" aria-hidden="true" />
             Filter
           </span>
           <FilterSelect
@@ -273,7 +282,7 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
               variant="ghost"
               size="sm"
               onClick={clearAll}
-              leadingIcon={<X className="h-3.5 w-3.5" aria-hidden="true" />}
+              leadingIcon={<X className="h-4 w-4" weight="regular" aria-hidden="true" />}
             >
               Clear
             </Button>
@@ -284,7 +293,7 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
       {/* Result count */}
       <div id="cases" className="scroll-mt-24">
       <SectionHeading
-        icon={<LayoutGrid aria-hidden="true" />}
+        icon={<SquaresFour aria-hidden="true" weight="regular" />}
         title={activeCount > 0 || query.q ? "Results" : "All cases"}
         aside={
           loading ? (
@@ -311,7 +320,7 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
         ) : error ? (
           <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <EmptyState
-              icon={<CircleAlert aria-hidden="true" />}
+              icon={<WarningCircle aria-hidden="true" weight="regular" />}
               title="Couldn't load the library"
               description={error}
               action={
@@ -324,15 +333,23 @@ export function Catalog({ initial }: { initial: CatalogResponse }) {
         ) : data.cases.length === 0 ? (
           <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <EmptyState
-              icon={<Search aria-hidden="true" />}
-              title="No cases match these filters"
-              description="Try widening your search or clearing a filter."
+              icon={<MagnifyingGlass aria-hidden="true" weight="regular" />}
+              title={activeCount > 0 || query.q ? "No cases match these filters" : "No published cases yet"}
+              description={
+                activeCount > 0 || query.q
+                  ? "Widen the search, or clear a filter."
+                  : "Upload a study and record the teach. It appears here when you publish it."
+              }
               action={
                 activeCount > 0 || query.q ? (
                   <Button variant="secondary" onClick={clearAll}>
                     Clear filters
                   </Button>
-                ) : undefined
+                ) : (
+                  <TeacherEntry demoEntry={demoEntry} href={teachHref}>
+                    Record your first teach
+                  </TeacherEntry>
+                )
               }
             />
           </motion.div>
@@ -382,11 +399,76 @@ function FilterSelect({
   );
 }
 
+function TeacherEntry({
+  demoEntry,
+  href,
+  next,
+  variant = "primary",
+  children,
+}: {
+  demoEntry: boolean;
+  href: string;
+  next?: string;
+  variant?: "primary" | "secondary";
+  children: React.ReactNode;
+}) {
+  if (demoEntry) {
+    return (
+      <DemoEntryButton role="author" next={next} variant={variant}>
+        {children}
+      </DemoEntryButton>
+    );
+  }
+  return (
+    <Link href={href}>
+      <Button variant={variant}>{children}</Button>
+    </Link>
+  );
+}
+
+function LibraryStart({
+  teachHref,
+  uploadHref,
+  demoEntry,
+}: {
+  teachHref: string;
+  uploadHref: string;
+  demoEntry: boolean;
+}) {
+  return (
+    <section className="grid items-center gap-8 py-8 md:grid-cols-2" aria-label="Empty library">
+      <TeachStage compact />
+      <div className="flex flex-col gap-6">
+        <EmptyState
+          icon={<TeachMotif kind="stack" />}
+          title="Upload a study"
+          description="Start with a DICOM study you are allowed to teach from. It stays private until you publish the teach."
+          action={
+            <TeacherEntry demoEntry={demoEntry} href={uploadHref} next="/studio/new" variant="secondary">
+              Upload a study
+            </TeacherEntry>
+          }
+        />
+        <EmptyState
+          icon={<TeachMotif kind="voice" />}
+          title="Record your first teach"
+          description="Scroll, window, and narrate the finding. Registrars replay that path with the tutor on the same study."
+          action={
+            <TeacherEntry demoEntry={demoEntry} href={teachHref}>
+              Start teaching
+            </TeacherEntry>
+          }
+        />
+      </div>
+    </section>
+  );
+}
+
 function CatalogSkeleton() {
   return (
     <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {Array.from({ length: 6 }).map((_, i) => (
-        <li key={i} className="rounded-xl border border-subtle bg-elevated p-5">
+        <li key={i} className="rounded-2xl bg-elevated p-6">
           <Skeleton className="h-5 w-3/4" />
           <div className="mt-3 flex gap-2">
             <Skeleton className="h-5 w-16" />

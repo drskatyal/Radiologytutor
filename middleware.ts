@@ -5,9 +5,12 @@
 //
 //   1. RATE LIMITING. The AI, TTS and token-mint routes each spend real money
 //      per call. Without a limiter one caller can drain the account.
+//      /api/upload is deliberately not counted: a teaching study is hundreds
+//      of DICOM instances in one sitting, and a counter 429s a normal upload.
 //   2. BODY-SIZE CAPS. Voice routes accept base64 audio and TTS accepts free
 //      text; both were unbounded, so a single request could pin a serverless
-//      invocation and bill for a huge upstream call.
+//      invocation and bill for a huge upstream call. Upload keeps a per-request
+//      sanity cap for the same reason, with no request-rate limit.
 //
 // Deliberately simple: a fixed-window counter in module memory. That is correct
 // for a single long-lived server (the Fly/Railway deployment) and degrades to
@@ -21,25 +24,36 @@
 // ============================================================================
 
 import { NextResponse, type NextRequest } from "next/server";
+import { shareCookieOptions, tokenFromSharePath, SHARE_COOKIE } from "@/lib/caseShare";
 
 export const config = {
   matcher: [
+    // `:path*` is the matcher token Next statically compiles. A custom
+    // name such as `:token` is ignored, and the cookie never gets set.
+    "/s/:path*",
     "/api/tutor",
+    "/api/tour-check-in",
     "/api/transcribe",
+    "/api/transcribe-narration",
     "/api/tts",
     "/api/grade-report",
     "/api/structure-finding",
     "/api/structure-session",
+    "/api/gemini/files",
     "/api/audio",
     "/api/voice/realtime",
+    "/api/voice/search",
     "/api/auth/demo",
     "/api/upload",
   ],
 };
 
-/** Per-route budget: `limit` requests per `windowMs`, and a max request body. */
+/**
+ * Per-route budget. `limit` requests per `windowMs`, plus a max request body.
+ * Omit `limit` to apply only the body-size cap (no request counter).
+ */
 interface Budget {
-  limit: number;
+  limit?: number;
   windowMs: number;
   maxBodyBytes: number;
 }
@@ -51,20 +65,29 @@ const MINUTE = 60_000;
 const BUDGETS: Record<string, Budget> = {
   // A student asking questions: a handful of turns a minute.
   "/api/tutor": { limit: 20, windowMs: MINUTE, maxBodyBytes: 256 * 1024 },
+  // One check-in per finding. The body is teaching text, not audio.
+  "/api/tour-check-in": { limit: 30, windowMs: MINUTE, maxBodyBytes: 32 * 1024 },
   // Mic capture — base64 audio, so allow real size but bound it.
   "/api/transcribe": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
+  "/api/transcribe-narration": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
   "/api/tts": { limit: 40, windowMs: MINUTE, maxBodyBytes: 32 * 1024 },
   "/api/grade-report": { limit: 10, windowMs: MINUTE, maxBodyBytes: 128 * 1024 },
   // Authoring: dictation in, structured JSON out.
   "/api/structure-finding": { limit: 20, windowMs: MINUTE, maxBodyBytes: 12 * MB },
   "/api/structure-session": { limit: 10, windowMs: MINUTE, maxBodyBytes: 48 * MB },
+  // Viewport video for a long teaching take. Body cap only would be too open
+  // on a billed Files API upload, so this route keeps a small request budget.
+  "/api/gemini/files": { limit: 4, windowMs: MINUTE, maxBodyBytes: 96 * MB },
   "/api/audio": { limit: 30, windowMs: MINUTE, maxBodyBytes: 48 * MB },
   // Token mint — one per session turn is plenty.
   "/api/voice/realtime": { limit: 10, windowMs: MINUTE, maxBodyBytes: 4 * 1024 },
+  // Live web_search tool. Short text in, a grounded answer out.
+  "/api/voice/search": { limit: 20, windowMs: MINUTE, maxBodyBytes: 8 * 1024 },
   // Credential-adjacent: keep the attempt rate low.
   "/api/auth/demo": { limit: 10, windowMs: 5 * MINUTE, maxBodyBytes: 4 * 1024 },
-  // DICOM upload is large by nature; the cap is a sanity bound, not a quota.
-  "/api/upload": { limit: 20, windowMs: 5 * MINUTE, maxBodyBytes: 512 * MB },
+  // Teaching-study upload: hundreds of files, quickly. Body size is a sanity
+  // cap only — this route is not rate limited.
+  "/api/upload": { windowMs: 5 * MINUTE, maxBodyBytes: 512 * MB },
 };
 
 const DEFAULT_BUDGET: Budget = { limit: 60, windowMs: MINUTE, maxBodyBytes: MB };
@@ -105,6 +128,25 @@ function budgetFor(pathname: string): Budget {
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  // Visiting a share link plants the capability cookie before the viewer
+  // asks /api/dicomweb for pixels. The token is checked in the data layer;
+  // a malformed path does not get a cookie. This branch is not rate-limited.
+  const shareToken = tokenFromSharePath(pathname);
+  if (shareToken) {
+    const res = NextResponse.next();
+    const options = shareCookieOptions();
+    // Raw Set-Cookie. Next's matcher only compiles `:path` / `:path*`, so the
+    // route above is `/s/:path*` and the token is checked here.
+    const secure = options.secure ? "; Secure" : "";
+    res.headers.append(
+      "set-cookie",
+      `${SHARE_COOKIE}=${shareToken}; Path=${options.path}; HttpOnly; SameSite=Lax; Max-Age=${options.maxAge}${secure}`
+    );
+    return res;
+  }
+  if (pathname.startsWith("/s/")) return NextResponse.next();
+
   const budget = budgetFor(pathname);
 
   // 1. Body-size cap — reject before the handler reads (and before we pay to
@@ -118,7 +160,12 @@ export function middleware(req: NextRequest) {
     );
   }
 
-  // 2. Fixed-window rate limit.
+  // 2. Fixed-window rate limit. Routes with no `limit` (DICOM upload) skip
+  //    the counter entirely so a multi-file study cannot 429.
+  if (budget.limit == null) {
+    return NextResponse.next();
+  }
+
   const now = Date.now();
   sweep(now);
   const key = `${pathname} ${callerKey(req)}`;

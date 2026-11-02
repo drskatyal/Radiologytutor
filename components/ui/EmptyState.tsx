@@ -7,42 +7,38 @@ export interface EmptyStateProps {
   /** Primary action(s) — typically a Button. */
   action?: React.ReactNode;
   className?: string;
+  /** `imaging`: on a pure-black reading-room surface (the free viewer). */
+  tone?: "default" | "imaging";
 }
 
-/** Friendly placeholder for empty lists / no-data states. */
+/** Composed getting started view. Flat surface, no glow. */
 export function EmptyState({
   icon,
   title,
   description,
   action,
   className,
+  tone = "default",
 }: EmptyStateProps) {
+  const imaging = tone === "imaging";
   return (
     <div
       className={cn(
-        "relative flex flex-col items-center justify-center overflow-hidden rounded-xl border border-dashed border-strong bg-surface/60 px-6 py-9 text-center shadow-sm",
+        "flex flex-col items-start rounded-2xl border p-8 text-left",
+        imaging ? "border-white/10 bg-white/[0.03]" : "border-subtle bg-surface",
         className
       )}
     >
-      {/* Faint accent wash behind the icon for depth. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute left-1/2 top-6 h-24 w-24 -translate-x-1/2 rounded-full bg-accent/10 blur-3xl"
-      />
       {icon && (
-        <div className="relative mb-3.5 flex h-11 w-11 items-center justify-center rounded-xl border border-subtle bg-elevated text-accent shadow-sm surface-hairline [&_svg]:h-5 [&_svg]:w-5">
+        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-accent/10 text-accent [&_svg]:h-6 [&_svg]:w-6">
           {icon}
         </div>
       )}
-      <h3 className="relative font-display text-base font-semibold tracking-tight text-primary">
-        {title}
-      </h3>
+      <h3 className={cn("text-base font-semibold tracking-tight text-balance", imaging ? "text-white" : "text-primary")}>{title}</h3>
       {description && (
-        <p className="relative mt-1.5 max-w-sm text-sm leading-relaxed text-muted">
-          {description}
-        </p>
+        <p className={cn("mt-2 max-w-[65ch] text-sm text-pretty", imaging ? "text-white/70" : "text-secondary")}>{description}</p>
       )}
-      {action && <div className="relative mt-5">{action}</div>}
+      {action && <div className="mt-6">{action}</div>}
     </div>
   );
 }

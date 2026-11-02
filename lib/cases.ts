@@ -22,13 +22,21 @@
 // `orgId` so real auth slots in without a refactor.
 //
 // Store selection is ENV-GATED and LAZY: with no `MONGODB_URI` the app uses the
-// JSON-on-volume store under DATA_DIR (env-overridable) so it can point at a
-// Railway persistent Volume that survives redeploys with no database. Set
-// `MONGODB_URI` and the entire data layer silently runs on MongoDB instead —
-// no caller changes. Either store seeds itself from the committed `/seed` cases
-// the first time it is empty, so demos always have sample data.
+// JSON-on-volume store under DATA_DIR (env-overridable) so local dev and tests
+// run with no database. Set `MONGODB_URI` and the entire data layer silently
+// runs on MongoDB instead — no caller changes. Cloud Run sets `K_SERVICE`;
+// that runtime refuses the JSON fallback (`assertCloudRunMongo`) because the
+// container disk is not durable. Either store seeds itself from the committed
+// `/seed` cases the first time it is empty. Placeholder courses, playlists,
+// assessments, and the demo author profile are not copied (see
+// catalogPlaceholders). The LIDC teach case still seeds so it can be recorded.
 // ============================================================================
 
+import {
+  findingsFromCompiledTake,
+  materializeLiveTeachingPack,
+  type CompiledTakeCommit,
+} from "./liveTeachingPack";
 import { promises as fs } from "fs";
 import path from "path";
 import type { Collection as MongoNativeCollection } from "mongodb";
@@ -44,6 +52,7 @@ import type {
   Course,
   Playlist,
   Membership,
+  Org,
   Enrollment,
   Progress,
   WishlistItem,
@@ -51,6 +60,7 @@ import type {
   Certificate,
   Assessment,
   Attempt,
+  CaseShare,
   MembershipRole,
   User,
   UserRole,
@@ -62,8 +72,21 @@ import type {
 } from "./types";
 import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
+import { resolveLiveTeachingPack } from "./liveTeachingPack";
+import { assertCloudRunMongo } from "./durableStore";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+import {
+  activeShare,
+  generateShareToken,
+  isShareToken,
+  studyUidsForCase,
+} from "./caseShare";
 import { sortRelatedCourses } from "./relatedCourses";
+import {
+  isPlaceholderCatalogCase,
+  isPlaceholderCourse,
+  isPlaceholderSeedFile,
+} from "./catalogPlaceholders";
 
 /** Persisted de-id report — keyed by studyInstanceUID. */
 export type StoredDeidReport = DeidReport & {
@@ -184,9 +207,8 @@ async function seedIfEmpty(): Promise<void> {
 async function copyJsonFiles(src: string, dst: string): Promise<void> {
   const files = await fs.readdir(src).catch(() => [] as string[]);
   for (const f of files) {
-    if (f.endsWith(".json")) {
-      await fs.copyFile(path.join(src, f), path.join(dst, f));
-    }
+    if (!f.endsWith(".json") || isPlaceholderSeedFile(f)) continue;
+    await fs.copyFile(path.join(src, f), path.join(dst, f));
   }
 }
 
@@ -198,6 +220,7 @@ type CollectionName =
   | "courses"
   | "playlists"
   | "users"
+  | "orgs"
   | "memberships"
   | "enrollments"
   | "progress"
@@ -206,7 +229,8 @@ type CollectionName =
   | "certificates"
   | "deidReports"
   | "assessments"
-  | "attempts";
+  | "attempts"
+  | "caseShares";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -219,7 +243,7 @@ async function readSeedRecords<T extends { id: string }>(name: CollectionName): 
   const files = await fs.readdir(dir).catch(() => [] as string[]);
   const records: T[] = [];
   for (const f of files) {
-    if (!f.endsWith(".json")) continue;
+    if (!f.endsWith(".json") || isPlaceholderSeedFile(f)) continue;
     try {
       const raw = await fs.readFile(path.join(dir, f), "utf-8");
       const parsed = JSON.parse(raw) as Partial<T> & { id?: string; caseId?: string };
@@ -440,6 +464,7 @@ class MongoCollection<T extends { id: string }> implements Collection<T> {
  * run with no database). No caller is aware of which store is returned.
  */
 function collection<T extends { id: string }>(name: CollectionName): Collection<T> {
+  assertCloudRunMongo();
   if (mongoConfigured()) {
     return new MongoCollection<T>(name);
   }
@@ -459,6 +484,7 @@ const authorsStore = collection<Author>("authors");
 const coursesStore = collection<Course>("courses");
 const playlistsStore = collection<Playlist>("playlists");
 const usersStore = collection<User>("users");
+const orgsStore = collection<Org>("orgs");
 const membershipsStore = collection<Membership>("memberships");
 const enrollmentsStore = collection<Enrollment>("enrollments");
 const progressStore = collection<Progress>("progress");
@@ -468,6 +494,7 @@ const certificatesStore = collection<Certificate>("certificates");
 const assessmentsStore = collection<Assessment>("assessments");
 const attemptsStore = collection<Attempt>("attempts");
 const deidReportsStore = collection<StoredDeidReport>("deidReports");
+const caseSharesStore = collection<CaseShare>("caseShares");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
 export const DEMO_USER_ID = "user_demo";
@@ -517,6 +544,39 @@ export async function listCases(): Promise<CaseData[]> {
   return all
     .map(normalizeCase)
     .sort((a, b) => a.title.localeCompare(b.title)) as CaseData[];
+}
+
+/**
+ * Platform maintenance (scripts/dicom-cdn-backfill.ts): every case's imaging
+ * references across ALL orgs — study UID plus the series its findings and
+ * studyRefs name. Not for request handlers; those stay orgId-scoped.
+ */
+export async function listCaseImagingRefsAllOrgs(): Promise<
+  Array<{ orgId: string; caseId: string; studyInstanceUID: string; seriesInstanceUIDs: string[] }>
+> {
+  const out: Array<{ orgId: string; caseId: string; studyInstanceUID: string; seriesInstanceUIDs: string[] }> = [];
+  for (const raw of await casesStore.find({})) {
+    const c = normalizeCase(raw);
+    const byStudy = new Map<string, Set<string>>();
+    const add = (study?: string, series?: string) => {
+      const st = study?.trim();
+      if (!st) return;
+      const set = byStudy.get(st) ?? new Set<string>();
+      if (series?.trim()) set.add(series.trim());
+      byStudy.set(st, set);
+    };
+    for (const ref of c.studyRefs ?? []) {
+      if (!ref.seriesInstanceUIDs?.length) add(ref.studyInstanceUID);
+      for (const series of ref.seriesInstanceUIDs ?? []) add(ref.studyInstanceUID, series);
+    }
+    for (const f of c.findings ?? []) {
+      add(f.studyInstanceUID ?? c.studyRefs?.[0]?.studyInstanceUID, f.seriesInstanceUID);
+    }
+    for (const [studyInstanceUID, series] of byStudy) {
+      out.push({ orgId: c.orgId ?? DEFAULT_ORG_ID, caseId: c.caseId, studyInstanceUID, seriesInstanceUIDs: [...series] });
+    }
+  }
+  return out;
 }
 
 export async function getCase(caseId: string): Promise<CaseData | null> {
@@ -709,6 +769,7 @@ export type UpdateCaseInput = Partial<
     | "learningObjectives"
     | "discussion"
     | "references"
+    | "liveTeachingPack"
   >
 >;
 
@@ -720,7 +781,13 @@ export async function updateCaseForOrg(
 ): Promise<Case | null> {
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return null;
-  const updated: Case = { ...current, ...patch, caseId, orgId, updatedAt: nowIso() };
+  const nextPatch = patch.liveTeachingPack
+    ? {
+        ...patch,
+        liveTeachingPack: resolveLiveTeachingPack({ ...current, ...patch, caseId }),
+      }
+    : patch;
+  const updated: Case = { ...current, ...nextPatch, caseId, orgId, updatedAt: nowIso() };
   if (updated.status === "published" && current.status !== "published") {
     await assertCasePublishable(updated);
   }
@@ -801,7 +868,111 @@ export async function getDeidReport(
 export async function deleteCaseForOrg(orgId: string, caseId: string): Promise<boolean> {
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return false;
+  await revokeCaseShares(orgId, caseId);
   return casesStore.remove(caseId);
+}
+
+// ============================================================================
+// Case shares — unguessable viewer links (one live token per case)
+// ============================================================================
+
+/** Live share for a token, or null when missing or revoked. */
+export async function getCaseShare(token: string): Promise<CaseShare | null> {
+  if (!isShareToken(token)) return null;
+  const row = await caseSharesStore.get(token);
+  if (!row || row.revokedAt) return null;
+  if (row.orgId == null || row.caseId == null) return null;
+  return row;
+}
+
+export async function listCaseShares(orgId: string, caseId: string): Promise<CaseShare[]> {
+  const rows = await caseSharesStore.find({ orgId, caseId });
+  return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Newest live share for each case in the org. */
+export async function listActiveSharesForOrg(orgId: string): Promise<CaseShare[]> {
+  const rows = await caseSharesStore.find({ orgId });
+  const byCase = new Map<string, CaseShare>();
+  for (const row of rows) {
+    if (row.revokedAt) continue;
+    const prev = byCase.get(row.caseId);
+    if (!prev || row.createdAt > prev.createdAt) byCase.set(row.caseId, row);
+  }
+  return [...byCase.values()];
+}
+
+/**
+ * Return the live share, or mint one. Idempotent so "Copy link" does not
+ * rotate a link the teacher already handed out.
+ */
+export async function createCaseShare(
+  orgId: string,
+  caseId: string,
+  createdBy: string
+): Promise<CaseShare> {
+  const existing = activeShare(await listCaseShares(orgId, caseId));
+  if (existing) return existing;
+  const row: CaseShare = {
+    id: generateShareToken(),
+    orgId,
+    caseId,
+    createdBy,
+    createdAt: nowIso(),
+  };
+  await caseSharesStore.put(row);
+  return row;
+}
+
+/** Kill every live link for the case and mint a new token. */
+export async function rotateCaseShare(
+  orgId: string,
+  caseId: string,
+  createdBy: string
+): Promise<CaseShare> {
+  await revokeCaseShares(orgId, caseId);
+  const row: CaseShare = {
+    id: generateShareToken(),
+    orgId,
+    caseId,
+    createdBy,
+    createdAt: nowIso(),
+  };
+  await caseSharesStore.put(row);
+  return row;
+}
+
+/** Mark live shares revoked. Returns how many were live. */
+export async function revokeCaseShares(orgId: string, caseId: string): Promise<number> {
+  const rows = await listCaseShares(orgId, caseId);
+  const now = nowIso();
+  let count = 0;
+  for (const row of rows) {
+    if (row.revokedAt) continue;
+    await caseSharesStore.put({ ...row, revokedAt: now });
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * What a live token may read: the case's org and the study UIDs it names.
+ * A token never authorizes a study that case does not reference.
+ */
+export async function resolveShareAccess(token: string): Promise<{
+  orgId: string;
+  caseId: string;
+  studyUids: string[];
+} | null> {
+  const share = await getCaseShare(token);
+  if (!share) return null;
+  const caseData = await getCaseForOrg(share.orgId, share.caseId);
+  if (!caseData) return null;
+  return {
+    orgId: share.orgId,
+    caseId: share.caseId,
+    studyUids: studyUidsForCase(caseData),
+  };
 }
 
 // ============================================================================
@@ -820,6 +991,72 @@ export async function createFinding(
   if (f.order == null) f.order = data.findings.length + 1;
   data.findings.push(f);
   data.findings.sort((a, b) => a.order - b.order);
+  data.updatedAt = nowIso();
+  await casesStore.put(toStored(data));
+  return data;
+}
+
+/**
+ * Replace the case's findings and dossier with one compiled take.
+ * The track already stored on the capture session is the only source of
+ * viewer anchors. Draft text is label, description, points, times, and rank.
+ */
+export async function commitLiveTeachingPack(
+  orgId: string,
+  caseId: string,
+  input: CompiledTakeCommit
+): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new Error(`Case not found: ${caseId}`);
+  const sessions = data.captureSessions ? [...data.captureSessions] : [];
+  const session = sessions.find((item) => item.id === input.captureSessionId);
+  if (!session?.track) throw new Error("Recording not found for this case.");
+  const transcript = (input.transcript ?? session.transcript ?? "").trim();
+  const findings = findingsFromCompiledTake({
+    captureSessionId: session.id,
+    track: session.track,
+    drafted: input.findings,
+    seriesInstanceUID: input.seriesInstanceUID,
+    studyInstanceUID: input.studyInstanceUID,
+  });
+  if (!findings.length) throw new Error("No findings to store.");
+  if (transcript) session.transcript = transcript;
+  data.captureSessions = sessions;
+  data.findings = findings;
+  const ranked = input.findings
+    .filter((draft) => draft.label.trim())
+    .map((draft, index) => ({
+      draft,
+      index,
+      rank: Number.isFinite(Number(draft.clinicalImportance)) && Number(draft.clinicalImportance) > 0
+        ? Math.round(Number(draft.clinicalImportance))
+        : index + 1,
+    }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((row) => row.draft);
+  data.liveTeachingPack = materializeLiveTeachingPack({
+    caseId,
+    modality: data.modality,
+    clinicalQuestion: data.clinicalHistory,
+    diagnosis: data.primaryDiagnosis,
+    findings,
+    prose: findings.map((finding, index) => {
+      const draft = ranked[index];
+      return {
+        id: finding.id,
+        tStartMs: finding.tStartMs,
+        label: finding.label,
+        whatToNotice: draft?.whatToNotice ?? finding.description,
+        pearl: draft?.pearl,
+        mimics: draft?.mimics,
+        clinicalImportance: finding.order,
+        whyClinicallyFirst: draft?.whyClinicallyFirst,
+        reportLine: draft?.reportLine ?? finding.reportGold,
+        landmark: draft?.landmark ?? finding.landmark,
+      };
+    }),
+    studySeriesUIDs: (data.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? []),
+  });
   data.updatedAt = nowIso();
   await casesStore.put(toStored(data));
   return data;
@@ -1093,6 +1330,7 @@ export async function listCatalogCases(
   const q = filter.q?.trim().toLowerCase();
 
   const matched = all.filter((c) => {
+    if (isPlaceholderCatalogCase(c)) return false;
     if (filter.status && c.status !== filter.status) return false;
     if (filter.system && c.system !== filter.system) return false;
     if (filter.difficulty && c.difficulty !== filter.difficulty) return false;
@@ -1142,6 +1380,7 @@ export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
   const modalities = new Set<string>();
   const specialties = new Set<string>();
   for (const c of all) {
+    if (isPlaceholderCatalogCase(c)) continue;
     if (c.system) systems.add(c.system);
     if (c.difficulty) difficulties.add(c.difficulty);
     if (c.modality) modalities.add(c.modality);
@@ -1275,7 +1514,9 @@ export async function listRelatedCourses(
     status: "published",
     excludeId: course.id,
   });
-  return sortRelatedCourses(course, candidates).slice(0, limit);
+  return sortRelatedCourses(course, candidates)
+    .filter((item) => !isPlaceholderCourse(item))
+    .slice(0, limit);
 }
 
 export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {
@@ -1473,17 +1714,100 @@ export async function updateUser(
 }
 
 /**
- * After Better Auth creates a user, ensure a domain User + org membership
- * exist. Looks up by email first so demo identities and re-signups link.
+ * Public email/Google sign-up is a teacher. `"student"` is only for an
+ * explicit learner sign-up.
+ */
+export type AuthSignupIntent = "teacher" | "student";
+
+export async function getOrg(orgId: string): Promise<Org | null> {
+  return orgsStore.get(orgId);
+}
+
+function teachingOrgName(name: string | undefined, email: string): string {
+  return name?.trim() || email.split("@")[0]?.trim() || "Teacher";
+}
+
+/** A personal org the teacher owns. Not the shared demo tenant. */
+async function createPersonalOrg(name: string): Promise<Org> {
+  const org: Org = {
+    id: genId("org"),
+    name,
+    createdAt: nowIso(),
+  };
+  await orgsStore.put(org);
+  return org;
+}
+
+async function ensureOrgRecord(orgId: string, name: string): Promise<void> {
+  if (await orgsStore.get(orgId)) return;
+  const org: Org = { id: orgId, name, createdAt: nowIso() };
+  await orgsStore.put(org);
+}
+
+/**
+ * Seed a membership when the user has none.
+ * A teacher never receives an author seat on the shared demo org.
+ * Existing memberships are not rewritten.
+ */
+async function ensureSignupMembership(user: User, intent: AuthSignupIntent): Promise<void> {
+  const mems = await listMembershipsForUser(user.id);
+  if (mems.length > 0) return;
+
+  if (user.platformRole === "super_admin") {
+    await createMembership({
+      userId: user.id,
+      orgId: user.orgId || DEFAULT_ORG_ID,
+      role: "owner",
+    });
+    return;
+  }
+
+  if (intent === "student") {
+    await createMembership({
+      userId: user.id,
+      orgId: user.orgId || DEFAULT_ORG_ID,
+      role: "student",
+    });
+    return;
+  }
+
+  let orgId = user.orgId;
+  if (!orgId || orgId === DEFAULT_ORG_ID) {
+    const org = await createPersonalOrg(teachingOrgName(user.name, user.email));
+    orgId = org.id;
+    await updateUser(user.id, { orgId, role: "author" });
+  } else {
+    await ensureOrgRecord(orgId, teachingOrgName(user.name, user.email));
+    if (user.role !== "author") await updateUser(user.id, { role: "author" });
+  }
+  await createMembership({
+    userId: user.id,
+    orgId,
+    role: "author",
+  });
+}
+
+/**
+ * After Better Auth creates a user (email or Google), ensure a domain User and
+ * an org membership exist. Looks up by email first so demo identities and
+ * re-signups link.
+ *
+ * Default public sign-up is a teacher: a personal org with membership role
+ * `author`, which is what `requireAuthorOrg` checks. Pass `intent: "student"`
+ * only for an explicit learner sign-up (shared `org_demo` student seat).
+ * Existing memberships are kept — a learner is not promoted and a teacher is
+ * not demoted.
  */
 export async function provisionAuthUser(input: {
   authProviderId: string;
   email: string;
   name?: string;
   image?: string;
+  intent?: AuthSignupIntent;
 }): Promise<User> {
   await ensureDemoIdentity();
   const email = normalizeEmail(input.email);
+  const intent: AuthSignupIntent = input.intent === "student" ? "student" : "teacher";
   const existing =
     (await getUserByAuthProviderId(input.authProviderId)) ?? (await getUserByEmail(email));
   if (existing) {
@@ -1494,30 +1818,34 @@ export async function provisionAuthUser(input: {
       image: input.image ?? existing.image,
     };
     await usersStore.put(updated);
-    const mems = await listMembershipsForUser(updated.id);
-    if (mems.length === 0) {
-      await createMembership({
-        userId: updated.id,
-        orgId: updated.orgId || DEFAULT_ORG_ID,
-        role: updated.platformRole === "super_admin" ? "owner" : "student",
-      });
-    }
-    return updated;
+    await ensureSignupMembership(updated, intent);
+    return (await getUser(updated.id)) ?? updated;
   }
+
+  if (intent === "student") {
+    const user = await createUser({
+      email,
+      name: input.name,
+      image: input.image,
+      role: "student",
+      authProviderId: input.authProviderId,
+      orgId: DEFAULT_ORG_ID,
+    });
+    await ensureSignupMembership(user, "student");
+    return (await getUser(user.id)) ?? user;
+  }
+
+  const org = await createPersonalOrg(teachingOrgName(input.name, email));
   const user = await createUser({
     email,
     name: input.name,
     image: input.image,
-    role: "student",
+    role: "author",
     authProviderId: input.authProviderId,
-    orgId: DEFAULT_ORG_ID,
+    orgId: org.id,
   });
-  await createMembership({
-    userId: user.id,
-    orgId: DEFAULT_ORG_ID,
-    role: "student",
-  });
-  return user;
+  await ensureSignupMembership(user, "teacher");
+  return (await getUser(user.id)) ?? user;
 }
 
 export async function listMemberships(orgId: string): Promise<Membership[]> {
@@ -1783,6 +2111,9 @@ export async function listReviewsForCourse(
   orgId: string,
   courseId: string
 ): Promise<CourseReviewsSummary> {
+  if (isPlaceholderCourse({ id: courseId })) {
+    return { reviews: [], average: 0, count: 0 };
+  }
   const reviews = (await reviewsStore.find({ orgId, courseId })).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt)
   );

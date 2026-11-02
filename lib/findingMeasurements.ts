@@ -4,7 +4,13 @@
  * (mm / HU) so tutors and student UI can teach without re-querying voxels.
  */
 
-import type { FindingMeasurement, FindingMeasurementKind } from "./types";
+import type {
+  FindingMeasurement,
+  FindingMeasurementKind,
+  RecordedAnnotation,
+  RecordedEvent,
+  RecordedTrack,
+} from "./types";
 
 export type RawAnnotationLike = {
   annotationUID?: string;
@@ -36,6 +42,8 @@ const TOOL_KIND: Record<string, FindingMeasurementKind> = {
   RectangleROI: "ellipse",
   Probe: "probe",
   Bidirectional: "bidirectional",
+  ArrowAnnotate: "arrow",
+  Angle: "angle",
 };
 
 function firstStats(
@@ -111,6 +119,100 @@ export function normalizeMeasurements(
   return out;
 }
 
+function finiteNum(n: number | undefined): number | undefined {
+  return n != null && Number.isFinite(n) ? n : undefined;
+}
+
+/** Numeric payload for a record event, read off Cornerstone cachedStats. */
+export function statsFromAnnotation(raw: RawAnnotationLike): {
+  lengthMm?: number;
+  meanHu?: number;
+  maxHu?: number;
+  minHu?: number;
+  stdHu?: number;
+  areaMm2?: number;
+  unit?: string;
+  label?: string;
+} {
+  const stats = firstStats(raw.data);
+  const unit =
+    stats?.modalityUnit ||
+    (stats?.Modality === "CT" ? "HU" : undefined) ||
+    stats?.unit;
+  return {
+    lengthMm: finiteNum(stats?.length),
+    meanHu: finiteNum(stats?.mean),
+    maxHu: finiteNum(stats?.max),
+    minHu: finiteNum(stats?.min),
+    stdHu: finiteNum(stats?.stdDev),
+    areaMm2: finiteNum(stats?.area),
+    unit: unit ? String(unit) : undefined,
+    label: raw.data?.label || undefined,
+  };
+}
+
+function kindFromTool(tool?: string, shape?: RecordedAnnotation["shape"]): FindingMeasurementKind | undefined {
+  if (tool && TOOL_KIND[tool]) return TOOL_KIND[tool];
+  if (shape === "arrow") return "arrow";
+  return undefined;
+}
+
+/** One recorded stroke → a FindingMeasurement, or null if it has no handles. */
+export function measurementFromAnnotationEvent(
+  e: Extract<RecordedEvent, { type: "annotation" }>,
+  index = 0
+): FindingMeasurement | null {
+  const handles = (e.handles?.length ? e.handles : [e.from, e.to]).filter(
+    (p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1])
+  );
+  const kind = kindFromTool(e.tool, e.shape);
+  if (!kind || handles.length === 0) return null;
+  const m: FindingMeasurement = {
+    id: e.annotationUID || `ann_${index}`,
+    kind,
+    handles,
+    label: e.label,
+    sliceIndex: e.sliceIndex,
+  };
+  if (e.lengthMm != null && Number.isFinite(e.lengthMm)) m.lengthMm = e.lengthMm;
+  if (e.meanHu != null && Number.isFinite(e.meanHu)) m.meanHu = e.meanHu;
+  if (e.maxHu != null && Number.isFinite(e.maxHu)) m.maxHu = e.maxHu;
+  if (e.minHu != null && Number.isFinite(e.minHu)) m.minHu = e.minHu;
+  if (e.stdHu != null && Number.isFinite(e.stdHu)) m.stdHu = e.stdHu;
+  if (e.areaMm2 != null && Number.isFinite(e.areaMm2)) m.areaMm2 = e.areaMm2;
+  if (e.unit) m.unit = e.unit;
+  return m;
+}
+
+/**
+ * Last stroke per annotation id on a track. Used when the live viewport
+ * snapshot is empty but the recording captured Length / ROI / Arrow.
+ */
+export function measurementsFromTrack(track: RecordedTrack | null | undefined): FindingMeasurement[] {
+  if (!track?.events?.length) return [];
+  const byKey = new Map<string, FindingMeasurement>();
+  let n = 0;
+  for (const e of track.events) {
+    if (e.type !== "annotation") continue;
+    const m = measurementFromAnnotationEvent(e, n++);
+    if (!m) continue;
+    byKey.set(e.annotationUID || m.id, m);
+  }
+  return [...byKey.values()];
+}
+
+/** Live viewport snapshot wins on id; track strokes fill anything missing. */
+export function mergeMeasurements(
+  live: FindingMeasurement[] | undefined,
+  fromTrack: FindingMeasurement[] | undefined
+): FindingMeasurement[] {
+  const primary = live ?? [];
+  const extra = fromTrack ?? [];
+  if (primary.length === 0) return extra;
+  const ids = new Set(primary.map((m) => m.id));
+  return [...primary, ...extra.filter((m) => !ids.has(m.id))];
+}
+
 /** Compact tutor/context line for a measurement. */
 export function formatMeasurementBrief(m: FindingMeasurement): string {
   if (m.kind === "length" && m.lengthMm != null) {
@@ -128,5 +230,7 @@ export function formatMeasurementBrief(m: FindingMeasurement): string {
   if (m.kind === "bidirectional" && m.lengthMm != null) {
     return `diameter ${m.lengthMm.toFixed(1)}${m.unit || "mm"}`;
   }
+  if (m.kind === "arrow") return m.label ? `arrow "${m.label}"` : "arrow";
+  if (m.kind === "angle") return "angle";
   return m.kind;
 }

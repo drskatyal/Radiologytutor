@@ -45,6 +45,50 @@ export function sliceNearTime(
   return slice;
 }
 
+export interface CompareLanding {
+  seriesInstanceUID?: string;
+  sliceIndex?: number;
+  ww?: number;
+  wc?: number;
+  marker?: { x_pct: number; y_pct: number };
+}
+
+/**
+ * Compare pane open at `tMs`. Closed, or opened with no slice/series/window/pointer,
+ * returns null. Fields come only from the compare event.
+ */
+export function compareNearTime(
+  track: RecordedTrack | null | undefined,
+  tMs: number
+): CompareLanding | null {
+  if (!track?.events?.length) return null;
+  let last: Extract<RecordedEvent, { type: "compare" }> | null = null;
+  for (const e of track.events) {
+    if (e.t > tMs) break;
+    if (e.type === "compare") last = e;
+  }
+  if (!last?.open) return null;
+  const landing: CompareLanding = {};
+  if (last.seriesInstanceUID?.trim()) landing.seriesInstanceUID = last.seriesInstanceUID.trim();
+  if (Number.isFinite(last.sliceIndex)) landing.sliceIndex = last.sliceIndex;
+  if (Number.isFinite(last.ww) && Number.isFinite(last.wc)) {
+    landing.ww = last.ww;
+    landing.wc = last.wc;
+  }
+  if (Number.isFinite(last.x) && Number.isFinite(last.y)) {
+    landing.marker = { x_pct: last.x as number, y_pct: last.y as number };
+  }
+  if (
+    !landing.seriesInstanceUID &&
+    landing.sliceIndex == null &&
+    landing.ww == null &&
+    !landing.marker
+  ) {
+    return null;
+  }
+  return landing;
+}
+
 /** Last series UID at or before `tMs`. */
 export function seriesNearTime(
   track: RecordedTrack | null | undefined,

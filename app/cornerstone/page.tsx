@@ -22,7 +22,7 @@ const CornerstoneViewer = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex aspect-square w-full items-center justify-center rounded-xl bg-imaging text-muted">
+      <div className="flex aspect-square w-full items-center justify-center rounded-xl bg-imaging text-white">
         <span className="flex items-center gap-2 text-sm">
           <Spinner size="sm" label="Loading viewer" />
           Loading viewer…
@@ -104,7 +104,7 @@ export default function CornerstoneSpikePage() {
                 Public CT (DICOMweb)
               </SourceChip>
             </div>
-            <CornerstoneViewer source={source} />
+            <CornerstoneViewer source={source} questionMarkHelp />
           </div>
         )}
       </PageContainer>

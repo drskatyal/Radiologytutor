@@ -1,76 +1,50 @@
-import {
-  listAuthors,
-  listCatalogCases,
-  listCourses,
-} from "@/lib/cases";
-import { activeOrgId, getSession } from "@/lib/auth";
-import CasesPrefetcher from "@/components/CasesPrefetcher";
-import { MarketplaceHero } from "@/components/home/MarketplaceHero";
-import { FeaturedMarketplace } from "@/components/home/FeaturedMarketplace";
-import { DashboardError } from "@/components/home/DashboardError";
-import type { Author, Case, Course } from "@/lib/types";
+import { demoAuthEnabled, getSession } from "@/lib/auth";
+import { Landing } from "@/components/marketing/Landing";
+import { LANDING_FAQ } from "@/components/marketing/faq";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "FlowRad Learn",
-  description: "The marketplace where radiologists teach radiology — narrated DICOM cases with an AI tutor.",
+  title: "RadLearn",
+  description:
+    "Teach radiology on the DICOM study. Record a case once. Registrars replay it with an AI tutor that drives scroll, window, and zoom.",
+  openGraph: {
+    title: "RadLearn",
+    description:
+      "Teach radiology on the DICOM study. Record a case once. Registrars replay it with an AI tutor that drives scroll, window, and zoom.",
+    type: "website",
+  },
 };
 
-function countsByAuthor(items: { authorId?: string }[]): Record<string, number> {
-  const map: Record<string, number> = {};
-  for (const item of items) {
-    if (!item.authorId) continue;
-    map[item.authorId] = (map[item.authorId] ?? 0) + 1;
-  }
-  return map;
+function canTeach(session: Awaited<ReturnType<typeof getSession>>): boolean {
+  if (!session) return false;
+  if (session.user.platformRole === "super_admin") return true;
+  const role = session.user.membershipRole;
+  return role === "author" || role === "admin" || role === "owner";
 }
 
 /**
- * Marketplace home — brand-led hero, then featured courses, teachers, and cases.
- * The full filterable catalog lives at /library.
+ * Marketing landing. One offer: a teacher records a case, the tutor replays it.
+ * The library lives at /library and does not borrow placeholder courses.
  */
 export default async function HomePage() {
-  let cases: Case[] = [];
-  let courses: Course[] = [];
-  let authors: Author[] = [];
-  let loadError: string | null = null;
-
   const session = await getSession();
-  // Anonymous visitors see the default tenant's public catalog; a signed-in
-  // user sees their own org's. Never a client-supplied value.
-  const orgId = await activeOrgId();
-
-  try {
-    [cases, courses, authors] = await Promise.all([
-      listCatalogCases(orgId, { status: "published" }),
-      listCourses(orgId, { status: "published" }),
-      listAuthors(orgId),
-    ]);
-  } catch (e) {
-    loadError = e instanceof Error ? e.message : "Something went wrong.";
-  }
-
-  const authorById = Object.fromEntries(authors.map((a) => [a.id, a]));
+  const teachHref = canTeach(session) ? "/studio" : "/sign-up";
+  const demoEntry = !session && demoAuthEnabled();
+  const faqSchema = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: LANDING_FAQ.map((item) => ({
+      "@type": "Question",
+      name: item.q,
+      acceptedAnswer: { "@type": "Answer", text: item.a },
+    })),
+  };
 
   return (
     <>
-      <MarketplaceHero signedIn={Boolean(session)} />
-
-      {loadError ? (
-        <DashboardError title="Couldn't load the marketplace" message={loadError} />
-      ) : (
-        <FeaturedMarketplace
-          courses={courses}
-          authors={authors}
-          cases={cases}
-          authorById={authorById}
-          caseCountByAuthor={countsByAuthor(cases)}
-          courseCountByAuthor={countsByAuthor(courses)}
-        />
-      )}
-
-      {!loadError && <CasesPrefetcher caseIds={cases.slice(0, 6).map((c) => c.caseId)} />}
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }} />
+      <Landing teachHref={teachHref} demoEntry={demoEntry} />
     </>
   );
 }

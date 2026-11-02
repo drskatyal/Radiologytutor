@@ -21,6 +21,7 @@ import {
   IconButton,
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import { displaySliceNumber } from "@/lib/findingDisplayState";
 import type { Finding } from "@/lib/types";
 import {
   casePublishReadiness,
@@ -28,7 +29,7 @@ import {
   isExamReadyFinding,
   isTeachableFinding,
 } from "@/lib/findingQuality";
-import { wantsCompare } from "@/lib/findingAnchors";
+import { secondaryAnchor, wantsCompare } from "@/lib/findingAnchors";
 
 export function SequenceBoard({
   findings,
@@ -41,6 +42,7 @@ export function SequenceBoard({
   onReplay,
   onReRecord,
   onPinCompare,
+  onClearCompare,
   pinningId,
 }: {
   findings: Finding[];
@@ -53,6 +55,7 @@ export function SequenceBoard({
   onReplay: (finding: Finding) => void;
   onReRecord?: (finding: Finding) => void;
   onPinCompare?: (finding: Finding) => void;
+  onClearCompare?: (finding: Finding) => void;
   pinningId?: string | null;
 }) {
   const readiness = casePublishReadiness(findings);
@@ -81,6 +84,7 @@ export function SequenceBoard({
             const exam = isExamReadyFinding(f);
             const active = f.id === activeId;
             const hasTrack = !!f.track && (f.track.events?.length ?? 0) > 0;
+            const compareSlice = secondaryAnchor(f)?.sliceIndex;
             return (
               <li key={f.id}>
                 <div
@@ -122,11 +126,29 @@ export function SequenceBoard({
                           )}
                           {f.sliceIndex != null && (
                             <Badge variant="neutral" className="tabular-nums">
-                              Slice {f.sliceIndex + 1}
+                              Slice {displaySliceNumber(f.sliceIndex)}
+                            </Badge>
+                          )}
+                          {f.teachingGuide && f.teachingGuide.beats.length > 0 && (
+                            <Badge
+                              variant="accent"
+                              className="tabular-nums"
+                              title={f.teachingGuide.beats
+                                .map((beat) => beat.act)
+                                .filter(Boolean)
+                                .join(" → ")}
+                            >
+                              {f.teachingGuide.beats.length} teach{" "}
+                              {f.teachingGuide.beats.length === 1 ? "beat" : "beats"}
                             </Badge>
                           )}
                           {wantsCompare(f) && (
-                            <Badge variant="accent">Compare</Badge>
+                            <Badge variant="accent" className="tabular-nums">
+                              Compare
+                              {compareSlice != null
+                                ? ` · slice ${displaySliceNumber(compareSlice)}`
+                                : ""}
+                            </Badge>
                           )}
                           {pinningId === f.id && (
                             <Badge variant="warning">Click compare landing</Badge>
@@ -189,7 +211,21 @@ export function SequenceBoard({
                         onClick={() => onPinCompare(f)}
                         disabled={busy}
                       >
-                        {pinningId === f.id ? "Click image…" : "Compare landing"}
+                        {pinningId === f.id
+                          ? "Click image…"
+                          : wantsCompare(f)
+                            ? "Re-pin compare"
+                            : "Compare landing"}
+                      </Button>
+                    )}
+                    {onClearCompare && wantsCompare(f) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onClearCompare(f)}
+                        disabled={busy}
+                      >
+                        Clear compare
                       </Button>
                     )}
                     <Button

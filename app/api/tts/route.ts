@@ -1,8 +1,9 @@
 // POST /api/tts
-// Body: { text: string, authorId?: string }
+// Body: { text: string, authorId?: string, persona?: "attending" }
 // Returns: audio bytes (mpeg from ElevenLabs clone, or wav from Gemini TTS).
 //
-// Live tutor answers ONLY — recorded walk-throughs never route through here.
+// Live answers use the enrolled clone when there is one. Teach-guide beats
+// pass persona "attending" and are spoken with Gemini TTS — never the raw mic.
 // Voice selection: Author.voice.voiceId (resolved server-side, in the caller's
 // own org) → Gemini TTS. A client-supplied voiceId is ignored by design.
 // Headers: X-FlowRad-Voice-Provider, X-FlowRad-Voice-Latency-Ms,
@@ -34,6 +35,7 @@ export async function POST(req: NextRequest) {
       text?: string;
       voiceId?: string;
       authorId?: string;
+      persona?: string;
     };
     if (typeof body.text !== "string" || !body.text.trim()) {
       return NextResponse.json({ error: "text is required" }, { status: 400 });
@@ -53,10 +55,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const persona = body.persona === "attending" ? "attending" : undefined;
     const { audio, mimeType, provider, latencyMs, exceededBudget } =
       await synthesizeTutorSpeech({
         text: body.text,
-        voiceId,
+        voiceId: persona === "attending" ? undefined : voiceId,
+        persona,
       });
 
     return new NextResponse(audio as unknown as BodyInit, {

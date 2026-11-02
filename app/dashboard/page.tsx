@@ -6,7 +6,7 @@ import { DashboardHub } from "@/components/dashboard/DashboardHub";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Your home · FlowRad Learn",
+  title: "Your home · RadLearn",
 };
 
 /**
@@ -22,6 +22,8 @@ export default async function DashboardPage() {
     platformRole: session?.user.platformRole,
     membershipRole: session?.user.membershipRole,
   });
+  // Students land on the case locker. Opening a study is a separate step
+  // from starting the tutor.
   if (dest) redirect(dest);
 
   return <DashboardHub email={session?.user.email} name={session?.user.name} />;

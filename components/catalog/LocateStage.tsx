@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Crosshair, ImageOff, Target } from "lucide-react";
 import { Button, Spinner } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
+import { ImagingLayout } from "@/components/viewer/ImagingLayout";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 
 const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
@@ -66,6 +67,7 @@ export function LocateStage({
    * a hit layer over the canvas for exactly one click.
    */
   const [marking, setMarking] = useState(false);
+  const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
   const controls = useRef<CornerstoneControls | null>(null);
   const hitRef = useRef<HTMLButtonElement>(null);
 
@@ -75,6 +77,7 @@ export function LocateStage({
     setState({ status: "loading" });
     setViewerReady(false);
     setMarking(false);
+    setActiveSeriesIndex(0);
     controls.current = null;
 
     const params = new URLSearchParams({ courseId, questionId });
@@ -90,6 +93,11 @@ export function LocateStage({
           setState({ status: "no-imaging" });
           return;
         }
+        const uid = payload.view?.seriesInstanceUID;
+        const idx = uid
+          ? payload.series.findIndex((item) => item.seriesInstanceUID === uid)
+          : -1;
+        if (idx >= 0) setActiveSeriesIndex(idx);
         setState({ status: "ready", payload });
       })
       .catch((err: unknown) => {
@@ -160,11 +168,11 @@ export function LocateStage({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-1.5 text-xs text-muted">
+        <p className="flex items-center gap-1.5 text-xs text-secondary">
           <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
           {marking
             ? "Click the abnormality on the image."
-            : "Search the study as you would in the reading room, then mark the finding."}
+            : "Drag scrolls the stack, pinch zooms. Window and pan are on the toolbar. Then mark the finding."}
         </p>
         {ready && (
           <Button
@@ -179,7 +187,7 @@ export function LocateStage({
         )}
       </div>
 
-      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-strong bg-imaging">
+      <div className="relative aspect-[4/3] w-full max-w-full overflow-hidden rounded-lg border border-strong bg-imaging max-lg:aspect-auto max-lg:h-[min(72dvh,36rem)]">
         {state.status === "loading" && <StageMessage spinner label="Loading study…" />}
 
         {state.status === "no-imaging" && (
@@ -195,15 +203,32 @@ export function LocateStage({
         )}
 
         {state.status === "ready" && state.payload.source && (
-          <>
+          <ImagingLayout
+            fill
+            pane="overlay"
+            series={state.payload.series}
+            activeIndex={activeSeriesIndex}
+            onSelectSeries={setActiveSeriesIndex}
+            mainImageReady={viewerReady}
+            className="h-full"
+          >
             <CornerstoneViewer
               source={state.payload.source}
               series={state.payload.series}
+              activeSeriesIndex={activeSeriesIndex}
+              onSeriesChange={(uid) => {
+                const idx = state.payload.series.findIndex(
+                  (item) => item.seriesInstanceUID === uid
+                );
+                if (idx >= 0) setActiveSeriesIndex(idx);
+              }}
               modality={state.payload.modality}
               controls={controls}
               onReady={handleReady}
               instanceId={`locate-${questionId}`}
-              showToolbar={false}
+              chrome="edge"
+              defaultTool="StackScroll"
+              className="h-full w-full"
             />
 
             {!viewerReady && <StageMessage spinner label="Preparing series…" />}
@@ -219,7 +244,7 @@ export function LocateStage({
                 ref={hitRef}
                 type="button"
                 onClick={handleClick}
-                className="absolute inset-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
+                className="absolute inset-x-0 bottom-14 top-0 z-10 cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
                 aria-label="Click the image where the finding is located"
               />
             )}
@@ -233,7 +258,7 @@ export function LocateStage({
                 <Target className="h-3 w-3" />
               </span>
             )}
-          </>
+          </ImagingLayout>
         )}
       </div>
     </div>
@@ -255,9 +280,9 @@ function StageMessage({
   return (
     <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-imaging px-6 text-center">
       {spinner && <Spinner />}
-      {icon && <ImageOff className="h-5 w-5 text-muted" aria-hidden="true" />}
-      <p className="text-sm text-secondary">{label}</p>
-      {detail && <p className="max-w-sm text-xs text-muted">{detail}</p>}
+      {icon && <ImageOff className="h-5 w-5 text-white/80" aria-hidden="true" />}
+      <p className="text-sm text-white">{label}</p>
+      {detail && <p className="max-w-sm text-xs text-white/80">{detail}</p>}
     </div>
   );
 }

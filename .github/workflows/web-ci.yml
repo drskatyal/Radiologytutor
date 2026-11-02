@@ -1,0 +1,96 @@
+# Web app checks on every PR that touches the web app or the shared viewer:
+# unit tests, the production build, the free viewer's bundle budget, and the
+# viewer's visual-regression + perf + privacy gates (e2e/visual, against
+# synthetic real-size studies; no backend needed).
+name: web-ci
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "packages/**"
+      - "e2e/visual/**"
+      - "scripts/make-test-ct.py"
+      - "scripts/make-test-mr.py"
+      - "scripts/perf/**"
+      - "playwright.visual.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.*"
+      - "tailwind.config.ts"
+      - ".github/workflows/web-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build-visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Voice model (served from public/voice) and spoken test commands
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
+          python3 scripts/fetch-voice-model.py
+          python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
+      - name: Production build
+        # next/font downloads Google Fonts at build time; a bad response from
+        # Google (seen on runners) fails the build with a parse error. Retry
+        # once after a pause: a real compile error fails both attempts.
+        run: npm run build || { echo "::warning::build failed, retrying once (next/font download)"; sleep 20; npm run build; }
+      - name: Free viewer shell bundle budget (/viewer ≤ 300 KB gzipped JS)
+        run: node scripts/perf/viewer-bundle-budget.mjs --route /viewer --budget-kb 300 --json "$RUNNER_TEMP/bundle.json"
+      - name: Synthetic studies (deterministic)
+        # CT 60 for the visual baselines; CT 520 × 512² (263 MB) and a 5-series
+        # JPEG 2000 brain MR for the free viewer's perf gates.
+        run: |
+          pip install pydicom numpy pylibjpeg pylibjpeg-openjpeg
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-520" --slices 520
+          python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
+      - name: Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Visual regression + perf + privacy gates (/viewer/local, /viewer)
+        env:
+          CI: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+          TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
+          TEST_MR_DIR: ${{ runner.temp }}/test-mr
+        # One worker: the perf gates measure frame times and must not share
+        # the runner's cores with another test (nor the voice recognizer's WASM).
+        run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"
+      - name: Perf table (job summary)
+        if: always()
+        run: |
+          node scripts/perf/viewer-perf-table.mjs "$RUNNER_TEMP/bundle.json" test-results/perf/free-viewer.json | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/bundle.json" test-results/perf/ 2>/dev/null || true
+      - name: Voice commands and pop-out windows (after the timed suite, alone)
+        env:
+          CI: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+          TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts popout.spec.ts --workers=1
+      - name: Upload screenshots and samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
