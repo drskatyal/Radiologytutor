@@ -57,8 +57,12 @@ pub fn window_monitor(app: AppHandle, label: String) -> Option<String> {
 /// Open (or move) viewer window `label` on the monitor named `monitor`
 /// (none: beside the main window), full screen there. `payload` is what the
 /// window shows; it takes it with `take_window_payload`.
+/// `async` on purpose: building a webview window inside a synchronous
+/// command deadlocks on Windows (the command runs on the main thread, which
+/// window creation waits for). Linux never showed it; the Windows
+/// multi-window bench hung until its watchdog.
 #[tauri::command]
-pub fn open_viewer_window(app: AppHandle, label: String, monitor: Option<String>, payload: String, title: String) -> Result<(), String> {
+pub async fn open_viewer_window(app: AppHandle, label: String, monitor: Option<String>, payload: String, title: String) -> Result<(), String> {
     if !label.starts_with("viewer-") {
         return Err("viewer windows are named viewer-<n>".into());
     }
