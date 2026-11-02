@@ -44,7 +44,7 @@ test("right-click menu: sections, shortcuts, presets, DICOM tags; browser menu k
   const menu = page.getByRole("menu", { name: "Image" });
   await expect(menu).toBeVisible({ timeout: 3000 });
   const top = (await menu.locator(":scope > div > [role]").allInnerTexts()).map((t) => t.split("\n")[0]);
-  for (const s of ["Tools", "Window / level", "Zoom, rotate, flip", "Reset view", "Export", "DICOM tags…"]) expect(top).toContain(s);
+  for (const s of ["Tools", "Window / level", "Zoom", "Rotate / flip", "Reset view", "Export", "DICOM tags…"]) expect(top).toContain(s);
   await menu.getByRole("menuitem", { name: /^Window \/ level/ }).hover();
   const lung = page.getByRole("menuitemradio", { name: /^Lung/ });
   await expect(lung).toBeVisible();

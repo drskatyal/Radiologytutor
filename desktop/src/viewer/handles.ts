@@ -21,7 +21,10 @@ export interface ViewportHandle {
   zoomBy(factor: number): void;
   pan(dx: number, dy: number): void;
   rotate(degrees: number): void;
+  /** Screen flip (left↔right / top↔bottom as seen, whatever the rotation). */
   flip(axis: "h" | "v"): void;
+  /** Rotation and flips back to the file's orientation; zoom, pan and window kept. */
+  resetOrientation(): void;
   reset(): void;
   step(delta: number): void;
   goTo(where: "first" | "last" | number): void;

@@ -51,7 +51,7 @@ const find = (entries: readonly MenuEntry[], id: string): MenuEntry | undefined 
 test("image menu: every section of the spec is there on a CT with two monitors", () => {
   const ids = commandsOf(imageMenu(base()));
   for (const id of [
-    "tool:Length", "preset:ct-lung", "invert", "zoom:fit", "zoom:1", "zoom:2", "rotate:90", "flip:h", "reset",
+    "tool:Length", "preset:ct-lung", "invert", "zoom:fit", "zoom:1", "zoom:2", "rotate:90", "rotate:-90", "rotate:180", "flip:h", "flip:v", "orient:reset", "reset",
     "slab:mip", "slab:minip", "slab:avg", "slab-mm:10", "reformat:coronal", "mpr", "3d", "layout:2x2", "layout:2x3", "layout:3x3",
     "monitor:B", "link:scroll", "link:voi", "link:zoom", "refLines", "cine", "fps:30", "overlay", "annotations",
     "copyImage", "save:png", "save:jpeg", "video", "tags", "comparePrior",
@@ -104,4 +104,12 @@ test("tidy: no leading, trailing or doubled separators", () => {
   const s: MenuEntry = { kind: "sep" };
   const a: MenuEntry = { kind: "item", id: "a", label: "A" };
   assert.deepEqual(tidy([s, a, s, s, a, s]), [a, s, a]);
+});
+
+test("image menu: 'Hide series panel' only where the app has a series panel", () => {
+  assert.equal(find(imageMenu(base()), "seriesPanel"), undefined);
+  const shown = find(imageMenu({ ...base(), seriesPanel: { shown: true } }), "seriesPanel");
+  assert.ok(shown?.kind === "item" && shown.label === "Hide series panel");
+  const hidden = find(imageMenu({ ...base(), seriesPanel: { shown: false } }), "seriesPanel");
+  assert.ok(hidden?.kind === "item" && hidden.label === "Show series panel");
 });

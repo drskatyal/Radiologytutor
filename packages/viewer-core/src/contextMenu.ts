@@ -10,6 +10,8 @@
  * out rather than shown disabled, so the menu stays short.
  */
 
+import { ORIENTATION_COMMANDS } from "./viewOrientation";
+
 export type MenuCommand = string;
 
 export type MenuEntry =
@@ -61,6 +63,8 @@ export interface ImageMenuContext {
   /** Slab state; null when slabs are not available for this image. */
   slab?: { mode: "off" | "mip" | "minip" | "avg"; mm: number } | null;
   layout?: { rows: number; cols: number } | null;
+  /** The series panel beside the viewports: offered as "Hide / Show series panel" when the app has one. */
+  seriesPanel?: { shown: boolean } | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
   can: Partial<Record<"reformat" | "mpr" | "threeD" | "video" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
@@ -118,19 +122,25 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
     {
       kind: "sub",
       id: "zoom",
-      label: "Zoom, rotate, flip",
+      label: "Zoom",
       items: () => [
         item(ctx, "zoom:fit", "Fit to viewport"),
         item(ctx, "zoom:1", "Actual size (1:1)"),
         item(ctx, "zoom:2", "Zoom 2×"),
-        sep,
-        item(ctx, "rotate:90", "Rotate 90° right"),
-        item(ctx, "rotate:-90", "Rotate 90° left"),
-        item(ctx, "flip:h", "Flip horizontal"),
-        item(ctx, "flip:v", "Flip vertical"),
       ],
     },
+    {
+      kind: "sub",
+      id: "orient",
+      label: "Rotate / flip",
+      items: () =>
+        ORIENTATION_COMMANDS.flatMap((e) => [
+          ...(e.command === "flip:h" || e.command === "orient:reset" ? [sep] : []),
+          item(ctx, e.command, e.label),
+        ]),
+    },
     item(ctx, "reset", "Reset view"),
+    ...(ctx.seriesPanel ? [item(ctx, "seriesPanel", ctx.seriesPanel.shown ? "Hide series panel" : "Show series panel")] : []),
     sep,
   ];
   if (ctx.slab) {

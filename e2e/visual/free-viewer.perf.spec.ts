@@ -118,6 +118,15 @@ function watchPrivacy(page: Page) {
       const out: string[] = [];
       const origin = new URL(page.url()).origin;
       for (const request of after) {
+        // blob: / data: are in-memory reads inside this page (e.g. the series
+        // thumbnails' JPEG object URLs): nothing leaves the browser. A blob:
+        // URL must still belong to this page's origin.
+        if (request.url().startsWith("data:")) continue;
+        if (request.url().startsWith("blob:")) {
+          const inner = new URL(request.url().slice("blob:".length));
+          if (inner.origin !== origin) out.push(`foreign blob ${inner.origin}`);
+          continue;
+        }
         const url = new URL(request.url());
         if (request.method() !== "GET") out.push(`${request.method()} ${url.pathname}`);
         if (request.postData() != null) out.push(`request body on ${url.pathname}`);

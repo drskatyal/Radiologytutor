@@ -1,7 +1,7 @@
 // The viewer toolbar. Every button maps to a keyboard shortcut (shown in its
 // tooltip) and acts on the active viewport.
 
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   ChevronDown,
   Mic,
@@ -51,10 +51,13 @@ import {
   ZoomIn,
   Spline,
   Pipette,
+  FlipHorizontal2,
+  FlipVertical2,
+  RefreshCw,
 } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/components/ui/cn";
-import type { WindowPreset } from "@flowrad/viewer-core";
+import { ORIENTATION_COMMANDS, type OrientationCommand, type WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
 import { LAYOUT_SHORTCUTS, keyLabel } from "../shortcuts";
 
@@ -66,7 +69,8 @@ export interface ToolbarProps {
   onCustomWindow: () => void;
   onInvert: () => void;
   onReset: () => void;
-  onRotate: (deg: number) => void;
+  /** Rotate / flip / reset orientation (viewer-core ORIENTATION_COMMANDS). */
+  onOrientation: (command: OrientationCommand) => void;
   layout: { rows: number; cols: number };
   onLayout: (rows: number, cols: number) => void;
   syncScroll: boolean;
@@ -309,12 +313,34 @@ export function Toolbar(props: ToolbarProps) {
           <MenuItem shortcut="I" onSelect={props.onInvert}>Invert</MenuItem>
         </MenuContent>
       </MenuRoot>
-      <Tool label="Rotate left" shortcut={keyLabel("Shift+Q")} onClick={() => props.onRotate(-90)}>
-        <RotateCcw />
-      </Tool>
-      <Tool label="Rotate right" shortcut="Q" onClick={() => props.onRotate(90)}>
-        <RotateCw />
-      </Tool>
+      <MenuRoot>
+        <MenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Rotate and flip"
+            title={`Rotate / flip  ·  R, ${keyLabel("Shift+R")}, H, V`}
+            className="flex h-8 items-center gap-0.5 rounded-md pl-1.5 pr-1 text-secondary hover:bg-overlay hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <RotateCw className="h-4 w-4" aria-hidden />
+            <ChevronDown className="h-3 w-3 opacity-70" aria-hidden />
+          </button>
+        </MenuTrigger>
+        <MenuContent>
+          <MenuLabel>Rotate / flip</MenuLabel>
+          {ORIENTATION_COMMANDS.map((entry) => (
+            <Fragment key={entry.command}>
+              {(entry.command === "flip:h" || entry.command === "orient:reset") && <MenuSeparator />}
+              <MenuItem
+                icon={ORIENT_ICONS[entry.command]}
+                shortcut={entry.shortcut ? keyLabel(entry.shortcut) : undefined}
+                onSelect={() => props.onOrientation(entry.command)}
+              >
+                {entry.label}
+              </MenuItem>
+            </Fragment>
+          ))}
+        </MenuContent>
+      </MenuRoot>
       <Tool label="Reset view" shortcut="Backspace" onClick={props.onReset}>
         <Layers3 />
       </Tool>
@@ -522,3 +548,12 @@ export function Toolbar(props: ToolbarProps) {
     </div>
   );
 }
+
+const ORIENT_ICONS: Record<OrientationCommand, ReactNode> = {
+  "rotate:90": <RotateCw />,
+  "rotate:-90": <RotateCcw />,
+  "rotate:180": <RefreshCw />,
+  "flip:h": <FlipHorizontal2 />,
+  "flip:v": <FlipVertical2 />,
+  "orient:reset": <Undo2 />,
+};

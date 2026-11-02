@@ -373,7 +373,7 @@ function treeMemory(pid) {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine | ConvertTo-Json -Compress",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine,@{n='Created';e={if ($_.CreationDate) { [long]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds } else { 0 }}} | ConvertTo-Json -Compress",
       ],
       { maxBuffer: 64 * 1024 * 1024 }
     ).toString();
@@ -392,7 +392,12 @@ function treeMemory(pid) {
       seen.add(r.ProcessId);
       const type = /--type=([\w-]+)/.exec(r.CommandLine ?? "")?.[1] ?? (procs.length ? "browser" : "app");
       procs.push({ name: r.Name, type, wsMb: Math.round(r.WorkingSetSize / 1048576), privateMb: Math.round(Number(r.PrivatePageCount) / 1048576) });
-      stack.push(...(kids.get(r.ProcessId) ?? []));
+      // A real child is never older than its parent. Windows reuses PIDs, so
+      // processes whose (long-dead) parent had this PID would otherwise be
+      // counted as the app's: perf-windows once summed 135 system processes
+      // (lsass, svchost, Defender…) into "the app's tree", 3.7 GB.
+      const born = Number(r.Created) || 0;
+      stack.push(...(kids.get(r.ProcessId) ?? []).filter((c) => !born || !Number(c.Created) || Number(c.Created) >= born - 1000));
     }
     return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
   }
