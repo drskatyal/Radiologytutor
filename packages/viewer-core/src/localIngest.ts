@@ -38,6 +38,14 @@ import {
   type LocalInstanceHeader,
 } from "./localStudy";
 import { listZipFile, looksLikeZipName } from "./zipArchive";
+import { localDecodedCacheBudget } from "./localMemoryBudget";
+import { detectDeviceProfile, imageCacheBytes } from "./viewerRuntime";
+
+/**
+ * File size per registered base `dicomfile:` id — what the loader keeps
+ * resident (as a Part 10 buffer) while that image is cached. Numbers only.
+ */
+const rawBytesById = new Map<string, number>();
 
 export { HEADER_BYTES };
 
@@ -286,6 +294,7 @@ export async function ingestLocalFiles(
     // The base id and, for a multiframe instance, every frame id: each can
     // hold its own metadata-cache entry that must be released on close.
     registeredIds.push(baseImageId);
+    rawBytesById.set(baseImageId, file.size);
     for (const id of ids) if (id !== baseImageId) registeredIds.push(id);
     imageIdsByFile.set(header.fileName, ids);
     headers.push(header);
@@ -423,6 +432,12 @@ export async function releaseLocalImages(registeredIds: readonly string[]): Prom
     clearTypedCacheData(type: string, query?: string): void;
   };
   recycleDecodeWorkers(core);
+  // Back to the device budget: the study's raw-aware cap (applyLocalCacheBudget) ends with it.
+  try {
+    core.cache.setMaxCacheSize(imageCacheBytes(detectDeviceProfile()));
+  } catch {
+    /* keep whatever cap is set */
+  }
   // Header workers: drop the pool; the next ingest (or prewarm) builds a fresh one.
   pool?.terminate();
   pool = null;
@@ -434,6 +449,7 @@ export async function releaseLocalImages(registeredIds: readonly string[]): Prom
     } catch {
       /* nothing cached for this id */
     }
+    rawBytesById.delete(id);
     if (id.includes("?")) continue; // frame ids share their base's File
     const index = Number(id.slice("dicomfile:".length));
     if (Number.isInteger(index)) wadouri.fileManager.remove(index);
@@ -479,6 +495,35 @@ function recycleDecodeWorkers(core: typeof import("@cornerstonejs/core")): void 
  * NATURALIZED metadata entries held for `dicomfile:` (local) images. Numbers
  * only — for the memory gate and support, never the entries themselves.
  */
+/**
+ * Cap the decoded-image cache so decoded pixels + the raw files the loader
+ * keeps beside them fit the device budget (see localMemoryBudget.ts). Call
+ * once the engine is initialised (its init sets the plain device cap) and the
+ * study's headers are parsed; `releaseLocalImages` restores the device cap.
+ * Returns the cap applied, in bytes.
+ */
+export async function applyLocalCacheBudget(headers: readonly LocalInstanceHeader[]): Promise<number> {
+  const core = await import("@cornerstonejs/core");
+  const cap = localDecodedCacheBudget(headers, imageCacheBytes(detectDeviceProfile()));
+  core.cache.setMaxCacheSize(cap);
+  return cap;
+}
+
+/**
+ * Raw Part 10 bytes the loader currently holds for local images (files whose
+ * NATURALIZED entry is cached). Numbers only — for the memory gate.
+ */
+export async function localRawBytesHeld(): Promise<number> {
+  const metadata = await import("@cornerstonejs/metadata");
+  const store = (metadata.utilities.CacheData as unknown as { mapCacheData?: Map<string, Map<string, unknown>> })
+    .mapCacheData;
+  const entries = store?.get(metadata.Enums.MetadataModules.NATURALIZED);
+  if (!entries) return 0;
+  let bytes = 0;
+  for (const key of entries.keys()) bytes += rawBytesById.get(String(key)) ?? 0;
+  return bytes;
+}
+
 export async function localMetadataEntryCount(): Promise<number> {
   const metadata = await import("@cornerstonejs/metadata");
   const store = (metadata.utilities.CacheData as unknown as { mapCacheData?: Map<string, Map<string, unknown>> })

@@ -49,7 +49,9 @@ import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
 import {
   ingestLocalFiles,
   prewarmLocalIngest,
+  applyLocalCacheBudget,
   localMetadataEntryCount,
+  localRawBytesHeld,
   releaseLocalImages,
   type FirstLocalImage,
   type LocalIngestResult,
@@ -120,6 +122,8 @@ export interface ViewerMemoryStats {
   openFiles: number;
   /** Local images still holding a NATURALIZED metadata entry (raw file bytes). */
   metadataEntries: number;
+  /** Raw Part 10 bytes the loader holds beside the decoded cache. */
+  rawBytes: number;
 }
 
 type DirectoryPickerWindow = Window & {
@@ -195,6 +199,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         maxCacheBytes: core.cache.getMaxCacheSize(),
         openFiles: registeredRef.current.length,
         metadataEntries: await localMetadataEntryCount(),
+        rawBytes: await localRawBytesHeld(),
       };
     };
     return () => {
@@ -356,6 +361,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         }
         setOpenedFiles(files);
         setPhase({ state: "open", result, pinned: located ? pinnedNow : null });
+        // Decoded + raw must fit the device budget, not decoded alone (see
+        // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
+        const headers = result.studies.flatMap((study) => study.series.flatMap((series) => series.instances));
+        void import("@/components/CornerstoneViewer")
+          .then((module) => module.ensureViewerEngine())
+          .then(() => (controller.signal.aborted ? 0 : applyLocalCacheBudget(headers)))
+          .catch(() => undefined);
       } catch (error) {
         rejectFull(new Error("failed"));
         if (controller.signal.aborted) return;

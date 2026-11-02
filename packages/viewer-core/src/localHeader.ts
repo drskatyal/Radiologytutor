@@ -37,6 +37,8 @@ export const TAG = {
   rows: "x00280010",
   columns: "x00280011",
   transferSyntaxUID: "x00020010",
+  samplesPerPixel: "x00280002",
+  bitsAllocated: "x00280100",
   pixelData: "x7fe00010",
 } as const;
 
@@ -108,6 +110,8 @@ export function parseLocalHeader(
     rows: u16(TAG.rows),
     columns: u16(TAG.columns),
     transferSyntaxUID: text(TAG.transferSyntaxUID),
+    samplesPerPixel: u16(TAG.samplesPerPixel),
+    bitsAllocated: u16(TAG.bitsAllocated),
   };
 }
 
