@@ -180,11 +180,16 @@ export default function App() {
   const [activeCell, setActiveCell] = useState(0);
   const [maximized, setMaximized] = useState<number | null>(null);
   // Native renderer on (FLOWRAD_NATIVE=1 and the GPU surface is up).
-  const [native, setNative] = useState(false);
+  // Native renderer: null until known (Tauri asks Rust once at start), so a
+  // viewport is never first mounted on the JS path and then swapped.
+  const [nativeMode, setNativeMode] = useState<boolean | null>(isTauri ? null : false);
+  const native = nativeMode === true;
+  const nativeRef = useRef(false);
   useEffect(() => {
     if (!isTauri) return;
     void nativeEnabled().then((on) => {
-      setNative(on);
+      nativeRef.current = on;
+      setNativeMode(on);
       if (on) document.documentElement.classList.add("native-transparent");
     });
   }, []);
@@ -630,7 +635,7 @@ export default function App() {
               firstImagePaintedMs: bench.current.firstPaint ?? null,
               // Phase 2: the native renderer's state and the first native
               // viewport's rect (CSS px), for the e2e's screen grab.
-              ...(native
+              ...(nativeRef.current
                 ? {
                     native: await invoke("native_status").catch(() => null),
                     nativeCell: (() => {
@@ -1973,6 +1978,8 @@ export default function App() {
                       }}
                     />
                   );
+                // Native mode not known yet (a few ms after start): hold the cell.
+                if (nativeMode === null && entry?.series) return <div key={`w${i}`} className="min-h-0 min-w-0" aria-busy="true" />;
                 if (native && entry?.series && nativeCapable(entry.series))
                   return (
                     <NativeStackViewport
