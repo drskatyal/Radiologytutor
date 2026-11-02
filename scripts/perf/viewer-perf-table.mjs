@@ -61,11 +61,20 @@ if (ct) {
 }
 if (cap) {
   row(
-    `Memory cap, emulated ${cap.emulatedDeviceMemoryGb} GB device, full 520-slice scroll: peak / cap`,
+    `Memory cap, emulated ${cap.emulatedDeviceMemoryGb} GB device, full 520-slice scroll: decoded peak / cap`,
     `${v(cap.cachePeakMb, " MB")} / ${v(cap.cacheCapMb, " MB")}`,
     "≤ cap (evicts)",
     cap.cachePeakMb <= cap.cacheCapMb
   );
+  if (cap.residentPeakMb != null) {
+    row(
+      "…decoded + raw Part 10 files held, peak / device budget",
+      `${v(cap.residentPeakMb, " MB")} / ${v(cap.deviceBudgetMb, " MB")}`,
+      "≤ device budget",
+      cap.residentPeakMb <= cap.deviceBudgetMb
+    );
+    row("…renderer+GPU RSS idle → peak while scrolling", `${v(cap.rendererRssIdleMb)} → ${v(cap.rendererRssPeakMb)} MB`, "", null);
+  }
 }
 if (mr) {
   row(`First image — ${mr.study}`, v(mr.firstImageMs, " ms"), "≤ 1000 ms", mr.firstImageMs <= 1000);
