@@ -98,6 +98,23 @@ export function decodeWorkers(): { live: number; releaseIdle(): void } {
 }
 
 /** Start loading the engine chunks without initialising (idle pre-warm). */
+let preloaded = false;
+/**
+ * Fetch + compile the engine's chunks without running them (modulepreload),
+ * from the list vite.config.ts writes into the page. Cheap to call often.
+ */
+export function preloadEngineChunks(): void {
+  if (preloaded || typeof document === "undefined") return;
+  preloaded = true;
+  const list = document.querySelector<HTMLMetaElement>('meta[name="flowrad-engine-chunks"]')?.content;
+  for (const href of list?.split(" ").filter(Boolean) ?? []) {
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+}
+
 export function prewarmEngine(): void {
   void import("@cornerstonejs/core");
   void import("@cornerstonejs/tools");
@@ -133,6 +150,70 @@ export function getEngine(): Promise<Engine> {
   return enginePromise;
 }
 
+/**
+ * Give the main thread back between engine-init steps. Each step resumed as
+ * a microtask of the last, so module evaluation, core/tools init, loader init
+ * and tool registration ran as ONE long task (Windows HP: 66–225 ms freezes
+ * at "engine startup"). A macrotask boundary lets input, the instant preview
+ * and paint run in between.
+ */
+function yieldToMain(): Promise<void> {
+  const scheduler = (globalThis as unknown as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    channel.port2.postMessage(null);
+  });
+}
+
+const GPU_PROBE_KEY = "flowrad.gpuProbe.v1";
+
+/**
+ * What core.init() would probe (norm16 textures, WebGL at all), one probe per
+ * task and cached per browser + app build, so engine start-up creates no
+ * throwaway WebGL contexts in one long task (vite.config.ts feeds the result
+ * to Cornerstone). A stale cache is caught by the paint self-check
+ * (paintCheck.ts), which falls back to CPU rendering on a blank GPU paint.
+ */
+async function probeGpu(): Promise<void> {
+  const g = globalThis as unknown as {
+    __flowradGpu?: { norm16: boolean; webgl: boolean };
+    __flowradNorm16Probe?: (linear: boolean) => boolean;
+  };
+  const key = `${navigator.userAgent}|${import.meta.env.VITE_APP_VERSION ?? ""}`;
+  try {
+    const cached = JSON.parse(localStorage.getItem(GPU_PROBE_KEY) ?? "null") as { key: string; norm16: boolean; webgl: boolean } | null;
+    if (cached?.key === key) {
+      g.__flowradGpu = { norm16: cached.norm16, webgl: cached.webgl };
+      return;
+    }
+  } catch {
+    /* no storage: probe */
+  }
+  const webgl = (() => {
+    const gl = document.createElement("canvas").getContext("webgl2");
+    gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    return !!gl;
+  })();
+  await yieldToMain();
+  let norm16 = false;
+  if (webgl && g.__flowradNorm16Probe) {
+    norm16 = g.__flowradNorm16Probe(false);
+    await yieldToMain();
+    norm16 = norm16 && g.__flowradNorm16Probe(true);
+    await yieldToMain();
+  }
+  // Without the seam (dev server, Cornerstone upgrade) Cornerstone probes itself.
+  if (!g.__flowradNorm16Probe) return;
+  g.__flowradGpu = { norm16, webgl };
+  try {
+    localStorage.setItem(GPU_PROBE_KEY, JSON.stringify({ key, norm16, webgl }));
+  } catch {
+    /* not cached: probe again next launch */
+  }
+}
+
 async function createEngine(): Promise<Engine> {
   const steps: Record<string, number> = {};
   engineTimings.steps = steps;
@@ -144,12 +225,19 @@ async function createEngine(): Promise<Engine> {
     steps[name] = Math.round(now - mark);
     mark = now;
   };
-  const [core, tools, loader] = await Promise.all([
-    import("@cornerstonejs/core"),
-    import("@cornerstonejs/tools"),
-    import("@cornerstonejs/dicom-image-loader"),
-  ]);
+  // Fetch + compile all three in parallel; each evaluates in its own task.
+  const coreP = import("@cornerstonejs/core");
+  const toolsP = import("@cornerstonejs/tools");
+  const loaderP = import("@cornerstonejs/dicom-image-loader");
+  const core = await coreP;
+  await yieldToMain();
+  const tools = await toolsP;
+  await yieldToMain();
+  const loader = await loaderP;
   step("importMs");
+  await yieldToMain();
+  await probeGpu();
+  step("gpuProbeMs");
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
@@ -162,8 +250,10 @@ async function createEngine(): Promise<Engine> {
   await core.init(config as unknown as Parameters<typeof core.init>[0]);
   // Cursors are ours (toolCursor.ts): Cornerstone's drew one green crosshair for every tool.
   core.Settings.getRuntimeSettings().set("useCursors", false);
+  await yieldToMain();
   await tools.init();
   step("coreToolsInitMs");
+  await yieldToMain();
   // ONE worker at init (the loader would otherwise spawn every instance up
   // front and never free them); workerPool.ts widens it to a lazy pool of
   // cores − 2 that spawns on demand and reaps idle workers.
@@ -182,6 +272,7 @@ async function createEngine(): Promise<Engine> {
   );
   installDatasetTrim(core, loader);
   step("loaderInitMs");
+  await yieldToMain();
   try {
     // Honest now that raw file bytes are released after decode (memory.ts):
     // this budget is close to what the decoded images really hold. LRU
@@ -231,7 +322,11 @@ async function createEngine(): Promise<Engine> {
     }
   }
 
+  await yieldToMain();
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
+  // The constructor creates the engine's WebGL context (its own task):
+  // give the main thread back before tools and the first render.
+  await yieldToMain();
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);
   step("toolsAndEngineMs");

@@ -2,16 +2,102 @@
 // bundle needs one static page, no server, and no Next runtime. It imports the
 // SAME `lib/` and `components/ui` the web app ships, through the `@/` alias, so
 // stack ordering, presets, cine and the design system stay identical.
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { viteCommonjs } from "@originjs/vite-plugin-commonjs";
 import path from "node:path";
+import { readFileSync } from "node:fs";
+
+const appVersion = (JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 const root = path.resolve(__dirname, "..");
 
+/**
+ * List the viewer engine's chunks in the page so the app can preload them
+ * (fetch + compile, NOT evaluate) at the right moment. The engine stays a dynamic import — nothing runs until a study
+ * opens — but its ~3 MB no longer has to be fetched and compiled on the
+ * critical path between the instant preview and the first real image.
+ */
+/**
+ * Cornerstone's core.init() creates three throwaway WebGL contexts in one task
+ * (two norm16 texture probes + a "has WebGL" check): an engine-startup freeze.
+ * Let it take a result the app already has (engine.ts runs the probes one per
+ * task and caches them), and expose its own probe so the result is identical.
+ * Fails the build if a Cornerstone upgrade changes these lines.
+ */
+function cornerstoneGpuProbeSeam(): Plugin {
+  const edits: Record<string, [string, string][]> = {
+    "@cornerstonejs/core/dist/esm/init.js": [
+      ["canUseNorm16Texture = _hasNorm16TextureSupport();", "canUseNorm16Texture = globalThis.__flowradGpu?.norm16 ?? _hasNorm16TextureSupport();"],
+      ["const hasWebGLContext = _hasActiveWebGLContext();", "const hasWebGLContext = globalThis.__flowradGpu?.webgl ?? _hasActiveWebGLContext();"],
+    ],
+    "@cornerstonejs/core/dist/esm/utilities/textureSupport.js": [
+      [
+        "function main({",
+        "globalThis.__flowradNorm16Probe = (linear) => main({ ext: 'EXT_texture_norm16', filterType: linear ? 'LINEAR' : 'NEAREST', texData: new Int16Array([32767, 2e3, 3e3, 4e3, 5e3, 16784, 7e3, 8e3, 9e3, 32767]), internalFormat: (gl, ext) => ext.R16_SNORM_EXT, glDataType: (gl) => gl.SHORT });\nfunction main({",
+      ],
+    ],
+  };
+  return {
+    name: "flowrad-cornerstone-gpu-probe",
+    enforce: "pre",
+    transform(code, id) {
+      const key = Object.keys(edits).find((k) => id.replace(/\\/g, "/").endsWith(k));
+      if (!key) return null;
+      let out = code;
+      for (const [from, to] of edits[key]) {
+        if (!out.includes(from)) this.error(`cornerstone GPU probe seam: "${from}" not found in ${key} (Cornerstone changed?)`);
+        out = out.replace(from, to);
+      }
+      return { code: out, map: null };
+    },
+  };
+}
+
+function preloadEngineChunks(): Plugin {
+  const engine = /node_modules\/@cornerstonejs\/(core|tools|dicom-image-loader)\//;
+  return {
+    name: "flowrad-preload-engine",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html, ctx) {
+        const bundle = ctx.bundle;
+        if (!bundle) return html;
+        const files = new Set<string>();
+        const add = (file: string) => {
+          if (files.has(file)) return;
+          files.add(file);
+          const chunk = bundle[file];
+          if (chunk?.type === "chunk") chunk.imports.forEach(add);
+        };
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type === "chunk" && chunk.isDynamicEntry && chunk.facadeModuleId && engine.test(chunk.facadeModuleId)) add(chunk.fileName);
+        }
+        // A list, not <link rel=modulepreload> tags: preloading 3 MB at page
+        // load competed with the instant preview on a cold disk (perf-windows
+        // cold CT: preview 816 ms). The app starts the preload when it is
+        // cheap (engine.ts preloadEngineChunks).
+        return {
+          html,
+          tags: [
+            {
+              tag: "meta",
+              attrs: { name: "flowrad-engine-chunks", content: [...files].map((f) => `/${f}`).join(" ") },
+              injectTo: "head" as const,
+            },
+          ],
+        };
+      },
+    },
+  };
+}
+
 export default defineConfig({
   root: __dirname,
-  plugins: [react(), viteCommonjs()],
+  // Keys the cached GPU probe (engine.ts): a new build probes again.
+  define: { "import.meta.env.VITE_APP_VERSION": JSON.stringify(appVersion) },
+  plugins: [react(), viteCommonjs(), cornerstoneGpuProbeSeam(), preloadEngineChunks()],
   clearScreen: false,
   resolve: {
     alias: [

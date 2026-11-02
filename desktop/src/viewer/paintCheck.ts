@@ -95,9 +95,16 @@ export async function verifyPainted(
     });
   const simulate = await simulatingBlankGpu();
   const sample = () => (simulate && !cpu() ? 0 : sampleCanvas(element) ?? 0);
+  // The canvas read-back forces a GPU sync: never in the same task as the
+  // render it inspects (that task showed up as a 53–58 ms "load series" freeze).
+  const nextTask = () => new Promise<void>((r) => setTimeout(r, 0));
   const check = async (first: boolean): Promise<PaintHealth> => {
+    await nextTask();
     // The first render may already have happened; if the canvas has pixels now, done.
-    if (!first || !sample()) await rendered();
+    if (!first || !sample()) {
+      await rendered();
+      await nextTask();
+    }
     const maxLum = sample();
     const visible = engine ? expectVisible(engine, vp, ids[index]) : true;
     return {
@@ -112,7 +119,7 @@ export async function verifyPainted(
   if (engine && ids[index]) {
     const deadline = performance.now() + 15_000;
     while (!engine.core.cache.getImage(ids[index]) && performance.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 16));
     }
   }
   let health = await check(true);

@@ -112,7 +112,15 @@ node desktop/scripts/bench.mjs desktop $B /tmp/fixtures/bench/ct-1200 --runs 5
 node desktop/scripts/bench.mjs browser /tmp/fixtures/ct-phantom     # the web loader, for before/after
 ```
 
-On Windows use the `.exe` path. Memory is always the **whole process tree**,
+On Windows use the `.exe` path. The app is a GUI program, so when you run it
+directly with a bench variable it attaches to the terminal it was started from
+to print its report, and always appends the report to `%TEMP%\flowrad-bench.jsonl`:
+
+```powershell
+$env:FLOWRAD_LEAK_ROUNDS=5; & "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe" D:\studies\ct
+Get-Content $env:TEMP\flowrad-bench.jsonl -Tail 1
+```
+ Memory is always the **whole process tree**,
 including WebView2's browser, GPU, renderer and utility processes on Windows:
 working set and private bytes, plus the peak during a `desktop` run.
 
@@ -125,6 +133,8 @@ Bench environment:
 | `FLOWRAD_BENCH_PAINT_TIMEOUT_MS` | report without a frame after this long; default 20000; see `paint.timedOut` |
 | `FLOWRAD_BENCH_TIMEOUT_MS` | watchdog: print what is known and exit 3; default 120000 |
 | `FLOWRAD_BENCH_VIEW=mpr\|3d\|fusion` | report when that volume is built |
+| `FLOWRAD_LEAK_ROUNDS=5` | feature on/off leak test: open and close MPR, 3D, cine, tools and dialogs that many times, then report memory per round (implies `FLOWRAD_BENCH=1` and the leak view) |
+| `FLOWRAD_BENCH_OUT` | also append every report line to this file; default `flowrad-bench.jsonl` in the temp folder (`%TEMP%` on Windows) |
 | `FLOWRAD_BENCH_PIXELS=1` | include decoded-pixel stats (used by `codec-check.py`) |
 | `FLOWRAD_PROBE_AFTER_MS=8000` | on a normal launch, report every viewport's on-screen pixels after that long (`FLOWRAD_PROBE {json}`) |
 | `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | Windows: override WebView2 flags to A/B memory experiments, e.g. `--in-process-gpu` |

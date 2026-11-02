@@ -159,7 +159,12 @@ jobs:
       MPR_MAX_MS: "2000"
       MPR_MAX_MB: "1200"
       IDLE_MAX_MB: "400"
+      # CI runner: WebView2 alone takes ~0.4-0.5 s before our page loads, so CI
+      # gates the app's own share (window build + page load -> first paint)
+      # and keeps the total as a backstop. The 500 ms total is checked on real
+      # hardware (HP) before a release is published.
       COLDSTART_MAX_MS: "900"
+      COLDSTART_APP_MAX_MS: "150"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
@@ -228,14 +233,34 @@ jobs:
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2
-      - name: Cold start (median of 5, first paint in-process)
-        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
+      - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }}
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
+      # Informational A/B (never fails the job): WebView2 process model vs
+      # idle and MPR memory. The flags are the app's own plus one variant.
+      - name: A/B — WebView2 process model vs idle / MPR memory / cold start (informational)
+        continue-on-error: true
+        shell: bash
+        env:
+          FLOWRAD_BENCH_VIEW: grid
+        run: |
+          # Keep going when a variant fails (no report = that flag set breaks the app).
+          set +e +o pipefail
+          base=$(node -p "require('./desktop/src-tauri/tauri.conf.json').app.windows[0].additionalBrowserArgs")
+          exe=desktop/src-tauri/target/release/flowrad-viewer.exe
+          for variant in "" "--in-process-gpu" "--enable-features=NetworkServiceInProcess2" "--in-process-gpu --enable-features=NetworkServiceInProcess2"; do
+            echo "::group::variant: ${variant:-app defaults}"
+            export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="$base $variant" VARIANT="${variant:-defaults}"
+            FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=grid timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" --settle 20 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`IDLE ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`IDLE ${process.env.VARIANT||"defaults"}: settled ws ${r.settledWsMb} MB private ${r.settledPrivateMb} MB, ${r.processes} processes`)})'
+            FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=mpr timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`MPR  ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`MPR  ${process.env.VARIANT||"defaults"}: peak ws ${r.peakWsMb} MB private ${r.peakPrivateMb} MB, ${r.processes} processes`)})'
+            timeout 150 node desktop/scripts/bench.mjs coldstart $exe --runs 3 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.indexOf("{")<0){console.log(`COLD ${process.env.VARIANT}: no report`);return}const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.env.VARIANT||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})'
+            echo "::endgroup::"
+          done
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)

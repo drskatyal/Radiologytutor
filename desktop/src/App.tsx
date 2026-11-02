@@ -5,7 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -39,8 +39,8 @@ import { historyEntryFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { keyLabel, resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { StartScreen } from "./components/StartScreen";
-import { useUpdater } from "./components/Updates";
-import { useSyncStatus } from "./components/Account";
+import { useUpdater } from "./components/useUpdater";
+import { useSyncStatus } from "./components/syncStatus";
 import { DEFAULT_SETTINGS, type ViewerSettings } from "./settings";
 import { setScrollPreferences } from "@flowrad/viewer-core";
 import { hangingPlanFor } from "./hanging";
@@ -56,6 +56,7 @@ import {
   enterNativeVolumeMemory,
   getEngine,
   prewarmEngine,
+  preloadEngineChunks,
   setGroupLeftTool,
   setReferenceSource,
   setScaleOverlay,
@@ -131,6 +132,19 @@ type ScanState = { label: string; progress: ScanProgress | null } | null;
 
 const cellKey = (i: number) => `cell-${i}`;
 const viewportIdFor = (i: number) => `vp-${i}`;
+
+/** Paint health of the volume panes (MPR / 3D), from their per-pane max luminance. */
+function volumePaneHealth(panes: unknown): { maxLum: number; nonBlank: boolean; renderPath: string; panes: Record<string, number> } | null {
+  if (!panes || typeof panes !== "object") return null;
+  const values = Object.values(panes as Record<string, number>).filter((v) => typeof v === "number");
+  if (!values.length) return null;
+  return {
+    maxLum: Math.min(...values),
+    nonBlank: values.every((v) => v > 8),
+    renderPath: "native-volume",
+    panes: panes as Record<string, number>,
+  };
+}
 
 export default function App() {
   const { toast } = useToast();
@@ -476,10 +490,17 @@ export default function App() {
         if (seq !== openSeq.current) return;
         markPhase("study: group series");
         const built = buildStudies([...acc.values()]);
-        setStudies(built);
+        // After the first series is up, the growing list re-renders as a
+        // transition: React yields every few ms instead of one long task per
+        // batch (10,310-image MRI: 58-105 ms 'study: group series' freezes).
+        if (firstShown) startTransition(() => setStudies(built));
+        else setStudies(built);
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
+          // The study is on screen and its preview is loading: compile the
+          // engine meanwhile (not at page load: on a cold disk that delayed the preview).
+          preloadEngineChunks();
           setScan(null); // progressive: the viewer takes over, progress moves to the status bar
           hangFirst(built);
         }
@@ -585,7 +606,12 @@ export default function App() {
                 visibility: document.visibilityState,
                 focused: document.hasFocus(),
               },
-              viewport: paintHealth.last ?? null,
+              // `viewport` = what is on screen. In a volume bench that is the
+              // MPR / 3D panes: the 2D stack check was cut short when the view
+              // switched (its canvas unmounted), and reported "blank, maxLum 0"
+              // although the 3D pane had painted. The 2D check stays as stackViewport.
+              viewport: volumePaneHealth(bench.current.marks.vrPanes ?? bench.current.marks.mprPanes) ?? paintHealth.last ?? null,
+              stackViewport: paintHealth.last ?? null,
               ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
               gpu: gpuInfo(),
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
@@ -813,16 +839,22 @@ export default function App() {
       // no launch paths, no start-screen warm-up, no cold-start report.
       if (isSecondaryWindow) return;
       const initial = await takeLaunchPaths();
-      // A study on the command line opens at once. The engine is NOT
-      // pre-imported here: its ~3 MB parse on the main thread would delay the
-      // instant preview (see openPaths); the viewport starts it after.
+      // A study on the command line opens at once. The engine starts the
+      // moment the instant preview is on screen (onPreview), not here:
+      // measured, starting it with the scan put the preview at 440 ms (was 200).
       if (initial.length) {
         void openPaths(initial);
       } else {
         // Start screen: compile the engine in idle time so the first open does
         // not pay for it (code only: no WebGL context, no decode workers).
         const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
-        window.setTimeout(() => (idle ? idle(() => prewarmEngine(), { timeout: 4000 }) : prewarmEngine()), 1500);
+        // Soon after the start screen paints, not 1.5 s later: a reader who
+        // opens a study within two seconds still found the engine cold.
+        window.setTimeout(() => {
+          preloadEngineChunks();
+          if (idle) idle(() => prewarmEngine(), { timeout: 1000 });
+          else prewarmEngine();
+        }, 300);
       }
       if (!initial.length && (await benchEnabled())) {
         // Cold-start probe: report once the start screen has painted.
@@ -835,11 +867,19 @@ export default function App() {
             // before it is window + WebView2/WebKit start-up, after it is ours.
             const now = performance.now();
             const marks = await invoke<Record<string, number | null>>("startup_marks").catch(() => ({}));
+            // First paint = the browser's own first-contentful-paint (Paint
+            // Timing, relative to navigation start), placed on the process
+            // clock. The time this callback runs is later by two frames and
+            // three IPC round trips; it is kept as paintReportedMs.
+            const fcp = performance.getEntriesByName?.("first-contentful-paint")[0]?.startTime;
+            const navAt = Math.max(0, ms - now);
             await benchReport({
               coldStart: true,
               ...marks,
-              firstPaintMs: ms,
-              webviewNavStartMs: Math.max(0, ms - now),
+              firstPaintMs: fcp != null ? navAt + fcp : ms,
+              firstPaintSource: fcp != null ? "first-contentful-paint" : "double-rAF",
+              paintReportedMs: ms,
+              webviewNavStartMs: navAt,
               jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs,
               pageToPaintMs: now,
               windowReadyMs: bench.current.marks.windowReadyMs,
@@ -1609,6 +1649,9 @@ export default function App() {
 
   const onPreview = useCallback(() => {
     if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = performance.now() - bench.current.t0;
+    // The preview is what the reader sees first; start the engine right
+    // behind it instead of waiting for the viewport's next frame + task.
+    void getEngine();
   }, []);
 
   const onFirstPaint = useCallback(() => {

@@ -322,6 +322,17 @@ function StackViewportImpl({
     const voi = sameSeries ? vp.getProperties?.().voiRange : null;
     const camera = sameSeries ? vp.getCamera?.() : null;
     let suv: "suv" | "raw" = "raw";
+    // First image = the moment Cornerstone actually drew this stack, not when
+    // the paint self-check below finished (it polls for the decode and reads
+    // the canvas back: up to ~50 ms of slack, and a GPU sync, on top).
+    let renderedAt: number | null = null;
+    const element = elementRef.current;
+    const Events = engineRef.current?.core.Enums.Events;
+    const onRendered = () => {
+      if (renderedAt == null && loadedRef.current?.ids === ids) renderedAt = performance.now();
+      if (renderedAt != null) element?.removeEventListener(Events!.IMAGE_RENDERED, onRendered);
+    };
+    if (!sameSeries && element && Events) element.addEventListener(Events.IMAGE_RENDERED, onRendered);
     ensureSuv(series)
       .then((state) => {
         suv = state;
@@ -348,9 +359,18 @@ function StackViewportImpl({
           // that renders black (some drivers' 16-bit textures) falls back to
           // CPU rendering here instead of leaving the reader a black box.
           void verifyPainted(engineRef.current, vp, elementRef.current, ids, index, () => loadedRef.current?.ids === ids).then((health) => {
-            if (loadedRef.current?.ids !== ids || verifiedUidRef.current === series.uid) return;
+            if (element && Events) element.removeEventListener(Events.IMAGE_RENDERED, onRendered);
+            // A series that grew while this check ran (a scan still streaming)
+            // is the same image on screen: a non-blank result still counts.
+            // (It used to be dropped, so 'first image' on a 10k MRI waited for
+            // the whole series to finish arriving: 0.95-2.8 s warm on CI.)
+            const superseded = loadedRef.current?.ids !== ids;
+            if (verifiedUidRef.current === series.uid) return;
+            if (superseded && !(loadedRef.current?.uid === series.uid && health.nonBlank)) return;
             verifiedUidRef.current = series.uid;
-            onFirstPaint?.(performance.now() - started, health);
+            // A blank GPU paint that fell back to the CPU path is "painted" only now.
+            const at = health.nonBlank && renderedAt != null && health.renderPath !== "cpu-fallback" ? renderedAt : performance.now();
+            onFirstPaint?.(at - started, health);
             setPaintedUid(series.uid);
           });
         }

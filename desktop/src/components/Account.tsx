@@ -12,21 +12,8 @@ import { useToast } from "../toast";
 import { invoke, isTauri, listen } from "../platform";
 import type { ViewerSeries, ViewerStudy } from "../types";
 
-export interface SyncStatus {
-  signedIn: boolean;
-  server?: string;
-  email?: string;
-  name?: string | null;
-}
-
-export function useSyncStatus() {
-  const [status, setStatus] = useState<SyncStatus>({ signedIn: false });
-  const refresh = () => {
-    if (isTauri) invoke<SyncStatus>("sync_status").then(setStatus, () => undefined);
-  };
-  useEffect(refresh, []);
-  return { status, setStatus, refresh };
-}
+import type { SyncStatus } from "./syncStatus";
+export { useSyncStatus, type SyncStatus } from "./syncStatus";
 
 export function AccountSection({ status, onChange }: { status: SyncStatus; onChange: (s: SyncStatus) => void }) {
   const { toast } = useToast();

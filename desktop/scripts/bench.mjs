@@ -2,7 +2,7 @@
 // FlowRad Viewer benchmark harness.
 //
 //   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N]
-//   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5] [--max-ms N]
+//   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5] [--max-ms N] [--max-app-ms N]
 //   node desktop/scripts/bench.mjs interact <binary> <study-path> [--max-frame-p95-ms 16.7] [--max-dropped 0]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
@@ -129,7 +129,7 @@ async function benchDesktop(binary, study) {
     const report = await runApp(binary, [study]);
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImagePaintedMs)} ms · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImagePaintedMs)} ms · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
   }
   const warm = reports.slice(1);
@@ -179,9 +179,15 @@ async function benchColdStart(binary) {
   const inProc = [];
   const external = [];
   const stages = { windowBuiltMs: [], navStartMs: [], jsStartMs: [], navDoneMs: [] };
+  const appShare = [];
+  const webviewShare = [];
   for (let i = 0; i < runs; i += 1) {
     const report = await runApp(binary, []);
     inProc.push(report.firstPaintMs);
+    if (typeof report.navStartMs === "number" && typeof report.windowBuiltMs === "number") {
+      appShare.push(report.windowBuiltMs + (report.firstPaintMs - report.navStartMs));
+      webviewShare.push(report.navStartMs - report.windowBuiltMs);
+    }
     external.push(report.externalMs);
     for (const k of Object.keys(stages)) if (typeof report[k] === "number") stages[k].push(report[k]);
     console.error(
@@ -192,9 +198,15 @@ async function benchColdStart(binary) {
   // (windowBuiltMs), WebView2 start until it begins loading the page
   // (navStartMs), page JS start, first paint.
   const breakdown = Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, v.length ? r0(median(v)) : null]));
+  // Split the total into the two parts with different owners:
+  //   webview2Ms  window built → WebView2 starts loading our page (the runtime's
+  //               own start-up; ~0.4 s on the CI runner, ~1.2 s on the HP)
+  //   appMs       window build + page load start → first paint (our code)
+  const appMs = r0(median(appShare));
+  const webview2Ms = r0(median(webviewShare));
   console.log(
     JSON.stringify(
-      { mode: "coldstart", firstRunMs: r0(inProc[0]), medianMs: r0(median(inProc)), medianExternalMs: r0(median(external)), median: breakdown },
+      { mode: "coldstart", firstRunMs: r0(inProc[0]), medianMs: r0(median(inProc)), medianExternalMs: r0(median(external)), appMs, webview2Ms, median: breakdown },
       null,
       2
     )
@@ -202,6 +214,11 @@ async function benchColdStart(binary) {
   const budget = flag("max-ms", Infinity);
   if (!(median(inProc) <= budget)) {
     console.error(`cold-start gate failed: median first paint ${r0(median(inProc))} ms > ${budget} ms`);
+    process.exitCode = 1;
+  }
+  const appBudget = flag("max-app-ms", Infinity);
+  if (appBudget !== Infinity && !(appMs <= appBudget)) {
+    console.error(`cold-start gate failed: the app's own share ${appMs} ms > ${appBudget} ms (WebView2 start-up ${webview2Ms} ms not counted)`);
     process.exitCode = 1;
   }
 }
@@ -480,6 +497,14 @@ async function benchMpr(binary, study) {
     volumeBuildMs: r0(report.volumeBuildMs),
     peakPrivateMb: peak?.privateMb,
     settledPrivateMb: settled?.privateMb,
+    // Working set too: it is what Task Manager shows (and what the HP numbers
+    // quote). Summed per process, so DLL pages shared by the WebView2
+    // processes count once per process: fewer processes, smaller sum.
+    peakWsMb: peak?.wsMb,
+    settledWsMb: settled?.wsMb,
+    processes: settled?.processes.length ?? peak?.processes.length,
+    settledByProcess: settled?.processes.filter((p) => p.wsMb > 10),
+    browserArgs: process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? null,
     imageCacheMb: report.imageCacheMb ?? null,
     trimmedMb: report.trimmedMb ?? null,
     trim: report.trim ?? null,
