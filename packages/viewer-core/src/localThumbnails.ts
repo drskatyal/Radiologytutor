@@ -118,6 +118,14 @@ export function createLocalThumbnailer(): LocalThumbnailer {
     const core = await import("@cornerstonejs/core");
     const wasCached = !!core.cache.getImageLoadObject(imageId);
     const image = (await core.imageLoader.loadImage(imageId)) as unknown as EngineImage;
+    // The FILE's window, if it has one. Not image.windowCenter/Width: when the
+    // file has none the engine fills them from the STORED pixel range, but the
+    // thumbnail windows modality values (slope / intercept applied), so a CT
+    // with intercept −1024 and no window (pydicom's CT_small) came out ~1024
+    // HU too low: a black thumbnail. Read before the raw file is dropped.
+    const fileWindow = core.metaData.get("voiLutModule", imageId) as
+      | { windowCenter?: unknown; windowWidth?: unknown }
+      | undefined;
     if (!wasCached && !core.cache.getImageLoadObject(imageId)) void dropRawFile(imageId);
     const pixels = image.getPixelData();
     const components = Math.max(1, Math.round(pixels.length / Math.max(1, image.columns * image.rows)));
@@ -130,7 +138,7 @@ export function createLocalThumbnailer(): LocalThumbnailer {
       intercept: image.intercept,
     });
     if (!sample) return null;
-    const win = defaultThumbWindow(sample, image);
+    const win = defaultThumbWindow(sample, fileWindow ?? null);
     return encode({ sample, window: win, invert: sample.channels === 1 && !!image.invert, edge: THUMB_EDGE });
   };
 
