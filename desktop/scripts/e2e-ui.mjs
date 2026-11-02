@@ -852,7 +852,7 @@ if (want("contextmenu")) {
   check("contextmenu: the first open of the session stays under 250 ms", firstOpenMs != null && firstOpenMs < 250, `${firstOpenMs?.toFixed?.(1)} ms`);
   const top = (await imageMenu.locator(":scope > div > [role]").allInnerTexts()).map((t) => t.split("\n")[0]);
   // Slab is drawn by the Rust core: the real app shows it, this browser build cannot.
-  const want = ["Tools", "Window / level", "Zoom, rotate, flip", "Reset view", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
+  const want = ["Tools", "Window / level", "Zoom", "Rotate / flip", "Reset view", "Hide series panel", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
   check("contextmenu: every section of the spec is there", want.every((w) => top.includes(w)), top.join(" | "));
   const kbds = await imageMenu.locator("kbd").count();
   check("contextmenu: keyboard shortcuts are shown beside items", kbds >= 3, `${kbds} shortcuts`);
