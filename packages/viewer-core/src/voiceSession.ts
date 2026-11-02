@@ -152,17 +152,12 @@ export interface VoiceOptions {
   /** What was heard that matched nothing (for the hint chip). */
   onUnrecognized?: (heard: string) => void;
   timeouts?: Partial<VoiceTimeouts>;
-  /** Test hook: where the audio comes from (default: the microphone). */
+  /** Where the audio comes from (default: the microphone). Tests pass a stream that plays spoken phrases. */
   getStream?: () => Promise<MediaStream>;
 }
 
 export interface VoiceSession {
   stop(): void;
-  /**
-   * Test hook: feed mono PCM (−1…1) straight to the recognizer, as if heard.
-   * Resolves once the samples are queued.
-   */
-  feed(samples: Float32Array, sampleRate: number): void;
 }
 
 interface WorkerMessage {
@@ -323,7 +318,7 @@ export async function startVoice(opts: VoiceOptions): Promise<VoiceSession> {
     teardown();
     opts.onState("off");
   };
-  const session: VoiceSession = { stop, feed: send };
+  const session: VoiceSession = { stop };
 
   opts.onState("loading");
   try {
