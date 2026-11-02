@@ -51,20 +51,25 @@ async function sample(label: string, settleMs: number): Promise<Sample> {
 export async function runLeakCycle(d: LeakDriver, { rounds = 2, settleMs = 6000 } = {}) {
   const samples: Sample[] = [await sample("baseline", settleMs)];
   let peakMb = samples[0].treeMb;
-  const peek = async () => {
+  // Peak per phase (whole tree, working set): which feature sets the peak.
+  const phasePeakMb: Record<string, number> = { "2d": samples[0].treeMb };
+  const peek = async (phase: string) => {
     const t = await invoke<{ totalMb: number }>("process_memory").catch(() => ({ totalMb: 0 }));
     peakMb = Math.max(peakMb, t.totalMb);
+    phasePeakMb[phase] = Math.max(phasePeakMb[phase] ?? 0, t.totalMb);
   };
   for (let round = 1; round <= rounds; round += 1) {
     for (const view of ["mpr", "3d"] as const) {
       await d.setView(view);
       await wait(800);
-      await peek();
+      await peek(view);
       await d.setView("grid");
       await wait(500);
+      await peek("2d");
     }
     d.toggleCine();
     await wait(1500);
+    await peek("cine");
     d.toggleCine();
     for (const tool of ["Length", "EllipticalROI", "WindowLevel"]) {
       d.setTool(tool);
@@ -73,6 +78,7 @@ export async function runLeakCycle(d: LeakDriver, { rounds = 2, settleMs = 6000 
     for (const dialog of ["export", "settings", "pacs"] as const) {
       d.setDialog(dialog);
       await wait(400);
+      await peek("dialogs");
       d.setDialog(null);
       await wait(150);
     }
@@ -85,6 +91,7 @@ export async function runLeakCycle(d: LeakDriver, { rounds = 2, settleMs = 6000 
     baselineMb: base,
     finalMb: last,
     peakMb,
+    phasePeakMb,
     leakMb: last - base,
     /** Growth from the first round to the last: a steady leak, independent of warm-up. */
     roundGrowthMb: samples.length > 2 ? last - samples[1].treeMb : 0,
