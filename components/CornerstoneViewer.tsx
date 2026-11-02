@@ -575,15 +575,54 @@ export function prewarmViewerEngine(): void {
       if (viewportEngineRegistry.size > 0) return;
       const engine = await obtainSharedEngine(core as unknown as EngineHost);
       const element = document.createElement("div");
-      // DOM API, not JSX: a throwaway off-screen host, never painted.
-      element.style.cssText = "position:fixed;left:-10000px;top:0;width:64px;height:64px;";
+      // DOM API, not JSX: a throwaway off-screen host, never painted. Sized
+      // like the stage the first study will open in, so the GL drawing
+      // buffer is allocated at its real size now, not on the first drop.
+      const width = Math.max(64, Math.round(window.innerWidth));
+      const height = Math.max(64, Math.round(window.innerHeight));
+      element.style.cssText = `position:fixed;left:-${width + 100}px;top:0;width:${width}px;height:${height}px;pointer-events:none;`;
       element.setAttribute("aria-hidden", "true");
       document.body.appendChild(element);
       const viewportId = "flowrad-context-warm";
+      const warmIds: string[] = [];
+      const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       try {
         engine.enableElement({ viewportId, type: core.Enums.ViewportType.STACK, element });
-        (engine.getViewport(viewportId) as { render?: () => void } | undefined)?.render?.();
-        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        const vp = engine.getViewport(viewportId) as
+          | { render?: () => void; setStack?: (ids: string[], index?: number) => Promise<unknown> }
+          | undefined;
+        vp?.render?.();
+        await frame();
+        // Compile the image pipeline: the first REAL render otherwise pays
+        // for shader compile + link (~0.5–0.9 s in software GL, tens of ms on
+        // a GPU) between "files dropped" and the first pixel. One synthetic
+        // 16-bit gradient per texture path (signed: CT; unsigned: MR, CR) —
+        // generated here, never read from a file, never sent anywhere.
+        const loader = (core as unknown as {
+          imageLoader?: { createAndCacheLocalImage?: (id: string, options: Record<string, unknown>) => unknown };
+        }).imageLoader;
+        for (const [suffix, Typed] of [
+          ["int16", Int16Array],
+          ["uint16", Uint16Array],
+        ] as const) {
+          if (!loader?.createAndCacheLocalImage || !vp?.setStack) break;
+          const id = `flowrad-warm:${suffix}`;
+          const side = 64;
+          const scalarData = new Typed(side * side);
+          for (let i = 0; i < scalarData.length; i += 1) scalarData[i] = (i % side) * 16;
+          loader.createAndCacheLocalImage(id, {
+            scalarData,
+            dimensions: [side, side],
+            spacing: [1, 1],
+            origin: [0, 0, 0],
+            direction: [1, 0, 0, 0, 1, 0],
+            frameOfReferenceUID: "flowrad-warm",
+          });
+          warmIds.push(id);
+          await vp.setStack([id], 0);
+          vp.render?.();
+          await frame();
+        }
       } finally {
         try {
           engine.disableElement(viewportId);
@@ -591,6 +630,13 @@ export function prewarmViewerEngine(): void {
           /* engine torn down meanwhile */
         }
         element.remove();
+        for (const id of warmIds) {
+          try {
+            core.cache.removeImageLoadObject(id);
+          } catch {
+            /* already evicted */
+          }
+        }
         markEngineWarm("flowrad:viewer:engine-warm");
       }
     })

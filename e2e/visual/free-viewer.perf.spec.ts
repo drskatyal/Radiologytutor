@@ -41,6 +41,8 @@ const FRAME_P95_BUDGET_MS = 20;
  */
 const FRAME_P95_SOFTWARE_GPU_BUDGET_MS = 34;
 const SCROLL_STEPS = 240;
+/** Fresh-browser launches for the cold first-image gate. */
+const COLD_RUNS = 3;
 /**
  * Close study must give the memory back. Renderer + GPU resident memory has
  * to return to the level measured on the dropzone before the drop (engine,
@@ -288,6 +290,37 @@ test("public, no sign-in: /viewer renders the dropzone with the privacy line and
   const master = fs.readFileSync(path.join(__dirname, "..", "..", "public", "owlscan.svg"));
   expect(Buffer.from(await svg.body()).equals(master), "the served icon is the master SVG").toBe(true);
   await page.screenshot({ path: path.join(OUT_DIR, "01-dropzone.png") });
+});
+
+test("cold browser: first image within budget on a freshly launched browser (no shader or GPU cache)", async ({ playwright }) => {
+  test.skip(!CT_DIR, "TEST_CT_LARGE_DIR is not set");
+  test.setTimeout(180_000);
+  // Every other test shares one browser, so its GPU process has already
+  // compiled the image shaders. A real visitor's first drop does not: launch a
+  // fresh browser per run. The prewarm (CornerstoneViewer prewarmViewerEngine)
+  // must have compiled them on the dropzone, in idle time, before the drop.
+  const runs: number[] = [];
+  for (let run = 0; run < COLD_RUNS; run += 1) {
+    const browser = await playwright.chromium.launch({
+      ...(process.env.PW_CHROMIUM_PATH ? { executablePath: process.env.PW_CHROMIUM_PATH } : {}),
+      args: [...(process.env.PW_CHROMIUM_PATH ? ["--headless", "--no-sandbox"] : []), ...GPU_CANVAS_FLAGS],
+    });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      await page.goto(`http://127.0.0.1:${process.env.VISUAL_PORT ?? 3100}/viewer`);
+      await expect(page.getByTestId("local-dropzone")).toBeVisible();
+      await page.waitForTimeout(2500); // a visitor choosing a folder
+      await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
+      runs.push((await measureFirstImage(page)).firstImageMs);
+    } finally {
+      await browser.close();
+    }
+  }
+  const sorted = [...runs].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  record("coldFirstImage", { runs, medianMs: median, maxMs: sorted[sorted.length - 1] });
+  console.log(`cold-browser first image: ${runs.join(", ")} ms (median ${median})`);
+  for (const ms of runs) expect(ms, "first image on a freshly launched browser").toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
 });
 
 test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({ page, browser }) => {

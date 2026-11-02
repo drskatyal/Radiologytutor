@@ -16,6 +16,7 @@ const perf = read(perfPath) ?? {};
 const ct = perf.ct520;
 const mr = perf.mrZip;
 const cap = perf.memoryCap;
+const cold = perf.coldFirstImage;
 
 const ok = (pass) => (pass ? "✅" : "❌");
 const v = (x, unit = "") => (x == null ? "—" : `${x}${unit}`);
@@ -28,6 +29,14 @@ if (bundle) {
   row("Engine + tools, lazy (loaded on idle / after drop)", `${Math.round(engine)} KB`, "not in shell", null);
   const wasm = (bundle.lazyWasm ?? []).map((f) => `${f.file.split("/").pop().split(".")[0]} ${f.gzipKb} KB`).join(", ");
   row("WASM codecs, lazy (only the transfer syntax in use)", wasm || "—", "not in shell", null);
+}
+if (cold) {
+  row(
+    `First image — CT 520, **freshly launched browser** (${cold.runs.length} launches)`,
+    `${cold.runs.join(" / ")} ms (median ${cold.medianMs})`,
+    "each ≤ 1000 ms",
+    cold.maxMs <= 1000
+  );
 }
 if (ct) {
   row(`First image — ${ct.study}`, v(ct.firstImageMs, " ms"), "≤ 1000 ms", ct.firstImageMs <= 1000);
