@@ -41,6 +41,14 @@ const FRAME_P95_BUDGET_MS = 20;
  */
 const FRAME_P95_SOFTWARE_GPU_BUDGET_MS = 34;
 const SCROLL_STEPS = 240;
+/**
+ * Close study must give the memory back. Renderer + GPU resident memory has
+ * to return to the level measured on the dropzone before the drop (engine,
+ * workers and GL context already warm), within this slack for allocator and
+ * JIT noise — a 263 MB study left behind would miss it by ~5×.
+ */
+const CLOSE_RSS_TOLERANCE_MB = 64;
+const CLOSE_SETTLE_MS = 30_000;
 
 // Chromium with a GPU accelerates 2D canvases by default, so the viewer's
 // WebGL → 2D-canvas copy is a GPU blit. Headless Chromium on a GPU-less runner
@@ -120,7 +128,8 @@ function watchPrivacy(page: Page) {
 async function marks(page: Page) {
   return page.evaluate(() => {
     const all = performance.getEntriesByType("mark");
-    const at = (name: string) => all.find((m) => m.name === name)?.startTime ?? null;
+    // The LATEST mark of each kind: a test can open, close and reopen.
+    const at = (name: string) => all.filter((m) => m.name === name).pop()?.startTime ?? null;
     const received = at("flowrad:viewer:files-received");
     const pixel = all.find((m) => m.name.startsWith("radlearn:first-pixel:") && m.startTime >= (received ?? 0));
     const ready = all.find((m) => m.name.startsWith("radlearn:series-ready:") && m.startTime >= (received ?? 0));
@@ -228,7 +237,7 @@ async function gpuRenderer(page: Page): Promise<string> {
 
 async function viewerStats(page: Page) {
   return page.evaluate(async () => {
-    const w = window as unknown as { __flowradViewerStats?: () => Promise<{ cacheBytes: number; maxCacheBytes: number; openFiles: number }> };
+    const w = window as unknown as { __flowradViewerStats?: () => Promise<{ cacheBytes: number; maxCacheBytes: number; openFiles: number; metadataEntries: number }> };
     return w.__flowradViewerStats ? w.__flowradViewerStats() : null;
   });
 }
@@ -309,14 +318,30 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   const heapOpen = await jsHeapMb(cdp);
   const rssOpen = await rendererRssMb(browser);
 
+  const closedAt = Date.now();
   await page.getByRole("button", { name: "Close study" }).first().click();
   await expect(page.getByTestId("local-dropzone")).toBeVisible();
-  await page.waitForTimeout(500);
-  await cdp.send("HeapProfiler.collectGarbage").catch(() => undefined);
-  await page.waitForTimeout(500);
+  // Regression gate (close → back to the pre-open footprint). No forced GC:
+  // a user's tab only gets the collector's natural schedule, so poll.
+  let rssClosed = await rendererRssMb(browser);
+  if (rssIdle != null) {
+    const deadline = Date.now() + CLOSE_SETTLE_MS;
+    while (rssClosed != null && rssClosed > rssIdle + CLOSE_RSS_TOLERANCE_MB && Date.now() < deadline) {
+      await page.waitForTimeout(500);
+      rssClosed = await rendererRssMb(browser);
+    }
+  }
+  const closeSettleMs = Date.now() - closedAt;
   const statsClosed = await viewerStats(page);
   const heapClosed = await jsHeapMb(cdp);
-  const rssClosed = await rendererRssMb(browser);
+
+  // Reopen after close: the recycled decode/header workers must serve the
+  // next study as fast as the first one.
+  await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
+  const reopen = await measureFirstImage(page);
+  await waitParsed(page);
+  await page.getByRole("button", { name: "Close study" }).first().click();
+  await expect(page.getByTestId("local-dropzone")).toBeVisible();
   const wasm = privacy.wasmFetched();
   const violations = privacy.violations();
 
@@ -330,12 +355,15 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
       cacheCapMb: stats ? Math.round(stats.maxCacheBytes / 1048576) : null,
       cacheAfterCloseMb: statsClosed ? Math.round(statsClosed.cacheBytes / 1048576) : null,
       filesAfterClose: statsClosed?.openFiles ?? null,
+      metadataEntriesAfterClose: statsClosed?.metadataEntries ?? null,
+      closeSettleMs,
       jsHeapOpenMb: heapOpen,
       jsHeapClosedMb: heapClosed,
       rendererRssIdleMb: rssIdle,
       rendererRssOpenMb: rssOpen,
       rendererRssClosedMb: rssClosed,
     },
+    reopenFirstImageMs: reopen.firstImageMs,
     wasmFetched: wasm,
     requestsAfterDrop: privacy.requestCount(),
     privacyViolations: violations,
@@ -352,6 +380,14 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   expect(wasm, "uncompressed CT must not load any WASM codec").toEqual([]);
   expect(statsClosed?.cacheBytes, "Close study frees the decoded cache").toBe(0);
   expect(statsClosed?.openFiles, "Close study drops every file handle").toBe(0);
+  expect(statsClosed?.metadataEntries, "Close study drops every cached Part 10 buffer (NATURALIZED metadata)").toBe(0);
+  if (rssIdle != null && rssClosed != null) {
+    expect(
+      rssClosed,
+      `renderer + GPU memory returns to the pre-open baseline (${rssIdle} MB + ${CLOSE_RSS_TOLERANCE_MB} MB) within ${CLOSE_SETTLE_MS / 1000} s of Close study`
+    ).toBeLessThanOrEqual(rssIdle + CLOSE_RSS_TOLERANCE_MB);
+  }
+  expect(reopen.firstImageMs, "first image when reopening after Close study").toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
 });
 
 test("memory cap: a 2 GB device scrolls all 520 slices under its cap (eviction), then frees on close", async ({ browser }) => {
