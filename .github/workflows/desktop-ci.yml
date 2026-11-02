@@ -255,6 +255,10 @@ jobs:
           FLOWRAD_NATIVE: "1"
           FLOWRAD_BENCH_VIEW: native-spike
         run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+      - name: P2.1 — cold start in native mode (native first paint before WebView2 loads; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5
       - name: P2.0 e2e — native wgpu surface under a transparent WebView2 (screen grab)
         run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots"
       - name: Upload the P2.0 screen grab

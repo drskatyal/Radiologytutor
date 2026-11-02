@@ -217,7 +217,7 @@ async function benchColdStart(binary) {
     external.push(report.externalMs);
     for (const k of Object.keys(stages)) if (typeof report[k] === "number") stages[k].push(report[k]);
     console.error(
-      `run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms · window built ${r0(report.windowBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms`
+      `run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms · window built ${r0(report.windowBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms${report.nativeFirstPaintMs != null ? ` · native first paint ${r0(report.nativeFirstPaintMs)} ms` : ""}`
     );
   }
   // Where the time goes before first paint: Rust + window creation
