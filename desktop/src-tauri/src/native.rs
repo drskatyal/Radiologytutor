@@ -134,16 +134,22 @@ impl Native {
         s
     }
 
-    /// Create the surface on the window and the device. Idempotent.
-    pub fn init(&self, window: &tauri::WebviewWindow) -> NativeStatus {
+    /// Create the surface on the window and the device. Idempotent. Async:
+    /// it runs inside Tauri's async runtime (a blocking wait there panics).
+    pub async fn init(&self, window: &tauri::WebviewWindow) -> NativeStatus {
         if self.gpu.lock().is_some() || !enabled() {
             return self.status();
         }
         *self.wl.lock() = (32768.0, 65535.0);
         let started = Instant::now();
-        match pollster_block(create_gpu(window)) {
+        let created = create_gpu(window).await;
+        match created {
             Ok((gpu, adapter, backend)) => {
-                *self.gpu.lock() = Some(gpu);
+                let mut slot = self.gpu.lock();
+                if slot.is_none() {
+                    *slot = Some(gpu);
+                }
+                drop(slot);
                 let mut s = self.status.lock();
                 s.ready = true;
                 s.adapter = Some(adapter);
@@ -253,10 +259,6 @@ impl Native {
 fn bytemuck_cast(data: &[f32; 8]) -> &[u8] {
     // SAFETY: [f32; 8] is 32 plain bytes with no padding.
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
-}
-
-fn pollster_block<F: std::future::Future>(f: F) -> F::Output {
-    tauri::async_runtime::block_on(f)
 }
 
 async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
