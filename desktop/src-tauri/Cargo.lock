@@ -1371,6 +1371,7 @@ dependencies = [
 name = "flowrad-viewer"
 version = "0.8.1"
 dependencies = [
+ "block2",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-encoding",
@@ -1382,6 +1383,8 @@ dependencies = [
  "libmimalloc-sys",
  "memmap2",
  "mimalloc",
+ "objc2",
+ "objc2-app-kit",
  "parking_lot",
  "percent-encoding",
  "png",

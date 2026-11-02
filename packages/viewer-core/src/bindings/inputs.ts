@@ -126,9 +126,51 @@ export function wheelSpecOf(e: ModState = {}, mac = isMac()): string {
   return [...modsOf(e, mac), "Wheel"].join("+");
 }
 
+/**
+ * Which inputs a page must get from the OS directly because its webview can't
+ * report them (macOS WKWebView: side buttons arrive as "middle", tilt as
+ * trackpad-like pixels): mouse buttons 3+ (back, forward, 5, 6…) and tilt.
+ */
+export function nativeMouseWanted(specs: Iterable<string>): { buttons: boolean; tilt: boolean } {
+  let buttons = false;
+  let tilt = false;
+  for (const s of specs) {
+    const b = mouseButtonOf(s);
+    if (b !== null && b >= 3) buttons = true;
+    const token = parseSpec(s).token;
+    if (token === "WheelLeft" || token === "WheelRight") tilt = true;
+    if (buttons && tilt) break;
+  }
+  return { buttons, tilt };
+}
+
+/** A wheel event, as much of it as tilt detection needs. */
+export interface WheelLike extends ModState {
+  deltaX: number;
+  deltaY: number;
+  /** 0 pixel, 1 line, 2 page (WheelEvent.deltaMode). */
+  deltaMode?: number;
+  /** Legacy WebKit / Chromium wheelDeltaX: ±120 per notch of a notched wheel. */
+  wheelDeltaX?: number;
+}
+
+/**
+ * macOS: is this horizontal scroll a notched tilt wheel rather than a
+ * trackpad / Magic Mouse swipe (or its momentum)? Trackpads report precise
+ * pixel deltas, so on a Mac only a line-mode event (the desktop app's native
+ * monitor sends tilt that way) or a legacy ±120-per-notch wheelDeltaX counts.
+ */
+export function isNotchedHorizontal(e: WheelLike): boolean {
+  if (e.deltaMode === 1 || e.deltaMode === 2) return true;
+  const w = e.wheelDeltaX;
+  return typeof w === "number" && w !== 0 && w % 120 === 0 && w !== -3 * e.deltaX;
+}
+
 /** A horizontal wheel / tilt notch, or null for a vertical one. */
-export function tiltSpecOf(e: ModState & { deltaX: number; deltaY: number }, mac = isMac()): string | null {
+export function tiltSpecOf(e: WheelLike, mac = isMac()): string | null {
   if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || e.deltaX === 0) return null;
+  // A trackpad's sideways swipe is not a tilt notch (macOS).
+  if (mac && !isNotchedHorizontal(e)) return null;
   // Browsers turn Shift+wheel into deltaX; that stays the vertical wheel
   // (Shift+tilt is therefore not distinguishable, and not offered).
   if (e.shiftKey) return null;
