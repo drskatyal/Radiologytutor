@@ -110,21 +110,22 @@ fn save_cache(path: &Path, headers: &[Header]) {
 /// Header reads are I/O-latency bound (open, antivirus callback, first 64 KB),
 /// not CPU bound, so the scan runs on its own pool with twice the cores:
 /// while half the threads wait on the disk the other half parse.
-pub(crate) fn scan_pool() -> &'static rayon::ThreadPool {
-    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        // Opening files is the cold cost (Windows: an antivirus callback per
-        // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
-        // it overlaps well: keep many opens in flight, not just one per core.
-        rayon::ThreadPoolBuilder::new()
-            .num_threads((cores * 4).clamp(16, 64))
-            .thread_name(|i| format!("scan-{i}"))
-            .build()
-            .expect("scan thread pool")
-    })
+///
+/// Built per scan and dropped with it: its 16-64 threads (stacks, per-thread
+/// allocator heaps) exit when the scan ends instead of idling for the rest of
+/// the session with the scan's leftovers (the 0.8.2 close gate).
+fn scan_pool() -> rayon::ThreadPool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Opening files is the cold cost (Windows: an antivirus callback per
+    // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
+    // it overlaps well: keep many opens in flight, not just one per core.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads((cores * 4).clamp(16, 64))
+        .thread_name(|i| format!("scan-{i}"))
+        .build()
+        .expect("scan thread pool")
 }
 
 /// `dir` when it holds exactly one folder and nothing else (dotfiles aside).
@@ -316,7 +317,8 @@ pub fn scan(
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_micros);
-    let mut headers: Vec<(Header, bool)> = scan_pool().install(|| {
+    let pool = scan_pool();
+    let mut headers: Vec<(Header, bool)> = pool.install(|| {
         files
             .par_iter()
             .filter_map(|path| {

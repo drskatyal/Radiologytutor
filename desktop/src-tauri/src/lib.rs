@@ -52,15 +52,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 ///
 /// Every thread: mimalloc keeps a heap per thread, and a block freed by
 /// another thread (the slice cache is cleared on the command thread, but the
-/// slices were decoded on rayon workers; the scan's headers on the scan pool)
-/// only goes back to its owner's heap, which purges it on its own next
-/// allocation or collect. An idle worker never does: the closed study's
-/// slices stayed committed (CI 0.8.2 close gate: the app process kept
-/// +105 MB 30 s after close). So each pool's threads collect themselves.
+/// slices were decoded on rayon workers) only goes back to its owner's heap,
+/// which purges it on its own next allocation or collect. An idle worker
+/// never does: the closed study's slices stayed committed (CI 0.8.2 close
+/// gate: the app process kept +105 MB 30 s after close). So every worker
+/// collects itself (the scan's pool is per scan; its threads exit with it).
 pub(crate) fn release_memory() {
-    let collect = |_: rayon::BroadcastContext<'_>| unsafe { libmimalloc_sys::mi_collect(true) };
-    rayon::broadcast(collect);
-    scan::scan_pool().broadcast(collect);
+    rayon::broadcast(|_| unsafe { libmimalloc_sys::mi_collect(true) });
     unsafe {
         libmimalloc_sys::mi_collect(true);
     }
@@ -616,13 +614,21 @@ fn native_close(native: tauri::State<'_, native::Shared>) {
     let after_clear = commit_mb();
     release_memory();
     let after_release = commit_mb();
-    // Work that was mid-decode when the cache was cleared lands afterwards:
-    // collect once more when it has drained.
-    std::thread::spawn(|| {
+    // Calls already in flight when the study closed (a viewport's last
+    // view / scroll, the prefetch behind it) land after the clear and put
+    // slices back (CI: 26 slices, 13 MB, after close). Once they have
+    // drained, and if no viewport exists by then (nothing open, so the cache
+    // serves nobody), empty the cache again and collect.
+    let native = native.inner().clone();
+    std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(2));
+        let swept = native.sweep_if_idle();
         release_memory();
         if bench_on() {
-            bench_emit("FLOWRAD_BENCH_CLOSE", &serde_json::json!({ "step": "late release", "commitMb": commit_mb() }));
+            bench_emit(
+                "FLOWRAD_BENCH_CLOSE",
+                &serde_json::json!({ "step": "late sweep", "swept": swept, "store": native.store().stats(), "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb() }),
+            );
         }
     });
     if bench_on() {
@@ -631,10 +637,39 @@ fn native_close(native: tauri::State<'_, native::Shared>) {
             &serde_json::json!({
                 "held": held,
                 "commitMb": { "before": before, "afterClear": after_clear, "afterRelease": after_release },
+                "heapCommittedMb": heap_committed_mb(),
             }),
         );
     }
 }
+
+extern "C" {
+    // mimalloc-stats.h (v3): the allocator's statistics as JSON; the result is
+    // mi_malloc'ed when `buf` is null.
+    fn mi_stats_get_json(buf_size: usize, buf: *mut std::ffi::c_char) -> *mut std::ffi::c_char;
+}
+
+/// What mimalloc itself has committed, MB (the Rust heap's share of the
+/// process's private bytes; the rest is D3D / WARP, DLLs, stacks).
+pub(crate) fn heap_committed_mb() -> Option<f64> {
+    let json = unsafe {
+        let p = mi_stats_get_json(0, std::ptr::null_mut());
+        if p.is_null() {
+            return None;
+        }
+        let s = std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+        libmimalloc_sys::mi_free(p.cast());
+        s
+    };
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let current = v.get("committed")?.get("current")?.as_f64()?;
+    Some((current / 1_048_576.0 * 10.0).round() / 10.0)
+}
+
+/// mimalloc option `purge_delay` (v3 `mi_option_e` index 15): ms before
+/// freed memory is decommitted. 0 = at once, on every thread, without
+/// waiting for a collect that an idle thread never runs.
+const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
 /// This process's committed memory (private bytes), MB, from the allocator's
 /// view of the OS counters.
@@ -941,6 +976,8 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    // Freed memory goes back to the OS at once (see MI_OPTION_PURGE_DELAY).
+    unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
     // The GPU device and pipelines build on their own thread from here, in
     // parallel with WebView2 starting (native.rs `prewarm`).
     native::prewarm();
@@ -1126,6 +1163,16 @@ mod tests {
         super::commit_mb()
     }
 
+    /// The option index we set at start-up really is mimalloc's purge delay
+    /// (v3 default 1000 ms), and the heap statistic the close report uses reads.
+    #[test]
+    fn mimalloc_purge_option_and_heap_stat() {
+        let delay = unsafe { libmimalloc_sys::mi_option_get(super::MI_OPTION_PURGE_DELAY) };
+        assert!(delay == 1000 || delay == 0, "option {} is not purge_delay (value {delay})", super::MI_OPTION_PURGE_DELAY);
+        let heap = super::heap_committed_mb().expect("mimalloc stats JSON");
+        assert!(heap > 0.0, "heap committed {heap} MB");
+    }
+
     /// The close-gate root cause: blocks allocated on idle rayon workers and
     /// freed on another thread stay with the workers' heaps until those
     /// threads collect. `release_memory` must hand them back to the OS.
@@ -1141,8 +1188,9 @@ mod tests {
         super::release_memory();
         let released = held_mb();
         eprintln!("held MB: base {base:.0} · 192 MB decoded {held:.0} · freed {freed:.0} · after release_memory {released:.0}");
+        // Relative to the peak: other tests share this process and allocate meanwhile.
         assert!(held - base > 150.0, "the slices were not resident? {base:.0} -> {held:.0}");
-        assert!(released - base < 48.0, "release_memory kept {:.0} MB of 192 freed ({base:.0} -> {released:.0})", released - base);
+        assert!(held - released > 128.0, "release_memory returned only {:.0} of 192 MB freed ({held:.0} -> {released:.0})", held - released);
     }
 
     /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test inflates
