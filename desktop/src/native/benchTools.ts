@@ -8,6 +8,9 @@ const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function driveNativeTools(setTool: (t: string) => void) {
+  // Draw only once the viewport's image <-> cell mapping is valid (it follows
+  // the first layout by a frame or two), as a reader's first click would.
+  for (let i = 0; i < 100 && !document.querySelector('[data-native-viewport][data-native-ready="1"]'); i += 1) await wait(50);
   const svg = document.querySelector("[data-native-viewport] [data-native-annotations]") as SVGSVGElement | null;
   if (!svg) return { error: "no native viewport with an annotation layer" };
   const r = svg.getBoundingClientRect();
