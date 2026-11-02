@@ -20,7 +20,7 @@ import { invoke } from "../platform";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
-import { registerNativeCell } from "./nativeLayout";
+import { onNativeLayoutApplied, registerNativeCell } from "./nativeLayout";
 import type { NativeTransform, NativeView } from "./transform";
 
 export interface NativeShow {
@@ -122,6 +122,21 @@ export default function NativeStackViewport({
     },
     [pump]
   );
+
+  // The cell's size changed (layout applied): refresh the view so the
+  // transform the overlays and tools use matches the new size.
+  useEffect(() => {
+    let size = "";
+    return onNativeLayoutApplied(() => {
+      const el = elementRef.current;
+      if (!el || !shownRef.current) return;
+      const next = `${el.clientWidth}x${el.clientHeight}`;
+      const t = shownRef.current.transform;
+      if (next === size && t.scale > 0) return;
+      size = next;
+      void change({});
+    });
+  }, [change]);
 
   // ── the series ──
   useEffect(() => {
