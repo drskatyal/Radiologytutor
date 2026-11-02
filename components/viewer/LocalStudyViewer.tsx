@@ -38,14 +38,18 @@ import {
   X,
 } from "lucide-react";
 import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
-import { Button, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
+import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
+import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
+import { isSeriesPanelShortcut } from "@flowrad/viewer-core";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
-import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
+import { primarySeriesIndexByProtocol, thumbnailImageId } from "@flowrad/viewer-core";
+import { createLocalThumbnailer, type LocalThumbnailer } from "@flowrad/viewer-core/localThumbnails";
+import { LocalSeriesThumb } from "@/components/viewer/LocalSeriesThumb";
 import {
   ingestLocalFiles,
   prewarmLocalIngest,
@@ -163,6 +167,14 @@ type DirectoryPickerWindow = Window & {
 export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) {
   const reading = tone === "reading";
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
+  // Series panel (reading room): collapsible to a rail, remembered per device.
+  const seriesPanel = useSeriesPanel();
+  const [modKey, setModKey] = useState("Ctrl");
+  useEffect(() => {
+    if (/Mac|iPhone|iPad/.test(navigator.platform)) setModKey("⌘");
+  }, []);
+  /** The first image of the open study is on screen (thumbnails may start). */
+  const [firstImageUp, setFirstImageUp] = useState(false);
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
   // Voice commands stay on across series (each series mounts its own viewer).
@@ -289,6 +301,22 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       .catch(() => undefined);
   }, []);
 
+  // Ctrl+B / Cmd+B: show / hide the series panel (reading room, wide screens).
+  const togglePanel = seriesPanel.toggle;
+  useEffect(() => {
+    if (!reading) return;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const onKey = (e: KeyboardEvent) => {
+      if (!isSeriesPanelShortcut(e, mac)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      togglePanel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reading, togglePanel]);
+
   // Leaving the page frees the study (SPA navigation away included).
   useEffect(
     () => () => {
@@ -375,6 +403,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       abortRef.current = controller;
       setActiveStudy(0);
       setActiveSeries(0);
+      setFirstImageUp(false);
       setPhase({ state: "reading", progress: { read: 0, accepted: 0, total: files.length }, pinned: null });
 
       // The full stack for the first image's series, resolved when parsing ends.
@@ -621,6 +650,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, []);
 
   const result = phase.state === "open" ? phase.result : null;
+
+  // Series thumbnails: one thumbnailer per opened study, freed with it. It
+  // waits for the first image (`firstImageUp`) so it never competes with it.
+  const thumbs = useMemo(() => (result ? createLocalThumbnailer() : null), [result]);
+  useEffect(() => () => thumbs?.dispose(), [thumbs]);
+  useEffect(() => {
+    if (thumbs && firstImageUp) thumbs.start();
+  }, [thumbs, firstImageUp]);
+  const imageIdsFor = useCallback(
+    (item: LocalSeries) => (result ? seriesImageIds(item, result.imageIdsByFile) : []),
+    [result]
+  );
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
@@ -691,6 +732,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           }}
           onSeries={pickSeries}
           dark={reading}
+          thumbs={thumbs}
+          imageIdsFor={imageIdsFor}
         />
       ) : phase.state === "reading" ? (
         <ReadingProgress progress={phase.progress} dark={reading} />
@@ -778,12 +821,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           onDrop={reading ? onDrop : undefined}
         >
           {reading ? (
-            <aside
-              aria-label="Series"
-              className="hidden w-72 shrink-0 flex-col overflow-y-auto border-r border-white/10 bg-imaging p-3 lg:flex"
+            <CollapsiblePanel
+              label="Series"
+              collapsed={seriesPanel.collapsed}
+              onToggle={seriesPanel.toggle}
+              shortcut={[modKey, "B"]}
+              widthClassName="w-72"
+              className="hidden lg:flex"
             >
-              {sidePanel}
-            </aside>
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">{sidePanel}</div>
+            </CollapsiblePanel>
           ) : (
             <Panel className="hidden w-full shrink-0 lg:block lg:w-64" title="Series">
               {sidePanel}
@@ -879,6 +926,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp
+                seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                 onChunkLoadError={recoverFromChunkError}
                 voiceOn={voiceOn}
                 onVoiceChange={setVoiceOn}
@@ -887,6 +935,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                   if (count > 1) pickSeries((activeSeries + delta + count) % count);
                 }}
                 onReady={(controls) => {
+                  setFirstImageUp(true);
                   const slice = pendingSlice.current;
                   if (slice == null || slice < 0) return;
                   pendingSlice.current = null;
@@ -957,6 +1006,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 }}
                 onSeries={pickSeries}
                 hideHeading
+                thumbs={thumbs}
+                imageIdsFor={imageIdsFor}
               />
             ) : phase.state === "reading" ? (
               <ReadingProgress progress={phase.progress} />
@@ -1145,6 +1196,8 @@ function SeriesList({
   onSeries,
   hideHeading = false,
   dark = false,
+  thumbs,
+  imageIdsFor,
 }: {
   result: LocalIngestResult;
   study: LocalStudy;
@@ -1154,6 +1207,8 @@ function SeriesList({
   onSeries: (index: number) => void;
   hideHeading?: boolean;
   dark?: boolean;
+  thumbs: LocalThumbnailer | null;
+  imageIdsFor: (series: LocalSeries) => string[];
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -1187,36 +1242,56 @@ function SeriesList({
           </select>
         </label>
       )}
-      <ul className="flex flex-col gap-1">
-        {study.series.map((item, index) => (
-          <li key={item.seriesInstanceUID}>
-            <button
-              type="button"
-              onClick={() => onSeries(index)}
-              aria-pressed={index === activeSeries}
-              className={cn(
-                // 44px rows: a thumb-sized target in the phone drawer.
-                "min-h-11 w-full rounded-lg px-2 py-2 text-left text-xs transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                dark
-                  ? index === activeSeries
-                    ? "bg-white/[0.12] text-white"
-                    : "text-white/70 hover:bg-white/[0.06] hover:text-white"
-                  : index === activeSeries
-                    ? "bg-accent-muted/40 text-primary"
-                    : "text-secondary hover:bg-elevated/60 hover:text-primary"
-              )}
-            >
-              <span className="block font-medium tabular-nums">
-                {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
-                {item.modality || "DICOM"}
-              </span>
-              <span className={cn("block truncate", dark ? "text-white/60" : "text-secondary")}>
-                {describeLocalSeries(item)}
-              </span>
-            </button>
-          </li>
-        ))}
+      <ul className="grid grid-cols-2 gap-2" aria-label="Series">
+        {study.series.map((item, index) => {
+          const ids = imageIdsFor(item);
+          const selected = index === activeSeries;
+          return (
+            <li key={item.seriesInstanceUID}>
+              <button
+                type="button"
+                onClick={() => onSeries(index)}
+                aria-pressed={selected}
+                title={describeLocalSeries(item)}
+                className={cn(
+                  "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left text-[11px] transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                  dark
+                    ? selected
+                      ? "border-accent bg-white/[0.10] text-white"
+                      : "border-transparent text-white/70 hover:border-white/15 hover:bg-white/[0.05] hover:text-white"
+                    : selected
+                      ? "border-accent bg-accent-muted/40 text-primary"
+                      : "border-transparent text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
+                )}
+              >
+                <LocalSeriesThumb
+                  thumbs={thumbs}
+                  seriesKey={item.seriesInstanceUID}
+                  imageId={thumbnailImageId(ids)}
+                  dark={dark}
+                />
+                <span className="flex items-baseline gap-1 px-0.5 font-medium tabular-nums">
+                  <span className="truncate">
+                    {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
+                    {item.modality || "DICOM"}
+                  </span>
+                  <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
+                    {formatCount(item.imageCount)} im
+                  </span>
+                </span>
+                <span
+                  className={cn(
+                    "line-clamp-2 min-h-[2lh] px-0.5 leading-tight",
+                    dark ? "text-white/60 group-hover:text-white/80" : "text-secondary group-hover:text-primary"
+                  )}
+                >
+                  {item.description?.trim() || "No description"}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

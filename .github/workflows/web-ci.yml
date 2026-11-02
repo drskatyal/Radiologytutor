@@ -63,6 +63,8 @@ jobs:
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-520" --slices 520
           python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-40" --slices 40 --size 256
+          python3 scripts/make-test-multiseries.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-multi"
       - name: Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Visual regression + perf + privacy gates (/viewer/local, /viewer)
@@ -71,6 +73,7 @@ jobs:
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
           TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
+          TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
         # One worker: the perf gates measure frame times and must not share
         # the runner's cores with another test (nor the voice recognizer's WASM).
         run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"

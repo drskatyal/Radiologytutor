@@ -23,6 +23,8 @@ export type ShortcutAction =
   | { type: "invert" }
   | { type: "rotate"; degrees: number }
   | { type: "flip"; axis: "h" | "v" }
+  /** Rotation and flips back to the file's orientation (zoom, pan, window kept). */
+  | { type: "orientReset" }
   | { type: "reset" }
   | { type: "cine" }
   | { type: "cineFps"; delta: number }
@@ -34,6 +36,7 @@ export type ShortcutAction =
   | { type: "toggleSyncZoom" }
   | { type: "linkAtCurrent" }
   | { type: "toggleReferenceLines" }
+  /** Show / hide (collapse to a rail) the series panel. */
   | { type: "toggleBrowser" }
   | { type: "fullscreen" }
   | { type: "distractionFree" }
@@ -126,7 +129,8 @@ export const BINDINGS: Binding[] = [
   tool("a", "Angle", "Angle"),
   tool("c", "CobbAngle", "Cobb angle"),
   tool("e", "EllipticalROI", "Ellipse ROI (mean / SD / area)"),
-  tool("r", "RectangleROI", "Rectangle ROI"),
+  // R is rotate (as on the web viewer); the rectangle is S (square).
+  tool("s", "RectangleROI", "Rectangle ROI"),
   tool("o", "CircleROI", "Circle ROI"),
   tool("n", "PlanarFreehandROI", "Freehand ROI"),
   tool("x", "Probe", "Pixel value probe"),
@@ -165,14 +169,16 @@ export const BINDINGS: Binding[] = [
   { id: "invert", keys: "I", does: "Invert greyscale", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "i"), action: { type: "invert" } },
   { keys: "H / V", does: "Flip horizontal / vertical", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "h"), action: { type: "flip", axis: "h" } },
   { keys: "", does: "", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "v"), action: { type: "flip", axis: "v" } },
-  { keys: "Q / Shift+Q", does: "Rotate 90° right / left", group: "View", match: (e, m) => plain(e, m) && keyIs(e, "q"), action: { type: "rotate", degrees: 90 } },
+  { id: "rotate", keys: "R / Shift+R", does: "Rotate 90° clockwise / anticlockwise", group: "View", match: (e, m) => plain(e, m) && keyIs(e, "r"), action: { type: "rotate", degrees: 90 } },
+  // Q / Shift+Q: the earlier rotate keys keep working (not listed twice).
+  { keys: "", does: "", group: "View", match: (e, m) => plain(e, m) && keyIs(e, "q"), action: { type: "rotate", degrees: 90 } },
   { keys: "Esc", does: "Cancel the tool / drawing · leave full screen", group: "View", match: (e) => e.key === "Escape", action: { type: "escape" } },
   { id: "reset", keys: "Backspace", does: "Reset zoom, pan, window, rotation", group: "View", match: (e, m) => plain(e, m) && keyIs(e, "Backspace"), action: { type: "reset" } },
   { keys: "Mod+Shift+F12", does: "Show / hide DICOM overlay", group: "View", match: (e, m) => m && !!e.shiftKey && e.key === "F12", action: { type: "toggleOverlay" } },
   { keys: "F12", does: "Show / hide annotations", group: "View", match: (e, m) => !m && e.key === "F12", action: { type: "toggleAnnotations" } },
   { keys: "F", does: "Full screen", group: "View", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "f"), action: { type: "fullscreen" } },
   { keys: "Shift+Alt+Enter", does: "Distraction-free reading", group: "View", match: (e) => !!e.shiftKey && !!e.altKey && e.key === "Enter", action: { type: "distractionFree" } },
-  { keys: "Mod+B", does: "Show / hide series browser", group: "View", match: (e, m) => m && !e.shiftKey && keyIs(e, "b"), action: { type: "toggleBrowser" } },
+  { keys: "Mod+B", does: "Show / hide the series panel", group: "View", match: (e, m) => m && !e.shiftKey && keyIs(e, "b"), action: { type: "toggleBrowser" } },
 
   // Window
   { keys: "1 … 9", does: "Window presets (by modality)", group: "Window", match: (e, m) => plain(e, m) && !e.shiftKey && digit(e) >= 1 && digit(e) <= 9, action: { type: "preset", ordinal: 1 } },
