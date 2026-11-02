@@ -247,6 +247,18 @@ export function keysForAction(action: ShortcutAction, overrides: ShortcutOverrid
   return keyLabel(spec, mac);
 }
 
+/**
+ * Every key that selects a left-button tool, for tooltips and menus: "M / L"
+ * for Length, "S" for the rectangle ROI. Read from BINDINGS (re-mappings
+ * win), so a moved key can never leave a stale tooltip behind.
+ */
+export function toolKeyLabel(tool: string, overrides: ShortcutOverrides = {}, mac = isMac()): string | undefined {
+  const keys = BINDINGS.filter((b) => b.action.type === "tool" && b.action.tool === tool && b.keys).map((b) =>
+    keyLabel((b.id && overrides[b.id]) || b.keys, mac)
+  );
+  return keys.length ? keys.join(" / ") : undefined;
+}
+
 export function isMac(): boolean {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }

@@ -59,9 +59,11 @@ import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/components/ui/cn";
 import { ORIENTATION_COMMANDS, type OrientationCommand, type WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
-import { LAYOUT_SHORTCUTS, keyLabel } from "../shortcuts";
+import { LAYOUT_SHORTCUTS, keyLabel, toolKeyLabel, type ShortcutOverrides } from "../shortcuts";
 
 export interface ToolbarProps {
+  /** The reader's key re-mappings (Settings): tooltips show the keys that work. */
+  shortcuts?: ShortcutOverrides;
   leftTool: string;
   onTool: (tool: string) => void;
   presets: WindowPreset[];
@@ -193,23 +195,25 @@ function Divider() {
   return <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-subtle" />;
 }
 
-const MEASURE: { tool: string; label: string; key: string; icon: ReactNode }[] = [
-  { tool: "Length", label: "Measure length", key: "M / L", icon: <Ruler /> },
-  { tool: "Angle", label: "Angle", key: "A", icon: <Triangle /> },
-  { tool: "CobbAngle", label: "Cobb angle", key: "C", icon: <Spline /> },
-  { tool: "EllipticalROI", label: "Ellipse ROI", key: "E", icon: <Circle /> },
-  { tool: "RectangleROI", label: "Rectangle ROI", key: "R", icon: <Square /> },
-  { tool: "PlanarFreehandROI", label: "Freehand ROI", key: "N", icon: <PenLine /> },
-  { tool: "Probe", label: "Pixel probe", key: "X", icon: <Pipette /> },
-  { tool: "ArrowAnnotate", label: "Arrow", key: "Y", icon: <ArrowUpRight /> },
+// Keys come from the bindings table (toolKeyLabel), never typed here.
+const MEASURE: { tool: string; label: string; icon: ReactNode }[] = [
+  { tool: "Length", label: "Measure length", icon: <Ruler /> },
+  { tool: "Angle", label: "Angle", icon: <Triangle /> },
+  { tool: "CobbAngle", label: "Cobb angle", icon: <Spline /> },
+  { tool: "EllipticalROI", label: "Ellipse ROI", icon: <Circle /> },
+  { tool: "RectangleROI", label: "Rectangle ROI", icon: <Square /> },
+  { tool: "PlanarFreehandROI", label: "Freehand ROI", icon: <PenLine /> },
+  { tool: "Probe", label: "Pixel probe", icon: <Pipette /> },
+  { tool: "ArrowAnnotate", label: "Arrow", icon: <ArrowUpRight /> },
 ];
 
 export function Toolbar(props: ToolbarProps) {
   const { leftTool, onTool } = props;
+  const keyOf = (tool: string) => toolKeyLabel(tool, props.shortcuts);
   const extraMeasure = [
-    { tool: "CircleROI", label: "Circle ROI", key: "O", icon: <Circle /> },
-    { tool: "Bidirectional", label: "Bidirectional", key: "D", icon: <Crosshair /> },
-    { tool: "Magnify", label: "Magnifying glass", key: "G", icon: <Search /> },
+    { tool: "CircleROI", label: "Circle ROI", icon: <Circle /> },
+    { tool: "Bidirectional", label: "Bidirectional", icon: <Crosshair /> },
+    { tool: "Magnify", label: "Magnifying glass", icon: <Search /> },
   ];
   const extraActive = extraMeasure.find((m) => m.tool === leftTool);
 
@@ -239,25 +243,25 @@ export function Toolbar(props: ToolbarProps) {
 
 {!props.volumeView && (
         <>
-      <Tool label="Browse slices" shortcut="B" active={leftTool === "StackScroll"} onClick={() => onTool("StackScroll")}>
+      <Tool label="Browse slices" shortcut={keyOf("StackScroll")} active={leftTool === "StackScroll"} onClick={() => onTool("StackScroll")}>
         <MousePointer2 />
       </Tool>
-      <Tool label="Window / level" shortcut="W · right drag" active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
+      <Tool label="Window / level" shortcut={`${keyOf("WindowLevel")} · right drag`} active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
         <SunMedium />
       </Tool>
-      <Tool label="Pan" shortcut="P · middle drag" active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
+      <Tool label="Pan" shortcut={`${keyOf("Pan")} · middle drag`} active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
         <Hand />
       </Tool>
-      <Tool label="Zoom" shortcut={`Z · ${keyLabel("Mod+")}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
+      <Tool label="Zoom" shortcut={`${keyOf("Zoom")} · ${keyLabel("Mod+")}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
         <ZoomIn />
       </Tool>
       <Divider />
       {MEASURE.map((m) => (
-        <Tool key={m.tool} label={m.label} shortcut={m.key} active={leftTool === m.tool} onClick={() => onTool(m.tool)}>
+        <Tool key={m.tool} label={m.label} shortcut={keyOf(m.tool)} active={leftTool === m.tool} onClick={() => onTool(m.tool)}>
           {m.icon}
         </Tool>
       ))}
-      <Tool label="Eraser (click an annotation to delete it)" shortcut="Shift+E" active={leftTool === "Eraser"} onClick={() => onTool("Eraser")}>
+      <Tool label="Eraser (click an annotation to delete it)" shortcut={keyOf("Eraser")} active={leftTool === "Eraser"} onClick={() => onTool("Eraser")}>
         <Eraser />
       </Tool>
       <MenuRoot>
@@ -274,7 +278,7 @@ export function Toolbar(props: ToolbarProps) {
         </MenuTrigger>
         <MenuContent>
           {extraMeasure.map((m) => (
-            <MenuItem key={m.tool} icon={m.icon} shortcut={m.key} checked={leftTool === m.tool} onSelect={() => onTool(m.tool)}>
+            <MenuItem key={m.tool} icon={m.icon} shortcut={keyOf(m.tool)} checked={leftTool === m.tool} onSelect={() => onTool(m.tool)}>
               {m.label}
             </MenuItem>
           ))}
