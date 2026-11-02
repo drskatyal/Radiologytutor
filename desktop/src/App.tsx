@@ -10,7 +10,9 @@ import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
-import type { WindowPreset } from "@flowrad/viewer-core";
+import type { OrientationCommand, WindowPreset } from "@flowrad/viewer-core";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import type { ExportKind } from "./components/ExportDialog";
 import {
   appVersion,
@@ -219,7 +221,8 @@ export default function App() {
   /** Window/level and zoom/pan follow the active viewport across the visible ones. */
   const [syncVoi, setSyncVoi] = useState(false);
   const [syncZoom, setSyncZoom] = useState(false);
-  const [browserOpen, setBrowserOpen] = useState(true);
+  // Series panel: collapses to a rail (Mod+B, chevron, right-click), remembered per device.
+  const seriesPanel = useSeriesPanel();
   const [distractionFree, setDistractionFree] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState<"grid" | VolumeMode>("grid");
@@ -1596,6 +1599,8 @@ export default function App() {
           return handle?.rotate(action.degrees);
         case "flip":
           return handle?.flip(action.axis);
+        case "orientReset":
+          return handle?.resetOrientation();
         case "reset":
           return handle?.reset();
         case "cine":
@@ -1625,7 +1630,7 @@ export default function App() {
         case "toggleReferenceLines":
           return setReferenceLines((v) => !v);
         case "toggleBrowser":
-          return setBrowserOpen((v) => !v);
+          return seriesPanel.toggle();
         case "export":
           if (view !== "grid") return;
           setExportInitial(undefined);
@@ -1691,6 +1696,10 @@ export default function App() {
         return { type: "rotate", degrees: Number(arg) };
       case "flip":
         return { type: "flip", axis: arg === "v" ? "v" : "h" };
+      case "orient":
+        return { type: "orientReset" };
+      case "seriesPanel":
+        return { type: "toggleBrowser" };
       case "reset":
         return { type: "reset" };
       case "reformat":
@@ -1733,6 +1742,15 @@ export default function App() {
       }
     },
     [toast]
+  );
+
+  /** Toolbar rotate / flip dropdown: the same actions as the keys and the menu. */
+  const runOrientation = useCallback(
+    (command: OrientationCommand) => {
+      const action = commandAction(command, []);
+      if (action) runAction(action);
+    },
+    [commandAction, runAction]
   );
 
   const runMenuCommand = useCallback(
@@ -1819,6 +1837,7 @@ export default function App() {
         cine: multi ? { playing: !!cine?.playing, fps: cine?.fps ?? 15 } : null,
         slab: isTauri && volume ? { mode: reformatAt(cell) ? slabCycle.current : "off", mm: 10 } : null,
         layout,
+        seriesPanel: distractionFree ? null : { shown: !seriesPanel.collapsed },
         can: {
           reformat: isTauri && volume,
           mpr: volume,
@@ -1836,7 +1855,7 @@ export default function App() {
         },
       });
     },
-    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts]
+    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts, distractionFree, seriesPanel.collapsed]
   );
   const annotationShortcut = useCallback(
     (id: MenuCommand) => (id === "ann:delete" ? "Del" : undefined),
@@ -2064,7 +2083,7 @@ export default function App() {
           onCustomWindow={() => setDialog("window")}
           onInvert={() => handle?.invert()}
           onReset={() => handle?.reset()}
-          onRotate={(d) => handle?.rotate(d)}
+          onOrientation={(command) => runOrientation(command)}
           layout={layout}
           onLayout={applyLayout}
           syncScroll={syncScroll}
@@ -2129,8 +2148,15 @@ export default function App() {
               </div>
             }
           >
-            {browserOpen && !distractionFree && (
-              <aside className="w-[244px] shrink-0 border-r border-subtle bg-surface">
+            {!distractionFree && (
+              <CollapsiblePanel
+                label="Series"
+                tone="surface"
+                collapsed={seriesPanel.collapsed}
+                onToggle={seriesPanel.toggle}
+                shortcut={[keyLabel("Mod+B")]}
+                widthClassName="w-[244px]"
+              >
                 <SeriesBrowser
                   studies={studies}
                   onScreen={cells}
@@ -2146,7 +2172,7 @@ export default function App() {
                   menuFor={thumbMenuFor}
                   onSeriesCommand={onSeriesCommand}
                 />
-              </aside>
+              </CollapsiblePanel>
             )}
             {view !== "grid" && growing ? (
               // A volume is built once, from the complete series. While a cold

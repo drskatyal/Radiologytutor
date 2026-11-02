@@ -7,6 +7,8 @@
 //   keys       ↑/↓ slice, ←/→ series, PgUp/PgDn 10 %, Home/End, Shift+digit layouts, ? sheet
 //   remap      Settings → change a shortcut → the new key works, the old one doesn't
 //   cursors    each tool has its own cursor on the image; the UI keeps the arrow
+//   orient     R / Shift+R / H, toolbar rotate dropdown; edge letters follow
+//   panel      Ctrl+B collapses the series panel to a rail; handle reopens; remembered
 //   annotate   arrow with no prompt; inline label; select + Delete; undo / redo;
 //              right-click menu (delete, delete all on image / series); eraser
 //
@@ -144,6 +146,50 @@ const focusImage = async () => {
   await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
 };
 const box = async (i = 0) => (await cell(i).boundingBox());
+
+// ── rotate / flip + series panel (0.8.1) ─────────────────────────────────
+const edgesOf = (i = 0) =>
+  cell(i).evaluate((el) => {
+    const out = {};
+    for (const e of el.querySelectorAll("[data-edge]")) out[e.dataset.edge] = e.textContent;
+    return out;
+  });
+if (want("orient")) {
+  await focusImage();
+  const start = await edgesOf();
+  check("orient: edge letters on an axial", start.top === "A" && start.left === "R", JSON.stringify(start));
+  await page.keyboard.press("r");
+  await settle(300);
+  const cw = await edgesOf();
+  check("orient: R rotates 90° clockwise (L to the bottom)", cw.bottom === start.right && cw.top === start.left, JSON.stringify(cw));
+  await page.keyboard.press("Shift+R");
+  await page.keyboard.press("h");
+  await settle(300);
+  const h = await edgesOf();
+  check("orient: H mirrors the screen left ↔ right", h.left === start.right && h.right === start.left && h.top === start.top, JSON.stringify(h));
+  await page.getByRole("button", { name: "Rotate and flip" }).click();
+  await settle(200);
+  await shot("rotate-menu");
+  await page.getByRole("menuitem", { name: /Reset orientation/ }).click();
+  await settle(300);
+  check("orient: toolbar → Reset orientation", JSON.stringify(await edgesOf()) === JSON.stringify(start), JSON.stringify(await edgesOf()));
+}
+if (want("panel")) {
+  await focusImage();
+  const panel = page.getByRole("complementary", { name: "Series" });
+  const w0 = (await box(0)).width;
+  await page.keyboard.press("Control+b");
+  await settle(400);
+  const collapsed = (await panel.getAttribute("data-collapsed")) === "true";
+  const w1 = (await box(0)).width;
+  check("panel: Ctrl+B collapses to a rail and the viewport takes the space", collapsed && w1 > w0 + 150, `${w0} → ${w1}`);
+  check("panel: Im n / N still shown (no reload)", !!(await imageNo()));
+  await shot("panel-collapsed");
+  await page.getByRole("button", { name: "Show series panel" }).click();
+  await settle(400);
+  check("panel: the rail handle opens it again", (await panel.getAttribute("data-collapsed")) !== "true");
+  check("panel: remembered on this device", (await page.evaluate(() => localStorage.getItem("flowrad.seriesPanel.collapsed"))) === "0");
+}
 
 // ── active border ───────────────────────────────────────────────────────
 if (want("border")) {
