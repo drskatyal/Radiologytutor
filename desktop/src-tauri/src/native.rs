@@ -1,25 +1,31 @@
-//! Phase 2 (docs/NATIVE_RENDERER.md), step P2.0: a wgpu surface drawn in the
-//! window UNDER a transparent WebView2, behind `FLOWRAD_NATIVE=1`.
+//! Phase 2 (docs/NATIVE_RENDERER.md): the native renderer. A wgpu surface is
+//! drawn in the window UNDER a transparent WebView2, behind `FLOWRAD_NATIVE=1`.
 //!
-//! The webview keeps all chrome and input; it reports the rectangles of the
-//! viewports ("cells", CSS px of the page) and Rust draws into them with the
-//! GPU. Where the page is transparent the native pixels show through; where it
-//! draws (toolbar, overlays, menus) it covers them.
+//! The webview keeps all chrome and input; it reports the rectangles of its
+//! viewports ("cells", CSS px of the page) and Rust draws each cell's slice
+//! with the GPU. Where the page is transparent the native pixels show through;
+//! everything the page draws (toolbar, overlays, menus, annotations) sits on
+//! top.
 //!
-//! P2.0 is the spike: one test image (a 16-bit ramp + rings, R16Uint texture,
-//! window/level applied in the shader) drawn into every cell. It proves the
-//! compositing, the window/level path and the IPC cost, and it lets the bench
-//! measure the WebView2 UI floor with no image engine in the page.
+//! - P2.0: the surface, transparency, one test image (spike view).
+//! - P2.1: decoded slices from the Rust image core (image_store.rs), the first
+//!   paint before WebView2 loads.
+//! - P2.2: every layout cell is a native viewport with its own view (slice,
+//!   window/level, zoom, pan, rotate, flip, invert), one draw per cell with
+//!   its own uniforms and texture, scissored to the cell. The image ↔ cell
+//!   transform (native_view.rs) is returned with every view so the page can
+//!   draw overlays in image coordinates.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-
-use std::path::PathBuf;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::image_store::{self, ImageStore, Slice};
+use crate::native_view::{Transform, View, ViewPatch};
 
 /// The P2 path is opt-in until P2.6 (cutover).
 pub fn enabled() -> bool {
@@ -28,8 +34,18 @@ pub fn enabled() -> bool {
 
 /// A viewport rectangle in CSS pixels of the page (its top-left origin is
 /// the window's client-area origin: the webview fills the window).
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Default)]
 pub struct Cell {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// A layout cell from the page: its id (the layout cell key) and rectangle.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CellRect {
+    pub id: String,
     pub x: f32,
     pub y: f32,
     pub w: f32,
@@ -51,9 +67,30 @@ pub struct NativeStatus {
     /// Window client-area origin on screen, physical px (for the e2e grab).
     pub client_origin: Option<(i32, i32)>,
     pub scale: Option<f64>,
+    /// Native viewports alive.
+    pub cells: usize,
 }
 
 const TEST_SIZE: u32 = 512;
+/// The spike view's single cell.
+pub const SPIKE: &str = "spike";
+
+/// One cell's GPU side: its uniforms and the texture on screen.
+struct CellGpu {
+    uniforms: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    /// (path, texture) of the slice uploaded, None = the test image.
+    texture: Option<(PathBuf, wgpu::Texture)>,
+    dims: (usize, usize),
+}
+
+/// One viewport.
+struct CellState {
+    rect: Cell,
+    series: Vec<PathBuf>,
+    view: View,
+    gpu: Option<CellGpu>,
+}
 
 struct Gpu {
     surface: wgpu::Surface<'static>,
@@ -62,23 +99,14 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
-    /// The test image's bind group (spike, no study).
-    bind_group: wgpu::BindGroup,
-    uniforms: wgpu::Buffer,
-    /// The slice on screen (P2.1): its path, texture and bind group.
-    slice: Option<(PathBuf, wgpu::Texture, wgpu::BindGroup)>,
+    test_view: wgpu::TextureView,
 }
 
 #[derive(Default)]
 pub struct Native {
     gpu: Mutex<Option<Gpu>>,
     status: Mutex<NativeStatus>,
-    cells: Mutex<Vec<Cell>>,
-    /// Window centre / width (modality units for a study; the test image's 0..32767 otherwise).
-    wl: Mutex<(f32, f32)>,
-    /// P2.1: the series opened natively (paths in display order) and the slice shown.
-    series: Mutex<Vec<PathBuf>>,
-    index: Mutex<usize>,
+    cells: Mutex<HashMap<String, CellState>>,
     /// P2.1: decoded slices, byte-budgeted, shared by every window.
     pub store: std::sync::OnceLock<Arc<ImageStore>>,
     /// Serialises init (start-up paint and the page's native_init can race:
@@ -105,50 +133,80 @@ pub fn test_image(size: u32) -> Vec<i16> {
     px
 }
 
+/// Uniforms per cell (std140: five vec4).
+///   rect   x, y, w, h of the cell, physical px of the surface
+///   wl     centre, width (modality units), surface w, h
+///   xf     scale (physical px per image px), centre x, y (physical px, in the cell), invert
+///   rot    cos, sin, flip x, flip y
+///   dims   cols, rows, -, -
 const SHADER: &str = r#"
-struct U {
-  // x, y, w, h of the cell in NDC-space pixels of the surface; then wl centre, wl width (stored units), surface w, h
-  rect: vec4<f32>,
-  wl: vec4<f32>,
-};
+struct U { rect: vec4<f32>, wl: vec4<f32>, xf: vec4<f32>, rot: vec4<f32>, dims: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var img: texture_2d<i32>;
 
 struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
-  // Two triangles covering the cell, in surface pixels -> NDC.
   var corners = array<vec2<f32>, 6>(vec2(0.,0.), vec2(1.,0.), vec2(0.,1.), vec2(0.,1.), vec2(1.,0.), vec2(1.,1.));
   let c = corners[i];
   let px = u.rect.xy + c * u.rect.zw;
-  let ndc = vec2(px.x / u.wl.z * 2.0 - 1.0, 1.0 - px.y / u.wl.w * 2.0);
   var o: VOut;
-  o.pos = vec4(ndc, 0.0, 1.0);
+  o.pos = vec4(px.x / u.wl.z * 2.0 - 1.0, 1.0 - px.y / u.wl.w * 2.0, 0.0, 1.0);
   o.uv = c;
   return o;
 }
 
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  let dims = vec2<f32>(textureDimensions(img));
-  // Fit the image into the cell (contain, square pixels), black around it.
-  let cell = u.rect.zw;
-  let k = min(cell.x / dims.x, cell.y / dims.y);
-  let size = dims * k;
-  let q = (v.uv * cell - (cell - size) * 0.5) / size;
-  if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0) { return vec4(0.0, 0.0, 0.0, 1.0); }
-  let p = vec2<i32>(clamp(q * dims, vec2(0.0), dims - 1.0));
-  let s = f32(textureLoad(img, p, 0).r);
+  // Cell px -> image px: the inverse of native_view.rs Transform::to_cell.
+  let d = v.uv * u.rect.zw - u.xf.yz;
+  let f = vec2(u.rot.x * d.x + u.rot.y * d.y, -u.rot.y * d.x + u.rot.x * d.y);
+  let q = vec2(f.x * u.rot.z, f.y * u.rot.w) / u.xf.x + u.dims.xy * 0.5;
+  if (q.x < 0.0 || q.y < 0.0 || q.x >= u.dims.x || q.y >= u.dims.y) { return vec4(0.0, 0.0, 0.0, 1.0); }
+  let s = f32(textureLoad(img, vec2<i32>(q), 0).r);
   let lo = u.wl.x - u.wl.y * 0.5;
-  let g = clamp((s - lo) / max(u.wl.y, 1.0), 0.0, 1.0);
+  var g = clamp((s - lo) / max(u.wl.y, 1.0), 0.0, 1.0);
+  if (u.xf.w > 0.5) { g = 1.0 - g; }
   return vec4(g, g, g, 1.0);
 }
 "#;
+
+/// What the page gets back for a cell after any change.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowResult {
+    pub index: usize,
+    pub count: usize,
+    pub cached: bool,
+    pub decode_ms: f64,
+    pub frame_ms: f64,
+    pub total_ms: f64,
+    pub rows: usize,
+    pub cols: usize,
+    pub window: (f32, f32),
+    pub view: View,
+    /// Image ↔ cell (CSS px), for overlays.
+    pub transform: Transform,
+    /// The file's own window (for "reset").
+    pub default_window: Option<(f64, f64)>,
+}
+
+/// A window over the slice's data range, for files without one.
+fn data_window(s: &Slice) -> (f64, f64) {
+    let (lo, hi) = s.data.iter().fold((i16::MAX, i16::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    let (lo, hi) = (lo as f64, hi as f64);
+    ((lo + hi) / 2.0, (hi - lo).max(1.0))
+}
 
 impl Native {
     pub fn status(&self) -> NativeStatus {
         let mut s = self.status.lock().clone();
         s.enabled = enabled();
+        s.cells = self.cells.lock().len();
         s
+    }
+
+    pub fn store(&self) -> Arc<ImageStore> {
+        self.store.get_or_init(|| Arc::new(ImageStore::new(image_store::budget_from_env()))).clone()
     }
 
     /// Create the surface on the window and the device. Idempotent. Async:
@@ -158,16 +216,10 @@ impl Native {
         if self.gpu.lock().is_some() || !enabled() {
             return self.status();
         }
-        *self.wl.lock() = (16384.0, 32767.0);
         let started = Instant::now();
-        let created = create_gpu(window).await;
-        match created {
+        match create_gpu(window).await {
             Ok((gpu, adapter, backend)) => {
-                let mut slot = self.gpu.lock();
-                if slot.is_none() {
-                    *slot = Some(gpu);
-                }
-                drop(slot);
+                *self.gpu.lock() = Some(gpu);
                 let mut s = self.status.lock();
                 s.ready = true;
                 s.adapter = Some(adapter);
@@ -175,9 +227,7 @@ impl Native {
                 s.error = None;
                 s.init_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
             }
-            Err(e) => {
-                self.status.lock().error = Some(e);
-            }
+            Err(e) => self.status.lock().error = Some(e),
         }
         self.status()
     }
@@ -192,12 +242,230 @@ impl Native {
         }
     }
 
-    pub fn set_cells(&self, cells: Vec<Cell>) {
-        *self.cells.lock() = cells;
+    pub fn set_window_facts(&self, origin: (i32, i32), scale: f64) {
+        let mut s = self.status.lock();
+        s.client_origin = Some(origin);
+        s.scale = Some(scale);
     }
 
+    // ───────────── layout ─────────────
+
+    /// The page's cells, all of them: cells not listed are dropped (their
+    /// textures freed). New cells start empty (black) until given a series.
+    pub fn set_layout(&self, rects: Vec<CellRect>) {
+        let mut cells = self.cells.lock();
+        cells.retain(|id, _| rects.iter().any(|r| &r.id == id));
+        for r in rects {
+            let rect = Cell { x: r.x, y: r.y, w: r.w, h: r.h };
+            cells
+                .entry(r.id)
+                .and_modify(|c| c.rect = rect)
+                .or_insert(CellState { rect, series: vec![], view: View::default(), gpu: None });
+        }
+    }
+
+    /// Spike (P2.0): one cell showing the test image.
+    pub fn set_cells(&self, rects: Vec<Cell>) {
+        let first = rects.first().copied().unwrap_or_default();
+        let mut cells = self.cells.lock();
+        let c = cells.entry(SPIKE.to_string()).or_insert(CellState {
+            rect: first,
+            series: vec![],
+            view: View { wl: (16384.0, 32767.0), ..View::default() },
+            gpu: None,
+        });
+        c.rect = first;
+    }
+
+    /// Spike: window / level of the spike cell.
     pub fn set_wl(&self, center: f32, width: f32) {
-        *self.wl.lock() = (center, width.max(1.0));
+        if let Some(c) = self.cells.lock().get_mut(SPIKE) {
+            c.view.wl = (center, width.max(1.0));
+        }
+    }
+
+    // ───────────── series and views ─────────────
+
+    /// Show `paths` (display order) in cell `id` at `index`, with the file's window.
+    pub fn set_series(&self, id: &str, paths: Vec<PathBuf>, index: usize, scale: f64) -> Result<ShowResult, String> {
+        {
+            let mut cells = self.cells.lock();
+            let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], view: View::default(), gpu: None });
+            c.series = paths;
+            c.view = View { index: index.min(c.series.len().saturating_sub(1)), ..View::default() };
+        }
+        self.show(id, None, true, scale)
+    }
+
+    /// Apply a view change (any of slice, window, zoom, pan, rotation, flip, invert).
+    pub fn update_view(&self, id: &str, patch: ViewPatch, scale: f64) -> Result<ShowResult, String> {
+        self.show(id, Some(patch), false, scale)
+    }
+
+    /// Scroll by `delta` slices (clamped).
+    pub fn scroll(&self, id: &str, delta: i64, scale: f64) -> Result<ShowResult, String> {
+        let at = {
+            let cells = self.cells.lock();
+            let c = cells.get(id).ok_or("no such viewport")?;
+            if c.series.is_empty() {
+                return Err("no series in this viewport".into());
+            }
+            (c.view.index as i64 + delta).clamp(0, c.series.len() as i64 - 1) as usize
+        };
+        self.show(id, Some(ViewPatch { index: Some(at), ..Default::default() }), false, scale)
+    }
+
+    /// Free a cell's texture and series (viewport closed or switched to JS).
+    pub fn close_cell(&self, id: &str) {
+        self.cells.lock().remove(id);
+    }
+
+    /// Study closed: every cell and every decoded slice.
+    pub fn close_all(&self) {
+        self.cells.lock().clear();
+        if let Some(store) = self.store.get() {
+            store.clear();
+        }
+    }
+
+    /// Image pixel value under a cell point (CSS px), modality units.
+    pub fn pick(&self, id: &str, x: f32, y: f32) -> Option<(f32, f32, i16)> {
+        let (path, t) = {
+            let cells = self.cells.lock();
+            let c = cells.get(id)?;
+            let path = c.series.get(c.view.index)?.clone();
+            let (cols, rows) = c.gpu.as_ref().map(|g| g.dims)?;
+            (path, Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h))
+        };
+        let (col, row) = t.to_image(x, y);
+        let slice = self.store().peek(&path)?;
+        if col < 0.0 || row < 0.0 || col as usize >= slice.cols || row as usize >= slice.rows {
+            return None;
+        }
+        Some((col, row, slice.data[row as usize * slice.cols + col as usize]))
+    }
+
+    fn show(&self, id: &str, patch: Option<ViewPatch>, reset_wl: bool, scale: f64) -> Result<ShowResult, String> {
+        let started = Instant::now();
+        // 1. Apply the view and find the slice + what to prefetch (no GPU lock held).
+        let (path, ahead, count) = {
+            let mut cells = self.cells.lock();
+            let c = cells.get_mut(id).ok_or("no such viewport")?;
+            let prev = c.view.index;
+            if let Some(p) = &patch {
+                c.view.apply(p);
+            }
+            if c.series.is_empty() {
+                (None, vec![], 0)
+            } else {
+                c.view.index = c.view.index.min(c.series.len() - 1);
+                let index = c.view.index;
+                let forward = index >= prev;
+                let mut ahead = Vec::new();
+                for k in 1..=24usize {
+                    let i = if forward { index.checked_add(k) } else { index.checked_sub(k) };
+                    if let Some(p) = i.and_then(|i| c.series.get(i)) {
+                        ahead.push(p.clone());
+                    }
+                    if k <= 4 {
+                        let j = if forward { index.checked_sub(k) } else { index.checked_add(k) };
+                        if let Some(p) = j.and_then(|j| c.series.get(j)) {
+                            ahead.push(p.clone());
+                        }
+                    }
+                }
+                (Some(c.series[index].clone()), ahead, c.series.len())
+            }
+        };
+        // 2. Decode (or take from the cache) outside every lock.
+        let store = self.store();
+        let mut cached = true;
+        let mut decode_ms = 0.0;
+        let slice = match &path {
+            Some(p) => Some(match store.peek(p) {
+                Some(s) => s,
+                None => {
+                    cached = false;
+                    let s = store.get(p)?;
+                    decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    s
+                }
+            }),
+            None => None,
+        };
+        // 3. Upload and draw.
+        let default_window = slice.as_ref().map(|s| s.window.unwrap_or_else(|| data_window(s)));
+        if reset_wl {
+            if let (Some(w), Some(c)) = (default_window, self.cells.lock().get_mut(id)) {
+                c.view.wl = (w.0 as f32, w.1 as f32);
+            }
+        }
+        if let (Some(p), Some(s)) = (&path, &slice) {
+            self.upload(id, p, s)?;
+        }
+        let frame_ms = self.render(scale)?;
+        if !ahead.is_empty() {
+            store.prefetch(ahead);
+        }
+        let cells = self.cells.lock();
+        let c = cells.get(id).ok_or("viewport closed")?;
+        let (cols, rows) = slice.as_ref().map(|s| (s.cols, s.rows)).unwrap_or((TEST_SIZE as usize, TEST_SIZE as usize));
+        Ok(ShowResult {
+            index: c.view.index,
+            count,
+            cached,
+            decode_ms,
+            frame_ms,
+            total_ms: started.elapsed().as_secs_f64() * 1000.0,
+            rows,
+            cols,
+            window: c.view.wl,
+            view: c.view,
+            transform: Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h),
+            default_window,
+        })
+    }
+
+    /// Make sure the cell's texture holds `slice` (reused across a series).
+    fn upload(&self, id: &str, path: &std::path::Path, slice: &Slice) -> Result<(), String> {
+        let guard = self.gpu.lock();
+        let gpu = guard.as_ref().ok_or("native renderer not initialised")?;
+        let mut cells = self.cells.lock();
+        let c = cells.get_mut(id).ok_or("no such viewport")?;
+        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
+        if cg.texture.as_ref().is_some_and(|(p, _)| p == path) {
+            return Ok(());
+        }
+        let size = wgpu::Extent3d { width: slice.cols as u32, height: slice.rows as u32, depth_or_array_layers: 1 };
+        let reuse = cg.texture.take().filter(|(_, t)| t.width() == size.width && t.height() == size.height).map(|(_, t)| t);
+        let fresh = reuse.is_none();
+        let texture = reuse.unwrap_or_else(|| {
+            gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("slice"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R16Sint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        });
+        // SAFETY: i16 is plain old data; the slice is borrowed for the call.
+        let bytes = unsafe { std::slice::from_raw_parts(slice.data.as_ptr() as *const u8, slice.data.len() * 2) };
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 2), rows_per_image: Some(size.height) },
+            size,
+        );
+        if fresh {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            cg.bind_group = bind_group(gpu, &cg.uniforms, &view);
+        }
+        cg.texture = Some((path.to_path_buf(), texture));
+        cg.dims = (slice.cols, slice.rows);
+        Ok(())
     }
 
     /// Draw every cell. `scale`: physical px per CSS px.
@@ -217,21 +485,37 @@ impl Native {
                 }
             }
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let (center, width) = *self.wl.lock();
-        let cells = self.cells.lock().clone();
-        let (sw, sh) = (gpu.config.width as f32, gpu.config.height as f32);
+        let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (sw, sh) = (gpu.config.width, gpu.config.height);
+        let s = scale as f32;
+        let mut cells = self.cells.lock();
+        // Uniforms first (each cell has its own buffer), then one pass.
+        for c in cells.values_mut() {
+            let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
+            let (cols, rows) = if cg.texture.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
+            let t = Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h);
+            let data: [f32; 20] = [
+                c.rect.x * s, c.rect.y * s, c.rect.w * s, c.rect.h * s,
+                c.view.wl.0, c.view.wl.1, sw as f32, sh as f32,
+                t.scale * s, t.center.0 * s, t.center.1 * s, if c.view.invert { 1.0 } else { 0.0 },
+                t.cos, t.sin, t.flip_x, t.flip_y,
+                cols as f32, rows as f32, 0.0, 0.0,
+            ];
+            // SAFETY: [f32; 20] is 80 plain bytes.
+            let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) };
+            gpu.queue.write_buffer(&cg.uniforms, 0, bytes);
+        }
         let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cells"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &target,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
                         // The app canvas colour behind everything the page does not cover.
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.035, g: 0.04, b: 0.05, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 11.0 / 255.0, g: 13.0 / 255.0, b: 16.0 / 255.0, a: 1.0 }), // --canvas #0B0D10
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -241,188 +525,68 @@ impl Native {
                 multiview_mask: None,
             });
             pass.set_pipeline(&gpu.pipeline);
-            pass.set_bind_group(0, gpu.slice.as_ref().map(|(_, _, bg)| bg).unwrap_or(&gpu.bind_group), &[]);
-            for cell in &cells {
-                let s = scale as f32;
-                let rect = [cell.x * s, cell.y * s, cell.w * s, cell.h * s];
-                if rect[2] < 1.0 || rect[3] < 1.0 {
+            for (id, c) in cells.iter() {
+                let Some(cg) = &c.gpu else { continue };
+                // An app cell without a slice stays the page's (no test image there).
+                if cg.texture.is_none() && id != SPIKE {
                     continue;
                 }
-                // One uniform write per cell is fine for the spike (one queue
-                // write lands before the pass executes, so cells share the
-                // last value: P2.2 moves to a per-cell buffer). Draw only the
-                // first cell's rect with its own uniforms here.
-                let data: [f32; 8] = [rect[0], rect[1], rect[2], rect[3], center, width, sw, sh];
-                gpu.queue.write_buffer(&gpu.uniforms, 0, bytemuck_cast(&data));
+                // Clip to the cell and to the surface.
+                let x0 = (c.rect.x * s).max(0.0).floor() as u32;
+                let y0 = (c.rect.y * s).max(0.0).floor() as u32;
+                let x1 = ((c.rect.x + c.rect.w) * s).ceil().max(0.0) as u32;
+                let y1 = ((c.rect.y + c.rect.h) * s).ceil().max(0.0) as u32;
+                let (x1, y1) = (x1.min(sw), y1.min(sh));
+                if x1 <= x0 || y1 <= y0 {
+                    continue;
+                }
+                pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                pass.set_bind_group(0, &cg.bind_group, &[]);
                 pass.draw(0..6, 0..1);
-                break;
             }
         }
+        drop(cells);
         gpu.queue.submit(Some(encoder.finish()));
         gpu.queue.present(frame);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        let mut s = self.status.lock();
-        s.last_frame_ms = Some(ms);
-        s.frames += 1;
+        let mut st = self.status.lock();
+        st.last_frame_ms = Some(ms);
+        st.frames += 1;
         Ok(ms)
     }
 
-    pub fn store(&self) -> Arc<ImageStore> {
-        self.store.get_or_init(|| Arc::new(ImageStore::new(image_store::budget_from_env()))).clone()
-    }
+    // ───────────── P2.1 spike API (the spike cell) ─────────────
 
-    /// P2.1: the series to show (display order) and its first slice.
     pub fn open_series(&self, paths: Vec<PathBuf>, scale: f64) -> Result<ShowResult, String> {
         self.store().clear();
-        *self.series.lock() = paths;
-        *self.index.lock() = 0;
-        self.show(0, true, scale)
+        self.set_series(SPIKE, paths, 0, scale)
     }
 
-    /// Scroll by `delta` slices (clamped); keeps the window/level.
-    pub fn scroll(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
-        let n = self.series.lock().len();
-        if n == 0 {
-            return Err("no series open".into());
-        }
-        let at = (*self.index.lock() as i64 + delta).clamp(0, n as i64 - 1) as usize;
-        self.show(at, false, scale)
-    }
-
-    /// Decode (or take from the cache), upload, draw; prefetch ahead in the
-    /// direction of travel and a few behind.
-    fn show(&self, index: usize, reset_wl: bool, scale: f64) -> Result<ShowResult, String> {
-        let started = Instant::now();
-        let (path, ahead) = {
-            let series = self.series.lock();
-            let path = series.get(index).cloned().ok_or("slice out of range")?;
-            let prev = *self.index.lock();
-            let forward = index >= prev;
-            let mut ahead: Vec<PathBuf> = Vec::new();
-            for k in 1..=24usize {
-                let i = if forward { index.checked_add(k) } else { index.checked_sub(k) };
-                if let Some(p) = i.and_then(|i| series.get(i)) {
-                    ahead.push(p.clone());
-                }
-                if k <= 4 {
-                    let j = if forward { index.checked_sub(k) } else { index.checked_add(k) };
-                    if let Some(p) = j.and_then(|j| series.get(j)) {
-                        ahead.push(p.clone());
-                    }
-                }
-            }
-            (path, ahead)
-        };
-        let store = self.store();
-        let cached = store.peek(&path);
-        let was_cached = cached.is_some();
-        let slice = match cached {
-            Some(s) => s,
-            None => store.get(&path)?,
-        };
-        let decode_ms = if was_cached { 0.0 } else { started.elapsed().as_secs_f64() * 1000.0 };
-        if reset_wl {
-            let (c, w) = slice.window.unwrap_or_else(|| data_window(&slice));
-            *self.wl.lock() = (c as f32, w as f32);
-        }
-        self.upload(&path, &slice)?;
-        *self.index.lock() = index;
-        let frame_ms = self.render(scale)?;
-        store.prefetch(ahead);
-        Ok(ShowResult {
-            index,
-            count: self.series.lock().len(),
-            cached: was_cached,
-            decode_ms,
-            frame_ms,
-            total_ms: started.elapsed().as_secs_f64() * 1000.0,
-            rows: slice.rows,
-            cols: slice.cols,
-            window: *self.wl.lock(),
-        })
-    }
-
-    fn upload(&self, path: &std::path::Path, slice: &Slice) -> Result<(), String> {
-        let mut guard = self.gpu.lock();
-        let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
-        if gpu.slice.as_ref().is_some_and(|(p, _, _)| p == path) {
-            return Ok(());
-        }
-        let size = wgpu::Extent3d { width: slice.cols as u32, height: slice.rows as u32, depth_or_array_layers: 1 };
-        // Reuse the texture when the size matches (every slice of a series).
-        let texture = match gpu.slice.take() {
-            Some((_, t, _)) if t.width() == size.width && t.height() == size.height => t,
-            _ => gpu.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("slice"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R16Sint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            }),
-        };
-        // SAFETY: i16 is plain old data; the slice is borrowed for the call.
-        let bytes = unsafe { std::slice::from_raw_parts(slice.data.as_ptr() as *const u8, slice.data.len() * 2) };
-        gpu.queue.write_texture(
-            texture.as_image_copy(),
-            bytes,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 2), rows_per_image: Some(size.height) },
-            size,
-        );
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("slice"),
-            layout: &gpu.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&texture.create_view(&wgpu::TextureViewDescriptor::default())),
-                },
-            ],
-        });
-        gpu.slice = Some((path.to_path_buf(), texture, bind_group));
-        Ok(())
-    }
-
-    /// Study closed: free the slice texture and every decoded slice.
-    pub fn close_series(&self) {
-        self.series.lock().clear();
-        if let Some(gpu) = self.gpu.lock().as_mut() {
-            gpu.slice = None;
-        }
-        if let Some(store) = self.store.get() {
-            store.clear();
-        }
-    }
-
-    pub fn set_window_facts(&self, origin: (i32, i32), scale: f64) {
-        let mut s = self.status.lock();
-        s.client_origin = Some(origin);
-        s.scale = Some(scale);
+    pub fn scroll_spike(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
+        self.scroll(SPIKE, delta, scale)
     }
 }
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowResult {
-    pub index: usize,
-    pub count: usize,
-    pub cached: bool,
-    pub decode_ms: f64,
-    pub frame_ms: f64,
-    pub total_ms: f64,
-    pub rows: usize,
-    pub cols: usize,
-    pub window: (f32, f32),
+fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
+    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("cell"),
+        layout: &gpu.layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+        ],
+    })
 }
 
-/// A window over the slice's data range, for files without one.
-fn data_window(s: &Slice) -> (f64, f64) {
-    let (lo, hi) = s.data.iter().fold((i16::MAX, i16::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-    let (lo, hi) = (lo as f64, hi as f64);
-    ((lo + hi) / 2.0, (hi - lo).max(1.0))
+fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::TextureView) -> CellGpu {
+    let uniforms = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cell uniforms"),
+        size: 80,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = bind_group(gpu, &uniforms, initial);
+    CellGpu { uniforms, bind_group, texture: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize) }
 }
 
 /// P2.1 bench / spike: the DICOM files under `roots`, grouped by series, the
@@ -465,11 +629,6 @@ pub fn largest_series(roots: &[PathBuf]) -> Vec<PathBuf> {
     rows.into_iter().map(|r| r.3).collect()
 }
 
-fn bytemuck_cast(data: &[f32; 8]) -> &[u8] {
-    // SAFETY: [f32; 8] is 32 plain bytes with no padding.
-    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
-}
-
 async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -502,8 +661,11 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
         format,
         width: size.width.max(1),
         height: size.height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        desired_maximum_frame_latency: 2,
+        // Mailbox: a frame never waits for the display's vblank (Fifo made
+        // every scroll call wait ~16 ms+); the newest frame wins. Fifo where
+        // mailbox is not offered.
+        present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) { wgpu::PresentMode::Mailbox } else { wgpu::PresentMode::Fifo },
+        desired_maximum_frame_latency: 1,
         alpha_mode: caps.alpha_modes[0],
         color_space: wgpu::SurfaceColorSpace::Auto,
         view_formats: vec![],
@@ -528,12 +690,6 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
         wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(TEST_SIZE * 2), rows_per_image: Some(TEST_SIZE) },
         wgpu::Extent3d { width: TEST_SIZE, height: TEST_SIZE, depth_or_array_layers: 1 },
     );
-    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("cell uniforms"),
-        size: 32,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("cell"),
         entries: &[
@@ -555,17 +711,7 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
             },
         ],
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("cell"),
-        layout: &layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&texture.create_view(&wgpu::TextureViewDescriptor::default())),
-            },
-        ],
-    });
+    let test_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cell"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("cell"),
@@ -589,7 +735,7 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
         cache: None,
     });
     Ok((
-        Gpu { surface, device, queue, config, pipeline, layout, bind_group, uniforms, slice: None },
+        Gpu { surface, device, queue, config, pipeline, layout, test_view },
         info.name,
         format!("{:?}", info.backend),
     ))

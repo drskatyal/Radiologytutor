@@ -18,6 +18,7 @@ Writes the grab to <out-dir>/native-spike.png. Windows only for now (the
 Linux CI job keeps the JS path, see the design note).
 
 Usage: python desktop/scripts/e2e-native.py <app.exe> [<out-dir>]
+       python desktop/scripts/e2e-native.py <app.exe> [<out-dir>] --study <ct-folder>   # P2.2: the real app
 """
 from __future__ import annotations
 
@@ -40,10 +41,77 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def run_report(exe: str, env: dict, args: list[str], timeout: float = 120) -> tuple[subprocess.Popen, dict | None, list[str]]:
+    proc = subprocess.Popen([exe, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    box: dict = {}
+    tail: list[str] = []
+
+    def read() -> None:
+        assert proc.stdout
+        for line in proc.stdout:
+            tail.append(line.rstrip())
+            del tail[:-40]
+            if line.startswith("FLOWRAD_BENCH ") and "r" not in box:
+                box["r"] = json.loads(line[len("FLOWRAD_BENCH "):])
+
+    threading.Thread(target=read, daemon=True).start()
+    deadline = time.time() + timeout
+    while "r" not in box and time.time() < deadline and proc.poll() is None:
+        time.sleep(0.2)
+    return proc, box.get("r"), tail
+
+
+def app_mode(exe: str, study: str, out_dir: Path) -> None:
+    """P2.2: the real app, FLOWRAD_NATIVE=1, a CT on the command line: the
+    first viewport is drawn natively under the page; grab it from the screen."""
+    env = {**os.environ, "FLOWRAD_NATIVE": "1", "FLOWRAD_BENCH": "1"}
+    env.pop("FLOWRAD_BENCH_EXIT", None)
+    env.pop("FLOWRAD_BENCH_VIEW", None)
+    proc, report, tail = run_report(exe, env, [study])
+    try:
+        if report is None:
+            fail("app mode: no bench report\n" + "\n".join(tail))
+        native, cell = report.get("native") or {}, report.get("nativeCell")
+        print(json.dumps({k: report.get(k) for k in ("firstImagePaintedMs", "native", "nativeCell", "nativeStore", "longTasks")}, indent=2, default=str))
+        if not native.get("ready"):
+            fail(f"app mode: native renderer not ready: {native.get('error')}")
+        if not cell:
+            fail("app mode: no native viewport on screen (the series went to the JS path?)")
+        time.sleep(0.8)
+        from PIL import ImageGrab
+
+        scale = native.get("scale") or 1
+        ox, oy = native.get("clientOrigin") or [0, 0]
+        x, y = int(ox + cell["x"] * scale), int(oy + cell["y"] * scale)
+        w, h = int(cell["w"] * scale), int(cell["h"] * scale)
+        img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True).convert("RGB")
+        img.save(out_dir / "native-app-cell.png")
+        px = img.load()
+        # The middle third of the cell: real anatomy, grey, with contrast.
+        samples = [px[int(w * (0.35 + 0.3 * i / 15)), int(h * (0.35 + 0.3 * j / 15))] for i in range(16) for j in range(16)]
+        grey = sum(1 for c in samples if max(c) - min(c) <= 16) / len(samples)
+        lum = [sum(c) / 3 for c in samples]
+        spread = max(lum) - min(lum)
+        ok = grey > 0.9 and spread > 40
+        print(f"{'PASS' if ok else 'FAIL'}  app mode: the CT slice is drawn natively in the first viewport — grey {grey:.2f}, luminance spread {spread:.0f}")
+        if not ok:
+            sys.exit(1)
+    finally:
+        proc.kill()
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
+    if "--study" in sys.argv:
+        i = sys.argv.index("--study")
+        study = sys.argv[i + 1]
+        rest = [a for k, a in enumerate(sys.argv) if k not in (i, i + 1)]
+        out = Path(rest[2] if len(rest) > 2 else ".")
+        out.mkdir(parents=True, exist_ok=True)
+        app_mode(rest[1], study, out)
+        return
     exe = sys.argv[1]
     out_dir = Path(sys.argv[2] if len(sys.argv) > 2 else ".")
     out_dir.mkdir(parents=True, exist_ok=True)
