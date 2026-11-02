@@ -95,6 +95,7 @@ import {
   markViewerNavigation,
   markViewerSeriesReady,
 } from "../lib/viewerTiming";
+import { importWithRetry, isChunkLoadError, reloadForChunkError } from "../lib/chunkRecovery";
 import {
   QUALITY_EVENT,
   imageSource,
@@ -516,6 +517,11 @@ type EngineModules = {
 };
 let engineReady: Promise<EngineModules> | null = null;
 
+/** Viewer status lines for failures (shown on the imaging stage). */
+export const VIEWER_UPDATING = "Updating viewer, reloading…";
+export const VIEWER_LOAD_FAILED = "The viewer could not load. Check your connection, then reload the page.";
+const VIEWER_SERIES_FAILED = "This series could not be displayed.";
+
 /**
  * Load and initialise the imaging engine once per page: Cornerstone core,
  * tools, the DICOM loader and its decode-worker pool, the cache ceiling and
@@ -525,9 +531,11 @@ let engineReady: Promise<EngineModules> | null = null;
  */
 export function ensureViewerEngine(): Promise<EngineModules> {
   engineReady ??= (async () => {
-    const core = await import("@cornerstonejs/core");
-    const loader = await import("@cornerstonejs/dicom-image-loader");
-    const tools = await import("@cornerstonejs/tools");
+    // Each chunk retried twice with backoff (lib/chunkRecovery.ts): a
+    // dropped request or a deploy mid-session must not cost the study.
+    const core = await importWithRetry(() => import("@cornerstonejs/core"));
+    const loader = await importWithRetry(() => import("@cornerstonejs/dicom-image-loader"));
+    const tools = await importWithRetry(() => import("@cornerstonejs/tools"));
     // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
     // how much decoded-pixel cache, how many frame requests may be in
     // flight, and whether this is a phone (which drops Cornerstone's
@@ -787,6 +795,7 @@ export default function CornerstoneViewer({
   onActivate,
   initialWindow = null,
   paneLabel,
+  onChunkLoadError,
 }: {
   /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
   paneLabel?: string;
@@ -816,6 +825,13 @@ export default function CornerstoneViewer({
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /**
+   * The viewer's code could not be fetched even after retries (a deploy
+   * swapped the build under this tab, or the network dropped it). The host
+   * saves the reader's place and reloads (lib/chunkRecovery.ts). Without a
+   * handler the viewer reloads the page itself.
+   */
+  onChunkLoadError?: (error: unknown) => void;
   /** Record hook: ordered viewer state changes (slice/voi/camera/invert). */
   onEvent?: (e: ViewerEvent) => void;
   /** Wrapper class (the viewer fills it; imaging surface stays pure black). */
@@ -922,6 +938,23 @@ export default function CornerstoneViewer({
     seriesRef.current?.find((s) => s.seriesInstanceUID === seriesInstanceUID)?.instanceCount;
 
   const [status, setStatus] = useState("Initializing viewer…");
+  // A failure is shown as a calm sentence, never an exception message on the
+  // black stage. Code that would not load (ChunkLoadError after retries) is
+  // handed to the host once, which saves the reader's place and reloads.
+  const onChunkLoadErrorRef = useRef(onChunkLoadError);
+  onChunkLoadErrorRef.current = onChunkLoadError;
+  const chunkFailureHandled = useRef(false);
+  const failureStatus = (err: unknown): string => {
+    if (!isChunkLoadError(err)) return VIEWER_SERIES_FAILED;
+    if (chunkFailureHandled.current) return VIEWER_UPDATING;
+    chunkFailureHandled.current = true;
+    const handler = onChunkLoadErrorRef.current;
+    if (handler) {
+      handler(err);
+      return VIEWER_UPDATING;
+    }
+    return reloadForChunkError() ? VIEWER_UPDATING : VIEWER_LOAD_FAILED;
+  };
   const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
   /** Annotation select / delete / erase / label (AnnotationEditLayer). */
   const [editCtx, setEditCtx] = useState<annotationEditing.EditingContext | null>(null);
@@ -2432,7 +2465,7 @@ export default function CornerstoneViewer({
               return;
             }
             console.error("CornerstoneViewer switchSeries error", safeErrorText(err));
-            setStatus(`Error: ${(err as Error).message}`);
+            setStatus(failureStatus(err));
           }
         };
         switchSeriesRef.current = switchSeries;
@@ -3200,7 +3233,7 @@ export default function CornerstoneViewer({
         if (disposed || (err as Error)?.name === "AbortError") return;
         console.error("CornerstoneViewer error", safeErrorText(err));
         setStacking(false);
-        setStatus(`Error: ${(err as Error).message}`);
+        setStatus(failureStatus(err));
       }
     })();
 
