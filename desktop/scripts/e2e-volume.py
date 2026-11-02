@@ -95,7 +95,7 @@ def main() -> int:
         proc = subprocess.run([binary, str(study)], env=env, capture_output=True, text=True, timeout=180)
         line = next((l for l in proc.stdout.splitlines() if l.startswith("FLOWRAD_BENCH ")), None)
         report = json.loads(line[len("FLOWRAD_BENCH ") :]) if line else {}
-        path = (report.get("viewport") or {}).get("renderPath")
+        path = (report.get("stackViewport") or report.get("viewport") or {}).get("renderPath")
         loaded = report.get("volumeLoadedMs")
         problems = []
         if not line:
