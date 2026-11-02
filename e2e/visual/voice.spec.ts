@@ -80,27 +80,3 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   await page.waitForTimeout(800);
   expect(page.workers().length, "the recognizer worker is terminated").toBeLessThanOrEqual(workersBefore);
 });
-
-test.describe("voice: no microphone permission", () => {
-  // No fake-UI flag and no granted permission: getUserMedia is refused.
-  test.use({
-    permissions: [],
-    launchOptions: {
-      ...(process.env.PW_CHROMIUM_PATH ? { executablePath: process.env.PW_CHROMIUM_PATH } : {}),
-      args: ["--no-sandbox", "--deny-permission-prompts"],
-    },
-  });
-
-  test("voice: a blocked microphone says so, with Retry, instead of spinning", async ({ page }) => {
-    test.setTimeout(90_000);
-    await page.setViewportSize({ width: 1440, height: 1200 });
-    await openStudy(page);
-    await page.getByRole("button", { name: /^Voice commands/ }).click();
-    const status = page.getByTestId("voice-status");
-    await expect(status).toContainText(/Microphone access is blocked|No microphone found/, { timeout: 30_000 });
-    await expect(status.getByRole("button", { name: "Retry" })).toBeVisible();
-    await status.getByRole("button", { name: "Dismiss" }).click();
-    await expect(status).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^Voice commands$/ })).toBeVisible();
-  });
-});

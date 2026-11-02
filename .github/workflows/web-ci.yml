@@ -84,7 +84,7 @@ jobs:
           CI: "1"
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
           TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
-        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts popout.spec.ts --workers=1
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts voice-denied.spec.ts popout.spec.ts --workers=1
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4
