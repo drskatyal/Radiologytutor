@@ -132,7 +132,8 @@ test("bindings: rebind right drag + a key, bind mouse button 5 and F13; all surv
 
   const stored = await page.evaluate(() => window.localStorage.getItem("flowrad.bindings"));
   expect(JSON.parse(stored!).overrides).toMatchObject({
-    "drag.zoom": ["Mouse2Drag"],
+    "drag.zoom": ["Mod+Mouse2Drag", "Mouse2Drag"],
+    "drag.windowLevel": [],
     invert: ["J"],
     "flip.h": ["F13"],
     "rotate.cw": ["R", "Mouse5"],
@@ -178,7 +179,7 @@ test("bindings: rebind right drag + a key, bind mouse button 5 and F13; all surv
   await expect(sheet2).toContainText("F13");
   await expect(sheet2).toContainText("Mouse button 6");
   await expect(sheet2).toContainText("Right drag");
-  const zoomRow = sheet2.locator("li", { hasText: "Right drag" });
+  const zoomRow = sheet2.locator("li", { hasText: /^ZoomRight drag$/ });
   await expect(zoomRow).toContainText("Zoom");
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "web-bindings-sheet.png") });
 });
