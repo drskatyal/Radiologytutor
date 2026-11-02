@@ -138,7 +138,8 @@ def tools_mode(exe: str, study: str) -> None:
             ("annotations are drawn over the native image", (t.get("drawnOnScreen") or 0) >= 4),
             # HP 0.8.0: Esc threw on every press (a Cornerstone call with a native element).
             ("Esc, tool keys, display / sync / reset keys: no error", not t.get("keyErrors"), ),
-            ("Ctrl+Z / Ctrl+Y undo / redo one native step", (lambda k: k.get("afterUndo") == k.get("before", 0) - 1 and k.get("afterRedo") == k.get("before"))(t.get("keyUndo") or {})),
+            # One step each way (the last step may be an add or a delete: Backspace removed the selected one).
+            ("Ctrl+Z / Ctrl+Y undo / redo one native step", (lambda k: abs((k.get("afterUndo") or 0) - (k.get("before") or 0)) == 1 and k.get("afterRedo") == k.get("before"))(t.get("keyUndo") or {})),
             ("each tool shows its own cursor on the native viewport", (lambda c: all("url(" in c.get(k, "") for k in ("StackScroll", "WindowLevel", "Zoom")) and "grab" in c.get("Pan", "") and c.get("Length") == "crosshair")(t.get("cursors") or {})),
             ("the series thumbnail's right-click menu has items", (t.get("thumbMenuItems") or 0) >= 2),
         ]

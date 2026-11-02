@@ -124,9 +124,22 @@ let installed = false;
 export function installToolCursors(): void {
   if (installed || typeof document === "undefined") return;
   installed = true;
+  // A constructed stylesheet, not a <style> element: Tauri adds a nonce to the
+  // CSP's style-src, which makes the browser ignore 'unsafe-inline', so an
+  // injected <style> never applied in the app (HP 0.8.0: only Pan, a bundled
+  // Tailwind class, showed its cursor). CSSOM sheets are not inline styles.
+  const css = stylesheet();
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    return;
+  } catch {
+    /* no constructable stylesheets: fall back to an element */
+  }
   const style = document.createElement("style");
   style.dataset.flowrad = "tool-cursors";
-  style.textContent = stylesheet();
+  style.textContent = css;
   document.head.appendChild(style);
 }
 
