@@ -54,18 +54,19 @@ export function ViewportOverlay({
       <Lines lines={corners.bottomRight} className={cn(right, "bottom-2 text-right")} />
       {markers ? (
         <>
-          <span aria-hidden="true" data-imaging-chrome className={cn(marker, "left-1/2 top-1.5 -translate-x-1/2")}>
+          <span aria-hidden="true" data-imaging-chrome data-edge="top" className={cn(marker, "left-1/2 top-1.5 -translate-x-1/2")}>
             {markers.top}
           </span>
-          <span aria-hidden="true" data-imaging-chrome className={cn(marker, "bottom-1.5 left-1/2 -translate-x-1/2")}>
+          <span aria-hidden="true" data-imaging-chrome data-edge="bottom" className={cn(marker, "bottom-1.5 left-1/2 -translate-x-1/2")}>
             {markers.bottom}
           </span>
-          <span aria-hidden="true" data-imaging-chrome className={cn(marker, "imaging-readout left-2 top-1/2 -translate-y-1/2")}>
+          <span aria-hidden="true" data-imaging-chrome data-edge="left" className={cn(marker, "imaging-readout left-2 top-1/2 -translate-y-1/2")}>
             {markers.left}
           </span>
           <span
             aria-hidden="true"
             data-imaging-chrome
+            data-edge="right"
             className={cn(marker, scrollbar ? "right-8" : "right-2", "top-1/2 -translate-y-1/2")}
           >
             {markers.right}
