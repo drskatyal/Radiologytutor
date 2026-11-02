@@ -96,7 +96,8 @@ import {
 import { useCrossWindow } from "./viewer/useCrossWindow";
 import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
 import { setToolCursor } from "./viewer/toolCursor";
-import type { VoiceState } from "@/components/viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceState } from "@/components/viewer/voice/voiceSession";
+import { VoiceStatus } from "@/components/viewer/voice/VoiceStatus";
 import {
   monitorColor,
   nextMonitor,
@@ -1189,7 +1190,12 @@ export default function App() {
   // ───────────── offline voice commands ─────────────
   // The mic toggle loads the recognizer and model only when switched on and
   // frees them entirely when off (components/viewer/voice/voiceSession.ts).
-  const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
+  const [voice, setVoice] = useState<{
+    state: VoiceState;
+    heard?: string | null;
+    progress?: VoiceProgress | null;
+    detail?: string | null;
+  }>({ state: "off" });
   const voiceSession = useRef<{ stop(): void } | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
   const heardTimer = useRef(0);
@@ -1203,8 +1209,12 @@ export default function App() {
     voiceSession.current = null;
   }, []);
   const toggleVoiceRef = useRef<() => Promise<void>>(async () => undefined);
+  // The session handle comes back at once, so a click while loading cancels
+  // (it used to come back only when loading had finished, and a load that
+  // never finished left an endless spinner nobody could switch off).
   toggleVoiceRef.current = async () => {
-    if (voiceSession.current || voice.state === "loading") return stopVoice();
+    if (voiceSession.current) return stopVoice();
+    setVoice((v) => ({ ...v, state: "loading", detail: null, progress: { phase: "model", fraction: 0, label: "Loading voice model…" } }));
     const { startVoice } = await import("@/components/viewer/voice/voiceSession");
     voiceSession.current = await startVoice({
       modelUrl: "/voice/model.tar.gz",
@@ -1213,9 +1223,9 @@ export default function App() {
         voiceAction.current(action);
       },
       onUnrecognized: (heard) => showHeard(`${heard} ?`),
+      onProgress: (progress) => setVoice((v) => (v.state === "loading" ? { ...v, progress } : v)),
       onState: (state, detail) => {
-        setVoice((v) => ({ ...v, state }));
-        if (state === "error" && detail) toast({ title: "Voice commands could not start", description: detail, variant: "warning", duration: 6000 });
+        setVoice((v) => ({ ...v, state, detail: state === "error" ? detail ?? null : null, progress: state === "loading" ? v.progress : null }));
         if (state === "off" || state === "error") voiceSession.current = null;
       },
     });
@@ -2375,6 +2385,18 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {voice.state === "loading" || voice.state === "error" ? (
+          <div className="pointer-events-none absolute bottom-4 left-1/2 z-40 flex -translate-x-1/2 justify-center">
+            <VoiceStatus
+              state={voice.state}
+              progress={voice.progress}
+              detail={voice.detail}
+              onRetry={() => void toggleVoiceRef.current()}
+              onDismiss={() => setVoice((v) => ({ ...v, state: "off", detail: null }))}
+            />
+          </div>
+        ) : null}
 
         {dragging && hasStudy && (
           <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent bg-accent-muted/30">

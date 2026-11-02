@@ -89,6 +89,10 @@ const config: Config = {
         draw: "cubic-bezier(0.22, 1, 0.36, 1)",
       },
       keyframes: {
+        "voice-indeterminate": {
+          "0%": { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(300%)" },
+        },
         "marker-pulse": {
           "0%": { boxShadow: "0 0 0 0 rgb(var(--accent) / 0.45)" },
           "70%": { boxShadow: "0 0 0 12px rgb(var(--accent) / 0)" },

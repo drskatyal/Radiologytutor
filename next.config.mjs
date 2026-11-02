@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -9,9 +11,25 @@ const nextConfig = {
   //   - fs:false  — one transitive dep references node's `fs`
   //   - .wasm as a static asset so the codec binaries resolve at runtime
   // NOTE: this only applies to the default webpack builder — do NOT run with --turbo.
+  // The voice model is ~40 MB and changes only with scripts/voice-model.sha256:
+  // cache it, so a second "mic on" reads it from disk, not the network.
+  async headers() {
+    return [
+      {
+        source: "/voice/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=604800, stale-while-revalidate=86400" }],
+      },
+    ];
+  },
   webpack: (config) => {
     config.resolve.fallback = { ...config.resolve.fallback, fs: false };
     config.module.rules.push({ test: /\.wasm/, type: "asset/resource" });
+    // Voice commands: drop the one eval in the recognizer's worker, so it runs
+    // under a CSP without 'unsafe-eval' (scripts/vosk-csp-patch.cjs).
+    config.module.rules.push({
+      test: /vosk-browser[\\/]dist[\\/]vosk\.js$/,
+      use: [{ loader: fileURLToPath(new URL("./scripts/vosk-csp-patch.cjs", import.meta.url)) }],
+    });
     return config;
   },
   // Keep Node-only SDKs out of the webpack graph (R2 / Mongo).

@@ -877,6 +877,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp
+                onSeriesStep={(delta) => {
+                  const count = study?.series.length ?? 0;
+                  if (count > 1) pickSeries((activeSeries + delta + count) % count);
+                }}
                 onChunkLoadError={recoverFromChunkError}
                 onReady={(controls) => {
                   const slice = pendingSlice.current;

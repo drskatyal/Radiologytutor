@@ -6,9 +6,33 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { viteCommonjs } from "@originjs/vite-plugin-commonjs";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 
 const root = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
+
+/**
+ * Voice commands: the recognizer's worker (vosk-browser, started from a blob:
+ * URL) inherits the app's CSP, `script-src 'self' 'wasm-unsafe-eval'`. Its
+ * one `new Function` threw EvalError and the mic spun forever (0.8.0 on
+ * Windows). Patched here instead of allowing 'unsafe-eval'
+ * (scripts/vosk-csp-patch.cjs, shared with the web build).
+ */
+function voskWithoutEval(): Plugin {
+  const { patchVoskSource } = require(path.join(root, "scripts", "vosk-csp-patch.cjs")) as {
+    patchVoskSource: (source: string) => string;
+  };
+  return {
+    name: "flowrad-vosk-without-eval",
+    enforce: "pre",
+    transform(code, id) {
+      // The file itself, not the commonjs plugin's `?commonjs-…` proxy of it.
+      if (id.includes("?") || !/vosk-browser[\\/]dist[\\/]vosk\.js$/.test(id)) return null;
+      return { code: patchVoskSource(code), map: null };
+    },
+  };
+}
 
 /**
  * List the viewer engine's chunks in the page so the app can preload them
@@ -57,7 +81,7 @@ function preloadEngineChunks(): Plugin {
 
 export default defineConfig({
   root: __dirname,
-  plugins: [react(), viteCommonjs(), preloadEngineChunks()],
+  plugins: [voskWithoutEval(), react(), viteCommonjs(), preloadEngineChunks()],
   clearScreen: false,
   resolve: {
     alias: [

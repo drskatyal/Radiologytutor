@@ -49,7 +49,10 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   const consoleLines: string[] = [];
   page.on("console", (m) => consoleLines.push(`${m.type()}: ${m.text()}`.slice(0, 300)));
   page.on("pageerror", (e) => consoleLines.push(`pageerror: ${e.message}`.slice(0, 300)));
+  const clickedAt = Date.now();
   await page.getByRole("button", { name: /^Voice commands/ }).click();
+  // Loading shows a real progress bar (never a bare spinner).
+  await expect(page.getByTestId("voice-status").getByRole("progressbar")).toBeVisible({ timeout: 5_000 });
   const on = await page
     .getByRole("button", { name: /^Voice commands on/ })
     .waitFor({ timeout: 90_000 })
@@ -61,6 +64,9 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
       `voice never turned on. button: ${JSON.stringify(labels)}; toasts: ${JSON.stringify(toasts)}; requests: ${JSON.stringify(voiceRequests)}; console:\n${consoleLines.slice(-25).join("\n")}`
     );
   }
+  const readyMs = Date.now() - clickedAt;
+  console.log(`voice ready ${readyMs} ms after the click`);
+  await expect(page.getByTestId("voice-status")).toHaveCount(0);
   expect(page.workers().length).toBeGreaterThan(workersBefore);
 
   // The fake microphone loops "layout two", "lung window", "zoom in".
@@ -73,4 +79,28 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   await expect(page.getByRole("button", { name: /^Voice commands$/ })).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(800);
   expect(page.workers().length, "the recognizer worker is terminated").toBeLessThanOrEqual(workersBefore);
+});
+
+test.describe("voice: no microphone permission", () => {
+  // No fake-UI flag and no granted permission: getUserMedia is refused.
+  test.use({
+    permissions: [],
+    launchOptions: {
+      ...(process.env.PW_CHROMIUM_PATH ? { executablePath: process.env.PW_CHROMIUM_PATH } : {}),
+      args: ["--no-sandbox", "--deny-permission-prompts"],
+    },
+  });
+
+  test("voice: a blocked microphone says so, with Retry, instead of spinning", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await openStudy(page);
+    await page.getByRole("button", { name: /^Voice commands/ }).click();
+    const status = page.getByTestId("voice-status");
+    await expect(status).toContainText(/Microphone access is blocked|No microphone found/, { timeout: 30_000 });
+    await expect(status.getByRole("button", { name: "Retry" })).toBeVisible();
+    await status.getByRole("button", { name: "Dismiss" }).click();
+    await expect(status).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Voice commands$/ })).toBeVisible();
+  });
 });

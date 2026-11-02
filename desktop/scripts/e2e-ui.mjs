@@ -16,7 +16,7 @@
 
 import { createServer } from "node:http";
 import { readFile, readdir, stat, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -50,13 +50,31 @@ async function listFiles(dir) {
   return out;
 }
 
+// The app's own Content-Security-Policy (src-tauri/tauri.conf.json), sent
+// with the page as the installed app applies it: code that needs eval, inline
+// script or an unlisted source fails here as it would on a reader's machine
+// (the voice recognizer's worker did, in 0.8.0).
+const appCsp = (() => {
+  try {
+    const conf = JSON.parse(readFileSync(path.join(path.dirname(dist), "src-tauri", "tauri.conf.json"), "utf8"));
+    const csp = conf?.app?.security?.csp;
+    if (!csp || typeof csp !== "object") return null;
+    return Object.entries(csp)
+      .map(([k, v]) => `${k} ${v}`)
+      .join("; ");
+  } catch {
+    return null;
+  }
+})();
 const types = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html", ".svg": "image/svg+xml" };
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const file = path.join(dist, url.pathname === "/" ? "index.html" : url.pathname);
   try {
     const body = await readFile(file);
-    res.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream" });
+    const headers = { "Content-Type": types[path.extname(file)] ?? "application/octet-stream" };
+    if (appCsp && path.extname(file) === ".html") headers["Content-Security-Policy"] = appCsp;
+    res.writeHead(200, headers);
     res.end(body);
   } catch {
     res.writeHead(404).end();

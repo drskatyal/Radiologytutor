@@ -55,7 +55,8 @@ import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { imageMenu } from "@flowrad/viewer-core";
 import { shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
-import type { VoiceState } from "./viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
+import { VoiceStatus } from "./viewer/voice/VoiceStatus";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
@@ -796,6 +797,7 @@ export default function CornerstoneViewer({
   initialWindow = null,
   paneLabel,
   onChunkLoadError,
+  onSeriesStep,
 }: {
   /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
   paneLabel?: string;
@@ -825,6 +827,11 @@ export default function CornerstoneViewer({
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /**
+   * "Next / previous series" (voice) for hosts that own the series list
+   * themselves (the free viewer). Without it, the `series` prop is stepped.
+   */
+  onSeriesStep?: (delta: number) => void;
   /**
    * The viewer's code could not be fetched even after retries (a deploy
    * swapped the build under this tab, or the network dropped it). The host
@@ -3635,7 +3642,12 @@ export default function CornerstoneViewer({
   };
 
   // ── Offline voice commands (components/viewer/voice) ──
-  const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
+  const [voice, setVoice] = useState<{
+    state: VoiceState;
+    heard?: string | null;
+    progress?: VoiceProgress | null;
+    detail?: string | null;
+  }>({ state: "off" });
   const voiceSessionRef = useRef<{ stop(): void } | null>(null);
   // Client-only (the server render has no microphone API): no hydration mismatch.
   const [canVoice, setCanVoice] = useState(false);
@@ -3644,6 +3656,7 @@ export default function CornerstoneViewer({
   voiceActionRef.current = (a: VoiceAction) => {
     switch (a.type) {
       case "series": {
+        if (onSeriesStep) return onSeriesStep(a.delta);
         if (!series?.length || !onSeriesChangeRef.current) return;
         const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
         if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
@@ -3680,26 +3693,29 @@ export default function CornerstoneViewer({
         return;
     }
   };
+  // The session handle comes back at once, so a click while loading cancels.
   const toggleVoice = async () => {
-    if (voiceSessionRef.current || voice.state === "loading") {
-      voiceSessionRef.current?.stop();
+    if (voiceSessionRef.current) {
+      voiceSessionRef.current.stop();
       voiceSessionRef.current = null;
       return;
     }
+    setVoice({ state: "loading", progress: { phase: "model", fraction: 0, label: "Loading voice model…" } });
     const { startVoice } = await import("./viewer/voice/voiceSession");
-    voiceSessionRef.current = await startVoice({
+    const session = await startVoice({
       modelUrl: "/voice/model.tar.gz",
       onAction: (action, heard) => {
         flash(`“${heard}”`);
         voiceActionRef.current(action);
       },
       onUnrecognized: (heard) => flash(`“${heard}” ?`),
+      onProgress: (progress) => setVoice((v) => (v.state === "loading" ? { ...v, progress } : v)),
       onState: (state, detail) => {
-        setVoice({ state });
-        if (state === "error" && detail) flash(detail);
+        setVoice((v) => ({ ...v, state, detail: state === "error" ? detail ?? null : null, progress: state === "loading" ? v.progress : null }));
         if (state === "off" || state === "error") voiceSessionRef.current = null;
       },
     });
+    voiceSessionRef.current = session;
   };
   useEffect(() => () => voiceSessionRef.current?.stop(), []);
 
@@ -4097,6 +4113,17 @@ export default function CornerstoneViewer({
           </p>
         )}
         <ViewerHud text={hud} />
+        {voice.state === "loading" || voice.state === "error" ? (
+          <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 justify-center">
+            <VoiceStatus
+              state={voice.state}
+              progress={voice.progress}
+              detail={voice.detail}
+              onRetry={() => void toggleVoice()}
+              onDismiss={() => setVoice({ state: "off" })}
+            />
+          </div>
+        ) : null}
         <ViewerHelp open={helpOpen} onClose={closeHelp} />
         {mprShowing ? null : imageOverlay}
       </div>
