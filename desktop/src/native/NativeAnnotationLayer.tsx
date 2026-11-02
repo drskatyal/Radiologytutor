@@ -186,8 +186,9 @@ export default function NativeAnnotationLayer({ cellKey, seriesUid, imageIndex, 
     if (d) {
       drag.current = null;
       const a = list.find((x) => x.id === d.id);
-      if (a) {
-        // One undo step for the whole drag.
+      const moved = a && a.points.some((p, i) => p[0] !== d.orig[i]?.[0] || p[1] !== d.orig[i]?.[1]);
+      if (a && moved) {
+        // One undo step for the whole drag (a click without a move selects only).
         updateAnnotation({ ...a, points: d.orig }, { undoable: false });
         updateAnnotation(a);
         void refreshStats(a);
