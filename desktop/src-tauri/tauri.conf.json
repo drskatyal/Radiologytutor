@@ -85,6 +85,7 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist",
       "dmg": {
         "windowSize": {
           "width": 600,
