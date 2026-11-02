@@ -326,6 +326,34 @@ mod tests {
         assert_eq!(s.window, Some((40.0, 400.0)));
     }
 
+    /// Study closed: slices decoded on rayon workers (warm, prefetch) and on
+    /// the caller are all released; no Arc to a slice survives the clear, and
+    /// a concurrent warm + get of one slice decodes it once.
+    #[test]
+    fn clear_after_warm_releases_every_slice() {
+        let d = tmp("clear");
+        let paths: Vec<PathBuf> = (0..6).map(|i| write_ct(&d, &format!("{i}.dcm"), 64, 64, 100 + i)).collect();
+        let store = Arc::new(ImageStore::new(64 * 1_048_576));
+        store.warm(paths.clone());
+        let first = store.get(&paths[0]).unwrap();
+        // Let the warm jobs finish, then load the rest on this thread.
+        for p in &paths {
+            store.get(p).unwrap();
+        }
+        let before = store.stats();
+        assert_eq!(before.slices, 6);
+        assert!(before.used_mb > 0.0);
+        assert!(before.misses <= 6, "one decode per slice, got {}", before.misses);
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        store.clear();
+        let after = store.stats();
+        eprintln!("store after close: {:.3} MB in {} slices (before {:.3} MB in {})", after.used_mb, after.slices, before.used_mb, before.slices);
+        assert_eq!((after.slices, after.used_mb), (0, 0.0));
+        assert!(weak.upgrade().is_none(), "a closed study's slice is still referenced");
+        assert!(store.inflight.lock().is_empty());
+    }
+
     #[test]
     fn evicts_least_recently_used_within_budget() {
         let d = tmp("lru");

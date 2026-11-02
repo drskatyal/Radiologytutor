@@ -110,7 +110,7 @@ fn save_cache(path: &Path, headers: &[Header]) {
 /// Header reads are I/O-latency bound (open, antivirus callback, first 64 KB),
 /// not CPU bound, so the scan runs on its own pool with twice the cores:
 /// while half the threads wait on the disk the other half parse.
-fn scan_pool() -> &'static rayon::ThreadPool {
+pub(crate) fn scan_pool() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         let cores = std::thread::available_parallelism()

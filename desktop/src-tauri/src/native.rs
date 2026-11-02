@@ -142,6 +142,21 @@ pub struct Native {
 
 pub type Shared = Arc<Native>;
 
+/// What a study held when it was closed (`close_all`), MB.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedReport {
+    pub cells: usize,
+    pub cell_textures_mb: f64,
+    pub store_mb: f64,
+    pub store_slices: usize,
+    /// A reformat volume still alive after close (its views free it).
+    pub volume_mb: f64,
+    /// wgpu's GPU allocator after the close (D3D12): live, and reserved in blocks.
+    pub gpu_allocated_mb: Option<f64>,
+    pub gpu_reserved_mb: Option<f64>,
+}
+
 /// The 16-bit test image: a horizontal ramp with concentric rings, so window
 /// / level visibly changes contrast and an off-by-one in the upload shows.
 pub fn test_image(size: u32) -> Vec<i16> {
@@ -585,18 +600,40 @@ impl Native {
         self.cells.lock().remove(id);
     }
 
-    /// Study closed: every cell and every decoded slice.
-    pub fn close_all(&self) {
-        self.cells.lock().clear();
+    /// Study closed: every cell and every decoded slice. Returns what was
+    /// held (logged by the close bench, so a regression names its cache).
+    pub fn close_all(&self) -> ClosedReport {
+        let mut report = ClosedReport::default();
+        {
+            let mut cells = self.cells.lock();
+            report.cells = cells.len();
+            report.cell_textures_mb = cells
+                .values()
+                .filter_map(|c| c.gpu.as_ref()?.texture.as_ref().map(|(_, t)| {
+                    let px = t.width() as f64 * t.height() as f64;
+                    px * if c.gpu.as_ref().is_some_and(|g| g.rgba) { 4.0 } else { 2.0 } / 1_048_576.0
+                }))
+                .sum();
+            cells.clear();
+        }
         if let Some(store) = self.store.get() {
+            let st = store.stats();
+            report.store_mb = st.used_mb;
+            report.store_slices = st.slices;
             store.clear();
         }
+        report.volume_mb = crate::volume::held_bytes() as f64 / 1_048_576.0;
         // wgpu destroys dropped textures / buffers only once the GPU is done
         // with them, on a later poll: wait for that now rather than at the
         // next frame (none may come on the home screen).
         if let Some(gpu) = self.gpu.lock().as_ref() {
             let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+            if let Some(r) = gpu.device.generate_allocator_report() {
+                report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
+                report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
+            }
         }
+        report
     }
 
     /// Image pixel value under a cell point (CSS px), modality units.

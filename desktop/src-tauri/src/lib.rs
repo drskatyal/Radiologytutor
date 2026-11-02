@@ -49,7 +49,18 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Hand freed memory back to the OS now (study closed, scan finished):
 /// mimalloc's free pages on every thread, then the process heap that the
 /// system DLLs (D3D, WebView2 host) allocate from.
+///
+/// Every thread: mimalloc keeps a heap per thread, and a block freed by
+/// another thread (the slice cache is cleared on the command thread, but the
+/// slices were decoded on rayon workers; the scan's headers on the scan pool)
+/// only goes back to its owner's heap, which purges it on its own next
+/// allocation or collect. An idle worker never does: the closed study's
+/// slices stayed committed (CI 0.8.2 close gate: the app process kept
+/// +105 MB 30 s after close). So each pool's threads collect themselves.
 pub(crate) fn release_memory() {
+    let collect = |_: rayon::BroadcastContext<'_>| unsafe { libmimalloc_sys::mi_collect(true) };
+    rayon::broadcast(collect);
+    scan::scan_pool().broadcast(collect);
     unsafe {
         libmimalloc_sys::mi_collect(true);
     }
@@ -600,8 +611,40 @@ fn native_close(native: tauri::State<'_, native::Shared>) {
     // allocator's slack (reformat volumes are freed by their views' unmount,
     // volume_close). Back to the empty-app footprint (bench `close` gate:
     // within 30 MB of baseline).
-    native.close_all();
+    let before = commit_mb();
+    let held = native.close_all();
+    let after_clear = commit_mb();
     release_memory();
+    let after_release = commit_mb();
+    // Work that was mid-decode when the cache was cleared lands afterwards:
+    // collect once more when it has drained.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        release_memory();
+        if bench_on() {
+            bench_emit("FLOWRAD_BENCH_CLOSE", &serde_json::json!({ "step": "late release", "commitMb": commit_mb() }));
+        }
+    });
+    if bench_on() {
+        bench_emit(
+            "FLOWRAD_BENCH_CLOSE",
+            &serde_json::json!({
+                "held": held,
+                "commitMb": { "before": before, "afterClear": after_clear, "afterRelease": after_release },
+            }),
+        );
+    }
+}
+
+/// This process's committed memory (private bytes), MB, from the allocator's
+/// view of the OS counters.
+pub(crate) fn commit_mb() -> f64 {
+    let (mut z, mut commit) = (0usize, 0usize);
+    let (mut a, mut b, mut c, mut d, mut e, mut f) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    unsafe {
+        libmimalloc_sys::mi_process_info(&mut z, &mut a, &mut b, &mut c, &mut d, &mut commit, &mut e, &mut f);
+    }
+    (commit as f64 / 1_048_576.0 * 10.0).round() / 10.0
 }
 
 // ───────────── P2.2: native viewports in the app (one per layout cell) ─────────────
@@ -1068,6 +1111,40 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// What this process holds, MB: private bytes on Windows / macOS (the
+    /// allocator's view of the OS commit), anonymous resident memory on Linux
+    /// (mimalloc purges there with MADV_DONTNEED, which its commit counter
+    /// does not see).
+    fn held_mb() -> f64 {
+        #[cfg(target_os = "linux")]
+        {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            if let Some(kb) = status.lines().find(|l| l.starts_with("RssAnon:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<f64>().ok()) {
+                return kb / 1024.0;
+            }
+        }
+        super::commit_mb()
+    }
+
+    /// The close-gate root cause: blocks allocated on idle rayon workers and
+    /// freed on another thread stay with the workers' heaps until those
+    /// threads collect. `release_memory` must hand them back to the OS.
+    #[test]
+    fn release_memory_returns_blocks_freed_across_threads() {
+        use rayon::prelude::*;
+        let base = held_mb();
+        // 192 MB of 512 KB "slices", decoded (allocated and written) on the rayon pool.
+        let slices: Vec<Vec<i16>> = (0..384).into_par_iter().map(|i| vec![1 + i as i16; 256 * 1024]).collect();
+        let held = held_mb();
+        drop(slices); // freed here, on the test thread (the close command's thread)
+        let freed = held_mb();
+        super::release_memory();
+        let released = held_mb();
+        eprintln!("held MB: base {base:.0} · 192 MB decoded {held:.0} · freed {freed:.0} · after release_memory {released:.0}");
+        assert!(held - base > 150.0, "the slices were not resident? {base:.0} -> {held:.0}");
+        assert!(released - base < 48.0, "release_memory kept {:.0} MB of 192 freed ({base:.0} -> {released:.0})", released - base);
+    }
+
     /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test inflates
     #[test]
     fn inflates_deflated_explicit_le() {
