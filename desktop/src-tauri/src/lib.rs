@@ -462,7 +462,7 @@ async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, nati
     if !native::enabled() {
         return Ok(native.status());
     }
-    let status = native.init(&window);
+    let status = native.init(&window).await;
     if status.ready {
         // Where the page draws nothing, the native surface shows through.
         let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
