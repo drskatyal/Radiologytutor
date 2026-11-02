@@ -139,12 +139,23 @@ jobs:
       - name: Build the app (debug, embedded renderer)
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
-      - name: e2e — normal launch paints real pixels in the main viewport
+      # The JS renderer stays as the fallback after the P2.6 cutover (no GPU
+      # adapter, FLOWRAD_NATIVE=0, colour / multi-frame series): this test
+      # reads its canvases back and exercises its CPU fallback, so it pins it.
+      - name: e2e — normal launch paints real pixels in the main viewport (JS renderer, the fallback)
         env:
+          FLOWRAD_NATIVE: "0"
           # WARP runner: an unforced CPU-fallback launch is discarded and
           # repeated (max 2, logged); the check itself is unchanged.
           FLOWRAD_BENCH_WARP_RETRY: "1"
         run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer.exe
+      # The default after the cutover: the native renderer, checked on screen.
+      - run: pip install pillow
+      - name: e2e — normal launch paints the slice natively (screen grab, default renderer)
+        shell: bash
+        run: |
+          python scripts/make-test-ct.py "$RUNNER_TEMP/ct40" --slices 40
+          python desktop/scripts/e2e-native.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$RUNNER_TEMP/native-shots" --study "$RUNNER_TEMP/ct40"
 
   # Performance gate on WebView2 (the platform readers install on), release
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
