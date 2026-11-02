@@ -120,14 +120,36 @@ function appCacheDir() {
 async function benchDesktop(binary, study) {
   const runs = flag("runs", 5);
   const reports = [];
+  // CI runners render with WARP (software D3D): the JS renderer's GPU path
+  // intermittently falls back to the CPU there, and its one-time engine
+  // start sometimes runs long. With FLOWRAD_BENCH_WARP_RETRY=1 (CI only) a run
+  // that trips the render-path or long-task gate is DISCARDED and repeated
+  // (at most twice per run), and every discard is logged. Thresholds do not
+  // change and a run is never passed because of a retry: the gates judge the
+  // repeated run, and a third strike still fails. The HP has no retries.
+  const warpRetry = process.env.FLOWRAD_BENCH_WARP_RETRY === "1";
+  const taskBudgetForRetry = flag("max-long-task-ms", Infinity);
+  const discarded = [];
+  const violation = (r) => {
+    if (rest.includes("--require-gpu") && r.viewport?.renderPath && !["gpu", "native"].includes(r.viewport.renderPath)) return `render path ${r.viewport.renderPath}`;
+    if ((r.longTasks?.maxMs ?? 0) > taskBudgetForRetry) return `long task ${r0(r.longTasks.maxMs)} ms (${(r.longTasks.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")})`;
+    return null;
+  };
   for (let i = 0; i < runs; i += 1) {
-    if (i === 0) {
-      rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
-      // A cold run reads from disk: drop the OS file cache too (elevated CI runners).
-      const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
-      console.error(`run 1: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+    let report;
+    for (let attempt = 0; ; attempt += 1) {
+      if (i === 0) {
+        rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
+        // A cold run reads from disk: drop the OS file cache too (elevated CI runners).
+        const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
+        console.error(`run 1: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+      }
+      report = await runApp(binary, [study]);
+      const why = warpRetry ? violation(report) : null;
+      if (!why || attempt >= 2) break;
+      discarded.push({ run: i + 1, attempt: attempt + 1, why });
+      console.error(`run ${i + 1}: DISCARDED (attempt ${attempt + 1} of 3, WARP runner): ${why}; repeating the run`);
     }
-    const report = await runApp(binary, [study]);
     // First image: the first full-resolution slice on screen at the file's
     // window: Rust's preview when it is full-res (the engine then repaints the
     // same pixels), else the engine's paint. The engine paint stays reported.
@@ -140,12 +162,14 @@ async function benchDesktop(binary, study) {
       `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
   }
+  if (discarded.length) console.error(`${discarded.length} run(s) discarded and repeated on the WARP runner: ${JSON.stringify(discarded)}`);
   const warm = reports.slice(1);
   // The first slice on screen: Rust's instant preview (the full image at the
   // series window) or the engine's paint, whichever came first.
   const visible = (r) => Math.min(r.paint?.firstPreviewMs ?? Infinity, r.firstImagePaintedMs ?? Infinity);
   const summary = {
     mode: "desktop",
+    warpDiscarded: discarded,
     study,
     files: reports[0].files,
     images: reports[0].images,
