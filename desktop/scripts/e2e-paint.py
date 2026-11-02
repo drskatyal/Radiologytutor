@@ -122,6 +122,16 @@ def main() -> int:
     for study in studies:
         try:
             probe = run(binary, study, {"FLOWRAD_PROBE_AFTER_MS": "8000"}, "FLOWRAD_PROBE")
+            # CI runner (WARP, software D3D): the GPU path intermittently falls
+            # back to the CPU on its own. With FLOWRAD_BENCH_WARP_RETRY=1 such
+            # a launch is discarded and repeated (at most twice, logged); the
+            # repeated launch must pass the same check. The forced black-GPU
+            # case below is unchanged, and the HP runs have no retries.
+            for attempt in range(2):
+                if os.environ.get("FLOWRAD_BENCH_WARP_RETRY") != "1" or probe.get("renderPath") != "cpu-fallback":
+                    break
+                print(f"     {study.name}: normal launch DISCARDED (attempt {attempt + 1} of 3, WARP runner): unforced CPU fallback, maxLum={[v.get('maxLum') for v in probe.get('viewports', [])]}; repeating")
+                probe = run(binary, study, {"FLOWRAD_PROBE_AFTER_MS": "8000"}, "FLOWRAD_PROBE")
             bench = run(binary, study, {"FLOWRAD_BENCH": "1", "FLOWRAD_BENCH_EXIT": "1"}, "FLOWRAD_BENCH")
             vp = bench.get("viewport") or {}
             problems = []
