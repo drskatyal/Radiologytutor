@@ -9,6 +9,7 @@
 import type { WindowSyncMessage } from "@flowrad/viewer-core";
 import { invoke } from "../platform";
 import { onWindowMessage, postToWindows, windowId } from "../multiWindow";
+import { longTasks } from "../perfWatch";
 
 export interface WindowCycleDriver {
   /** Open a viewer window showing `uid`; resolves to its id. */
@@ -36,6 +37,10 @@ function nextMessage(pred: (m: WindowSyncMessage) => boolean, timeoutMs: number)
 export async function runWindowCycle(d: WindowCycleDriver, series: [string, string], { rounds = 2, settleMs = 6000 } = {}) {
   await wait(settleMs);
   const baselineMb = await treeMb();
+  // Long tasks while windows open and close — not the main window's own
+  // startup (engine init, first series), which the desktop bench gates.
+  const tasksBefore = { count: longTasks.count, totalMs: longTasks.totalMs };
+  const cycleStart = performance.now();
   const runs: { openMs: number | null; paintMs: number | null; roundTripMs: number | null; openMb: number; closedMb: number }[] = [];
   for (let round = 0; round < rounds; round += 1) {
     const t0 = performance.now();
@@ -68,6 +73,11 @@ export async function runWindowCycle(d: WindowCycleDriver, series: [string, stri
     perWindowMb: last ? Math.max(...runs.map((r) => r.openMb)) - baselineMb : null,
     /** After closing every window: back to baseline? */
     leakMb: last ? last.closedMb - baselineMb : null,
+    longTasks: {
+      count: longTasks.count - tasksBefore.count,
+      totalMs: longTasks.totalMs - tasksBefore.totalMs,
+      recent: longTasks.recent.filter((t) => t.at >= cycleStart),
+    },
     ok: runs.length === rounds && runs.every((r) => r.openMs != null && r.paintMs != null && r.roundTripMs != null),
   };
 }

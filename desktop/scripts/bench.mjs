@@ -234,13 +234,14 @@ async function benchInteract(binary, study) {
  * bus, close it, twice; the process tree is sampled before, during and after.
  *   --max-window-leak-mb N   after closing − baseline (memory back to baseline)
  *   --max-window-mb N        what one open window costs
- *   --max-long-tasks N       main-thread tasks over 50 ms during the run
+ *   --max-long-tasks N       main-thread tasks over 50 ms while windows open and close
  */
 async function benchMultiWindow(binary, study) {
   const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "multiwindow", BENCH_TIMEOUT_MS: String(240_000) }));
   const mw = report.multiWindow;
   if (!mw) throw new Error(`no multi-window report (marks: ${Object.keys(report).join(", ")}; timedOut: ${report.timedOut ?? "?"})`);
-  console.log(JSON.stringify({ mode: "multiwindow", study, ...mw, longTasks: report.longTasks }, null, 2));
+  // mw.longTasks: during the window cycle only; startupLongTasks: the whole run.
+  console.log(JSON.stringify({ mode: "multiwindow", study, ...mw, startupLongTasks: report.longTasks }, null, 2));
   const over = [];
   if (!mw.ok) over.push(`a window did not open / paint / follow: ${JSON.stringify(mw.runs)}`);
   const gate = (name, value, label) => {
@@ -249,7 +250,7 @@ async function benchMultiWindow(binary, study) {
   };
   gate("max-window-leak-mb", mw.leakMb, "MB not returned after closing the window");
   gate("max-window-mb", mw.perWindowMb, "MB per open window");
-  gate("max-long-tasks", report.longTasks?.count ?? 0, "long tasks");
+  gate("max-long-tasks", (mw.longTasks ?? report.longTasks)?.count ?? 0, "long tasks while opening/closing windows");
   if (over.length) {
     console.error(`multi-window gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
