@@ -60,3 +60,21 @@ export function onHandlesChanged(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+
+/**
+ * The viewport is drawn by the native renderer (Phase 2): there is no
+ * Cornerstone viewport, enabled element or tool group behind it, so engine
+ * calls (cancelActiveManipulations, getEnabledElement, synchronizers,
+ * HistoryMemo) must not be given its element or id.
+ */
+export function isNativeHandle(handle: ViewportHandle | null | undefined): boolean {
+  return !!handle?.element?.hasAttribute("data-native-viewport");
+}
+
+/** Viewport ids of the stacks Cornerstone draws (native viewports left out). */
+export function engineViewportIds(cells: readonly { key: string; id: string }[]): string[] {
+  return cells.flatMap(({ key, id }) => {
+    const h = handles.get(key);
+    return h && !isNativeHandle(h) ? [id] : [];
+  });
+}

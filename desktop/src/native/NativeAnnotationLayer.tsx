@@ -21,13 +21,12 @@ import {
   isDragTool,
   measureText,
   newId,
+  annotationsHidden,
   pointsNeeded,
-  redo,
   removeAnnotations,
   roiShape,
   segmentDistance,
   subscribe,
-  undo,
   updateAnnotation,
   type Annotation,
   type Pt,
@@ -215,14 +214,10 @@ export default function NativeAnnotationLayer({ cellKey, seriesUid, imageIndex, 
         onDeleted?.(removeAnnotations([selected]));
         setSelected(null);
         e.preventDefault();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        // Handled here: the app's own Mod+Z must not undo a second step.
-        if (e.shiftKey ? redo() : undo()) e.preventDefault();
-        if (!e.shiftKey) e.stopPropagation();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
-        if (redo()) e.preventDefault();
-        e.stopPropagation();
       }
+      // Ctrl+Z / Ctrl+Y: the app's shortcut map routes them to this store
+      // (App.tsx undoAnnotation / redoAnnotation), with the menu and voice —
+      // handling them here as well undid two steps per press.
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -235,7 +230,9 @@ export default function NativeAnnotationLayer({ cellKey, seriesUid, imageIndex, 
   }, [list, refreshStats]);
 
   const capture = isAnnotationTool(tool) || !!draft;
-  const shapes = draft ? [...list, draft] : list;
+  // F12 hides them (kept, and still undoable); a drawing in progress stays visible.
+  const shown = annotationsHidden() ? [] : list;
+  const shapes = draft ? [...shown, draft] : shown;
   const editingA = editing ? list.find((a) => a.id === editing) : null;
   return (
     <>
