@@ -139,3 +139,45 @@ test("a multiframe count comes through so the frame fan-out is right", () => {
   const header = parseLocalHeader(fakeParser({ x00280008: "96" }), "IM1", 10, dicomBytes());
   assert.equal(header?.numberOfFrames, 96);
 });
+
+test("progressive header read: one small read for a normal file, a larger one only when needed", async () => {
+  const { parseLocalHeaderProgressive, FIRST_HEADER_BYTES, HEADER_BYTES } = await import(
+    "../packages/viewer-core/src/localHeader"
+  );
+  const reads: number[] = [];
+  const bytes = dicomBytes();
+  const read = async (end: number) => {
+    reads.push(end);
+    const out = new Uint8Array(end);
+    out.set(bytes.subarray(0, Math.min(end, bytes.length)));
+    return out;
+  };
+  const ok = await parseLocalHeaderProgressive(fakeParser(FULL), "IM1", 512 * 1024, read);
+  assert.ok(ok);
+  assert.deepEqual(reads, [FIRST_HEADER_BYTES]);
+
+  // A header that does not fit the first read: the parser throws on the
+  // short buffer and succeeds on the longer one.
+  reads.length = 0;
+  let calls = 0;
+  const longHeader: DicomHeaderParser = {
+    parseDicom: (input) => {
+      calls += 1;
+      if (input.length < HEADER_BYTES) throw new Error("buffer overread");
+      return fakeParser(FULL).parseDicom(input);
+    },
+  };
+  const late = await parseLocalHeaderProgressive(longHeader, "IM2", 1024 * 1024, read);
+  assert.ok(late);
+  assert.deepEqual(reads, [FIRST_HEADER_BYTES, HEADER_BYTES]);
+  assert.equal(calls, 2);
+
+  // No DICM magic: never a second read.
+  reads.length = 0;
+  const none = await parseLocalHeaderProgressive(fakeParser(FULL), "x.bin", 1024 * 1024, async (end) => {
+    reads.push(end);
+    return new Uint8Array(end);
+  });
+  assert.equal(none, null);
+  assert.deepEqual(reads, [FIRST_HEADER_BYTES]);
+});
