@@ -3,6 +3,17 @@
 Status: approved direction (Phase 2 of the Rust rewrite), 2026-11-02. Desktop only;
 the web viewer keeps the current Cornerstone/JS path.
 
+**Progress (P2.0–P2.6 PRs #117–#123):** the native surface composites under a
+transparent WebView2 (screen-grab e2e on Windows CI); the Rust image core
+decodes all ten transfer-syntax fixtures; 2D viewports, every measurement /
+annotation tool, MPR / slabs / quick reformats and the 3D view are drawn
+natively; P2.6 makes native the default on Windows and macOS
+(`FLOWRAD_NATIVE=0` opts out; Linux stays JS unless `FLOWRAD_NATIVE=1`).
+Still on the JS path after cutover: colour and multi-frame series, PET/CT
+fusion, curved MPR, and viewer windows on other monitors (one native surface,
+main window). 3D is ray-cast on the CPU (every core) and drawn natively; GPU
+ray-casting is a later optimisation.
+
 ## Why
 
 HP bench of 0.7.2 (f4e7300), whole process tree, real GPU:

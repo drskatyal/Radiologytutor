@@ -210,7 +210,8 @@ async function benchDesktop(binary, study) {
   }
   // The GPU path must paint: a CPU fallback means it drew blank.
   if (rest.includes("--require-gpu")) {
-    const fell = reports.map((r, i) => [i + 1, r.viewport?.renderPath]).filter(([, p]) => p && p !== "gpu");
+    // "native": the Phase 2 renderer (wgpu), a GPU path by construction.
+    const fell = reports.map((r, i) => [i + 1, r.viewport?.renderPath]).filter(([, p]) => p && p !== "gpu" && p !== "native");
     if (fell.length) {
       console.error(`render-path gate failed: ${fell.map(([n, p]) => `run ${n} ${p}`).join(", ")}`);
       process.exitCode = 1;

@@ -472,6 +472,11 @@ async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, nati
     if !native::enabled() {
         return Ok(native.status());
     }
+    // One native surface, on the main window. Viewer windows on other
+    // monitors keep the JS renderer (their own surfaces are a follow-up).
+    if window.label() != "main" {
+        return Ok(native::NativeStatus { enabled: false, ..Default::default() });
+    }
     let status = native.init(&window).await;
     if status.ready {
         // Where the page draws nothing, the native surface shows through.

@@ -27,9 +27,17 @@ use serde::{Deserialize, Serialize};
 use crate::image_store::{self, ImageStore, Slice};
 use crate::native_view::{Transform, View, ViewPatch};
 
-/// The P2 path is opt-in until P2.6 (cutover).
+/// P2.6 cutover: the native renderer is the default on Windows and macOS
+/// (DX12 / Metal); FLOWRAD_NATIVE=0 turns it off (the JS renderer, as before
+/// Phase 2). Linux stays on the JS path unless FLOWRAD_NATIVE=1 (WebKitGTK
+/// transparency over a native surface is not validated). Without a usable
+/// GPU adapter the init fails and the app falls back to JS by itself.
 pub fn enabled() -> bool {
-    crate::flowrad_env("NATIVE").as_deref() == Ok("1")
+    match crate::flowrad_env("NATIVE").as_deref() {
+        Ok("0") => false,
+        Ok("1") => true,
+        _ => cfg!(any(target_os = "windows", target_os = "macos")),
+    }
 }
 
 /// A viewport rectangle in CSS pixels of the page (its top-left origin is
