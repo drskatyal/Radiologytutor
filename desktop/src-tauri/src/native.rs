@@ -860,8 +860,11 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
         format,
         width: size.width.max(1),
         height: size.height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        desired_maximum_frame_latency: 2,
+        // Mailbox: a frame never waits for the display's vblank (Fifo made
+        // every scroll call wait ~16 ms+); the newest frame wins. Fifo where
+        // mailbox is not offered.
+        present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) { wgpu::PresentMode::Mailbox } else { wgpu::PresentMode::Fifo },
+        desired_maximum_frame_latency: 1,
         alpha_mode: caps.alpha_modes[0],
         color_space: wgpu::SurfaceColorSpace::Auto,
         view_formats: vec![],
