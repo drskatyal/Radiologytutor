@@ -36,21 +36,29 @@ export async function profileNativeInteraction(cellId: string) {
   };
   requestAnimationFrame(tick);
   const rustFrame: number[] = [];
-  const run = async (steps: number, act: (i: number) => Promise<Shown>) => {
+  // The slowest step and where its time went (decode / cache vs. drawing and
+  // presenting the frame), so a freeze names its cause.
+  let slowest: { kind: string; step: number; ms: number; rustMs: number; decodeMs: number; frameMs: number } | null = null;
+  const run = async (kind: string, steps: number, act: (i: number) => Promise<Shown>) => {
     const out: number[] = [];
     for (let i = 0; i < steps; i += 1) {
       await nextFrame();
       const t0 = performance.now();
       const r = await act(i);
-      out.push(performance.now() - t0);
+      const ms = performance.now() - t0;
+      out.push(ms);
       rustFrame.push(r.totalMs);
+      if (!slowest || ms > slowest.ms) {
+        const r1 = (x: number) => Math.round(x * 10) / 10;
+        slowest = { kind, step: i, ms: r1(ms), rustMs: r1(r.totalMs), decodeMs: r1(r.decodeMs), frameMs: r1(r.frameMs) };
+      }
     }
     return out;
   };
-  const scroll = await run(120, () => invoke<Shown>("native_cell_scroll", { id: cellId, delta: 1 }));
-  const zoom = await run(30, (i) => invoke<Shown>("native_cell_view", { id: cellId, patch: { zoom: 1 + 0.02 * (i % 15) } }));
+  const scroll = await run("scroll", 120, () => invoke<Shown>("native_cell_scroll", { id: cellId, delta: 1 }));
+  const zoom = await run("zoom", 30, (i) => invoke<Shown>("native_cell_view", { id: cellId, patch: { zoom: 1 + 0.02 * (i % 15) } }));
   const base = await invoke<Shown>("native_cell_view", { id: cellId, patch: {} });
-  const windowLevel = await run(30, (i) =>
+  const windowLevel = await run("windowLevel", 30, (i) =>
     invoke<Shown>("native_cell_view", { id: cellId, patch: { wl: [base.view.wl[0] + 4 * i, base.view.wl[1] + 8 * i] } })
   );
   measuring = false;
@@ -61,6 +69,7 @@ export async function profileNativeInteraction(cellId: string) {
     windowLevel: stats(windowLevel),
     // Inside Rust (decode / cache + upload + draw + present), per step.
     native: stats(rustFrame),
+    slowest,
     frames: {
       ...frames,
       over33: intervals.slice(1).filter((x) => x > 33.4).length,
