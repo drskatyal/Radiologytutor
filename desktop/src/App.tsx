@@ -2174,6 +2174,7 @@ export default function App() {
       />
       {hasStudy && !distractionFree && (
         <Toolbar
+          shortcuts={settings.shortcuts}
           leftTool={leftTool}
           onTool={setLeftTool}
           presets={presets}

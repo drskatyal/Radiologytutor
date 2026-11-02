@@ -1,7 +1,7 @@
 // Pure renderer logic. Run: npm --prefix desktop test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveShortcut, shortcutSheet, BINDINGS, keySpecOf, conflictFor, type KeyLike } from "./shortcuts";
+import { resolveShortcut, shortcutSheet, BINDINGS, keySpecOf, conflictFor, toolKeyLabel, type KeyLike } from "./shortcuts";
 import { edgeLabels, directionLabel } from "./viewer/orientation";
 import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex } from "./study";
 import { hangSeries } from "./layout";
@@ -342,4 +342,18 @@ test("files with the same name in two series keep their own headers (browser dro
   assert.deepEqual(byUid.get("thin")!.headers.map((h) => h.imagePositionPatient![2]), [0, -1, -2, -3]);
   assert.equal(byUid.get("thin")!.volumetric, true);
   assert.deepEqual(byUid.get("thick")!.headers.map((h) => h.imagePositionPatient![2]), [-0.5, -5.5]);
+});
+
+test("tool keys shown in the toolbar, menus and F1 sheet come from the bindings table", () => {
+  // Rectangle ROI is S (R rotates); the label follows a re-mapping.
+  assert.equal(toolKeyLabel("RectangleROI", {}, false), "S");
+  assert.equal(toolKeyLabel("RectangleROI", { "tool.s": "K" }, false), "K");
+  assert.equal(toolKeyLabel("Length", {}, false), "M / L");
+  assert.equal(toolKeyLabel("Eraser", {}, false), "Shift+E");
+  assert.equal(toolKeyLabel("WindowLevel", {}, false), "W");
+  // The F1 sheet lists the same key for the rectangle, and no tool claims R.
+  const rows = shortcutSheet(false);
+  assert.ok(rows.some((r) => r.keys === "S" && /Rectangle/.test(r.does)));
+  assert.ok(!rows.some((r) => r.keys === "R" && /Rectangle/.test(r.does)));
+  for (const b of BINDINGS) if (b.action.type === "tool") assert.notEqual(b.keys, "R", `${b.action.tool} must not claim R`);
 });
