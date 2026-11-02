@@ -618,6 +618,32 @@ async fn native_cell_plane(
         .map_err(|e| e.to_string())?
 }
 
+/// P2.5: a 3D frame of the built Rust volume into a native cell.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn native_cell_render3d(
+    window: tauri::WebviewWindow,
+    id: String,
+    key: String,
+    mode: String,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
+    center: f32,
+    width: f32,
+    size: usize,
+    fast: bool,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::Render3dResult, String> {
+    let key: u64 = key.parse().map_err(|_| "bad volume key")?;
+    let mode = render3d::Mode::parse(&mode).ok_or("bad 3D mode")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.show_render3d(&id, key, mode, yaw, pitch, zoom, center, width, size, fast, scale))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn native_cell_close(id: String, native: tauri::State<'_, native::Shared>) {
     native.close_cell(&id);
@@ -924,6 +950,7 @@ pub fn run() {
             native_pick,
             native_roi_stats,
             native_cell_plane,
+            native_cell_render3d,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");

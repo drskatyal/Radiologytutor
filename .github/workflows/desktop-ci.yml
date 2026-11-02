@@ -331,6 +331,15 @@ jobs:
         run: |
           python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --view mpr --slab mip:20 --runs 1
           python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --view reformat --runs 1
+      - name: P2.5 e2e — MPR and 3D draw natively on a cold open (848-slice CT)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 1
+      - name: P2.5 — 3D peak and settled memory, native mode (whole process tree; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_BENCH_VIEW: 3d
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 8
       - name: P2.4 — MPR peak and settled memory, native mode (whole process tree; informational)
         env:
           FLOWRAD_NATIVE: "1"

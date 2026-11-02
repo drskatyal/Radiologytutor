@@ -7,14 +7,18 @@
 // frame when the drag ends), the wheel zooms, Shift+drag windows the MIP,
 // double-click resets. Presets: Bone, Soft tissue, MIP.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
 import { invoke, render3dUrl } from "../platform";
+import { useNativeMode } from "../native/nativeLayout";
 import type { ViewerSeries } from "../types";
 import { reducedNote, usePlaneImage, type VolumeInfo } from "./NativeMprView";
+
+// Phase 2: in native mode the frame is drawn by Rust under the page.
+const NativeRender3DSurface = lazy(() => import("../native/NativeRender3DSurface"));
 
 type Mode = "bone" | "soft" | "mip";
 
@@ -92,16 +96,22 @@ export function Native3DView({ series, onExit, onUnsupported, onVolumeReady, onP
   const dpr = window.devicePixelRatio || 1;
   // Interactive frames at ~half the device pixels, final frames at full (capped).
   const px = Math.min(1024, Math.max(128, Math.round(size * dpr * (dragging ? 0.5 : 1))));
-  const url = info && size ? render3dUrl(info.key, mode, view, voi.center, voi.width, px, dragging) : null;
-  const { src, failed } = usePlaneImage(url, (lum) => {
+  const native = useNativeMode();
+  const [nativePainted, setNativePainted] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const url = info && size && !native ? render3dUrl(info.key, mode, view, voi.center, voi.width, px, dragging) : null;
+  const firstPaint = (lum: number) => {
     if (paintedOnce.current || dragging) return;
     paintedOnce.current = true;
     cbs.current.onPainted?.({ ms: performance.now() - opened.current, maxLum: { "3d": lum } });
-  });
+  };
+  const img = usePlaneImage(url, firstPaint);
+  const src = native ? (nativePainted ? "native" : null) : img.src;
+  const failed = native ? !!nativeError : img.failed;
 
   const drag = useRef<{ x: number; y: number; shift: boolean } | null>(null);
   return (
-    <section aria-label="3D" className="flex min-w-0 flex-1 flex-col bg-black">
+    <section aria-label="3D" data-native-transparent className="flex min-w-0 flex-1 flex-col bg-black">
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-subtle bg-surface px-2 text-sm">
         <Button size="sm" variant="ghost" onClick={onExit} leadingIcon={<ArrowLeft className="h-4 w-4" />}>
           Back to 2D
@@ -150,7 +160,8 @@ export function Native3DView({ series, onExit, onUnsupported, onVolumeReady, onP
           aria-label={`3D ${MODES.find((m) => m.mode === mode)?.label ?? ""} rendering; drag to rotate`}
           tabIndex={0}
           className={cn(
-            "relative min-h-0 flex-1 touch-none select-none overflow-hidden bg-black outline-none",
+            "relative min-h-0 flex-1 touch-none select-none overflow-hidden outline-none",
+            native ? "bg-transparent" : "bg-black",
             "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",
             dragging ? "cursor-grabbing" : "cursor-grab"
           )}
@@ -190,7 +201,26 @@ export function Native3DView({ series, onExit, onUnsupported, onVolumeReady, onP
             e.preventDefault();
           }}
         >
-          {src && (
+          {native && info && size > 0 && (
+            <Suspense fallback={null}>
+              <NativeRender3DSurface
+                volumeKey={info.key}
+                mode={mode}
+                view={view}
+                center={voi.center}
+                width={voi.width}
+                size={size}
+                px={px}
+                fast={dragging}
+                onPainted={(lum, fast) => {
+                  setNativePainted(true);
+                  if (!fast) firstPaint(lum);
+                }}
+                onError={setNativeError}
+              />
+            </Suspense>
+          )}
+          {src && !native && (
             <img
               src={src}
               alt=""
