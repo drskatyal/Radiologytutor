@@ -29,7 +29,15 @@ const MR_DIR = process.env.TEST_MR_DIR;
 const OUT_DIR = path.join(__dirname, "..", "..", "test-results", "perf");
 const OUT_FILE = path.join(OUT_DIR, "free-viewer.json");
 
-const FIRST_IMAGE_BUDGET_MS = Number(process.env.FIRST_IMAGE_BUDGET_MS ?? 1000);
+/**
+ * First image = drop → the frame actually drawn (IMAGE_RENDERED), not the
+ * render request. Product targets: < 300 ms in a warm tab, < 500 ms on a
+ * freshly launched browser. CI renders in software GL on a shared runner, so
+ * the warm gate keeps 100 ms of headroom over the target; the cold gate is
+ * the target itself, on the median of the launches.
+ */
+const FIRST_IMAGE_BUDGET_MS = Number(process.env.FIRST_IMAGE_BUDGET_MS ?? 400);
+const COLD_FIRST_IMAGE_MEDIAN_BUDGET_MS = Number(process.env.COLD_FIRST_IMAGE_BUDGET_MS ?? 500);
 const LONG_TASK_BUDGET_MS = 50;
 /** 60 fps on a real GPU. */
 const FRAME_P95_BUDGET_MS = 20;
@@ -135,7 +143,10 @@ async function marks(page: Page) {
     // The LATEST mark of each kind: a test can open, close and reopen.
     const at = (name: string) => all.filter((m) => m.name === name).pop()?.startTime ?? null;
     const received = at("flowrad:viewer:files-received");
-    const pixel = all.find((m) => m.name.startsWith("radlearn:first-pixel:") && m.startTime >= (received ?? 0));
+    // The frame actually drawn (IMAGE_RENDERED), not the render request.
+    const pixel =
+      all.find((m) => m.name.startsWith("radlearn:first-rendered:") && m.startTime >= (received ?? 0)) ??
+      all.find((m) => m.name.startsWith("radlearn:first-pixel:") && m.startTime >= (received ?? 0));
     const ready = all.find((m) => m.name.startsWith("radlearn:series-ready:") && m.startTime >= (received ?? 0));
     return {
       received,
@@ -164,7 +175,17 @@ async function centreLuma(page: Page): Promise<number> {
 }
 
 async function measureFirstImage(page: Page) {
-  await expect.poll(async () => (await marks(page)).firstPixel, { timeout: 30_000, intervals: [25] }).not.toBeNull();
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const all = performance.getEntriesByType("mark");
+          const received = all.filter((m) => m.name === "flowrad:viewer:files-received").pop()?.startTime ?? 0;
+          return all.some((m) => m.name.startsWith("radlearn:first-rendered:") && m.startTime >= received);
+        }),
+      { timeout: 30_000, intervals: [25] }
+    )
+    .toBe(true);
   await expect.poll(() => centreLuma(page), { timeout: 10_000, intervals: [25] }).toBeGreaterThan(30);
   const m = await marks(page);
   return {
@@ -318,9 +339,14 @@ test("cold browser: first image within budget on a freshly launched browser (no 
   }
   const sorted = [...runs].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
-  record("coldFirstImage", { runs, medianMs: median, maxMs: sorted[sorted.length - 1] });
+  record("coldFirstImage", {
+    runs,
+    medianMs: median,
+    maxMs: sorted[sorted.length - 1],
+    medianBudgetMs: COLD_FIRST_IMAGE_MEDIAN_BUDGET_MS,
+  });
   console.log(`cold-browser first image: ${runs.join(", ")} ms (median ${median})`);
-  for (const ms of runs) expect(ms, "first image on a freshly launched browser").toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
+  expect(median, "median first image on a freshly launched browser").toBeLessThanOrEqual(COLD_FIRST_IMAGE_MEDIAN_BUDGET_MS);
 });
 
 test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({ page, browser }) => {
@@ -403,7 +429,7 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
     requestsAfterDrop: privacy.requestCount(),
     privacyViolations: violations,
   };
-  record("ct520", result);
+  record("ct520", { ...result, firstImageBudgetMs: FIRST_IMAGE_BUDGET_MS });
   console.log(JSON.stringify(result, null, 2));
 
   expect(violations, "privacy: no data leaves the page").toEqual([]);
@@ -536,7 +562,7 @@ test("MR multi-series JPEG 2000 as a ZIP: first image, series switch, lazy codec
     requestsAfterDrop: privacy.requestCount(),
     privacyViolations: violations,
   };
-  record("mrZip", result);
+  record("mrZip", { ...result, firstImageBudgetMs: FIRST_IMAGE_BUDGET_MS });
   console.log(JSON.stringify(result, null, 2));
 
   expect(violations, "privacy: no data leaves the page").toEqual([]);

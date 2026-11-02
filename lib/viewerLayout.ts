@@ -9,6 +9,12 @@ export const NARROW_LAYOUT_MAX_PX = 1023;
 
 export const NARROW_LAYOUT_MEDIA = "(max-width: 1023px)";
 
+/** The reading-room series aside on wide screens (`w-72`). */
+export const READING_SERIES_ASIDE_PX = 288;
+
+/** The edge toolbar under the image in the reading room (36px buttons + padding + border). */
+export const EDGE_TOOLBAR_PX = 45;
+
 /** Collapsed series strip. `w-11` — a 44px touch target. */
 export const COLLAPSED_RAIL_PX = 44;
 

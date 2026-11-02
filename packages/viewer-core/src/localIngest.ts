@@ -411,7 +411,14 @@ export async function ingestLocalFiles(
  *   • every `File` handle. Index slots are cleared, not reused, so a later
  *     study can never alias a freed imageId.
  */
-export async function releaseLocalImages(registeredIds: readonly string[]): Promise<void> {
+export async function releaseLocalImages(
+  registeredIds: readonly string[],
+  options: { recycleWorkers?: boolean } = {}
+): Promise<void> {
+  // The engine warm releases its two synthetic frames with recycleWorkers:
+  // false — nothing of a study to free, and the booted decode/header workers
+  // are exactly what the first drop should find.
+  const recycleWorkers = options.recycleWorkers ?? true;
   const [core, loader, metadata] = await Promise.all([
     import("@cornerstonejs/core"),
     import("@cornerstonejs/dicom-image-loader"),
@@ -431,7 +438,7 @@ export async function releaseLocalImages(registeredIds: readonly string[]): Prom
   const cacheData = metadata.utilities.CacheData as unknown as {
     clearTypedCacheData(type: string, query?: string): void;
   };
-  recycleDecodeWorkers(core);
+  if (recycleWorkers) recycleDecodeWorkers(core);
   // Back to the device budget: the study's raw-aware cap (applyLocalCacheBudget) ends with it.
   try {
     core.cache.setMaxCacheSize(imageCacheBytes(detectDeviceProfile()));
@@ -439,8 +446,10 @@ export async function releaseLocalImages(registeredIds: readonly string[]): Prom
     /* keep whatever cap is set */
   }
   // Header workers: drop the pool; the next ingest (or prewarm) builds a fresh one.
-  pool?.terminate();
-  pool = null;
+  if (recycleWorkers) {
+    pool?.terminate();
+    pool = null;
+  }
   for (const id of registeredIds) {
     // Per query, not a global clear: another viewer on the page (a teaching
     // case beside the local study) keeps its metadata.
