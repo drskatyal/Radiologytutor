@@ -39,6 +39,40 @@ use tauri::{Emitter, Manager};
 
 use crate::scan::ScanResult;
 
+/// mimalloc: decommits freed pages (purge) instead of keeping them committed
+/// like the Windows process heap, so private bytes fall back after a study is
+/// closed or a scan's per-thread buffers are dropped. Also faster for the
+/// scan's many small header allocations.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Hand freed memory back to the OS now (study closed, scan finished):
+/// mimalloc's free pages on every thread, then the process heap that the
+/// system DLLs (D3D, WebView2 host) allocate from.
+///
+/// Every thread: mimalloc keeps a heap per thread, and a block freed by
+/// another thread (the slice cache is cleared on the command thread, but the
+/// slices were decoded on rayon workers) only goes back to its owner's heap,
+/// which purges it on its own next allocation or collect. An idle worker
+/// never does: the closed study's slices stayed committed (CI 0.8.2 close
+/// gate: the app process kept +105 MB 30 s after close). So every worker
+/// collects itself (the scan's pool is per scan; its threads exit with it).
+pub(crate) fn release_memory() {
+    rayon::broadcast(|_| unsafe { libmimalloc_sys::mi_collect(true) });
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+        HeapCompact(GetProcessHeap(), 0);
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
 /// Files the user opened this session. The `dicom://` protocol serves by index
 /// into this list, so the renderer can never name an arbitrary path.
 #[derive(Default)]
@@ -118,12 +152,9 @@ async fn scan_sources(
         if bench_on() {
             bench_scan_line(&result);
         }
-        // A 4,000-file scan parses on every core; glibc keeps each thread's
-        // arena afterwards. Hand the slack back so an open study stays lean.
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            malloc_trim(0);
-        }
+        // A 4,000-file scan parses on every core; each thread keeps its
+        // pages afterwards. Hand the slack back so an open study stays lean.
+        release_memory();
         Ok(result)
     })
     .await
@@ -422,6 +453,7 @@ fn startup_marks() -> serde_json::Value {
         "navStartMs": m[1],
         "navDoneMs": m[2],
         "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+        "gpuWarmMs": native::WARM_MS.get(),
     })
 }
 
@@ -443,6 +475,13 @@ fn bench_view() -> Option<String> {
     crate::flowrad_env("BENCH_VIEW")
         .ok()
         .or_else(|| crate::flowrad_env("LEAK_ROUNDS").ok().map(|_| "leak".to_string()))
+}
+
+/// `FLOWRAD_BENCH_VIEW=close`: how long the study stays open (settled
+/// sample) before the app closes it (`FLOWRAD_BENCH_CLOSE_AFTER_MS`, default 20 s).
+#[tauri::command]
+fn bench_close_after_ms() -> u64 {
+    crate::flowrad_env("BENCH_CLOSE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000)
 }
 
 /// `FLOWRAD_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
@@ -552,10 +591,95 @@ async fn native_scroll(window: tauri::WebviewWindow, delta: i64, native: tauri::
     native.scroll_spike(delta, window.scale_factor().unwrap_or(1.0))
 }
 
+/// Study open: decode the slices the first viewport is about to ask for
+/// while React mounts it, so `native_cell_series` finds them decoded.
+#[tauri::command]
+fn native_warm(file_ids: Vec<u32>, state: tauri::State<'_, AppState>, native: tauri::State<'_, native::Shared>) {
+    if !native::enabled() {
+        return;
+    }
+    let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().flatten().collect();
+    native.store().warm(paths);
+}
+
 /// P2.1: close the native series: texture and decoded slices freed.
 #[tauri::command]
 fn native_close(native: tauri::State<'_, native::Shared>) {
-    native.close_all();
+    // Study closed: every viewport, decoded slice and GPU texture, then the
+    // allocator's slack (reformat volumes are freed by their views' unmount,
+    // volume_close). Back to the empty-app footprint (bench `close` gate:
+    // within 30 MB of baseline).
+    let before = commit_mb();
+    let held = native.close_all();
+    let after_clear = commit_mb();
+    release_memory();
+    let after_release = commit_mb();
+    // Calls already in flight when the study closed (a viewport's last
+    // view / scroll, the prefetch behind it) land after the clear and put
+    // slices back (CI: 26 slices, 13 MB, after close). Once they have
+    // drained, and if no viewport exists by then (nothing open, so the cache
+    // serves nobody), empty the cache again and collect.
+    let native = native.inner().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let swept = native.sweep_if_idle();
+        release_memory();
+        if bench_on() {
+            bench_emit(
+                "FLOWRAD_BENCH_CLOSE",
+                &serde_json::json!({ "step": "late sweep", "swept": swept, "store": native.store().stats(), "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb() }),
+            );
+        }
+    });
+    if bench_on() {
+        bench_emit(
+            "FLOWRAD_BENCH_CLOSE",
+            &serde_json::json!({
+                "held": held,
+                "commitMb": { "before": before, "afterClear": after_clear, "afterRelease": after_release },
+                "heapCommittedMb": heap_committed_mb(),
+            }),
+        );
+    }
+}
+
+extern "C" {
+    // mimalloc-stats.h (v3): the allocator's statistics as JSON; the result is
+    // mi_malloc'ed when `buf` is null.
+    fn mi_stats_get_json(buf_size: usize, buf: *mut std::ffi::c_char) -> *mut std::ffi::c_char;
+}
+
+/// What mimalloc itself has committed, MB (the Rust heap's share of the
+/// process's private bytes; the rest is D3D / WARP, DLLs, stacks).
+pub(crate) fn heap_committed_mb() -> Option<f64> {
+    let json = unsafe {
+        let p = mi_stats_get_json(0, std::ptr::null_mut());
+        if p.is_null() {
+            return None;
+        }
+        let s = std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+        libmimalloc_sys::mi_free(p.cast());
+        s
+    };
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let current = v.get("committed")?.get("current")?.as_f64()?;
+    Some((current / 1_048_576.0 * 10.0).round() / 10.0)
+}
+
+/// mimalloc option `purge_delay` (v3 `mi_option_e` index 15): ms before
+/// freed memory is decommitted. 0 = at once, on every thread, without
+/// waiting for a collect that an idle thread never runs.
+const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
+/// This process's committed memory (private bytes), MB, from the allocator's
+/// view of the OS counters.
+pub(crate) fn commit_mb() -> f64 {
+    let (mut z, mut commit) = (0usize, 0usize);
+    let (mut a, mut b, mut c, mut d, mut e, mut f) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    unsafe {
+        libmimalloc_sys::mi_process_info(&mut z, &mut a, &mut b, &mut c, &mut d, &mut commit, &mut e, &mut f);
+    }
+    (commit as f64 / 1_048_576.0 * 10.0).round() / 10.0
 }
 
 // ───────────── P2.2: native viewports in the app (one per layout cell) ─────────────
@@ -852,6 +976,11 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    // Freed memory goes back to the OS at once (see MI_OPTION_PURGE_DELAY).
+    unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+    // The GPU device and pipelines build on their own thread from here, in
+    // parallel with WebView2 starting (native.rs `prewarm`).
+    native::prewarm();
     attach_bench_console();
     let state = AppState::default();
     *state.launch_paths.lock() = launch_args();
@@ -924,6 +1053,7 @@ pub fn run() {
             bench_slab,
             bench_reformat,
             bench_view,
+            bench_close_after_ms,
             bench_voice_wav,
             bench_pixels,
             bench_paint_timeout_ms,
@@ -960,6 +1090,7 @@ pub fn run() {
             native_open_launch_study,
             native_scroll,
             native_close,
+            native_warm,
             native_store_stats,
             native_layout,
             native_cell_series,
@@ -1017,6 +1148,51 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// What this process holds, MB: private bytes on Windows / macOS (the
+    /// allocator's view of the OS commit), anonymous resident memory on Linux
+    /// (mimalloc purges there with MADV_DONTNEED, which its commit counter
+    /// does not see).
+    fn held_mb() -> f64 {
+        #[cfg(target_os = "linux")]
+        {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            if let Some(kb) = status.lines().find(|l| l.starts_with("RssAnon:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<f64>().ok()) {
+                return kb / 1024.0;
+            }
+        }
+        super::commit_mb()
+    }
+
+    /// The option index we set at start-up really is mimalloc's purge delay
+    /// (v3 default 1000 ms), and the heap statistic the close report uses reads.
+    #[test]
+    fn mimalloc_purge_option_and_heap_stat() {
+        let delay = unsafe { libmimalloc_sys::mi_option_get(super::MI_OPTION_PURGE_DELAY) };
+        assert!(delay == 1000 || delay == 0, "option {} is not purge_delay (value {delay})", super::MI_OPTION_PURGE_DELAY);
+        let heap = super::heap_committed_mb().expect("mimalloc stats JSON");
+        assert!(heap > 0.0, "heap committed {heap} MB");
+    }
+
+    /// The close-gate root cause: blocks allocated on idle rayon workers and
+    /// freed on another thread stay with the workers' heaps until those
+    /// threads collect. `release_memory` must hand them back to the OS.
+    #[test]
+    fn release_memory_returns_blocks_freed_across_threads() {
+        use rayon::prelude::*;
+        let base = held_mb();
+        // 192 MB of 512 KB "slices", decoded (allocated and written) on the rayon pool.
+        let slices: Vec<Vec<i16>> = (0..384).into_par_iter().map(|i| vec![1 + i as i16; 256 * 1024]).collect();
+        let held = held_mb();
+        drop(slices); // freed here, on the test thread (the close command's thread)
+        let freed = held_mb();
+        super::release_memory();
+        let released = held_mb();
+        eprintln!("held MB: base {base:.0} · 192 MB decoded {held:.0} · freed {freed:.0} · after release_memory {released:.0}");
+        // Relative to the peak: other tests share this process and allocate meanwhile.
+        assert!(held - base > 150.0, "the slices were not resident? {base:.0} -> {held:.0}");
+        assert!(held - released > 128.0, "release_memory returned only {:.0} of 192 MB freed ({held:.0} -> {released:.0})", held - released);
+    }
+
     /// FLOWRAD_FIXTURES=/tmp/fixtures cargo test inflates
     #[test]
     fn inflates_deflated_explicit_le() {
