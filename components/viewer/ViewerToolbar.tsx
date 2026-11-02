@@ -15,7 +15,7 @@
 //
 // No Cornerstone import: this file only renders state the viewer owns.
 
-import { useContext, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useContext, useEffect, useState, type ReactNode } from "react";
 import {
   Blend,
   Captions,
@@ -36,6 +36,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  RotateCw,
   Ruler,
   SlidersHorizontal,
   Square,
@@ -52,6 +53,7 @@ import { shortcutForTool } from "@/lib/viewerHotkeys";
 import type { MprMode, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
+import { ORIENTATION_COMMANDS, type OrientationCommand } from "@flowrad/viewer-core";
 
 export type ViewerTool = {
   name: string;
@@ -143,7 +145,10 @@ export function ToolbarButton({
   container,
   className,
   children,
+  onWarm,
 }: {
+  /** Pointer over / focus: start loading what a click will need. */
+  onWarm?: () => void;
   label: string;
   shortcut?: string[] | null;
   /** Selected state (tool, toggle on). */
@@ -164,6 +169,8 @@ export function ToolbarButton({
         aria-pressed={pressed === null ? undefined : (pressed ?? active)}
         disabled={disabled}
         onClick={onClick}
+        onPointerEnter={onWarm}
+        onFocus={onWarm}
         className={cn(
           "inline-flex shrink-0 items-center justify-center rounded-md",
           square,
@@ -215,6 +222,8 @@ export interface ViewerToolbarProps {
   onPreset: (preset: WindowPreset | null) => void;
   onInvert: () => void;
   onReset: () => void;
+  /** Rotate / flip / reset orientation (the shared ORIENTATION_COMMANDS). */
+  onOrientation: (command: OrientationCommand) => void;
   onClear: () => void;
   onViewMode: (mode: MprMode) => void;
   onCineToggle: () => void;
@@ -222,7 +231,7 @@ export interface ViewerToolbarProps {
   onOverlay: () => void;
   onHelp: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
-  voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void };
+  voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
 }
 
 export function ViewerToolbar(props: ViewerToolbarProps) {
@@ -497,6 +506,38 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
 
         <span aria-hidden="true" className="min-w-2 flex-1" />
 
+        <Menu
+          label="Rotate and flip"
+          container={host}
+          trigger={
+            <button
+              type="button"
+              disabled={!ready || viewMode === "mpr"}
+              aria-label="Rotate and flip"
+              title="Rotate / flip · R, Shift+R, H, V"
+              className={cn(
+                "inline-flex h-9 shrink-0 items-center gap-0.5 rounded-md pl-2 pr-1 [@media(pointer:coarse)]:h-11",
+                pressable,
+                idle
+              )}
+            >
+              <Icon as={RotateCw} />
+              <ChevronDown className="h-3.5 w-3.5 opacity-70" strokeWidth={2} aria-hidden="true" />
+            </button>
+          }
+        >
+          <MenuLabel>Rotate / flip</MenuLabel>
+          {ORIENTATION_COMMANDS.map((entry) => (
+            <Fragment key={entry.command}>
+              {(entry.command === "flip:h" || entry.command === "orient:reset") && <MenuSeparator />}
+              <MenuItem
+                label={entry.label}
+                shortcut={entry.shortcut ? entry.shortcut.replace("Shift+", "⇧") : null}
+                onSelect={() => props.onOrientation(entry.command)}
+              />
+            </Fragment>
+          ))}
+        </Menu>
         <ToolbarButton
           label="Reset view"
           shortcut={["0"]}
@@ -537,6 +578,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             pressed={props.voice.state === "listening"}
             container={host}
             onClick={props.voice.onToggle}
+            onWarm={props.voice.onWarm}
             className={props.voice.state === "listening" ? "bg-accent text-accent-foreground hover:bg-accent" : undefined}
           >
             <Icon as={props.voice.state === "listening" ? Mic : MicOff} />
@@ -544,7 +586,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         )}
         <ToolbarButton
           label="Keyboard & mouse"
-          shortcut={["H"]}
+          shortcut={["?"]}
           pressed={null}
           container={host}
           onClick={props.onHelp}

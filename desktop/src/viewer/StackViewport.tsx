@@ -469,6 +469,13 @@ function StackViewportImpl({
         else vp.setCamera({ flipVertical: !cam.flipVertical });
         render();
       },
+      resetOrientation() {
+        const vp = viewport();
+        if (!vp) return;
+        vp.setViewPresentation?.({ rotation: 0 });
+        vp.setCamera({ flipHorizontal: false, flipVertical: false });
+        render();
+      },
       reset() {
         const vp = viewport();
         if (!vp) return;
@@ -722,10 +729,10 @@ function StackViewportImpl({
           </div>
           {readout?.edges && (
             <>
-              <span className="absolute left-1/2 top-2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.top}</span>
-              <span className="absolute bottom-2 left-1/2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.bottom}</span>
-              <span className="absolute left-2 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.left}</span>
-              <span className="absolute right-6 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.right}</span>
+              <span data-edge="top" className="absolute left-1/2 top-2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.top}</span>
+              <span data-edge="bottom" className="absolute bottom-2 left-1/2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.bottom}</span>
+              <span data-edge="left" className="absolute left-2 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.left}</span>
+              <span data-edge="right" className="absolute right-6 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.right}</span>
             </>
           )}
         </div>

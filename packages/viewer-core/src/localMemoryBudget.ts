@@ -21,6 +21,7 @@
 // is unit-tested in node (lib/localMemoryBudget.test.ts).
 
 import { instanceImageCount, type LocalInstanceHeader } from "./localStudy";
+import { THUMB_BUDGET_BYTES } from "./seriesThumbnail";
 
 /** Share of the device budget kept for reads in flight (file read, decode pending). */
 export const IN_FLIGHT_HEADROOM = 0.25;
@@ -63,6 +64,8 @@ export function localDecodedCacheBudget(
   deviceBudgetBytes: number
 ): number {
   const ratio = rawToDecodedRatio(headers);
-  const cap = Math.floor((deviceBudgetBytes * (1 - IN_FLIGHT_HEADROOM)) / (1 + ratio));
+  // Series thumbnails (seriesThumbnail.ts) are images too: their cap comes out first.
+  const usable = Math.max(0, deviceBudgetBytes - THUMB_BUDGET_BYTES);
+  const cap = Math.floor((usable * (1 - IN_FLIGHT_HEADROOM)) / (1 + ratio));
   return Math.max(Math.min(MIN_LOCAL_DECODED_CACHE_BYTES, deviceBudgetBytes), cap);
 }

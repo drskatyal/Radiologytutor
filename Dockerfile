@@ -18,6 +18,22 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# Offline voice commands: the small speech model (Apache-2.0, ~40 MB), checked
+# against scripts/voice-model.sha256. Its own stage, keyed only on the fetch
+# script and the pinned hash, so Docker caches it across deploys. public/voice/
+# is not in the repository: without this the live viewer had no model and the
+# mic could never start. A checksum mismatch (or any other failure) fails the
+# build; only a network outage (exit 3) is tolerated, and prod-smoke's voice
+# check then fails loudly on the missing model.
+FROM python:3.12-slim AS voice
+WORKDIR /app
+COPY scripts/fetch-voice-model.py scripts/voice-model.sha256 ./scripts/
+RUN mkdir -p public/voice desktop/public/voice; \
+  rc=0; python3 scripts/fetch-voice-model.py || rc=$?; \
+  if [ "$rc" = "3" ]; then echo "WARNING: voice model host unreachable; voice commands will say they are not included in this build"; \
+  elif [ "$rc" != "0" ]; then exit "$rc"; \
+  else python3 scripts/fetch-voice-model.py --check; fi
+
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
@@ -25,6 +41,13 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build
+# Carry the LIVE build's /_next/static files into this image (kept 7 days
+# after they stop being current), so tabs opened before this deploy can still
+# load their lazy chunks. Best effort; see scripts/carry-static.mjs. Railway
+# passes RAILWAY_PUBLIC_DOMAIN to the build; STATIC_CARRY_FROM overrides it.
+ARG STATIC_CARRY_FROM=""
+ARG RAILWAY_PUBLIC_DOMAIN=""
+RUN node scripts/carry-static.mjs --from "${STATIC_CARRY_FROM:-${RAILWAY_PUBLIC_DOMAIN:+https://$RAILWAY_PUBLIC_DOMAIN}}" || true
 
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
@@ -40,6 +63,7 @@ RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=voice --chown=nextjs:nodejs /app/public/voice ./public/voice
 # Standalone trace: server.js + traced node_modules at the image root.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static

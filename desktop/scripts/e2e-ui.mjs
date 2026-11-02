@@ -7,6 +7,8 @@
 //   keys       ↑/↓ slice, ←/→ series, PgUp/PgDn 10 %, Home/End, Shift+digit layouts, ? sheet
 //   remap      Settings → change a shortcut → the new key works, the old one doesn't
 //   cursors    each tool has its own cursor on the image; the UI keeps the arrow
+//   orient     R / Shift+R / H, toolbar rotate dropdown; edge letters follow
+//   panel      Ctrl+B collapses the series panel to a rail; handle reopens; remembered
 //   annotate   arrow with no prompt; inline label; select + Delete; undo / redo;
 //              right-click menu (delete, delete all on image / series); eraser
 //
@@ -50,13 +52,22 @@ async function listFiles(dir) {
   return out;
 }
 
+// --prod-csp: serve the page with the CSP the installed app ships with
+// (tauri.conf.json; Tauri sends it with HTML only). Without it this e2e
+// passed while the installed app's recognizer was blocked by that CSP.
+const prodCsp = args.includes("--prod-csp")
+  ? Object.entries(JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security.csp)
+      .map(([k, v]) => `${k} ${v}`)
+      .join("; ")
+  : null;
 const types = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html", ".svg": "image/svg+xml" };
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const file = path.join(dist, url.pathname === "/" ? "index.html" : url.pathname);
   try {
     const body = await readFile(file);
-    res.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream" });
+    const type = types[path.extname(file)] ?? "application/octet-stream";
+    res.writeHead(200, { "Content-Type": type, ...(prodCsp && type === "text/html" ? { "Content-Security-Policy": prodCsp } : {}) });
     res.end(body);
   } catch {
     res.writeHead(404).end();
@@ -93,7 +104,7 @@ if (only?.includes("multiwindow")) {
 }
 // Voice must load nothing until the mic is switched on.
 const voiceRequests = [];
-context.on("request", (r) => /\/assets\/vosk-|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
+context.on("request", (r) => /\/assets\/vosk-|recognizer-worker|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
 const page = await context.newPage();
 const consoleErrors = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
@@ -144,6 +155,50 @@ const focusImage = async () => {
   await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
 };
 const box = async (i = 0) => (await cell(i).boundingBox());
+
+// ── rotate / flip + series panel (0.8.1) ─────────────────────────────────
+const edgesOf = (i = 0) =>
+  cell(i).evaluate((el) => {
+    const out = {};
+    for (const e of el.querySelectorAll("[data-edge]")) out[e.dataset.edge] = e.textContent;
+    return out;
+  });
+if (want("orient")) {
+  await focusImage();
+  const start = await edgesOf();
+  check("orient: edge letters on an axial", start.top === "A" && start.left === "R", JSON.stringify(start));
+  await page.keyboard.press("r");
+  await settle(300);
+  const cw = await edgesOf();
+  check("orient: R rotates 90° clockwise (L to the bottom)", cw.bottom === start.right && cw.top === start.left, JSON.stringify(cw));
+  await page.keyboard.press("Shift+R");
+  await page.keyboard.press("h");
+  await settle(300);
+  const h = await edgesOf();
+  check("orient: H mirrors the screen left ↔ right", h.left === start.right && h.right === start.left && h.top === start.top, JSON.stringify(h));
+  await page.getByRole("button", { name: "Rotate and flip" }).click();
+  await settle(200);
+  await shot("rotate-menu");
+  await page.getByRole("menuitem", { name: /Reset orientation/ }).click();
+  await settle(300);
+  check("orient: toolbar → Reset orientation", JSON.stringify(await edgesOf()) === JSON.stringify(start), JSON.stringify(await edgesOf()));
+}
+if (want("panel")) {
+  await focusImage();
+  const panel = page.getByRole("complementary", { name: "Series" });
+  const w0 = (await box(0)).width;
+  await page.keyboard.press("Control+b");
+  await settle(400);
+  const collapsed = (await panel.getAttribute("data-collapsed")) === "true";
+  const w1 = (await box(0)).width;
+  check("panel: Ctrl+B collapses to a rail and the viewport takes the space", collapsed && w1 > w0 + 150, `${w0} → ${w1}`);
+  check("panel: Im n / N still shown (no reload)", !!(await imageNo()));
+  await shot("panel-collapsed");
+  await page.getByRole("button", { name: "Show series panel" }).click();
+  await settle(400);
+  check("panel: the rail handle opens it again", (await panel.getAttribute("data-collapsed")) !== "true");
+  check("panel: remembered on this device", (await page.evaluate(() => localStorage.getItem("flowrad.seriesPanel.collapsed"))) === "0");
+}
 
 // ── active border ───────────────────────────────────────────────────────
 if (want("border")) {
@@ -806,7 +861,7 @@ if (want("contextmenu")) {
   check("contextmenu: the first open of the session stays under 250 ms", firstOpenMs != null && firstOpenMs < 250, `${firstOpenMs?.toFixed?.(1)} ms`);
   const top = (await imageMenu.locator(":scope > div > [role]").allInnerTexts()).map((t) => t.split("\n")[0]);
   // Slab is drawn by the Rust core: the real app shows it, this browser build cannot.
-  const want = ["Tools", "Window / level", "Zoom, rotate, flip", "Reset view", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
+  const want = ["Tools", "Window / level", "Zoom", "Rotate / flip", "Reset view", "Hide series panel", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
   check("contextmenu: every section of the spec is there", want.every((w) => top.includes(w)), top.join(" | "));
   const kbds = await imageMenu.locator("kbd").count();
   check("contextmenu: keyboard shortcuts are shown beside items", kbds >= 3, `${kbds} shortcuts`);
@@ -1032,7 +1087,10 @@ if (want("voice")) {
     await settle(400);
     const mic = page.getByRole("button", { name: /^Voice commands/ });
     await mic.click();
-    await page.waitForFunction(() => !!document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 60_000 }).catch(() => undefined);
+    // Locator waits, not waitForFunction: Playwright compiles a waitForFunction
+    // predicate with `new Function` in the page, which the production CSP
+    // (--prod-csp, no 'unsafe-eval') blocks — the wait then returned at once.
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
     const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
     check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
     check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
@@ -1054,7 +1112,7 @@ if (want("voice")) {
     check("voice: what was heard is shown", [...heard].some((h) => /layout|lung|zoom/.test(h) && !h.includes("✓")), [...heard].join(" | "));
     await shot("voice-listening");
     await page.keyboard.press("Control+Shift+V");
-    await page.waitForFunction(() => !document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 10_000 }).catch(() => undefined);
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
     check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
   }

@@ -5,12 +5,14 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
-import type { WindowPreset } from "@flowrad/viewer-core";
+import type { OrientationCommand, WindowPreset } from "@flowrad/viewer-core";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import type { ExportKind } from "./components/ExportDialog";
 import {
   appVersion,
@@ -47,7 +49,9 @@ import { setScrollPreferences } from "@flowrad/viewer-core";
 import { hangingPlanFor } from "./hanging";
 import { withKeyImageSeries, type DicomDocument } from "./documents";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
-import { getHandle, onHandlesChanged } from "./viewer/handles";
+import { engineViewportIds, getHandle, isNativeHandle, onHandlesChanged } from "./viewer/handles";
+// Native viewports' annotation store (tiny, no engine): undo / redo / clear / F12.
+import * as nativeAnnotations from "./native/annotations";
 import {
   getStackOffset,
   clearAnnotations,
@@ -69,6 +73,7 @@ import {
   annotationHistory,
   enterIdleMemory,
   leaveIdleMemory,
+  type Engine,
 } from "./viewer/engine";
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
@@ -96,7 +101,8 @@ import {
 import { useCrossWindow } from "./viewer/useCrossWindow";
 import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
 import { setToolCursor } from "./viewer/toolCursor";
-import type { VoiceState } from "@/components/viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceSession, VoiceState } from "@/components/viewer/voice/voiceSession";
+import { VoiceStatus } from "@/components/viewer/voice/VoiceStatus";
 import {
   monitorColor,
   nextMonitor,
@@ -181,6 +187,11 @@ function nativeCapable(series: { multiframe?: boolean; headers: readonly { photo
   return pi.startsWith("MONOCHROME");
 }
 
+/** Whether this window renders natively; false at once outside Tauri. */
+function whenNativeKnown(): Promise<boolean> {
+  return isTauri ? nativeEnabled() : Promise.resolve(false);
+}
+
 export default function App() {
   const { toast } = useToast();
   const [version, setVersion] = useState("");
@@ -203,6 +214,29 @@ export default function App() {
   const [nativeMode, setNativeMode] = useState<boolean | null>(isTauri ? null : false);
   const native = nativeMode === true;
   const nativeRef = useRef(false);
+  /**
+   * The JS (Cornerstone) engine for App-level wiring: tools, sync, annotation
+   * visibility, linked windows. In native mode it is NOT started here — its
+   * import + init cost ~350 ms of main thread right when the first image is
+   * due, plus a WebGL context and a decode worker — only used once a JS-path
+   * viewport (colour / multi-frame fallback) has started it itself.
+   */
+  const withEngine = useCallback((fn: (engine: Engine) => void) => {
+    // Until Rust has answered whether this window is native, wait for it:
+    // an open right after launch must not start the engine "just in case".
+    void whenNativeKnown().then((on) => {
+      if (!on) {
+        void getEngine().then(fn);
+        return;
+      }
+      const engine = enginePeek();
+      if (engine) fn(engine);
+    });
+  }, []);
+  /** Start the JS engine early only where it will be the renderer. */
+  const prewarmJsEngine = useCallback(() => {
+    void whenNativeKnown().then((on) => !on && void getEngine());
+  }, []);
   useEffect(() => {
     if (!isTauri) return;
     void nativeEnabled().then((on) => {
@@ -219,7 +253,8 @@ export default function App() {
   /** Window/level and zoom/pan follow the active viewport across the visible ones. */
   const [syncVoi, setSyncVoi] = useState(false);
   const [syncZoom, setSyncZoom] = useState(false);
-  const [browserOpen, setBrowserOpen] = useState(true);
+  // Series panel: collapses to a rail (Mod+B, chevron, right-click), remembered per device.
+  const seriesPanel = useSeriesPanel();
   const [distractionFree, setDistractionFree] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [view, setView] = useState<"grid" | VolumeMode>("grid");
@@ -277,7 +312,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -382,8 +417,7 @@ export default function App() {
       }
       return;
     }
-    if (!engine) return;
-    leaveVolumeMemory(engine);
+    if (engine) leaveVolumeMemory(engine);
     // Give the freed volume back to the OS: a short Low memory-target pulse
     // makes WebView2 trim the renderer and GPU process (a no-op elsewhere).
     if (!isTauri) return;
@@ -543,7 +577,10 @@ export default function App() {
         if (seq !== openSeq.current) return;
         markPhase("study: group series");
         const built = buildStudies([...acc.values()]);
-        setStudies(built);
+        // After the first series is up, later batches re-render at low
+        // priority (time-sliced) instead of one long task per batch.
+        if (firstShown) startTransition(() => setStudies(built));
+        else setStudies(built);
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
@@ -822,6 +859,13 @@ export default function App() {
                   bench.current.marks.nativeTools = await driveNativeTools(setLeftTool);
                   void report();
                 })();
+              } else if (bench.current.firstPaint != null && benchView === "voice") {
+                // Voice e2e in the built app, under its production CSP.
+                void (async () => {
+                  const { runVoiceBench } = await import("./voiceBench");
+                  bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
+                  void report();
+                })();
               } else if (bench.current.firstPaint != null) void report();
               else if (performance.now() > deadline) void report(true);
               else window.setTimeout(waitPaint, 20);
@@ -893,7 +937,7 @@ export default function App() {
 
   const openDialog = useCallback(
     async (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => {
-      void getEngine();
+      prewarmJsEngine();
       if (what === "pacs") {
         if (isTauri) setDialog("pacs");
         else toast({ title: "PACS needs the desktop app", variant: "info" });
@@ -983,7 +1027,7 @@ export default function App() {
       off.push(
         await getCurrentWebview().onDragDropEvent((event) => {
           const p = event.payload;
-          if (p.type === "enter") void getEngine();
+          if (p.type === "enter") prewarmJsEngine();
           if (p.type === "enter" || p.type === "over") setDragging(true);
           else if (p.type === "leave") setDragging(false);
           else if (p.type === "drop") {
@@ -1008,14 +1052,15 @@ export default function App() {
   useEffect(() => {
     if (!studies.length) return;
     let cancelled = false;
-    getEngine().then((engine) => {
+    withEngine((engine) => {
       if (cancelled) return;
       setGroupLeftTool(engine, STACK_GROUP, leftTool);
     });
     return () => {
       cancelled = true;
     };
-  }, [leftTool, studies.length]);
+    // handlesVersion: a JS-path viewport that started the engine (native mode) gets the tool too.
+  }, [leftTool, studies.length, handlesVersion, withEngine]);
 
   // Slice geometry for sync and the 3D cursor, straight from the header scan.
   useEffect(() => {
@@ -1026,8 +1071,8 @@ export default function App() {
   const toggleSync = useCallback(() => {
     setSyncScroll((on) => {
       if (!on) {
-        void getEngine().then((engine) => {
-          const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
+        withEngine((engine) => {
+          const ids = engineViewportIds(cells.flatMap((uid, i) => (uid ? [{ key: cellKey(i), id: viewportIdFor(i) }] : [])));
           if (ids.length > 1) linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
         });
       }
@@ -1043,13 +1088,15 @@ export default function App() {
   useEffect(() => {
     if (!studies.length) return;
     let cancelled = false;
-    getEngine().then((engine) => {
+    withEngine((engine) => {
       if (cancelled) return;
-      const ids = visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i));
+      // Cornerstone synchronizers and reference lines only over the stacks the
+      // engine draws: a native viewport id is unknown to it.
+      const ids = engineViewportIds(visibleCells.filter((c) => c.uid).map((c) => ({ key: cellKey(c.i), id: viewportIdFor(c.i) })));
       setSynchronized(engine, "slice", ids, syncScroll);
       setSynchronized(engine, "voi", ids, syncVoi);
       setSynchronized(engine, "zoompan", ids, syncZoom);
-      const activeId = getHandle(cellKey(activeCell)) ? viewportIdFor(activeCell) : null;
+      const activeId = engineViewportIds([{ key: cellKey(activeCell), id: viewportIdFor(activeCell) }])[0] ?? null;
       setReferenceSource(engine, activeId, referenceLines && ids.length > 1);
       setScaleOverlay(engine, settings.scaleBar);
     });
@@ -1060,8 +1107,8 @@ export default function App() {
 
   /** Register the visible stacks at what each shows now (a prior, or a series with another FOV / frame). */
   const linkAtCurrent = useCallback(() => {
-    void getEngine().then((engine) => {
-      const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
+    withEngine((engine) => {
+      const ids = engineViewportIds(cells.flatMap((uid, i) => (uid ? [{ key: cellKey(i), id: viewportIdFor(i) }] : [])));
       if (ids.length < 2) return toast({ title: "Linking needs two viewports", variant: "info", duration: 2500 });
       linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
       setSyncScroll(true);
@@ -1071,7 +1118,9 @@ export default function App() {
 
   useEffect(() => {
     if (!studies.length) return;
-    getEngine().then((engine) => {
+    // F12 hides native annotations too (their own layer reads this).
+    nativeAnnotations.setAnnotationsHidden(!annotationsVisible);
+    withEngine((engine) => {
       const { annotation } = engine.tools;
       for (const a of annotation.state.getAllAnnotations()) {
         if (a.annotationUID) annotation.visibility.setAnnotationVisibility(a.annotationUID, annotationsVisible);
@@ -1190,7 +1239,7 @@ export default function App() {
   // The mic toggle loads the recognizer and model only when switched on and
   // frees them entirely when off (components/viewer/voice/voiceSession.ts).
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
-  const voiceSession = useRef<{ stop(): void } | null>(null);
+  const voiceSession = useRef<VoiceSession | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
@@ -1202,20 +1251,39 @@ export default function App() {
     voiceSession.current?.stop();
     voiceSession.current = null;
   }, []);
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+  // Hover / focus on the mic: start loading the recognizer so a click is ready at once.
+  const warmVoice = useCallback(() => {
+    if (voiceSession.current) return;
+    void import("@/components/viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
+  }, []);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const toggleVoiceRef = useRef<() => Promise<void>>(async () => undefined);
   toggleVoiceRef.current = async () => {
-    if (voiceSession.current || voice.state === "loading") return stopVoice();
-    const { startVoice } = await import("@/components/viewer/voice/voiceSession");
-    voiceSession.current = await startVoice({
-      modelUrl: "/voice/model.tar.gz",
+    if (voiceSession.current || voice.state === "loading") {
+      stopVoice();
+      setVoice((v) => ({ ...v, state: "off" }));
+      return;
+    }
+    setVoiceError(null);
+    setVoiceProgress(null);
+    setVoice((v) => ({ ...v, state: "loading" }));
+    const voiceModule = await import("@/components/viewer/voice/voiceSession");
+    await voiceModule.startVoice({
+      onSession: (session) => {
+        voiceSession.current = session;
+      },
+      modelUrl: voiceModule.VOICE_MODEL_URL,
+      workerUrl: voiceModule.VOICE_WORKER_URL,
       onAction: (action, heard) => {
         showHeard(heard);
         voiceAction.current(action);
       },
       onUnrecognized: (heard) => showHeard(`${heard} ?`),
+      onProgress: setVoiceProgress,
       onState: (state, detail) => {
         setVoice((v) => ({ ...v, state }));
-        if (state === "error" && detail) toast({ title: "Voice commands could not start", description: detail, variant: "warning", duration: 6000 });
+        if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSession.current = null;
       },
     });
@@ -1425,7 +1493,9 @@ export default function App() {
   }, [syncScroll, syncVoi, syncZoom, referenceLines]);
   const activeViewportHandle = studies.length && handlesVersion >= 0 ? getHandle(cellKey(activeCell)) : undefined;
   const remotePlanes = useCrossWindow({
-    enabled: studies.length > 0,
+    // Linked windows ride on the JS engine's events. Native mode: only once a
+    // JS-path viewport has started the engine (re-checked as handles change).
+    enabled: studies.length > 0 && (nativeMode === false || (handlesVersion >= 0 && enginePeek() != null)),
     viewportIds: visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i)),
     active: activeViewportHandle ? { viewportId: activeViewportHandle.viewportId, element: activeViewportHandle.element } : null,
     links: { scroll: syncScroll, voi: syncVoi, zoom: syncZoom, referenceLines },
@@ -1514,10 +1584,17 @@ export default function App() {
         case "escape": {
           // 1) a measurement being drawn → cancel it; 2) a tool other than
           // browsing → back to browsing; 3) then leave modes / full screen.
+          // Native viewports have no Cornerstone enabled element: the engine's
+          // cancel would destructure `renderingEngineId` of undefined (HP 0.8.0,
+          // every Esc). Their own layer cancels a drawing on Escape.
           const element = handle?.element;
-          if (element && enginePeek()) {
-            const cancelled = enginePeek()!.tools.cancelActiveManipulations(element);
-            if (cancelled) return;
+          if (element && !isNativeHandle(handle) && enginePeek()) {
+            try {
+              const cancelled = enginePeek()!.tools.cancelActiveManipulations(element);
+              if (cancelled) return;
+            } catch {
+              /* no manipulation to cancel */
+            }
           }
           if (leftTool !== "StackScroll" && view === "grid") {
             setLeftTool("StackScroll");
@@ -1596,6 +1673,8 @@ export default function App() {
           return handle?.rotate(action.degrees);
         case "flip":
           return handle?.flip(action.axis);
+        case "orientReset":
+          return handle?.resetOrientation();
         case "reset":
           return handle?.reset();
         case "cine":
@@ -1625,7 +1704,7 @@ export default function App() {
         case "toggleReferenceLines":
           return setReferenceLines((v) => !v);
         case "toggleBrowser":
-          return setBrowserOpen((v) => !v);
+          return seriesPanel.toggle();
         case "export":
           if (view !== "grid") return;
           setExportInitial(undefined);
@@ -1636,12 +1715,21 @@ export default function App() {
           return toggleView("3d");
         case "fusion":
           return toggleView("fusion");
+        // Native viewports keep their annotations in native/annotations.ts (undo
+        // stack included); keys, menu and voice all come here, one step each.
         case "redoAnnotation":
-          return void getEngine().then((e) => annotationHistory(e, "redo"));
+          if (isNativeHandle(handle)) return void nativeAnnotations.redo();
+          return withEngine((e) => annotationHistory(e, "redo"));
         case "undoAnnotation":
-          return void getEngine().then((e) => annotationHistory(e, "undo"));
+          if (isNativeHandle(handle)) return void nativeAnnotations.undo();
+          return withEngine((e) => annotationHistory(e, "undo"));
         case "clearAnnotations":
-          return void getEngine().then((e) => clearAnnotations(e));
+          if (isNativeHandle(handle)) {
+            // Undoable (Ctrl+Z brings them back), unlike closing the study.
+            nativeAnnotations.removeAnnotations(nativeAnnotations.allAnnotations().map((a) => a.id));
+            return;
+          }
+          return withEngine((e) => clearAnnotations(e));
         case "voice":
           return void toggleVoiceRef.current();
         default:
@@ -1691,6 +1779,10 @@ export default function App() {
         return { type: "rotate", degrees: Number(arg) };
       case "flip":
         return { type: "flip", axis: arg === "v" ? "v" : "h" };
+      case "orient":
+        return { type: "orientReset" };
+      case "seriesPanel":
+        return { type: "toggleBrowser" };
       case "reset":
         return { type: "reset" };
       case "reformat":
@@ -1733,6 +1825,15 @@ export default function App() {
       }
     },
     [toast]
+  );
+
+  /** Toolbar rotate / flip dropdown: the same actions as the keys and the menu. */
+  const runOrientation = useCallback(
+    (command: OrientationCommand) => {
+      const action = commandAction(command, []);
+      if (action) runAction(action);
+    },
+    [commandAction, runAction]
   );
 
   const runMenuCommand = useCallback(
@@ -1819,6 +1920,7 @@ export default function App() {
         cine: multi ? { playing: !!cine?.playing, fps: cine?.fps ?? 15 } : null,
         slab: isTauri && volume ? { mode: reformatAt(cell) ? slabCycle.current : "off", mm: 10 } : null,
         layout,
+        seriesPanel: distractionFree ? null : { shown: !seriesPanel.collapsed },
         can: {
           reformat: isTauri && volume,
           mpr: volume,
@@ -1836,7 +1938,7 @@ export default function App() {
         },
       });
     },
-    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts]
+    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts, distractionFree, seriesPanel.collapsed]
   );
   const annotationShortcut = useCallback(
     (id: MenuCommand) => (id === "ann:delete" ? "Del" : undefined),
@@ -1987,8 +2089,9 @@ export default function App() {
     if (fullRes && bench.current.marks.firstFullResMs == null) bench.current.marks.firstFullResMs = at;
     // The preview is what the reader sees first; start the engine right
     // behind it instead of waiting for the viewport's next frame + task.
-    void getEngine();
-  }, []);
+    // (Native mode: the native viewport draws; no JS engine.)
+    prewarmJsEngine();
+  }, [prewarmJsEngine]);
 
   const onFirstPaint = useCallback(() => {
     if (bench.current.firstPaint == null) bench.current.firstPaint = performance.now() - bench.current.t0;
@@ -2055,6 +2158,20 @@ export default function App() {
         </>
       )}
 
+      <VoiceStatus
+        className="fixed right-3 top-12 z-50"
+        state={voice.state}
+        progress={voiceProgress}
+        error={voiceError}
+        onRetry={() => {
+          setVoice((v) => ({ ...v, state: "off" }));
+          void toggleVoiceRef.current();
+        }}
+        onDismiss={() => {
+          stopVoice();
+          setVoice((v) => ({ ...v, state: "off" }));
+        }}
+      />
       {hasStudy && !distractionFree && (
         <Toolbar
           leftTool={leftTool}
@@ -2064,7 +2181,7 @@ export default function App() {
           onCustomWindow={() => setDialog("window")}
           onInvert={() => handle?.invert()}
           onReset={() => handle?.reset()}
-          onRotate={(d) => handle?.rotate(d)}
+          onOrientation={(command) => runOrientation(command)}
           layout={layout}
           onLayout={applyLayout}
           syncScroll={syncScroll}
@@ -2087,7 +2204,7 @@ export default function App() {
           }}
           onOpen={(w) => void openDialog(w)}
           onHome={goHome}
-          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current() } : undefined}
+          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current(), onWarm: warmVoice } : undefined}
           onUndo={() => runAction({ type: "undoAnnotation" })}
           onRedo={() => runAction({ type: "redoAnnotation" })}
           onClear={() => runAction({ type: "clearAnnotations" })}
@@ -2129,8 +2246,15 @@ export default function App() {
               </div>
             }
           >
-            {browserOpen && !distractionFree && (
-              <aside className="w-[244px] shrink-0 border-r border-subtle bg-surface">
+            {!distractionFree && (
+              <CollapsiblePanel
+                label="Series"
+                tone="surface"
+                collapsed={seriesPanel.collapsed}
+                onToggle={seriesPanel.toggle}
+                shortcut={[keyLabel("Mod+B")]}
+                widthClassName="w-[244px]"
+              >
                 <SeriesBrowser
                   studies={studies}
                   onScreen={cells}
@@ -2146,7 +2270,7 @@ export default function App() {
                   menuFor={thumbMenuFor}
                   onSeriesCommand={onSeriesCommand}
                 />
-              </aside>
+              </CollapsiblePanel>
             )}
             {view !== "grid" && growing ? (
               // A volume is built once, from the complete series. While a cold

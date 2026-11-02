@@ -132,7 +132,8 @@ test("overlay, MPR, layout, help and cine rate", () => {
   assert.deepEqual(resolveViewerHotkey({ key: "o" }), { type: "overlay" });
   assert.deepEqual(resolveViewerHotkey({ key: "x" }), { type: "mpr" });
   assert.deepEqual(resolveViewerHotkey({ key: "g" }), { type: "layout" });
-  assert.deepEqual(resolveViewerHotkey({ key: "h" }), { type: "help" });
+  // H is flip now (rotate / flip test below); the sheet is ? and the toolbar.
+  assert.equal(resolveViewerHotkey({ key: "h" })?.type, "orient");
   assert.deepEqual(resolveViewerHotkey({ key: "," }), { type: "cineFps", delta: -1 });
   assert.deepEqual(resolveViewerHotkey({ key: "." }), { type: "cineFps", delta: 1 });
 });
@@ -161,11 +162,23 @@ test("tooltips and the help sheet read the same bindings", () => {
       for (const key of row.keys) {
         if (key.length !== 1 || !/[A-Z]/.test(key)) continue;
         assert.notEqual(
-          resolveViewerHotkey({ key: key.toLowerCase() }),
+          resolveViewerHotkey({ key: key.toLowerCase() }, 0, { rotateKey: true, questionMarkHelp: true }),
           null,
           `help lists ${key} but the resolver ignores it`
         );
       }
     }
   }
+});
+
+test("rotate / flip: R, Shift+R, H, V (as on the desktop)", () => {
+  const own = { rotateKey: true };
+  assert.deepEqual(resolveViewerHotkey({ key: "r" }, 0, own), { type: "orient", command: "rotate:90" });
+  assert.deepEqual(resolveViewerHotkey({ key: "R", shiftKey: true }, 0, own), { type: "orient", command: "rotate:-90" });
+  // In a student session R stays the session's (exam reveal).
+  assert.equal(resolveViewerHotkey({ key: "r" }), null);
+  assert.deepEqual(resolveViewerHotkey({ key: "h" }), { type: "orient", command: "flip:h" });
+  assert.deepEqual(resolveViewerHotkey({ key: "v" }), { type: "orient", command: "flip:v" });
+  // Browser combinations stay the browser's.
+  assert.equal(resolveViewerHotkey({ key: "r", ctrlKey: true }), null);
 });

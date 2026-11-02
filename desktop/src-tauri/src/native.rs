@@ -962,9 +962,31 @@ pub fn largest_series(roots: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
+    match create_gpu_on(window, None).await {
+        Ok(gpu) => Ok(gpu),
+        // No usable D3D12 adapter: every primary backend before giving up.
+        Err(e) if cfg!(target_os = "windows") => create_gpu_on(window, Some(wgpu::Backends::PRIMARY)).await.map_err(|e2| format!("{e}; {e2}")),
+        Err(e) => Err(e),
+    }
+}
+
+async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backends>) -> Result<(Gpu, String, String), String> {
     let size = window.inner_size().map_err(|e| e.to_string())?;
+    // Windows: Direct3D 12 only. With PRIMARY the Vulkan loader and the
+    // vendor's Vulkan driver (the HP's Intel Arc picked Vulkan) load too: tens
+    // to hundreds of ms on the startup path, competing with WebView2 for the
+    // loader lock, plus the driver's own resident memory. FLOWRAD_WGPU_BACKENDS
+    // (e.g. "vulkan", "dx12,vulkan") overrides for diagnosis.
+    let backends = force
+        .or_else(|| {
+            std::env::var("FLOWRAD_WGPU_BACKENDS")
+                .ok()
+                .map(|s| wgpu::Backends::from_comma_list(&s))
+                .filter(|b| !b.is_empty())
+        })
+        .unwrap_or(if cfg!(target_os = "windows") { wgpu::Backends::DX12 } else { wgpu::Backends::PRIMARY });
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
+        backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
@@ -982,6 +1004,9 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
             label: Some("flowrad-native"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            // Small allocator blocks: on an integrated GPU (shared memory) the
+            // default "performance" blocks are resident in our working set.
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         })
         .await

@@ -55,7 +55,8 @@ import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { imageMenu } from "@flowrad/viewer-core";
 import { shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
-import type { VoiceState } from "./viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
+import { VoiceStatus } from "./viewer/voice/VoiceStatus";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
@@ -95,6 +96,7 @@ import {
   markViewerNavigation,
   markViewerSeriesReady,
 } from "../lib/viewerTiming";
+import { importWithRetry, isChunkLoadError, reloadForChunkError } from "../lib/chunkRecovery";
 import {
   QUALITY_EVENT,
   imageSource,
@@ -132,12 +134,20 @@ import {
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
 import { isTextTarget, resolveViewerHotkey, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
 import {
+  ORIENTATION_COMMANDS,
+  isOrientationCommand,
+  orientMarkers,
+  type OrientationCommand,
+} from "@flowrad/viewer-core";
+import {
   OVERLAY_STORAGE_KEY,
   nextOverlayDensity,
+  orientationLetters,
   orientationMarkers,
   overlayCorners,
   parseOverlayDensity,
   windowLine,
+  type OrientationMarkers,
   type OverlayDensity,
   type OverlayMeta,
 } from "../lib/dicomOverlay";
@@ -516,6 +526,11 @@ type EngineModules = {
 };
 let engineReady: Promise<EngineModules> | null = null;
 
+/** Viewer status lines for failures (shown on the imaging stage). */
+export const VIEWER_UPDATING = "Updating viewer, reloading…";
+export const VIEWER_LOAD_FAILED = "The viewer could not load. Check your connection, then reload the page.";
+const VIEWER_SERIES_FAILED = "This series could not be displayed.";
+
 /**
  * Load and initialise the imaging engine once per page: Cornerstone core,
  * tools, the DICOM loader and its decode-worker pool, the cache ceiling and
@@ -525,9 +540,11 @@ let engineReady: Promise<EngineModules> | null = null;
  */
 export function ensureViewerEngine(): Promise<EngineModules> {
   engineReady ??= (async () => {
-    const core = await import("@cornerstonejs/core");
-    const loader = await import("@cornerstonejs/dicom-image-loader");
-    const tools = await import("@cornerstonejs/tools");
+    // Each chunk retried twice with backoff (lib/chunkRecovery.ts): a
+    // dropped request or a deploy mid-session must not cost the study.
+    const core = await importWithRetry(() => import("@cornerstonejs/core"));
+    const loader = await importWithRetry(() => import("@cornerstonejs/dicom-image-loader"));
+    const tools = await importWithRetry(() => import("@cornerstonejs/tools"));
     // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
     // how much decoded-pixel cache, how many frame requests may be in
     // flight, and whether this is a phone (which drops Cornerstone's
@@ -781,12 +798,17 @@ export default function CornerstoneViewer({
   defaultTool = "WindowLevel",
   onViewModeChange,
   questionMarkHelp = false,
+  seriesPanel = null,
   onCycleLayout,
   toolbarHost,
   active = true,
   onActivate,
   initialWindow = null,
   paneLabel,
+  onChunkLoadError,
+  onSeriesStep,
+  voiceOn = false,
+  onVoiceChange,
 }: {
   /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
   paneLabel?: string;
@@ -816,6 +838,25 @@ export default function CornerstoneViewer({
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /**
+   * "Next / previous series" (voice) for hosts that own the series list
+   * themselves (the free viewer). Without it, the `series` prop is stepped.
+   */
+  onSeriesStep?: (delta: number) => void;
+  /**
+   * Voice commands were on in the viewer this one replaces (another series):
+   * switch them back on once this one is ready. Paired with `onVoiceChange`,
+   * which reports the reader turning voice on or off (not an unmount).
+   */
+  voiceOn?: boolean;
+  onVoiceChange?: (on: boolean) => void;
+  /**
+   * The viewer's code could not be fetched even after retries (a deploy
+   * swapped the build under this tab, or the network dropped it). The host
+   * saves the reader's place and reloads (lib/chunkRecovery.ts). Without a
+   * handler the viewer reloads the page itself.
+   */
+  onChunkLoadError?: (error: unknown) => void;
   /** Record hook: ordered viewer state changes (slice/voi/camera/invert). */
   onEvent?: (e: ViewerEvent) => void;
   /** Wrapper class (the viewer fills it; imaging surface stays pure black). */
@@ -846,9 +887,12 @@ export default function CornerstoneViewer({
   /**
    * `?` opens the viewer's shortcut sheet. Leave off inside the student
    * session, which owns `?` on `window`; the standalone viewer turns it on.
-   * H always opens it.
+   * The toolbar's keyboard button always opens it. The same flag gives the
+   * standalone viewer R / Shift+R rotate (R is the session's exam reveal).
    */
   questionMarkHelp?: boolean;
+  /** The caller's series panel, offered in the right-click menu as Hide / Show. */
+  seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
   onCycleLayout?: () => void;
   /**
@@ -922,6 +966,23 @@ export default function CornerstoneViewer({
     seriesRef.current?.find((s) => s.seriesInstanceUID === seriesInstanceUID)?.instanceCount;
 
   const [status, setStatus] = useState("Initializing viewer…");
+  // A failure is shown as a calm sentence, never an exception message on the
+  // black stage. Code that would not load (ChunkLoadError after retries) is
+  // handed to the host once, which saves the reader's place and reloads.
+  const onChunkLoadErrorRef = useRef(onChunkLoadError);
+  onChunkLoadErrorRef.current = onChunkLoadError;
+  const chunkFailureHandled = useRef(false);
+  const failureStatus = (err: unknown): string => {
+    if (!isChunkLoadError(err)) return VIEWER_SERIES_FAILED;
+    if (chunkFailureHandled.current) return VIEWER_UPDATING;
+    chunkFailureHandled.current = true;
+    const handler = onChunkLoadErrorRef.current;
+    if (handler) {
+      handler(err);
+      return VIEWER_UPDATING;
+    }
+    return reloadForChunkError() ? VIEWER_UPDATING : VIEWER_LOAD_FAILED;
+  };
   const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
   /** Annotation select / delete / erase / label (AnnotationEditLayer). */
   const [editCtx, setEditCtx] = useState<annotationEditing.EditingContext | null>(null);
@@ -942,6 +1003,9 @@ export default function CornerstoneViewer({
   const openSliceRef = useRef(openSlice);
   openSliceRef.current = openSlice;
   const [inverted, setInverted] = useState(false);
+  // Rotate / flip: edge letters read off the camera after each turn (null =
+  // unrotated, the header's own letters). See applyOrientationRef.
+  const [turnedMarkers, setTurnedMarkers] = useState<OrientationMarkers | null>(null);
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [readout, setReadout] = useState<{
     slice: number;
@@ -2432,7 +2496,7 @@ export default function CornerstoneViewer({
               return;
             }
             console.error("CornerstoneViewer switchSeries error", safeErrorText(err));
-            setStatus(`Error: ${(err as Error).message}`);
+            setStatus(failureStatus(err));
           }
         };
         switchSeriesRef.current = switchSeries;
@@ -2468,6 +2532,14 @@ export default function CornerstoneViewer({
           }
           vp.resetCamera();
           vp.resetProperties?.();
+          // Reset view includes rotation and flips (as on the desktop).
+          const turnable = vp as unknown as {
+            setViewPresentation?: (p: Record<string, unknown>) => void;
+            setCamera?: (c: Record<string, unknown>) => void;
+          };
+          turnable.setViewPresentation?.({ rotation: 0 });
+          turnable.setCamera?.({ flipHorizontal: false, flipVertical: false });
+          setTurnedMarkers(null);
           vp.render();
           setInverted(vp.getProperties().invert ?? false);
           setActivePreset(null);
@@ -3200,7 +3272,7 @@ export default function CornerstoneViewer({
         if (disposed || (err as Error)?.name === "AbortError") return;
         console.error("CornerstoneViewer error", safeErrorText(err));
         setStacking(false);
-        setStatus(`Error: ${(err as Error).message}`);
+        setStatus(failureStatus(err));
       }
     })();
 
@@ -3369,7 +3441,7 @@ export default function CornerstoneViewer({
       setHelpOpen(false);
       return;
     }
-    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp });
+    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp });
     if (!action) return;
     event.preventDefault();
     if (action.type === "help") event.stopPropagation();
@@ -3470,7 +3542,58 @@ export default function CornerstoneViewer({
       case "help":
         setHelpOpen((open) => !open);
         return;
+      case "orient":
+        applyOrientation(action.command);
+        return;
     }
+  };
+
+  /**
+   * Rotate / flip the stack (per viewport; display only). Flips are the
+   * engine's camera flips, i.e. screen flips at any rotation. The edge letters
+   * are re-read from the camera afterwards; when the camera is not patient-
+   * aligned (no geometry) the shared orientation maths is used instead.
+   */
+  const applyOrientation = (command: OrientationCommand) => {
+    if (!ready) return;
+    if (mprShowing) {
+      flash("Rotate and flip apply to the stack");
+      return;
+    }
+    const vp = viewportRef.current as unknown as {
+      getCamera?: () => { flipHorizontal?: boolean; flipVertical?: boolean; viewUp?: number[]; viewPlaneNormal?: number[] };
+      setCamera?: (c: Record<string, unknown>) => void;
+      getViewPresentation?: () => { rotation?: number };
+      setViewPresentation?: (p: Record<string, unknown>) => void;
+      render?: () => void;
+    } | null;
+    if (!vp) return;
+    const before = vp.getCamera?.() ?? {};
+    const rotation = vp.getViewPresentation?.()?.rotation ?? 0;
+    if (command === "orient:reset") {
+      vp.setViewPresentation?.({ rotation: 0 });
+      vp.setCamera?.({ flipHorizontal: false, flipVertical: false });
+    } else if (command === "flip:h" || command === "flip:v") {
+      vp.setCamera?.(command === "flip:v" ? { flipVertical: !before.flipVertical } : { flipHorizontal: !before.flipHorizontal });
+    } else {
+      const step = command === "rotate:90" ? 90 : command === "rotate:-90" ? -90 : 180;
+      vp.setViewPresentation?.({ rotation: (((rotation + step) % 360) + 360) % 360 });
+    }
+    vp.render?.();
+    const base = orientationMarkers(readout?.meta?.imageOrientationPatient);
+    if (!base) setTurnedMarkers(null);
+    else {
+      const cam = vp.getCamera?.() ?? {};
+      const after = {
+        rotation: vp.getViewPresentation?.()?.rotation ?? 0,
+        flipH: !!cam.flipHorizontal,
+        flipV: !!cam.flipVertical,
+      };
+      const fromCamera = cameraMarkers(cam.viewUp, cam.viewPlaneNormal);
+      const identity = after.rotation === 0 && !after.flipH && !after.flipV;
+      setTurnedMarkers(identity ? null : fromCamera ?? orientMarkers(base, after));
+    }
+    flash(ORIENTATION_COMMANDS.find((c) => c.command === command)?.label ?? "Orientation");
   };
 
   // ── Right-click / long-press menu (shared @flowrad/viewer-core contextMenu) ──
@@ -3484,6 +3607,9 @@ export default function CornerstoneViewer({
       const i = presets.findIndex((p) => p.id === arg);
       return i >= 0 && i < 9 ? `Shift+${i + 1}` : undefined;
     }
+    const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
+    if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
+    if (command === "seriesPanel") return "Ctrl+B";
     return ({ invert: "I", reset: "0", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
@@ -3500,6 +3626,7 @@ export default function CornerstoneViewer({
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
       slab: null,
       layout: null,
+      seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
       can: { mpr: ready && sliceCount >= 3, copyImage: true, saveImage: true, tags: true, links: false },
       shortcut: webMenuShortcut,
     });
@@ -3536,16 +3663,13 @@ export default function CornerstoneViewer({
         if (arg === "fit") vp?.resetCamera?.();
         else vp?.setZoom?.(Number(arg));
         return vp?.render?.();
-      case "rotate": {
-        const now = vp?.getViewPresentation?.()?.rotation ?? 0;
-        vp?.setViewPresentation?.({ rotation: (now + Number(arg) + 360) % 360 });
-        return vp?.render?.();
-      }
-      case "flip": {
-        const cam = vp?.getCamera?.() ?? {};
-        vp?.setCamera?.(arg === "v" ? { flipVertical: !cam.flipVertical } : { flipHorizontal: !cam.flipHorizontal });
-        return vp?.render?.();
-      }
+      case "rotate":
+      case "flip":
+      case "orient":
+        if (isOrientationCommand(command)) applyOrientation(command);
+        return;
+      case "seriesPanel":
+        return seriesPanel?.toggle();
       case "fps":
         return setCineFps(clampCineFps(Number(arg)));
       case "annotations": {
@@ -3611,6 +3735,7 @@ export default function CornerstoneViewer({
   voiceActionRef.current = (a: VoiceAction) => {
     switch (a.type) {
       case "series": {
+        if (onSeriesStep) return onSeriesStep(a.delta);
         if (!series?.length || !onSeriesChangeRef.current) return;
         const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
         if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
@@ -3647,28 +3772,70 @@ export default function CornerstoneViewer({
         return;
     }
   };
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const toggleVoice = async () => {
     if (voiceSessionRef.current || voice.state === "loading") {
       voiceSessionRef.current?.stop();
       voiceSessionRef.current = null;
+      setVoice({ state: "off" });
       return;
     }
-    const { startVoice } = await import("./viewer/voice/voiceSession");
-    voiceSessionRef.current = await startVoice({
-      modelUrl: "/voice/model.tar.gz",
+    setVoiceError(null);
+    setVoiceProgress(null);
+    // Show the loading card at once, before the session module arrives.
+    setVoice({ state: "loading" });
+    let mod: typeof import("./viewer/voice/voiceSession");
+    try {
+      mod = await import("./viewer/voice/voiceSession");
+    } catch {
+      setVoice({ state: "error" });
+      setVoiceError("Voice commands could not be loaded. Check the connection and press Retry.");
+      return;
+    }
+    await mod.startVoice({
+      onSession: (session) => {
+        voiceSessionRef.current = session;
+      },
+      modelUrl: mod.VOICE_MODEL_URL,
+      workerUrl: mod.VOICE_WORKER_URL,
       onAction: (action, heard) => {
         flash(`“${heard}”`);
         voiceActionRef.current(action);
       },
       onUnrecognized: (heard) => flash(`“${heard}” ?`),
+      onProgress: setVoiceProgress,
       onState: (state, detail) => {
         setVoice({ state });
-        if (state === "error" && detail) flash(detail);
+        if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSessionRef.current = null;
+        // The reader's choice, so the next series' viewer keeps it (not an unmount).
+        if (!unmountingRef.current && (state === "listening" || state === "off" || state === "error")) {
+          onVoiceChangeRef.current?.(state === "listening");
+        }
       },
     });
   };
-  useEffect(() => () => voiceSessionRef.current?.stop(), []);
+  const unmountingRef = useRef(false);
+  const onVoiceChangeRef = useRef(onVoiceChange);
+  onVoiceChangeRef.current = onVoiceChange;
+  useEffect(
+    () => () => {
+      unmountingRef.current = true;
+      voiceSessionRef.current?.stop();
+    },
+    []
+  );
+  // "Next series" by voice remounts the viewer for the new series: carry the
+  // mic over (the model is in the HTTP cache, the permission already given).
+  const voiceResumedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || !canVoice || !voiceOn || voiceResumedRef.current) return;
+    voiceResumedRef.current = true;
+    if (!voiceSessionRef.current) void toggleVoice();
+    // Once per mount; toggleVoice reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, canVoice, voiceOn]);
 
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
@@ -3739,6 +3906,7 @@ export default function CornerstoneViewer({
       }}
       onInvert={() => invertRef.current()}
       onReset={() => resetRef.current()}
+      onOrientation={applyOrientation}
       onClear={() => clearRef.current()}
       onViewMode={setViewMode}
       previewLocked={previewing && !mprLive}
@@ -3746,7 +3914,19 @@ export default function CornerstoneViewer({
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
       onHelp={() => setHelpOpen((open) => !open)}
-      voice={canVoice ? { state: voice.state, onToggle: () => void toggleVoice() } : undefined}
+      voice={
+        canVoice
+          ? {
+              state: voice.state,
+              onToggle: () => void toggleVoice(),
+              // Hover / focus: start loading the recognizer so a click is ready at once.
+              onWarm: () => {
+                if (voiceSessionRef.current) return;
+                void import("./viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
+              },
+            }
+          : undefined
+      }
     />
   );
 
@@ -3852,8 +4032,8 @@ export default function CornerstoneViewer({
   );
   if (paneLabel) corners.topLeft.unshift(paneLabel.toUpperCase());
   // Orientation letters only on the stack: the MPR planes carry their own.
-  const markers =
-    overlay !== "off" && !mprShowing ? orientationMarkers(readout?.meta?.imageOrientationPatient) : null;
+  const headerMarkers = orientationMarkers(readout?.meta?.imageOrientationPatient);
+  const markers = overlay !== "off" && !mprShowing && headerMarkers ? turnedMarkers ?? headerMarkers : null;
 
   // Grid panes portal one shared bar; a lone pane keeps its own.
   const sharedBar = toolbarHost !== undefined;
@@ -4065,6 +4245,21 @@ export default function CornerstoneViewer({
         )}
         <ViewerHud text={hud} />
         <ViewerHelp open={helpOpen} onClose={closeHelp} />
+        <VoiceStatus
+          className="absolute right-3 top-3 z-30"
+          state={voice.state}
+          progress={voiceProgress}
+          error={voiceError}
+          onRetry={() => {
+            setVoice({ state: "off" });
+            void toggleVoice();
+          }}
+          onDismiss={() => {
+            voiceSessionRef.current?.stop();
+            voiceSessionRef.current = null;
+            setVoice({ state: "off" });
+          }}
+        />
         {mprShowing ? null : imageOverlay}
       </div>
       {ownBar && toolbar}
@@ -4076,4 +4271,23 @@ export default function CornerstoneViewer({
       )}
     </div>
   );
+}
+
+/**
+ * Edge letters from the stack camera (LPS world): top is viewUp, screen-right
+ * is viewUp × viewPlaneNormal. Null when the camera carries no direction.
+ */
+function cameraMarkers(viewUp?: number[], normal?: number[]): OrientationMarkers | null {
+  if (!viewUp || !normal || viewUp.length < 3 || normal.length < 3) return null;
+  const [ux, uy, uz] = viewUp as [number, number, number];
+  const [nx, ny, nz] = normal as [number, number, number];
+  const right = [uy * nz - uz * ny, uz * nx - ux * nz, ux * ny - uy * nx];
+  const neg = (v: number[]) => v.map((x) => -x);
+  const out = {
+    top: orientationLetters(viewUp),
+    bottom: orientationLetters(neg(viewUp)),
+    right: orientationLetters(right),
+    left: orientationLetters(neg(right)),
+  };
+  return out.top && out.right ? out : null;
 }

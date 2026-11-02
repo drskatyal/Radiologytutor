@@ -13,7 +13,14 @@
 // (NativeAnnotationLayer), and Magnify as a second native viewport at 3×.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getScrollPreferences, slicesForNotch } from "@flowrad/viewer-core";
+import {
+  applyOrientation,
+  getScrollPreferences,
+  normalizeRotation,
+  orientationMarkers,
+  orientMarkers,
+  slicesForNotch,
+} from "@flowrad/viewer-core";
 import { cn } from "@/components/ui/cn";
 import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
 import { Spinner } from "@/components/ui/Spinner";
@@ -21,6 +28,7 @@ import { invoke } from "../platform";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
+import { cursorForTool } from "../viewer/toolCursor";
 import { onNativeLayoutApplied, registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
 import { toCell, toImage, transformFor, type NativeTransform, type NativeView } from "./transform";
 import NativeAnnotationLayer, { isAnnotationTool } from "./NativeAnnotationLayer";
@@ -238,8 +246,16 @@ export default function NativeStackViewport({
         const p = shownRef.current?.view.pan ?? [0, 0];
         void change({ pan: [p[0] + dx, p[1] + dy] });
       },
-      rotate: (deg) => void change({ rotation: (((shownRef.current?.view.rotation ?? 0) + deg) % 360 + 360) % 360 }),
-      flip: (axis) => void change(axis === "h" ? { flipH: !shownRef.current?.view.flipH } : { flipV: !shownRef.current?.view.flipV }),
+      rotate: (deg) => void change({ rotation: normalizeRotation((shownRef.current?.view.rotation ?? 0) + deg) }),
+      // Screen flips: at 90° / 270° the image-space flip alone would mirror the
+      // other axis (viewer-core viewOrientation.ts applyOrientation).
+      flip: (axis) => {
+        const v = shownRef.current?.view;
+        if (!v) return;
+        const next = applyOrientation({ rotation: v.rotation, flipH: v.flipH, flipV: v.flipV }, axis === "h" ? "flip:h" : "flip:v");
+        void change(next);
+      },
+      resetOrientation: () => void change({ rotation: 0, flipH: false, flipV: false }),
       reset: () => {
         const d = shownRef.current?.defaultWindow;
         void change({ resetCamera: true, ...(d ? { wl: [d[0], d[1]] as [number, number] } : {}) });
@@ -363,6 +379,8 @@ export default function NativeStackViewport({
   }, [notice]);
 
   const header = series?.headers[shown?.index ?? 0];
+  const baseEdges = orientationMarkers(header?.imageOrientationPatient);
+  const edges = baseEdges && shown ? orientMarkers(baseEdges, shown.view) : null;
   return (
     <div
       ref={elementRef}
@@ -373,7 +391,8 @@ export default function NativeStackViewport({
       data-viewport-id={viewportId}
       role="img"
       aria-label={series ? `${series.description || "Series"}, image ${(shown?.index ?? 0) + 1} of ${count}` : "Empty viewport"}
-      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", tool === "Pan" ? "cursor-grab" : "cursor-crosshair")}
+      // The tool's own cursor (viewer/toolCursor.ts); the body-level rule wins when installed.
+      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", `tool-cursor-${cursorForTool(tool)}`)}
       onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -409,6 +428,15 @@ export default function NativeStackViewport({
           <div className="pointer-events-none absolute bottom-2 right-2 text-[11px] tabular-nums text-white/70 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
             Zoom {shown.view.zoom.toFixed(2)}× · native
           </div>
+          {edges && (
+            // Edge letters follow rotate / flip (viewer-core orientMarkers).
+            <div data-orientation-markers className="pointer-events-none absolute inset-0 text-xs font-semibold text-white/80 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
+              <span data-edge="top" className="absolute left-1/2 top-1.5 -translate-x-1/2">{edges.top}</span>
+              <span data-edge="bottom" className="absolute bottom-1.5 left-1/2 -translate-x-1/2">{edges.bottom}</span>
+              <span data-edge="left" className="absolute left-1.5 top-1/2 -translate-y-1/2">{edges.left}</span>
+              <span data-edge="right" className="absolute right-1.5 top-1/2 -translate-y-1/2">{edges.right}</span>
+            </div>
+          )}
         </>
       )}
       {shown && series && (

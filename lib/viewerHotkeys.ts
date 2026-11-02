@@ -19,6 +19,7 @@
 // imperative handle.
 
 import { sliceStepForKey } from "./sliceScrollbar";
+import type { OrientationCommand } from "@flowrad/viewer-core";
 
 export type ViewerHotkeyAction =
   | { type: "tool"; tool: string }
@@ -33,6 +34,7 @@ export type ViewerHotkeyAction =
   | { type: "overlay" }
   | { type: "mpr" }
   | { type: "layout" }
+  | { type: "orient"; command: OrientationCommand }
   | { type: "help" };
 
 export interface HotkeyEventLike {
@@ -51,6 +53,11 @@ export interface HotkeyOptions {
    * viewer (library, share link, local files) turns it on.
    */
   questionMarkHelp?: boolean;
+  /**
+   * R / Shift+R rotate. Off by default because R is the student session's
+   * exam-mode "reveal"; the standalone viewer turns it on (with `?`).
+   */
+  rotateKey?: boolean;
 }
 
 /** Digit → left-button tool. The order a reading room reaches for them. */
@@ -64,7 +71,8 @@ export const TOOL_DIGITS: Record<string, string> = {
 
 /**
  * Letter → left-button tool, the mnemonic a PACS user already has. None of
- * these is a student-session key (C N P R T F [ Space ?).
+ * these is a student-session key (C N P R T F [ Space ?). R (rotate) is bound
+ * only where no session owns it (`rotateKey`).
  */
 export const TOOL_LETTERS: Record<string, string> = {
   s: "StackScroll",
@@ -134,11 +142,21 @@ export const VIEWER_SHORTCUT_GROUPS: ShortcutGroup[] = [
     ],
   },
   {
+    title: "Rotate / flip",
+    rows: [
+      { keys: ["R"], does: "Rotate 90° clockwise (standalone viewer)" },
+      { keys: ["Shift", "R"], does: "Rotate 90° anticlockwise (standalone viewer)" },
+      { keys: ["H"], does: "Flip horizontal" },
+      { keys: ["V"], does: "Flip vertical" },
+    ],
+  },
+  {
     title: "Layout",
     rows: [
       { keys: ["X"], does: "Stack ↔ MPR" },
       { keys: ["G"], does: "Cycle hanging layout (where offered)" },
-      { keys: ["H"], does: "This sheet" },
+      { keys: ["Ctrl", "B"], does: "Show / hide the series panel (⌘B on a Mac)" },
+      { keys: ["?"], does: "This sheet" },
     ],
   },
 ];
@@ -235,8 +253,12 @@ export function resolveViewerHotkey(
       return { type: "mpr" };
     case "g":
       return { type: "layout" };
+    case "r":
+      return options.rotateKey ? { type: "orient", command: event.shiftKey ? "rotate:-90" : "rotate:90" } : null;
     case "h":
-      return { type: "help" };
+      return { type: "orient", command: "flip:h" };
+    case "v":
+      return { type: "orient", command: "flip:v" };
     default:
       return null;
   }

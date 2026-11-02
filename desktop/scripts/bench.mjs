@@ -373,7 +373,7 @@ function treeMemory(pid) {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine | ConvertTo-Json -Compress",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine,@{n='Created';e={if ($_.CreationDate) { [long]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds } else { 0 }}} | ConvertTo-Json -Compress",
       ],
       { maxBuffer: 64 * 1024 * 1024 }
     ).toString();
@@ -392,7 +392,12 @@ function treeMemory(pid) {
       seen.add(r.ProcessId);
       const type = /--type=([\w-]+)/.exec(r.CommandLine ?? "")?.[1] ?? (procs.length ? "browser" : "app");
       procs.push({ name: r.Name, type, wsMb: Math.round(r.WorkingSetSize / 1048576), privateMb: Math.round(Number(r.PrivatePageCount) / 1048576) });
-      stack.push(...(kids.get(r.ProcessId) ?? []));
+      // A real child is never older than its parent. Windows reuses PIDs, so
+      // processes whose (long-dead) parent had this PID would otherwise be
+      // counted as the app's: perf-windows once summed 135 system processes
+      // (lsass, svchost, Defender…) into "the app's tree", 3.7 GB.
+      const born = Number(r.Created) || 0;
+      stack.push(...(kids.get(r.ProcessId) ?? []).filter((c) => !born || !Number(c.Created) || Number(c.Created) >= born - 1000));
     }
     return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
   }
@@ -526,6 +531,13 @@ async function benchMpr(binary, study) {
   const maxMb = flag("max-mb", Infinity);
   const maxMs = flag("max-ms", Infinity);
   const maxSettledMb = flag("max-settled-mb", Infinity);
+  // --cold: the first open after a cache clear (HP: 988 MB idle cold vs
+  // ~330-410 MB warm). No scan cache, and the OS file cache dropped.
+  if (rest.includes("--cold")) {
+    rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
+    const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
+    console.error(`cold: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+  }
   const started = performance.now();
   const child = spawn(binary, [study], {
     env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: process.env.FLOWRAD_BENCH_VIEW ?? process.env.RADLEARN_BENCH_VIEW ?? "mpr" }) },
@@ -567,8 +579,11 @@ async function benchMpr(binary, study) {
   child.kill("SIGKILL");
   const summary = {
     mode: "mpr",
+    view: process.env.FLOWRAD_BENCH_VIEW ?? "mpr",
+    cold: rest.includes("--cold"),
     study,
     images: report.images,
+    engineStarted: report.engineInitMs != null || report.engineStartMs != null,
     volumeLoadedMs: r0(report.volumeLoadedMs),
     volumeBuildMs: r0(report.volumeBuildMs),
     peakPrivateMb: peak?.privateMb,
@@ -596,6 +611,9 @@ async function benchMpr(binary, study) {
   if (summary.peakWsMb > maxMb) over.push(`peak working set ${summary.peakWsMb} MB > ${maxMb} MB`);
   if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
   if (summary.settledWsMb > maxSettledMb) over.push(`settled working set ${summary.settledWsMb} MB > ${maxSettledMb} MB`);
+  // Native mode draws without the JS engine; starting it costs ~350 ms of
+  // main thread on open plus its WebGL context and decode worker.
+  if (rest.includes("--require-no-engine") && summary.engineStarted) over.push("the JS engine started in native mode");
   if (over.length) {
     console.error(`MPR gate failed: ${over.join("; ")}`);
     process.exitCode = 1;

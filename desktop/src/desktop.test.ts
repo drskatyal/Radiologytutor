@@ -55,13 +55,21 @@ test("navigation and the ambiguous pairs resolve to the intended action", () => 
   assert.deepEqual(resolveShortcut(key("F12", { ctrlKey: true }), false), { type: "toggleReferenceLines" });
   assert.deepEqual(resolveShortcut(key("F12"), false), { type: "toggleAnnotations" });
   assert.deepEqual(resolveShortcut(key("Q", { shiftKey: true }), false), { type: "rotate", degrees: -90 });
+  // R / Shift+R rotate (the web viewer's keys too); the rectangle ROI moved to S.
+  assert.deepEqual(resolveShortcut(key("r"), false), { type: "rotate", degrees: 90 });
+  assert.deepEqual(resolveShortcut(key("R", { shiftKey: true }), false), { type: "rotate", degrees: -90 });
+  assert.deepEqual(resolveShortcut(key("s"), false), { type: "tool", tool: "RectangleROI" });
+  assert.deepEqual(resolveShortcut(key("h"), false), { type: "flip", axis: "h" });
+  assert.deepEqual(resolveShortcut(key("v"), false), { type: "flip", axis: "v" });
+  assert.deepEqual(resolveShortcut(key("b", { ctrlKey: true }), false), { type: "toggleBrowser" });
   assert.deepEqual(resolveShortcut(key("f"), false), { type: "fullscreen" });
   assert.deepEqual(resolveShortcut(key("F", { ctrlKey: true, shiftKey: true }), false), { type: "fusion" });
 });
 
 test("no two bindings claim the same key combination", () => {
   const combos = [
-    ...["a", "b", "c", "d", "e", "f", "g", "h", "i", "l", "m", "o", "p", "q", "r", "v", "w", "x", "y", "z"].map((k) => key(k)),
+    ...["a", "b", "c", "d", "e", "f", "g", "h", "i", "l", "m", "o", "p", "q", "r", "s", "v", "w", "x", "y", "z"].map((k) => key(k)),
+    ...["r", "q"].map((k) => key(k.toUpperCase(), { shiftKey: true })),
     ...["o", "z", "m", "e", "f"].flatMap((k) => [key(k, { ctrlKey: true }), key(k, { ctrlKey: true, shiftKey: true })]),
   ];
   for (const combo of combos) {
