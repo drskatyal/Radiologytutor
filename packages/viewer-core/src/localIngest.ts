@@ -61,7 +61,7 @@ export interface LocalIngestResult extends LocalOpenResult {
   first: FirstLocalImage | null;
   /** ZIP archives that were expanded. */
   zipCount: number;
-  /** Every `dicomfile:` base id registered — what `releaseLocalImages` frees. */
+  /** Every `dicomfile:` id registered (bases and frames) — what `releaseLocalImages` frees. */
   registeredIds: string[];
   /** Wall time from call to grouped result, ms. Numbers only, never names. */
   elapsedMs: number;
@@ -282,8 +282,11 @@ export async function ingestLocalFiles(
 
   const accept = (file: File, header: LocalInstanceHeader) => {
     const baseImageId = fileManager.add(file);
-    registeredIds.push(baseImageId);
     const ids = imageIdsForInstance(baseImageId, instanceImageCount(header));
+    // The base id and, for a multiframe instance, every frame id: each can
+    // hold its own metadata-cache entry that must be released on close.
+    registeredIds.push(baseImageId);
+    for (const id of ids) if (id !== baseImageId) registeredIds.push(id);
     imageIdsByFile.set(header.fileName, ids);
     headers.push(header);
     if (!found.first) {
@@ -386,14 +389,24 @@ export async function ingestLocalFiles(
 }
 
 /**
- * Free a closed study: every decoded frame and parsed dataset in the
- * Cornerstone caches, and every `File` handle. Index slots are cleared, not
- * reused, so a later study can never alias a freed imageId.
+ * Free a closed study, back to the memory the page had before it opened:
+ *
+ *   • every decoded frame (Cornerstone image cache);
+ *   • every parsed wadouri dataset;
+ *   • every NATURALIZED metadata entry. Cornerstone 5's wadouri loader stores
+ *     each file it reads with `addDicomPart10Instance`, and that entry keeps
+ *     the whole Part 10 buffer — PixelData included — in a static metadata
+ *     cache (`@cornerstonejs/metadata` CacheData) that neither cache eviction
+ *     nor `purgeCache` touches. Without this a closed 520-slice CT kept
+ *     ~260 MB of raw file bytes alive for the life of the tab;
+ *   • every `File` handle. Index slots are cleared, not reused, so a later
+ *     study can never alias a freed imageId.
  */
 export async function releaseLocalImages(registeredIds: readonly string[]): Promise<void> {
-  const [core, loader] = await Promise.all([
+  const [core, loader, metadata] = await Promise.all([
     import("@cornerstonejs/core"),
     import("@cornerstonejs/dicom-image-loader"),
+    import("@cornerstonejs/metadata"),
   ]);
   try {
     core.cache.purgeCache();
@@ -405,8 +418,74 @@ export async function releaseLocalImages(registeredIds: readonly string[]): Prom
     dataSetCacheManager?: { purge(): void };
   };
   wadouri.dataSetCacheManager?.purge();
+  const naturalized = metadata.Enums.MetadataModules.NATURALIZED;
+  const cacheData = metadata.utilities.CacheData as unknown as {
+    clearTypedCacheData(type: string, query?: string): void;
+  };
+  recycleDecodeWorkers(core);
+  // Header workers: drop the pool; the next ingest (or prewarm) builds a fresh one.
+  pool?.terminate();
+  pool = null;
   for (const id of registeredIds) {
+    // Per query, not a global clear: another viewer on the page (a teaching
+    // case beside the local study) keeps its metadata.
+    try {
+      cacheData.clearTypedCacheData(naturalized, id);
+    } catch {
+      /* nothing cached for this id */
+    }
+    if (id.includes("?")) continue; // frame ids share their base's File
     const index = Number(id.slice("dicomfile:".length));
     if (Number.isInteger(index)) wadouri.fileManager.remove(index);
   }
+}
+
+const DECODE_WORKER = "dicomImageLoader";
+
+/**
+ * Replace the Cornerstone decode-worker pool with fresh workers.
+ *
+ * Each decode worker is its own V8 isolate. After a study it holds the heap it
+ * grew while decoding (~20–40 MB each, collected only at the worker's own
+ * pace), which a main-thread GC cannot reach. Terminating the pool frees it
+ * all at once. Cornerstone's own lazy re-creation after `terminate()` rebuilds
+ * only worker 0 (its least-loaded search skips null slots), which would leave
+ * the next study decoding on one core, so the pool is re-registered with the
+ * same worker function and size instead: the next drop finds N booted, empty
+ * workers. Uses the manager's registry, which is not in its typings; every
+ * access is guarded and a failure leaves the existing pool untouched.
+ */
+function recycleDecodeWorkers(core: typeof import("@cornerstonejs/core")): void {
+  try {
+    const manager = (core as unknown as { getWebWorkerManager?: () => unknown }).getWebWorkerManager?.() as
+      | {
+          workerRegistry?: Record<string, { workerFn?: () => Worker; nativeWorkers?: unknown[]; processing?: boolean }>;
+          terminate(name: string): void;
+          registerWorker(name: string, fn: () => Worker, options: { maxWorkerInstances: number; overwrite: boolean }): void;
+        }
+      | undefined;
+    const entry = manager?.workerRegistry?.[DECODE_WORKER];
+    const workerFn = entry?.workerFn;
+    const size = entry?.nativeWorkers?.length ?? 0;
+    if (!manager || !workerFn || size === 0 || entry?.processing) return;
+    manager.terminate(DECODE_WORKER);
+    manager.registerWorker(DECODE_WORKER, workerFn, { maxWorkerInstances: size, overwrite: true });
+  } catch {
+    /* keep the current pool: it still works, it just keeps its heap */
+  }
+}
+
+/**
+ * NATURALIZED metadata entries held for `dicomfile:` (local) images. Numbers
+ * only — for the memory gate and support, never the entries themselves.
+ */
+export async function localMetadataEntryCount(): Promise<number> {
+  const metadata = await import("@cornerstonejs/metadata");
+  const store = (metadata.utilities.CacheData as unknown as { mapCacheData?: Map<string, Map<string, unknown>> })
+    .mapCacheData;
+  const entries = store?.get(metadata.Enums.MetadataModules.NATURALIZED);
+  if (!entries) return 0;
+  let count = 0;
+  for (const key of entries.keys()) if (key.startsWith("dicomfile:")) count += 1;
+  return count;
 }

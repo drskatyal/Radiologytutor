@@ -42,9 +42,20 @@ if (ct) {
   );
   const m = ct.memory ?? {};
   row("Decoded cache, study open / cap", `${v(m.cacheMb, " MB")} / ${v(m.cacheCapMb, " MB")}`, "≤ cap", m.cacheMb <= m.cacheCapMb);
-  row("Decoded cache + file handles after **Close study**", `${v(m.cacheAfterCloseMb, " MB")}, ${v(m.filesAfterClose)} files`, "0", m.cacheAfterCloseMb === 0 && m.filesAfterClose === 0);
+  row(
+    "After **Close study**: decoded cache / file handles / cached Part 10 buffers",
+    `${v(m.cacheAfterCloseMb, " MB")} / ${v(m.filesAfterClose)} / ${v(m.metadataEntriesAfterClose)}`,
+    "0 / 0 / 0",
+    m.cacheAfterCloseMb === 0 && m.filesAfterClose === 0 && m.metadataEntriesAfterClose === 0
+  );
   row("JS heap open → closed", `${v(m.jsHeapOpenMb, " MB")} → ${v(m.jsHeapClosedMb, " MB")}`, "", null);
-  row("Renderer+GPU RSS idle → open → closed", `${v(m.rendererRssIdleMb)} → ${v(m.rendererRssOpenMb)} → ${v(m.rendererRssClosedMb)} MB`, "", null);
+  row(
+    "Renderer+GPU RSS: before open → open → after close (no forced GC)",
+    `${v(m.rendererRssIdleMb)} → ${v(m.rendererRssOpenMb)} → ${v(m.rendererRssClosedMb)} MB (settled in ${v(m.closeSettleMs, " ms")})`,
+    "after close ≤ before open + 64 MB",
+    m.rendererRssIdleMb == null || m.rendererRssClosedMb <= m.rendererRssIdleMb + 64
+  );
+  if (ct.reopenFirstImageMs != null) row("First image when reopening after Close study", v(ct.reopenFirstImageMs, " ms"), "≤ 1000 ms", ct.reopenFirstImageMs <= 1000);
   row("WASM fetched for uncompressed CT", ct.wasmFetched?.length ? ct.wasmFetched.join(", ") : "none", "none", !ct.wasmFetched?.length);
   row("Privacy: requests after drop / violations", `${v(ct.requestsAfterDrop)} / ${ct.privacyViolations?.length ?? "—"}`, "static GETs only / 0", (ct.privacyViolations?.length ?? 1) === 0);
 }
