@@ -272,12 +272,16 @@ export default function NativeStackViewport({
     return registerHandle(cellKey, handle);
   }, [cellKey, viewportId, series?.uid, change, step, goTo, count]);
 
-  // ── input: wheel scrolls; left = the app's tool; right = zoom; middle = pan ──
+  // ── input (Settings › Mouse & Keyboard): wheel scrolls; left = the app's tool; right = W/L; middle = pan ──
   const notchRun = useRef({ at: 0, n: 0 });
   const onWheel = (e: React.WheelEvent) => {
     if (!shown) return;
-    // Ctrl+wheel zooms a plain image (WHEEL_DEFAULTS; slab is a reformat's).
-    if (resolveWheel({ ctrl: e.ctrlKey || e.metaKey })?.command !== "scroll") {
+    // Tilt notches are commands (bindings, App), not slices.
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    // Ctrl+wheel zooms a plain image (the bindings; slab is a reformat's).
+    const wheel = resolveWheel({ ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey })?.command;
+    if (!wheel) return;
+    if (wheel !== "scroll") {
       void change({ zoom: shown.view.zoom * Math.exp(-Math.sign(e.deltaY) * 0.1) });
       return;
     }
@@ -298,6 +302,9 @@ export default function NativeStackViewport({
     // Annotation tools are handled by the annotation layer (it stops the event).
     if (e.button === 0 && !NAV_TOOLS.has(tool)) return;
     if (e.button === 2) rightMoved.current = false;
+    // Other buttons drag only when bound to a drag tool; a click of an extra
+    // button is a command (App's bindings listener).
+    if (e.button !== 0 && !dragModeFor(e.button, "", { ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey })) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY, button: e.button, ctrl: e.ctrlKey || e.metaKey, start: shown, acc: 0 };
   };
@@ -311,7 +318,7 @@ export default function NativeStackViewport({
     // Right drag = window / level, middle = pan, as on the JS path (engine.ts
     // MouseBindings.Secondary / Auxiliary), the toolbar tooltip and the F1
     // sheet. (0.8.1 zoomed on right drag: HP report.) Zoom is Ctrl+wheel / Z.
-    const mode = dragModeFor(d.button, tool, { ctrl: d.ctrl });
+    const mode = dragModeFor(d.button, tool, { ctrl: d.ctrl, alt: e.altKey, shift: e.shiftKey });
     const v = d.start.view;
     if (mode === "WindowLevel") {
       const k = Math.max(1, v.wl[1] / 256);

@@ -4,14 +4,22 @@
 // or `?` where the viewer owns it. Drawn inside the imaging pane (not a body
 // portal) so it survives fullscreen and covers only the image it describes.
 
-import { useEffect, useId, useRef } from "react";
-import { X } from "lucide-react";
+import { Suspense, lazy, useEffect, useId, useRef, useState } from "react";
+import { ArrowLeft, Mouse, X } from "lucide-react";
 import { cn } from "@/components/ui/cn";
+import { Button } from "@/components/ui/Button";
+import { Spinner } from "@/components/ui/Spinner";
+import type { BindingOverrides } from "@flowrad/viewer-core/bindings";
 import {
-  VIEWER_POINTER_HINTS,
-  VIEWER_SHORTCUT_GROUPS,
+  WEB_COMMANDS,
+  viewerPointerHints,
+  viewerShortcutGroups,
   type ShortcutRow,
 } from "@/lib/viewerHotkeys";
+import { saveViewerBindings, syncViewerBindingsWithAccount, viewerBindingsSyncedToAccount } from "./useViewerBindings";
+
+// Settings › Mouse & Keyboard: its own chunk, loaded when the reader opens it.
+const BindingsPanel = lazy(() => import("@/components/bindings/BindingsPanel"));
 
 function Keys({ keys }: { keys: string[] }) {
   return (
@@ -37,16 +45,27 @@ function Row({ row }: { row: ShortcutRow }) {
   );
 }
 
-export function ViewerHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; onClose: () => void; overrides?: BindingOverrides }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [customise, setCustomise] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setCustomise(false);
+      return;
+    }
     closeRef.current?.focus();
   }, [open]);
 
+  useEffect(() => {
+    // Opening the panel is a deliberate act: the signed-in copy may be fetched now.
+    if (customise) void syncViewerBindingsWithAccount();
+  }, [customise]);
+
   if (!open) return null;
+  const groups = viewerShortcutGroups(overrides);
+  const pointer = viewerPointerHints(overrides);
   return (
     <div
       className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-3 backdrop-blur-[2px] animate-overlay-in"
@@ -59,6 +78,11 @@ export function ViewerHelp({ open, onClose }: { open: boolean; onClose: () => vo
         aria-modal="true"
         aria-labelledby={titleId}
         onKeyDown={(event) => {
+          // While customising, keys belong to the capture (Esc cancels it there).
+          if (customise) {
+            event.stopPropagation();
+            return;
+          }
           if (event.key === "Escape" || event.key === "h" || event.key === "H" || event.key === "?") {
             event.preventDefault();
             event.stopPropagation();
@@ -68,9 +92,26 @@ export function ViewerHelp({ open, onClose }: { open: boolean; onClose: () => vo
         className="max-h-full w-full max-w-2xl overflow-y-auto overscroll-contain rounded-xl border border-white/10 bg-[#181818] p-4 text-white shadow-2xl sm:p-5"
       >
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 id={titleId} className="text-sm font-semibold tracking-tight text-white">
-            Viewer shortcuts
-          </h2>
+          <div className="flex min-w-0 items-center gap-2">
+            {customise && (
+              <button
+                type="button"
+                aria-label="Back to the shortcut sheet"
+                onClick={() => setCustomise(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+              >
+                <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+            <h2 id={titleId} className="text-sm font-semibold tracking-tight text-white">
+              {customise ? "Mouse & keyboard" : "Viewer shortcuts"}
+            </h2>
+          </div>
+          {!customise && (
+            <Button size="sm" variant="imaging" leadingIcon={<Mouse />} onClick={() => setCustomise(true)} className="ml-auto">
+              Customise
+            </Button>
+          )}
           <button
             ref={closeRef}
             type="button"
@@ -85,11 +126,29 @@ export function ViewerHelp({ open, onClose }: { open: boolean; onClose: () => vo
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
+        {customise ? (
+          <Suspense
+            fallback={
+              <div className="flex justify-center py-10">
+                <Spinner label="Loading bindings" />
+              </div>
+            }
+          >
+            <BindingsPanel
+              table={WEB_COMMANDS}
+              overrides={overrides}
+              onChange={(next) => void saveViewerBindings(next)}
+              surface="web"
+              storedWhere={viewerBindingsSyncedToAccount() ? "in this browser and your account" : "in this browser"}
+            />
+          </Suspense>
+        ) : (
+        <>
         <p className="mb-4 text-xs text-white/55">
           Click the image first — keys act on the viewport you are in.
         </p>
         <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-          {VIEWER_SHORTCUT_GROUPS.map((group) => (
+          {groups.map((group) => (
             <section key={group.title}>
               <h3 className="mb-1 text-[11px] font-medium uppercase tracking-wide text-white/45">
                 {group.title}
@@ -106,12 +165,14 @@ export function ViewerHelp({ open, onClose }: { open: boolean; onClose: () => vo
               Mouse &amp; touch
             </h3>
             <ul className="grid gap-x-8 divide-white/5 sm:grid-cols-2">
-              {VIEWER_POINTER_HINTS.map((row) => (
-                <Row key={row.keys.join()} row={row} />
+              {pointer.map((row) => (
+                <Row key={row.keys.join() + row.does} row={row} />
               ))}
             </ul>
           </section>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
