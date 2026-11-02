@@ -36,6 +36,7 @@
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
+import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import {
   useCallback,
   useEffect,
@@ -49,6 +50,8 @@ import {
 import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import type { VoiceState } from "./viewer/voice/voiceSession";
+import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
   prefetchImageIndexes,
@@ -120,7 +123,7 @@ import {
   type CineWrap,
 } from "../lib/cinePlayer";
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
-import { isTextTarget, resolveViewerHotkey } from "../lib/viewerHotkeys";
+import { isTextTarget, resolveViewerHotkey, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
 import {
   OVERLAY_STORAGE_KEY,
   nextOverlayDensity,
@@ -479,6 +482,117 @@ async function buildImageIds(source: ViewerSource): Promise<string[]> {
 
 /** One Cornerstone core/tools/loader init per page; see the init effect. */
 let engineInit: Promise<void> | null = null;
+
+type EngineModules = {
+  core: typeof import("@cornerstonejs/core");
+  loader: typeof import("@cornerstonejs/dicom-image-loader");
+  tools: typeof import("@cornerstonejs/tools");
+  deviceProfile: ReturnType<typeof detectDeviceProfile>;
+};
+let engineReady: Promise<EngineModules> | null = null;
+
+/**
+ * Load and initialise the imaging engine once per page: Cornerstone core,
+ * tools, the DICOM loader and its decode-worker pool, the cache ceiling and
+ * request pools. Every pane awaits this; a page that is ABOUT to show a viewer
+ * (the free viewer's dropzone) calls `prewarmViewerEngine` on idle so the
+ * first drop finds the workers already booted.
+ */
+export function ensureViewerEngine(): Promise<EngineModules> {
+  engineReady ??= (async () => {
+    const core = await import("@cornerstonejs/core");
+    const loader = await import("@cornerstonejs/dicom-image-loader");
+    const tools = await import("@cornerstonejs/tools");
+    // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
+    // how much decoded-pixel cache, how many frame requests may be in
+    // flight, and whether this is a phone (which drops Cornerstone's
+    // WebGL context pool from 7 to 1). They are device-dependent and the
+    // benchmark harness measures the same functions.
+    const deviceProfile = detectDeviceProfile();
+    // Once per page, not once per pane. `dicomImageLoader.init()` runs
+    // `registerLoaders()`, which PURGES the image cache and the wadors
+    // metadata store — so a second pane mounting (a hanging layout, or
+    // student compare) silently wiped the first pane's metadata.
+    engineInit ??= (async () => {
+      await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
+      await tools.init();
+      await loader.init({ maxWebWorkers: webWorkerCount(deviceProfile) });
+    })();
+    try {
+      await engineInit;
+    } catch (err) {
+      engineInit = null;
+      throw err;
+    }
+    const workers = webWorkerCount(deviceProfile);
+    // Converted-bundle delivery (HTJ2K + previews via CDN) behind the same
+    // wadors imageIds. Falls through to DICOMweb per image. Idempotent.
+    installBundleLoader(
+      core as unknown as CoreLike,
+      loader as unknown as DicomLoaderLike,
+      { decodeWorkers: workers }
+    );
+    // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
+    // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
+    // ceiling costs re-decodes, never correctness.
+    try {
+      core.cache.setMaxCacheSize(imageCacheBytes(deviceProfile));
+    } catch {
+      /* older core without a settable ceiling — keep the library default */
+    }
+    const retrieval = (
+      core as {
+        imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> };
+      }
+    ).imageRetrievalPoolManager;
+    const pool = retrieval?.maxNumRequests;
+    if (pool) Object.assign(pool, retrievalPoolSizes(deviceProfile));
+    console.info("[radlearn] viewer runtime", describeRuntime(deviceProfile));
+    return { core, loader, tools, deviceProfile };
+  })();
+  engineReady.catch(() => {
+    engineReady = null;
+  });
+  return engineReady;
+}
+
+let contextWarm: Promise<void> | null = null;
+
+/**
+ * Fire-and-forget engine warm for idle callbacks: `ensureViewerEngine`, then
+ * the shared rendering engine and its first WebGL context. vtk.js creates GL
+ * contexts lazily on the first render, and that creation is the single
+ * largest cost between "files dropped" and "first pixel" (~50 ms on a GPU,
+ * ~250 ms in software GL). One hidden 64 px stack viewport renders once and is
+ * disabled again, so the user's viewport finds the context already built.
+ * Skipped when a viewer is already mounted.
+ */
+export function prewarmViewerEngine(): void {
+  contextWarm ??= ensureViewerEngine()
+    .then(async ({ core }) => {
+      if (viewportEngineRegistry.size > 0) return;
+      const engine = await obtainSharedEngine(core as unknown as EngineHost);
+      const element = document.createElement("div");
+      // DOM API, not JSX: a throwaway off-screen host, never painted.
+      element.style.cssText = "position:fixed;left:-10000px;top:0;width:64px;height:64px;";
+      element.setAttribute("aria-hidden", "true");
+      document.body.appendChild(element);
+      const viewportId = "flowrad-context-warm";
+      try {
+        engine.enableElement({ viewportId, type: core.Enums.ViewportType.STACK, element });
+        (engine.getViewport(viewportId) as { render?: () => void } | undefined)?.render?.();
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      } finally {
+        try {
+          engine.disableElement(viewportId);
+        } catch {
+          /* engine torn down meanwhile */
+        }
+        element.remove();
+      }
+    })
+    .catch(() => undefined);
+}
 
 type SharedEngine = {
   enableElement: (entry: {
@@ -863,58 +977,8 @@ export default function CornerstoneViewer({
           : null;
 
       try {
-        const core = await import("@cornerstonejs/core");
-        const loader = await import("@cornerstonejs/dicom-image-loader");
-        const tools = await import("@cornerstonejs/tools");
+        const { core, tools, deviceProfile } = await ensureViewerEngine();
         sharedCore = core as unknown as EngineHost;
-
-        // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
-        // how much decoded-pixel cache, how many frame requests may be in
-        // flight, and whether this is a phone (which drops Cornerstone's
-        // WebGL context pool from 7 to 1). They are device-dependent and the
-        // benchmark harness measures the same functions.
-        const deviceProfile = detectDeviceProfile();
-        // Once per page, not once per pane. `dicomImageLoader.init()` runs
-        // `registerLoaders()`, which PURGES the image cache and the wadors
-        // metadata store — so a second pane mounting (a hanging layout, or
-        // student compare) silently wiped the first pane's metadata. Its stack
-        // kept painting from textures, but MPR then found no pixel module for
-        // any slice ("no spatial orientation") and prefetch decodes threw.
-        engineInit ??= (async () => {
-          await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
-          await tools.init();
-          await loader.init({ maxWebWorkers: webWorkerCount(deviceProfile) });
-        })();
-        try {
-          await engineInit;
-        } catch (err) {
-          engineInit = null;
-          throw err;
-        }
-        const workers = webWorkerCount(deviceProfile);
-        // Converted-bundle delivery (HTJ2K + previews via CDN) behind the same
-        // wadors imageIds. Falls through to DICOMweb per image. Idempotent.
-        installBundleLoader(
-          core as unknown as CoreLike,
-          loader as unknown as DicomLoaderLike,
-          { decodeWorkers: workers }
-        );
-        // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
-        // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
-        // ceiling costs re-decodes, never correctness.
-        try {
-          core.cache.setMaxCacheSize(imageCacheBytes(deviceProfile));
-        } catch {
-          /* older core without a settable ceiling — keep the library default */
-        }
-        const retrieval = (
-          core as {
-            imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> };
-          }
-        ).imageRetrievalPoolManager;
-        const pool = retrieval?.maxNumRequests;
-        if (pool) Object.assign(pool, retrievalPoolSizes(deviceProfile));
-        console.info("[radlearn] viewer runtime", describeRuntime(deviceProfile));
 
         const engine = await obtainSharedEngine(core as unknown as EngineHost);
         if (disposed || !elementRef.current) {
@@ -1460,6 +1524,20 @@ export default function CornerstoneViewer({
           );
           if (!ids || disposed || !elementRef.current) return;
           imageIds = ids;
+        } else if (initialSource.kind === "imageIds" && initialSource.full) {
+          // Progressive local open: paint what is parsed, then swap to the
+          // ordered stack in place once every header is in.
+          const seriesUID = seriesUidOf(initialSource);
+          await loadStack([...initialSource.imageIds], 0);
+          if (disposed || !elementRef.current) return;
+          noteFirstPixel(seriesUID);
+          const full = await initialSource.full.catch(() => null);
+          if (disposed || !elementRef.current) return;
+          imageIds = full && full.imageIds.length > 0 ? full.imageIds : [...initialSource.imageIds];
+          const openAt = full ? full.openIndex : 0;
+          await loadStack(imageIds, openAt);
+          if (disposed || !elementRef.current) return;
+          finishStack(seriesUID, imageIds, openAt);
         } else {
           imageIds = await buildImageIds(initialSource);
           if (disposed || !elementRef.current) return;
@@ -2015,7 +2093,7 @@ export default function CornerstoneViewer({
               },
             });
           } catch (err) {
-            console.error("CornerstoneViewer MPR", err);
+            console.error("CornerstoneViewer MPR", safeErrorText(err));
             session?.destroy();
             if (mprHeld) await resumeStack();
             if (!disposed) {
@@ -2080,7 +2158,7 @@ export default function CornerstoneViewer({
               await session.replace(ids, imageId, pinnedVoi ?? heldVoi);
               publishReadout();
             } catch (err) {
-              console.error("CornerstoneViewer MPR series", err);
+              console.error("CornerstoneViewer MPR series", safeErrorText(err));
               mprEpoch += 1;
               destroyMprSession();
               setMprLive(false);
@@ -2133,7 +2211,7 @@ export default function CornerstoneViewer({
                 requestAnimationFrame(fit);
               });
             } catch (err) {
-              console.error("CornerstoneViewer MPR resume", err);
+              console.error("CornerstoneViewer MPR resume", safeErrorText(err));
             }
           }
         };
@@ -2213,7 +2291,7 @@ export default function CornerstoneViewer({
             if (disposed || controller.signal.aborted || (err as Error)?.name === "AbortError") {
               return;
             }
-            console.error("CornerstoneViewer switchSeries error", err);
+            console.error("CornerstoneViewer switchSeries error", safeErrorText(err));
             setStatus(`Error: ${(err as Error).message}`);
           }
         };
@@ -2377,7 +2455,7 @@ export default function CornerstoneViewer({
             vp.render();
             return true;
           } catch (err) {
-            console.warn("CornerstoneViewer applyEvent annotation", err);
+            console.warn("CornerstoneViewer applyEvent annotation", safeErrorText(err));
             return false;
           }
         };
@@ -2843,7 +2921,7 @@ export default function CornerstoneViewer({
             try {
               engine.resize(true, plan.keepCamera);
             } catch (err) {
-              console.warn("CornerstoneViewer layout restore", err);
+              console.warn("CornerstoneViewer layout restore", safeErrorText(err));
             }
             const paint = () => {
               if (gen !== layoutGen) return;
@@ -2980,7 +3058,7 @@ export default function CornerstoneViewer({
         setStatus(`${imageIds.length} images loaded`);
       } catch (err) {
         if (disposed || (err as Error)?.name === "AbortError") return;
-        console.error("CornerstoneViewer error", err);
+        console.error("CornerstoneViewer error", safeErrorText(err));
         setStacking(false);
         setStatus(`Error: ${(err as Error).message}`);
       }
@@ -3153,6 +3231,12 @@ export default function CornerstoneViewer({
     const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp });
     if (!action) return;
     event.preventDefault();
+    if (action.type === "help") event.stopPropagation();
+    runViewerAction(action);
+  };
+
+  /** One viewer action, from a key or a voice command. */
+  const runViewerAction = (action: ViewerHotkeyAction) => {
     switch (action.type) {
       case "tool":
         if (!ready) return;
@@ -3243,11 +3327,79 @@ export default function CornerstoneViewer({
         if (onCycleLayout) onCycleLayout();
         return;
       case "help":
-        event.stopPropagation();
         setHelpOpen((open) => !open);
         return;
     }
   };
+
+  // ── Offline voice commands (components/viewer/voice) ──
+  const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
+  const voiceSessionRef = useRef<{ stop(): void } | null>(null);
+  // Client-only (the server render has no microphone API): no hydration mismatch.
+  const [canVoice, setCanVoice] = useState(false);
+  useEffect(() => setCanVoice(typeof navigator.mediaDevices?.getUserMedia === "function"), []);
+  const voiceActionRef = useRef<(a: VoiceAction) => void>(() => undefined);
+  voiceActionRef.current = (a: VoiceAction) => {
+    switch (a.type) {
+      case "series": {
+        if (!series?.length || !onSeriesChangeRef.current) return;
+        const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
+        if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
+        return;
+      }
+      case "slice":
+        return runViewerAction({ type: "slice", delta: a.delta });
+      case "page":
+        return runViewerAction({ type: "slice", delta: a.dir * Math.max(1, Math.round(sliceCount / 10)) });
+      case "zoom":
+        return runViewerAction({ type: "zoom", factor: a.factor });
+      case "tool":
+        return runViewerAction({ type: "tool", tool: a.tool });
+      case "reset":
+        return runViewerAction({ type: "reset" });
+      case "invert":
+        return runViewerAction({ type: "invert" });
+      case "mpr":
+      case "volume3d":
+        return runViewerAction({ type: "mpr" });
+      case "layout":
+        return runViewerAction({ type: "layout" });
+      case "preset": {
+        const want = a.name === "abdomen" ? /abdom|soft/i : new RegExp(a.name, "i");
+        const at = presets.findIndex((p) => want.test(p.label) || want.test(p.id));
+        if (at < 0) return flash(`No ${a.name} window for this series`);
+        return runViewerAction({ type: "preset", ordinal: at + 1 });
+      }
+      case "slab":
+      case "slabThickness":
+        return flash("Slabs are in the desktop viewer");
+      case "stop":
+        voiceSessionRef.current?.stop();
+        return;
+    }
+  };
+  const toggleVoice = async () => {
+    if (voiceSessionRef.current || voice.state === "loading") {
+      voiceSessionRef.current?.stop();
+      voiceSessionRef.current = null;
+      return;
+    }
+    const { startVoice } = await import("./viewer/voice/voiceSession");
+    voiceSessionRef.current = await startVoice({
+      modelUrl: "/voice/model.tar.gz",
+      onAction: (action, heard) => {
+        flash(`“${heard}”`);
+        voiceActionRef.current(action);
+      },
+      onUnrecognized: (heard) => flash(`“${heard}” ?`),
+      onState: (state, detail) => {
+        setVoice({ state });
+        if (state === "error" && detail) flash(detail);
+        if (state === "off" || state === "error") voiceSessionRef.current = null;
+      },
+    });
+  };
+  useEffect(() => () => voiceSessionRef.current?.stop(), []);
 
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
@@ -3325,6 +3477,7 @@ export default function CornerstoneViewer({
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
       onHelp={() => setHelpOpen((open) => !open)}
+      voice={canVoice ? { state: voice.state, onToggle: () => void toggleVoice() } : undefined}
     />
   );
 
