@@ -10,7 +10,6 @@ on:
     branches:
       - claude/epic-noether-3nvcbf
       - claude/viewer-chunk-recovery
-      - claude/voice-fix
     paths-ignore:
       - "desktop/**"
       - "docs/**"
