@@ -37,6 +37,7 @@ export type ShortcutAction =
   | { type: "maximizeCell" }
   | { type: "undoAnnotation" }
   | { type: "redoAnnotation" }
+  | { type: "voice" }
   | { type: "clearAnnotations" }
   | { type: "export" }
   | { type: "mpr" }
@@ -198,6 +199,7 @@ export const BINDINGS: Binding[] = [
   { id: "slab.cycle", keys: "T", does: "Slab: Slice → MIP → MinIP → AvgIP", group: "Advanced", match: (e, m) => plain(e, m) && !e.shiftKey && keyIs(e, "t"), action: { type: "slabCycle" } },
   { id: "slab.thicker", keys: "Mod+]", does: "Thicker slab (+2 mm; Ctrl+wheel too)", group: "Advanced", match: (e, m) => m && !e.shiftKey && (e.key === "]" || e.code === "BracketRight"), action: { type: "slabThickness", deltaMm: 2 } },
   { id: "slab.thinner", keys: "Mod+[", does: "Thinner slab (−2 mm)", group: "Advanced", match: (e, m) => m && !e.shiftKey && (e.key === "[" || e.code === "BracketLeft"), action: { type: "slabThickness", deltaMm: -2 } },
+  { id: "voice", keys: "Mod+Shift+V", does: "Voice commands on / off", group: "Advanced", match: (e, m) => m && !!e.shiftKey && !e.altKey && keyIs(e, "v"), action: { type: "voice" } },
   { keys: "F1 / ?", does: "Keyboard shortcuts", group: "Advanced", match: (e) => e.key === "F1" || e.key === "?", action: { type: "help" } },
 ];
 

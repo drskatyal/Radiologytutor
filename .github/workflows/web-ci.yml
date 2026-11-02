@@ -43,6 +43,11 @@ jobs:
       - run: npm ci
       - name: Unit tests
         run: npm test
+      - name: Voice model (served from public/voice) and spoken test commands
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
+          python3 scripts/fetch-voice-model.py
+          python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
       - name: Production build
         # next/font downloads Google Fonts at build time; a bad response from
         # Google (seen on runners) fails the build with a parse error. Retry
@@ -67,13 +72,19 @@ jobs:
           TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
         # One worker: the perf gates measure frame times and must not share
-        # the runner's cores with another test.
-        run: npx playwright test -c playwright.visual.config.ts --workers=1
+        # the runner's cores with another test (nor the voice recognizer's WASM).
+        run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:"
       - name: Perf table (job summary)
         if: always()
         run: |
           node scripts/perf/viewer-perf-table.mjs "$RUNNER_TEMP/bundle.json" test-results/perf/free-viewer.json | tee -a "$GITHUB_STEP_SUMMARY"
           cp "$RUNNER_TEMP/bundle.json" test-results/perf/ 2>/dev/null || true
+      - name: Voice commands with a spoken-command microphone (after the timed suite, alone)
+        env:
+          CI: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+          TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts --workers=1
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4

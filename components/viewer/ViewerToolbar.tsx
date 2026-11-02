@@ -25,6 +25,8 @@ import {
   Crosshair,
   Eraser,
   Keyboard,
+  Mic,
+  MicOff,
   Layers,
   LocateFixed,
   Maximize2,
@@ -219,6 +221,8 @@ export interface ViewerToolbarProps {
   onCineFps: (fps: number) => void;
   onOverlay: () => void;
   onHelp: () => void;
+  /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
+  voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void };
 }
 
 export function ViewerToolbar(props: ViewerToolbarProps) {
@@ -527,6 +531,17 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         >
           <Icon as={overlay === "off" ? CaptionsOff : Captions} />
         </ToolbarButton>
+        {props.voice && (
+          <ToolbarButton
+            label={props.voice.state === "listening" ? "Voice commands on" : props.voice.state === "loading" ? "Starting voice commands" : "Voice commands"}
+            pressed={props.voice.state === "listening"}
+            container={host}
+            onClick={props.voice.onToggle}
+            className={props.voice.state === "listening" ? "bg-accent text-accent-foreground hover:bg-accent" : undefined}
+          >
+            <Icon as={props.voice.state === "listening" ? Mic : MicOff} />
+          </ToolbarButton>
+        )}
         <ToolbarButton
           label="Keyboard & mouse"
           shortcut={["H"]}

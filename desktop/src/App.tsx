@@ -75,6 +75,8 @@ import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
 import { onSeriesDrop, useSeriesDrag } from "./viewer/seriesDrag";
 import { setToolCursor } from "./viewer/toolCursor";
+import type { VoiceState } from "@/components/viewer/voice/voiceSession";
+import type { VoiceAction } from "@flowrad/viewer-core";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -161,6 +163,8 @@ export default function App() {
   /** Slab shortcut (T, Ctrl+[ ]) for the active reformat; `seq` re-fires the same command. */
   const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; seq: number } | undefined>();
   const slabCycle = useRef<"off" | "mip" | "minip" | "avg">("off");
+  /** Slab a voice command asked for before a reformat was open. */
+  const [voiceSlab, setVoiceSlab] = useState<{ mode: "off" | "mip" | "minip" | "avg"; mm: number } | undefined>();
   /** Series the native MPR cannot decode (falls back to the GPU MPR). */
   const [nativeMprUnsupported, setNativeMprUnsupported] = useState<string | null>(null);
   useEffect(() => {
@@ -988,6 +992,42 @@ export default function App() {
     [fusionPair, volumeSeries, toast]
   );
 
+  // ───────────── offline voice commands ─────────────
+  // The mic toggle loads the recognizer and model only when switched on and
+  // frees them entirely when off (components/viewer/voice/voiceSession.ts).
+  const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
+  const voiceSession = useRef<{ stop(): void } | null>(null);
+  const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
+  const heardTimer = useRef(0);
+  const showHeard = useCallback((heard: string) => {
+    setVoice((v) => ({ ...v, heard }));
+    window.clearTimeout(heardTimer.current);
+    heardTimer.current = window.setTimeout(() => setVoice((v) => ({ ...v, heard: null })), 1800);
+  }, []);
+  const stopVoice = useCallback(() => {
+    voiceSession.current?.stop();
+    voiceSession.current = null;
+  }, []);
+  const toggleVoiceRef = useRef<() => Promise<void>>(async () => undefined);
+  toggleVoiceRef.current = async () => {
+    if (voiceSession.current || voice.state === "loading") return stopVoice();
+    const { startVoice } = await import("@/components/viewer/voice/voiceSession");
+    voiceSession.current = await startVoice({
+      modelUrl: "/voice/model.tar.gz",
+      onAction: (action, heard) => {
+        showHeard(heard);
+        voiceAction.current(action);
+      },
+      onUnrecognized: (heard) => showHeard(`${heard} ?`),
+      onState: (state, detail) => {
+        setVoice((v) => ({ ...v, state }));
+        if (state === "error" && detail) toast({ title: "Voice commands could not start", description: detail, variant: "warning", duration: 6000 });
+        if (state === "off" || state === "error") voiceSession.current = null;
+      },
+    });
+  };
+  useEffect(() => () => stopVoice(), [stopVoice]);
+
   const runAction = useCallback(
     (action: ShortcutAction) => {
       const handle = activeHandle();
@@ -1122,6 +1162,8 @@ export default function App() {
           return void getEngine().then((e) => annotationHistory(e, "undo"));
         case "clearAnnotations":
           return void getEngine().then((e) => clearAnnotations(e));
+        case "voice":
+          return void toggleVoiceRef.current();
         default:
           return;
       }
@@ -1129,6 +1171,49 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [studies.length, leftTool, toggleSync, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
   );
+
+  voiceAction.current = (a: VoiceAction) => {
+    switch (a.type) {
+      case "series":
+        return runAction({ type: "series", delta: a.delta });
+      case "slice":
+        return runAction({ type: "slice", delta: a.delta });
+      case "page":
+        return runAction({ type: "slicePage", dir: a.dir });
+      case "zoom":
+        return runAction({ type: "zoomBy", factor: a.factor });
+      case "tool":
+        return runAction({ type: "tool", tool: a.tool });
+      case "reset":
+        return runAction({ type: "reset" });
+      case "invert":
+        return runAction({ type: "invert" });
+      case "mpr":
+        return runAction({ type: "mpr" });
+      case "volume3d":
+        return runAction({ type: "volume3d" });
+      case "slab":
+        // A slab needs a reformat: open the axial one with that mode.
+        if (!activeReformat && a.mode !== "off") {
+          setVoiceSlab({ mode: a.mode, mm: 10 });
+          return runAction({ type: "reformat", plane: "axial" });
+        }
+        slabCycle.current = a.mode;
+        return setSlabCommand((c) => ({ mode: a.mode, seq: (c?.seq ?? 0) + 1 }));
+      case "slabThickness":
+        return runAction({ type: "slabThickness", deltaMm: a.deltaMm });
+      case "layout":
+        return runAction({ type: "layout", rows: a.rows, cols: a.cols });
+      case "preset": {
+        const want = a.name === "abdomen" ? /abdom|soft/i : new RegExp(a.name, "i");
+        const preset = presets.find((p) => want.test(p.label) || want.test(p.id));
+        if (preset) return applyPreset(preset);
+        return toast({ title: `No ${a.name} window for this series`, variant: "info", duration: 2500 });
+      }
+      case "stop":
+        return stopVoice();
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1252,6 +1337,7 @@ export default function App() {
           }}
           onOpen={(w) => void openDialog(w)}
           onHome={goHome}
+          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current() } : undefined}
           onUndo={() => runAction({ type: "undoAnnotation" })}
           onRedo={() => runAction({ type: "redoAnnotation" })}
           onClear={() => runAction({ type: "clearAnnotations" })}
@@ -1406,7 +1492,7 @@ export default function App() {
                       }}
                       onClose={() => setReformat(null, i)}
                       slabCommand={i === activeCell ? slabCommand : undefined}
-                      initialSlab={benchSlab}
+                      initialSlab={benchSlab ?? voiceSlab}
                       onPainted={(t) => {
                         bench.current.marks.reformat = { plane: reformat.plane, ms: Math.round(t.ms), maxLum: t.maxLum, slab: `${t.slab.mode}:${t.slab.mm}` };
                         const pending = bench.current.pendingVolume;
