@@ -258,7 +258,9 @@ export function AppShell({
 
   const readingRoom = pathname.startsWith("/case/") || pathname.startsWith("/s/");
   const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
-  const hideChrome = readingRoom || authScreen;
+  // The free, public FlowRad Viewer brings its own reading-room bar.
+  const freeViewer = pathname === "/viewer";
+  const hideChrome = readingRoom || authScreen || freeViewer;
   const showDeveloper = process.env.NODE_ENV === "development";
   const nav = useMemo(() => navGroups(showDeveloper, me), [showDeveloper, me]);
   const flatNav = useMemo(
@@ -274,7 +276,7 @@ export function AppShell({
       >
         Skip to content
       </a>
-      <div className={cn("flex min-h-dvh flex-col bg-canvas", readingRoom && "bg-imaging")}>
+      <div className={cn("flex min-h-dvh flex-col bg-canvas", (readingRoom || freeViewer) && "bg-imaging")}>
         {!hideChrome && (
           <header className="pointer-events-none fixed inset-x-0 top-4 z-40 px-4">
             <div className="pointer-events-auto mx-auto flex w-fit max-w-full items-center gap-2 rounded-2xl border border-subtle bg-surface/90 p-2 shadow-md backdrop-blur-md">
@@ -404,7 +406,8 @@ export function AppShell({
             />
           )}
         </div>
-        {!readingRoom && <CookieNotice />}
+        {/* The free viewer signs no one in and sets no cookie to view. */}
+        {!readingRoom && !freeViewer && <CookieNotice />}
       </div>
     </ToastProvider>
   );

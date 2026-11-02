@@ -44,6 +44,8 @@ export interface LocalInstanceHeader {
   numberOfFrames?: number;
   rows?: number;
   columns?: number;
+  /** (0002,0010). Decides which decoder (and WASM codec) a frame needs. */
+  transferSyntaxUID?: string;
 }
 
 export interface LocalSeries {
@@ -103,9 +105,14 @@ export function isObviouslyNotDicom(fileName: string): boolean {
   );
 }
 
+// One collator for every comparison: `localeCompare` with options builds a
+// new collator per call, which made sorting a 2 000-file CD cost ~100 ms.
+let naturalCollator: Intl.Collator | null = null;
+
 /** Natural compare so `IM9` sorts before `IM10`. */
 export function compareFileNames(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+  naturalCollator ??= new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  return naturalCollator.compare(a, b);
 }
 
 function cross(a: readonly number[], b: readonly number[]): [number, number, number] {
