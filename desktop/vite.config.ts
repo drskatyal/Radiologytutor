@@ -55,9 +55,27 @@ function preloadEngineChunks(): Plugin {
   };
 }
 
+/**
+ * Old CommonJS globals shims (`new Function("return this")()`) ask for eval,
+ * which the app's CSP (script-src without 'unsafe-eval') refuses: one guarded
+ * shim in the bundle reached it on every start and logged a CSP violation.
+ * `globalThis` is what they compute; swap it in.
+ */
+function noEvalGlobalShim(): Plugin {
+  const shim = /(?:new )?Function\("return this"\)\(\)/g;
+  return {
+    name: "flowrad-no-eval-global-shim",
+    apply: "build",
+    renderChunk(code) {
+      if (!code.includes('Function("return this")')) return null;
+      return { code: code.replace(shim, "globalThis"), map: null };
+    },
+  };
+}
+
 export default defineConfig({
   root: __dirname,
-  plugins: [react(), viteCommonjs(), preloadEngineChunks()],
+  plugins: [react(), viteCommonjs(), preloadEngineChunks(), noEvalGlobalShim()],
   clearScreen: false,
   resolve: {
     alias: [
