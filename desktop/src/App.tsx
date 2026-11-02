@@ -5,7 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -69,7 +69,9 @@ import {
   annotationHistory,
   enterIdleMemory,
   leaveIdleMemory,
+  type Engine,
 } from "./viewer/engine";
+import { clearAnnotations as clearNativeAnnotations, redo as redoNative, undo as undoNative } from "./native/annotations";
 import { windowPresetsFor } from "./viewer/presets";
 import { hangSeries } from "./layout";
 import { firstImagePixelStats } from "./viewer/pixelStats";
@@ -203,6 +205,21 @@ export default function App() {
   const [nativeMode, setNativeMode] = useState<boolean | null>(isTauri ? null : false);
   const native = nativeMode === true;
   const nativeRef = useRef(false);
+  /**
+   * The JS (Cornerstone) engine for App-level wiring: tools, sync, annotation
+   * visibility, linked windows. In native mode it is NOT started here — its
+   * import + init cost ~350 ms of main thread right when the first image is
+   * due, plus a WebGL context and a decode worker — only used once a JS-path
+   * viewport (colour / multi-frame fallback) has started it itself.
+   */
+  const withEngine = useCallback((fn: (engine: Engine) => void) => {
+    if (!nativeRef.current) {
+      void getEngine().then(fn);
+      return;
+    }
+    const engine = enginePeek();
+    if (engine) fn(engine);
+  }, []);
   useEffect(() => {
     if (!isTauri) return;
     void nativeEnabled().then((on) => {
@@ -543,7 +560,10 @@ export default function App() {
         if (seq !== openSeq.current) return;
         markPhase("study: group series");
         const built = buildStudies([...acc.values()]);
-        setStudies(built);
+        // After the first series is up, later batches re-render at low
+        // priority (time-sliced) instead of one long task per batch.
+        if (firstShown) startTransition(() => setStudies(built));
+        else setStudies(built);
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
@@ -893,7 +913,7 @@ export default function App() {
 
   const openDialog = useCallback(
     async (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => {
-      void getEngine();
+      if (!nativeRef.current) void getEngine();
       if (what === "pacs") {
         if (isTauri) setDialog("pacs");
         else toast({ title: "PACS needs the desktop app", variant: "info" });
@@ -983,7 +1003,7 @@ export default function App() {
       off.push(
         await getCurrentWebview().onDragDropEvent((event) => {
           const p = event.payload;
-          if (p.type === "enter") void getEngine();
+          if (p.type === "enter" && !nativeRef.current) void getEngine();
           if (p.type === "enter" || p.type === "over") setDragging(true);
           else if (p.type === "leave") setDragging(false);
           else if (p.type === "drop") {
@@ -1008,14 +1028,15 @@ export default function App() {
   useEffect(() => {
     if (!studies.length) return;
     let cancelled = false;
-    getEngine().then((engine) => {
+    withEngine((engine) => {
       if (cancelled) return;
       setGroupLeftTool(engine, STACK_GROUP, leftTool);
     });
     return () => {
       cancelled = true;
     };
-  }, [leftTool, studies.length]);
+    // handlesVersion: a JS-path viewport that started the engine (native mode) gets the tool too.
+  }, [leftTool, studies.length, handlesVersion, withEngine]);
 
   // Slice geometry for sync and the 3D cursor, straight from the header scan.
   useEffect(() => {
@@ -1026,7 +1047,7 @@ export default function App() {
   const toggleSync = useCallback(() => {
     setSyncScroll((on) => {
       if (!on) {
-        void getEngine().then((engine) => {
+        withEngine((engine) => {
           const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
           if (ids.length > 1) linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
         });
@@ -1043,7 +1064,7 @@ export default function App() {
   useEffect(() => {
     if (!studies.length) return;
     let cancelled = false;
-    getEngine().then((engine) => {
+    withEngine((engine) => {
       if (cancelled) return;
       const ids = visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i));
       setSynchronized(engine, "slice", ids, syncScroll);
@@ -1060,7 +1081,7 @@ export default function App() {
 
   /** Register the visible stacks at what each shows now (a prior, or a series with another FOV / frame). */
   const linkAtCurrent = useCallback(() => {
-    void getEngine().then((engine) => {
+    withEngine((engine) => {
       const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
       if (ids.length < 2) return toast({ title: "Linking needs two viewports", variant: "info", duration: 2500 });
       linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
@@ -1071,7 +1092,7 @@ export default function App() {
 
   useEffect(() => {
     if (!studies.length) return;
-    getEngine().then((engine) => {
+    withEngine((engine) => {
       const { annotation } = engine.tools;
       for (const a of annotation.state.getAllAnnotations()) {
         if (a.annotationUID) annotation.visibility.setAnnotationVisibility(a.annotationUID, annotationsVisible);
@@ -1425,7 +1446,9 @@ export default function App() {
   }, [syncScroll, syncVoi, syncZoom, referenceLines]);
   const activeViewportHandle = studies.length && handlesVersion >= 0 ? getHandle(cellKey(activeCell)) : undefined;
   const remotePlanes = useCrossWindow({
-    enabled: studies.length > 0,
+    // Linked windows ride on the JS engine's events. Native mode: only once a
+    // JS-path viewport has started the engine (re-checked as handles change).
+    enabled: studies.length > 0 && (!native || (handlesVersion >= 0 && enginePeek() != null)),
     viewportIds: visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i)),
     active: activeViewportHandle ? { viewportId: activeViewportHandle.viewportId, element: activeViewportHandle.element } : null,
     links: { scroll: syncScroll, voi: syncVoi, zoom: syncZoom, referenceLines },
@@ -1636,12 +1659,16 @@ export default function App() {
           return toggleView("3d");
         case "fusion":
           return toggleView("fusion");
+        // Native viewports keep their annotations in native/annotations.ts.
         case "redoAnnotation":
-          return void getEngine().then((e) => annotationHistory(e, "redo"));
+          if (nativeRef.current) redoNative();
+          return withEngine((e) => annotationHistory(e, "redo"));
         case "undoAnnotation":
-          return void getEngine().then((e) => annotationHistory(e, "undo"));
+          if (nativeRef.current) undoNative();
+          return withEngine((e) => annotationHistory(e, "undo"));
         case "clearAnnotations":
-          return void getEngine().then((e) => clearAnnotations(e));
+          if (nativeRef.current) clearNativeAnnotations();
+          return withEngine((e) => clearAnnotations(e));
         case "voice":
           return void toggleVoiceRef.current();
         default:
@@ -1987,7 +2014,8 @@ export default function App() {
     if (fullRes && bench.current.marks.firstFullResMs == null) bench.current.marks.firstFullResMs = at;
     // The preview is what the reader sees first; start the engine right
     // behind it instead of waiting for the viewport's next frame + task.
-    void getEngine();
+    // (Native mode: the native viewport draws; no JS engine.)
+    if (!nativeRef.current) void getEngine();
   }, []);
 
   const onFirstPaint = useCallback(() => {
