@@ -143,7 +143,10 @@ export function ToolbarButton({
   container,
   className,
   children,
+  onWarm,
 }: {
+  /** Pointer over / focus: start loading what a click will need. */
+  onWarm?: () => void;
   label: string;
   shortcut?: string[] | null;
   /** Selected state (tool, toggle on). */
@@ -164,6 +167,8 @@ export function ToolbarButton({
         aria-pressed={pressed === null ? undefined : (pressed ?? active)}
         disabled={disabled}
         onClick={onClick}
+        onPointerEnter={onWarm}
+        onFocus={onWarm}
         className={cn(
           "inline-flex shrink-0 items-center justify-center rounded-md",
           square,
@@ -222,7 +227,7 @@ export interface ViewerToolbarProps {
   onOverlay: () => void;
   onHelp: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
-  voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void };
+  voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
 }
 
 export function ViewerToolbar(props: ViewerToolbarProps) {
@@ -537,6 +542,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             pressed={props.voice.state === "listening"}
             container={host}
             onClick={props.voice.onToggle}
+            onWarm={props.voice.onWarm}
             className={props.voice.state === "listening" ? "bg-accent text-accent-foreground hover:bg-accent" : undefined}
           >
             <Icon as={props.voice.state === "listening" ? Mic : MicOff} />

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Offline voice commands: macOS asks for the microphone with this text. Audio never leaves the Mac. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>FlowRad Viewer listens for voice commands (offline, on this Mac) only while you switch the microphone on.</string>
+</dict>
+</plist>

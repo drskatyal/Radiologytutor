@@ -24,6 +24,14 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+# Offline voice commands: the small speech model is served from public/voice
+# (scripts/fetch-voice-model.py, SHA-256 pinned). Without it the live viewer's
+# mic could never start. Best effort: a download outage must not block a
+# deploy; the viewer then says "not included in this build" and prod-smoke
+# flags the missing model.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends python3 ca-certificates >/dev/null \
+  && rm -rf /var/lib/apt/lists/* \
+  && (python3 scripts/fetch-voice-model.py || echo "WARNING: voice model not fetched; voice commands will be unavailable")
 RUN npm run build
 # Carry the LIVE build's /_next/static files into this image (kept 7 days
 # after they stop being current), so tabs opened before this deploy can still
