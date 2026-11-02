@@ -19,6 +19,7 @@
 // nothing from a header is logged, and there is no analytics on this surface.
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
+import { useViewerBindings } from "./useViewerBindings";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -165,6 +166,9 @@ type DirectoryPickerWindow = Window & {
 };
 
 export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) {
+  // Mouse & keyboard bindings: the local copy, and the signed-in copy fetched
+  // now — before any study is opened (no request may follow a drop).
+  useViewerBindings({ account: true });
   const reading = tone === "reading";
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   // Series panel (reading room): collapsible to a rail, remembered per device.
