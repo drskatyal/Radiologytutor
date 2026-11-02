@@ -43,6 +43,12 @@ memmap2 = "0.9"
 # Phase 2 native renderer (FLOWRAD_NATIVE=1): DX12 on Windows, Metal on macOS, Vulkan/GL on Linux.
 wgpu = "30"
 
+# CharLS (JPEG-LS) is C++ built by cmake: in an unoptimised dev build cmake
+# picks Debug and the MSVC debug CRT (/MDd), which Rust's release CRT cannot
+# link (_CrtDbgReport). Optimising just this package makes it RelWithDebInfo.
+[profile.dev.package.charls-sys]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = true
