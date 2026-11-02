@@ -3717,8 +3717,6 @@ export default function CornerstoneViewer({
         if (state === "off" || state === "error") voiceSessionRef.current = null;
       },
     });
-    // Test hook (e2e): feed PCM to the live recognizer.
-    (window as Window & { __flowradVoice?: unknown }).__flowradVoice = voiceSessionRef.current;
   };
   useEffect(() => () => voiceSessionRef.current?.stop(), []);
 
