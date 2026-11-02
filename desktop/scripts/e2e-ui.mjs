@@ -1050,9 +1050,15 @@ if (want("voice")) {
     await settle(400);
     const mic = page.getByRole("button", { name: /^Voice commands/ });
     await mic.click();
-    await page.waitForFunction(() => !!document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 60_000 }).catch(() => undefined);
-    const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
-    check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
+    // Locator waits, not waitForFunction: Playwright evaluates a waitForFunction
+    // predicate with eval in the page, which the app's CSP (no 'unsafe-eval')
+    // refuses, so that wait failed at once and was swallowed.
+    const clickedAt = Date.now();
+    const on = page.getByRole("button", { name: /^Voice commands on/ });
+    const waitError = await on.first().waitFor({ timeout: 60_000 }).then(() => "", (e) => String(e?.message ?? e).split("\n")[0]);
+    const listening = await on.count();
+    const state = `${await mic.first().getAttribute("aria-label").catch(() => "?")} | ${(await page.getByTestId("voice-status").innerText().catch(() => "")).replace(/\s+/g, " ")}`;
+    check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1, listening === 1 ? `ready in ${Date.now() - clickedAt} ms` : `${waitError} · ${state}`);
     check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
     // The WAV says: "layout two", "lung window", "zoom in" (looped by Chromium).
     const heard = new Set();
@@ -1072,7 +1078,7 @@ if (want("voice")) {
     check("voice: what was heard is shown", [...heard].some((h) => /layout|lung|zoom/.test(h) && !h.includes("✓")), [...heard].join(" | "));
     await shot("voice-listening");
     await page.keyboard.press("Control+Shift+V");
-    await page.waitForFunction(() => !document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 10_000 }).catch(() => undefined);
+    await on.first().waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
     check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
   }
