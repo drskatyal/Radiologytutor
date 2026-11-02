@@ -863,7 +863,10 @@ export default function App() {
         const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
         // Soon after the start screen paints, not 1.5 s later: a reader who
         // opens a study within two seconds still found the engine cold.
-        window.setTimeout(() => {
+        window.setTimeout(async () => {
+          // Native renderer (Phase 2): the JS engine is not this window's
+          // renderer, so the start screen stays at the WebView2 UI floor.
+          if (isTauri && (await invoke<{ enabled: boolean }>("native_status").catch(() => null))?.enabled) return;
           preloadEngineChunks();
           if (idle) idle(() => prewarmEngine(), { timeout: 1000 });
           else prewarmEngine();
