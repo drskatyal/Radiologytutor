@@ -291,7 +291,9 @@ export default function App() {
   /** Quick reformats by cell: that cell shows one native plane of its series. */
   const [reformats, setReformats] = useState<Record<number, { uid: string; plane: "axial" | "coronal" | "sagittal" }>>({});
   /** Slab shortcut (T, Ctrl+[ ]) for the active reformat; `seq` re-fires the same command. */
-  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; mm?: number; seq: number } | undefined>();
+  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; mm?: number; seq: number; cell?: number } | undefined>();
+  /** Each reformat's slab as shown, for the right-click menu's checks. */
+  const [cellSlabs, setCellSlabs] = useState<Record<number, { mode: "off" | "mip" | "minip" | "avg"; mm: number }>>({});
   const slabCycle = useRef<"off" | "mip" | "minip" | "avg">("off");
   /** Slab a voice command asked for before a reformat was open. */
   const [voiceSlab, setVoiceSlab] = useState<{ mode: "off" | "mip" | "minip" | "avg"; mm: number } | undefined>();
@@ -1633,17 +1635,17 @@ export default function App() {
           if (view !== "grid") setView("grid");
           return setReformat(activeReformat?.plane === action.plane ? null : action.plane);
         case "slabCycle": {
-          if (!activeReformat) {
+          if (!activeReformat && view !== "mpr") {
             toast({ title: "Slab works on a reformat or MPR", description: "Press Alt+C, Alt+S or Alt+A for a reformat, then T or Ctrl+wheel.", variant: "info" });
             return;
           }
           const order = ["off", "mip", "minip", "avg"] as const;
           slabCycle.current = order[(order.indexOf(slabCycle.current) + 1) % order.length];
-          return setSlabCommand((c) => ({ mode: slabCycle.current, seq: (c?.seq ?? 0) + 1 }));
+          return setSlabCommand((c) => ({ mode: slabCycle.current, seq: (c?.seq ?? 0) + 1, cell: activeCell }));
         }
         case "slabThickness":
-          if (!activeReformat) return;
-          return setSlabCommand((c) => ({ deltaMm: action.deltaMm, seq: (c?.seq ?? 0) + 1 }));
+          if (!activeReformat && view !== "mpr") return;
+          return setSlabCommand((c) => ({ deltaMm: action.deltaMm, seq: (c?.seq ?? 0) + 1, cell: activeCell }));
         case "sliceEdge":
           return handle?.goTo(action.where);
         case "series": {
@@ -1855,7 +1857,7 @@ export default function App() {
             return setReformat("axial", cell);
           }
           slabCycle.current = mode;
-          return setSlabCommand((c) => ({ mode, seq: (c?.seq ?? 0) + 1 }));
+          return setSlabCommand((c) => ({ mode, seq: (c?.seq ?? 0) + 1, cell }));
         }
         case "slab-mm": {
           const mm = Number(arg);
@@ -1863,7 +1865,7 @@ export default function App() {
             setVoiceSlab({ mode: "mip", mm });
             return setReformat("axial", cell);
           }
-          return setSlabCommand((c) => ({ mm, seq: (c?.seq ?? 0) + 1 }));
+          return setSlabCommand((c) => ({ mm, seq: (c?.seq ?? 0) + 1, cell }));
         }
         case "monitor":
           return uid ? void sendSeriesToMonitor(uid, arg) : undefined;
@@ -1918,7 +1920,7 @@ export default function App() {
         overlay,
         annotations: annotationsVisible,
         cine: multi ? { playing: !!cine?.playing, fps: cine?.fps ?? 15 } : null,
-        slab: isTauri && volume ? { mode: reformatAt(cell) ? slabCycle.current : "off", mm: 10 } : null,
+        slab: isTauri && volume ? (reformatAt(cell) ? (cellSlabs[cell] ?? { mode: slabCycle.current, mm: 10 }) : { mode: "off", mm: 10 }) : null,
         layout,
         seriesPanel: distractionFree ? null : { shown: !seriesPanel.collapsed },
         can: {
@@ -2034,7 +2036,7 @@ export default function App() {
           return runAction({ type: "reformat", plane: "axial" });
         }
         slabCycle.current = a.mode;
-        return setSlabCommand((c) => ({ mode: a.mode, seq: (c?.seq ?? 0) + 1 }));
+        return setSlabCommand((c) => ({ mode: a.mode, seq: (c?.seq ?? 0) + 1, cell: activeCell }));
       case "slabThickness":
         return runAction({ type: "slabThickness", deltaMm: a.deltaMm });
       case "layout":
@@ -2298,6 +2300,7 @@ export default function App() {
               <NativeMprView
                 series={volumeSeries}
                 initialSlab={benchSlab}
+                slabCommand={slabCommand}
                 onExit={() => setView("grid")}
                 onUnsupported={() => setNativeMprUnsupported(volumeSeries.uid)}
                 onVolumeReady={(t) => {
@@ -2378,8 +2381,11 @@ export default function App() {
                         setActiveCell(i);
                       }}
                       onClose={() => setReformat(null, i)}
-                      slabCommand={i === activeCell ? slabCommand : undefined}
+                      slabCommand={slabCommand}
                       initialSlab={benchSlab ?? voiceSlab}
+                      onSlabChange={(slab) => setCellSlabs((m) => (m[i]?.mode === slab.mode && m[i]?.mm === slab.mm ? m : { ...m, [i]: slab }))}
+                      imageMenu={imageMenuFor(i)}
+                      onMenuCommand={(command) => runMenuCommand(command, i)}
                       onPainted={(t) => {
                         bench.current.marks.reformat = { plane: reformat.plane, ms: Math.round(t.ms), maxLum: t.maxLum, slab: `${t.slab.mode}:${t.slab.mm}` };
                         const pending = bench.current.pendingVolume;

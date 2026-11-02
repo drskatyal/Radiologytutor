@@ -863,15 +863,8 @@ impl Native {
                     continue;
                 }
                 // Clip to the cell and to the surface.
-                let x0 = (c.rect.x * s).max(0.0).floor() as u32;
-                let y0 = (c.rect.y * s).max(0.0).floor() as u32;
-                let x1 = ((c.rect.x + c.rect.w) * s).ceil().max(0.0) as u32;
-                let y1 = ((c.rect.y + c.rect.h) * s).ceil().max(0.0) as u32;
-                let (x1, y1) = (x1.min(sw), y1.min(sh));
-                if x1 <= x0 || y1 <= y0 {
-                    continue;
-                }
-                pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                let Some((x0, y0, cw, ch)) = device_clip(c.rect.x, c.rect.y, c.rect.w, c.rect.h, s, sw, sh) else { continue };
+                pass.set_scissor_rect(x0, y0, cw, ch);
                 pass.set_pipeline(if cg.rgba { &gpu.pipeline_rgba } else { &gpu.pipeline });
                 pass.set_bind_group(0, &cg.bind_group, &[]);
                 pass.draw(0..6, 0..1);
@@ -1141,8 +1134,37 @@ async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backen
     ))
 }
 
+/// A cell's CSS-px rect → the device-px scissor (x, y, w, h), clipped to the
+/// surface. Both edges are ROUNDED: floor / ceil (0.8.1) grew every cell by
+/// up to a pixel on each side at fractional DPI (125 %, 150 %), so a coronal or
+/// sagittal plane spilled over its pane edge onto the axial pane's border.
+/// Rounding the same edge the same way lets neighbours tile exactly.
+pub fn device_clip(x: f32, y: f32, w: f32, h: f32, scale: f32, sw: u32, sh: u32) -> Option<(u32, u32, u32, u32)> {
+    let edge = |v: f32, max: u32| ((v * scale).round().max(0.0) as u32).min(max);
+    let (x0, y0) = (edge(x, sw), edge(y, sh));
+    let (x1, y1) = (edge(x + w, sw), edge(y + h, sh));
+    (x1 > x0 && y1 > y0).then(|| (x0, y0, x1 - x0, y1 - y0))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scissor_tiles_neighbours_without_overlap_at_fractional_dpi() {
+        for scale in [1.0f32, 1.25, 1.5, 1.75] {
+            // Three panes side by side at fractional CSS positions.
+            let xs = [0.0f32, 333.4, 666.8, 1000.2];
+            let mut prev_end = 0u32;
+            for i in 0..3 {
+                let (x0, _, w, _) = super::device_clip(xs[i], 10.3, xs[i + 1] - xs[i], 200.6, scale, 4000, 4000).unwrap();
+                assert_eq!(x0, prev_end, "pane {i} starts where pane {} ends (scale {scale})", i.wrapping_sub(1));
+                prev_end = x0 + w;
+            }
+        }
+        // Clipped to the surface; an off-surface cell has no scissor.
+        assert_eq!(super::device_clip(-10.0, -10.0, 50.0, 50.0, 1.0, 30, 30), Some((0, 0, 30, 30)));
+        assert_eq!(super::device_clip(40.0, 0.0, 10.0, 10.0, 1.0, 30, 30), None);
+    }
+
     #[test]
     fn test_image_is_a_ramp_with_rings() {
         let px = super::test_image(64);
