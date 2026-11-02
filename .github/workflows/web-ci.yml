@@ -73,18 +73,18 @@ jobs:
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
         # One worker: the perf gates measure frame times and must not share
         # the runner's cores with another test (nor the voice recognizer's WASM).
-        run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:"
+        run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"
       - name: Perf table (job summary)
         if: always()
         run: |
           node scripts/perf/viewer-perf-table.mjs "$RUNNER_TEMP/bundle.json" test-results/perf/free-viewer.json | tee -a "$GITHUB_STEP_SUMMARY"
           cp "$RUNNER_TEMP/bundle.json" test-results/perf/ 2>/dev/null || true
-      - name: Voice commands with a spoken-command microphone (after the timed suite, alone)
+      - name: Voice commands and pop-out windows (after the timed suite, alone)
         env:
           CI: "1"
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
           TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
-        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts --workers=1
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts popout.spec.ts --workers=1
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4

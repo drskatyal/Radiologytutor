@@ -6,6 +6,8 @@
 // reader is looking at.
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MenuItem } from "@/components/ui/Menu";
+import { RemoteReferenceLines, type RemotePlane } from "@/components/viewer/RemoteReferenceLines";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/Spinner";
 import { clampCineFps, createScrollDirectionState, directionalPrefetchIndexes, trackScrollDirection } from "@flowrad/viewer-core";
@@ -53,6 +55,10 @@ export interface StackViewportProps {
   eraser?: boolean;
   onAnnotationsDeleted?: (count: number, scope: "one" | "image" | "series") => void;
   onCopied?: (text: string) => void;
+  /** Right-click menu items from the app ("Open in new window", "Send to Monitor 2"). */
+  menuExtra?: readonly { label: string; hint?: string; onSelect: () => void }[];
+  /** Image planes shown in other windows: drawn here as reference lines. */
+  remotePlanes?: readonly RemotePlane[];
 }
 
 interface Readout extends ViewportReadout {
@@ -88,6 +94,8 @@ function StackViewportImpl({
   eraser = false,
   onAnnotationsDeleted,
   onCopied,
+  menuExtra,
+  remotePlanes,
 }: StackViewportProps) {
   const elementRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -568,12 +576,22 @@ function StackViewportImpl({
       <ViewportFrame active={active} hover={dragOver || !!dropHover} />
       {editCtx && series && (
         <Suspense fallback={null}>
+          {remotePlanes?.length ? <RemoteReferenceLines ctx={editCtx} planes={remotePlanes} /> : null}
           <AnnotationEditLayer
             ctx={editCtx}
             seriesImageIds={series.imageIds}
             eraser={eraser}
             onDeleted={onAnnotationsDeleted}
             onCopied={onCopied}
+            extraItems={
+              menuExtra?.length ? (
+                <>
+                  {menuExtra.map((m) => (
+                    <MenuItem key={m.label} label={m.label} hint={m.hint} onSelect={m.onSelect} />
+                  ))}
+                </>
+              ) : undefined
+            }
           />
         </Suspense>
       )}

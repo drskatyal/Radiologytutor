@@ -76,7 +76,21 @@ const browser = await chromium.launch({
     ...(voiceWav ? [`--use-file-for-fake-audio-capture=${path.resolve(voiceWav)}`] : []),
   ],
 });
-const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write", "microphone"] });
+const context = await browser.newContext({
+  viewport: { width: 1440, height: 900 },
+  permissions: ["clipboard-read", "clipboard-write", "microphone"],
+  acceptDownloads: true,
+});
+// Multi-window group: a pretend desk of two monitors (1 left, 2 right, larger),
+// so the monitor picker can be driven without a second screen.
+if (only?.includes("multiwindow")) {
+  await context.addInitScript(() => {
+    window.__flowradTestMonitors = [
+      { name: "DISPLAY1", x: 0, y: 0, width: 1920, height: 1080, scale: 1 },
+      { name: "DISPLAY2", x: 1920, y: -180, width: 2560, height: 1440, scale: 1.5 },
+    ];
+  });
+}
 // Voice must load nothing until the mic is switched on.
 const voiceRequests = [];
 context.on("request", (r) => /\/assets\/vosk-|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
@@ -553,6 +567,151 @@ if (want("sync")) {
   await page.keyboard.press("Alt+F5");
   await settle(300);
 }
+
+// ── multi-monitor: picker, pop-out window, linked scroll / W/L / reference lines.
+// Browser mode against the pretend desk above: --only multiwindow.
+if (want("multiwindow") && only?.includes("multiwindow")) {
+  const cards = page.locator('nav[aria-label="Series"] li button');
+  const cardWith = async (n) => {
+    for (let i = 0; i < (await cards.count()); i += 1)
+      if (((await cards.nth(i).innerText()).match(/\d+/g) ?? []).includes(String(n))) return cards.nth(i);
+    return null;
+  };
+  const picker = page.getByTestId("monitor-picker");
+  const tile = (n) => page.locator(`[data-testid="monitor-tile"][data-number="${n}"]`);
+  const holdOn = async (card) => {
+    const b = await card.boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(450);
+  };
+  const center = async (loc) => {
+    const b = await loc.boundingBox();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+
+  const axial = await cardWith(300);
+  const coronal = await cardWith(47);
+  check("multiwindow: the study has the axial (300) and coronal (47) series", !!axial && !!coronal);
+
+  // Hold: the picker shows one numbered tile per monitor, laid out like the desk.
+  await holdOn(axial);
+  const shown = await picker.isVisible().catch(() => false);
+  check("multiwindow: holding a series card shows the monitor picker", shown);
+  const t1 = await tile(1).boundingBox();
+  const t2 = await tile(2).boundingBox();
+  check("multiwindow: one tile per monitor, numbered 1 and 2", !!t1 && !!t2 && (await page.getByTestId("monitor-tile").count()) === 2);
+  check("multiwindow: tiles follow the desk (2 is right of 1 and larger)", !!t1 && !!t2 && t2.x >= t1.x + t1.width - 1 && t2.width > t1.width, JSON.stringify({ t1, t2 }));
+  const colors = await page.getByTestId("monitor-tile").evaluateAll((els) => els.map((e) => getComputedStyle(e).backgroundColor));
+  check("multiwindow: each monitor has its own colour", new Set(colors).size === 2, colors.join(" | "));
+  const p2 = await center(tile(2));
+  await page.mouse.move(p2.x, p2.y, { steps: 4 });
+  check("multiwindow: the tile under the cursor is highlighted", (await tile(2).getAttribute("data-hover")) === "1");
+  await shot("monitor-picker");
+  // Esc cancels: nothing opens.
+  let popups = 0;
+  const countPopup = () => (popups += 1);
+  context.on("page", countPopup);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await settle(500);
+  check("multiwindow: Esc closes the picker and opens nothing", !(await picker.isVisible().catch(() => false)) && popups === 0);
+  context.off("page", countPopup);
+
+  // Drop on monitor 2: the series opens in a new window (browser: a pop-out).
+  await holdOn(axial);
+  const popupWait = context.waitForEvent("page", { timeout: 20_000 });
+  const q2 = await center(tile(2));
+  await page.mouse.move(q2.x, q2.y, { steps: 4 });
+  await page.mouse.up();
+  const popup = await popupWait.catch(() => null);
+  check("multiwindow: dropping on tile 2 opens the series in a new window", !!popup);
+  if (popup) {
+    const popErrors = [];
+    popup.on("pageerror", (e) => popErrors.push(String(e)));
+    await popup.setViewportSize({ width: 1200, height: 800 });
+    const painted = await popup
+      .waitForFunction(() => /Im \d+ \/ 300/.test(document.body.innerText), null, { timeout: 60_000 })
+      .then(() => true, () => false);
+    check("multiwindow: the new window shows the series (Im n / 300)", painted);
+    const badge = async (pg) => (await pg.getByTestId("monitor-badge").first().getAttribute("data-number").catch(() => null));
+    check("multiwindow: each window wears its monitor's number (main 1, new window 2)", (await badge(page)) === "1" && (await badge(popup)) === "2", `${await badge(page)} / ${await badge(popup)}`);
+
+    const popImage = async () => {
+      const m = (await popup.locator('[data-drop-cell="0"]').innerText()).match(/Im (\d+) \/ (\d+)/);
+      return m ? Number(m[1]) : null;
+    };
+    // Linked scroll across windows (F5 links every window).
+    await page.bringToFront();
+    await focusImage();
+    await page.keyboard.press("Digit1"); // layout 1×1 keeps the axial in the main window
+    await settle(300);
+    const mainCell = cell(0);
+    await mainCell.click({ position: { x: 40, y: 40 } });
+    if (!/300/.test((await imageNo(0))?.of ?? "")) {
+      const b = await axial.boundingBox();
+      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+      await settle(600);
+    }
+    await page.keyboard.press("F5");
+    await settle(300);
+    const before = await popImage();
+    for (let k = 0; k < 20; k += 1) await page.keyboard.press("ArrowDown");
+    const moved = await popup
+      .waitForFunction((b) => {
+        const m = document.querySelector('[data-drop-cell="0"]')?.textContent?.match(/Im (\d+) \/ 300/);
+        return m && Number(m[1]) !== b;
+      }, before, { timeout: 8000 })
+      .then(() => true, () => false);
+    const mainAt = (await imageNo(0))?.at;
+    const popAt = await popImage();
+    check("multiwindow: scrolling the main window scrolls the other window (linked)", moved && Math.abs((popAt ?? 0) - (mainAt ?? -99)) <= 1, `main ${mainAt} · other ${before} → ${popAt}`);
+
+    // Linked W/L.
+    await page.keyboard.press("Shift+F5");
+    await settle(200);
+    await page.keyboard.press("Digit3"); // a window preset
+    await settle(300);
+    const wl = async (pg) => ((await pg.locator('[data-drop-cell="0"]').innerText()).match(/W (\d+) · L (-?\d+)/) ?? []).slice(1, 3).join("/");
+    const wlMain = await wl(page);
+    const wlLinked = await popup
+      .waitForFunction((w) => (document.querySelector('[data-drop-cell="0"]')?.textContent ?? "").replace(/\s+/g, " ").includes(`W ${w.split("/")[0]}`), wlMain, { timeout: 5000 })
+      .then(() => true, () => false);
+    check("multiwindow: window / level is linked across windows", wlLinked && !!wlMain, `${wlMain} → ${await wl(popup)}`);
+
+    // Drop the coronal on monitor 2 again: that window is reused (series in its active pane).
+    const pagesBefore = context.pages().length;
+    await holdOn(coronal);
+    const r2 = await center(tile(2));
+    await page.mouse.move(r2.x, r2.y, { steps: 4 });
+    await page.mouse.up();
+    const reused = await popup
+      .waitForFunction(() => /Im \d+ \/ 47/.test(document.body.innerText), null, { timeout: 20_000 })
+      .then(() => true, () => false);
+    check("multiwindow: a second drop on the same monitor reuses its window", reused && context.pages().length === pagesBefore, `${context.pages().length} pages`);
+
+    // Reference lines across windows: the axial in the main window cuts the coronal there.
+    await page.bringToFront();
+    await focusImage();
+    await page.keyboard.press("Control+F12");
+    await settle(300);
+    for (let k = 0; k < 5; k += 1) await page.keyboard.press("ArrowUp");
+    const lines = popup.getByTestId("remote-reference-lines");
+    const hasLine = await lines.waitFor({ timeout: 8000 }).then(() => true, () => false);
+    const y1 = await popup.locator('[data-testid="remote-reference-lines"] line').first().getAttribute("y1").catch(() => null);
+    for (let k = 0; k < 30; k += 1) await page.keyboard.press("ArrowDown");
+    await popup.waitForTimeout(800);
+    const y2 = await popup.locator('[data-testid="remote-reference-lines"] line').first().getAttribute("y1").catch(() => null);
+    check("multiwindow: the main window's slice shows as a reference line in the other window, and moves", hasLine && y1 != null && y2 != null && y1 !== y2, `${y1} → ${y2}`);
+    await popup.screenshot({ path: shots ? path.join(shots, "multiwindow-second.png") : undefined }).catch(() => undefined);
+
+    // Closing the other window is clean (its lines go, nothing breaks here).
+    await popup.close();
+    await settle(500);
+    check("multiwindow: closing the other window raises no errors in either", popErrors.length === 0, popErrors.slice(0, 2).join(" | "));
+  }
+}
+
 
 // ── voice commands ──────────────────────────────────────────────────────
 if (want("voice")) {

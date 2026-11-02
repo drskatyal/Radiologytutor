@@ -48,6 +48,7 @@ import { withKeyImageSeries, type DicomDocument } from "./documents";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
 import { getHandle, onHandlesChanged } from "./viewer/handles";
 import {
+  getStackOffset,
   clearAnnotations,
   engineTimings,
   enginePeek,
@@ -73,10 +74,34 @@ import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
-import { onSeriesDrop, useSeriesDrag } from "./viewer/seriesDrag";
+import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
+import {
+  announceClosing,
+  currentMonitorName,
+  isSecondaryWindow,
+  listMonitors,
+  monitorsAvailable,
+  onHandoffChanged,
+  onWindowMessage,
+  openViewerWindow,
+  postToWindows,
+  takeHandoff,
+  windowId,
+  type WindowHandoff,
+} from "./multiWindow";
+import { useCrossWindow } from "./viewer/useCrossWindow";
+import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
 import { setToolCursor } from "./viewer/toolCursor";
 import type { VoiceState } from "@/components/viewer/voice/voiceSession";
-import type { VoiceAction } from "@flowrad/viewer-core";
+import {
+  monitorColor,
+  monitorLabel,
+  nextMonitor,
+  placeArrangement,
+  type MonitorInfo,
+  type VoiceAction,
+  type WindowArrangement,
+} from "@flowrad/viewer-core";
 
 // Everything the start screen does not need loads on demand: the start screen
 // must paint from the smallest possible bundle (cold-start budget).
@@ -138,6 +163,10 @@ export default function App() {
   const [dialog, setDialog] = useState<null | "help" | "window" | "settings" | "disc" | "export" | "pacs" | "send">(null);
   /** Structured reports and key-image notes from the open study; the report being read. */
   const [documents, setDocuments] = useState<DicomDocument[]>([]);
+  /** The bench's way to build a one-series handoff (set once handoffFor exists). */
+  const benchHandoffRef = useRef<(uid: string) => WindowHandoff>(() => ({ sourceLabel: "", rows: 1, cols: 1, cells: [], activeCell: 0, links: { scroll: true, voi: false, zoom: false, referenceLines: false } }));
+  /** What was opened, for handing to another window: scanned headers (desktop) or the files (browser). */
+  const rawOpen = useRef<{ headers?: DesktopHeader[]; documents?: unknown[]; files?: File[] }>({});
   const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
   const updater = useUpdater(settings.checkUpdates);
@@ -185,7 +214,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown };
+    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -478,6 +507,7 @@ export default function App() {
         // Key-image notes become series of the images they select.
         markPhase("study: group series");
         const built = withKeyImageSeries(buildStudies(headers), docs);
+        rawOpen.current = { headers, documents: docs };
         setDocuments(docs);
         setStudies(built);
         setGrowing(false);
@@ -654,6 +684,20 @@ export default function App() {
                   }, { rounds });
                   void report();
                 })();
+              } else if (bench.current.firstPaint != null && benchView === "multiwindow") {
+                // A second viewer window: opens, paints, obeys, closes, frees its memory.
+                void (async () => {
+                  const { runWindowCycle } = await import("./viewer/windowCycle");
+                  const all = built.flatMap((st) => st.series).filter((x) => x.imageCount > 1);
+                  if (all.length) {
+                    setSyncScroll(true);
+                    bench.current.marks.multiWindow = await runWindowCycle(
+                      { open: (uid) => openViewerWindow(benchHandoffRef.current(uid), null) },
+                      [all[0].uid, (all[1] ?? all[0]).uid]
+                    );
+                  }
+                  void report();
+                })();
               } else if (bench.current.firstPaint != null && benchView === "interact") {
                 // Frame-time profile of scroll / zoom / W-L on the main stack.
                 void (async () => {
@@ -702,6 +746,7 @@ export default function App() {
         );
         if (seq !== openSeq.current) return;
         const built = buildStudies(headers);
+        rawOpen.current = { files };
         setStudies(built);
         setScan(null);
         if (!built.length) {
@@ -764,6 +809,9 @@ export default function App() {
     if (!isTauri) return;
     let off: (() => void)[] = [];
     (async () => {
+      // A secondary window (another monitor) shows what its opener hands it:
+      // no launch paths, no start-screen warm-up, no cold-start report.
+      if (isSecondaryWindow) return;
       const initial = await takeLaunchPaths();
       // A study on the command line opens at once. The engine is NOT
       // pre-imported here: its ~3 MB parse on the main thread would delay the
@@ -1044,6 +1092,300 @@ export default function App() {
   };
   useEffect(() => () => stopVoice(), [stopVoice]);
 
+  // ───────────── several windows / monitors (multiWindow.ts) ─────────────
+  // Main + secondary viewer windows act as one reading station: a series can
+  // go to another monitor (monitor picker on a series card, right-click menu,
+  // Mod+Shift+N), the windows link scroll / W/L / zoom / reference lines, and
+  // the main window remembers which layout sat on which monitor.
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [myMonitor, setMyMonitor] = useState<string | undefined>();
+  /** Every other window's monitor and layout (from their window-state messages). */
+  const otherWindows = useRef<Record<string, { monitor?: string; rows: number; cols: number; cells: (string | null)[]; studyKey?: string }>>({});
+  const refreshMonitors = useCallback(async () => {
+    const [list, mine] = await Promise.all([listMonitors(), currentMonitorName()]);
+    setMonitors(list);
+    setMyMonitor(mine);
+    return list;
+  }, []);
+  useEffect(() => {
+    if (!monitorsAvailable()) return;
+    void refreshMonitors();
+    const onFocus = () => void refreshMonitors();
+    window.addEventListener("focus", onFocus);
+    let timer = 0;
+    let off: (() => void) | undefined;
+    if (isTauri) {
+      // Dragged to another monitor, or its scaling changed: re-read (debounced).
+      const later = () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => void refreshMonitors(), 300);
+      };
+      void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        const w = getCurrentWindow();
+        void Promise.all([w.onMoved(later), w.onScaleChanged(later)]).then((uns) => (off = () => uns.forEach((u) => u())));
+      });
+    }
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.clearTimeout(timer);
+      off?.();
+    };
+  }, [refreshMonitors]);
+  const myMonitorIndex = monitors.findIndex((m) => m.name === myMonitor);
+
+  /** Main window: remember the other windows' monitors and layouts for next launch. */
+  const persistArrangements = useCallback(() => {
+    if (isSecondaryWindow || !isTauri) return;
+    const list: WindowArrangement[] = Object.values(otherWindows.current).flatMap((w) => {
+      const m = monitors.find((x) => x.name === w.monitor);
+      return m ? [{ monitor: m, rows: w.rows, cols: w.cols, cells: w.cells, studyKey: w.studyKey }] : [];
+    });
+    updateSettings({ windowArrangements: list });
+  }, [monitors, updateSettings]);
+
+  /** What another window needs to show `sendCells` of this study. */
+  const handoffFor = useCallback(
+    (rows: number, cols: number, sendCells: (string | null)[]): WindowHandoff => {
+      const offsets: Record<string, number> = {};
+      for (const uid of sendCells) {
+        const first = uid ? seriesByUid.get(uid)?.series.imageIds[0] : undefined;
+        const off = first ? getStackOffset(first) : undefined;
+        if (first && off != null) offsets[first] = off;
+      }
+      return {
+        sourceLabel: source?.label ?? "Study",
+        studyKey: source?.key,
+        rows,
+        cols,
+        cells: sendCells,
+        activeCell: 0,
+        links: { scroll: syncScroll, voi: syncVoi, zoom: syncZoom, referenceLines },
+        offsets,
+        ...rawOpen.current,
+      };
+    },
+    [seriesByUid, source, syncScroll, syncVoi, syncZoom, referenceLines]
+  );
+
+  benchHandoffRef.current = (uid: string) => ({ ...handoffFor(1, 1, [uid]), links: { scroll: true, voi: false, zoom: false, referenceLines: false } });
+
+  const openedToast = useCallback(
+    (monitorName: string | null) => {
+      const n = monitors.findIndex((m) => m.name === monitorName) + 1;
+      toast({
+        title: n > 0 ? `Opened on monitor ${n}` : "Opened in a new window",
+        description: syncScroll ? "Scrolling is linked across windows." : "Linked scroll across windows: F5.",
+        variant: "success",
+        duration: 2500,
+      });
+    },
+    [monitors, syncScroll, toast]
+  );
+
+  /** Show `uid` on monitor `monitorName` (null: a new window here / a browser pop-out). */
+  const sendSeriesToMonitor = useCallback(
+    async (uid: string, monitorName: string | null) => {
+      if (monitorName && monitorName === myMonitor) {
+        showSeries(uid, activeCell);
+        return;
+      }
+      const existing = monitorName ? Object.entries(otherWindows.current).find(([, w]) => w.monitor === monitorName) : undefined;
+      if (existing && existing[1].studyKey === source?.key) {
+        // Reuse that monitor's window: the series goes to its active pane.
+        postToWindows({ kind: "show-series", from: windowId, to: existing[0], seriesUid: uid });
+        openedToast(monitorName);
+        return;
+      }
+      const monitor = monitors.find((m) => m.name === monitorName) ?? null;
+      const id = await openViewerWindow(handoffFor(1, 1, [uid]), monitor, existing?.[0]);
+      if (!id) {
+        toast({ title: "Pop-up blocked", description: "Allow pop-ups for this page to open a series in a new window.", variant: "warning" });
+        return;
+      }
+      otherWindows.current[id] = { monitor: monitor?.name, rows: 1, cols: 1, cells: [uid], studyKey: source?.key };
+      persistArrangements();
+      openedToast(monitor?.name ?? null);
+    },
+    [myMonitor, showSeries, activeCell, source, monitors, handoffFor, persistArrangements, openedToast, toast]
+  );
+
+  /** The whole layout to monitor `monitorName` (null: a new window). */
+  const sendLayoutToMonitor = useCallback(
+    async (monitorName: string | null) => {
+      const existing = monitorName ? Object.entries(otherWindows.current).find(([, w]) => w.monitor === monitorName) : undefined;
+      const monitor = monitors.find((m) => m.name === monitorName) ?? null;
+      const id = await openViewerWindow(handoffFor(layout.rows, layout.cols, cells), monitor, existing?.[0]);
+      if (!id) return;
+      otherWindows.current[id] = { monitor: monitor?.name, rows: layout.rows, cols: layout.cols, cells, studyKey: source?.key };
+      persistArrangements();
+      openedToast(monitor?.name ?? null);
+    },
+    [monitors, handoffFor, layout, cells, source, persistArrangements, openedToast]
+  );
+
+  /** Mod+Shift+N / Mod+Alt+N: to the next monitor (or a new window with one monitor). */
+  const sendToMonitor = useCallback(
+    async (scope: "viewport" | "layout") => {
+      const list = await refreshMonitors();
+      const target = nextMonitor(list, myMonitor)?.name ?? null;
+      if (scope === "layout") return sendLayoutToMonitor(target);
+      if (activeSeriesUid) return sendSeriesToMonitor(activeSeriesUid, target);
+    },
+    [refreshMonitors, myMonitor, sendLayoutToMonitor, sendSeriesToMonitor, activeSeriesUid]
+  );
+
+  /** Right-click menu items for a viewport showing `uid`. */
+  const windowMenuFor = useCallback(
+    (uid: string) => {
+      const others = monitors.filter((m) => m.name !== myMonitor);
+      return [
+        { label: isTauri ? "Open in new window" : "Pop out to new window", onSelect: () => void sendSeriesToMonitor(uid, null) },
+        ...others.map((m) => ({
+          label: `Send to monitor ${monitors.indexOf(m) + 1}`,
+          hint: monitorLabel(monitors, m).split(" · ")[1],
+          onSelect: () => void sendSeriesToMonitor(uid, m.name),
+        })),
+        ...(others.length ? [{ label: `Send layout to monitor ${monitors.indexOf(others[0]) + 1}`, onSelect: () => void sendLayoutToMonitor(others[0].name) }] : []),
+      ];
+    },
+    [monitors, myMonitor, sendSeriesToMonitor, sendLayoutToMonitor]
+  );
+
+  // The monitor picker on series cards.
+  useEffect(() => {
+    setMonitorSource(monitorsAvailable() ? () => refreshMonitors() : null);
+    onSeriesToMonitor((uid, name) => void sendSeriesToMonitor(uid, name));
+    return () => {
+      setMonitorSource(null);
+      onSeriesToMonitor(null);
+    };
+  }, [refreshMonitors, sendSeriesToMonitor]);
+
+  // Window states, closes and "show this series" from the other windows.
+  const windowMsgRef = useRef({ persistArrangements, showSeries, seriesByUid, activeCell });
+  windowMsgRef.current = { persistArrangements, showSeries, seriesByUid, activeCell };
+  useEffect(
+    () =>
+      onWindowMessage((m) => {
+        const live = windowMsgRef.current;
+        if (m.kind === "window-state") {
+          otherWindows.current[m.from] = { monitor: m.monitor, rows: m.rows, cols: m.cols, cells: m.cells, studyKey: m.studyKey };
+          live.persistArrangements();
+        } else if (m.kind === "closed") {
+          delete otherWindows.current[m.from];
+          live.persistArrangements();
+        } else if (m.kind === "show-series" && m.to === windowId && live.seriesByUid.has(m.seriesUid)) {
+          live.showSeries(m.seriesUid, live.activeCell);
+        }
+      }),
+    []
+  );
+
+  // Secondary window: tell the others where it is and what it shows.
+  useEffect(() => {
+    if (!isSecondaryWindow || !studies.length) return;
+    const t = window.setTimeout(
+      () => postToWindows({ kind: "window-state", from: windowId, monitor: myMonitor, rows: layout.rows, cols: layout.cols, cells, studyKey: source?.key }),
+      150
+    );
+    return () => window.clearTimeout(t);
+  }, [studies.length, myMonitor, layout, cells, source?.key]);
+
+  useEffect(() => {
+    window.addEventListener("pagehide", announceClosing);
+    return () => window.removeEventListener("pagehide", announceClosing);
+  }, []);
+
+  // Links (scroll / W/L / zoom / reference lines) are shared by every window.
+  const linksFromRemote = useRef(false);
+  const linksInitial = useRef(true);
+  useEffect(() => {
+    if (linksInitial.current) {
+      linksInitial.current = false;
+      return;
+    }
+    if (linksFromRemote.current) {
+      linksFromRemote.current = false;
+      return;
+    }
+    postToWindows({ kind: "links", from: windowId, scroll: syncScroll, voi: syncVoi, zoom: syncZoom, referenceLines });
+  }, [syncScroll, syncVoi, syncZoom, referenceLines]);
+  const activeViewportHandle = studies.length && handlesVersion >= 0 ? getHandle(cellKey(activeCell)) : undefined;
+  const remotePlanes = useCrossWindow({
+    enabled: studies.length > 0,
+    viewportIds: visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i)),
+    active: activeViewportHandle ? { viewportId: activeViewportHandle.viewportId, element: activeViewportHandle.element } : null,
+    links: { scroll: syncScroll, voi: syncVoi, zoom: syncZoom, referenceLines },
+    onLinks: (l) => {
+      linksFromRemote.current = true;
+      setSyncScroll(l.scroll);
+      setSyncVoi(l.voi);
+      setSyncZoom(l.zoom);
+      setReferenceLines(l.referenceLines);
+    },
+    monitorIndex: myMonitorIndex >= 0 ? myMonitorIndex : undefined,
+  });
+
+  // Main window, first study of the session: reopen the remembered windows on their monitors.
+  const arrangementsRestored = useRef(false);
+  useEffect(() => {
+    if (isSecondaryWindow || arrangementsRestored.current || !studies.length || !source || growing) return;
+    arrangementsRestored.current = true;
+    const saved = settings.windowArrangements ?? [];
+    if (!saved.length || !isTauri) return;
+    void (async () => {
+      const list = await refreshMonitors();
+      const mainName = await currentMonitorName();
+      const shown = new Set(cells.filter(Boolean));
+      const pool = studies.flatMap((st) => st.series).filter((s) => s.imageCount > 0 && !shown.has(s.uid)).map((s) => s.uid);
+      for (const [i, arr] of saved.entries()) {
+        const monitor = placeArrangement(arr, i, list, mainName);
+        if (!monitor) continue;
+        const n = arr.rows * arr.cols;
+        const restoredCells =
+          arr.studyKey === source.key
+            ? arr.cells.map((uid) => (uid && seriesByUid.has(uid) ? uid : null))
+            : Array.from({ length: n }, () => pool.shift() ?? null);
+        if (!restoredCells.some(Boolean)) continue;
+        const id = await openViewerWindow(handoffFor(arr.rows, arr.cols, restoredCells), monitor);
+        if (id) otherWindows.current[id] = { monitor: monitor.name, rows: arr.rows, cols: arr.cols, cells: restoredCells, studyKey: source.key };
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the first study has settled
+  }, [studies.length, source, growing]);
+
+  // Secondary window: show what the opener handed over (and again when it is re-sent).
+  useEffect(() => {
+    if (!isSecondaryWindow) return;
+    const apply = async () => {
+      const h = await takeHandoff();
+      if (!h) return;
+      autoHung.current = false;
+      if (h.headers) {
+        rawOpen.current = { headers: h.headers, documents: h.documents };
+        const docs = (h.documents ?? []) as DicomDocument[];
+        setDocuments(docs);
+        setStudies(withKeyImageSeries(buildStudies(h.headers), docs));
+        setSource({ key: h.studyKey ?? `window:${windowId}`, paths: [], kind: "files", label: h.sourceLabel });
+      } else if (h.files) {
+        await openBrowserFiles(h.files);
+        autoHung.current = false;
+      }
+      for (const [first, mm] of Object.entries(h.offsets ?? {})) setStackOffset(first, mm);
+      setLayout({ rows: h.rows, cols: h.cols });
+      setCells(Array.from({ length: h.rows * h.cols }, (_, i) => h.cells[i] ?? null));
+      setActiveCell(Math.min(h.activeCell, h.rows * h.cols - 1));
+      linksFromRemote.current = true;
+      setSyncScroll(h.links.scroll);
+      setSyncVoi(h.links.voi);
+      setSyncZoom(h.links.zoom);
+      setReferenceLines(h.links.referenceLines);
+    };
+    void apply();
+    return onHandoffChanged(() => void apply());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per window
+  }, []);
+
   const runAction = useCallback(
     (action: ShortcutAction) => {
       const handle = activeHandle();
@@ -1165,6 +1507,8 @@ export default function App() {
           return setSyncZoom((v) => !v);
         case "linkAtCurrent":
           return linkAtCurrent();
+        case "sendToMonitor":
+          return void sendToMonitor(action.scope);
         case "toggleReferenceLines":
           return setReferenceLines((v) => !v);
         case "toggleBrowser":
@@ -1191,7 +1535,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, leftTool, toggleSync, linkAtCurrent, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
+    [studies.length, leftTool, toggleSync, linkAtCurrent, sendToMonitor, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
   );
 
   voiceAction.current = (a: VoiceAction) => {
@@ -1552,6 +1896,8 @@ export default function App() {
                     eraser={leftTool === "Eraser"}
                     onAnnotationsDeleted={onAnnotationsDeleted}
                     onCopied={onCopied}
+                    menuExtra={uid ? windowMenuFor(uid) : undefined}
+                    remotePlanes={remotePlanes}
                   />
                 );
               })}
@@ -1619,6 +1965,7 @@ export default function App() {
 
       {hasStudy && !distractionFree && (
         <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-subtle bg-surface px-3 text-[11px] text-muted tabular-nums">
+          {monitors.length > 1 && myMonitorIndex >= 0 && <MonitorBadge number={myMonitorIndex + 1} color={monitorColor(myMonitorIndex)} />}
           <span className="flex items-center gap-1 text-success">
             <ShieldCheck className="h-3 w-3" aria-hidden /> Offline
           </span>
@@ -1650,7 +1997,8 @@ export default function App() {
 
       <Suspense fallback={null}>
       {hud && <MemoryHud onClose={() => setHud(false)} />}
-      {seriesDrag && (
+      {seriesDrag?.picker && <MonitorPicker picker={seriesDrag.picker} />}
+      {seriesDrag && !(seriesDrag.picker && insidePicker(seriesDrag.picker, seriesDrag.x, seriesDrag.y)) && (
         <div
           aria-hidden
           className="pointer-events-none fixed z-50 max-w-[240px] -translate-y-full truncate rounded-md border border-accent bg-elevated/95 px-2 py-1 text-xs font-medium text-primary shadow-lg"

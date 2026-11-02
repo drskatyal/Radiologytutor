@@ -1,6 +1,8 @@
 // Viewer settings: shape and defaults. Kept out of the dialogs so the start
 // screen can read them without loading any dialog code.
 
+import type { WindowArrangement } from "@flowrad/viewer-core";
+
 export interface ViewerSettings {
   showOverlay: boolean;
   rememberHistory: boolean;
@@ -22,6 +24,8 @@ export interface ViewerSettings {
   nativeMpr: boolean;
   /** Re-mapped keyboard shortcuts: binding id → key spec ("Mod+Shift+K"). */
   shortcuts: Record<string, string>;
+  /** Viewer windows on other monitors at last exit, reopened on the next study. */
+  windowArrangements?: WindowArrangement[];
 }
 
 export const DEFAULT_SETTINGS: ViewerSettings = {
