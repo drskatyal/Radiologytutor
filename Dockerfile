@@ -25,6 +25,13 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build
+# Carry the LIVE build's /_next/static files into this image (kept 7 days
+# after they stop being current), so tabs opened before this deploy can still
+# load their lazy chunks. Best effort; see scripts/carry-static.mjs. Railway
+# passes RAILWAY_PUBLIC_DOMAIN to the build; STATIC_CARRY_FROM overrides it.
+ARG STATIC_CARRY_FROM=""
+ARG RAILWAY_PUBLIC_DOMAIN=""
+RUN node scripts/carry-static.mjs --from "${STATIC_CARRY_FROM:-${RAILWAY_PUBLIC_DOMAIN:+https://$RAILWAY_PUBLIC_DOMAIN}}" || true
 
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
