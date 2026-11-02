@@ -6,6 +6,7 @@
 // one synchronizer across the three planes. Crosshairs stay passive: scroll
 // and pan move the cameras, and the tool redraws the intersection.
 
+import { safeErrorText } from "./safeLog";
 import {
   MIP_SLAB_MM,
   MPR_REFERENCE_LINE,
@@ -434,7 +435,7 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
         render = "3d";
         return true;
       } catch (err) {
-        console.warn("Viewer 3D render unavailable", err);
+        console.warn("Viewer 3D render unavailable", safeErrorText(err));
         disable3d();
         return false;
       }

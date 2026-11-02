@@ -1,6 +1,7 @@
 # Web app checks on every PR that touches the web app or the shared viewer:
-# unit tests, the production build, and the viewer's visual-regression + perf
-# gate (e2e/visual, against a synthetic CT; no backend needed).
+# unit tests, the production build, the free viewer's bundle budget, and the
+# viewer's visual-regression + perf + privacy gates (e2e/visual, against
+# synthetic real-size studies; no backend needed).
 name: web-ci
 
 on:
@@ -12,6 +13,8 @@ on:
       - "packages/**"
       - "e2e/visual/**"
       - "scripts/make-test-ct.py"
+      - "scripts/make-test-mr.py"
+      - "scripts/perf/**"
       - "playwright.visual.config.ts"
       - "package.json"
       - "package-lock.json"
@@ -45,17 +48,32 @@ jobs:
         # Google (seen on runners) fails the build with a parse error. Retry
         # once after a pause: a real compile error fails both attempts.
         run: npm run build || { echo "::warning::build failed, retrying once (next/font download)"; sleep 20; npm run build; }
-      - name: Synthetic CT (deterministic)
+      - name: Free viewer shell bundle budget (/viewer ≤ 300 KB gzipped JS)
+        run: node scripts/perf/viewer-bundle-budget.mjs --route /viewer --budget-kb 300 --json "$RUNNER_TEMP/bundle.json"
+      - name: Synthetic studies (deterministic)
+        # CT 60 for the visual baselines; CT 520 × 512² (263 MB) and a 5-series
+        # JPEG 2000 brain MR for the free viewer's perf gates.
         run: |
-          pip install pydicom numpy
+          pip install pydicom numpy pylibjpeg pylibjpeg-openjpeg
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-520" --slices 520
+          python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
       - name: Playwright Chromium
         run: npx playwright install --with-deps chromium
-      - name: Visual regression + first-image budget (desktop, tablet, phone, landscape)
+      - name: Visual regression + perf + privacy gates (/viewer/local, /viewer)
         env:
           CI: "1"
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
-        run: npx playwright test -c playwright.visual.config.ts
+          TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
+          TEST_MR_DIR: ${{ runner.temp }}/test-mr
+        # One worker: the perf gates measure frame times and must not share
+        # the runner's cores with another test.
+        run: npx playwright test -c playwright.visual.config.ts --workers=1
+      - name: Perf table (job summary)
+        if: always()
+        run: |
+          node scripts/perf/viewer-perf-table.mjs "$RUNNER_TEMP/bundle.json" test-results/perf/free-viewer.json | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/bundle.json" test-results/perf/ 2>/dev/null || true
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4
