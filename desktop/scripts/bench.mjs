@@ -280,9 +280,15 @@ function treeMemory(pid) {
     const kids = new Map();
     for (const r of rows) kids.set(r.ParentProcessId, [...(kids.get(r.ParentProcessId) ?? []), r]);
     const procs = [];
+    // Windows reuses PIDs, so a stale ParentProcessId can point back into
+    // the tree and make a cycle: without `seen` the walk never ended and ran
+    // the bench out of heap (perf-windows, cold 10k-file MRI open).
+    const seen = new Set();
     const stack = rows.filter((r) => r.ProcessId === pid);
     while (stack.length) {
       const r = stack.pop();
+      if (seen.has(r.ProcessId)) continue;
+      seen.add(r.ProcessId);
       const type = /--type=([\w-]+)/.exec(r.CommandLine ?? "")?.[1] ?? (procs.length ? "browser" : "app");
       procs.push({ name: r.Name, type, wsMb: Math.round(r.WorkingSetSize / 1048576), privateMb: Math.round(Number(r.PrivatePageCount) / 1048576) });
       stack.push(...(kids.get(r.ProcessId) ?? []));
