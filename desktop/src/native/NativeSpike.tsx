@@ -26,7 +26,20 @@ interface NativeStatus {
   scale?: number | null;
 }
 
-const FULL: [number, number] = [32768, 65535];
+// The test image's full range (i16 0..32767); a study uses its own window.
+const FULL: [number, number] = [16384, 32767];
+
+interface ShowResult {
+  index: number;
+  count: number;
+  cached: boolean;
+  decodeMs: number;
+  frameMs: number;
+  totalMs: number;
+  rows: number;
+  cols: number;
+  window: [number, number];
+}
 
 const pct = (xs: number[], p: number) => {
   if (!xs.length) return null;
@@ -39,6 +52,9 @@ export default function NativeSpike() {
   const [status, setStatus] = useState<NativeStatus | null>(null);
   const [wl, setWl] = useState<[number, number]>(FULL);
   const [lastRtt, setLastRtt] = useState<number | null>(null);
+  // P2.1: a study from the command line, shown natively.
+  const [shown, setShown] = useState<ShowResult | null>(null);
+  const [studyError, setStudyError] = useState<string | null>(null);
   const rtts = useRef<number[]>([]);
   const pending = useRef<[number, number] | null>(null);
   const inflight = useRef(false);
@@ -95,14 +111,67 @@ export default function NativeSpike() {
       };
       observer = new ResizeObserver(send);
       if (cellRef.current) observer.observe(cellRef.current);
-      send();
+      await new Promise<void>((resolve) => {
+        const r = rect();
+        if (!r) return resolve();
+        void invoke("native_set_cells", { cells: [r] }).then(() => resolve(), () => resolve());
+      });
+
+      // P2.1: a study on the command line opens natively (largest series).
+      type Opened = { listMs: number; firstImageMs: number; firstImageSinceStartMs: number; first: ShowResult };
+      const opened = await invoke<Opened>("native_open_launch_study").catch((e: unknown) => {
+        const msg = String(e);
+        if (!/no study on the command line/.test(msg)) setStudyError(msg);
+        return null;
+      });
+      if (disposed) return;
+      if (opened) {
+        setShown(opened.first);
+        setWl(opened.first.window);
+      }
 
       if (!(await benchEnabled())) return;
+      if (opened) {
+        // Scroll 120 slices one per call (like the 2D frame bench), then report.
+        const steps: ShowResult[] = [];
+        const rtt: number[] = [];
+        for (let i = 0; i < 120; i += 1) {
+          const t = performance.now();
+          steps.push(await invoke<ShowResult>("native_scroll", { delta: 1 }));
+          rtt.push(performance.now() - t);
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        const stats = await invoke<unknown>("native_store_stats");
+        await benchReport({
+          view: "native-spike",
+          native: await invoke<NativeStatus>("native_status"),
+          study: {
+            images: opened.first.count,
+            listMs: opened.listMs,
+            firstImageMs: opened.firstImageMs,
+            firstImageSinceStartMs: opened.firstImageSinceStartMs,
+            firstDecodeMs: opened.first.decodeMs,
+            firstFrameMs: opened.first.frameMs,
+            size: [opened.first.cols, opened.first.rows],
+          },
+          scroll: {
+            steps: steps.length,
+            cachedShare: steps.filter((s) => s.cached).length / Math.max(1, steps.length),
+            p50Ms: pct(rtt, 50),
+            p95Ms: pct(rtt, 95),
+            maxMs: pct(rtt, 100),
+            decodeMaxMs: Math.max(...steps.map((s) => s.decodeMs)),
+          },
+          store: stats,
+          longTasks: { count: longTasks.count, maxMs: longTasks.maxMs, recent: longTasks.recent },
+        });
+        return;
+      }
       // Bench: a W/L sweep through IPC, then back to the full window, then report.
       await new Promise((r) => setTimeout(r, 500));
       for (let i = 0; i < 60; i += 1) {
         const t = performance.now();
-        await invoke<number>("native_set_wl", { center: 20000 + i * 400, width: 8000 + i * 500 });
+        await invoke<number>("native_set_wl", { center: 10000 + i * 200, width: 4000 + i * 250 });
         rtts.current.push(performance.now() - t);
       }
       await invoke<number>("native_set_wl", { center: FULL[0], width: FULL[1] });
@@ -135,8 +204,9 @@ export default function NativeSpike() {
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    const width = Math.max(64, Math.min(65535, d.wl[1] + (e.clientX - d.x) * 150));
-    const center = Math.max(0, Math.min(65535, d.wl[0] - (e.clientY - d.y) * 150));
+    const k = Math.max(1, d.wl[1] / 250);
+    const width = Math.max(1, d.wl[1] + (e.clientX - d.x) * k);
+    const center = d.wl[0] - (e.clientY - d.y) * k;
     applyWl([center, width]);
   };
   const onPointerUp = () => {
@@ -160,6 +230,16 @@ export default function NativeSpike() {
             {status.adapter} · {status.backend} · init {Math.round(status.initMs ?? 0)} ms · frame {status.lastFrameMs?.toFixed(2) ?? "–"} ms
           </span>
         )}
+        {shown && (
+          <span className="text-xs tabular-nums text-secondary">
+            Im {shown.index + 1} / {shown.count} · {shown.cols}×{shown.rows} · {shown.cached ? "cached" : `decoded ${shown.decodeMs.toFixed(1)} ms`} · {shown.totalMs.toFixed(1)} ms
+          </span>
+        )}
+        {studyError && (
+          <span role="alert" className="text-xs text-danger">
+            Study could not be opened natively: {studyError}
+          </span>
+        )}
         <span className="ml-auto text-xs tabular-nums text-muted">
           W {Math.round(wl[1])} · L {Math.round(wl[0])}
           {lastRtt != null && ` · IPC+render ${lastRtt.toFixed(1)} ms (p95 ${p95 ?? "–"})`}
@@ -170,7 +250,7 @@ export default function NativeSpike() {
           The viewport on the right is drawn by Rust with the GPU, under this page. The page is transparent there and draws only the overlay on top.
           <br />
           <br />
-          Drag in the viewport to change window (←→) and level (↑↓).
+          Drag in the viewport to change window (←→) and level (↑↓). With a study on the command line, the wheel scrolls its slices.
         </aside>
         <div
           ref={cellRef}
@@ -182,6 +262,10 @@ export default function NativeSpike() {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          onWheel={(e) => {
+            if (!shown) return;
+            void invoke<ShowResult>("native_scroll", { delta: Math.sign(e.deltaY) }).then(setShown, () => undefined);
+          }}
         >
           {/* WebView overlay ON TOP of the native pixels: crosshair + label. */}
           <svg className="pointer-events-none absolute inset-0 h-full w-full text-warning" aria-hidden>

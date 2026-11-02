@@ -73,6 +73,11 @@ jobs:
         env:
           FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
         run: cargo test --lib
+      - name: P2.1 — native decode of every transfer-syntax fixture (Rust image core)
+        working-directory: desktop/src-tauri
+        env:
+          FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
+        run: cargo test --lib fixture_matrix -- --ignored --nocapture
       - name: Build the app (debug, embedded renderer)
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
@@ -258,6 +263,10 @@ jobs:
           FLOWRAD_NATIVE: "1"
           FLOWRAD_BENCH_VIEW: native-spike
         run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+      - name: P2.1 — cold start in native mode (native first paint before WebView2 loads; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5
       - name: P2.0 e2e — native wgpu surface under a transparent WebView2 (screen grab)
         run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots"
       - name: Upload the P2.0 screen grab
@@ -309,6 +318,8 @@ jobs:
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }}
+      - name: P2.1 — native renderer on the 848-slice CT (first image, scroll, whole tree; informational)
+        run: node desktop/scripts/bench.mjs native desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3
       - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
