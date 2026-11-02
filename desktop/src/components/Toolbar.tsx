@@ -59,7 +59,8 @@ import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/components/ui/cn";
 import { ORIENTATION_COMMANDS, type OrientationCommand, type WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
-import { LAYOUT_SHORTCUTS, keyLabel, toolKeyLabel, type ShortcutOverrides } from "../shortcuts";
+import { LAYOUT_SHORTCUTS, keyLabel, keysForAction, toolKeyLabel, type ShortcutOverrides } from "../shortcuts";
+import { mouseHintFor } from "../viewer/mouseBindings";
 
 export interface ToolbarProps {
   /** The reader's key re-mappings (Settings): tooltips show the keys that work. */
@@ -246,10 +247,10 @@ export function Toolbar(props: ToolbarProps) {
       <Tool label="Browse slices" shortcut={keyOf("StackScroll")} active={leftTool === "StackScroll"} onClick={() => onTool("StackScroll")}>
         <MousePointer2 />
       </Tool>
-      <Tool label="Window / level" shortcut={`${keyOf("WindowLevel")} · right drag`} active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
+      <Tool label="Window / level" shortcut={`${keyOf("WindowLevel")} · ${mouseHintFor("WindowLevel")}`} active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
         <SunMedium />
       </Tool>
-      <Tool label="Pan" shortcut={`${keyOf("Pan")} · middle drag`} active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
+      <Tool label="Pan" shortcut={`${keyOf("Pan")} · ${mouseHintFor("Pan")}`} active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
         <Hand />
       </Tool>
       <Tool label="Zoom" shortcut={`${keyOf("Zoom")} · ${keyLabel("Mod+")}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
@@ -314,7 +315,7 @@ export function Toolbar(props: ToolbarProps) {
           ))}
           <MenuSeparator />
           <MenuItem shortcut={keyLabel("Mod+F11")} onSelect={props.onCustomWindow}>Custom W / L…</MenuItem>
-          <MenuItem shortcut="I" onSelect={props.onInvert}>Invert</MenuItem>
+          <MenuItem shortcut={keysForAction({ type: "invert" }, props.shortcuts)} onSelect={props.onInvert}>Invert</MenuItem>
         </MenuContent>
       </MenuRoot>
       <MenuRoot>
@@ -539,7 +540,7 @@ export function Toolbar(props: ToolbarProps) {
         <Tool label={props.overlay ? "Hide overlay" : "Show overlay"} shortcut={keyLabel("Mod+Shift+F12")} active={!props.overlay} onClick={props.onToggleOverlay}>
           {props.overlay ? <Eye /> : <EyeOff />}
         </Tool>
-        <Tool label="Full screen" shortcut="F" onClick={props.onFullscreen}>
+        <Tool label="Full screen" shortcut={keysForAction({ type: "fullscreen" }, props.shortcuts)} onClick={props.onFullscreen}>
           <Maximize />
         </Tool>
         <Tool label="Keyboard shortcuts" shortcut="F1" onClick={props.onHelp}>
