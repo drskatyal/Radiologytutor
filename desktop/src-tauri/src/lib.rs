@@ -232,7 +232,38 @@ pub(crate) fn flowrad_env(name: &str) -> Result<String, std::env::VarError> {
 }
 
 fn bench_on() -> bool {
-    crate::flowrad_env("BENCH").as_deref() == Ok("1")
+    crate::flowrad_env("BENCH").as_deref() == Ok("1") || crate::flowrad_env("LEAK_ROUNDS").is_ok()
+}
+
+/// The release exe is a GUI-subsystem binary on Windows: its stdout goes
+/// nowhere when it is started from a terminal, so `FLOWRAD_BENCH=1` printed
+/// nothing on a real machine. When any bench/probe hook is on, attach to the
+/// parent console (no-op when stdout is already redirected, e.g. bench.mjs).
+fn attach_bench_console() {
+    #[cfg(windows)]
+    if bench_on() || crate::flowrad_env("PROBE_AFTER_MS").is_ok() {
+        // SAFETY: plain Win32 call; failure (no parent console) is harmless.
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(
+                windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+            );
+        }
+    }
+}
+
+/// Every bench line is also appended to a file, so a run started from
+/// Explorer or a shortcut still leaves its numbers behind:
+/// `FLOWRAD_BENCH_OUT` if set, else `flowrad-bench.jsonl` in the temp dir.
+fn bench_emit(prefix: &str, value: &serde_json::Value) {
+    let line = format!("{prefix} {value}");
+    println!("{line}");
+    let path = crate::flowrad_env("BENCH_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("flowrad-bench.jsonl"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 /// The last scan's numbers, for the watchdog line.
@@ -263,7 +294,7 @@ fn bench_scan_line(result: &ScanResult) {
         "rust": result.timings,
         "processUptimeMs": startup_elapsed_ms(),
     });
-    println!("FLOWRAD_BENCH_SCAN {line}");
+    bench_emit("FLOWRAD_BENCH_SCAN", &line);
     *LAST_SCAN.lock() = Some(line);
 }
 
@@ -286,7 +317,7 @@ fn start_bench_watchdog() {
             "scan": LAST_SCAN.lock().clone(),
             "note": "the renderer never reported; scan numbers (if any) come from the shell",
         });
-        println!("FLOWRAD_BENCH {line}");
+        bench_emit("FLOWRAD_BENCH", &line);
         std::process::exit(3);
     });
 }
@@ -304,7 +335,7 @@ fn probe_after_ms() -> Option<u64> {
 
 #[tauri::command]
 fn probe_report(app: tauri::AppHandle, report: serde_json::Value) {
-    println!("FLOWRAD_PROBE {report}");
+    bench_emit("FLOWRAD_PROBE", &report);
     app.exit(0);
 }
 
@@ -353,7 +384,7 @@ fn set_memory_mode(window: tauri::WebviewWindow, low: bool) {
 /// `FLOWRAD_BENCH_EXIT=1`. Used by `desktop/scripts/bench.mjs`.
 #[tauri::command]
 fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
-    println!("FLOWRAD_BENCH {}", report);
+    bench_emit("FLOWRAD_BENCH", &report);
     if crate::flowrad_env("BENCH_EXIT").as_deref() == Ok("1") {
         app.exit(0);
     }
@@ -394,7 +425,11 @@ fn startup_elapsed_ms() -> f64 {
 /// `FLOWRAD_BENCH_VIEW=mpr|3d|fusion`: switch to that view once the study is open.
 #[tauri::command]
 fn bench_view() -> Option<String> {
-    crate::flowrad_env("BENCH_VIEW").ok()
+    // FLOWRAD_LEAK_ROUNDS alone used to do nothing (it only sized a leak run
+    // that BENCH_VIEW=leak had to request); asking for rounds now asks for it.
+    crate::flowrad_env("BENCH_VIEW")
+        .ok()
+        .or_else(|| crate::flowrad_env("LEAK_ROUNDS").ok().map(|_| "leak".to_string()))
 }
 
 /// `FLOWRAD_BENCH_PIXELS=1`: include decoded-pixel statistics of the first
@@ -579,6 +614,7 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    attach_bench_console();
     let state = AppState::default();
     *state.launch_paths.lock() = launch_args();
     start_bench_watchdog();

@@ -233,6 +233,24 @@ jobs:
         env:
           FLOWRAD_BENCH_VIEW: grid
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
+      # Informational A/B (never fails the job): WebView2 process model vs
+      # idle and MPR memory. The flags are the app's own plus one variant.
+      - name: A/B — WebView2 process model vs idle / MPR memory / cold start (informational)
+        continue-on-error: true
+        shell: bash
+        env:
+          FLOWRAD_BENCH_VIEW: grid
+        run: |
+          base=$(node -p "require('./desktop/src-tauri/tauri.conf.json').app.windows[0].additionalBrowserArgs")
+          exe=desktop/src-tauri/target/release/flowrad-viewer.exe
+          for variant in "" "--in-process-gpu" "--enable-features=NetworkServiceInProcess2" "--in-process-gpu --enable-features=NetworkServiceInProcess2"; do
+            echo "::group::variant: ${variant:-app defaults}"
+            export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="$base $variant"
+            FLOWRAD_BENCH_VIEW=grid node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" --settle 20 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);console.log(`IDLE ${process.argv[1]||"defaults"}: settled ws ${r.settledWsMb} MB private ${r.settledPrivateMb} MB, ${r.processes} processes`)})' "$variant"
+            FLOWRAD_BENCH_VIEW=mpr node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);console.log(`MPR  ${process.argv[1]||"defaults"}: peak ws ${r.peakWsMb} MB private ${r.peakPrivateMb} MB, ${r.processes} processes`)})' "$variant"
+            node desktop/scripts/bench.mjs coldstart $exe --runs 3 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.argv[1]||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})' "$variant"
+            echo "::endgroup::"
+          done
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)

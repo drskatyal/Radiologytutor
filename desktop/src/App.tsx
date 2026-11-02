@@ -107,6 +107,19 @@ type ScanState = { label: string; progress: ScanProgress | null } | null;
 const cellKey = (i: number) => `cell-${i}`;
 const viewportIdFor = (i: number) => `vp-${i}`;
 
+/** Paint health of the volume panes (MPR / 3D), from their per-pane max luminance. */
+function volumePaneHealth(panes: unknown): { maxLum: number; nonBlank: boolean; renderPath: string; panes: Record<string, number> } | null {
+  if (!panes || typeof panes !== "object") return null;
+  const values = Object.values(panes as Record<string, number>).filter((v) => typeof v === "number");
+  if (!values.length) return null;
+  return {
+    maxLum: Math.min(...values),
+    nonBlank: values.every((v) => v > 8),
+    renderPath: "native-volume",
+    panes: panes as Record<string, number>,
+  };
+}
+
 export default function App() {
   const { toast } = useToast();
   const [version, setVersion] = useState("");
@@ -555,7 +568,12 @@ export default function App() {
                 visibility: document.visibilityState,
                 focused: document.hasFocus(),
               },
-              viewport: paintHealth.last ?? null,
+              // `viewport` = what is on screen. In a volume bench that is the
+              // MPR / 3D panes: the 2D stack check was cut short when the view
+              // switched (its canvas unmounted), and reported "blank, maxLum 0"
+              // although the 3D pane had painted. The 2D check stays as stackViewport.
+              viewport: volumePaneHealth(bench.current.marks.vrPanes ?? bench.current.marks.mprPanes) ?? paintHealth.last ?? null,
+              stackViewport: paintHealth.last ?? null,
               ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
               gpu: gpuInfo(),
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
@@ -765,16 +783,20 @@ export default function App() {
     let off: (() => void)[] = [];
     (async () => {
       const initial = await takeLaunchPaths();
-      // A study on the command line opens at once. The engine is NOT
-      // pre-imported here: its ~3 MB parse on the main thread would delay the
-      // instant preview (see openPaths); the viewport starts it after.
+      // A study on the command line opens at once, and the engine starts in
+      // the same breath: the main thread is idle while Rust scans, and the
+      // init now yields between steps (engine.ts), so the instant preview
+      // still paints between them instead of waiting behind one long task.
       if (initial.length) {
         void openPaths(initial);
+        void getEngine();
       } else {
         // Start screen: compile the engine in idle time so the first open does
         // not pay for it (code only: no WebGL context, no decode workers).
         const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
-        window.setTimeout(() => (idle ? idle(() => prewarmEngine(), { timeout: 4000 }) : prewarmEngine()), 1500);
+        // Soon after the start screen paints, not 1.5 s later: a reader who
+        // opens a study within two seconds still found the engine cold.
+        window.setTimeout(() => (idle ? idle(() => prewarmEngine(), { timeout: 1000 }) : prewarmEngine()), 300);
       }
       if (!initial.length && (await benchEnabled())) {
         // Cold-start probe: report once the start screen has painted.

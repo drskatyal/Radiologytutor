@@ -1,6 +1,6 @@
 [package]
 name = "flowrad-viewer"
-version = "0.7.0"
+version = "0.7.1"
 description = "FlowRad Viewer — a free, offline DICOM viewer for Windows, macOS and Linux"
 authors = ["FlowRad"]
 license = "UNLICENSED"
@@ -49,7 +49,7 @@ panic = "abort"
 strip = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console"] }
 # WebView2's MemoryUsageTargetLevel (idle footprint). Same versions wry uses.
 webview2-com = "0.39"
 windows = "0.62"

@@ -227,7 +227,7 @@ fn float(obj: &DefaultDicomObject, tag: Tag) -> Option<f64> {
 pub fn read_header(path: &Path) -> Option<Header> {
     let file = File::open(path).ok()?;
     let meta = file.metadata().ok();
-    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut reader = std::io::BufReader::with_capacity(16 * 1024, file);
     let mut probe = [0u8; MAGIC_PROBE];
     let mut filled = 0;
     while filled < MAGIC_PROBE {

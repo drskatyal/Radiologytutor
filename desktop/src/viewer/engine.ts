@@ -133,6 +133,23 @@ export function getEngine(): Promise<Engine> {
   return enginePromise;
 }
 
+/**
+ * Give the main thread back between engine-init steps. Each step resumed as
+ * a microtask of the last, so module evaluation, core/tools init, loader init
+ * and tool registration ran as ONE long task (Windows HP: 66–225 ms freezes
+ * at "engine startup"). A macrotask boundary lets input, the instant preview
+ * and paint run in between.
+ */
+function yieldToMain(): Promise<void> {
+  const scheduler = (globalThis as unknown as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    channel.port2.postMessage(null);
+  });
+}
+
 async function createEngine(): Promise<Engine> {
   const steps: Record<string, number> = {};
   engineTimings.steps = steps;
@@ -144,12 +161,17 @@ async function createEngine(): Promise<Engine> {
     steps[name] = Math.round(now - mark);
     mark = now;
   };
-  const [core, tools, loader] = await Promise.all([
-    import("@cornerstonejs/core"),
-    import("@cornerstonejs/tools"),
-    import("@cornerstonejs/dicom-image-loader"),
-  ]);
+  // Fetch + compile all three in parallel; each evaluates in its own task.
+  const coreP = import("@cornerstonejs/core");
+  const toolsP = import("@cornerstonejs/tools");
+  const loaderP = import("@cornerstonejs/dicom-image-loader");
+  const core = await coreP;
+  await yieldToMain();
+  const tools = await toolsP;
+  await yieldToMain();
+  const loader = await loaderP;
   step("importMs");
+  await yieldToMain();
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
@@ -162,8 +184,10 @@ async function createEngine(): Promise<Engine> {
   await core.init(config as unknown as Parameters<typeof core.init>[0]);
   // Cursors are ours (toolCursor.ts): Cornerstone's drew one green crosshair for every tool.
   core.Settings.getRuntimeSettings().set("useCursors", false);
+  await yieldToMain();
   await tools.init();
   step("coreToolsInitMs");
+  await yieldToMain();
   // ONE worker at init (the loader would otherwise spawn every instance up
   // front and never free them); workerPool.ts widens it to a lazy pool of
   // cores − 2 that spawns on demand and reaps idle workers.
@@ -182,6 +206,7 @@ async function createEngine(): Promise<Engine> {
   );
   installDatasetTrim(core, loader);
   step("loaderInitMs");
+  await yieldToMain();
   try {
     // Honest now that raw file bytes are released after decode (memory.ts):
     // this budget is close to what the decoded images really hold. LRU
@@ -231,6 +256,7 @@ async function createEngine(): Promise<Engine> {
     }
   }
 
+  await yieldToMain();
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);

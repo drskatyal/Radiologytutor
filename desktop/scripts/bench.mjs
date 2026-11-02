@@ -445,6 +445,14 @@ async function benchMpr(binary, study) {
     volumeBuildMs: r0(report.volumeBuildMs),
     peakPrivateMb: peak?.privateMb,
     settledPrivateMb: settled?.privateMb,
+    // Working set too: it is what Task Manager shows (and what the HP numbers
+    // quote). Summed per process, so DLL pages shared by the WebView2
+    // processes count once per process: fewer processes, smaller sum.
+    peakWsMb: peak?.wsMb,
+    settledWsMb: settled?.wsMb,
+    processes: settled?.processes.length ?? peak?.processes.length,
+    settledByProcess: settled?.processes.filter((p) => p.wsMb > 10),
+    browserArgs: process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? null,
     imageCacheMb: report.imageCacheMb ?? null,
     trimmedMb: report.trimmedMb ?? null,
     trim: report.trim ?? null,
