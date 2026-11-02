@@ -152,6 +152,11 @@ export interface VoiceOptions {
   /** What was heard that matched nothing (for the hint chip). */
   onUnrecognized?: (heard: string) => void;
   timeouts?: Partial<VoiceTimeouts>;
+  /**
+   * Called at once with the session (before anything loads), so the caller
+   * can cancel a load in progress with `stop()`.
+   */
+  onSession?: (session: VoiceSession) => void;
   /** Where the audio comes from (default: the microphone). Tests pass a stream that plays spoken phrases. */
   getStream?: () => Promise<MediaStream>;
 }
@@ -233,6 +238,8 @@ function spawnRecognizer(modelUrl: string, workerUrl: string): Recognizer {
 }
 
 // ── warm-up: start loading on hover / focus of the mic, so a click is ready at once ──
+/** Sessions loading or listening: no warm-up while one exists (it would only leak a worker). */
+let activeSessions = 0;
 let warm: { key: string; rec: Recognizer; timer: ReturnType<typeof setTimeout> } | null = null;
 
 /**
@@ -241,6 +248,7 @@ let warm: { key: string; rec: Recognizer; timer: ReturnType<typeof setTimeout> }
  * unless voice is switched on, so hovering costs memory only briefly.
  */
 export function prewarmVoice(modelUrl: string, workerUrl: string, keepMs = 45_000): void {
+  if (activeSessions > 0) return;
   const key = `${workerUrl} ${modelUrl}`;
   if (warm?.key === key) {
     clearTimeout(warm.timer);
@@ -312,13 +320,21 @@ export async function startVoice(opts: VoiceOptions): Promise<VoiceSession> {
     rec = null;
     ready = false;
   };
+  let counted = true;
+  activeSessions += 1;
+  const release = () => {
+    if (counted) activeSessions -= 1;
+    counted = false;
+  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
     teardown();
+    release();
     opts.onState("off");
   };
   const session: VoiceSession = { stop };
+  opts.onSession?.(session);
 
   opts.onState("loading");
   try {
@@ -407,6 +423,7 @@ export async function startVoice(opts: VoiceOptions): Promise<VoiceSession> {
     if (!stopped) {
       stopped = true;
       teardown();
+      release();
       opts.onState("error", err.message, err.kind);
     }
   }

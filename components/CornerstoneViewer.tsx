@@ -3702,7 +3702,10 @@ export default function CornerstoneViewer({
       setVoiceError("Voice commands could not be loaded. Check the connection and press Retry.");
       return;
     }
-    voiceSessionRef.current = await mod.startVoice({
+    await mod.startVoice({
+      onSession: (session) => {
+        voiceSessionRef.current = session;
+      },
       modelUrl: mod.VOICE_MODEL_URL,
       workerUrl: mod.VOICE_WORKER_URL,
       onAction: (action, heard) => {
