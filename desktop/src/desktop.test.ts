@@ -1,8 +1,10 @@
 // Pure renderer logic. Run: npm --prefix desktop test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveShortcut, shortcutSheet, BINDINGS, keySpecOf, conflictFor, type KeyLike } from "./shortcuts";
+import { resolveShortcut, shortcutSheet, BINDINGS, keySpecOf, conflictFor, toolKeyLabel, type KeyLike } from "./shortcuts";
 import { edgeLabels, directionLabel } from "./viewer/orientation";
+import { dragModeFor, mouseHintFor, mouseSheetLine, resolveWheel, MOUSE_DEFAULTS } from "./viewer/mouseBindings";
+import { readFileSync } from "node:fs";
 import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex } from "./study";
 import { hangSeries } from "./layout";
 import { historyEntryFor, sourceKey } from "./history";
@@ -342,4 +344,48 @@ test("files with the same name in two series keep their own headers (browser dro
   assert.deepEqual(byUid.get("thin")!.headers.map((h) => h.imagePositionPatient![2]), [0, -1, -2, -3]);
   assert.equal(byUid.get("thin")!.volumetric, true);
   assert.deepEqual(byUid.get("thick")!.headers.map((h) => h.imagePositionPatient![2]), [-0.5, -5.5]);
+});
+
+test("tool keys shown in the toolbar, menus and F1 sheet come from the bindings table", () => {
+  // Rectangle ROI is S (R rotates); the label follows a re-mapping.
+  assert.equal(toolKeyLabel("RectangleROI", {}, false), "S");
+  assert.equal(toolKeyLabel("RectangleROI", { "tool.s": "K" }, false), "K");
+  assert.equal(toolKeyLabel("Length", {}, false), "M / L");
+  assert.equal(toolKeyLabel("Eraser", {}, false), "Shift+E");
+  assert.equal(toolKeyLabel("WindowLevel", {}, false), "W");
+  // The F1 sheet lists the same key for the rectangle, and no tool claims R.
+  const rows = shortcutSheet(false);
+  assert.ok(rows.some((r) => r.keys === "S" && /Rectangle/.test(r.does)));
+  assert.ok(!rows.some((r) => r.keys === "R" && /Rectangle/.test(r.does)));
+  for (const b of BINDINGS) if (b.action.type === "tool") assert.notEqual(b.keys, "R", `${b.action.tool} must not claim R`);
+});
+
+test("right drag is window / level everywhere: native viewports, JS engine, tooltip, F1 sheet", () => {
+  // Native (NativeStackViewport → dragModeFor): 0.8.1 zoomed on right drag.
+  for (const left of ["StackScroll", "Length", "Zoom"]) {
+    assert.equal(dragModeFor(2, left), "WindowLevel");
+    assert.equal(dragModeFor(1, left), "Pan");
+    assert.equal(dragModeFor(0, left), left);
+  }
+  assert.equal(dragModeFor(2, "StackScroll", { ctrl: true }), "Zoom");
+  assert.equal(dragModeFor(1, "StackScroll", { ctrl: true }), "Pan", "an unbound modifier falls back to the plain gesture");
+  assert.equal(resolveWheel({})?.command, "scroll");
+  assert.equal(resolveWheel({ ctrl: true })?.command, "slab");
+  assert.equal(mouseHintFor("WindowLevel"), "right drag");
+  assert.equal(mouseHintFor("Pan"), "middle drag");
+  assert.equal(mouseHintFor("Zoom"), "Ctrl+right drag");
+  const sheet = mouseSheetLine();
+  assert.match(sheet, /right drag = window\/level/);
+  assert.match(sheet, /middle drag = pan/);
+  assert.match(sheet, /Ctrl\+right drag = zoom/);
+  assert.match(sheet, /Ctrl\+wheel = zoom/);
+  // The JS engine reads the same table (no hard-coded buttons left).
+  const engineSrc = readFileSync(new URL("./viewer/engine.ts", import.meta.url), "utf8");
+  assert.ok(engineSrc.includes("MOUSE_DEFAULTS"));
+  assert.ok(!/setToolActive\("WindowLevel", \{ bindings: \[\{ mouseButton: MouseBindings\.Secondary \}\] \}\);\n\s*group\.setToolActive\("Pan"/.test(engineSrc));
+  assert.deepEqual(MOUSE_DEFAULTS.map((b) => `${b.mods.ctrl ? "Ctrl+" : ""}${b.button}:${b.command}`), ["Ctrl+2:Zoom", "2:WindowLevel", "1:Pan"]);
+  // Toolbar: no hard-coded tool keys.
+  const toolbarSrc = readFileSync(new URL("./components/Toolbar.tsx", import.meta.url), "utf8");
+  assert.ok(!/key: "[A-Z]/.test(toolbarSrc), "tool keys come from toolKeyLabel");
+  assert.ok(!/shortcut="[A-Z]"/.test(toolbarSrc), "tool tooltips come from the bindings table");
 });

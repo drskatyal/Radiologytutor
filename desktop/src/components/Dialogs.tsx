@@ -19,13 +19,14 @@ import {
 } from "@flowrad/viewer-core";
 import { conflictFor, keyLabel, keySpecOf, remappableBindings, shortcutSheet, type ShortcutOverrides } from "../shortcuts";
 import type { ViewerSettings } from "../settings";
+import { mouseSheetLine } from "../viewer/mouseBindings";
 import { cacheUsage, clearCache, listMedia, type MediaVolume } from "../platform";
 
 export function ShortcutsDialog({ open, onClose, overrides }: { open: boolean; onClose: () => void; overrides?: ShortcutOverrides }) {
   const rows = shortcutSheet(undefined, overrides);
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
-    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description="Mouse: left = selected tool · wheel = scroll · Ctrl+wheel = zoom (slab thickness in a reformat) · right drag = window/level · middle drag = pan · Shift+click = 3D cursor. Change keys in Settings." size="xl">
+    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description={`${mouseSheetLine((m) => keyLabel(`${m.ctrl ? "Mod+" : ""}${m.alt ? "Alt+" : ""}${m.shift ? "Shift+" : ""}`))} Change keys in Settings.`} size="xl">
       <div className="grid max-h-[60vh] grid-cols-1 gap-x-8 gap-y-5 overflow-y-auto pr-1 md:grid-cols-2">
         {groups.map((group) => (
           <section key={group}>

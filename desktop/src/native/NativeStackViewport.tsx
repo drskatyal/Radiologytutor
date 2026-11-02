@@ -30,6 +30,7 @@ import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport"
 import { noteActivity } from "../activity";
 import { cursorForTool } from "../viewer/toolCursor";
 import { onNativeLayoutApplied, registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
+import { dragModeFor, resolveWheel } from "../viewer/mouseBindings";
 import { toCell, toImage, transformFor, type NativeTransform, type NativeView } from "./transform";
 import NativeAnnotationLayer, { isAnnotationTool } from "./NativeAnnotationLayer";
 
@@ -87,7 +88,7 @@ export default function NativeStackViewport({
   tool = "StackScroll",
 }: Props) {
   // Right-click menu (#111, shared contextMenu.ts): a right press that did not
-  // drag (a right drag zooms) opens it at the pointer.
+  // drag (a right drag windows, MOUSE_DEFAULTS) opens it at the pointer.
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const rightMoved = useRef(false);
   const elementRef = useRef<HTMLDivElement>(null);
@@ -275,12 +276,17 @@ export default function NativeStackViewport({
   const notchRun = useRef({ at: 0, n: 0 });
   const onWheel = (e: React.WheelEvent) => {
     if (!shown) return;
+    // Ctrl+wheel zooms a plain image (WHEEL_DEFAULTS; slab is a reformat's).
+    if (resolveWheel({ ctrl: e.ctrlKey || e.metaKey })?.command !== "scroll") {
+      void change({ zoom: shown.view.zoom * Math.exp(-Math.sign(e.deltaY) * 0.1) });
+      return;
+    }
     const now = performance.now();
     const run = now - notchRun.current.at < 140 ? notchRun.current.n + 1 : 1;
     notchRun.current = { at: now, n: run };
     void step(Math.sign(e.deltaY) * slicesForNotch(getScrollPreferences(), run));
   };
-  const drag = useRef<{ x: number; y: number; button: number; start: NativeShow; acc: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; button: number; ctrl: boolean; start: NativeShow; acc: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     onActivate();
     if (!shown) return;
@@ -293,7 +299,7 @@ export default function NativeStackViewport({
     if (e.button === 0 && !NAV_TOOLS.has(tool)) return;
     if (e.button === 2) rightMoved.current = false;
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, y: e.clientY, button: e.button, start: shown, acc: 0 };
+    drag.current = { x: e.clientX, y: e.clientY, button: e.button, ctrl: e.ctrlKey || e.metaKey, start: shown, acc: 0 };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (lens) moveLens(e);
@@ -302,7 +308,10 @@ export default function NativeStackViewport({
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (d.button === 2 && Math.abs(dx) + Math.abs(dy) > 3) rightMoved.current = true;
-    const mode = d.button === 2 ? "Zoom" : d.button === 1 ? "Pan" : tool;
+    // Right drag = window / level, middle = pan, as on the JS path (engine.ts
+    // MouseBindings.Secondary / Auxiliary), the toolbar tooltip and the F1
+    // sheet. (0.8.1 zoomed on right drag: HP report.) Zoom is Ctrl+wheel / Z.
+    const mode = dragModeFor(d.button, tool, { ctrl: d.ctrl });
     const v = d.start.view;
     if (mode === "WindowLevel") {
       const k = Math.max(1, v.wl[1] / 256);
