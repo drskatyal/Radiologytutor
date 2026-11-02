@@ -43,7 +43,6 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   await page.setViewportSize({ width: 1440, height: 1200 });
   await openStudy(page);
   expect(voiceRequests, "nothing loaded before the mic is on").toEqual([]);
-  const workersBefore = page.workers().length;
 
   // On failure, say why: the page's console and what the voice button says.
   const consoleLines: string[] = [];
@@ -69,7 +68,8 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   test.info().annotations.push({ type: "voice-ready-ms", description: String(readyMs) });
   expect(readyMs, "ready well within the stall timeout").toBeLessThan(20_000);
   await expect(page.getByTestId("voice-status")).toHaveCount(0);
-  expect(page.workers().length).toBeGreaterThan(workersBefore);
+  const recognizers = () => page.workers().filter((w) => /recognizer-worker/.test(w.url()));
+  expect(recognizers().length, "the recognizer runs in its own worker").toBe(1);
 
   // The fake microphone loops "layout two", "lung window", "zoom in".
   await expect
@@ -80,7 +80,8 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   await page.getByRole("button", { name: /^Voice commands on/ }).click();
   await expect(page.getByRole("button", { name: /^Voice commands$/ })).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(800);
-  expect(page.workers().length, "the recognizer worker is terminated").toBeLessThanOrEqual(workersBefore);
+  // The recognizer's own worker is gone (engine decode workers may come and go).
+  expect(recognizers().length, `the recognizer worker is terminated; workers: ${page.workers().map((w) => w.url()).join(", ")}`).toBe(0);
 });
 
 test("voice: a missing model is an error with Retry, not an endless load; Retry then works", async ({ page }) => {
@@ -105,12 +106,11 @@ test("voice: a blocked microphone says so (with Retry), the load stops", async (
   });
   await page.setViewportSize({ width: 1440, height: 1200 });
   await openStudy(page);
-  const workersBefore = page.workers().length;
   await page.getByRole("button", { name: /^Voice commands/ }).click();
   const card = page.getByTestId("voice-status");
   await expect(card).toHaveAttribute("data-voice-state", "error", { timeout: 15_000 });
   await expect(card).toContainText("Microphone access is blocked");
   await expect(page.getByTestId("voice-retry")).toBeVisible();
   await page.waitForTimeout(500);
-  expect(page.workers().length, "the recognizer is freed after the failure").toBeLessThanOrEqual(workersBefore);
+  expect(page.workers().filter((w) => /recognizer-worker/.test(w.url())).length, "the recognizer is freed after the failure").toBe(0);
 });

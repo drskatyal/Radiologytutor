@@ -9,6 +9,17 @@ const nextConfig = {
   //   - fs:false  — one transitive dep references node's `fs`
   //   - .wasm as a static asset so the codec binaries resolve at runtime
   // NOTE: this only applies to the default webpack builder — do NOT run with --turbo.
+  // Offline voice commands: the ~40 MB model and the recognizer worker change
+  // only with scripts/voice-model.sha256 / vosk-browser. Cache them, so a
+  // second "mic on" (or a hover warm-up) reads them from disk, not the network.
+  async headers() {
+    return [
+      {
+        source: "/voice/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=604800, stale-while-revalidate=86400" }],
+      },
+    ];
+  },
   webpack: (config) => {
     config.resolve.fallback = { ...config.resolve.fallback, fs: false };
     config.module.rules.push({ test: /\.wasm/, type: "asset/resource" });

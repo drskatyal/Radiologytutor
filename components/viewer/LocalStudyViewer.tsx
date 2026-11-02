@@ -878,6 +878,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 defaultTool="StackScroll"
                 questionMarkHelp
                 onChunkLoadError={recoverFromChunkError}
+                onSeriesStep={(delta) => {
+                  const count = study?.series.length ?? 0;
+                  if (count > 1) pickSeries((activeSeries + delta + count) % count);
+                }}
                 onReady={(controls) => {
                   const slice = pendingSlice.current;
                   if (slice == null || slice < 0) return;

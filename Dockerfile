@@ -18,20 +18,28 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# Offline voice commands: the small speech model (Apache-2.0, ~40 MB), checked
+# against scripts/voice-model.sha256. Its own stage, keyed only on the fetch
+# script and the pinned hash, so Docker caches it across deploys. public/voice/
+# is not in the repository: without this the live viewer had no model and the
+# mic could never start. A checksum mismatch (or any other failure) fails the
+# build; only a network outage (exit 3) is tolerated, and prod-smoke's voice
+# check then fails loudly on the missing model.
+FROM python:3.12-slim AS voice
+WORKDIR /app
+COPY scripts/fetch-voice-model.py scripts/voice-model.sha256 ./scripts/
+RUN mkdir -p public/voice desktop/public/voice; \
+  rc=0; python3 scripts/fetch-voice-model.py || rc=$?; \
+  if [ "$rc" = "3" ]; then echo "WARNING: voice model host unreachable; voice commands will say they are not included in this build"; \
+  elif [ "$rc" != "0" ]; then exit "$rc"; \
+  else python3 scripts/fetch-voice-model.py --check; fi
+
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
-# Offline voice commands: the small speech model is served from public/voice
-# (scripts/fetch-voice-model.py, SHA-256 pinned). Without it the live viewer's
-# mic could never start. Best effort: a download outage must not block a
-# deploy; the viewer then says "not included in this build" and prod-smoke
-# flags the missing model.
-RUN apt-get update -qq && apt-get install -y --no-install-recommends python3 ca-certificates >/dev/null \
-  && rm -rf /var/lib/apt/lists/* \
-  && (python3 scripts/fetch-voice-model.py || echo "WARNING: voice model not fetched; voice commands will be unavailable")
 RUN npm run build
 # Carry the LIVE build's /_next/static files into this image (kept 7 days
 # after they stop being current), so tabs opened before this deploy can still
@@ -55,6 +63,7 @@ RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=voice --chown=nextjs:nodejs /app/public/voice ./public/voice
 # Standalone trace: server.js + traced node_modules at the image root.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
