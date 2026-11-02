@@ -179,6 +179,12 @@ jobs:
           $s.Speak("lung window. ")
           $s.Dispose()
           python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" "$env:RUNNER_TEMP\voice.wav"
+      # The committed recording (speech through a simulated speaker-to-mic room
+      # path; desktop/scripts/make-voice-wav.py --room): every phrase must be
+      # recognised and performed, not just one.
+      - name: e2e — voice from a fixed recording (next series, zoom in, lung window all recognised)
+        shell: pwsh
+        run: python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" e2e/fixtures/voice/commands-room.wav --expect "next series" "zoom in" "lung window"
 
   # Performance gate on WebView2 (the platform readers install on), release
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
