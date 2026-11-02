@@ -1,0 +1,69 @@
+# Free viewer against the LIVE deployment: opens /viewer on production,
+# drops a synthetic CT (no patient data) and checks the first image is drawn
+# and every JS chunk production serves is complete. Runs after a push to the
+# integration branch (Railway auto-deploys it: waits for /api/version to
+# report the pushed commit), on demand, and from the chunk-recovery branch.
+name: prod-smoke
+
+on:
+  push:
+    branches:
+      - claude/epic-noether-3nvcbf
+      - claude/viewer-chunk-recovery
+    paths-ignore:
+      - "desktop/**"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      expect_commit:
+        description: "Wait until production reports this commit (optional)"
+        required: false
+
+concurrency:
+  group: prod-smoke-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PROD_URL: https://radiologytutor-production.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Synthetic CT and JPEG 2000 MR (no patient data)
+        run: |
+          pip install pydicom numpy pylibjpeg pylibjpeg-openjpeg
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
+          python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
+      - name: Playwright ${{ matrix.browser }}
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Smoke the live free viewer
+        env:
+          PROD_SMOKE_BROWSER: ${{ matrix.browser }}
+        run: |
+          EXPECT=""
+          if [ "${{ github.ref_name }}" = "claude/epic-noether-3nvcbf" ]; then EXPECT="--expect-commit ${GITHUB_SHA::7} --wait-deploy-s 1200"; fi
+          if [ -n "${{ inputs.expect_commit }}" ]; then EXPECT="--expect-commit ${{ inputs.expect_commit }} --wait-deploy-s 1200"; fi
+          node scripts/prod-smoke.mjs "$PROD_URL" "$RUNNER_TEMP/test-ct" $EXPECT
+          # Compressed: the codec loads in the decode workers.
+          PROD_SMOKE_TAG=mr node scripts/prod-smoke.mjs "$PROD_URL" "$RUNNER_TEMP/test-mr"
+      - name: Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-smoke-${{ matrix.browser }}
+          path: prod-smoke-*.png
+          retention-days: 14
