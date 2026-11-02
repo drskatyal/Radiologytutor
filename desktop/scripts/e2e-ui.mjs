@@ -480,6 +480,80 @@ if (want("annotate")) {
   check("annotate: Esc leaves the eraser", (await page.evaluate(() => document.body.dataset.toolCursor)) === "scroll");
 }
 
+// ── linked scroll / sync / reference lines ──────────────────────────────
+if (want("sync")) {
+  const count = async (i) => (await imageNo(i))?.of;
+  await focusImage();
+  await page.keyboard.press("Shift+Digit2");
+  await page.waitForSelector('[data-drop-cell="1"]');
+  await settle(600);
+  // 1 mm series left, 5 mm series right (same frame of reference).
+  const cards = page.locator('nav[aria-label="Series"] li button');
+  const cardWith = async (n) => {
+    for (let i = 0; i < (await cards.count()); i += 1) if (((await cards.nth(i).innerText()).match(/\d+/g) ?? []).includes(String(n))) return cards.nth(i);
+    return null;
+  };
+  const dragTo = async (card, target) => {
+    const cb = await card.boundingBox();
+    const tb = await box(target);
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, { steps: 12 });
+    await page.mouse.up();
+    await settle(1000);
+  };
+  if ((await count(0)) !== 300) await dragTo(await cardWith(300), 0);
+  if ((await count(1)) !== 60) await dragTo(await cardWith(60), 1);
+  // Same anatomy on both (first slice), then link + sync.
+  for (const i of [1, 0]) {
+    const b = await box(i);
+    await page.mouse.click(b.x + b.width * 0.9, b.y + b.height * 0.5);
+    await page.keyboard.press("Home");
+    await settle(300);
+  }
+  await page.keyboard.press("F5");
+  await settle(400);
+  for (let k = 0; k < 5; k += 1) await page.keyboard.press("PageDown"); // 5 × 30 = 150 slices of 1 mm
+  await settle(800);
+  const left = await imageNo(0);
+  const right = await imageNo(1);
+  // 150 mm down the 1 mm stack ≈ 30 slices of the 5 mm stack.
+  const expected = 1 + Math.round(((left?.at ?? 1) - 1) / 5);
+  check("sync: scrolling one series moves the other to the same position", right && Math.abs(right.at - expected) <= 1, `left ${left?.at}/300 → right ${right?.at}/60 (expect ~${expected})`);
+  await shot("sync-scroll");
+  // Window / level sync.
+  await page.keyboard.press("Shift+F5");
+  await page.keyboard.press("3");
+  await settle(500);
+  const wl = async (i) => (await cell(i).innerText()).match(/W (-?\d+) · L (-?\d+)/)?.slice(1).join("/");
+  check("sync: window / level follows the active viewport (Shift+F5)", (await wl(0)) === (await wl(1)) && !!(await wl(0)), `${await wl(0)} vs ${await wl(1)}`);
+  // Zoom sync.
+  await page.keyboard.press("Alt+F5");
+  await page.keyboard.press("Control+Digit2");
+  await settle(500);
+  const zoom = async (i) => (await cell(i).innerText()).match(/Zoom (\d+)%/)?.[1];
+  check("sync: zoom follows the active viewport (Alt+F5)", (await zoom(0)) === (await zoom(1)) && !!(await zoom(0)), `${await zoom(0)} vs ${await zoom(1)}`);
+  // Reference lines need non-parallel planes: the coronal reformat on the
+  // right (make-ortho-series.py), the axial stack active on the left.
+  const coronal = await cardWith(47);
+  if (coronal) await dragTo(coronal, 1);
+  const lb = await box(0);
+  await page.mouse.click(lb.x + lb.width * 0.9, lb.y + lb.height * 0.5);
+  await settle(400);
+  const lines = async (i) => cell(i).locator("svg line, svg path").count();
+  const before = await lines(1);
+  await page.keyboard.press("Control+F12");
+  await settle(600);
+  check("sync: reference lines draw the active axial slice on the coronal", !!coronal && (await lines(1)) > before, `${coronal ? "" : "no coronal series in the study; "}${before} → ${await lines(1)} svg strokes`);
+  await shot("sync-reference-lines");
+  // Off again so later groups start clean.
+  await page.keyboard.press("Control+F12");
+  await page.keyboard.press("F5");
+  await page.keyboard.press("Shift+F5");
+  await page.keyboard.press("Alt+F5");
+  await settle(300);
+}
+
 // ── voice commands ──────────────────────────────────────────────────────
 if (want("voice")) {
   const hasModel = existsSync(path.join(dist, "voice", "model.tar.gz"));

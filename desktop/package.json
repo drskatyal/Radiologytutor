@@ -1,7 +1,7 @@
 {
   "name": "flowrad-viewer",
   "private": true,
-  "version": "0.6.4",
+  "version": "0.7.0",
   "type": "module",
   "description": "FlowRad Viewer \u2014 free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
   "scripts": {

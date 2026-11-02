@@ -128,6 +128,9 @@ export default function App() {
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
   const [syncScroll, setSyncScroll] = useState(false);
   const [referenceLines, setReferenceLines] = useState(false);
+  /** Window/level and zoom/pan follow the active viewport across the visible ones. */
+  const [syncVoi, setSyncVoi] = useState(false);
+  const [syncZoom, setSyncZoom] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(true);
   const [distractionFree, setDistractionFree] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -866,6 +869,8 @@ export default function App() {
       if (cancelled) return;
       const ids = visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i));
       setSynchronized(engine, "slice", ids, syncScroll);
+      setSynchronized(engine, "voi", ids, syncVoi);
+      setSynchronized(engine, "zoompan", ids, syncZoom);
       const activeId = getHandle(cellKey(activeCell)) ? viewportIdFor(activeCell) : null;
       setReferenceSource(engine, activeId, referenceLines && ids.length > 1);
       setScaleOverlay(engine, settings.scaleBar);
@@ -873,7 +878,18 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [syncScroll, referenceLines, visibleCells, activeCell, handlesVersion, studies.length, settings.scaleBar]);
+  }, [syncScroll, syncVoi, syncZoom, referenceLines, visibleCells, activeCell, handlesVersion, studies.length, settings.scaleBar]);
+
+  /** Register the visible stacks at what each shows now (a prior, or a series with another FOV / frame). */
+  const linkAtCurrent = useCallback(() => {
+    void getEngine().then((engine) => {
+      const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
+      if (ids.length < 2) return toast({ title: "Linking needs two viewports", variant: "info", duration: 2500 });
+      linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
+      setSyncScroll(true);
+      toast({ title: "Linked at the current position", description: "Scrolling now keeps this anatomy together.", variant: "success", duration: 2500 });
+    });
+  }, [cells, activeCell, toast]);
 
   useEffect(() => {
     if (!studies.length) return;
@@ -1143,6 +1159,12 @@ export default function App() {
           return setAnnotationsVisible((v) => !v);
         case "toggleSync":
           return toggleSync();
+        case "toggleSyncVoi":
+          return setSyncVoi((v) => !v);
+        case "toggleSyncZoom":
+          return setSyncZoom((v) => !v);
+        case "linkAtCurrent":
+          return linkAtCurrent();
         case "toggleReferenceLines":
           return setReferenceLines((v) => !v);
         case "toggleBrowser":
@@ -1169,7 +1191,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studies.length, leftTool, toggleSync, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
+    [studies.length, leftTool, toggleSync, linkAtCurrent, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
   );
 
   voiceAction.current = (a: VoiceAction) => {
@@ -1324,6 +1346,11 @@ export default function App() {
           onLayout={applyLayout}
           syncScroll={syncScroll}
           onToggleSync={toggleSync}
+          syncVoi={syncVoi}
+          syncZoom={syncZoom}
+          onToggleSyncVoi={() => setSyncVoi((v) => !v)}
+          onToggleSyncZoom={() => setSyncZoom((v) => !v)}
+          onLinkAtCurrent={linkAtCurrent}
           referenceLines={referenceLines}
           onToggleReferenceLines={() => setReferenceLines((v) => !v)}
           overlay={overlay}
@@ -1614,6 +1641,8 @@ export default function App() {
           )}
           <span className="ml-auto">
             {syncScroll && "Sync · "}
+            {syncVoi && "W/L sync · "}
+            {syncZoom && "Zoom sync · "}
             {leftTool.replace(/([a-z])([A-Z])/g, "$1 $2")} · Not for diagnostic use
           </span>
         </footer>

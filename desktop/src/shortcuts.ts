@@ -30,6 +30,9 @@ export type ShortcutAction =
   | { type: "toggleOverlay" }
   | { type: "toggleAnnotations" }
   | { type: "toggleSync" }
+  | { type: "toggleSyncVoi" }
+  | { type: "toggleSyncZoom" }
+  | { type: "linkAtCurrent" }
   | { type: "toggleReferenceLines" }
   | { type: "toggleBrowser" }
   | { type: "fullscreen" }
@@ -177,7 +180,10 @@ export const BINDINGS: Binding[] = [
   // Layout
   { keys: "Shift+1 … 7", does: "Layouts 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3", group: "Layout", match: (e, m) => plain(e, m) && !!e.shiftKey && digit(e) >= 1 && digit(e) <= 7, action: { type: "layout", rows: 1, cols: 1 } },
   { keys: "Enter", does: "Maximise / restore the active viewport", group: "Layout", match: (e, m) => plain(e, m) && !e.shiftKey && e.key === "Enter", action: { type: "maximizeCell" } },
-  { keys: "F5", does: "Synchronise scrolling", group: "Layout", match: (e) => e.key === "F5", action: { type: "toggleSync" } },
+  { keys: "F5", does: "Synchronise scrolling (by position)", group: "Layout", match: (e) => e.key === "F5" && !e.shiftKey && !e.altKey, action: { type: "toggleSync" } },
+  { id: "sync.voi", keys: "Shift+F5", does: "Synchronise window / level", group: "Layout", match: (e) => e.key === "F5" && !!e.shiftKey && !e.altKey, action: { type: "toggleSyncVoi" } },
+  { id: "sync.zoom", keys: "Alt+F5", does: "Synchronise zoom and pan", group: "Layout", match: (e) => e.key === "F5" && !!e.altKey && !e.shiftKey, action: { type: "toggleSyncZoom" } },
+  { id: "sync.link", keys: "Mod+Shift+L", does: "Link viewports at what they show now (register a prior / other FOV)", group: "Layout", match: (e, m) => m && !!e.shiftKey && keyIs(e, "l"), action: { type: "linkAtCurrent" } },
   { keys: "Mod+F12", does: "Reference lines", group: "Layout", match: (e, m) => m && !e.shiftKey && e.key === "F12", action: { type: "toggleReferenceLines" } },
 
   // Annotate
