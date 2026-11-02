@@ -35,12 +35,12 @@ export async function driveNativeTools(setTool: (t: string) => void) {
     await frame();
     await dragLine(a as [number, number], b as [number, number]);
   }
-  // Probe: one click in the middle.
+  // Probe: one click on free anatomy (a click ON an annotation selects it).
   setTool("Probe");
   await frame();
   await frame();
-  fire("pointerdown", at(0.5, 0.5));
-  fire("pointerup", at(0.5, 0.5));
+  fire("pointerdown", at(0.5, 0.3));
+  fire("pointerup", at(0.5, 0.3));
   await wait(400);
   const spacing: [number, number] = [1, 1];
   for (const a of allAnnotations()) results[a.tool] = { text: measureText(a, spacing), stats: a.stats ?? null, value: a.value ?? null, points: a.points };
