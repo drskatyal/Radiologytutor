@@ -59,8 +59,36 @@ import {
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import { hapticTick, isSwipeUp } from "@/lib/sheetGesture";
 import { EDGE_TOOLBAR_PX, NARROW_LAYOUT_MEDIA, READING_SERIES_ASIDE_PX, requestStageFullscreen } from "@/lib/viewerLayout";
+import {
+  importWithRetry,
+  isChunkLoadError,
+  mayReloadForChunkError,
+  reloadForChunkError,
+  takeSavedPlace,
+} from "@/lib/chunkRecovery";
+import {
+  clearStudyHandles,
+  recallStudyHandles,
+  regainStudyHandles,
+  rememberStudyHandles,
+} from "@/lib/studyHandleStore";
 
-const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
+/** Raised when the viewer's own code could not be fetched (after retries). */
+const VIEWER_CHUNK_ERROR_EVENT = "flowrad:viewer-chunk-error";
+
+/** Stands in for the viewer when its code could not be fetched: calm, not an error. */
+function ViewerCodeUnavailable() {
+  return <UpdatingNotice />;
+}
+
+const CornerstoneViewer = dynamic(
+  () =>
+    importWithRetry(() => import("@/components/CornerstoneViewer")).catch((error: unknown) => {
+      if (!isChunkLoadError(error)) throw error;
+      window.dispatchEvent(new CustomEvent(VIEWER_CHUNK_ERROR_EVENT));
+      return ViewerCodeUnavailable as unknown as typeof import("@/components/CornerstoneViewer").default;
+    }),
+  {
   ssr: false,
   loading: () => (
     <div className="flex h-full min-h-64 w-full items-center justify-center bg-imaging text-white">
@@ -70,7 +98,8 @@ const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer")
       </span>
     </div>
   ),
-});
+  }
+);
 
 export type LocalViewerTone = "page" | "reading";
 
@@ -153,6 +182,15 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [openedFiles, setOpenedFiles] = useState<File[] | null>(null);
   /** Pop-out: the series to show once its files are read. */
   const wantSeries = useRef<string | null>(null);
+  // Recovery from a new build arriving under an open tab (lib/chunkRecovery):
+  // "updating" while it reloads, "failed" when a reload already happened.
+  const [recovery, setRecovery] = useState<"updating" | "failed" | null>(null);
+  // After that reload: the study's handles (Chromium) and where the reader was.
+  const [restore, setRestore] = useState<{ handles: FileSystemHandle[]; place?: Record<string, number> } | null>(null);
+  const restorePlace = useRef<Record<string, number> | null>(null);
+  const pendingSlice = useRef<number | null>(null);
+  // Handles of the study being opened (folder picker / drop), kept on open.
+  const openingHandles = useRef<FileSystemHandle[]>([]);
   const [popOutNote, setPopOutNote] = useState<string | null>(null);
   /**
    * Chromium's `<input webkitdirectory>` asks "Upload N files to this site?" —
@@ -304,6 +342,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     setDrawerOpen(false);
     setExpanded(false);
     setPhase({ state: "idle" });
+    setRestore(null);
+    void clearStudyHandles();
     // Close recycles the decode workers (their heaps are the study's memory).
     // Once that is done, boot the fresh ones and re-prime the GL context on
     // idle — the same synthetic warm as page load — so a second study opens
@@ -422,7 +462,20 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           setActiveSeries(at.i);
         }
         setOpenedFiles(files);
+        // Back where the reader was before a recovery reload (numbers only).
+        const place = restorePlace.current;
+        restorePlace.current = null;
+        if (place) {
+          const st = result.studies[place.study ?? -1];
+          if (st?.series[place.series ?? -1]) {
+            setActiveStudy(place.study);
+            setActiveSeries(place.series);
+            pendingSlice.current = place.slice ?? null;
+          }
+        }
         setPhase({ state: "open", result, pinned: located ? pinnedNow : null });
+        setRestore(null);
+        void rememberStudyHandles(openingHandles.current);
         // Decoded + raw must fit the device budget, not decoded alone (see
         // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
         const headers = result.studies.flatMap((study) => study.series.flatMap((series) => series.instances));
@@ -433,6 +486,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       } catch (error) {
         rejectFull(new Error("failed"));
         if (controller.signal.aborted) return;
+        if (isChunkLoadError(error)) {
+          window.dispatchEvent(new CustomEvent(VIEWER_CHUNK_ERROR_EVENT));
+          return;
+        }
         void release();
         setPhase({
           state: "error",
@@ -452,16 +509,101 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     } catch {
       return; // cancelled
     }
+    openingHandles.current = [handle];
     const files = await filesFromDirectoryHandle(handle);
     if (files.length > 0) void ingest(files);
     else setPhase({ state: "empty", inspected: 0, warnings: [] });
   }, [ingest]);
 
+  // The viewer's code could not be fetched even after retries: a new build
+  // replaced the one this tab started with (or the network dropped it). Show
+  // a calm "updating" state and reload once, keeping the reader's place;
+  // never a raw error on the black stage. A second failure within minutes
+  // does not loop: it offers a Reload button instead.
+  const recoveringRef = useRef(false);
+  const recoverFromChunkError = useCallback(() => {
+    if (recoveringRef.current) return;
+    recoveringRef.current = true;
+    if (!mayReloadForChunkError()) {
+      setRecovery("failed");
+      return;
+    }
+    setRecovery("updating");
+    const slice = viewerControls.current?.getStartState?.().sliceIndex;
+    const place: Record<string, number> = { study: activeStudy, series: activeSeries };
+    if (typeof slice === "number" && slice >= 0) place.slice = slice;
+    // A beat so "Updating viewer, reloading…" is actually seen.
+    window.setTimeout(() => {
+      if (!reloadForChunkError(phase.state === "open" || phase.state === "reading" ? place : undefined)) setRecovery("failed");
+    }, 400);
+  }, [activeStudy, activeSeries, phase.state]);
+  const recoverRef = useRef(recoverFromChunkError);
+  recoverRef.current = recoverFromChunkError;
+
+  // Only what the reader is waiting for triggers recovery (the viewer's mount,
+  // the study's parse); a background warm-up that fails is simply retried
+  // when the code is actually needed.
+  useEffect(() => {
+    const onChunkError = () => recoverRef.current();
+    window.addEventListener(VIEWER_CHUNK_ERROR_EVENT, onChunkError);
+    return () => window.removeEventListener(VIEWER_CHUNK_ERROR_EVENT, onChunkError);
+  }, []);
+
+  // After a recovery reload: offer the study back (Chromium keeps a handle;
+  // elsewhere the reader opens it again) and remember where they were.
+  useEffect(() => {
+    const saved = takeSavedPlace();
+    if (!saved?.viewer) return;
+    let alive = true;
+    void recallStudyHandles().then((handles) => {
+      if (alive) setRestore({ handles, place: saved.viewer });
+    });
+    restorePlace.current = saved.viewer;
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const reopenStudy = useCallback(async () => {
+    if (!restore) return;
+    const handles = await regainStudyHandles(restore.handles);
+    if (handles.length === 0) {
+      setRestore({ handles: [], place: restore.place });
+      return;
+    }
+    const files: File[] = [];
+    for (const handle of handles) {
+      if (handle.kind === "directory") files.push(...(await filesFromDirectoryHandle(handle as FileSystemDirectoryHandle)));
+      else {
+        try {
+          files.push(await (handle as FileSystemFileHandle).getFile());
+        } catch {
+          /* moved or deleted since */
+        }
+      }
+    }
+    if (files.length === 0) {
+      setRestore({ handles: [], place: restore.place });
+      return;
+    }
+    openingHandles.current = handles;
+    restorePlace.current = restore.place ?? null;
+    void ingest(files);
+  }, [restore, ingest]);
+
   const onDrop = useCallback(
     async (event: React.DragEvent<HTMLElement>) => {
       event.preventDefault();
       setDragging(false);
+      // Handles must be requested before the first await (Chromium only).
+      const handlePromises = Array.from(event.dataTransfer.items ?? []).map((item) =>
+        (item as DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> })
+          .getAsFileSystemHandle?.()
+          ?.catch(() => null) ?? Promise.resolve(null)
+      );
       const files = await filesFromDataTransfer(event.dataTransfer);
+      const handles = await Promise.all(handlePromises);
+      openingHandles.current = handles.every(Boolean) ? (handles as FileSystemHandle[]) : [];
       if (files.length > 0) void ingest(files);
     },
     [ingest]
@@ -566,6 +708,32 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     </div>
   );
 
+  if (recovery) {
+    return (
+      <div className={cn("flex flex-col", reading ? "h-full min-h-0" : "min-h-96")}>
+        {recovery === "updating" ? (
+          <UpdatingNotice />
+        ) : (
+          <div
+            data-testid="viewer-recovery"
+            role="alert"
+            className="flex h-full min-h-64 w-full flex-1 items-center justify-center bg-imaging p-6 text-white"
+          >
+            <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+              <p className="text-base font-semibold">The viewer could not load</p>
+              <p className="text-sm text-white/70">
+                Check your connection, then reload the page. Your files stayed on this computer.
+              </p>
+              <Button variant="imaging" onClick={() => window.location.reload()}>
+                Reload page
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
       <input
@@ -580,6 +748,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
           event.target.value = "";
+          openingHandles.current = [];
           if (files.length > 0) void ingest(files);
         }}
       />
@@ -592,6 +761,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
           event.target.value = "";
+          openingHandles.current = [];
           if (files.length > 0) void ingest(files);
         }}
       />
@@ -707,6 +877,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp
+                onChunkLoadError={recoverFromChunkError}
+                onReady={(controls) => {
+                  const slice = pendingSlice.current;
+                  if (slice == null || slice < 0) return;
+                  pendingSlice.current = null;
+                  controls.applyEvent({ t: 0, type: "slice", index: slice });
+                }}
               />
             </div>
             {/* Swipe up (or tap) for the series drawer. */}
@@ -831,7 +1008,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               tone={reading ? "imaging" : "default"}
               icon={<HardDrive className="h-6 w-6" aria-hidden />}
               title={
-                phase.state === "empty"
+                restore && phase.state === "idle"
+                  ? "The viewer was updated"
+                  : phase.state === "empty"
                   ? "No DICOM images in that selection"
                   : phase.state === "error"
                     ? "That study could not be read"
@@ -840,7 +1019,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                       : "Open a study from this computer"
               }
               description={
-                phase.state === "empty"
+                restore && phase.state === "idle"
+                  ? restore.handles.length > 0
+                    ? "A new version arrived while your study was open. Reopen it to continue where you were. Your files stayed on this computer."
+                    : "A new version arrived while your study was open. Open it again to continue where you were. Your files stayed on this computer."
+                  : phase.state === "empty"
                   ? phase.warnings[0] ??
                     `Inspected ${formatCount(phase.inspected)} files and none were DICOM images. A study CD usually has them under a DICOM/ folder.`
                   : phase.state === "error"
@@ -850,6 +1033,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               action={
                 <div className="flex flex-col items-center gap-3">
                   <div className="flex flex-wrap items-center justify-center gap-2">
+                    {restore && phase.state === "idle" && restore.handles.length > 0 && (
+                      <Button variant={reading ? "imaging" : "primary"} onClick={() => void reopenStudy()}>
+                        Reopen study
+                      </Button>
+                    )}
                     {folderButton}
                     <FilePickerButton
                       inputId={fileInputId}
@@ -1106,3 +1294,21 @@ async function filesFromDataTransfer(transfer: DataTransfer): Promise<File[]> {
 }
 
 export default LocalStudyViewer;
+
+/** Shown while the page reloads onto the live build (never a raw error). */
+function UpdatingNotice() {
+  return (
+    <div
+      data-testid="viewer-updating"
+      role="status"
+      aria-live="polite"
+      className="flex h-full min-h-64 w-full flex-1 items-center justify-center bg-imaging p-6 text-white"
+    >
+      <div className="flex flex-col items-center gap-3 text-center">
+        <Spinner size="md" label="Updating viewer" />
+        <p className="text-sm font-medium">Updating viewer, reloading…</p>
+        <p className="text-xs text-white/60">Your files stay on this computer.</p>
+      </div>
+    </div>
+  );
+}
