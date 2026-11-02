@@ -749,6 +749,12 @@ if (want("contextmenu")) {
       }
     }
     check("contextmenu: pane 0 shows the 300-slice axial CT", (await imagesIn0()) === 300, `${await imagesIn0()} images`);
+    // Switching the pane starts loading + prefetching that series; on the
+    // 2-core CI runner (software GL) that work overlapped the first opens
+    // (100 / 93 ms, then 1.2 ms once it was done). Let it finish first: this
+    // measures the menu, not a series load.
+    await page.waitForFunction(() => document.querySelectorAll('[data-loading="1"]').length === 0, null, { timeout: 10_000 }).catch(() => undefined);
+    await settle(2500);
   }
   const b0 = await box(0);
   const at = (fx, fy) => [b0.x + b0.width * fx, b0.y + b0.height * fy];
@@ -774,7 +780,7 @@ if (want("contextmenu")) {
   const closeMenu = async () => {
     await page.keyboard.press("Escape");
     await imageMenu.waitFor({ state: "detached", timeout: 2000 }).catch(() => undefined);
-    await settle(200);
+    await settle(500);
   };
   // Steady state = median of three opens (the spec's < 50 ms). The very first
   // open of a session also pays one-off JIT / first-render costs, which on the
