@@ -12,6 +12,7 @@
 mod anonymize;
 mod documents;
 mod header;
+mod native;
 mod pacs;
 mod pet;
 mod preview;
@@ -412,6 +413,51 @@ async fn process_memory() -> procmem::TreeMem {
     tauri::async_runtime::spawn_blocking(procmem::current_tree).await.unwrap_or(procmem::TreeMem { total_mb: 0, processes: vec![] })
 }
 
+// ───────────── Phase 2 native renderer (native.rs, FLOWRAD_NATIVE=1) ─────────────
+
+#[tauri::command]
+fn native_status(native: tauri::State<'_, native::Shared>) -> native::NativeStatus {
+    native.status()
+}
+
+/// Create the GPU surface under the page and make the webview transparent.
+#[tauri::command]
+async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) -> Result<native::NativeStatus, String> {
+    if !native::enabled() {
+        return Ok(native.status());
+    }
+    let status = native.init(&window);
+    if status.ready {
+        // Where the page draws nothing, the native surface shows through.
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let origin = window.inner_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
+        native.set_window_facts(origin, scale);
+    }
+    Ok(native.status())
+}
+
+/// The page's viewport rectangles (CSS px); draws a frame. Returns its CPU ms.
+#[tauri::command]
+async fn native_set_cells(window: tauri::WebviewWindow, cells: Vec<native::Cell>, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    native.set_cells(cells);
+    let scale = window.scale_factor().unwrap_or(1.0);
+    if let Ok(size) = window.inner_size() {
+        native.resize(size.width, size.height);
+    }
+    if let Ok(p) = window.inner_position() {
+        native.set_window_facts((p.x, p.y), scale);
+    }
+    native.render(scale)
+}
+
+/// Window / level of the test image (stored units); draws a frame.
+#[tauri::command]
+async fn native_set_wl(window: tauri::WebviewWindow, center: f32, width: f32, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    native.set_wl(center, width);
+    native.render(window.scale_factor().unwrap_or(1.0))
+}
+
 /// Test hook: FLOWRAD_SIMULATE_BLANK_GPU=1 makes the paint check read the GPU
 /// path as black, to exercise the CPU fallback on any machine.
 #[tauri::command]
@@ -591,12 +637,20 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .manage(viewer_windows::WindowHandoff::default())
+        .manage(native::Shared::default())
         // Closing the main window ends the session: viewer windows on other
         // monitors go with it (their webviews and memory with them).
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if let tauri::WindowEvent::Destroyed = event {
                     window.app_handle().exit(0);
+                }
+                // Native surface follows the window (no-op until it exists).
+                if let tauri::WindowEvent::Resized(size) = event {
+                    if let Some(native) = window.app_handle().try_state::<native::Shared>() {
+                        native.resize(size.width, size.height);
+                        let _ = native.render(window.scale_factor().unwrap_or(1.0));
+                    }
                 }
             }
         })
@@ -671,6 +725,10 @@ pub fn run() {
             viewer_windows::take_window_payload,
             viewer_windows::viewer_windows,
             viewer_windows::close_viewer_window,
+            native_status,
+            native_init,
+            native_set_cells,
+            native_set_wl,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
