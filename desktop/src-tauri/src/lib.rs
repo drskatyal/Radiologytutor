@@ -13,6 +13,8 @@ mod anonymize;
 mod documents;
 mod header;
 mod image_store;
+#[cfg(target_os = "macos")]
+mod mac_mouse;
 mod native;
 mod native_view;
 mod pacs;
@@ -903,6 +905,17 @@ async fn volume_build(state: tauri::State<'_, AppState>, file_ids: Vec<u32>) -> 
         .map_err(|e| e.to_string())?
 }
 
+/// Which native mouse inputs the page wants forwarded (macOS: side buttons
+/// WKWebView reports as "middle", and notched tilt). A no-op elsewhere, where
+/// the webview delivers them itself.
+#[tauri::command]
+fn native_mouse_wanted(buttons: bool, tilt: bool) {
+    #[cfg(target_os = "macos")]
+    mac_mouse::set_wanted(buttons, tilt);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (buttons, tilt);
+}
+
 /// A view of the native volume closed; freed when no view uses it.
 #[tauri::command]
 fn volume_close(key: String) {
@@ -1101,10 +1114,14 @@ pub fn run() {
             native_roi_stats,
             native_cell_plane,
             native_cell_render3d,
+            native_mouse_wanted,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
     mark(0);
+    // macOS: side buttons and tilt wheels for bindings (inactive until asked).
+    #[cfg(target_os = "macos")]
+    mac_mouse::install(app.handle());
     // Native mode (Phase 2): the GPU surface paints the window at once, while
     // WebView2 is still starting; the webview is transparent over it.
     if native::enabled() {

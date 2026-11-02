@@ -41,7 +41,7 @@ import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } fro
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
-import { inputIndex, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
+import { inputIndex, isMac, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
 import { useSyncStatus } from "./components/syncStatus";
@@ -2107,6 +2107,28 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [runAction, dialog, settings.bindings]);
+
+  // macOS: WKWebView can't tell side buttons from the middle one, nor a tilt
+  // wheel from a trackpad, so the shell forwards them (src/macMouse.ts). Only
+  // what the bindings use (or the open Mouse & Keyboard panel) is forwarded.
+  const macBindingSpecs = useMemo(() => [...inputIndex(DESKTOP_COMMANDS, settings.bindings ?? {}).keys()], [settings.bindings]);
+  useEffect(() => {
+    if (!isMac()) return;
+    let stop: (() => void) | null = null;
+    let gone = false;
+    void import("./macMouse").then((m) => {
+      if (gone) return;
+      stop = m.startNativeMouse();
+    });
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (!isMac()) return;
+    void import("./macMouse").then((m) => m.setNativeMouseBindings(macBindingSpecs));
+  }, [macBindingSpecs]);
 
   // Mouse buttons (middle, back / forward, any extra button of a gaming or
   // programmable mouse) and wheel tilt bound to commands in Settings. Only

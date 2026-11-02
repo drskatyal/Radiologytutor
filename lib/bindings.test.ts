@@ -35,8 +35,60 @@ import {
   wheelActionFor,
   wheelRules,
   withMouseCommands,
+  engineModifierName,
+  isNotchedHorizontal,
+  keyLabel,
+  nativeMouseWanted,
   type BindingCommand,
 } from "../packages/viewer-core/src/bindings/index.ts";
+
+test("macOS: Mod is ⌘ (Meta) for keys, mouse and the engine; Ctrl elsewhere", () => {
+  // The same stored default (Mod+…) fires from ⌘ on a Mac and Ctrl on Windows.
+  assert.equal(keySpecOf({ key: "z", code: "KeyZ", metaKey: true }, true), "Mod+Z");
+  assert.equal(keySpecOf({ key: "z", code: "KeyZ", ctrlKey: true }, false), "Mod+Z");
+  assert.equal(keySpecOf({ key: "z", code: "KeyZ", ctrlKey: true }, true), "Ctrl+Z", "the Mac's Control key is its own modifier");
+  assert.equal(keyMatches("Mod+Z", { key: "z", code: "KeyZ", metaKey: true }, true), true);
+  assert.equal(keyMatches("Mod+Z", { key: "z", code: "KeyZ", ctrlKey: true }, true), false);
+  assert.equal(mouseSpecOf(2, "drag", { metaKey: true }, true), "Mod+Mouse2Drag");
+  assert.equal(mouseSpecOf(2, "drag", { ctrlKey: true }, false), "Mod+Mouse2Drag");
+  // Engine (Cornerstone) modifier for a rule: Meta on a Mac.
+  assert.equal(engineModifierName({ mod: true }, true), "Meta");
+  assert.equal(engineModifierName({ mod: true }, false), "Ctrl");
+  assert.equal(engineModifierName({ mod: true, shift: true }, true), "ShiftMeta");
+  assert.equal(engineModifierName({ mod: true, alt: true }, true), "AltMeta");
+  assert.equal(engineModifierName({ mod: true, alt: true }, false), "CtrlAlt");
+  assert.equal(engineModifierName({}, true), "");
+  // ⌘+right drag zooms on a Mac (preset Mod+Mouse2Drag).
+  const rules = dragRules(MOUSE_COMMANDS);
+  assert.equal(dragToolFor(rules, 2, { metaKey: true }, true), "Zoom");
+  assert.equal(wheelActionFor(wheelRules(MOUSE_COMMANDS), { metaKey: true }, true), "slab");
+  // Labels use the Mac glyphs.
+  assert.equal(keyLabel("Mod+Shift+R", true), "⌘⇧R");
+  assert.equal(keyLabel("Mod+Shift+R", false), "Ctrl+Shift+R");
+});
+
+test("macOS: a trackpad swipe is not a tilt notch; a notched wheel / native tilt is", () => {
+  // Trackpad: precise pixel deltas, wheelDeltaX = -3 × deltaX.
+  assert.equal(tiltSpecOf({ deltaX: 12.5, deltaY: 0, deltaMode: 0, wheelDeltaX: -37.5 }, true), null);
+  assert.equal(tiltSpecOf({ deltaX: 40, deltaY: 0, deltaMode: 0, wheelDeltaX: -120 }, true), null, "-3×deltaX even at 120 is a trackpad");
+  assert.equal(tiltSpecOf({ deltaX: 40, deltaY: 0, deltaMode: 0 }, true), null, "no legacy delta: not provably a notch");
+  // The desktop shell's native tilt (line mode) and a notched wheel's ±120.
+  assert.equal(tiltSpecOf({ deltaX: -3, deltaY: 0, deltaMode: 1 }, true), "WheelLeft");
+  assert.equal(tiltSpecOf({ deltaX: 4, deltaY: 0, deltaMode: 0, wheelDeltaX: -120 }, true), "WheelRight");
+  assert.equal(isNotchedHorizontal({ deltaX: 4, deltaY: 0, wheelDeltaX: 240 }), true);
+  // Windows / Linux unchanged: any horizontal step is tilt.
+  assert.equal(tiltSpecOf({ deltaX: 40, deltaY: 0, deltaMode: 0 }, false), "WheelRight");
+});
+
+test("native mouse: forward side buttons / tilt only when a binding uses them", () => {
+  assert.deepEqual(nativeMouseWanted(["R", "Mod+Mouse2Drag", "Mouse1Drag"]), { buttons: false, tilt: false });
+  assert.deepEqual(nativeMouseWanted(["Mouse3"]), { buttons: true, tilt: false });
+  assert.deepEqual(nativeMouseWanted(["Shift+Mouse6Drag"]), { buttons: true, tilt: false });
+  assert.deepEqual(nativeMouseWanted(["Alt+WheelRight"]), { buttons: false, tilt: true });
+  // The RadiAnt preset binds back / forward to the previous / next series.
+  const preset = [...inputIndex(withMouseCommands(ACTIONS)).keys()];
+  assert.equal(nativeMouseWanted(preset).buttons, true);
+});
 
 const ACTIONS: BindingCommand[] = [
   { id: "rotate.cw", label: "Rotate 90° clockwise", group: "View", kind: "action", defaults: ["R"] },
