@@ -11,8 +11,10 @@
 // the page used, with and without compression, and checks the body is the
 // complete chunk (it parses, and registers the chunk id its name says).
 //
-// --expect-commit polls /api/version until the deployed commit matches (a
-// redeploy check), up to --wait-deploy-s seconds.
+// --expect-commit polls /api/version until the deployed commit is that commit
+// or a later one that contains it (Railway may go straight to a newer push),
+// up to --wait-deploy-s seconds. Containment is checked with git in the
+// checkout, fetching --deploy-branch (default: the integration branch).
 //
 // Writes a Markdown report to stdout (and $GITHUB_STEP_SUMMARY when set);
 // exits non-zero when the study did not paint or a chunk is broken.
@@ -21,6 +23,7 @@ import { chromium, firefox, webkit } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { execFileSync } from "node:child_process";
 
 const [base, studyDir] = process.argv.slice(2);
 const arg = (name, fallback) => {
@@ -34,6 +37,7 @@ if (!base || !studyDir) {
 const root = base.replace(/\/$/, "");
 const expectCommit = arg("--expect-commit", null);
 const waitDeployS = Number(arg("--wait-deploy-s", 900));
+const deployBranch = arg("--deploy-branch", "claude/epic-noether-3nvcbf");
 const lines = [];
 const out = (s = "") => lines.push(s);
 
@@ -46,18 +50,37 @@ async function version() {
   }
 }
 
+const git = (...args) => execFileSync("git", args, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+let fetched = false;
+/** The deployed commit is the expected one, or a later one on the branch that contains it. */
+function containsExpected(commit) {
+  const deployedSha = String(commit ?? "");
+  if (!expectCommit || !deployedSha) return !expectCommit;
+  if (deployedSha.startsWith(expectCommit.slice(0, 7))) return true;
+  try {
+    if (!fetched) {
+      git("fetch", "-q", "--depth=200", "origin", deployBranch);
+      fetched = true;
+    }
+    git("merge-base", "--is-ancestor", expectCommit, deployedSha);
+    return true;
+  } catch {
+    return false; // not an ancestor, or the deployed commit is unknown here
+  }
+}
+
 let deployed = await version();
 if (expectCommit) {
   const deadline = Date.now() + waitDeployS * 1000;
-  while (!String(deployed.commit ?? "").startsWith(expectCommit.slice(0, 7)) && Date.now() < deadline) {
+  while (!containsExpected(deployed.commit) && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 15_000));
     deployed = await version();
   }
 }
 out(`### Free viewer production smoke (${process.env.PROD_SMOKE_BROWSER || "chromium"}): ${root}/viewer`);
 out("");
-out(`Deployed: \`${JSON.stringify(deployed)}\`${expectCommit ? ` (expected ${expectCommit.slice(0, 7)})` : ""}`);
-const deployOk = !expectCommit || String(deployed.commit ?? "").startsWith(expectCommit.slice(0, 7));
+const deployOk = containsExpected(deployed.commit);
+out(`Deployed: \`${JSON.stringify(deployed)}\`${expectCommit ? ` (expected ${expectCommit.slice(0, 7)} or a later commit containing it: ${deployOk ? "yes" : "no"})` : ""}`);
 
 
 // PROD_SMOKE_BROWSER=chromium|firefox|webkit (WebKit is Safari's engine).
