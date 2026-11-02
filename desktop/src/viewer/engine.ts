@@ -225,6 +225,12 @@ async function createEngine(): Promise<Engine> {
     steps[name] = Math.round(now - mark);
     mark = now;
   };
+  // dcmjs (+ xmlbuilder2) is ~40% of Cornerstone core's module graph and all
+  // of it evaluated in the core import's single task (54-114 ms 'engine:
+  // import' on perf-windows). Evaluating it first, on its own, splits that.
+  await import("dcmjs");
+  step("dcmjsMs");
+  await yieldToMain();
   // Fetch + compile all three in parallel; each evaluates in its own task.
   const coreP = import("@cornerstonejs/core");
   const toolsP = import("@cornerstonejs/tools");
@@ -324,22 +330,8 @@ async function createEngine(): Promise<Engine> {
 
   await yieldToMain();
   const renderingEngine = new core.RenderingEngine(ENGINE_ID);
-  // Create the engine's WebGL context now, in its own task, instead of inside
-  // the first image's render (which made that render a 50 ms+ freeze). vtk's
-  // initialize() asks the same canvas with the same default attributes and
-  // gets this context back.
-  await yieldToMain();
-  try {
-    type GLWindow = { getOpenGLRenderWindow(): { get3DContext(): unknown } };
-    const impl = (renderingEngine as unknown as {
-      _implementation?: { ensureContextPool?(): { getAllContexts(): GLWindow[] }; offscreenMultiRenderWindow?: GLWindow };
-    })._implementation;
-    const windows = impl?.ensureContextPool?.().getAllContexts() ?? (impl?.offscreenMultiRenderWindow ? [impl.offscreenMultiRenderWindow] : []);
-    for (const w of windows) w.getOpenGLRenderWindow().get3DContext();
-    engineTimings.steps!.earlyGlContexts = windows.length;
-  } catch {
-    /* created on first render instead */
-  }
+  // The constructor creates the engine's WebGL context (its own task):
+  // give the main thread back before tools and the first render.
   await yieldToMain();
   const engine: Engine = { core, tools, renderingEngine };
   buildStackGroup(engine);

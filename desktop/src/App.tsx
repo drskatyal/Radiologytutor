@@ -5,7 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -493,7 +493,11 @@ export default function App() {
         if (seq !== openSeq.current) return;
         markPhase("study: group series");
         const built = buildStudies([...acc.values()]);
-        setStudies(built);
+        // After the first series is up, the growing list re-renders as a
+        // transition: React yields every few ms instead of one long task per
+        // batch (10,310-image MRI: 58-105 ms 'study: group series' freezes).
+        if (firstShown) startTransition(() => setStudies(built));
+        else setStudies(built);
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;

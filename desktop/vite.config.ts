@@ -55,7 +55,7 @@ function cornerstoneGpuProbeSeam(): Plugin {
 }
 
 function preloadEngineChunks(): Plugin {
-  const engine = /node_modules\/@cornerstonejs\/(core|tools|dicom-image-loader)\//;
+  const engine = /node_modules\/(@cornerstonejs\/(core|tools|dicom-image-loader)|dcmjs)\//;
   return {
     name: "flowrad-preload-engine",
     apply: "build",
