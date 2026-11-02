@@ -73,7 +73,10 @@
       },
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "headerImage": "icons/installer/nsis-header.bmp",
+        "sidebarImage": "icons/installer/nsis-sidebar.bmp",
+        "installerIcon": "icons/icon.ico"
       },
       "wix": {
         "language": "en-US"
