@@ -198,6 +198,10 @@ jobs:
       MPR_MAX_MS: "2000"
       MPR_MAX_MB: "1200"
       IDLE_MAX_MB: "400"
+      # WARP (software GPU) on the runner: a JS-renderer run that falls back to
+      # the CPU or hits a long one-time engine task is discarded and repeated
+      # (max 2, logged); thresholds unchanged. Never set on the HP.
+      FLOWRAD_BENCH_WARP_RETRY: "1"
       # CI runner: WebView2 alone takes ~0.4-0.5 s before our page loads, so CI
       # gates the app's own share (window build + page load -> first paint)
       # and keeps the total as a backstop. The 500 ms total is checked on real
