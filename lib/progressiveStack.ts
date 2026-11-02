@@ -30,6 +30,7 @@ import { SeriesBundle, fetchSeriesManifest } from "./dicomCdn/client";
 import { attachBundle } from "./dicomCdn/cornerstoneBridge";
 import { JsonArrayScanner } from "./jsonArrayStream";
 import { fetchJsonShared } from "./sharedJsonFetch";
+import { runBounded } from "./seriesFill";
 import { stackOpenIndex } from "./stackIndex";
 import {
   ACTIVE_PREFETCH_RADIUS,
@@ -98,6 +99,47 @@ export function prefetchImageIndexes(
           /* metadata not registered yet, or the loader rejected the id */
         }
       }
+    })
+    .catch(() => undefined);
+}
+
+/** Fill loads in flight: enough to keep every decode worker fed, few enough to stop fast. */
+const FILL_CONCURRENCY = 8;
+
+/**
+ * Whole-series background fill: the same `prefetch` loads, but at most
+ * `concurrency` in flight and stopped by `signal`. Firing every slice at once
+ * (as `prefetchImageIndexes` does for a handful of neighbours) put hundreds
+ * of reads and decodes in flight that nothing could take back: closing a
+ * local study left them decoding ahead of the next one's first image
+ * (seconds, not milliseconds). Unstarted slices are simply never requested —
+ * no pending load object is left in Cornerstone's cache — and the few in
+ * flight finish on their own.
+ */
+export function fillImageIndexes(
+  imageIds: readonly string[],
+  indexes: readonly number[],
+  options: { signal: AbortSignal; concurrency?: number }
+): void {
+  if (typeof window === "undefined" || indexes.length === 0) return;
+  void import("@cornerstonejs/core")
+    .then((core) => {
+      const loader = core.imageLoader;
+      if (!loader?.loadAndCacheImage) return;
+      const requestType = core.Enums?.RequestType?.Prefetch ?? "prefetch";
+      return runBounded(
+        indexes,
+        (index) => {
+          const imageId = imageIds[index];
+          if (!imageId) return;
+          const queued = loader.loadAndCacheImage(imageId, {
+            priority: -5,
+            requestType: requestType as never,
+          }) as { promise?: Promise<unknown> } | Promise<unknown>;
+          return Promise.resolve(queued && typeof queued === "object" && "promise" in queued ? queued.promise : queued);
+        },
+        { signal: options.signal, concurrency: options.concurrency ?? FILL_CONCURRENCY }
+      );
     })
     .catch(() => undefined);
 }

@@ -37,6 +37,8 @@
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
+import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
+import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
 import {
   useCallback,
   useEffect,
@@ -54,6 +56,7 @@ import type { VoiceState } from "./viewer/voice/voiceSession";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
+  fillImageIndexes,
   prefetchImageIndexes,
   prefetchNeighborImageIds,
   startProgressiveWadorsLoad,
@@ -83,6 +86,7 @@ import {
 } from "../lib/viewerSession";
 import {
   markViewerFirstPixel,
+  markViewerFirstRendered,
   markViewerFirstPreview,
   markViewerFullQuality,
   markViewerNavigation,
@@ -567,23 +571,29 @@ let contextWarm: Promise<void> | null = null;
  * disabled again, so the user's viewport finds the context already built.
  * Skipped when a viewer is already mounted.
  */
-export function prewarmViewerEngine(): void {
+export function prewarmViewerEngine(stage?: { width: number; height: number }): void {
   if (!contextWarm) markEngineWarm("flowrad:viewer:engine-warm-start");
   contextWarm ??= ensureViewerEngine()
-    .then(async ({ core }) => {
+    .then(async ({ core, loader }) => {
       markEngineWarm("flowrad:viewer:engine-ready");
+      sharedCore = core as unknown as EngineHost;
       if (viewportEngineRegistry.size > 0) return;
       const engine = await obtainSharedEngine(core as unknown as EngineHost);
       const element = document.createElement("div");
       // DOM API, not JSX: a throwaway off-screen host, never painted. Sized
-      // like the stage the first study will open in, so the GL drawing
-      // buffer is allocated at its real size now, not on the first drop.
-      const width = Math.max(64, Math.round(window.innerWidth));
-      const height = Math.max(64, Math.round(window.innerHeight));
+      // like the stage the first study will open in (the caller's hint, else
+      // the window), so the pool context's GL drawing buffer is allocated at
+      // its real size now: a size change on the first drop reallocates it,
+      // ~70 ms of main thread in software GL.
+      const width = Math.max(64, Math.round(stage?.width ?? window.innerWidth));
+      const height = Math.max(64, Math.round(stage?.height ?? window.innerHeight));
       element.style.cssText = `position:fixed;left:-${width + 100}px;top:0;width:${width}px;height:${height}px;pointer-events:none;`;
       element.setAttribute("aria-hidden", "true");
       document.body.appendChild(element);
       const viewportId = "flowrad-context-warm";
+      const wadouri = (loader.default ?? loader).wadouri as unknown as {
+        fileManager: { add(file: File): string; remove(index: number): void };
+      };
       const warmIds: string[] = [];
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       try {
@@ -591,33 +601,22 @@ export function prewarmViewerEngine(): void {
         const vp = engine.getViewport(viewportId) as
           | { render?: () => void; setStack?: (ids: string[], index?: number) => Promise<unknown> }
           | undefined;
-        vp?.render?.();
-        await frame();
-        // Compile the image pipeline: the first REAL render otherwise pays
-        // for shader compile + link (~0.5–0.9 s in software GL, tens of ms on
-        // a GPU) between "files dropped" and the first pixel. One synthetic
-        // 16-bit gradient per texture path (signed: CT; unsigned: MR, CR) —
-        // generated here, never read from a file, never sent anywhere.
-        const loader = (core as unknown as {
-          imageLoader?: { createAndCacheLocalImage?: (id: string, options: Record<string, unknown>) => unknown };
-        }).imageLoader;
-        for (const [suffix, Typed] of [
-          ["int16", Int16Array],
-          ["uint16", Uint16Array],
-        ] as const) {
-          if (!loader?.createAndCacheLocalImage || !vp?.setStack) break;
-          const id = `flowrad-warm:${suffix}`;
-          const side = 64;
-          const scalarData = new Typed(side * side);
-          for (let i = 0; i < scalarData.length; i += 1) scalarData[i] = (i % side) * 16;
-          loader.createAndCacheLocalImage(id, {
-            scalarData,
-            dimensions: [side, side],
-            spacing: [1, 1],
-            origin: [0, 0, 0],
-            direction: [1, 0, 0, 0, 1, 0],
-            frameOfReferenceUID: "flowrad-warm",
+        // Render a real Part 10 file through the SAME path a dropped study
+        // takes (wadouri file loader → NATURALIZED metadata → rescale → float
+        // texture → shaders). Everything paid once per page is paid here, in
+        // idle time: vtk's norm16 capability probe (a throwaway WebGL context,
+        // ~0.45 s in software GL), the float-texture extensions on the pool
+        // context (~0.4 s), texture formats and shader programs. A synthetic
+        // image from createAndCacheLocalImage never reached vtk's texture
+        // path, so it warmed none of this. The files are 16×16 gradients
+        // built in memory (syntheticDicom.ts): no patient, no network.
+        for (const kind of ["ct", "mr"] as const) {
+          if (!vp?.setStack) break;
+          const bytes = syntheticDicomBytes({ kind });
+          const file = new File([bytes.buffer as ArrayBuffer], `flowrad-warm-${kind}.dcm`, {
+            type: "application/dicom",
           });
+          const id = wadouri.fileManager.add(file);
           warmIds.push(id);
           await vp.setStack([id], 0);
           vp.render?.();
@@ -630,17 +629,31 @@ export function prewarmViewerEngine(): void {
           /* engine torn down meanwhile */
         }
         element.remove();
-        for (const id of warmIds) {
-          try {
-            core.cache.removeImageLoadObject(id);
-          } catch {
-            /* already evicted */
-          }
-        }
+        // Gone without a trace: decoded frames, parsed metadata, file handles.
+        if (warmIds.length > 0) await releaseLocalImages(warmIds, { recycleWorkers: false }).catch(() => undefined);
         markEngineWarm("flowrad:viewer:engine-warm");
       }
     })
     .catch(() => undefined);
+}
+
+/**
+ * Warm again after a study closed: Close recycles the decode workers, so the
+ * next drop would boot them (and re-prime the pool context) on its critical
+ * path. No-op while a viewer is mounted or a warm is still running.
+ */
+export function rewarmViewerEngine(stage?: { width: number; height: number }): void {
+  if (viewportEngineRegistry.size > 0) return;
+  const running = contextWarm;
+  if (!running) {
+    prewarmViewerEngine(stage);
+    return;
+  }
+  void running.then(() => {
+    if (contextWarm !== running || viewportEngineRegistry.size > 0) return;
+    contextWarm = null;
+    prewarmViewerEngine(stage);
+  });
 }
 
 /** User Timing marks for the prewarm (timings only; read by the perf gate). */
@@ -697,9 +710,31 @@ async function obtainSharedEngine(core: EngineHost): Promise<SharedEngine> {
   return engine;
 }
 
+/**
+ * Pages that hold the engine warm between studies (the free viewer: drop,
+ * close, drop again). While any hold is live the last viewport's unmount
+ * disables its element instead of destroying the engine, so the next study
+ * skips rebuilding the WebGL context pool, its extensions and shaders
+ * (~0.5 s). The warmed engine is part of the page's idle baseline — it exists
+ * before the first drop — so keeping it does not hold any study's memory.
+ */
+let engineHolds = 0;
+
+/** Keep the shared engine across studies; call the returned release on unmount. */
+export function holdViewerEngine(): () => void {
+  engineHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    engineHolds -= 1;
+    if (engineHolds === 0 && sharedCore) destroySharedEngineIfIdle(liveSharedEngine(sharedCore));
+  };
+}
+
 function destroySharedEngineIfIdle(engine: SharedEngine | null | undefined) {
   if (!engine || engine.hasBeenDestroyed) return;
-  if (viewportEngineRegistry.size > 0) return;
+  if (viewportEngineRegistry.size > 0 || engineHolds > 0) return;
   try {
     engine.destroy();
   } catch {
@@ -981,6 +1016,7 @@ export default function CornerstoneViewer({
   useEffect(() => {
     let disposed = false;
     let prefetchTimer = 0;
+    let disposeFill: () => void = () => {};
     let detachListeners: () => void = () => {};
     let detachQuality: () => void = () => {};
     let resizeObserver: ResizeObserver | null = null;
@@ -1467,6 +1503,10 @@ export default function CornerstoneViewer({
         // request leaves its image load object pending in Cornerstone's cache
         // forever, and that slice would never paint.
         const filledSeries = new Set<string>();
+        // Stops every series' fill when this viewer goes (Close study, a new
+        // drop, navigation): a closed study must not keep reading and decoding.
+        const fillAbort = new AbortController();
+        disposeFill = () => fillAbort.abort();
         const startSeriesFill = (seriesUID: string, center: number) => {
           const ids = stackIdsRef.current;
           if (disposed || ids.length < 2 || filledSeries.has(seriesUID)) return;
@@ -1494,7 +1534,7 @@ export default function CornerstoneViewer({
             /* older core: keep the device budget */
           }
           const budget = fillBudget(ids.length, bytesPerSlice, cacheCap);
-          prefetchImageIndexes(ids, outwardOrder(ids.length, center, budget));
+          fillImageIndexes(ids, outwardOrder(ids.length, center, budget), { signal: fillAbort.signal });
         };
         let pixelMarked = false;
         // Mark first pixel only after setStack resolves. IMAGE_RENDERED also
@@ -1507,6 +1547,17 @@ export default function CornerstoneViewer({
           if (vp?.getCurrentImageId && !imageId) return;
           pixelMarked = true;
           markViewerFirstPixel(activeNav, seriesUID);
+          // `first-pixel` is when the stack resolved and a render was asked
+          // for; the frame itself is drawn on a later animation frame (and in
+          // software GL that draw can take hundreds of ms). IMAGE_RENDERED
+          // fires once it is actually on the canvas: that is what a reader sees.
+          const renderedNav = activeNav;
+          const renderedEl = elementRef.current;
+          const onRendered = () => {
+            renderedEl?.removeEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered as EventListener);
+            markViewerFirstRendered(renderedNav);
+          };
+          renderedEl?.addEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered as EventListener);
           markViewerPixels(instanceId);
           setPainted(true);
           setStatus((prev) => (prev.startsWith("Error") ? prev : "Loading stack…"));
@@ -3145,6 +3196,7 @@ export default function CornerstoneViewer({
       exitMprRef.current = async () => {};
       window.clearTimeout(readoutTimerRef.current);
       window.clearTimeout(prefetchTimer);
+      disposeFill();
       if (restoreRaf) cancelAnimationFrame(restoreRaf);
       if (viewRaf) cancelAnimationFrame(viewRaf);
       viewListeners.clear();
@@ -3166,8 +3218,8 @@ export default function CornerstoneViewer({
       const engine = sharedCore?.getRenderingEngine(SHARED_RENDERING_ENGINE_ID);
       if (!engine || engine.hasBeenDestroyed) return;
       try {
-        if (plan.destroyEngine) engine.destroy();
-        else if (plan.disableViewport && engine.getViewport(viewportId)) {
+        if (plan.destroyEngine && engineHolds === 0) engine.destroy();
+        else if ((plan.destroyEngine || plan.disableViewport) && engine.getViewport(viewportId)) {
           engine.disableElement(viewportId);
         }
       } catch {

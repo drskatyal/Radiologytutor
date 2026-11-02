@@ -34,12 +34,13 @@ if (cold) {
   row(
     `First image — CT 520, **freshly launched browser** (${cold.runs.length} launches)`,
     `${cold.runs.join(" / ")} ms (median ${cold.medianMs})`,
-    "each ≤ 1000 ms",
-    cold.maxMs <= 1000
+    `median < 500 ms (gate ≤ ${cold.medianBudgetMs ?? 500})`,
+    cold.medianMs <= (cold.medianBudgetMs ?? 500)
   );
 }
 if (ct) {
-  row(`First image — ${ct.study}`, v(ct.firstImageMs, " ms"), "≤ 1000 ms", ct.firstImageMs <= 1000);
+  const warmGate = ct.firstImageBudgetMs ?? 400;
+  row(`First image (drawn) — ${ct.study}`, v(ct.firstImageMs, " ms"), `< 300 ms (gate ≤ ${warmGate})`, ct.firstImageMs <= warmGate);
   row("All 520 headers parsed (worker pool) → stack scrollable", v(ct.seriesReadyMs, " ms"), "", null);
   const s = ct.scroll ?? {};
   row(`Scroll ${s.steps} slices: longest main-thread task`, v(s.longestTaskMs, " ms"), "≤ 50 ms", s.longestTaskMs <= 50);
@@ -64,7 +65,7 @@ if (ct) {
     "after close ≤ before open + 64 MB",
     m.rendererRssIdleMb == null || m.rendererRssClosedMb <= m.rendererRssIdleMb + 64
   );
-  if (ct.reopenFirstImageMs != null) row("First image when reopening after Close study", v(ct.reopenFirstImageMs, " ms"), "≤ 1000 ms", ct.reopenFirstImageMs <= 1000);
+  if (ct.reopenFirstImageMs != null) row("First image when reopening after Close study", v(ct.reopenFirstImageMs, " ms"), `< 300 ms (gate ≤ ${warmGate})`, ct.reopenFirstImageMs <= warmGate);
   row("WASM fetched for uncompressed CT", ct.wasmFetched?.length ? ct.wasmFetched.join(", ") : "none", "none", !ct.wasmFetched?.length);
   row("Privacy: requests after drop / violations", `${v(ct.requestsAfterDrop)} / ${ct.privacyViolations?.length ?? "—"}`, "static GETs only / 0", (ct.privacyViolations?.length ?? 1) === 0);
 }
@@ -86,7 +87,8 @@ if (cap) {
   }
 }
 if (mr) {
-  row(`First image — ${mr.study}`, v(mr.firstImageMs, " ms"), "≤ 1000 ms", mr.firstImageMs <= 1000);
+  const mrGate = mr.firstImageBudgetMs ?? 400;
+  row(`First image (drawn) — ${mr.study}`, v(mr.firstImageMs, " ms"), `< 300 ms (gate ≤ ${mrGate})`, mr.firstImageMs <= mrGate);
   row("MR: all headers parsed → stack scrollable", v(mr.seriesReadyMs, " ms"), "", null);
   row("MR: series switch → painted", v(mr.seriesSwitchMs, " ms"), "", null);
   const names = [...new Set(mr.wasmFetched ?? [])].map((n) => n.split(".")[0]);

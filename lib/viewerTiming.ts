@@ -45,6 +45,17 @@ export function markViewerFirstPixel(navMark: string, seriesUID: string): void {
   console.info("[radlearn] viewer first pixel", { ms });
 }
 
+/**
+ * The first frame is actually drawn on the canvas (Cornerstone IMAGE_RENDERED
+ * after the stack resolved). `first-pixel` precedes it by the draw itself.
+ */
+export function markViewerFirstRendered(navMark: string): void {
+  const end = `radlearn:first-rendered:${navMark}`;
+  if (canMark()) performance.mark(end);
+  const ms = measure("radlearn:navigation-to-first-rendered", navMark, end);
+  console.info("[radlearn] viewer first rendered", { ms });
+}
+
 /** The active series has its full imageId stack. Scrolling can request any slice. */
 export function markViewerSeriesReady(navMark: string, seriesUID: string, imageCount: number): void {
   const end = `radlearn:series-ready:${navMark}`;
