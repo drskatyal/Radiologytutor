@@ -165,6 +165,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
+  // Voice commands stay on across series (each series mounts its own viewer).
+  const [voiceOn, setVoiceOn] = useState(false);
   const [dragging, setDragging] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   /** Every registered `dicomfile:` id of the open study — freed on close. */
@@ -878,6 +880,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 defaultTool="StackScroll"
                 questionMarkHelp
                 onChunkLoadError={recoverFromChunkError}
+                voiceOn={voiceOn}
+                onVoiceChange={setVoiceOn}
+                onSeriesStep={(delta) => {
+                  const count = study?.series.length ?? 0;
+                  if (count > 1) pickSeries((activeSeries + delta + count) % count);
+                }}
                 onReady={(controls) => {
                   const slice = pendingSlice.current;
                   if (slice == null || slice < 0) return;

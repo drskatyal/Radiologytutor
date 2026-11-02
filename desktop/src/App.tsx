@@ -98,7 +98,8 @@ import {
 import { useCrossWindow } from "./viewer/useCrossWindow";
 import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
 import { setToolCursor } from "./viewer/toolCursor";
-import type { VoiceState } from "@/components/viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceSession, VoiceState } from "@/components/viewer/voice/voiceSession";
+import { VoiceStatus } from "@/components/viewer/voice/VoiceStatus";
 import {
   monitorColor,
   nextMonitor,
@@ -307,7 +308,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -855,6 +856,13 @@ export default function App() {
                   bench.current.marks.nativeTools = await driveNativeTools(setLeftTool);
                   void report();
                 })();
+              } else if (bench.current.firstPaint != null && benchView === "voice") {
+                // Voice e2e in the built app, under its production CSP.
+                void (async () => {
+                  const { runVoiceBench } = await import("./voiceBench");
+                  bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
+                  void report();
+                })();
               } else if (bench.current.firstPaint != null) void report();
               else if (performance.now() > deadline) void report(true);
               else window.setTimeout(waitPaint, 20);
@@ -1224,7 +1232,7 @@ export default function App() {
   // The mic toggle loads the recognizer and model only when switched on and
   // frees them entirely when off (components/viewer/voice/voiceSession.ts).
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
-  const voiceSession = useRef<{ stop(): void } | null>(null);
+  const voiceSession = useRef<VoiceSession | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
@@ -1236,20 +1244,39 @@ export default function App() {
     voiceSession.current?.stop();
     voiceSession.current = null;
   }, []);
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+  // Hover / focus on the mic: start loading the recognizer so a click is ready at once.
+  const warmVoice = useCallback(() => {
+    if (voiceSession.current) return;
+    void import("@/components/viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
+  }, []);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const toggleVoiceRef = useRef<() => Promise<void>>(async () => undefined);
   toggleVoiceRef.current = async () => {
-    if (voiceSession.current || voice.state === "loading") return stopVoice();
-    const { startVoice } = await import("@/components/viewer/voice/voiceSession");
-    voiceSession.current = await startVoice({
-      modelUrl: "/voice/model.tar.gz",
+    if (voiceSession.current || voice.state === "loading") {
+      stopVoice();
+      setVoice((v) => ({ ...v, state: "off" }));
+      return;
+    }
+    setVoiceError(null);
+    setVoiceProgress(null);
+    setVoice((v) => ({ ...v, state: "loading" }));
+    const voiceModule = await import("@/components/viewer/voice/voiceSession");
+    await voiceModule.startVoice({
+      onSession: (session) => {
+        voiceSession.current = session;
+      },
+      modelUrl: voiceModule.VOICE_MODEL_URL,
+      workerUrl: voiceModule.VOICE_WORKER_URL,
       onAction: (action, heard) => {
         showHeard(heard);
         voiceAction.current(action);
       },
       onUnrecognized: (heard) => showHeard(`${heard} ?`),
+      onProgress: setVoiceProgress,
       onState: (state, detail) => {
         setVoice((v) => ({ ...v, state }));
-        if (state === "error" && detail) toast({ title: "Voice commands could not start", description: detail, variant: "warning", duration: 6000 });
+        if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSession.current = null;
       },
     });
@@ -2096,6 +2123,20 @@ export default function App() {
         </>
       )}
 
+      <VoiceStatus
+        className="fixed right-3 top-12 z-50"
+        state={voice.state}
+        progress={voiceProgress}
+        error={voiceError}
+        onRetry={() => {
+          setVoice((v) => ({ ...v, state: "off" }));
+          void toggleVoiceRef.current();
+        }}
+        onDismiss={() => {
+          stopVoice();
+          setVoice((v) => ({ ...v, state: "off" }));
+        }}
+      />
       {hasStudy && !distractionFree && (
         <Toolbar
           leftTool={leftTool}
@@ -2128,7 +2169,7 @@ export default function App() {
           }}
           onOpen={(w) => void openDialog(w)}
           onHome={goHome}
-          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current() } : undefined}
+          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current(), onWarm: warmVoice } : undefined}
           onUndo={() => runAction({ type: "undoAnnotation" })}
           onRedo={() => runAction({ type: "redoAnnotation" })}
           onClear={() => runAction({ type: "clearAnnotations" })}
