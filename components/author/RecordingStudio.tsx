@@ -57,10 +57,21 @@ import type {
   MarkerShape,
   RecordedTrack,
   StructuredFinding,
+  TeacherSketchOp,
+  ViewerEvent,
 } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
+import { TeacherSketchLayer, type TeacherSketchLayerHandle } from "@/components/author/sketch/TeacherSketchLayer";
+import {
+  SketchShortcutHint,
+  SketchToolPalette,
+  type SketchExportFormat,
+} from "@/components/author/sketch/SketchToolPalette";
+import { useTeacherSketch } from "@/components/author/sketch/useTeacherSketch";
+import { resolveStudioHotkey } from "@/lib/studioHotkeys";
+import { isTextTarget } from "@/lib/viewerHotkeys";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
 import { AnnotatePopover } from "@/components/author/AnnotatePopover";
@@ -130,7 +141,13 @@ export function RecordingStudio({
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
-  const rr = useRecordReplay({ controls, overlay, ready });
+  // Teacher sketch layer: replay feeds recorded ops back through this sink.
+  const sketchSink = useRef<((op: TeacherSketchOp) => void) | null>(null);
+  const rr = useRecordReplay({ controls, overlay, ready, sketchSink });
+  const sketch = useTeacherSketch({ caseId: initialCase.caseId, onEvent: rr.onViewerEvent });
+  sketchSink.current = sketch.replayOp;
+  const sketchLayerRef = useRef<TeacherSketchLayerHandle | null>(null);
+  const [sketchExporting, setSketchExporting] = useState(false);
   const annotateRecorder = useRecorder();
 
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
@@ -212,6 +229,108 @@ export function RecordingStudio({
       alive = false;
     };
   }, [rr.supported]);
+
+  // A take starts from what is already drawn: snapshot it as the take's first
+  // sketch op so replay and the compile see the same ink the teacher saw.
+  const { snapshot: sketchSnapshot, endReplay: endSketchReplay, items: sketchItems } = sketch;
+  const sketchItemsRef = useRef(sketchItems);
+  sketchItemsRef.current = sketchItems;
+  useEffect(() => {
+    if (rr.phase === "recording" && sketchItemsRef.current.length) {
+      rr.onViewerEvent({ type: "sketch", ...sketchSnapshot() } as ViewerEvent);
+    }
+    if (rr.phase !== "replaying") endSketchReplay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rr.phase]);
+
+  // Studio-scoped sketch keys (lib/studioHotkeys.ts). Capture phase so they
+  // win over the viewport's letter tools while the image has focus. Alt+X
+  // (record) and every student-session key are left alone.
+  const sketchKeyRef = useRef({ sketch, phase: rr.phase });
+  sketchKeyRef.current = { sketch, phase: rr.phase };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTextTarget(e.target)) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.("[role=dialog], [role=menu]")) return;
+      const action = resolveStudioHotkey(e);
+      if (!action) return;
+      const { sketch: s, phase } = sketchKeyRef.current;
+      if (phase === "replaying") return;
+      // Esc only backs out of an armed sketch tool; otherwise dialogs own it.
+      if (e.key === "Escape" && s.tool === "select") return;
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat && action.type !== "undo" && action.type !== "redo") return;
+      switch (action.type) {
+        case "tool":
+          s.setTool(action.tool);
+          break;
+        case "marker":
+          if (!sketchLayerRef.current?.dropAtPointer()) s.setTool("marker");
+          break;
+        case "undo":
+          s.undo();
+          break;
+        case "redo":
+          s.redo();
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  async function exportSketch(format: SketchExportFormat) {
+    setSketchExporting(true);
+    try {
+      const takeEvents = (rr.track?.events ?? []).filter((e) => e.type === "sketch");
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/sketch-export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format,
+          items: sketch.items,
+          events: takeEvents,
+          narration: rr.track?.narration ?? [],
+          durationMs: rr.track?.durationMs,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data?.error === "string" ? data.error : `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const name =
+        /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ??
+        `sketch.${format === "json" ? "json" : "dcm"}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      const skipped = Number(res.headers.get("X-FlowRad-Skipped") ?? 0);
+      toast({
+        variant: skipped ? "warning" : "success",
+        title: format === "json" ? "Sketch timing exported" : `DICOM ${format === "sr" ? "SR" : "GSPS"} exported`,
+        description: skipped
+          ? `${skipped} mark${skipped === 1 ? "" : "s"} had no DICOM image to anchor to and were left out.`
+          : name,
+      });
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't export the sketch",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setSketchExporting(false);
+    }
+  }
 
   const onReady = useCallback((c: CornerstoneControls) => {
     controls.current = c;
@@ -945,7 +1064,30 @@ export function RecordingStudio({
                 onReady={onReady}
                 onEvent={rr.onViewerEvent}
                 onCursor={rr.onCursor}
-                annotateMode={annotateMode && !pendingMarker}
+                annotateMode={annotateMode && !pendingMarker && sketch.tool === "select"}
+                sketchLayer={
+                  <TeacherSketchLayer
+                    ref={sketchLayerRef}
+                    sketch={sketch}
+                    controls={controls}
+                    interactive={rr.phase !== "replaying"}
+                  />
+                }
+                sketchPalette={
+                  <SketchToolPalette
+                    tool={sketch.tool}
+                    onTool={sketch.setTool}
+                    canUndo={sketch.canUndo}
+                    canRedo={sketch.canRedo}
+                    onUndo={sketch.undo}
+                    onRedo={sketch.redo}
+                    onClear={sketch.clearAll}
+                    hasInk={sketch.items.length > 0}
+                    disabled={sketch.replaying}
+                    onExport={exportSketch}
+                    exporting={sketchExporting}
+                  />
+                }
                 onAnnotateClick={onAnnotateClick}
                 annotateSlot={
                   pendingMarker ? (
@@ -1074,6 +1216,7 @@ export function RecordingStudio({
               {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
             </div>
+            <SketchShortcutHint className="mt-3 border-t border-subtle pt-3" />
 
             {/* Hotkey hint */}
             {processingTake && (

@@ -49,6 +49,8 @@ export function RecordStage({
   annotateMode = false,
   onAnnotateClick,
   annotateSlot,
+  sketchLayer,
+  sketchPalette,
 }: {
   source: ViewerSource;
   /** Multi-series rail; when >1 entry a navigator renders beside the viewer. */
@@ -78,6 +80,10 @@ export function RecordStage({
   onAnnotateClick?: (x: number, y: number) => void;
   /** Rendered inside the imaging overlay (e.g. AnnotatePopover). */
   annotateSlot?: ReactNode;
+  /** Teacher sketch ink + capture layer (Studio). Sits above the replay laser. */
+  sketchLayer?: ReactNode;
+  /** Floating sketch tool palette on the imaging surface (Studio). */
+  sketchPalette?: ReactNode;
 }) {
   const imageRef = useRef<HTMLDivElement>(null);
   const clickToAnnotate =
@@ -139,6 +145,21 @@ export function RecordStage({
             imageOverlay={
               <div ref={imageRef} className="pointer-events-none absolute inset-0">
                 <ReplayOverlayMount overlay={overlay} active={phase === "replaying"} />
+
+                {sketchLayer}
+
+                {sketchPalette && (
+                  // Portaled menus/tooltips still bubble through the React
+                  // tree: keep the viewer from refocusing the image (which
+                  // closes the export menu) or reading menu arrow keys.
+                  <div
+                    className="absolute left-3 top-1/2 z-30 -translate-y-1/2"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    {sketchPalette}
+                  </div>
+                )}
 
                 {clickToAnnotate && (
                   <button
