@@ -48,8 +48,17 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
   const consoleLines: string[] = [];
   page.on("console", (m) => consoleLines.push(`${m.type()}: ${m.text()}`.slice(0, 300)));
   page.on("pageerror", (e) => consoleLines.push(`pageerror: ${e.message}`.slice(0, 300)));
+  // Worker timeline, for the failure message (which recognizer lived when).
+  const t0 = Date.now();
+  const timeline: string[] = [];
+  page.on("worker", (w) => {
+    const name = w.url().split("/").pop();
+    timeline.push(`+${name}@${Date.now() - t0}`);
+    w.on("close", () => timeline.push(`-${name}@${Date.now() - t0}`));
+  });
   const clicked = Date.now();
   await page.getByRole("button", { name: /^Voice commands/ }).click();
+  timeline.push(`click-on@${Date.now() - t0}`);
   // Loading shows a real progress card (never a bare spinner).
   await expect(page.getByTestId("voice-status")).toBeVisible({ timeout: 5_000 });
   const on = await page
@@ -77,11 +86,13 @@ test("voice: loads on demand, “lung window” applies the preset, off frees th
     .poll(async () => /W 1500\s+L [-−]600/.test(await page.locator("body").innerText()), { timeout: 45_000, intervals: [500] })
     .toBe(true);
 
+  timeline.push(`click-off@${Date.now() - t0}`);
   await page.getByRole("button", { name: /^Voice commands on/ }).click();
   await expect(page.getByRole("button", { name: /^Voice commands$/ })).toBeVisible({ timeout: 10_000 });
-  await page.waitForTimeout(800);
   // The recognizer's own worker is gone (engine decode workers may come and go).
-  expect(recognizers().length, `the recognizer worker is terminated; workers: ${page.workers().map((w) => w.url()).join(", ")}`).toBe(0);
+  await expect
+    .poll(() => recognizers().length, { timeout: 5_000, message: `the recognizer worker is terminated; timeline: ${timeline.join(" ")}` })
+    .toBe(0);
 });
 
 test("voice: a missing model is an error with Retry, not an endless load; Retry then works", async ({ page }) => {
