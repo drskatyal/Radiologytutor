@@ -102,6 +102,16 @@ def app_mode(exe: str, study: str, out_dir: Path) -> None:
             )
         if not cell:
             fail("app mode: no native viewport on screen (the series went to the JS path?)")
+        if sys.platform == "darwin" and os.environ.get("FLOWRAD_E2E_GRAB") != "1":
+            # macOS runners: a screen grab needs Screen Recording permission
+            # (without it the window is missing from the capture), so the gate
+            # is the renderer's own report: Metal ready, a native viewport on
+            # screen and the first image painted.
+            painted = report.get("firstImagePaintedMs")
+            if painted is None:
+                fail("app mode: the first image was never painted\n" + json.dumps(report, indent=2, default=str))
+            print(f"PASS  app mode (macOS): native renderer ready on {native.get('backend')} ({native.get('adapter')}), first image painted in {painted:.0f} ms")
+            return
         time.sleep(0.8)
         from PIL import ImageGrab
 
