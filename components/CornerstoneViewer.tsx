@@ -589,8 +589,10 @@ let contextWarm: Promise<void> | null = null;
  * Skipped when a viewer is already mounted.
  */
 export function prewarmViewerEngine(): void {
+  if (!contextWarm) markEngineWarm("flowrad:viewer:engine-warm-start");
   contextWarm ??= ensureViewerEngine()
     .then(async ({ core }) => {
+      markEngineWarm("flowrad:viewer:engine-ready");
       if (viewportEngineRegistry.size > 0) return;
       const engine = await obtainSharedEngine(core as unknown as EngineHost);
       const element = document.createElement("div");
@@ -610,9 +612,19 @@ export function prewarmViewerEngine(): void {
           /* engine torn down meanwhile */
         }
         element.remove();
+        markEngineWarm("flowrad:viewer:engine-warm");
       }
     })
     .catch(() => undefined);
+}
+
+/** User Timing marks for the prewarm (timings only; read by the perf gate). */
+function markEngineWarm(name: string): void {
+  try {
+    performance.mark(name);
+  } catch {
+    /* best-effort */
+  }
 }
 
 type SharedEngine = {

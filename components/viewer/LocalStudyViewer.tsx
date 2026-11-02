@@ -49,6 +49,7 @@ import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
 import {
   ingestLocalFiles,
   prewarmLocalIngest,
+  localMetadataEntryCount,
   releaseLocalImages,
   type FirstLocalImage,
   type LocalIngestResult,
@@ -117,6 +118,8 @@ export interface ViewerMemoryStats {
   cacheBytes: number;
   maxCacheBytes: number;
   openFiles: number;
+  /** Local images still holding a NATURALIZED metadata entry (raw file bytes). */
+  metadataEntries: number;
 }
 
 type DirectoryPickerWindow = Window & {
@@ -191,6 +194,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         cacheBytes: core.cache.getCacheSize(),
         maxCacheBytes: core.cache.getMaxCacheSize(),
         openFiles: registeredRef.current.length,
+        metadataEntries: await localMetadataEntryCount(),
       };
     };
     return () => {
@@ -201,7 +205,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const release = useCallback(() => {
     const ids = registeredRef.current;
     registeredRef.current = [];
-    if (ids.length > 0) void releaseLocalImages(ids).catch(() => undefined);
+    if (ids.length === 0) return;
+    // Freed back to the page's pre-open footprint, then re-warmed (fresh,
+    // empty header workers) so the next drop is as fast as the first.
+    void releaseLocalImages(ids)
+      .then(() => prewarmLocalIngest())
+      .catch(() => undefined);
   }, []);
 
   // Leaving the page frees the study (SPA navigation away included).
