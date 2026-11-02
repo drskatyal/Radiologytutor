@@ -14,6 +14,7 @@ mod documents;
 mod header;
 mod image_store;
 mod native;
+mod native_view;
 mod pacs;
 mod pet;
 mod preview;
@@ -530,13 +531,77 @@ async fn native_open_launch_study(window: tauri::WebviewWindow, native: tauri::S
 /// P2.1: scroll the native series by `delta` slices.
 #[tauri::command]
 async fn native_scroll(window: tauri::WebviewWindow, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
-    native.scroll(delta, window.scale_factor().unwrap_or(1.0))
+    native.scroll_spike(delta, window.scale_factor().unwrap_or(1.0))
 }
 
 /// P2.1: close the native series: texture and decoded slices freed.
 #[tauri::command]
 fn native_close(native: tauri::State<'_, native::Shared>) {
-    native.close_series();
+    native.close_all();
+}
+
+// ───────────── P2.2: native viewports in the app (one per layout cell) ─────────────
+
+/// Every layout cell's rectangle (CSS px); cells not listed are freed. Draws.
+#[tauri::command]
+async fn native_layout(window: tauri::WebviewWindow, cells: Vec<native::CellRect>, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    native.set_layout(cells);
+    if let Ok(size) = window.inner_size() {
+        native.resize(size.width, size.height);
+    }
+    native.render(window.scale_factor().unwrap_or(1.0))
+}
+
+/// Show a series (the app's file ids, display order) in a cell.
+#[tauri::command]
+async fn native_cell_series(
+    window: tauri::WebviewWindow,
+    id: String,
+    file_ids: Vec<u32>,
+    index: usize,
+    state: tauri::State<'_, AppState>,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::ShowResult, String> {
+    // Only files the user opened (the registry), like the dicom:// protocol.
+    let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().collect::<Option<Vec<_>>>().ok_or("unknown file id")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    tauri::async_runtime::spawn_blocking({
+        let native = native.inner().clone();
+        move || native.set_series(&id, paths, index, scale)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Change a cell's view: slice, window/level, zoom, pan, rotation, flip, invert.
+#[tauri::command]
+async fn native_cell_view(
+    window: tauri::WebviewWindow,
+    id: String,
+    patch: native_view::ViewPatch,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::ShowResult, String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.update_view(&id, patch, scale)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.scroll(&id, delta, scale)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn native_cell_close(id: String, native: tauri::State<'_, native::Shared>) {
+    native.close_cell(&id);
+}
+
+/// The image pixel and its value under a cell point (CSS px), or null.
+#[tauri::command]
+fn native_pick(id: String, x: f32, y: f32, native: tauri::State<'_, native::Shared>) -> Option<serde_json::Value> {
+    native.pick(&id, x, y).map(|(col, row, value)| serde_json::json!({ "col": col, "row": row, "value": value }))
 }
 
 #[tauri::command]
@@ -820,6 +885,12 @@ pub fn run() {
             native_scroll,
             native_close,
             native_store_stats,
+            native_layout,
+            native_cell_series,
+            native_cell_view,
+            native_cell_scroll,
+            native_cell_close,
+            native_pick,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");

@@ -76,6 +76,7 @@ import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
 import { onActivity } from "./activity";
+import { nativeEnabled } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
 import {
   announceClosing,
@@ -113,6 +114,9 @@ function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T 
 const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => import("./components/Toolbar"), "Toolbar");
 const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
 const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
+// Phase 2 (FLOWRAD_NATIVE=1): monochrome single-frame series are drawn by the
+// native renderer; everything else stays on the JS viewer (per series).
+const NativeStackViewport = lazy(() => import("./native/NativeStackViewport"));
 const Native3DView = named<typeof import("./viewer/Native3DView").Native3DView>(() => import("./viewer/Native3DView"), "Native3DView");
 const NativePlaneView = named<typeof import("./viewer/NativePlaneView").NativePlaneView>(() => import("./viewer/NativePlaneView"), "NativePlaneView");
 const NativeMprView = named<typeof import("./viewer/NativeMprView").NativeMprView>(() => import("./viewer/NativeMprView"), "NativeMprView");
@@ -152,6 +156,13 @@ const firstImageOf = (fullRes?: number | null, engine?: number | null): number |
   return Number.isFinite(ms) ? ms : null;
 };
 
+/** Series the native renderer draws (P2.2): monochrome, one frame per file. */
+function nativeCapable(series: { multiframe?: boolean; headers: readonly { photometricInterpretation?: string }[] }): boolean {
+  if (series.multiframe || series.headers.length === 0) return false;
+  const pi = (series.headers[0].photometricInterpretation ?? "MONOCHROME2").toUpperCase();
+  return pi.startsWith("MONOCHROME");
+}
+
 export default function App() {
   const { toast } = useToast();
   const [version, setVersion] = useState("");
@@ -168,6 +179,20 @@ export default function App() {
   const [cells, setCells] = useState<(string | null)[]>([null]);
   const [activeCell, setActiveCell] = useState(0);
   const [maximized, setMaximized] = useState<number | null>(null);
+  // Native renderer on (FLOWRAD_NATIVE=1 and the GPU surface is up).
+  // Native renderer: null until known (Tauri asks Rust once at start), so a
+  // viewport is never first mounted on the JS path and then swapped.
+  const [nativeMode, setNativeMode] = useState<boolean | null>(isTauri ? null : false);
+  const native = nativeMode === true;
+  const nativeRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    void nativeEnabled().then((on) => {
+      nativeRef.current = on;
+      setNativeMode(on);
+      if (on) document.documentElement.classList.add("native-transparent");
+    });
+  }, []);
   const [leftTool, setLeftTool] = useState("StackScroll");
   const [overlay, setOverlay] = useState(true);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
@@ -506,7 +531,10 @@ export default function App() {
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
           // The study is on screen and its preview is loading: compile the
           // engine meanwhile (not at page load: on a cold disk that delayed the preview).
-          preloadEngineChunks();
+          // Native mode: the JS engine is only for series the native path
+          // does not draw; it loads on demand then, not up front.
+          if (!isTauri) preloadEngineChunks();
+          else void nativeEnabled().then((on) => !on && preloadEngineChunks());
           setScan(null); // progressive: the viewer takes over, progress moves to the status bar
           hangFirst(built);
         }
@@ -605,6 +633,18 @@ export default function App() {
               rust: result.timings,
               ...bench.current.marks,
               firstImagePaintedMs: bench.current.firstPaint ?? null,
+              // Phase 2: the native renderer's state and the first native
+              // viewport's rect (CSS px), for the e2e's screen grab.
+              ...(nativeRef.current
+                ? {
+                    native: await invoke("native_status").catch(() => null),
+                    nativeCell: (() => {
+                      const r = document.querySelector("[data-native-viewport]")?.getBoundingClientRect();
+                      return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null;
+                    })(),
+                    nativeStore: await invoke("native_store_stats").catch(() => null),
+                  }
+                : {}),
               // First full-resolution slice on screen at the file's window:
               // Rust's full-res preview or the engine's paint, whichever first.
               firstImageMs: firstImageOf(bench.current.marks.firstFullResMs, bench.current.firstPaint),
@@ -1656,12 +1696,14 @@ export default function App() {
   const goHome = useCallback(() => {
     openSeq.current += 1;
     void cancelScan();
+    // Native renderer: every viewport and decoded slice freed (back to baseline).
+    if (native) void invoke("native_close").catch(() => undefined);
     setScan(null);
     setGrowing(false);
     setSource(null);
     resetWorkspace();
     historyList<HistoryEntry>().then(setHistory, () => undefined);
-  }, [resetWorkspace]);
+  }, [resetWorkspace, native]);
 
   const onPreview = useCallback((fullRes: boolean) => {
     const at = performance.now() - bench.current.t0;
@@ -1900,6 +1942,7 @@ export default function App() {
             ) : (
             <section
               aria-label="Viewports"
+              data-native-grid={native || undefined}
               className="grid min-w-0 flex-1 gap-px bg-black"
               // Grid shape is user-chosen at runtime.
               style={{
@@ -1933,6 +1976,32 @@ export default function App() {
                         bench.current.pendingVolume = undefined;
                         void pending?.();
                       }}
+                    />
+                  );
+                // Native mode not known yet (a few ms after start): hold the cell.
+                if (nativeMode === null && entry?.series) return <div key={`w${i}`} className="min-h-0 min-w-0" aria-busy="true" />;
+                if (native && entry?.series && nativeCapable(entry.series))
+                  return (
+                    <NativeStackViewport
+                      key={`n${i}`}
+                      cellKey={cellKey(i)}
+                      viewportId={viewportIdFor(i)}
+                      series={entry.series}
+                      study={entry.study}
+                      active={i === activeCell}
+                      cellIndex={i}
+                      dropHover={seriesDrag?.cell === i}
+                      showOverlay={overlay}
+                      hidePatient={settings.hidePatient}
+                      growing={growing}
+                      tool={leftTool}
+                      onActivate={() => {
+                        autoHung.current = false;
+                        setActiveCell(i);
+                      }}
+                      onDropSeries={(dropped) => showSeries(dropped, i)}
+                      onDoubleClick={() => cells.length > 1 && setMaximized((m) => (m == null ? i : null))}
+                      onFirstPaint={onFirstPaint}
                     />
                   );
                 return (
