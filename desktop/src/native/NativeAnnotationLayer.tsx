@@ -216,9 +216,12 @@ export default function NativeAnnotationLayer({ cellKey, seriesUid, imageIndex, 
         setSelected(null);
         e.preventDefault();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        // Handled here: the app's own Mod+Z must not undo a second step.
         if (e.shiftKey ? redo() : undo()) e.preventDefault();
+        if (!e.shiftKey) e.stopPropagation();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
         if (redo()) e.preventDefault();
+        e.stopPropagation();
       }
     };
     window.addEventListener("keydown", onKey, true);

@@ -526,6 +526,13 @@ async function benchMpr(binary, study) {
   const maxMb = flag("max-mb", Infinity);
   const maxMs = flag("max-ms", Infinity);
   const maxSettledMb = flag("max-settled-mb", Infinity);
+  // --cold: the first open after a cache clear (HP: 988 MB idle cold vs
+  // ~330-410 MB warm). No scan cache, and the OS file cache dropped.
+  if (rest.includes("--cold")) {
+    rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
+    const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
+    console.error(`cold: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+  }
   const started = performance.now();
   const child = spawn(binary, [study], {
     env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: process.env.FLOWRAD_BENCH_VIEW ?? process.env.RADLEARN_BENCH_VIEW ?? "mpr" }) },
@@ -567,8 +574,11 @@ async function benchMpr(binary, study) {
   child.kill("SIGKILL");
   const summary = {
     mode: "mpr",
+    view: process.env.FLOWRAD_BENCH_VIEW ?? "mpr",
+    cold: rest.includes("--cold"),
     study,
     images: report.images,
+    engineStarted: report.engineInitMs != null || report.engineStartMs != null,
     volumeLoadedMs: r0(report.volumeLoadedMs),
     volumeBuildMs: r0(report.volumeBuildMs),
     peakPrivateMb: peak?.privateMb,
