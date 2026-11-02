@@ -14,7 +14,10 @@
 // --expect-commit polls /api/version until the deployed commit is that commit
 // or a later one that contains it (Railway may go straight to a newer push),
 // up to --wait-deploy-s seconds. Containment is checked with git in the
-// checkout, fetching --deploy-branch (default: the integration branch).
+// checkout, fetching --deploy-branch (default: the integration branch). If
+// production is on an older commit and every file changed since is one the
+// site does not serve (desktop/, docs/, CI, tests, these scripts), Railway has
+// nothing to deploy and the check passes at once.
 //
 // Writes a Markdown report to stdout (and $GITHUB_STEP_SUMMARY when set);
 // exits non-zero when the study did not paint or a chunk is broken.
@@ -50,6 +53,8 @@ async function version() {
   }
 }
 
+/** Files that do not change what the site serves (desktop app, docs, CI, tests, these scripts). */
+const UNSERVED = /^(desktop\/|docs\/|\.github\/|e2e\/|scripts\/(prod-smoke|perf\/))|\.md$|\.test\.tsx?$/;
 const git = (...args) => execFileSync("git", args, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
 let fetched = false;
 /** The deployed commit is the expected one, or a later one on the branch that contains it. */
@@ -62,10 +67,23 @@ function containsExpected(commit) {
       git("fetch", "-q", "--depth=200", "origin", deployBranch);
       fetched = true;
     }
-    git("merge-base", "--is-ancestor", expectCommit, deployedSha);
-    return true;
   } catch {
-    return false; // not an ancestor, or the deployed commit is unknown here
+    return false; // the branch could not be fetched
+  }
+  try {
+    git("merge-base", "--is-ancestor", expectCommit, deployedSha);
+    return true; // a later deploy that already contains the expected commit
+  } catch {
+    /* not contained: maybe there was nothing to deploy (below) */
+  }
+  try {
+    // Production is on an older commit and everything since changes files the
+    // site does not serve: Railway skips such pushes, so there is nothing to wait for.
+    git("merge-base", "--is-ancestor", deployedSha, expectCommit);
+    const changed = git("diff", "--name-only", deployedSha, expectCommit).split("\n").filter(Boolean);
+    return changed.length > 0 && changed.every((file) => UNSERVED.test(file));
+  } catch {
+    return false; // unrelated history, or the deployed commit is unknown here
   }
 }
 
@@ -80,7 +98,7 @@ if (expectCommit) {
 out(`### Free viewer production smoke (${process.env.PROD_SMOKE_BROWSER || "chromium"}): ${root}/viewer`);
 out("");
 const deployOk = containsExpected(deployed.commit);
-out(`Deployed: \`${JSON.stringify(deployed)}\`${expectCommit ? ` (expected ${expectCommit.slice(0, 7)} or a later commit containing it: ${deployOk ? "yes" : "no"})` : ""}`);
+out(`Deployed: \`${JSON.stringify(deployed)}\`${expectCommit ? ` (expected ${expectCommit.slice(0, 7)}, a later commit containing it, or an earlier one with no served change since: ${deployOk ? "yes" : "no"})` : ""}`);
 
 
 // PROD_SMOKE_BROWSER=chromium|firefox|webkit (WebKit is Safari's engine).
