@@ -140,6 +140,10 @@ jobs:
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
       - name: e2e — normal launch paints real pixels in the main viewport
+        env:
+          # WARP runner: an unforced CPU-fallback launch is discarded and
+          # repeated (max 2, logged); the check itself is unchanged.
+          FLOWRAD_BENCH_WARP_RETRY: "1"
         run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer.exe
 
   # Performance gate on WebView2 (the platform readers install on), release
