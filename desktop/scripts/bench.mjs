@@ -399,10 +399,21 @@ function treeMemory(pid) {
 
 async function benchIdle(binary) {
   const seconds = flag("seconds", 8);
-  const child = spawn(binary, [], { stdio: "ignore", env: { ...process.env } });
+  const child = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
+  let out = "";
+  const keep = (d) => (out = (out + d).slice(-8000));
+  child.stdout.on("data", keep);
+  child.stderr.on("data", keep);
   await new Promise((r) => setTimeout(r, seconds * 1000));
+  const exited = child.exitCode != null;
   const mem = treeMemory(child.pid);
   child.kill("SIGKILL");
+  // A dead app measures 0 MB: that is a failure, not a floor.
+  if (exited || mem.processes.length === 0) {
+    console.error(`idle: the app is not running after ${seconds} s (exit ${child.exitCode}); its output:\n${out}`);
+    process.exitCode = 1;
+    return;
+  }
   // The app's own process vs the webview's (browser, renderer, GPU, utility):
   // the WebView2 UI floor is the second number (docs/NATIVE_RENDERER.md, P2.0).
   const app = mem.processes[0];
