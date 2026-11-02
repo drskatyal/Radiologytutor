@@ -587,7 +587,9 @@ async function benchNative(binary, study) {
   const runs = flag("runs", 3);
   const reports = [];
   for (let i = 0; i < runs; i += 1) {
-    const report = await runApp(binary, [study], { FLOWRAD_NATIVE: "1", ...benchEnv({ BENCH_VIEW: "native-spike" }) });
+    // BENCH_EXIT 0: the app stays up after its report, so the whole tree is
+    // sampled while the study is open (runApp kills it after).
+    const report = await runApp(binary, [study], { FLOWRAD_NATIVE: "1", ...benchEnv({ BENCH_VIEW: "native-spike", BENCH_EXIT: "0" }) });
     if (!report.study) throw new Error(`no native study report: ${JSON.stringify(report).slice(0, 400)}`);
     reports.push(report);
     const st = report.study;
