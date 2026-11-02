@@ -95,6 +95,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ui-study" && cp -r "$RUNNER_TEMP/fixtures/ct-phantom/." "$RUNNER_TEMP/ui-study/"
           python3 desktop/scripts/make-ortho-series.py "$RUNNER_TEMP/fixtures/ct-phantom" "$RUNNER_TEMP/ui-study/coronal"
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --shots "$RUNNER_TEMP/ui-shots" --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
+          # Multi-monitor: monitor picker, a second window, linked scroll / W/L / reference lines (pretend two-monitor desk).
+          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only multiwindow --shots "$RUNNER_TEMP/ui-shots"
       - name: Upload UI e2e screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -161,6 +163,7 @@ jobs:
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
+      WINDOW_LEAK_MAX_MB: "60"
       LEAK_ROUND_GROWTH_MAX_MB: "100"
     steps:
       - uses: actions/checkout@v4
@@ -237,5 +240,7 @@ jobs:
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)
         run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
+      - name: Gate — multi-monitor (a second viewer window opens, paints, follows; closing it returns memory)
+        run: node desktop/scripts/bench.mjs multiwindow desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-window-leak-mb ${{ env.WINDOW_LEAK_MAX_MB }} --max-long-tasks 0
       - name: MPR build time and peak memory (whole process tree)
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
