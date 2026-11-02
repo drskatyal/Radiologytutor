@@ -3,6 +3,7 @@
 
 import { useState, type ReactNode } from "react";
 import {
+  ChevronDown,
   Loader2,
   Mic,
   MicOff,
@@ -71,6 +72,11 @@ export interface ToolbarProps {
   onLayout: (rows: number, cols: number) => void;
   syncScroll: boolean;
   onToggleSync: () => void;
+  syncVoi?: boolean;
+  syncZoom?: boolean;
+  onToggleSyncVoi?: () => void;
+  onToggleSyncZoom?: () => void;
+  onLinkAtCurrent?: () => void;
   referenceLines: boolean;
   onToggleReferenceLines: () => void;
   overlay: boolean;
@@ -349,6 +355,31 @@ export function Toolbar(props: ToolbarProps) {
       <Tool label="Synchronise scrolling" shortcut="F5" active={props.syncScroll} onClick={props.onToggleSync}>
         <Link2 />
       </Tool>
+      {props.onToggleSyncVoi && (
+        <MenuRoot>
+          <MenuTrigger asChild>
+            <IconButton aria-label="Sync options" title="Sync options" size="sm" className={cn("-ml-1 h-8 w-4 rounded-md", (props.syncVoi || props.syncZoom) && "text-accent")}>
+              <ChevronDown />
+            </IconButton>
+          </MenuTrigger>
+          <MenuContent>
+            <MenuLabel>Keep viewports together</MenuLabel>
+            <MenuItem checked={props.syncScroll} shortcut="F5" onSelect={props.onToggleSync}>
+              Scrolling (by position)
+            </MenuItem>
+            <MenuItem checked={!!props.syncVoi} shortcut={keyLabel("Shift+F5")} onSelect={props.onToggleSyncVoi}>
+              Window / level
+            </MenuItem>
+            <MenuItem checked={!!props.syncZoom} shortcut={keyLabel("Alt+F5")} onSelect={props.onToggleSyncZoom!}>
+              Zoom and pan
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem shortcut={keyLabel("Mod+Shift+L")} onSelect={props.onLinkAtCurrent!}>
+              Link at current position
+            </MenuItem>
+          </MenuContent>
+        </MenuRoot>
+      )}
       <Tool label="Reference lines" shortcut={keyLabel("Mod+F12")} active={props.referenceLines} onClick={props.onToggleReferenceLines}>
         <Columns2 />
       </Tool>
