@@ -159,6 +159,7 @@ export function NativePlaneView({
 
   return (
     <div
+      data-native-transparent
       className="relative flex h-full w-full flex-col overflow-hidden bg-imaging"
       data-drop-cell={cellIndex}
       data-active-viewport={active ? "1" : undefined}

@@ -84,10 +84,23 @@ struct CellGpu {
     dims: (usize, usize),
 }
 
+/// P2.4: a plane (or slab) of the Rust volume (volume.rs) as a cell's source.
+#[derive(Clone, Copy, Debug)]
+struct PlaneSrc {
+    key: u64,
+    plane: crate::volume::Plane,
+    slab: crate::volume::Slab,
+    mm: f64,
+    depth: usize,
+    max_dim: usize,
+}
+
 /// One viewport.
 struct CellState {
     rect: Cell,
     series: Vec<PathBuf>,
+    /// When set, the cell shows this volume plane instead of `series`.
+    plane: Option<PlaneSrc>,
     view: View,
     gpu: Option<CellGpu>,
 }
@@ -188,6 +201,8 @@ pub struct ShowResult {
     pub transform: Transform,
     /// The file's own window (for "reset").
     pub default_window: Option<(f64, f64)>,
+    /// Largest value in the image (the page derives "is anything visible").
+    pub data_max: i16,
 }
 
 /// A region in image pixel coordinates (col, row).
@@ -339,7 +354,7 @@ impl Native {
             cells
                 .entry(r.id)
                 .and_modify(|c| c.rect = rect)
-                .or_insert(CellState { rect, series: vec![], view: View::default(), gpu: None });
+                .or_insert(CellState { rect, series: vec![], plane: None, view: View::default(), gpu: None });
         }
     }
 
@@ -350,6 +365,7 @@ impl Native {
         let c = cells.entry(SPIKE.to_string()).or_insert(CellState {
             rect: first,
             series: vec![],
+            plane: None,
             view: View { wl: (16384.0, 32767.0), ..View::default() },
             gpu: None,
         });
@@ -369,11 +385,49 @@ impl Native {
     pub fn set_series(&self, id: &str, paths: Vec<PathBuf>, index: usize, scale: f64) -> Result<ShowResult, String> {
         {
             let mut cells = self.cells.lock();
-            let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], view: View::default(), gpu: None });
+            let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], plane: None, view: View::default(), gpu: None });
             c.series = paths;
+            c.plane = None;
             c.view = View { index: index.min(c.series.len().saturating_sub(1)), ..View::default() };
         }
         self.show(id, None, true, scale)
+    }
+
+    /// P2.4: show a plane (or slab) of the built volume `key` in cell `id`.
+    /// Window / level, zoom, pan etc. apply as for a stack; the index pages
+    /// along the plane's axis. `max_dim`: output resolution (long side).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_plane(
+        &self,
+        id: &str,
+        key: u64,
+        plane: crate::volume::Plane,
+        index: usize,
+        slab: crate::volume::Slab,
+        mm: f64,
+        max_dim: usize,
+        wl: Option<(f32, f32)>,
+        scale: f64,
+    ) -> Result<ShowResult, String> {
+        let v = crate::volume::current(key).ok_or("the volume is not built")?;
+        let depth = match plane {
+            crate::volume::Plane::Axial => v.dims[2],
+            crate::volume::Plane::Coronal => v.dims[1],
+            crate::volume::Plane::Sagittal => v.dims[0],
+        };
+        let reset = {
+            let mut cells = self.cells.lock();
+            let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], plane: None, view: View::default(), gpu: None });
+            let fresh = c.plane.map(|p| p.key != key || p.plane != plane).unwrap_or(true);
+            c.series.clear();
+            c.plane = Some(PlaneSrc { key, plane, slab, mm, depth, max_dim: max_dim.clamp(64, 2048) });
+            c.view.index = index.min(depth.saturating_sub(1));
+            if let Some(wl) = wl {
+                c.view.wl = (wl.0, wl.1.max(1.0));
+            }
+            fresh && wl.is_none()
+        };
+        self.show(id, None, reset, scale)
     }
 
     /// Apply a view change (any of slice, window, zoom, pan, rotation, flip, invert).
@@ -386,10 +440,11 @@ impl Native {
         let at = {
             let cells = self.cells.lock();
             let c = cells.get(id).ok_or("no such viewport")?;
-            if c.series.is_empty() {
+            let n = c.plane.map(|p| p.depth).unwrap_or(c.series.len());
+            if n == 0 {
                 return Err("no series in this viewport".into());
             }
-            (c.view.index as i64 + delta).clamp(0, c.series.len() as i64 - 1) as usize
+            (c.view.index as i64 + delta).clamp(0, n as i64 - 1) as usize
         };
         self.show(id, Some(ViewPatch { index: Some(at), ..Default::default() }), false, scale)
     }
@@ -439,6 +494,54 @@ impl Native {
 
     fn show(&self, id: &str, patch: Option<ViewPatch>, reset_wl: bool, scale: f64) -> Result<ShowResult, String> {
         let started = Instant::now();
+        // 0. A volume plane: resample it (multi-core, from the shared volume).
+        let plane_src = {
+            let mut cells = self.cells.lock();
+            let c = cells.get_mut(id).ok_or("no such viewport")?;
+            match c.plane {
+                Some(p) => {
+                    if let Some(pt) = &patch {
+                        c.view.apply(pt);
+                    }
+                    c.view.index = c.view.index.min(p.depth.saturating_sub(1));
+                    Some((p, c.view.index))
+                }
+                None => None,
+            }
+        };
+        if let Some((p, index)) = plane_src {
+            let v = crate::volume::current(p.key).ok_or("the volume is not built")?;
+            let (w, h, data, px) = crate::volume::render_values(&v, p.plane, index, p.max_dim, p.slab, p.mm);
+            let slice = Slice { rows: h, cols: w, data, window: v.window, spacing: [px, px] };
+            let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let default_window = Some(slice.window.unwrap_or_else(|| data_window(&slice)));
+            if reset_wl {
+                if let (Some(dw), Some(c)) = (default_window, self.cells.lock().get_mut(id)) {
+                    c.view.wl = (dw.0 as f32, dw.1 as f32);
+                }
+            }
+            let key = PathBuf::from(format!("plane:{}:{:?}:{index}:{:?}:{}:{}", p.key, p.plane, p.slab, p.mm, p.max_dim));
+            self.upload(id, &key, &slice)?;
+            let frame_ms = self.render(scale)?;
+            let data_max = slice.data.iter().copied().max().unwrap_or(0);
+            let cells = self.cells.lock();
+            let c = cells.get(id).ok_or("viewport closed")?;
+            return Ok(ShowResult {
+                index,
+                count: p.depth,
+                cached: false,
+                decode_ms,
+                frame_ms,
+                total_ms: started.elapsed().as_secs_f64() * 1000.0,
+                rows: h,
+                cols: w,
+                window: c.view.wl,
+                view: c.view,
+                transform: Transform::new(&c.view, w, h, c.rect.w, c.rect.h),
+                default_window,
+                data_max,
+            });
+        }
         // 1. Apply the view and find the slice + what to prefetch (no GPU lock held).
         let (path, ahead, count) = {
             let mut cells = self.cells.lock();
@@ -515,6 +618,7 @@ impl Native {
             view: c.view,
             transform: Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h),
             default_window,
+            data_max: slice.as_ref().map(|s| s.data.iter().copied().max().unwrap_or(0)).unwrap_or(0),
         })
     }
 

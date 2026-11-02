@@ -484,11 +484,71 @@ fn render_one(
     max_dim: usize,
     reduce: &(dyn Fn(&dyn Fn(usize) -> f64) -> f64 + Sync),
 ) -> (usize, usize, Vec<u8>) {
-    let [nx, ny, nz] = v.dims;
-    let [sx, sy, sz] = v.spacing;
     let lower = center - width / 2.0;
     let scale = 255.0 / width.max(1.0);
-    let grey = |val: f64| ((val - lower) * scale).clamp(0.0, 255.0) as u8;
+    let (w, h, out, _) = render_map(v, plane, max_dim, reduce, &|val: f64| ((val - lower) * scale).clamp(0.0, 255.0) as u8);
+    (w, h, out)
+}
+
+/// Phase 2 (P2.4): a plane (or slab) as MODALITY VALUES for the native
+/// renderer, which applies window / level on the GPU: no PNG, no browser
+/// image decode, no second texture in WebView2's GPU process. Returns
+/// (width, height, values, mm per output pixel).
+pub fn render_values(v: &Volume, plane: Plane, index: usize, max_dim: usize, slab: Slab, thickness_mm: f64) -> (usize, usize, Vec<i16>, f64) {
+    let axis_mm = match plane {
+        Plane::Axial => v.spacing[2],
+        Plane::Coronal => v.spacing[1],
+        Plane::Sagittal => v.spacing[0],
+    };
+    let half = if slab == Slab::Off { 0 } else { ((thickness_mm / axis_mm.max(1e-3)) / 2.0).round() as isize };
+    let depth = match plane {
+        Plane::Axial => v.dims[2],
+        Plane::Coronal => v.dims[1],
+        Plane::Sagittal => v.dims[0],
+    } as isize;
+    let index = (index as isize).clamp(0, depth - 1);
+    let lo = (index - half).max(0) as usize;
+    let hi = (index + half).min(depth - 1) as usize;
+    let i16v = |val: f64| val.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+    if half == 0 {
+        let i = index as usize;
+        return render_map(v, plane, max_dim, &|f| f(i), &i16v);
+    }
+    let combine = move |f: &dyn Fn(usize) -> f64| -> f64 {
+        let mut acc = match slab {
+            Slab::Mip => f64::MIN,
+            Slab::MinIp => f64::MAX,
+            _ => 0.0,
+        };
+        for i in lo..=hi {
+            let val = f(i);
+            acc = match slab {
+                Slab::Mip => acc.max(val),
+                Slab::MinIp => acc.min(val),
+                _ => acc + val,
+            };
+        }
+        if slab == Slab::Avg {
+            acc / (hi - lo + 1) as f64
+        } else {
+            acc
+        }
+    };
+    render_map(v, plane, max_dim, &combine, &i16v)
+}
+
+/// The shared resampler: plane grid in mm (square output pixels), `reduce`
+/// over the plane's axis, `out` maps the value to the output type.
+fn render_map<T: Send + Default + Clone>(
+    v: &Volume,
+    plane: Plane,
+    max_dim: usize,
+    reduce: &(dyn Fn(&dyn Fn(usize) -> f64) -> f64 + Sync),
+    out_of: &(dyn Fn(f64) -> T + Sync),
+) -> (usize, usize, Vec<T>, f64) {
+    let [nx, ny, nz] = v.dims;
+    let [sx, sy, sz] = v.spacing;
+    let grey = out_of;
     let at = |x: usize, y: usize, z: usize| v.data[(z * ny + y) * nx + x] as f64;
     // Output grid in mm, then fit to max_dim.
     let (mm_w, mm_h) = match plane {
@@ -498,7 +558,7 @@ fn render_one(
     };
     let px = (mm_w.max(mm_h) / max_dim.max(16) as f64).max(sx.min(sy).min(sz).min(sx));
     let (w, h) = (((mm_w / px).round() as usize).max(1), ((mm_h / px).round() as usize).max(1));
-    let mut out = vec![0u8; w * h];
+    let mut out = vec![T::default(); w * h];
     out.par_chunks_mut(w).enumerate().for_each(|(oy, row)| {
         for (ox, o) in row.iter_mut().enumerate() {
             let u = (ox as f64 + 0.5) * mm_w / w as f64;
@@ -533,7 +593,7 @@ fn render_one(
             *o = grey(val);
         }
     });
-    (w, h, out)
+    (w, h, out, px)
 }
 
 pub fn png(w: usize, h: usize, grey: &[u8]) -> Option<Vec<u8>> {
