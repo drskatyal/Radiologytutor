@@ -259,7 +259,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown };
     pendingVolume?: () => Promise<void>;
     volumeT0?: number;
   }>({
@@ -786,6 +786,14 @@ export default function App() {
                     const { profileInteraction } = await import("./viewer/frameProfile");
                     bench.current.marks.interaction = await profileInteraction(engine.core, vp);
                   }
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "native-tools") {
+                // P2.3 e2e: draw with the real tools through real pointer
+                // events on the native viewport, then report what they measured.
+                void (async () => {
+                  const { driveNativeTools } = await import("./native/benchTools");
+                  bench.current.marks.nativeTools = await driveNativeTools(setLeftTool);
                   void report();
                 })();
               } else if (bench.current.firstPaint != null) void report();
@@ -1697,7 +1705,10 @@ export default function App() {
     openSeq.current += 1;
     void cancelScan();
     // Native renderer: every viewport and decoded slice freed (back to baseline).
-    if (native) void invoke("native_close").catch(() => undefined);
+    if (native) {
+      void invoke("native_close").catch(() => undefined);
+      void import("./native/annotations").then((m) => m.clearAnnotations());
+    }
     setScan(null);
     setGrowing(false);
     setSource(null);
@@ -2002,6 +2013,7 @@ export default function App() {
                       onDropSeries={(dropped) => showSeries(dropped, i)}
                       onDoubleClick={() => cells.length > 1 && setMaximized((m) => (m == null ? i : null))}
                       onFirstPaint={onFirstPaint}
+                      onAnnotationsDeleted={onAnnotationsDeleted}
                     />
                   );
                 return (
