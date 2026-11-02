@@ -46,6 +46,9 @@ export interface LocalInstanceHeader {
   columns?: number;
   /** (0002,0010). Decides which decoder (and WASM codec) a frame needs. */
   transferSyntaxUID?: string;
+  /** (0028,0002) and (0028,0100): with rows × columns, the decoded size. */
+  samplesPerPixel?: number;
+  bitsAllocated?: number;
 }
 
 export interface LocalSeries {

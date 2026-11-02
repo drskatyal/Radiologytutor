@@ -49,6 +49,8 @@ const SCROLL_STEPS = 240;
  */
 const CLOSE_RSS_TOLERANCE_MB = 64;
 const CLOSE_SETTLE_MS = 30_000;
+/** viewerRuntime.ts imageCacheBytes for a 2 GB device (deviceMemory ≤ 2). */
+const DEVICE_BUDGET_2GB_MB = 256;
 
 // Chromium with a GPU accelerates 2D canvases by default, so the viewer's
 // WebGL → 2D-canvas copy is a GPU blit. Headless Chromium on a GPU-less runner
@@ -237,7 +239,7 @@ async function gpuRenderer(page: Page): Promise<string> {
 
 async function viewerStats(page: Page) {
   return page.evaluate(async () => {
-    const w = window as unknown as { __flowradViewerStats?: () => Promise<{ cacheBytes: number; maxCacheBytes: number; openFiles: number; metadataEntries: number }> };
+    const w = window as unknown as { __flowradViewerStats?: () => Promise<{ cacheBytes: number; maxCacheBytes: number; openFiles: number; metadataEntries: number; rawBytes: number }> };
     return w.__flowradViewerStats ? w.__flowradViewerStats() : null;
   });
 }
@@ -390,7 +392,7 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   expect(reopen.firstImageMs, "first image when reopening after Close study").toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
 });
 
-test("memory cap: a 2 GB device scrolls all 520 slices under its cap (eviction), then frees on close", async ({ browser }) => {
+test("memory cap: a 2 GB device scrolls all 520 slices with decoded + raw under its budget, then frees on close", async ({ browser }) => {
   test.skip(!CT_DIR, "TEST_CT_LARGE_DIR is not set");
   test.setTimeout(240_000);
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -399,42 +401,63 @@ test("memory cap: a 2 GB device scrolls all 520 slices under its cap (eviction),
   });
   const page = await context.newPage();
   await page.goto("/viewer");
+  await page.waitForTimeout(1500);
+  const rssIdle = await rendererRssMb(browser);
   await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
   await measureFirstImage(page);
   await waitParsed(page);
-  let peak = 0;
+  let peakDecoded = 0;
+  let peakResident = 0;
+  let peakRss = 0;
   let cap = 0;
-  // Scroll end to end, sampling the cache: it must evict, never exceed the cap.
+  // Scroll end to end, sampling: the decoded cache must evict, and decoded +
+  // the raw Part 10 files the loader keeps beside it must fit the DEVICE
+  // budget — not just the decoded cap (lib/localMemoryBudget.ts).
+  const sample = async () => {
+    const s = await viewerStats(page);
+    if (s) {
+      peakDecoded = Math.max(peakDecoded, s.cacheBytes);
+      peakResident = Math.max(peakResident, s.cacheBytes + s.rawBytes);
+      cap = s.maxCacheBytes;
+    }
+    const rss = await rendererRssMb(browser);
+    if (rss != null) peakRss = Math.max(peakRss, rss);
+  };
   const canvas = page.locator("canvas").first();
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   for (let pass = 0; pass < 2; pass += 1) {
     for (let i = 0; i < 540; i += 1) {
       await page.mouse.wheel(0, pass === 0 ? 120 : -120);
-      if (i % 30 === 0) {
-        const s = await viewerStats(page);
-        if (s) {
-          peak = Math.max(peak, s.cacheBytes);
-          cap = s.maxCacheBytes;
-        }
-      }
+      if (i % 30 === 0) await sample();
     }
     await page.waitForTimeout(1500);
-    const s = await viewerStats(page);
-    if (s) peak = Math.max(peak, s.cacheBytes);
+    await sample();
   }
   await expect.poll(() => centreLuma(page)).toBeGreaterThan(30); // still painting: the tab survived
+  // Scroll back over evicted slices: they reload from the file and paint.
+  for (let i = 0; i < 40; i += 1) await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(800);
+  await expect.poll(() => centreLuma(page)).toBeGreaterThan(30);
   await page.getByRole("button", { name: "Close study" }).first().click();
   const closed = await viewerStats(page);
+  const deviceBudget = DEVICE_BUDGET_2GB_MB * 1048576;
   record("memoryCap", {
     emulatedDeviceMemoryGb: 2,
+    deviceBudgetMb: DEVICE_BUDGET_2GB_MB,
     cacheCapMb: Math.round(cap / 1048576),
-    cachePeakMb: Math.round(peak / 1048576),
+    cachePeakMb: Math.round(peakDecoded / 1048576),
+    residentPeakMb: Math.round(peakResident / 1048576),
+    rendererRssIdleMb: rssIdle,
+    rendererRssPeakMb: peakRss || null,
     cacheAfterCloseMb: closed ? Math.round(closed.cacheBytes / 1048576) : null,
+    rawAfterCloseMb: closed ? Math.round(closed.rawBytes / 1048576) : null,
   });
   expect(cap).toBeGreaterThan(0);
-  expect(peak, "decoded cache stays under the device cap").toBeLessThanOrEqual(cap);
+  expect(peakDecoded, "decoded cache stays under its cap").toBeLessThanOrEqual(cap);
+  expect(peakResident, "decoded + raw files stay inside the 2 GB device budget").toBeLessThanOrEqual(deviceBudget);
   expect(closed?.cacheBytes).toBe(0);
+  expect(closed?.rawBytes).toBe(0);
   await context.close();
 });
 
