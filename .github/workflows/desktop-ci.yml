@@ -367,7 +367,7 @@ jobs:
       - name: Gate — idle after a COLD open, native mode (848-slice CT; no scan cache, OS file cache dropped; whole tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
-        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --cold
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --require-no-engine --cold
       - name: Idle after a COLD open of the 10,310-image MRI, native mode (whole tree, after 20 s; informational)
         env:
           FLOWRAD_BENCH_VIEW: grid

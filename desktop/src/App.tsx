@@ -183,6 +183,11 @@ function nativeCapable(series: { multiframe?: boolean; headers: readonly { photo
   return pi.startsWith("MONOCHROME");
 }
 
+/** Whether this window renders natively; false at once outside Tauri. */
+function whenNativeKnown(): Promise<boolean> {
+  return isTauri ? nativeEnabled() : Promise.resolve(false);
+}
+
 export default function App() {
   const { toast } = useToast();
   const [version, setVersion] = useState("");
@@ -213,12 +218,20 @@ export default function App() {
    * viewport (colour / multi-frame fallback) has started it itself.
    */
   const withEngine = useCallback((fn: (engine: Engine) => void) => {
-    if (!nativeRef.current) {
-      void getEngine().then(fn);
-      return;
-    }
-    const engine = enginePeek();
-    if (engine) fn(engine);
+    // Until Rust has answered whether this window is native, wait for it:
+    // an open right after launch must not start the engine "just in case".
+    void whenNativeKnown().then((on) => {
+      if (!on) {
+        void getEngine().then(fn);
+        return;
+      }
+      const engine = enginePeek();
+      if (engine) fn(engine);
+    });
+  }, []);
+  /** Start the JS engine early only where it will be the renderer. */
+  const prewarmJsEngine = useCallback(() => {
+    void whenNativeKnown().then((on) => !on && void getEngine());
   }, []);
   useEffect(() => {
     if (!isTauri) return;
@@ -913,7 +926,7 @@ export default function App() {
 
   const openDialog = useCallback(
     async (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => {
-      if (!nativeRef.current) void getEngine();
+      prewarmJsEngine();
       if (what === "pacs") {
         if (isTauri) setDialog("pacs");
         else toast({ title: "PACS needs the desktop app", variant: "info" });
@@ -1003,7 +1016,7 @@ export default function App() {
       off.push(
         await getCurrentWebview().onDragDropEvent((event) => {
           const p = event.payload;
-          if (p.type === "enter" && !nativeRef.current) void getEngine();
+          if (p.type === "enter") prewarmJsEngine();
           if (p.type === "enter" || p.type === "over") setDragging(true);
           else if (p.type === "leave") setDragging(false);
           else if (p.type === "drop") {
@@ -1448,7 +1461,7 @@ export default function App() {
   const remotePlanes = useCrossWindow({
     // Linked windows ride on the JS engine's events. Native mode: only once a
     // JS-path viewport has started the engine (re-checked as handles change).
-    enabled: studies.length > 0 && (!native || (handlesVersion >= 0 && enginePeek() != null)),
+    enabled: studies.length > 0 && (nativeMode === false || (handlesVersion >= 0 && enginePeek() != null)),
     viewportIds: visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i)),
     active: activeViewportHandle ? { viewportId: activeViewportHandle.viewportId, element: activeViewportHandle.element } : null,
     links: { scroll: syncScroll, voi: syncVoi, zoom: syncZoom, referenceLines },
@@ -2015,8 +2028,8 @@ export default function App() {
     // The preview is what the reader sees first; start the engine right
     // behind it instead of waiting for the viewport's next frame + task.
     // (Native mode: the native viewport draws; no JS engine.)
-    if (!nativeRef.current) void getEngine();
-  }, []);
+    prewarmJsEngine();
+  }, [prewarmJsEngine]);
 
   const onFirstPaint = useCallback(() => {
     if (bench.current.firstPaint == null) bench.current.firstPaint = performance.now() - bench.current.t0;

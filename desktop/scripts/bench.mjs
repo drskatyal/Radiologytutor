@@ -606,6 +606,9 @@ async function benchMpr(binary, study) {
   if (summary.peakWsMb > maxMb) over.push(`peak working set ${summary.peakWsMb} MB > ${maxMb} MB`);
   if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
   if (summary.settledWsMb > maxSettledMb) over.push(`settled working set ${summary.settledWsMb} MB > ${maxSettledMb} MB`);
+  // Native mode draws without the JS engine; starting it costs ~350 ms of
+  // main thread on open plus its WebGL context and decode worker.
+  if (rest.includes("--require-no-engine") && summary.engineStarted) over.push("the JS engine started in native mode");
   if (over.length) {
     console.error(`MPR gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
