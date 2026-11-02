@@ -190,6 +190,85 @@ pub struct ShowResult {
     pub default_window: Option<(f64, f64)>,
 }
 
+/// A region in image pixel coordinates (col, row).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum RoiShape {
+    /// Axis-aligned in image space: two opposite corners.
+    Rect { a: (f32, f32), b: (f32, f32) },
+    /// Axis-aligned ellipse inscribed in the box of two corners.
+    Ellipse { a: (f32, f32), b: (f32, f32) },
+    /// Closed polygon (freehand).
+    Polygon { points: Vec<(f32, f32)> },
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoiStats {
+    pub mean: f64,
+    pub sd: f64,
+    pub min: f64,
+    pub max: f64,
+    pub pixels: usize,
+    pub area_mm2: f64,
+}
+
+fn inside_polygon(pts: &[(f32, f32)], x: f32, y: f32) -> bool {
+    let mut inside = false;
+    let mut j = pts.len().wrapping_sub(1);
+    for i in 0..pts.len() {
+        let (xi, yi) = pts[i];
+        let (xj, yj) = pts[j];
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi + f32::EPSILON) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Pixels whose centre falls inside the shape.
+pub fn roi_stats(s: &Slice, shape: &RoiShape) -> RoiStats {
+    let (x0, y0, x1, y1) = match shape {
+        RoiShape::Rect { a, b } | RoiShape::Ellipse { a, b } => (a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)),
+        RoiShape::Polygon { points } => points.iter().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |(a, b, c, d), p| (a.min(p.0), b.min(p.1), c.max(p.0), d.max(p.1))),
+    };
+    let cmin = x0.floor().max(0.0) as usize;
+    let rmin = y0.floor().max(0.0) as usize;
+    let cmax = (x1.ceil() as usize).min(s.cols);
+    let rmax = (y1.ceil() as usize).min(s.rows);
+    let (cx, cy, rx, ry) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0, ((x1 - x0) / 2.0).max(1e-6), ((y1 - y0) / 2.0).max(1e-6));
+    let (mut n, mut sum, mut sum2, mut lo, mut hi) = (0usize, 0f64, 0f64, f64::MAX, f64::MIN);
+    for r in rmin..rmax {
+        for c in cmin..cmax {
+            let (px, py) = (c as f32 + 0.5, r as f32 + 0.5);
+            let inside = match shape {
+                RoiShape::Rect { .. } => px >= x0 && px <= x1 && py >= y0 && py <= y1,
+                RoiShape::Ellipse { .. } => ((px - cx) / rx).powi(2) + ((py - cy) / ry).powi(2) <= 1.0,
+                RoiShape::Polygon { points } => inside_polygon(points, px, py),
+            };
+            if inside {
+                let v = s.data[r * s.cols + c] as f64;
+                n += 1;
+                sum += v;
+                sum2 += v * v;
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+    }
+    let mean = if n > 0 { sum / n as f64 } else { 0.0 };
+    let sd = if n > 1 { ((sum2 - sum * sum / n as f64) / (n as f64 - 1.0)).max(0.0).sqrt() } else { 0.0 };
+    RoiStats {
+        mean,
+        sd,
+        min: if n > 0 { lo } else { 0.0 },
+        max: if n > 0 { hi } else { 0.0 },
+        pixels: n,
+        area_mm2: n as f64 * s.spacing[0] * s.spacing[1],
+    }
+}
+
 /// A window over the slice's data range, for files without one.
 fn data_window(s: &Slice) -> (f64, f64) {
     let (lo, hi) = s.data.iter().fold((i16::MAX, i16::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
@@ -343,6 +422,19 @@ impl Native {
             return None;
         }
         Some((col, row, slice.data[row as usize * slice.cols + col as usize]))
+    }
+
+    /// P2.3: statistics of a region of the cell's current slice (image px
+    /// coordinates), from the decoded modality values: mean, SD, min, max,
+    /// pixel count and area (mm², from Pixel Spacing).
+    pub fn roi_stats(&self, id: &str, shape: &RoiShape) -> Option<RoiStats> {
+        let path = {
+            let cells = self.cells.lock();
+            let c = cells.get(id)?;
+            c.series.get(c.view.index)?.clone()
+        };
+        let slice = self.store().peek(&path).or_else(|| self.store().get(&path).ok())?;
+        Some(roi_stats(&slice, shape))
     }
 
     fn show(&self, id: &str, patch: Option<ViewPatch>, reset_wl: bool, scale: f64) -> Result<ShowResult, String> {
@@ -525,7 +617,10 @@ impl Native {
                 multiview_mask: None,
             });
             pass.set_pipeline(&gpu.pipeline);
-            for (id, c) in cells.iter() {
+            // Stable order: a cell's lens ("<id>:lens") draws after (over) the cell.
+            let mut order: Vec<(&String, &CellState)> = cells.iter().collect();
+            order.sort_by(|a, b| a.0.cmp(b.0));
+            for (id, c) in order {
                 let Some(cg) = &c.gpu else { continue };
                 // An app cell without a slice stays the page's (no test image there).
                 if cg.texture.is_none() && id != SPIKE {
@@ -747,5 +842,34 @@ mod tests {
         // Left edge dark, right edge bright on a row away from the rings' bright bands.
         assert!(px[0] < px[63]);
         assert!(px.iter().any(|&v| v > 25000));
+    }
+}
+
+#[cfg(test)]
+mod roi_tests {
+    use super::*;
+
+    fn slice() -> Slice {
+        // 10×10, value = column index; 0.5 mm × 2 mm pixels.
+        Slice { rows: 10, cols: 10, data: (0..100).map(|i| (i % 10) as i16).collect(), window: None, spacing: [0.5, 2.0] }
+    }
+
+    #[test]
+    fn rect_stats_and_area() {
+        let st = roi_stats(&slice(), &RoiShape::Rect { a: (2.0, 0.0), b: (4.0, 10.0) });
+        assert_eq!(st.pixels, 20);
+        assert!((st.mean - 2.5).abs() < 1e-9);
+        assert_eq!((st.min, st.max), (2.0, 3.0));
+        assert!((st.area_mm2 - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ellipse_and_polygon_are_inside_their_box() {
+        let s = slice();
+        let e = roi_stats(&s, &RoiShape::Ellipse { a: (0.0, 0.0), b: (10.0, 10.0) });
+        assert!(e.pixels > 60 && e.pixels < 100, "{}", e.pixels);
+        let tri = roi_stats(&s, &RoiShape::Polygon { points: vec![(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)] });
+        assert!(tri.pixels > 40 && tri.pixels < 60, "{}", tri.pixels);
+        assert!(tri.mean < 4.5);
     }
 }
