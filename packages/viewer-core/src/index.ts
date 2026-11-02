@@ -37,3 +37,4 @@ export * from "./contextMenu";
 export * from "./viewOrientation";
 export * from "./seriesPanel";
 export * from "./dicomTags";
+export * from "./voiceSession";

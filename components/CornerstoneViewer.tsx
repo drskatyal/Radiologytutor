@@ -55,7 +55,8 @@ import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { imageMenu } from "@flowrad/viewer-core";
 import { shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
-import type { VoiceState } from "./viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
+import { VoiceStatus } from "./viewer/voice/VoiceStatus";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
@@ -805,6 +806,9 @@ export default function CornerstoneViewer({
   initialWindow = null,
   paneLabel,
   onChunkLoadError,
+  onSeriesStep,
+  voiceOn = false,
+  onVoiceChange,
 }: {
   /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
   paneLabel?: string;
@@ -834,6 +838,18 @@ export default function CornerstoneViewer({
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /**
+   * "Next / previous series" (voice) for hosts that own the series list
+   * themselves (the free viewer). Without it, the `series` prop is stepped.
+   */
+  onSeriesStep?: (delta: number) => void;
+  /**
+   * Voice commands were on in the viewer this one replaces (another series):
+   * switch them back on once this one is ready. Paired with `onVoiceChange`,
+   * which reports the reader turning voice on or off (not an unmount).
+   */
+  voiceOn?: boolean;
+  onVoiceChange?: (on: boolean) => void;
   /**
    * The viewer's code could not be fetched even after retries (a deploy
    * swapped the build under this tab, or the network dropped it). The host
@@ -3719,6 +3735,7 @@ export default function CornerstoneViewer({
   voiceActionRef.current = (a: VoiceAction) => {
     switch (a.type) {
       case "series": {
+        if (onSeriesStep) return onSeriesStep(a.delta);
         if (!series?.length || !onSeriesChangeRef.current) return;
         const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
         if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
@@ -3755,28 +3772,70 @@ export default function CornerstoneViewer({
         return;
     }
   };
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const toggleVoice = async () => {
     if (voiceSessionRef.current || voice.state === "loading") {
       voiceSessionRef.current?.stop();
       voiceSessionRef.current = null;
+      setVoice({ state: "off" });
       return;
     }
-    const { startVoice } = await import("./viewer/voice/voiceSession");
-    voiceSessionRef.current = await startVoice({
-      modelUrl: "/voice/model.tar.gz",
+    setVoiceError(null);
+    setVoiceProgress(null);
+    // Show the loading card at once, before the session module arrives.
+    setVoice({ state: "loading" });
+    let mod: typeof import("./viewer/voice/voiceSession");
+    try {
+      mod = await import("./viewer/voice/voiceSession");
+    } catch {
+      setVoice({ state: "error" });
+      setVoiceError("Voice commands could not be loaded. Check the connection and press Retry.");
+      return;
+    }
+    await mod.startVoice({
+      onSession: (session) => {
+        voiceSessionRef.current = session;
+      },
+      modelUrl: mod.VOICE_MODEL_URL,
+      workerUrl: mod.VOICE_WORKER_URL,
       onAction: (action, heard) => {
         flash(`“${heard}”`);
         voiceActionRef.current(action);
       },
       onUnrecognized: (heard) => flash(`“${heard}” ?`),
+      onProgress: setVoiceProgress,
       onState: (state, detail) => {
         setVoice({ state });
-        if (state === "error" && detail) flash(detail);
+        if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSessionRef.current = null;
+        // The reader's choice, so the next series' viewer keeps it (not an unmount).
+        if (!unmountingRef.current && (state === "listening" || state === "off" || state === "error")) {
+          onVoiceChangeRef.current?.(state === "listening");
+        }
       },
     });
   };
-  useEffect(() => () => voiceSessionRef.current?.stop(), []);
+  const unmountingRef = useRef(false);
+  const onVoiceChangeRef = useRef(onVoiceChange);
+  onVoiceChangeRef.current = onVoiceChange;
+  useEffect(
+    () => () => {
+      unmountingRef.current = true;
+      voiceSessionRef.current?.stop();
+    },
+    []
+  );
+  // "Next series" by voice remounts the viewer for the new series: carry the
+  // mic over (the model is in the HTTP cache, the permission already given).
+  const voiceResumedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || !canVoice || !voiceOn || voiceResumedRef.current) return;
+    voiceResumedRef.current = true;
+    if (!voiceSessionRef.current) void toggleVoice();
+    // Once per mount; toggleVoice reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, canVoice, voiceOn]);
 
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
@@ -3855,7 +3914,19 @@ export default function CornerstoneViewer({
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
       onHelp={() => setHelpOpen((open) => !open)}
-      voice={canVoice ? { state: voice.state, onToggle: () => void toggleVoice() } : undefined}
+      voice={
+        canVoice
+          ? {
+              state: voice.state,
+              onToggle: () => void toggleVoice(),
+              // Hover / focus: start loading the recognizer so a click is ready at once.
+              onWarm: () => {
+                if (voiceSessionRef.current) return;
+                void import("./viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
+              },
+            }
+          : undefined
+      }
     />
   );
 
@@ -4174,6 +4245,21 @@ export default function CornerstoneViewer({
         )}
         <ViewerHud text={hud} />
         <ViewerHelp open={helpOpen} onClose={closeHelp} />
+        <VoiceStatus
+          className="absolute right-3 top-3 z-30"
+          state={voice.state}
+          progress={voiceProgress}
+          error={voiceError}
+          onRetry={() => {
+            setVoice({ state: "off" });
+            void toggleVoice();
+          }}
+          onDismiss={() => {
+            voiceSessionRef.current?.stop();
+            voiceSessionRef.current = null;
+            setVoice({ state: "off" });
+          }}
+        />
         {mprShowing ? null : imageOverlay}
       </div>
       {ownBar && toolbar}

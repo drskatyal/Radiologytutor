@@ -52,13 +52,22 @@ async function listFiles(dir) {
   return out;
 }
 
+// --prod-csp: serve the page with the CSP the installed app ships with
+// (tauri.conf.json; Tauri sends it with HTML only). Without it this e2e
+// passed while the installed app's recognizer was blocked by that CSP.
+const prodCsp = args.includes("--prod-csp")
+  ? Object.entries(JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security.csp)
+      .map(([k, v]) => `${k} ${v}`)
+      .join("; ")
+  : null;
 const types = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html", ".svg": "image/svg+xml" };
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const file = path.join(dist, url.pathname === "/" ? "index.html" : url.pathname);
   try {
     const body = await readFile(file);
-    res.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream" });
+    const type = types[path.extname(file)] ?? "application/octet-stream";
+    res.writeHead(200, { "Content-Type": type, ...(prodCsp && type === "text/html" ? { "Content-Security-Policy": prodCsp } : {}) });
     res.end(body);
   } catch {
     res.writeHead(404).end();
@@ -95,7 +104,7 @@ if (only?.includes("multiwindow")) {
 }
 // Voice must load nothing until the mic is switched on.
 const voiceRequests = [];
-context.on("request", (r) => /\/assets\/vosk-|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
+context.on("request", (r) => /\/assets\/vosk-|recognizer-worker|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
 const page = await context.newPage();
 const consoleErrors = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
@@ -1078,7 +1087,10 @@ if (want("voice")) {
     await settle(400);
     const mic = page.getByRole("button", { name: /^Voice commands/ });
     await mic.click();
-    await page.waitForFunction(() => !!document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 60_000 }).catch(() => undefined);
+    // Locator waits, not waitForFunction: Playwright compiles a waitForFunction
+    // predicate with `new Function` in the page, which the production CSP
+    // (--prod-csp, no 'unsafe-eval') blocks — the wait then returned at once.
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
     const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
     check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
     check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
@@ -1100,7 +1112,7 @@ if (want("voice")) {
     check("voice: what was heard is shown", [...heard].some((h) => /layout|lung|zoom/.test(h) && !h.includes("✓")), [...heard].join(" | "));
     await shot("voice-listening");
     await page.keyboard.press("Control+Shift+V");
-    await page.waitForFunction(() => !document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 10_000 }).catch(() => undefined);
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
     check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
   }
