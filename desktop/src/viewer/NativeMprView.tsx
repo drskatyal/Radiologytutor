@@ -8,15 +8,19 @@
 // window/level, click moves the crosshair (the other two planes follow),
 // arrow keys scroll the active pane, double-click resets.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Slider } from "@/components/ui/Slider";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
 import { invoke, volumePlaneUrl } from "../platform";
+import { useNativeMode } from "../native/nativeLayout";
 import type { ViewerSeries } from "../types";
 import { installToolCursors } from "./toolCursor";
+
+// Phase 2: in native mode the plane is drawn by Rust, not loaded as a PNG.
+const NativePlaneSurface = lazy(() => import("../native/NativePlaneSurface"));
 
 installToolCursors();
 
@@ -220,9 +224,16 @@ export function Pane({
   const scale = size[0] && size[1] ? Math.min(size[0] / mmW, size[1] / mmH) : 0;
   const rect = { w: mmW * scale, h: mmH * scale, x: (size[0] - mmW * scale) / 2, y: (size[1] - mmH * scale) / 2 };
   const maxDim = Math.min(1024, Math.max(128, Math.ceil(Math.max(rect.w, rect.h) * (window.devicePixelRatio || 1))));
-  const url = scale ? volumePlaneUrl(info.key, plane, at[plane], center, width, maxDim, slab) : null;
+  // Native renderer (Phase 2): the plane is drawn by Rust under the page.
+  const native = useNativeMode();
+  const [nativePainted, setNativePainted] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const paneId = useRef(`mpr:${plane}:${Math.random().toString(36).slice(2, 8)}`).current;
+  const url = scale && !native ? volumePlaneUrl(info.key, plane, at[plane], center, width, maxDim, slab) : null;
   const slabText = slabLabel(slab);
-  const { src, failed } = usePlaneImage(url, onPainted);
+  const img = usePlaneImage(url, onPainted);
+  const src = native ? (nativePainted ? "native" : null) : img.src;
+  const failed = native ? !!nativeError : img.failed;
   const [cx, cy] = crosshair(info, plane, at);
 
   const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
@@ -275,11 +286,33 @@ export function Pane({
       className={cn(
         // Click places the crosshair; without one, drag only windows.
         showCrosshair ? "cursor-crosshair" : "tool-cursor-wl",
-        "relative min-h-0 min-w-0 touch-none select-none overflow-hidden bg-black outline-none",
+        "relative min-h-0 min-w-0 touch-none select-none overflow-hidden outline-none",
+        // Native: transparent, the plane is drawn under the page.
+        native ? "bg-transparent" : "bg-black",
         active ? "ring-1 ring-inset ring-accent" : "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
       )}
     >
-      {src && (
+      {native && scale > 0 && (
+        <Suspense fallback={null}>
+          <NativePlaneSurface
+            id={paneId}
+            volumeKey={info.key}
+            plane={plane}
+            index={at[plane]}
+            slab={slab}
+            center={center}
+            width={width}
+            maxDim={maxDim}
+            rect={rect}
+            onPainted={(lum) => {
+              setNativePainted(true);
+              onPainted?.(lum);
+            }}
+            onError={setNativeError}
+          />
+        </Suspense>
+      )}
+      {src && !native && (
         <img
           src={src}
           alt=""
@@ -411,7 +444,7 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
   };
 
   return (
-    <section aria-label="MPR" className="flex min-w-0 flex-1 flex-col bg-black">
+    <section aria-label="MPR" data-native-transparent className="flex min-w-0 flex-1 flex-col bg-black">
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-subtle bg-surface px-2 text-sm">
         <Button size="sm" variant="ghost" onClick={onExit} leadingIcon={<ArrowLeft className="h-4 w-4" />}>
           Back to 2D
@@ -469,7 +502,7 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
           <Spinner label={`Building the volume (${fileIds.length.toLocaleString()} images)`} />
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-px bg-black">
+        <div data-native-transparent className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-px bg-black">
           {PLANES.map(({ plane, label }) => (
             <Pane
               key={plane}

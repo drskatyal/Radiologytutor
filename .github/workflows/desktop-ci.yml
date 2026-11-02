@@ -316,6 +316,17 @@ jobs:
         run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots" --study "${{ runner.temp }}/ct848"
       - name: P2.3 e2e — every native tool draws and measures (Length, ROIs with Rust stats, probe, undo / redo)
         run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots" --study "${{ runner.temp }}/ct848" --tools
+      - name: P2.4 e2e — MPR, slabs and quick reformat drawn natively (848-slice CT)
+        env:
+          FLOWRAD_NATIVE: "1"
+        shell: bash
+        run: |
+          python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --view mpr --slab mip:20 --runs 1
+          python desktop/scripts/e2e-volume.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --view reformat --runs 1
+      - name: P2.4 — MPR peak and settled memory, native mode (whole process tree; informational)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 8
       - name: P2.2 — app open + first image, native mode (cold and warm; informational)
         env:
           FLOWRAD_NATIVE: "1"
