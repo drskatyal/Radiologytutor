@@ -593,6 +593,31 @@ async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64
     tauri::async_runtime::spawn_blocking(move || native.scroll(&id, delta, scale)).await.map_err(|e| e.to_string())?
 }
 
+/// P2.4: a plane / slab of the built Rust volume in a native cell.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn native_cell_plane(
+    window: tauri::WebviewWindow,
+    id: String,
+    key: String,
+    plane: String,
+    index: usize,
+    slab: Option<String>,
+    mm: Option<f64>,
+    max_dim: Option<usize>,
+    wl: Option<(f32, f32)>,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<native::ShowResult, String> {
+    let key: u64 = key.parse().map_err(|_| "bad volume key")?;
+    let plane = volume::Plane::parse(&plane).ok_or("bad plane")?;
+    let slab = slab.as_deref().and_then(volume::Slab::parse).unwrap_or(volume::Slab::Off);
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let native = native.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || native.set_plane(&id, key, plane, index, slab, mm.unwrap_or(0.0), max_dim.unwrap_or(1024), wl, scale))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn native_cell_close(id: String, native: tauri::State<'_, native::Shared>) {
     native.close_cell(&id);
@@ -898,6 +923,7 @@ pub fn run() {
             native_cell_close,
             native_pick,
             native_roi_stats,
+            native_cell_plane,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");

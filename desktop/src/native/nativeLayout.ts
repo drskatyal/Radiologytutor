@@ -47,3 +47,17 @@ export function nativeEnabled(): Promise<boolean> {
     .catch(() => false);
   return nativeOn;
 }
+
+/** React: true once native mode is confirmed (false on the web and until then). */
+import { useEffect as useEffectR, useState as useStateR } from "react";
+export function useNativeMode(): boolean {
+  const [on, setOn] = useStateR(false);
+  useEffectR(() => {
+    let live = true;
+    void nativeEnabled().then((v) => live && setOn(v));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return on;
+}
