@@ -191,6 +191,87 @@ export interface RecordedAnnotation {
   unit?: string;
 }
 
+// ============================================================================
+// Teacher sketch layer (Recording Studio).
+//
+// Pen / arrow / ellipse / text strokes and numbered finding markers drawn on
+// the DICOM image while narrating. Every point is anchored in IMAGE space:
+// the SOP (+ frame) it was drawn on, its stack index, the pixel column/row,
+// the legacy 0–1 fractions, and patient millimetres when the image plane is
+// known. Strokes ride the same recorder clock as scroll/window events, so
+// replay, the Gemini compile and the AI sketch tool all read one timeline.
+// ============================================================================
+
+export type TeacherSketchKind = "pen" | "arrow" | "ellipse" | "text" | "marker";
+
+/** Which image a sketch item lives on. UIDs are DICOM identity, never Orthanc ids. */
+export interface SketchImageRef {
+  studyInstanceUID?: string;
+  seriesInstanceUID?: string;
+  sopInstanceUID?: string;
+  /** Referenced SOP Class (for DICOM export). */
+  sopClassUID?: string;
+  /** 1-based frame number inside a multi-frame instance. Absent for single-frame. */
+  frameNumber?: number;
+  /** 0-based stack index (Cornerstone imageId index). Always present. */
+  sliceIndex: number;
+  /** Pixel grid of the image the stroke was drawn on. */
+  columns?: number;
+  rows?: number;
+  /** Frame of Reference for SCOORD3D export. */
+  frameOfReferenceUID?: string;
+  /**
+   * DICOM Image Plane of that image (IPP, row/column cosines, PixelSpacing as
+   * [row, column] mm). Lets export place any pixel in patient mm.
+   */
+  plane?: {
+    imagePositionPatient: [number, number, number];
+    rowCosines: [number, number, number];
+    columnCosines: [number, number, number];
+    pixelSpacing: [number, number];
+  };
+}
+
+/**
+ * One anchored point. `x_pct`/`y_pct` are the back-compat image fractions
+ * (`col = x_pct × (columns − 1)`). `col`/`row` are continuous pixel-index
+ * coordinates (pixel centre = integer). `mm` is DICOM patient LPS.
+ */
+export interface SketchImagePoint {
+  x_pct: number;
+  y_pct: number;
+  col?: number;
+  row?: number;
+  mm?: [number, number, number];
+  /** ms since the stroke began — drives progressive replay of the pen. */
+  dt?: number;
+}
+
+export interface TeacherSketchItem {
+  id: string;
+  kind: TeacherSketchKind;
+  image: SketchImageRef;
+  /**
+   * pen: the path · arrow: [tail, tip] · ellipse: two opposite corners of the
+   * bounding box · text / marker: [anchor].
+   */
+  points: SketchImagePoint[];
+  /** Text body, or the marker's label. */
+  text?: string;
+  /** Marker number shown in the badge (1-based, per take). */
+  number?: number;
+  /** How long the gesture took; replay draws it back over this time. */
+  drawMs?: number;
+}
+
+/** Edits to the sketch layer. Append-only on the timeline; undo is an inverse op. */
+export type TeacherSketchOp =
+  | { op: "add"; item: TeacherSketchItem }
+  | { op: "remove"; id: string }
+  | { op: "label"; id: string; text: string }
+  /** Replace everything (take start snapshot, clear-all). */
+  | { op: "reset"; items: TeacherSketchItem[] };
+
 /** A single timestamped viewer state change (`t` = ms from record start). */
 export type RecordedEvent =
   | { t: number; type: "slice"; index: number }
@@ -203,6 +284,8 @@ export type RecordedEvent =
   // recordings — they simply never emit it and stay on their one series.
   | { t: number; type: "series"; seriesInstanceUID: string }
   | ({ t: number; type: "annotation" } & RecordedAnnotation)
+  /** Teacher sketch / marker edit (Recording Studio). Older tracks never emit it. */
+  | ({ t: number; type: "sketch" } & TeacherSketchOp)
   /**
    * Compare pane at this instant. `open: false` closes it. Slice, window,
    * series, and pointer are whatever the teacher had on that pane — never
@@ -230,6 +313,7 @@ export type ViewerEvent =
   | { type: "cursor"; x: number; y: number }
   | { type: "series"; seriesInstanceUID: string }
   | ({ type: "annotation" } & RecordedAnnotation)
+  | ({ type: "sketch" } & TeacherSketchOp)
   | {
       type: "compare";
       open: boolean;

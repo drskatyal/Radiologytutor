@@ -43,6 +43,12 @@ export interface ReplayTarget {
 export interface OverlaySink {
   cursor: (x: number, y: number, t: number) => void;
   annotation: (e: Extract<RecordedEvent, { type: "annotation" }>) => void;
+  /**
+   * Teacher sketch / marker op. The sketch layer owns its own state (it is not
+   * transient like the laser), so `clear` does not wipe it; replay resets it
+   * with a `reset` op when the track carries sketches.
+   */
+  sketch?: (e: Extract<RecordedEvent, { type: "sketch" }>) => void;
   /** Called when replay finishes or is cancelled, to clear transient visuals. */
   clear: () => void;
 }
@@ -86,6 +92,11 @@ export function startReplay(
     target.applyEvent({ t: 0, type: "voi", ww: track.start.ww, wc: track.start.wc });
   }
 
+  // Teacher sketches replay from a blank layer, drawn back as they were drawn.
+  if (events.some((e) => e.type === "sketch")) {
+    overlay?.sketch?.({ t: 0, type: "sketch", op: "reset", items: [] });
+  }
+
   let cursorIdx = 0;
   let cancelled = false;
   let ended = false;
@@ -109,6 +120,9 @@ export function startReplay(
         break;
       case "annotation":
         overlay?.annotation?.(e);
+        break;
+      case "sketch":
+        overlay?.sketch?.(e);
         break;
       default:
         target.applyEvent(e);

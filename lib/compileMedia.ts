@@ -9,6 +9,7 @@
  * Safe to import from client components. No Gemini key, no model id.
  */
 
+import { sketchClockLines } from "./teacherSketch";
 import type { RecordedTrack } from "./types";
 
 export const COMPILING_FROM_RECORDING = "Compiling from recording…";
@@ -59,6 +60,8 @@ export interface GrayscaleFrame {
 export function trackClockSummary(track: RecordedTrack | null | undefined): string {
   if (!track) return "";
   const lines = [`t=0ms slice ${track.start.sliceIndex}`];
+  // Teacher marks are listed once with their final label (no coordinates).
+  const marks = sketchClockLines(track.events);
   for (const event of track.events) {
     switch (event.type) {
       case "slice":
@@ -88,6 +91,10 @@ export function trackClockSummary(track: RecordedTrack | null | undefined): stri
       default:
         break;
     }
+  }
+  if (marks.length) {
+    lines.push("Teacher marks (the teacher drew these while speaking; a numbered marker names a finding):");
+    lines.push(...marks);
   }
   return lines.join("\n");
 }
