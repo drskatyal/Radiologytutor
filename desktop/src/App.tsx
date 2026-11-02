@@ -2134,33 +2134,39 @@ export default function App() {
   // programmable mouse) and wheel tilt bound to commands in Settings. Only
   // inside the viewports; browser defaults are suppressed only when bound.
   // Loaded with the first study (not at startup).
+  // Attached once per open study: the handler reads the current action and
+  // bindings through refs, so streaming scan batches (which change runAction)
+  // don't re-attach it on every render.
   const studyOpen = studies.length > 0;
+  const runActionRef = useRef(runAction);
+  runActionRef.current = runAction;
+  const bindingsRef = useRef(settings.bindings);
+  bindingsRef.current = settings.bindings;
   useEffect(() => {
     if (dialog || !studyOpen) return;
-    const index = inputIndex(DESKTOP_COMMANDS, settings.bindings ?? {});
     let detach: (() => void) | null = null;
     let gone = false;
     void import("@flowrad/viewer-core/bindings/dom").then(({ attachMouseCommands }) => {
       if (gone) return;
       detach = attachMouseCommands(window, {
-      within: (t) => {
-        const el = t instanceof Element ? t : null;
-        return !!el?.closest("main") && !el.closest("aside, [role=menu], [role=dialog], button, input, textarea, select, [data-series-panel]");
-      },
-      isBound: (spec) => index.has(normalizeSpec(spec)),
-      run: (spec) => {
-        const action = resolveInput(spec, settings.bindings ?? {});
-        if (!action) return false;
-        runAction(action);
-        return true;
-      },
+        within: (t) => {
+          const el = t instanceof Element ? t : null;
+          return !!el?.closest("main") && !el.closest("aside, [role=menu], [role=dialog], button, input, textarea, select, [data-series-panel]");
+        },
+        isBound: (spec) => inputIndex(DESKTOP_COMMANDS, bindingsRef.current ?? {}).has(normalizeSpec(spec)),
+        run: (spec) => {
+          const action = resolveInput(spec, bindingsRef.current ?? {});
+          if (!action) return false;
+          runActionRef.current(action);
+          return true;
+        },
       });
     });
     return () => {
       gone = true;
       detach?.();
     };
-  }, [runAction, dialog, settings.bindings, studyOpen]);
+  }, [dialog, studyOpen]);
 
   const goHome = useCallback(() => {
     openSeq.current += 1;
