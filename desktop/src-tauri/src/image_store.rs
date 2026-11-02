@@ -148,6 +148,12 @@ impl ImageStore {
                 // That decode failed (or was evicted already): try ourselves.
                 busy = self.inflight.lock();
             }
+            // A decode that finished between our first peek and taking this
+            // lock has already cached its slice (insert happens before its
+            // in-flight mark is removed), so look again before decoding.
+            if let Some(s) = self.peek(path) {
+                return Ok(s);
+            }
             busy.insert(path.to_path_buf());
         }
         let started = Instant::now();
