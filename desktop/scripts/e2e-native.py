@@ -155,7 +155,11 @@ def main() -> None:
             tail.append(line.rstrip())
             del tail[:-40]
             if line.startswith("FLOWRAD_BENCH ") and report is None:
-                report = json.loads(line[len("FLOWRAD_BENCH "):])
+                r = json.loads(line[len("FLOWRAD_BENCH "):])
+                # The app's start screen can report first (cold-start probe)
+                # while the spike view is still being chosen: wait for the spike's.
+                if r.get("view") == "native-spike":
+                    report = r
 
     threading.Thread(target=read, daemon=True).start()
     deadline = time.time() + 90
