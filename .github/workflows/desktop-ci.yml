@@ -73,6 +73,11 @@ jobs:
         env:
           FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
         run: cargo test --lib
+      - name: P2.1 — native decode of every transfer-syntax fixture (Rust image core)
+        working-directory: desktop/src-tauri
+        env:
+          FLOWRAD_FIXTURES: ${{ runner.temp }}/fixtures
+        run: cargo test --lib fixture_matrix -- --ignored --nocapture
       - name: Build the app (debug, embedded renderer)
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
