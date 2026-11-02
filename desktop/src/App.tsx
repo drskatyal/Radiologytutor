@@ -783,13 +783,11 @@ export default function App() {
     let off: (() => void)[] = [];
     (async () => {
       const initial = await takeLaunchPaths();
-      // A study on the command line opens at once, and the engine starts in
-      // the same breath: the main thread is idle while Rust scans, and the
-      // init now yields between steps (engine.ts), so the instant preview
-      // still paints between them instead of waiting behind one long task.
+      // A study on the command line opens at once. The engine starts the
+      // moment the instant preview is on screen (onPreview), not here:
+      // measured, starting it with the scan put the preview at 440 ms (was 200).
       if (initial.length) {
         void openPaths(initial);
-        void getEngine();
       } else {
         // Start screen: compile the engine in idle time so the first open does
         // not pay for it (code only: no WebGL context, no decode workers).
@@ -1287,6 +1285,9 @@ export default function App() {
 
   const onPreview = useCallback(() => {
     if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = performance.now() - bench.current.t0;
+    // The preview is what the reader sees first; start the engine right
+    // behind it instead of waiting for the viewport's next frame + task.
+    void getEngine();
   }, []);
 
   const onFirstPaint = useCallback(() => {
