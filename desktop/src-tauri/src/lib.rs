@@ -409,10 +409,19 @@ fn mark(i: usize) {
     }
 }
 
+/// Native mode: when Rust first presented a frame in the window (before
+/// WebView2 has loaded the page), ms since process start.
+static NATIVE_FIRST_PAINT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
-    serde_json::json!({ "windowBuiltMs": m[0], "navStartMs": m[1], "navDoneMs": m[2] })
+    serde_json::json!({
+        "windowBuiltMs": m[0],
+        "navStartMs": m[1],
+        "navDoneMs": m[2],
+        "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+    })
 }
 
 /// Milliseconds since the process started — the renderer calls this at first
@@ -815,6 +824,24 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
     mark(0);
+    // Native mode (Phase 2): the GPU surface paints the window at once, while
+    // WebView2 is still starting; the webview is transparent over it.
+    if native::enabled() {
+        if let (Some(window), Some(native)) = (app.get_webview_window("main"), app.try_state::<native::Shared>()) {
+            let native = native.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let status = native.init(&window).await;
+                if status.ready {
+                    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    if native.render(window.scale_factor().unwrap_or(1.0)).is_ok() {
+                        if let Some(t) = STARTED.get() {
+                            let _ = NATIVE_FIRST_PAINT.set(t.elapsed().as_secs_f64() * 1000.0);
+                        }
+                    }
+                }
+            });
+        }
+    }
     // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
     store::migrate_legacy_data(app.handle());
 
