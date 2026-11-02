@@ -55,7 +55,8 @@ import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { imageMenu } from "@flowrad/viewer-core";
 import { shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
-import type { VoiceState } from "./viewer/voice/voiceSession";
+import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
+import { VoiceStatus } from "./viewer/voice/VoiceStatus";
 import type { VoiceAction } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
 import {
@@ -3680,26 +3681,44 @@ export default function CornerstoneViewer({
         return;
     }
   };
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const toggleVoice = async () => {
     if (voiceSessionRef.current || voice.state === "loading") {
       voiceSessionRef.current?.stop();
       voiceSessionRef.current = null;
+      setVoice({ state: "off" });
       return;
     }
-    const { startVoice } = await import("./viewer/voice/voiceSession");
-    voiceSessionRef.current = await startVoice({
-      modelUrl: "/voice/model.tar.gz",
+    setVoiceError(null);
+    setVoiceProgress(null);
+    // Show the loading card at once, before the session module arrives.
+    setVoice({ state: "loading" });
+    let mod: typeof import("./viewer/voice/voiceSession");
+    try {
+      mod = await import("./viewer/voice/voiceSession");
+    } catch {
+      setVoice({ state: "error" });
+      setVoiceError("Voice commands could not be loaded. Check the connection and press Retry.");
+      return;
+    }
+    voiceSessionRef.current = await mod.startVoice({
+      modelUrl: mod.VOICE_MODEL_URL,
+      workerUrl: mod.VOICE_WORKER_URL,
       onAction: (action, heard) => {
         flash(`“${heard}”`);
         voiceActionRef.current(action);
       },
       onUnrecognized: (heard) => flash(`“${heard}” ?`),
+      onProgress: setVoiceProgress,
       onState: (state, detail) => {
         setVoice({ state });
-        if (state === "error" && detail) flash(detail);
+        if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSessionRef.current = null;
       },
     });
+    // Test hook (e2e): feed PCM to the live recognizer.
+    (window as Window & { __flowradVoice?: unknown }).__flowradVoice = voiceSessionRef.current;
   };
   useEffect(() => () => voiceSessionRef.current?.stop(), []);
 
@@ -3779,7 +3798,19 @@ export default function CornerstoneViewer({
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
       onHelp={() => setHelpOpen((open) => !open)}
-      voice={canVoice ? { state: voice.state, onToggle: () => void toggleVoice() } : undefined}
+      voice={
+        canVoice
+          ? {
+              state: voice.state,
+              onToggle: () => void toggleVoice(),
+              // Hover / focus: start loading the recognizer so a click is ready at once.
+              onWarm: () => {
+                if (voiceSessionRef.current) return;
+                void import("./viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
+              },
+            }
+          : undefined
+      }
     />
   );
 
@@ -4098,6 +4129,21 @@ export default function CornerstoneViewer({
         )}
         <ViewerHud text={hud} />
         <ViewerHelp open={helpOpen} onClose={closeHelp} />
+        <VoiceStatus
+          className="absolute right-3 top-3 z-30"
+          state={voice.state}
+          progress={voiceProgress}
+          error={voiceError}
+          onRetry={() => {
+            setVoice({ state: "off" });
+            void toggleVoice();
+          }}
+          onDismiss={() => {
+            voiceSessionRef.current?.stop();
+            voiceSessionRef.current = null;
+            setVoice({ state: "off" });
+          }}
+        />
         {mprShowing ? null : imageOverlay}
       </div>
       {ownBar && toolbar}

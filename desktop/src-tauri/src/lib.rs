@@ -453,6 +453,19 @@ fn bench_pixels() -> bool {
     crate::flowrad_env("BENCH_PIXELS").as_deref() == Ok("1")
 }
 
+/// Voice e2e (bench only: `FLOWRAD_BENCH=1 FLOWRAD_BENCH_VIEW=voice`): the
+/// spoken test phrases at `FLOWRAD_BENCH_VOICE_WAV`, fed to the recognizer
+/// through its test hook. Empty when not benchmarking or unset.
+#[tauri::command]
+fn bench_voice_wav() -> tauri::ipc::Response {
+    let bytes = if crate::flowrad_env("BENCH").as_deref() == Ok("1") {
+        crate::flowrad_env("BENCH_VOICE_WAV").ok().and_then(|p| std::fs::read(p).ok()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    tauri::ipc::Response::new(bytes)
+}
+
 /// Whole process-tree memory (debug HUD, leak test).
 #[tauri::command]
 async fn process_memory() -> procmem::TreeMem {
@@ -911,6 +924,7 @@ pub fn run() {
             bench_slab,
             bench_reformat,
             bench_view,
+            bench_voice_wav,
             bench_pixels,
             bench_paint_timeout_ms,
             probe_after_ms,
