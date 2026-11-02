@@ -159,6 +159,8 @@ export function useCrossWindow({ enabled, viewportIds, active, links, onLinks, m
       if (!frame) frame = requestAnimationFrame(send);
     };
     let ev = "CORNERSTONE_IMAGE_RENDERED";
+    // A native viewport is not an engine viewport: nothing to follow here.
+    if (active.element.hasAttribute("data-native-viewport")) return;
     void getEngine().then((e) => {
       ev = e.core.Enums.Events.IMAGE_RENDERED;
       active.element.addEventListener(ev, onRender);
