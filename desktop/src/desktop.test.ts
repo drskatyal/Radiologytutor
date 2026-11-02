@@ -1,9 +1,10 @@
 // Pure renderer logic. Run: npm --prefix desktop test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveShortcut, shortcutSheet, BINDINGS, keySpecOf, conflictFor, toolKeyLabel, type KeyLike } from "./shortcuts";
+import { resolveShortcut, resolveInput, shortcutSheet, BINDINGS, DESKTOP_COMMANDS, keySpecOf, keysForAction, conflictFor, toolKeyLabel, type KeyLike } from "./shortcuts";
+import { assignInput, exportBindings, migrateShortcutOverrides, parseBindings, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { edgeLabels, directionLabel } from "./viewer/orientation";
-import { dragModeFor, mouseHintFor, mouseSheetLine, resolveWheel, MOUSE_DEFAULTS } from "./viewer/mouseBindings";
+import { dragModeFor, mouseBindings, mouseHintFor, mouseSheetLine, resolveWheel } from "./viewer/mouseBindings";
 import { readFileSync } from "node:fs";
 import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex } from "./study";
 import { hangSeries } from "./layout";
@@ -321,7 +322,7 @@ test("reformat and slab shortcuts: Alt+C/S/A, T, Ctrl+[ ]", () => {
 });
 
 test("re-mapped shortcuts: the new key fires, the default no longer does, clashes are found", () => {
-  const overrides = { "tool.w": "Shift+W", "series.next": "Mod+Alt+ArrowRight" };
+  const overrides = { "tool.w": ["Shift+W"], "series.next": ["Mod+Alt+ArrowRight"] };
   assert.deepEqual(resolveShortcut(key("W", { shiftKey: true, code: "KeyW" }), false, overrides), { type: "tool", tool: "WindowLevel" });
   assert.equal(resolveShortcut(key("w", { code: "KeyW" }), false, overrides), null, "default released");
   assert.deepEqual(resolveShortcut(key("ArrowRight", { ctrlKey: true, altKey: true }), false, overrides), { type: "series", delta: 1 });
@@ -349,7 +350,7 @@ test("files with the same name in two series keep their own headers (browser dro
 test("tool keys shown in the toolbar, menus and F1 sheet come from the bindings table", () => {
   // Rectangle ROI is S (R rotates); the label follows a re-mapping.
   assert.equal(toolKeyLabel("RectangleROI", {}, false), "S");
-  assert.equal(toolKeyLabel("RectangleROI", { "tool.s": "K" }, false), "K");
+  assert.equal(toolKeyLabel("RectangleROI", { "tool.s": ["K"] }, false), "K");
   assert.equal(toolKeyLabel("Length", {}, false), "M / L");
   assert.equal(toolKeyLabel("Eraser", {}, false), "Shift+E");
   assert.equal(toolKeyLabel("WindowLevel", {}, false), "W");
@@ -369,23 +370,70 @@ test("right drag is window / level everywhere: native viewports, JS engine, tool
   }
   assert.equal(dragModeFor(2, "StackScroll", { ctrl: true }), "Zoom");
   assert.equal(dragModeFor(1, "StackScroll", { ctrl: true }), "Pan", "an unbound modifier falls back to the plain gesture");
+  assert.equal(dragModeFor(3, "StackScroll"), "", "an unbound extra button does not drag (its click is a command)");
   assert.equal(resolveWheel({})?.command, "scroll");
   assert.equal(resolveWheel({ ctrl: true })?.command, "slab");
-  assert.equal(mouseHintFor("WindowLevel"), "right drag");
-  assert.equal(mouseHintFor("Pan"), "middle drag");
-  assert.equal(mouseHintFor("Zoom"), "Ctrl+right drag");
-  const sheet = mouseSheetLine();
-  assert.match(sheet, /right drag = window\/level/);
-  assert.match(sheet, /middle drag = pan/);
-  assert.match(sheet, /Ctrl\+right drag = zoom/);
+  assert.equal(mouseHintFor("WindowLevel", {}, false), "Right drag");
+  assert.equal(mouseHintFor("Pan", {}, false), "Middle drag");
+  assert.equal(mouseHintFor("Zoom", {}, false), "Ctrl+Right drag");
+  const sheet = mouseSheetLine({}, false);
+  assert.match(sheet, /Right drag = window\/level/);
+  assert.match(sheet, /Middle drag = pan/);
+  assert.match(sheet, /Ctrl\+Right drag = zoom/);
   assert.match(sheet, /Ctrl\+wheel = zoom/);
-  // The JS engine reads the same table (no hard-coded buttons left).
+  // The JS engine reads the same live bindings (no hard-coded buttons left).
   const engineSrc = readFileSync(new URL("./viewer/engine.ts", import.meta.url), "utf8");
-  assert.ok(engineSrc.includes("MOUSE_DEFAULTS"));
+  assert.ok(engineSrc.includes("mouseBindings()"));
   assert.ok(!/setToolActive\("WindowLevel", \{ bindings: \[\{ mouseButton: MouseBindings\.Secondary \}\] \}\);\n\s*group\.setToolActive\("Pan"/.test(engineSrc));
-  assert.deepEqual(MOUSE_DEFAULTS.map((b) => `${b.mods.ctrl ? "Ctrl+" : ""}${b.button}:${b.command}`), ["Ctrl+2:Zoom", "2:WindowLevel", "1:Pan"]);
+  assert.deepEqual(mouseBindings({}).map((b) => `${b.mods.ctrl ? "Ctrl+" : ""}${b.button}:${b.command}`), ["Ctrl+2:Zoom", "2:WindowLevel", "1:Pan"]);
   // Toolbar: no hard-coded tool keys.
   const toolbarSrc = readFileSync(new URL("./components/Toolbar.tsx", import.meta.url), "utf8");
   assert.ok(!/key: "[A-Z]/.test(toolbarSrc), "tool keys come from toolKeyLabel");
   assert.ok(!/shortcut="[A-Z]"/.test(toolbarSrc), "tool tooltips come from the bindings table");
+});
+
+test("bindings: right drag rebound to zoom applies to native drags, the engine table, tooltips and the sheet", () => {
+  const o = assignInput(DESKTOP_COMMANDS, {}, "drag.zoom", "Mouse2Drag", { swap: true });
+  assert.equal(dragModeFor(2, "StackScroll", {}, o), "Zoom");
+  assert.equal(dragModeFor(2, "StackScroll", { ctrl: true }, o), "WindowLevel", "W/L took zoom's old gesture");
+  assert.equal(mouseHintFor("Zoom", o, false), "Right drag");
+  assert.match(mouseSheetLine(o, false), /Right drag = zoom/);
+  // Live: what every viewport and the engine read.
+  setLiveBindings(o);
+  try {
+    assert.equal(dragModeFor(2, "StackScroll"), "Zoom");
+    assert.equal(mouseBindings().find((b) => b.button === 2 && !b.mods.ctrl)?.command, "Zoom");
+  } finally {
+    setLiveBindings({});
+  }
+});
+
+test("bindings: any mouse — button 5 (6th button) and F13 from mouse software fire commands and show in the F1 sheet", () => {
+  let o = assignInput(DESKTOP_COMMANDS, {}, "rotate", "Mouse5", { mode: "add" });
+  o = assignInput(DESKTOP_COMMANDS, o, "flip.h", "F13", { mode: "add" });
+  assert.deepEqual(resolveInput("Mouse5", o), { type: "rotate", degrees: 90 });
+  assert.deepEqual(resolveShortcut(key("F13", { code: "F13" }), false, o), { type: "flip", axis: "h" });
+  assert.deepEqual(resolveShortcut(key("h"), false, o), { type: "flip", axis: "h" }, "added: the default H still works");
+  assert.deepEqual(resolveInput("Mouse3", {}), { type: "series", delta: -1 }, "Mouse 4 (back) = previous series by default");
+  assert.deepEqual(resolveInput("Mouse4", {}), { type: "series", delta: 1 }, "Mouse 5 (forward) = next series");
+  assert.deepEqual(resolveInput("WheelRight", assignInput(DESKTOP_COMMANDS, {}, "slice.next", "WheelRight", { mode: "add" })), { type: "slice", delta: 1 });
+  const rows = shortcutSheet(false, o);
+  assert.ok(rows.some((r) => /Rotate 90° clockwise/.test(r.does) && r.keys.includes("Mouse button 6")));
+  assert.ok(rows.some((r) => r.does === "Flip horizontal" && r.keys === "H / F13"));
+  assert.equal(keysForAction({ type: "flip", axis: "h" }, o, false), "H");
+  // Round trip through the exported file.
+  assert.deepEqual(parseBindings(exportBindings(o, "desktop"), DESKTOP_COMMANDS).overrides, o);
+});
+
+test("bindings: conflicts name the holder; swap moves the old key; ≤ 0.8.1 settings.shortcuts migrate", () => {
+  assert.equal(conflictFor("R", "tool.s", {}, false)?.does, "Rotate 90° clockwise");
+  const swapped = assignInput(DESKTOP_COMMANDS, {}, "tool.s", "R", { swap: true });
+  assert.deepEqual(resolveShortcut(key("r"), false, swapped), { type: "tool", tool: "RectangleROI" });
+  assert.deepEqual(resolveShortcut(key("s"), false, swapped), { type: "rotate", degrees: 90 });
+  assert.equal(toolKeyLabel("RectangleROI", swapped, false), "R");
+  const migrated = migrateShortcutOverrides({ "tool.w": "Shift+W", "gone": "F2" }, DESKTOP_COMMANDS);
+  assert.deepEqual(migrated, { "tool.w": ["Shift+W"] });
+  assert.deepEqual(resolveShortcut(key("W", { shiftKey: true, code: "KeyW" }), false, migrated), { type: "tool", tool: "WindowLevel" });
+  // Every remappable row has a valid default spec the engine understands.
+  for (const b of BINDINGS) if (b.id) assert.ok(DESKTOP_COMMANDS.some((c) => c.id === b.id && c.defaults.length), b.id);
 });
