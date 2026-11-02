@@ -21,6 +21,7 @@ import { ensureSuv } from "./suv";
 import { isTauri, previewUrlFor } from "../platform";
 import { verifyPainted, type PaintHealth } from "./paintCheck";
 import { markPhase } from "../perfWatch";
+import { noteActivity } from "../activity";
 
 // Select / delete / erase / label annotations: loaded with the first image.
 const AnnotationEditLayer = lazy(() =>
@@ -49,8 +50,12 @@ export interface StackViewportProps {
   onFirstPaint?: (ms: number, health: PaintHealth) => void;
   /** Teaching / screen sharing: no name, ID or birth date in the overlay. */
   hidePatient?: boolean;
-  /** Fired when the instant Rust-rendered preview is on screen. */
-  onPreview?: () => void;
+  /**
+   * Fired when the instant Rust-rendered preview is on screen. `fullRes`: it
+   * is the slice at its own resolution and the file's window (what the engine
+   * then paints at the same W/L), not a reduced stand-in.
+   */
+  onPreview?: (fullRes: boolean) => void;
   /** Eraser tool: a click deletes the annotation under it. */
   eraser?: boolean;
   onAnnotationsDeleted?: (count: number, scope: "one" | "image" | "series") => void;
@@ -224,7 +229,10 @@ function StackViewportImpl({
       });
       addViewportToGroup(engine, STACK_GROUP, viewportId);
       const Events = core.Enums.Events;
-      const onRender = () => refreshReadout();
+      const onRender = () => {
+        noteActivity();
+        refreshReadout();
+      };
       // ±N prefetch: a few slices in the direction of travel (and two behind),
       // never the whole series. The cache budget keeps it a window.
       const travel = createScrollDirectionState();
@@ -322,10 +330,22 @@ function StackViewportImpl({
     const voi = sameSeries ? vp.getProperties?.().voiRange : null;
     const camera = sameSeries ? vp.getCamera?.() : null;
     let suv: "suv" | "raw" = "raw";
+    // First image = the moment Cornerstone actually drew this stack, not when
+    // the paint self-check below finished (it polls for the decode and reads
+    // the canvas back: up to ~50 ms of slack, and a GPU sync, on top).
+    let renderedAt: number | null = null;
+    const element = elementRef.current;
+    const Events = engineRef.current?.core.Enums.Events;
+    const onRendered = () => {
+      if (renderedAt == null && loadedRef.current?.ids === ids) renderedAt = performance.now();
+      if (renderedAt != null) element?.removeEventListener(Events!.IMAGE_RENDERED, onRendered);
+    };
+    if (!sameSeries && element && Events) element.addEventListener(Events.IMAGE_RENDERED, onRendered);
     ensureSuv(series)
       .then((state) => {
         suv = state;
         markPhase("viewport: load series");
+        noteActivity();
         return vp.setStack(ids, index);
       })
       .then(() => {
@@ -348,9 +368,18 @@ function StackViewportImpl({
           // that renders black (some drivers' 16-bit textures) falls back to
           // CPU rendering here instead of leaving the reader a black box.
           void verifyPainted(engineRef.current, vp, elementRef.current, ids, index, () => loadedRef.current?.ids === ids).then((health) => {
-            if (loadedRef.current?.ids !== ids || verifiedUidRef.current === series.uid) return;
+            if (element && Events) element.removeEventListener(Events.IMAGE_RENDERED, onRendered);
+            // A series that grew while this check ran (a scan still streaming)
+            // is the same image on screen: a non-blank result still counts.
+            // (It used to be dropped, so 'first image' on a 10k MRI waited for
+            // the whole series to finish arriving: 0.95-2.8 s warm on CI.)
+            const superseded = loadedRef.current?.ids !== ids;
+            if (verifiedUidRef.current === series.uid) return;
+            if (superseded && !(loadedRef.current?.uid === series.uid && health.nonBlank)) return;
             verifiedUidRef.current = series.uid;
-            onFirstPaint?.(performance.now() - started, health);
+            // A blank GPU paint that fell back to the CPU path is "painted" only now.
+            const at = health.nonBlank && renderedAt != null && health.renderPath !== "cpu-fallback" ? renderedAt : performance.now();
+            onFirstPaint?.(at - started, health);
             setPaintedUid(series.uid);
           });
         }
@@ -610,7 +639,11 @@ function StackViewportImpl({
           alt=""
           aria-hidden
           draggable={false}
-          onLoad={onPreview}
+          onLoad={(e) => {
+            const h = series.headers[0];
+            const img = e.currentTarget;
+            onPreview?.(!!h?.rows && !!h?.columns && img.naturalWidth === h.columns && img.naturalHeight === h.rows);
+          }}
           onError={() => setPreviewFailed(series.uid)}
           className="pointer-events-none absolute inset-0 h-full w-full bg-imaging object-contain"
         />

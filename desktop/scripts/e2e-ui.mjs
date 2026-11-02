@@ -663,8 +663,15 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
         return m && Number(m[1]) !== b;
       }, before, { timeout: 8000 })
       .then(() => true, () => false);
-    const mainAt = (await imageNo(0))?.at;
-    const popAt = await popImage();
+    // Both overlays update on their own render; on a software GPU the main
+    // window's "Im n" can lag the linked window. Wait (bounded) for them to agree.
+    let mainAt = (await imageNo(0))?.at;
+    let popAt = await popImage();
+    for (let t = 0; moved && t < 40 && Math.abs((popAt ?? 0) - (mainAt ?? -99)) > 1; t += 1) {
+      await settle(200);
+      mainAt = (await imageNo(0))?.at;
+      popAt = await popImage();
+    }
     check("multiwindow: scrolling the main window scrolls the other window (linked)", moved && Math.abs((popAt ?? 0) - (mainAt ?? -99)) <= 1, `main ${mainAt} · other ${before} → ${popAt}`);
 
     // Linked W/L.
