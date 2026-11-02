@@ -10,6 +10,7 @@ on:
     branches:
       - claude/epic-noether-3nvcbf
       - claude/viewer-chunk-recovery
+      - claude/voice-fix
     paths-ignore:
       - "desktop/**"
       - "docs/**"
@@ -66,4 +67,41 @@ jobs:
         with:
           name: prod-smoke-${{ matrix.browser }}
           path: prod-smoke-*.png
+          retention-days: 14
+
+  # Voice commands on the live viewer: the mic must reach "listening" within
+  # 2 s and a spoken "lung window" (Chromium's fake microphone) must act.
+  voice:
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PROD_URL: https://radiologytutor-production.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Synthetic CT and a spoken test phrase (no patient data)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
+          pip install pydicom numpy
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
+          python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
+      - name: Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Mic on the live viewer
+        run: node scripts/prod-voice-probe.mjs "$PROD_URL" "$RUNNER_TEMP/test-ct" "$RUNNER_TEMP/voice.wav" --max-ready-ms 2000
+      - name: Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-voice
+          path: prod-voice.png
           retention-days: 14
