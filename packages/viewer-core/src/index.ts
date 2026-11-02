@@ -34,3 +34,4 @@ export * from "./voiceCommands";
 export * from "./crossWindow";
 export * from "./contextMenu";
 export * from "./dicomTags";
+export * from "./voiceSession";

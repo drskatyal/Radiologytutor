@@ -39,8 +39,14 @@ def main() -> int:
         print("voice model already packaged")
         return 0
     print(f"downloading {URL}")
-    with urllib.request.urlopen(URL, timeout=120) as response:
-        data = response.read()
+    try:
+        with urllib.request.urlopen(URL, timeout=120) as response:
+            data = response.read()
+    except OSError as e:  # URLError, timeouts, resets: the host is unreachable
+        # Exit 3 = network outage only (the Docker build tolerates it; a
+        # checksum mismatch, exit 1, never is).
+        print(f"download failed: {e}", file=sys.stderr)
+        return 3
     digest = hashlib.sha256(data).hexdigest()
     if not SHA256:
         print(f"no pinned SHA-256; this download is {digest} (write it to scripts/voice-model.sha256)", file=sys.stderr)

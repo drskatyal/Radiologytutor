@@ -4,7 +4,6 @@
 import { useState, type ReactNode } from "react";
 import {
   ChevronDown,
-  Loader2,
   Mic,
   MicOff,
   Eraser,
@@ -88,7 +87,7 @@ export interface ToolbarProps {
   onOpen: (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => void;
   onHome: () => void;
   /** Offline voice commands: the mic toggle (absent where unavailable). */
-  voice?: { state: "off" | "loading" | "listening" | "error"; heard?: string | null; onToggle: () => void };
+  voice?: { state: "off" | "loading" | "listening" | "error"; heard?: string | null; onToggle: () => void; onWarm?: () => void };
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
@@ -158,6 +157,7 @@ function Tool({
   onClick,
   children,
   disabled,
+  onWarm,
 }: {
   label: string;
   shortcut?: string;
@@ -165,6 +165,8 @@ function Tool({
   onClick: () => void;
   children: ReactNode;
   disabled?: boolean;
+  /** Pointer over / focus: start loading what a click will need. */
+  onWarm?: () => void;
 }) {
   return (
     <IconButton
@@ -174,6 +176,8 @@ function Tool({
       size="sm"
       disabled={disabled}
       onClick={onClick}
+      onPointerEnter={onWarm}
+      onFocus={onWarm}
       className={cn("h-8 w-8 rounded-md", active && "bg-accent text-accent-foreground hover:bg-accent hover:text-accent-foreground")}
     >
       {children}
@@ -488,8 +492,9 @@ export function Toolbar(props: ToolbarProps) {
               shortcut={keyLabel("Mod+Shift+V")}
               active={props.voice.state === "listening"}
               onClick={props.voice.onToggle}
+              onWarm={props.voice.onWarm}
             >
-              {props.voice.state === "loading" ? <Loader2 className="animate-spin" /> : props.voice.state === "listening" ? <Mic /> : <MicOff />}
+              {props.voice.state === "listening" ? <Mic /> : <MicOff />}
             </Tool>
             {props.voice.state === "listening" && (
               <span aria-hidden className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-accent-foreground" />
