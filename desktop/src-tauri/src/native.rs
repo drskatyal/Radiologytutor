@@ -81,6 +81,9 @@ pub struct Native {
     index: Mutex<usize>,
     /// P2.1: decoded slices, byte-budgeted, shared by every window.
     pub store: std::sync::OnceLock<Arc<ImageStore>>,
+    /// Serialises init (start-up paint and the page's native_init can race:
+    /// two surfaces on one window would fail).
+    init_lock: tauri::async_runtime::Mutex<()>,
 }
 
 pub type Shared = Arc<Native>;
@@ -151,6 +154,7 @@ impl Native {
     /// Create the surface on the window and the device. Idempotent. Async:
     /// it runs inside Tauri's async runtime (a blocking wait there panics).
     pub async fn init(&self, window: &tauri::WebviewWindow) -> NativeStatus {
+        let _serial = self.init_lock.lock().await;
         if self.gpu.lock().is_some() || !enabled() {
             return self.status();
         }
