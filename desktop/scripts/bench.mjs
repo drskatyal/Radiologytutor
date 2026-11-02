@@ -708,12 +708,18 @@ async function benchClose(binary, study) {
   });
   let out = "";
   const reports = [];
+  const shellClose = [];
   let partial = "";
   child.stdout.on("data", (d) => {
     out = (out + d).slice(-8000);
     const lines = (partial + d).split("\n");
     partial = lines.pop() ?? "";
-    for (const l of lines) if (REPORT.test(l)) reports.push(JSON.parse(l.replace(REPORT, "")));
+    for (const l of lines) {
+      if (REPORT.test(l)) reports.push(JSON.parse(l.replace(REPORT, "")));
+      // The shell's own account of the close: what each cache held, and the
+      // process's commit before / after clearing / after the allocator release.
+      else if (l.startsWith("FLOWRAD_BENCH_CLOSE ")) shellClose.push(JSON.parse(l.slice("FLOWRAD_BENCH_CLOSE ".length)));
+    }
   });
   child.stderr.on("data", (d) => (out = (out + d).slice(-8000)));
   const until = async (ok, ms, what) => {
@@ -751,6 +757,7 @@ async function benchClose(binary, study) {
     openWsMb: open.wsMb,
     closedWsMb: closed.wsMb,
     afterCloseSeconds: afterClose,
+    shellClose,
     baseline: brief(baseline),
     open: brief(open),
     closed: brief(closed),
@@ -760,6 +767,7 @@ async function benchClose(binary, study) {
   console.error(
     `CLOSE: private baseline ${baseline.privateMb} MB (${line(baseline)}) · open ${open.privateMb} MB (${line(open)}) · closed +${afterClose} s ${closed.privateMb} MB (${line(closed)}) · delta ${summary.closeDeltaPrivateMb} MB · ws ${baseline.wsMb} / ${open.wsMb} / ${closed.wsMb} MB`
   );
+  for (const c of shellClose) console.error(`CLOSE (app process): ${JSON.stringify(c)}`);
   const over = [];
   const maxBaseline = flag("max-baseline-private-mb", Infinity);
   const maxOpen = flag("max-open-private-mb", Infinity);
