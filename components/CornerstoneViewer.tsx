@@ -797,6 +797,7 @@ export default function CornerstoneViewer({
   initialWindow = null,
   paneLabel,
   onChunkLoadError,
+  onSeriesStep,
 }: {
   /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
   paneLabel?: string;
@@ -826,6 +827,11 @@ export default function CornerstoneViewer({
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /**
+   * "Next / previous series" (voice) for hosts that own the series list
+   * themselves (the free viewer). Without it, the `series` prop is stepped.
+   */
+  onSeriesStep?: (delta: number) => void;
   /**
    * The viewer's code could not be fetched even after retries (a deploy
    * swapped the build under this tab, or the network dropped it). The host
@@ -3645,6 +3651,7 @@ export default function CornerstoneViewer({
   voiceActionRef.current = (a: VoiceAction) => {
     switch (a.type) {
       case "series": {
+        if (onSeriesStep) return onSeriesStep(a.delta);
         if (!series?.length || !onSeriesChangeRef.current) return;
         const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
         if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
