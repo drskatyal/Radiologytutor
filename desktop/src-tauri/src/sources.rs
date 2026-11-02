@@ -145,30 +145,9 @@ pub fn walk_folder(dir: &Path) -> Vec<PathBuf> {
         })
         .flatten()
         .filter(|e| e.file_type().is_file())
-        .filter(|e| !is_obviously_not_dicom(e.path()))
-        .map(|e| {
-            // On Windows the directory listing already carries size and mtime
-            // (no extra open); remember them so the scan's cache check does
-            // not stat — i.e. open — every file a second time.
-            #[cfg(windows)]
-            if let Ok(meta) = e.metadata() {
-                WALK_STATS
-                    .lock()
-                    .insert(e.path().to_path_buf(), (meta.len(), crate::header::mtime_secs(&meta)));
-            }
-            e.into_path()
-        })
+        .map(|e| e.into_path())
+        .filter(|p| !is_obviously_not_dicom(p))
         .collect()
-}
-
-/// (size, mtime) recorded by [`walk_folder`] on Windows, consumed by the scan.
-static WALK_STATS: std::sync::LazyLock<
-    parking_lot::Mutex<std::collections::HashMap<PathBuf, (u64, u64)>>,
-> = std::sync::LazyLock::new(Default::default);
-
-/// Take (and clear) the stats the last walks recorded.
-pub fn take_walk_stats() -> std::collections::HashMap<PathBuf, (u64, u64)> {
-    std::mem::take(&mut *WALK_STATS.lock())
 }
 
 /// Extract a zip into `dest` (once — an existing complete extraction is

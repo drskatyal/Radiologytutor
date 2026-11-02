@@ -20,8 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::header::{mtime_secs, read_header, Header};
 use crate::sources::{
-    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, take_walk_stats, walk_folder,
-    SourceKind,
+    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, walk_folder, SourceKind,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -259,9 +258,7 @@ pub fn scan(
         accepted: 0,
         total: 0,
     });
-    let _ = take_walk_stats(); // anything left from an aborted scan
     let (files, kind, used_dicomdir) = list_candidates(paths, cache_dir, &mut warnings);
-    let walk_stats = take_walk_stats();
     let list_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let cache_key = paths
@@ -313,13 +310,9 @@ pub fn scan(
                     std::thread::sleep(d);
                 }
                 let key = path.to_string_lossy();
-                let (size, mtime) = walk_stats.get(path).copied().unwrap_or_else(|| {
-                    let meta = fs::metadata(path).ok();
-                    (
-                        meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                        meta.as_ref().map(mtime_secs).unwrap_or(0),
-                    )
-                });
+                let meta = fs::metadata(path).ok();
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let mtime = meta.as_ref().map(mtime_secs).unwrap_or(0);
                 let result = match cached.get(key.as_ref()) {
                     Some(hit) if hit.size_bytes == size && hit.mtime == mtime => {
                         hits.fetch_add(1, Ordering::Relaxed);
