@@ -498,7 +498,21 @@ test("memory cap: a 2 GB device scrolls all 520 slices with decoded + raw under 
   for (let i = 0; i < 40; i += 1) await page.mouse.wheel(0, 120);
   await page.waitForTimeout(800);
   await expect.poll(() => centreLuma(page)).toBeGreaterThan(30);
+  const closeClickedAt = await page.evaluate(() => performance.now());
   await page.getByRole("button", { name: "Close study" }).first().click();
+  // Close re-warms the engine on idle with a synthetic 16×16 frame that it
+  // caches and then releases. Sample once that warm has finished, so the
+  // gate checks both: the study is gone AND the warm left nothing behind.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (since) => performance.getEntriesByName("flowrad:viewer:engine-warm").some((m) => m.startTime > since),
+          closeClickedAt
+        ),
+      { timeout: 15_000, intervals: [50] }
+    )
+    .toBe(true);
   const closed = await viewerStats(page);
   const deviceBudget = DEVICE_BUDGET_2GB_MB * 1048576;
   record("memoryCap", {
