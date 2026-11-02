@@ -598,6 +598,12 @@ fn native_cell_close(id: String, native: tauri::State<'_, native::Shared>) {
     native.close_cell(&id);
 }
 
+/// P2.3: ROI statistics on a cell's current slice (image px coordinates).
+#[tauri::command]
+fn native_roi_stats(id: String, shape: native::RoiShape, native: tauri::State<'_, native::Shared>) -> Option<native::RoiStats> {
+    native.roi_stats(&id, &shape)
+}
+
 /// The image pixel and its value under a cell point (CSS px), or null.
 #[tauri::command]
 fn native_pick(id: String, x: f32, y: f32, native: tauri::State<'_, native::Shared>) -> Option<serde_json::Value> {
@@ -891,6 +897,7 @@ pub fn run() {
             native_cell_scroll,
             native_cell_close,
             native_pick,
+            native_roi_stats,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
