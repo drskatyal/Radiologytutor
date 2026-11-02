@@ -48,7 +48,8 @@ engine with its decode workers, and the first WebGL context.
 | Gate | Where |
 | --- | --- |
 | Shell JS ≤ 300 KB gzipped | `scripts/perf/viewer-bundle-budget.mjs` |
-| First image ≤ 1 s (CT 520 folder; 5-series J2K MR ZIP) | `e2e/visual/free-viewer.perf.spec.ts` |
+| First image, drop → frame drawn (`IMAGE_RENDERED`): target < 300 ms warm, gate ≤ 400 ms on software GL (CT 520 folder; 5-series J2K MR ZIP; reopen after Close) | `e2e/visual/free-viewer.perf.spec.ts` |
+| First image on a freshly launched browser: median of 3 launches < 500 ms | same |
 | No main-thread task > 50 ms while scrolling 240 slices | same |
 | Scroll p95 frame ≤ 20 ms on a GPU, ≤ 34 ms on SwiftShader (CI) | same |
 | Decoded cache ≤ cap on an emulated 2 GB device; 0 after Close | same |
