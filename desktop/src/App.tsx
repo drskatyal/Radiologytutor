@@ -75,6 +75,7 @@ import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
+import { onActivity } from "./activity";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
 import {
   announceClosing,
@@ -145,6 +146,11 @@ function volumePaneHealth(panes: unknown): { maxLum: number; nonBlank: boolean; 
     panes: panes as Record<string, number>,
   };
 }
+
+const firstImageOf = (fullRes?: number | null, engine?: number | null): number | null => {
+  const ms = Math.min(fullRes ?? Infinity, engine ?? Infinity);
+  return Number.isFinite(ms) ? ms : null;
+};
 
 export default function App() {
   const { toast } = useToast();
@@ -370,9 +376,13 @@ export default function App() {
     };
     const events = ["pointerdown", "pointermove", "wheel", "keydown"] as const;
     events.forEach((e) => window.addEventListener(e, arm, { passive: true }));
+    // Frames rendered and series loading count too (scripted, voice, cine,
+    // linked windows): only a viewer where nothing changes for 10 s is idle.
+    const offActivity = onActivity(arm);
     arm();
     return () => {
       window.clearTimeout(timer);
+      offActivity();
       events.forEach((e) => window.removeEventListener(e, arm));
       if (low) void invoke("set_memory_mode", { low: false }).catch(() => undefined);
     };
@@ -595,6 +605,13 @@ export default function App() {
               rust: result.timings,
               ...bench.current.marks,
               firstImagePaintedMs: bench.current.firstPaint ?? null,
+              // First full-resolution slice on screen at the file's window:
+              // Rust's full-res preview or the engine's paint, whichever first.
+              firstImageMs: firstImageOf(bench.current.marks.firstFullResMs, bench.current.firstPaint),
+              firstImageSource:
+                bench.current.marks.firstFullResMs != null && !((bench.current.firstPaint ?? Infinity) < bench.current.marks.firstFullResMs)
+                  ? "full-res preview"
+                  : "engine",
               paint: {
                 firstPreviewMs: bench.current.marks.firstPreviewMs ?? null,
                 firstImagePaintedMs: bench.current.firstPaint ?? null,
@@ -1643,8 +1660,12 @@ export default function App() {
     historyList<HistoryEntry>().then(setHistory, () => undefined);
   }, [resetWorkspace]);
 
-  const onPreview = useCallback(() => {
-    if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = performance.now() - bench.current.t0;
+  const onPreview = useCallback((fullRes: boolean) => {
+    const at = performance.now() - bench.current.t0;
+    if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = at;
+    // A full-resolution preview at the file's window IS the first image the
+    // reader sees (the engine's paint replaces it with the same pixels).
+    if (fullRes && bench.current.marks.firstFullResMs == null) bench.current.marks.firstFullResMs = at;
     // The preview is what the reader sees first; start the engine right
     // behind it instead of waiting for the viewport's next frame + task.
     void getEngine();

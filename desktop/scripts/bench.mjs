@@ -127,9 +127,16 @@ async function benchDesktop(binary, study) {
       console.error(`run 1: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
     }
     const report = await runApp(binary, [study]);
+    // First image: the first full-resolution slice on screen at the file's
+    // window: Rust's preview when it is full-res (the engine then repaints the
+    // same pixels), else the engine's paint. The engine paint stays reported.
+    report.enginePaintMs = report.firstImagePaintedMs;
+    report.firstImageSource = report.firstFullResMs != null && !(report.firstImagePaintedMs < report.firstFullResMs) ? "full-res preview" : "engine";
+    report.firstImageMs = Math.min(report.firstFullResMs ?? Infinity, report.firstImagePaintedMs ?? Infinity);
+    if (!Number.isFinite(report.firstImageMs)) report.firstImageMs = null;
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImagePaintedMs)} ms · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
   }
   const warm = reports.slice(1);
@@ -143,14 +150,16 @@ async function benchDesktop(binary, study) {
     images: reports[0].images,
     cold: {
       rustScanMs: r0(reports[0].rust?.totalMs),
-      firstImageMs: r0(reports[0].firstImagePaintedMs),
+      firstImageMs: r0(reports[0].firstImageMs),
+      enginePaintMs: r0(reports[0].enginePaintMs),
       firstVisibleMs: r0(visible(reports[0])),
       allReadyMs: r0(reports[0].scanDoneMs),
     },
     warm: {
       rustScanMs: r0(median(warm.map((r) => r.rust?.totalMs))),
       firstSeriesMs: r0(median(warm.map((r) => r.firstSeriesHungMs))),
-      firstImageMs: r0(median(warm.map((r) => r.firstImagePaintedMs))),
+      firstImageMs: r0(median(warm.map((r) => r.firstImageMs))),
+      enginePaintMs: r0(median(warm.map((r) => r.enginePaintMs))),
       firstPreviewMs: r0(median(warm.map((r) => r.paint?.firstPreviewMs))),
       firstVisibleMs: r0(median(warm.map(visible))),
       maxLongTaskMs: r0(Math.max(...warm.map((r) => r.longTasks?.maxMs ?? 0))),
@@ -480,11 +489,13 @@ async function benchMpr(binary, study) {
   let out = "";
   let peak = null;
   let report = null;
+  let peakWs = null;
   const timeline = [];
   const sample = () => {
     try {
       const m = treeMemory(child.pid);
       if (!peak || m.privateMb > peak.privateMb) peak = m;
+      if (!peakWs || m.wsMb > peakWs.wsMb) peakWs = m;
       timeline.push([Math.round(performance.now() - started), m.privateMb, report ? 1 : 0]);
       return m;
     } catch {
@@ -520,7 +531,7 @@ async function benchMpr(binary, study) {
     // Working set too: it is what Task Manager shows (and what the HP numbers
     // quote). Summed per process, so DLL pages shared by the WebView2
     // processes count once per process: fewer processes, smaller sum.
-    peakWsMb: peak?.wsMb,
+    peakWsMb: peakWs?.wsMb,
     settledWsMb: settled?.wsMb,
     processes: settled?.processes.length ?? peak?.processes.length,
     settledByProcess: settled?.processes.filter((p) => p.wsMb > 10),
@@ -535,9 +546,11 @@ async function benchMpr(binary, study) {
   };
   console.log(JSON.stringify(summary, null, 2));
   const over = [];
-  if (summary.peakPrivateMb > maxMb) over.push(`peak ${summary.peakPrivateMb} MB > ${maxMb} MB`);
+  // Gates are on the whole tree's WORKING SET (what Task Manager and the HP
+  // numbers show); private bytes are reported alongside.
+  if (summary.peakWsMb > maxMb) over.push(`peak working set ${summary.peakWsMb} MB > ${maxMb} MB`);
   if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
-  if (summary.settledPrivateMb > maxSettledMb) over.push(`settled ${summary.settledPrivateMb} MB > ${maxSettledMb} MB`);
+  if (summary.settledWsMb > maxSettledMb) over.push(`settled working set ${summary.settledWsMb} MB > ${maxSettledMb} MB`);
   if (over.length) {
     console.error(`MPR gate failed: ${over.join("; ")}`);
     process.exitCode = 1;

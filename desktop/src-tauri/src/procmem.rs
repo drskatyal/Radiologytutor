@@ -42,15 +42,40 @@ pub fn tree_of(root: u32, all: &[(u32, Option<u32>, String, u64)]) -> TreeMem {
     TreeMem { total_mb: processes.iter().map(|p| p.mb).sum(), processes }
 }
 
+/// "msedgewebview2.exe (gpu-process)": the Chromium role from `--type=`, so a
+/// report says WHICH WebView2 process holds the memory (the browser process
+/// has no --type).
+pub fn labelled(name: &str, cmd: &[String]) -> String {
+    match cmd.iter().find_map(|a| a.strip_prefix("--type=")) {
+        Some(kind) => {
+            let kind = if kind == "utility" {
+                cmd.iter().find_map(|a| a.strip_prefix("--utility-sub-type=")).map(|s| s.rsplit('.').next().unwrap_or(s)).unwrap_or(kind)
+            } else {
+                kind
+            };
+            format!("{name} ({kind})")
+        }
+        None => name.to_string(),
+    }
+}
+
 pub fn current_tree() -> TreeMem {
     let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_memory());
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_memory().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
+    );
     let all: Vec<(u32, Option<u32>, String, u64)> = sys
         .processes()
         .iter()
         // Linux lists every thread as a task with the process's own RSS.
         .filter(|(_, p)| p.thread_kind().is_none())
-        .map(|(pid, p)| (pid.as_u32(), p.parent().map(Pid::as_u32), p.name().to_string_lossy().into_owned(), p.memory()))
+        .map(|(pid, p)| {
+            let name = p.name().to_string_lossy().into_owned();
+            let cmd: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            (pid.as_u32(), p.parent().map(Pid::as_u32), labelled(&name, &cmd), p.memory())
+        })
         .collect();
     tree_of(std::process::id(), &all)
 }
@@ -71,6 +96,21 @@ mod tests {
         assert_eq!(t.total_mb, 280);
         assert_eq!(t.processes[0].name, "renderer");
         assert_eq!(t.processes.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod labels {
+    #[test]
+    fn names_chromium_roles() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::labelled("msedgewebview2.exe", &a(&["x.exe", "--type=gpu-process", "--foo"])), "msedgewebview2.exe (gpu-process)");
+        assert_eq!(super::labelled("msedgewebview2.exe", &a(&["x.exe", "--type=renderer"])), "msedgewebview2.exe (renderer)");
+        assert_eq!(
+            super::labelled("msedgewebview2.exe", &a(&["x.exe", "--type=utility", "--utility-sub-type=network.mojom.NetworkService"])),
+            "msedgewebview2.exe (NetworkService)"
+        );
+        assert_eq!(super::labelled("msedgewebview2.exe", &a(&["x.exe", "--embedded-browser-webview=1"])), "msedgewebview2.exe");
     }
 }
 

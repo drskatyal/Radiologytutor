@@ -21,6 +21,7 @@ import { ensureSuv } from "./suv";
 import { isTauri, previewUrlFor } from "../platform";
 import { verifyPainted, type PaintHealth } from "./paintCheck";
 import { markPhase } from "../perfWatch";
+import { noteActivity } from "../activity";
 
 // Select / delete / erase / label annotations: loaded with the first image.
 const AnnotationEditLayer = lazy(() =>
@@ -49,8 +50,12 @@ export interface StackViewportProps {
   onFirstPaint?: (ms: number, health: PaintHealth) => void;
   /** Teaching / screen sharing: no name, ID or birth date in the overlay. */
   hidePatient?: boolean;
-  /** Fired when the instant Rust-rendered preview is on screen. */
-  onPreview?: () => void;
+  /**
+   * Fired when the instant Rust-rendered preview is on screen. `fullRes`: it
+   * is the slice at its own resolution and the file's window (what the engine
+   * then paints at the same W/L), not a reduced stand-in.
+   */
+  onPreview?: (fullRes: boolean) => void;
   /** Eraser tool: a click deletes the annotation under it. */
   eraser?: boolean;
   onAnnotationsDeleted?: (count: number, scope: "one" | "image" | "series") => void;
@@ -224,7 +229,10 @@ function StackViewportImpl({
       });
       addViewportToGroup(engine, STACK_GROUP, viewportId);
       const Events = core.Enums.Events;
-      const onRender = () => refreshReadout();
+      const onRender = () => {
+        noteActivity();
+        refreshReadout();
+      };
       // ±N prefetch: a few slices in the direction of travel (and two behind),
       // never the whole series. The cache budget keeps it a window.
       const travel = createScrollDirectionState();
@@ -337,6 +345,7 @@ function StackViewportImpl({
       .then((state) => {
         suv = state;
         markPhase("viewport: load series");
+        noteActivity();
         return vp.setStack(ids, index);
       })
       .then(() => {
@@ -630,7 +639,11 @@ function StackViewportImpl({
           alt=""
           aria-hidden
           draggable={false}
-          onLoad={onPreview}
+          onLoad={(e) => {
+            const h = series.headers[0];
+            const img = e.currentTarget;
+            onPreview?.(!!h?.rows && !!h?.columns && img.naturalWidth === h.columns && img.naturalHeight === h.rows);
+          }}
           onError={() => setPreviewFailed(series.uid)}
           className="pointer-events-none absolute inset-0 h-full w-full bg-imaging object-contain"
         />
