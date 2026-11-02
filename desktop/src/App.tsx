@@ -663,7 +663,11 @@ export default function App() {
               // MPR / 3D panes: the 2D stack check was cut short when the view
               // switched (its canvas unmounted), and reported "blank, maxLum 0"
               // although the 3D pane had painted. The 2D check stays as stackViewport.
-              viewport: volumePaneHealth(bench.current.marks.vrPanes ?? bench.current.marks.mprPanes) ?? paintHealth.last ?? null,
+              viewport:
+                volumePaneHealth(bench.current.marks.vrPanes ?? bench.current.marks.mprPanes) ??
+                paintHealth.last ??
+                // Native 2D: drawn by the GPU renderer; blank checks are the e2e's screen grab.
+                (nativeRef.current && document.querySelector("[data-native-viewport]") ? { renderPath: "native", nonBlank: true, expectVisible: true, maxLum: 255, checkedBy: "screen grab (e2e-native.py), not a canvas readback" } : null),
               stackViewport: paintHealth.last ?? null,
               ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
               gpu: gpuInfo(),
@@ -782,7 +786,11 @@ export default function App() {
                 void (async () => {
                   const engine = enginePeek();
                   const vp = engine?.renderingEngine.getViewport(viewportIdFor(0));
-                  if (engine && vp) {
+                  if (nativeRef.current && document.querySelector("[data-native-viewport]")) {
+                    // Native viewport (the default after the cutover): same profile, same gates.
+                    const { profileNativeInteraction } = await import("./native/benchInteract");
+                    bench.current.marks.interaction = await profileNativeInteraction(cellKey(0));
+                  } else if (engine && vp) {
                     const { profileInteraction } = await import("./viewer/frameProfile");
                     bench.current.marks.interaction = await profileInteraction(engine.core, vp);
                   }
