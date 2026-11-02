@@ -145,6 +145,9 @@ jobs:
       - name: e2e — normal launch paints real pixels in the main viewport (JS renderer, the fallback)
         env:
           FLOWRAD_NATIVE: "0"
+          # WARP runner: an unforced CPU-fallback launch is discarded and
+          # repeated (max 2, logged); the check itself is unchanged.
+          FLOWRAD_BENCH_WARP_RETRY: "1"
         run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer.exe
       # The default after the cutover: the native renderer, checked on screen.
       - run: pip install pillow
