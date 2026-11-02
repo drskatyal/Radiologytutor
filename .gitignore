@@ -51,3 +51,4 @@ deploy/gcp/terraform/.terraform.lock.hcl
 scripts/bench/.build/
 scripts/bench/results/
 __pycache__/
+brand/build/out/
