@@ -151,3 +151,58 @@ test("series panel: chevron, Ctrl+B, menu, remembered; the image is not reloaded
   await open(page);
   await expect(page.getByRole("complementary", { name: "Series" })).toHaveAttribute("data-collapsed", "true");
 });
+
+// pydicom's own samples (CT_small: rescaled CT with no Window Center/Width;
+// MR_small: a second study). HP report 0.8.1: the MR was "silently dropped"
+// (its study hid behind a study picker) and the CT thumbnail was black (the
+// engine's stored-value default window applied to HU). TEST_PYDICOM_DIR is
+// made in CI from pydicom.data.get_testdata_file.
+const PYD = process.env.TEST_PYDICOM_DIR;
+test.describe("pydicom samples", () => {
+  test.skip(!PYD, "TEST_PYDICOM_DIR is not set");
+  test("two files of two studies: both listed, both thumbnails real images with no interaction", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+    await page.goto("/viewer");
+    const consent = page.getByRole("button", { name: "Continue" });
+    if (await consent.count()) await consent.first().click();
+    const files = fs.readdirSync(PYD!).map((f) => path.join(PYD!, f));
+    expect(files.length).toBe(2);
+    await page.locator("input[type=file]:not([webkitdirectory])").first().setInputFiles(files);
+    const panel = page.getByRole("complementary", { name: "Series" });
+    await expect(panel).toContainText("2 studies", { timeout: 30_000 });
+    await expect(panel.getByRole("button").filter({ hasText: /· CT/ })).toHaveCount(1);
+    await expect(panel.getByRole("button").filter({ hasText: /· MR/ })).toHaveCount(1);
+    // No click, scroll or key after the drop: thumbnails must fill in on their own.
+    await expect.poll(() => panel.locator("[data-thumb-state=ready]").count(), { timeout: 20_000 }).toBe(2);
+    const contrast = await panel.locator("[data-thumb-state=ready] img").evaluateAll(async (imgs) =>
+      Promise.all(
+        (imgs as HTMLImageElement[]).map(async (img) => {
+          await img.decode();
+          const c = document.createElement("canvas");
+          c.width = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const ctx = c.getContext("2d")!;
+          ctx.drawImage(img, 0, 0);
+          const d = ctx.getImageData(0, 0, c.width, c.height).data;
+          let sum = 0;
+          let max = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            sum += d[i]!;
+            max = Math.max(max, d[i]!);
+          }
+          return { mean: sum / (d.length / 4), max };
+        })
+      )
+    );
+    for (const c of contrast) {
+      expect(c.max, `thumbnail is not black (${JSON.stringify(contrast)})`).toBeGreaterThan(150);
+      expect(c.mean, `thumbnail is not near-black (${JSON.stringify(contrast)})`).toBeGreaterThan(25);
+    }
+    // The MR (the other study) opens from the list.
+    await panel.getByRole("button").filter({ hasText: /· MR/ }).click();
+    await expect.poll(async () => /MR\s*·\s*Se/.test(await page.locator("body").innerText()), { timeout: 15_000 }).toBe(true);
+    if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "web-two-studies.png") });
+  });
+});

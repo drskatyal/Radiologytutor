@@ -65,6 +65,10 @@ jobs:
           python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-40" --slices 40 --size 256
           python3 scripts/make-test-multiseries.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-multi"
+          # pydicom's own public samples: a rescaled CT with no window and an
+          # MR from another study (the 0.8.1 HP report's two dropped files).
+          mkdir -p "$RUNNER_TEMP/test-pydicom"
+          python3 -c "import shutil, sys; from pydicom.data import get_testdata_file as f; [shutil.copy(f(n), sys.argv[1]) for n in ('CT_small.dcm', 'MR_small.dcm')]" "$RUNNER_TEMP/test-pydicom"
       - name: Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Visual regression + perf + privacy gates (/viewer/local, /viewer)
@@ -74,6 +78,7 @@ jobs:
           TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
           TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+          TEST_PYDICOM_DIR: ${{ runner.temp }}/test-pydicom
         # One worker: the perf gates measure frame times and must not share
         # the runner's cores with another test (nor the voice recognizer's WASM).
         run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"
@@ -87,7 +92,8 @@ jobs:
           CI: "1"
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
           TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
-        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts popout.spec.ts --workers=1
+          TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts voice-recorded.spec.ts popout.spec.ts --workers=1
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4

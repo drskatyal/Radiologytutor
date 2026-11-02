@@ -384,10 +384,14 @@ export default function App() {
   nothingOpenRef.current = nothingOpen;
   useEffect(() => {
     if (!isTauri) return;
-    const timer = window.setTimeout(
-      () => void invoke("set_memory_mode", { low: nothingOpen }).catch(() => undefined),
-      nothingOpen ? 1500 : 0
-    );
+    const timer = window.setTimeout(() => {
+      // A study was just closed: collect its headers, series and view state
+      // now (the start screen may sit idle for a long while), then let
+      // WebView2 trim. `gc` exists because the app starts V8 with
+      // --expose-gc (tauri.conf.json); absent elsewhere.
+      if (nothingOpen) (globalThis as { gc?: () => void }).gc?.();
+      void invoke("set_memory_mode", { low: nothingOpen }).catch(() => undefined);
+    }, nothingOpen ? 1500 : 0);
     return () => window.clearTimeout(timer);
   }, [nothingOpen]);
 
@@ -548,16 +552,23 @@ export default function App() {
       if (prev.some(Boolean) || built.length === 0) return prev;
       const study = built[0];
       const first = study.series[primarySeriesIndex(study)];
-      // Ask Rust for the instant preview now, while the viewport chunk loads:
-      // the <img> it renders then comes from the webview's memory cache.
-      if (first && isTauri && first.headers[0]) {
-        try {
-          const img = new Image();
-          img.decoding = "async";
-          img.src = previewUrlFor(first.headers[0].fileId);
-        } catch {
-          /* protocol not ready: the viewport asks itself */
-        }
+      // Start on the first image now, while the viewport mounts. Native
+      // mode: Rust decodes the slice the native viewport shows first (index
+      // 0) into its store, so `native_cell_series` only uploads and draws (no
+      // PNG preview: nothing would show it). JS path: the instant preview,
+      // whose <img> then comes from the webview's memory cache.
+      const head = first?.headers[0];
+      if (head && isTauri) {
+        void nativeEnabled().then((on) => {
+          if (on) return void invoke("native_warm", { fileIds: [head.fileId] }).catch(() => undefined);
+          try {
+            const img = new Image();
+            img.decoding = "async";
+            img.src = previewUrlFor(head.fileId);
+          } catch {
+            /* protocol not ready: the viewport asks itself */
+          }
+        });
       }
       return first ? [first.uid, ...prev.slice(1)] : prev;
     });
@@ -881,6 +892,19 @@ export default function App() {
                   const { runVoiceBench } = await import("./voiceBench");
                   bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
                   void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "close") {
+                // Close lifecycle (bench.mjs `close`): report with the study
+                // open, hold it open while the bench samples it settled, then
+                // close it like the Home button and say so; the bench samples
+                // again after 30 s against the empty-app baseline.
+                void (async () => {
+                  await report();
+                  const after = await invoke<number>("bench_close_after_ms").catch(() => 20_000);
+                  window.setTimeout(() => {
+                    goHomeRef.current();
+                    void benchReport({ closed: true, closedAtMs: Math.round(performance.now() - t0) });
+                  }, after);
                 })();
               } else if (bench.current.firstPaint != null) void report();
               else if (performance.now() > deadline) void report(true);
@@ -1257,6 +1281,8 @@ export default function App() {
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
   const voiceSession = useRef<VoiceSession | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
+  /** The Home action, for the close-lifecycle bench (opened before `goHome` is defined). */
+  const goHomeRef = useRef<() => void>(() => undefined);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
     setVoice((v) => ({ ...v, heard }));
@@ -2128,6 +2154,7 @@ export default function App() {
     resetWorkspace();
     historyList<HistoryEntry>().then(setHistory, () => undefined);
   }, [resetWorkspace, native]);
+  goHomeRef.current = goHome;
 
   const onPreview = useCallback((fullRes: boolean) => {
     const at = performance.now() - bench.current.t0;

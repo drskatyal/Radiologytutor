@@ -16,7 +16,7 @@
 //! through dicom-pixeldata. Colour is not handled here yet: those series stay
 //! on the JS path (P2.1 falls back per series, never a blank viewport).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use dicom_dictionary_std::tags;
 use dicom_object::OpenFileOptions;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 
 use crate::volume::{decode_into, int, num, SliceHeader};
@@ -70,6 +70,16 @@ pub struct ImageStore {
     inner: Mutex<Inner>,
     /// Bumped by every prefetch request; queued work from an older one is dropped.
     generation: AtomicU64,
+    /// Bumped by `clear` (study closed). A decode that started before the
+    /// clear is not cached after it, and warm jobs queued before it do
+    /// nothing: work in flight at close must not refill the cache (CI close
+    /// gate: 26 slices were back in the cache after close).
+    epoch: AtomicU64,
+    /// Slices being decoded right now: a second `get` of one waits for that
+    /// decode instead of starting its own (the speculative first-slice
+    /// decode at open and the viewport's own request race by design).
+    inflight: Mutex<HashSet<PathBuf>>,
+    decoded: Condvar,
 }
 
 #[derive(Default)]
@@ -87,7 +97,14 @@ pub fn budget_from_env() -> usize {
 
 impl ImageStore {
     pub fn new(budget: usize) -> Self {
-        Self { budget, inner: Mutex::new(Inner::default()), generation: AtomicU64::new(0) }
+        Self {
+            budget,
+            inner: Mutex::new(Inner::default()),
+            generation: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
+            inflight: Mutex::new(HashSet::new()),
+            decoded: Condvar::new(),
+        }
     }
 
     /// Cached slice, or None (no decode).
@@ -110,11 +127,48 @@ impl ImageStore {
         if let Some(s) = self.peek(path) {
             return Ok(s);
         }
+        {
+            let mut busy = self.inflight.lock();
+            if busy.contains(path) {
+                while busy.contains(path) {
+                    self.decoded.wait(&mut busy);
+                }
+                drop(busy);
+                if let Some(s) = self.peek(path) {
+                    return Ok(s);
+                }
+                // That decode failed (or was evicted already): try ourselves.
+                busy = self.inflight.lock();
+            }
+            busy.insert(path.to_path_buf());
+        }
+        let epoch = self.epoch.load(Ordering::SeqCst);
         let started = Instant::now();
-        let slice = Arc::new(decode_slice(path)?);
+        let decoded = decode_slice(path).map(Arc::new);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        self.insert(path, slice.clone(), ms);
-        Ok(slice)
+        if let Ok(slice) = &decoded {
+            // Closed meanwhile: the caller gets its slice, the cache keeps nothing.
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                self.insert(path, slice.clone(), ms);
+            }
+        }
+        self.inflight.lock().remove(path);
+        self.decoded.notify_all();
+        decoded
+    }
+
+    /// Decode `paths` now on the rayon pool, without superseding the
+    /// scroll prefetch (study open: the slice the first viewport will ask for).
+    pub fn warm(self: &Arc<Self>, paths: Vec<PathBuf>) {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        for path in paths {
+            let store = self.clone();
+            rayon::spawn(move || {
+                if store.epoch.load(Ordering::SeqCst) == epoch {
+                    let _ = store.get(&path);
+                }
+            });
+        }
     }
 
     fn insert(&self, path: &Path, slice: Arc<Slice>, decode_ms: f64) {
@@ -180,6 +234,7 @@ impl ImageStore {
         g.entries.shrink_to_fit();
         g.used = 0;
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn stats(&self) -> StoreStats {
@@ -283,6 +338,41 @@ mod tests {
         assert_eq!(s.data[0], 1000 - 1024);
         assert_eq!(s.data[15], 1015 - 1024);
         assert_eq!(s.window, Some((40.0, 400.0)));
+    }
+
+    /// Study closed: slices decoded on rayon workers (warm, prefetch) and on
+    /// the caller are all released; no Arc to a slice survives the clear, and
+    /// a concurrent warm + get of one slice decodes it once.
+    #[test]
+    fn clear_after_warm_releases_every_slice() {
+        let d = tmp("clear");
+        let paths: Vec<PathBuf> = (0..6).map(|i| write_ct(&d, &format!("{i}.dcm"), 64, 64, 100 + i)).collect();
+        let store = Arc::new(ImageStore::new(64 * 1_048_576));
+        store.warm(paths.clone());
+        let first = store.get(&paths[0]).unwrap();
+        // Let the warm jobs finish, then load the rest on this thread.
+        for p in &paths {
+            store.get(p).unwrap();
+        }
+        let before = store.stats();
+        assert_eq!(before.slices, 6);
+        assert!(before.used_mb > 0.0);
+        assert!(before.misses <= 6, "one decode per slice, got {}", before.misses);
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        store.clear();
+        let after = store.stats();
+        eprintln!("store after close: {:.3} MB in {} slices (before {:.3} MB in {})", after.used_mb, after.slices, before.used_mb, before.slices);
+        assert_eq!((after.slices, after.used_mb), (0, 0.0));
+        assert!(weak.upgrade().is_none(), "a closed study's slice is still referenced");
+        // Work queued before the close (warm jobs) or decoding across it
+        // never refills the cache.
+        store.warm(paths.clone());
+        let stale = store.epoch.load(Ordering::SeqCst);
+        store.clear();
+        assert_eq!(store.epoch.load(Ordering::SeqCst), stale + 1);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(store.stats().slices, 0, "work from before the close refilled the cache");
     }
 
     #[test]

@@ -48,7 +48,7 @@ import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
-import { primarySeriesIndexByProtocol, thumbnailImageId } from "@flowrad/viewer-core";
+import { primarySeriesIndexByProtocol, stopParkedVoice, thumbnailImageId } from "@flowrad/viewer-core";
 import { createLocalThumbnailer, type LocalThumbnailer } from "@flowrad/viewer-core/localThumbnails";
 import { LocalSeriesThumb } from "@/components/viewer/LocalSeriesThumb";
 import {
@@ -181,8 +181,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [firstImageUp, setFirstImageUp] = useState(false);
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
-  // Voice commands stay on across series (each series mounts its own viewer).
+  // Voice commands stay on across series (each series mounts its own viewer,
+  // which hands the live microphone session to the next: voiceHandoff.ts).
   const [voiceOn, setVoiceOn] = useState(false);
+  // Leaving the viewer: a session parked mid-handoff must not keep the mic.
+  // After a tick, so the unmounting viewer has parked it first.
+  useEffect(() => () => void setTimeout(stopParkedVoice, 0), []);
   const [dragging, setDragging] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   /** Every registered `dicomfile:` id of the open study — freed on close. */
@@ -369,6 +373,14 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     setDrawerOpen(false);
     hapticTick();
   }, []);
+
+  const pickStudySeries = useCallback(
+    (studyIndex: number, seriesIndex: number) => {
+      setActiveStudy(studyIndex);
+      pickSeries(seriesIndex);
+    },
+    [pickSeries]
+  );
 
   const closeStudy = useCallback(() => {
     abortRef.current?.abort();
@@ -727,14 +739,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       {result && study ? (
         <SeriesList
           result={result}
-          study={study}
           activeStudy={activeStudy}
           activeSeries={activeSeries}
-          onStudy={(next) => {
-            setActiveStudy(next);
-            setActiveSeries(primarySeriesIndexByProtocol(result.studies[next]));
-          }}
-          onSeries={pickSeries}
+          onPick={pickStudySeries}
           dark={reading}
           thumbs={thumbs}
           imageIdsFor={imageIdsFor}
@@ -1001,14 +1008,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             {result && study ? (
               <SeriesList
                 result={result}
-                study={study}
                 activeStudy={activeStudy}
                 activeSeries={activeSeries}
-                onStudy={(next) => {
-                  setActiveStudy(next);
-                  setActiveSeries(primarySeriesIndexByProtocol(result.studies[next]));
-                }}
-                onSeries={pickSeries}
+                onPick={pickStudySeries}
                 hideHeading
                 thumbs={thumbs}
                 imageIdsFor={imageIdsFor}
@@ -1193,112 +1195,122 @@ function SignupPrompt({ onDismiss, dark = false }: { onDismiss: () => void; dark
 /** Study picker + series buttons, shared by the desktop panel and the phone drawer. */
 function SeriesList({
   result,
-  study,
   activeStudy,
   activeSeries,
-  onStudy,
-  onSeries,
+  onPick,
   hideHeading = false,
   dark = false,
   thumbs,
   imageIdsFor,
 }: {
   result: LocalIngestResult;
-  study: LocalStudy;
   activeStudy: number;
   activeSeries: number;
-  onStudy: (index: number) => void;
-  onSeries: (index: number) => void;
+  /** A series of any study was chosen (switches study when needed). */
+  onPick: (studyIndex: number, seriesIndex: number) => void;
   hideHeading?: boolean;
   dark?: boolean;
   thumbs: LocalThumbnailer | null;
   imageIdsFor: (series: LocalSeries) => string[];
 }) {
+  // Every study the drop produced is listed, each under its own heading: two
+  // files of two different studies (a CT and an MR) must both be visible, not
+  // one hidden behind a study picker.
+  const studies = result.studies;
+  const many = studies.length > 1;
+  const seriesTotal = studies.reduce((n, s) => n + s.series.length, 0);
+  const imageTotal = studies.reduce((n, s) => n + s.imageCount, 0);
+  const only = studies[0];
   return (
     <div className="flex flex-col gap-3">
       {!hideHeading && (
         <div className="flex flex-col gap-1">
           <h2 className={cn("text-sm font-medium", dark ? "text-white" : "text-primary")}>
-            {study.description?.trim() || "Local study"}
+            {many ? `${formatCount(studies.length)} studies` : only?.description?.trim() || "Local study"}
           </h2>
           <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
-            {formatCount(study.series.length)} series · {formatCount(study.imageCount)} images
-            {study.studyDate ? ` · ${study.studyDate}` : ""}
+            {formatCount(seriesTotal)} series · {formatCount(imageTotal)} images
+            {!many && only?.studyDate ? ` · ${only.studyDate}` : ""}
           </p>
         </div>
       )}
-      {result.studies.length > 1 && (
-        <label className={cn("flex flex-col gap-1 text-xs", dark ? "text-white/60" : "text-secondary")}>
-          Study
-          <select
-            value={activeStudy}
-            onChange={(event) => onStudy(Number(event.target.value))}
-            className={cn(
-              "rounded-lg border px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-              dark ? "border-white/15 bg-imaging text-white" : "border-subtle bg-surface text-primary"
-            )}
-          >
-            {result.studies.map((item, index) => (
-              <option key={item.studyInstanceUID} value={index}>
-                {item.description?.trim() || `Study ${index + 1}`} · {formatCount(item.imageCount)} images
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <ul className="grid grid-cols-2 gap-2" aria-label="Series">
-        {study.series.map((item, index) => {
-          const ids = imageIdsFor(item);
-          const selected = index === activeSeries;
-          return (
-            <li key={item.seriesInstanceUID}>
-              <button
-                type="button"
-                onClick={() => onSeries(index)}
-                aria-pressed={selected}
-                title={describeLocalSeries(item)}
-                className={cn(
-                  "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left text-[11px] transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                  dark
-                    ? selected
-                      ? "border-accent bg-white/[0.10] text-white"
-                      : "border-transparent text-white/70 hover:border-white/15 hover:bg-white/[0.05] hover:text-white"
-                    : selected
-                      ? "border-accent bg-accent-muted/40 text-primary"
-                      : "border-transparent text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
-                )}
-              >
-                <LocalSeriesThumb
-                  thumbs={thumbs}
-                  seriesKey={item.seriesInstanceUID}
-                  imageId={thumbnailImageId(ids)}
-                  dark={dark}
-                />
-                <span className="flex items-baseline gap-1 px-0.5 font-medium tabular-nums">
-                  <span className="truncate">
-                    {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
-                    {item.modality || "DICOM"}
-                  </span>
-                  <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
-                    {formatCount(item.imageCount)} im
-                  </span>
-                </span>
-                <span
-                  className={cn(
-                    "line-clamp-2 min-h-[2lh] px-0.5 leading-tight",
-                    dark ? "text-white/60 group-hover:text-white/80" : "text-secondary group-hover:text-primary"
-                  )}
-                >
-                  {item.description?.trim() || "No description"}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      {studies.map((study, studyIndex) => (
+        <section key={study.studyInstanceUID} aria-label={studyLabel(study, studyIndex)} className="flex flex-col gap-2">
+          {many && (
+            <h3
+              className={cn(
+                "flex items-baseline gap-1.5 border-t pt-2 text-xs font-medium",
+                dark ? "border-white/10 text-white/80" : "border-subtle text-primary"
+              )}
+            >
+              <span className="truncate">{studyLabel(study, studyIndex)}</span>
+              <span className={cn("ml-auto shrink-0 font-normal tabular-nums", dark ? "text-white/50" : "text-muted")}>
+                {[...new Set(study.series.map((s) => s.modality).filter(Boolean))].join(", ")}
+                {study.studyDate ? ` · ${study.studyDate}` : ""}
+              </span>
+            </h3>
+          )}
+          <ul className="grid grid-cols-2 gap-2" aria-label="Series">
+            {study.series.map((item, index) => {
+              const ids = imageIdsFor(item);
+              const selected = studyIndex === activeStudy && index === activeSeries;
+              return (
+                <li key={item.seriesInstanceUID}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(studyIndex, index)}
+                    aria-pressed={selected}
+                    title={describeLocalSeries(item)}
+                    className={cn(
+                      "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left text-[11px] transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                      dark
+                        ? selected
+                          ? "border-accent bg-white/[0.10] text-white"
+                          : "border-transparent text-white/70 hover:border-white/15 hover:bg-white/[0.05] hover:text-white"
+                        : selected
+                          ? "border-accent bg-accent-muted/40 text-primary"
+                          : "border-transparent text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
+                    )}
+                  >
+                    <LocalSeriesThumb
+                      thumbs={thumbs}
+                      seriesKey={item.seriesInstanceUID}
+                      imageId={thumbnailImageId(ids)}
+                      dark={dark}
+                    />
+                    <span className="flex items-baseline gap-1 px-0.5 font-medium tabular-nums">
+                      <span className="truncate">
+                        {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
+                        {item.modality || "DICOM"}
+                      </span>
+                      <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
+                        {formatCount(item.imageCount)} im
+                      </span>
+                    </span>
+                    <span
+                      className={cn(
+                        "line-clamp-2 min-h-[2lh] px-0.5 leading-tight",
+                        dark ? "text-white/60 group-hover:text-white/80" : "text-secondary group-hover:text-primary"
+                      )}
+                    >
+                      {item.description?.trim() || "No description"}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
     </div>
   );
+}
+
+/** "Study 2 · e+1" — numbered, so two studies with the same description stay distinct. */
+function studyLabel(study: LocalStudy, index: number): string {
+  const description = study.description?.trim();
+  return description ? `Study ${index + 1} · ${description}` : `Study ${index + 1}`;
 }
 
 function withRelativePath(file: File, path: string): File {
