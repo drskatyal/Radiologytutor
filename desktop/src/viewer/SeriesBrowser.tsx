@@ -11,6 +11,9 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Layers, Film, Box, FileText } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
+import type { MenuCommand, MenuEntry } from "@flowrad/viewer-core";
 import type { ViewerSeries, ViewerStudy } from "../types";
 import { describeSeries, formatDicomDate, formatPersonName } from "../study";
 import { getEngine } from "./engine";
@@ -129,12 +132,49 @@ interface Props {
   /** Structured reports found with the studies (listed under each study). */
   documents?: readonly DicomDocument[];
   onOpenReport?: (report: DicomDocument) => void;
+  /** Series the reader hid from the list (right-click → Hide series). */
+  hidden?: ReadonlySet<string>;
+  onShowHidden?: () => void;
+  /** Right-click menu of a series card (shared contextMenu.ts) and its commands. */
+  menuFor?: (uid: string) => MenuEntry[];
+  onSeriesCommand?: (uid: string, command: MenuCommand) => void;
 }
 
-function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries, documents = [], onOpenReport }: Props) {
+function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries, documents = [], onOpenReport, hidden, onShowHidden, menuFor, onSeriesCommand }: Props) {
+  const [menu, setMenu] = useState<{ uid: string; x: number; y: number } | null>(null);
+  const contextMenu = (uid: string) =>
+    menuFor
+      ? (e: React.MouseEvent) => {
+          e.preventDefault();
+          setMenu({ uid, x: e.clientX, y: e.clientY });
+        }
+      : undefined;
   return (
     <nav aria-label="Series" className="flex h-full flex-col overflow-y-auto overscroll-contain p-2">
       <p className="mb-2 px-1 text-[11px] text-muted">Click a series to show it in the selected viewport, or drag it onto any viewport.</p>
+      {hidden && hidden.size > 0 && (
+        <p className="mb-2 flex items-center justify-between gap-2 px-1 text-[11px] text-muted">
+          <span className="tabular-nums">
+            {hidden.size} hidden series
+          </span>
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={onShowHidden}>
+            Show all
+          </Button>
+        </p>
+      )}
+      {menu && menuFor && (
+        <ViewerContextMenu
+          at={{ x: menu.x, y: menu.y }}
+          label="Series"
+          entries={menuFor(menu.uid)}
+          onSelect={(command) => {
+            const uid = menu.uid;
+            setMenu(null);
+            onSeriesCommand?.(uid, command);
+          }}
+          onClose={() => setMenu(null)}
+        />
+      )}
       {studies.map((study) => (
         <section key={study.uid} className="mb-3">
           <header className="sticky top-0 z-10 -mx-2 mb-2 border-b border-subtle bg-surface/95 px-3 py-2 backdrop-blur">
@@ -153,7 +193,7 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
             </div>
           </header>
           <ul className={compact ? "flex flex-col gap-0.5" : "grid grid-cols-2 gap-2"}>
-            {study.series.map((series) => {
+            {study.series.filter((series) => !hidden?.has(series.uid)).map((series) => {
               const cells = onScreen.flatMap((uid, i) => (uid === series.uid ? [i + 1] : []));
               const isActive = series.uid === activeSeriesUid;
               // Pointer-driven drag (seriesDrag.ts): works on Windows, where
@@ -174,6 +214,7 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
                       type="button"
                       onPointerDown={press}
                       onClick={open}
+                      onContextMenu={contextMenu(series.uid)}
                       title={`${describeSeries(series)} — click to show, or drag onto a viewport`}
                       className={cn(
                         "flex w-full cursor-grab touch-none items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] transition-colors active:cursor-grabbing",
@@ -199,6 +240,7 @@ function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compac
                     type="button"
                     onPointerDown={press}
                     onClick={open}
+                    onContextMenu={contextMenu(series.uid)}
                     title={`${describeSeries(series)} — click to show, or drag onto a viewport`}
                     className={cn(
                       "group flex w-full cursor-grab touch-none flex-col gap-1 rounded-lg border p-1 text-left transition-colors active:cursor-grabbing",

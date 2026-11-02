@@ -11,6 +11,7 @@ import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import type { WindowPreset } from "@flowrad/viewer-core";
+import type { ExportKind } from "./components/ExportDialog";
 import {
   appVersion,
   benchEnabled,
@@ -34,10 +35,10 @@ import {
   takeLaunchPaths,
 } from "./platform";
 import { headersFromBrowserFiles } from "./browserSource";
-import { buildStudies, primarySeriesIndex } from "./study";
-import { historyEntryFor, sourceKey, type HistoryEntry } from "./history";
+import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
+import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
-import { keyLabel, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { keyLabel, keysForAction, resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/Updates";
 import { useSyncStatus } from "./components/Account";
@@ -95,9 +96,11 @@ import { setToolCursor } from "./viewer/toolCursor";
 import type { VoiceState } from "@/components/viewer/voice/voiceSession";
 import {
   monitorColor,
-  monitorLabel,
   nextMonitor,
   placeArrangement,
+  imageMenu,
+  thumbnailMenu,
+  type MenuCommand,
   type MonitorInfo,
   type VoiceAction,
   type WindowArrangement,
@@ -124,12 +127,27 @@ const ReportDialog = named<typeof import("./components/ReportDialog").ReportDial
 const ShortcutsDialog = named<typeof import("./components/Dialogs").ShortcutsDialog>(() => import("./components/Dialogs"), "ShortcutsDialog");
 const CustomWindowDialog = named<typeof import("./components/Dialogs").CustomWindowDialog>(() => import("./components/Dialogs"), "CustomWindowDialog");
 const DiscPickerDialog = named<typeof import("./components/Dialogs").DiscPickerDialog>(() => import("./components/Dialogs"), "DiscPickerDialog");
+const DicomTagsDialog = named<typeof import("@/components/viewer/DicomTagsDialog").DicomTagsDialog>(() => import("@/components/viewer/DicomTagsDialog"), "DicomTagsDialog");
 const MemoryHud = named<typeof import("./components/MemoryHud").MemoryHud>(() => import("./components/MemoryHud"), "MemoryHud");
 const SettingsDialog = named<typeof import("./components/Dialogs").SettingsDialog>(() => import("./components/Dialogs"), "SettingsDialog");
 
 type ScanState = { label: string; progress: ScanProgress | null } | null;
 
 const cellKey = (i: number) => `cell-${i}`;
+/** Tools in the right-click menu, in order. */
+const MENU_TOOLS = [
+  { id: "StackScroll", label: "Scroll" },
+  { id: "WindowLevel", label: "Window / level" },
+  { id: "Zoom", label: "Zoom" },
+  { id: "Pan", label: "Pan" },
+  { id: "Length", label: "Length" },
+  { id: "Angle", label: "Angle" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Eraser", label: "Eraser" },
+];
 const viewportIdFor = (i: number) => `vp-${i}`;
 
 export default function App() {
@@ -193,7 +211,7 @@ export default function App() {
   /** Quick reformats by cell: that cell shows one native plane of its series. */
   const [reformats, setReformats] = useState<Record<number, { uid: string; plane: "axial" | "coronal" | "sagittal" }>>({});
   /** Slab shortcut (T, Ctrl+[ ]) for the active reformat; `seq` re-fires the same command. */
-  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; seq: number } | undefined>();
+  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; mm?: number; seq: number } | undefined>();
   const slabCycle = useRef<"off" | "mip" | "minip" | "avg">("off");
   /** Slab a voice command asked for before a reformat was open. */
   const [voiceSlab, setVoiceSlab] = useState<{ mode: "off" | "mip" | "minip" | "avg"; mm: number } | undefined>();
@@ -1234,23 +1252,6 @@ export default function App() {
     [refreshMonitors, myMonitor, sendLayoutToMonitor, sendSeriesToMonitor, activeSeriesUid]
   );
 
-  /** Right-click menu items for a viewport showing `uid`. */
-  const windowMenuFor = useCallback(
-    (uid: string) => {
-      const others = monitors.filter((m) => m.name !== myMonitor);
-      return [
-        { label: isTauri ? "Open in new window" : "Pop out to new window", onSelect: () => void sendSeriesToMonitor(uid, null) },
-        ...others.map((m) => ({
-          label: `Send to monitor ${monitors.indexOf(m) + 1}`,
-          hint: monitorLabel(monitors, m).split(" · ")[1],
-          onSelect: () => void sendSeriesToMonitor(uid, m.name),
-        })),
-        ...(others.length ? [{ label: `Send layout to monitor ${monitors.indexOf(others[0]) + 1}`, onSelect: () => void sendLayoutToMonitor(others[0].name) }] : []),
-      ];
-    },
-    [monitors, myMonitor, sendSeriesToMonitor, sendLayoutToMonitor]
-  );
-
   // The monitor picker on series cards.
   useEffect(() => {
     setMonitorSource(monitorsAvailable() ? () => refreshMonitors() : null);
@@ -1515,6 +1516,7 @@ export default function App() {
           return setBrowserOpen((v) => !v);
         case "export":
           if (view !== "grid") return;
+          setExportInitial(undefined);
           return setDialog("export");
         case "mpr":
           return toggleView("mpr");
@@ -1536,6 +1538,259 @@ export default function App() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [studies.length, leftTool, toggleSync, linkAtCurrent, sendToMonitor, activeCell, presets, seriesOrder, activeSeriesUid, cells.length, maximized, distractionFree, view, openDialog, applyLayout, applyPreset, showSeries, toggleFullscreen, toggleView, activeReformat, setReformat, seriesByUid, toast]
+  );
+
+  // ───────────── right-click menus (shared @flowrad/viewer-core contextMenu) ─────────────
+  const [hiddenSeries, setHiddenSeries] = useState<ReadonlySet<string>>(() => new Set());
+  const [exportInitial, setExportInitial] = useState<{ kind?: ExportKind; format?: "png" | "jpeg"; overlay?: "none" | "anonymous" | "full" } | undefined>();
+  const [tagsView, setTagsView] = useState<{ imageId: string; title?: string; description?: string; summary?: { label: string; value: string }[] } | null>(null);
+  const menuMonitors = useMemo(
+    () => (monitors.length > 1 ? monitors.map((m, i) => ({ name: m.name, number: i + 1, color: monitorColor(i), current: m.name === myMonitor })) : []),
+    [monitors, myMonitor]
+  );
+  const priorEntries = useMemo(
+    () => (isTauri && source && studies.length === 1 ? priorsFor(history, { key: source.key, patientId: studies[0]?.patient.id, studyDate: studies[0]?.date }) : []),
+    [source, studies, history]
+  );
+  const comparePrior = useCallback(() => {
+    const prior = priorEntries[0];
+    if (!prior || !source) return toast({ title: "No prior of this patient on this computer", variant: "info", duration: 2500 });
+    void openPaths([...source.paths, ...prior.paths], "folder", `${source.label} + prior`);
+  }, [priorEntries, source, openPaths, toast]);
+
+  /** A menu command as a keyboard action (for its shortcut, and to run it). */
+  const commandAction = useCallback((command: MenuCommand, cellPresets: readonly WindowPreset[]): ShortcutAction | null => {
+    const at = command.indexOf(":");
+    const head = at < 0 ? command : command.slice(0, at);
+    const arg = at < 0 ? "" : command.slice(at + 1);
+    switch (head) {
+      case "tool":
+        return { type: "tool", tool: arg };
+      case "preset": {
+        if (arg === "auto") return { type: "presetDefault" };
+        const i = cellPresets.findIndex((p) => p.id === arg);
+        return i >= 0 ? { type: "preset", ordinal: i + 1 } : null;
+      }
+      case "invert":
+        return { type: "invert" };
+      case "zoom":
+        return { type: "zoomTo", scale: arg === "fit" ? "fit" : Number(arg) };
+      case "rotate":
+        return { type: "rotate", degrees: Number(arg) };
+      case "flip":
+        return { type: "flip", axis: arg === "v" ? "v" : "h" };
+      case "reset":
+        return { type: "reset" };
+      case "reformat":
+        return arg === "axial" || arg === "coronal" || arg === "sagittal" ? { type: "reformat", plane: arg } : null;
+      case "mpr":
+        return { type: "mpr" };
+      case "3d":
+        return { type: "volume3d" };
+      case "layout": {
+        const [rows, cols] = arg.split("x").map(Number);
+        return rows && cols ? { type: "layout", rows, cols } : null;
+      }
+      case "link":
+        return arg === "scroll" ? { type: "toggleSync" } : arg === "voi" ? { type: "toggleSyncVoi" } : { type: "toggleSyncZoom" };
+      case "refLines":
+        return { type: "toggleReferenceLines" };
+      case "cine":
+        return { type: "cine" };
+      case "overlay":
+        return { type: "toggleOverlay" };
+      case "annotations":
+        return { type: "toggleAnnotations" };
+      default:
+        return null;
+    }
+  }, []);
+
+  /** Copy the image of a pane: its pixels only (the overlay text is not on the canvas). */
+  const copyCellImage = useCallback(
+    async (cell: number) => {
+      const canvas = getHandle(cellKey(cell))?.element.querySelector("canvas");
+      if (!canvas) return;
+      try {
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob || typeof ClipboardItem !== "function") throw new Error("no clipboard image support");
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        toast({ title: "Image copied", description: "Pixels only: no patient text on it.", variant: "success", duration: 2000 });
+      } catch {
+        toast({ title: "Could not copy the image", description: "Use Export → Save as PNG instead.", variant: "warning" });
+      }
+    },
+    [toast]
+  );
+
+  const runMenuCommand = useCallback(
+    (command: MenuCommand, cell: number) => {
+      autoHung.current = false;
+      const handle = getHandle(cellKey(cell));
+      const uid = cells[cell];
+      const entry = uid ? seriesByUid.get(uid) : undefined;
+      const at = command.indexOf(":");
+      const head = at < 0 ? command : command.slice(0, at);
+      const arg = at < 0 ? "" : command.slice(at + 1);
+      switch (head) {
+        case "slab": {
+          const mode = arg as "off" | "mip" | "minip" | "avg";
+          if (!reformatAt(cell)) {
+            if (mode === "off") return;
+            // A slab needs a reformat: the axial one, in that mode.
+            setVoiceSlab({ mode, mm: 10 });
+            return setReformat("axial", cell);
+          }
+          slabCycle.current = mode;
+          return setSlabCommand((c) => ({ mode, seq: (c?.seq ?? 0) + 1 }));
+        }
+        case "slab-mm": {
+          const mm = Number(arg);
+          if (!reformatAt(cell)) {
+            setVoiceSlab({ mode: "mip", mm });
+            return setReformat("axial", cell);
+          }
+          return setSlabCommand((c) => ({ mm, seq: (c?.seq ?? 0) + 1 }));
+        }
+        case "monitor":
+          return uid ? void sendSeriesToMonitor(uid, arg) : undefined;
+        case "fps":
+          return handle?.setCineFps(Number(arg));
+        case "copyImage":
+          return void copyCellImage(cell);
+        case "save":
+          setExportInitial({ kind: "image", format: arg === "jpeg" ? "jpeg" : "png", overlay: "none" });
+          return setDialog("export");
+        case "video":
+          setExportInitial({ kind: "video" });
+          return setDialog("export");
+        case "tags": {
+          const r = handle?.readout() as { index?: number; count?: number; header?: DesktopHeader } | null | undefined;
+          const imageId = r?.header?.baseImageId ?? entry?.series.imageIds[r?.index ?? 0];
+          if (!imageId || !entry) return;
+          return setTagsView({
+            imageId,
+            description: `${entry.series.modality}${entry.series.number != null ? ` · Se ${entry.series.number}` : ""} · ${describeSeries(entry.series)}${r?.count ? ` · image ${(r.index ?? 0) + 1} of ${r.count}` : ""}`,
+          });
+        }
+        case "comparePrior":
+          return comparePrior();
+        default: {
+          const action = commandAction(command, windowPresetsFor(entry?.series.modality ?? ""));
+          if (action) runAction(action);
+        }
+      }
+    },
+    [cells, seriesByUid, sendSeriesToMonitor, copyCellImage, comparePrior, commandAction, runAction, setReformat]
+  );
+
+  /** The image menu of pane `cell` (built when it opens). */
+  const imageMenuFor = useCallback(
+    (cell: number) => () => {
+      const uid = cells[cell];
+      const series = uid ? seriesByUid.get(uid)?.series : undefined;
+      const modality = series?.modality ?? "";
+      const cellPresets = windowPresetsFor(modality);
+      const cine = getHandle(cellKey(cell))?.cine();
+      const multi = (series?.imageCount ?? 0) > 1;
+      const volume = !!series?.volumetric;
+      return imageMenu({
+        modality,
+        tools: MENU_TOOLS,
+        activeTool: leftTool,
+        presets: cellPresets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
+        monitors: menuMonitors,
+        links: { scroll: syncScroll, voi: syncVoi, zoom: syncZoom },
+        referenceLines,
+        overlay,
+        annotations: annotationsVisible,
+        cine: multi ? { playing: !!cine?.playing, fps: cine?.fps ?? 15 } : null,
+        slab: isTauri && volume ? { mode: reformatAt(cell) ? slabCycle.current : "off", mm: 10 } : null,
+        layout,
+        can: {
+          reformat: isTauri && volume,
+          mpr: volume,
+          threeD: volume,
+          video: multi,
+          tags: true,
+          comparePrior: priorEntries.length > 0,
+          copyImage: true,
+          saveImage: true,
+          customLayout: true,
+        },
+        shortcut: (id) => {
+          const a = commandAction(id, cellPresets);
+          return a ? keysForAction(a, settings.shortcuts) : undefined;
+        },
+      });
+    },
+    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts]
+  );
+  const annotationShortcut = useCallback(
+    (id: MenuCommand) => (id === "ann:delete" ? "Del" : undefined),
+    []
+  );
+
+  /** Open `uid` in a new pane: the first empty one, or a grown layout. */
+  const addPane = useCallback(
+    (uid: string) => {
+      const empty = cells.findIndex((c) => !c);
+      if (empty >= 0) {
+        showSeries(uid, empty);
+        return setActiveCell(empty);
+      }
+      const next = layout.cols <= layout.rows ? { rows: layout.rows, cols: layout.cols + 1 } : { rows: layout.rows + 1, cols: layout.cols };
+      autoHung.current = false;
+      setMaximized(null);
+      setLayout(next);
+      setCells((prev) => [...prev, ...Array.from({ length: next.rows * next.cols - prev.length }, () => null)].map((v, i) => (i === prev.length ? uid : v)));
+      setActiveCell(cells.length);
+    },
+    [cells, layout, showSeries]
+  );
+
+  const thumbMenuFor = useCallback(
+    (uid: string) =>
+      thumbnailMenu({
+        monitors: menuMonitors,
+        can: { newLayout: true, reformat: isTauri && !!seriesByUid.get(uid)?.series.volumetric, info: true, hide: true },
+        shortcut: () => undefined,
+      }),
+    [menuMonitors, seriesByUid]
+  );
+  const onSeriesCommand = useCallback(
+    (uid: string, command: MenuCommand) => {
+      const series = seriesByUid.get(uid)?.series;
+      if (command === "thumb:open") return showSeries(uid);
+      if (command.startsWith("thumb:monitor:")) return void sendSeriesToMonitor(uid, command.slice("thumb:monitor:".length));
+      if (command === "thumb:newLayout") return addPane(uid);
+      if (command.startsWith("thumb:reformat:")) {
+        const plane = command.slice("thumb:reformat:".length) as "coronal" | "sagittal";
+        showSeries(uid);
+        slabCycle.current = "off";
+        return setReformats((prev) => ({ ...prev, [activeCell]: { uid, plane } }));
+      }
+      if (command === "thumb:info" && series?.imageIds[0]) {
+        const h = series.headers[0];
+        return setTagsView({
+          imageId: h?.baseImageId ?? series.imageIds[0],
+          title: "Series info",
+          description: `${series.modality}${series.number != null ? ` · Se ${series.number}` : ""} · ${describeSeries(series)}`,
+          summary: [
+            { label: "Images", value: series.imageCount.toLocaleString() },
+            ...(h?.sliceThickness != null ? [{ label: "Slice thickness", value: `${h.sliceThickness} mm` }] : []),
+            ...(h?.pixelSpacing ? [{ label: "Pixel spacing", value: `${h.pixelSpacing.map((v) => Number(v).toFixed(3)).join(" × ")} mm` }] : []),
+            ...(h?.rows && h?.columns ? [{ label: "Matrix", value: `${h.columns} × ${h.rows}` }] : []),
+            { label: "Volume (MPR / 3D)", value: series.volumetric ? "Yes" : "No" },
+          ],
+        });
+      }
+      if (command === "thumb:hide") {
+        setHiddenSeries((prev) => new Set([...prev, uid]));
+        toast({ title: "Series hidden", description: "“Show all” at the top of the series list brings it back.", variant: "info", duration: 2500 });
+      }
+    },
+    [seriesByUid, showSeries, sendSeriesToMonitor, addPane, activeCell, toast]
   );
 
   voiceAction.current = (a: VoiceAction) => {
@@ -1716,7 +1971,14 @@ export default function App() {
           onHelp={() => setDialog("help")}
           onSettings={() => setDialog("settings")}
           volumeView={view !== "grid"}
-          onExport={view === "grid" ? () => setDialog("export") : undefined}
+          onExport={
+            view === "grid"
+              ? () => {
+                  setExportInitial(undefined);
+                  setDialog("export");
+                }
+              : undefined
+          }
           onSend={sync.status.signedIn ? () => setDialog("send") : undefined}
           advanced={{
             mprAvailable: !!volumeSeries,
@@ -1755,6 +2017,10 @@ export default function App() {
                   onOpenReport={setOpenReport}
                   hidePatient={settings.hidePatient}
                   onOpenSeries={(uid) => showSeries(uid)}
+                  hidden={hiddenSeries}
+                  onShowHidden={() => setHiddenSeries(new Set())}
+                  menuFor={thumbMenuFor}
+                  onSeriesCommand={onSeriesCommand}
                 />
               </aside>
             )}
@@ -1896,7 +2162,9 @@ export default function App() {
                     eraser={leftTool === "Eraser"}
                     onAnnotationsDeleted={onAnnotationsDeleted}
                     onCopied={onCopied}
-                    menuExtra={uid ? windowMenuFor(uid) : undefined}
+                    imageMenu={uid ? imageMenuFor(i) : undefined}
+                    onMenuCommand={(command) => runMenuCommand(command, i)}
+                    menuShortcut={annotationShortcut}
                     remotePlanes={remotePlanes}
                   />
                 );
@@ -2049,7 +2317,19 @@ export default function App() {
         handle={handle}
         series={active?.series ?? null}
         study={active?.study ?? null}
+        initial={exportInitial}
       />
+      )}
+      {tagsView && (
+        <DicomTagsDialog
+          open
+          onClose={() => setTagsView(null)}
+          imageId={tagsView.imageId}
+          title={tagsView.title}
+          description={tagsView.description}
+          summary={tagsView.summary}
+          hidePatient={settings.hidePatient}
+        />
       )}
       {openReport && <ReportDialog report={openReport} onClose={() => setOpenReport(null)} />}
       {dialog === "settings" && (

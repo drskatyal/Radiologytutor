@@ -111,3 +111,15 @@ export function searchHistory(entries: readonly HistoryEntry[], query: string): 
     return words.every((w) => text.includes(w));
   });
 }
+
+/**
+ * Earlier studies of the same patient in the local study database (needs
+ * "Include patient name and ID"), newest first: the "Compare with prior" list.
+ */
+export function priorsFor(history: readonly HistoryEntry[], current: { key: string; patientId?: string; studyDate?: string }): HistoryEntry[] {
+  if (!current.patientId) return [];
+  return history
+    .filter((h) => h.key !== current.key && h.patient?.id === current.patientId)
+    .filter((h) => !current.studyDate || !h.studyDate || h.studyDate <= current.studyDate)
+    .sort((a, b) => (b.studyDate ?? "").localeCompare(a.studyDate ?? ""));
+}

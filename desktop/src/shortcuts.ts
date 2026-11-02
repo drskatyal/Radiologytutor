@@ -226,6 +226,21 @@ export function keyLabel(spec: string, mac = isMac()): string {
     .replace(/Backspace/g, mac ? "⌫" : "Backspace");
 }
 
+/** The key shown for an action (the reader's re-mapping wins), e.g. "Shift+4". */
+export function keysForAction(action: ShortcutAction, overrides: ShortcutOverrides = {}, mac = isMac()): string | undefined {
+  // Ranges share one display row ("1 … 9", "Shift+1 … 7"): name the one key.
+  if (action.type === "preset") return action.ordinal >= 1 && action.ordinal <= 9 ? String(action.ordinal) : undefined;
+  if (action.type === "layout") {
+    const i = LAYOUT_SHORTCUTS.findIndex((l) => l.rows === action.rows && l.cols === action.cols);
+    return i >= 0 ? keyLabel(`Shift+${i + 1}`, mac) : undefined;
+  }
+  const want = JSON.stringify(action);
+  const b = BINDINGS.find((x) => x.keys && JSON.stringify(x.action) === want);
+  if (!b) return undefined;
+  const spec = (b.id && overrides[b.id]) || b.keys;
+  return keyLabel(spec, mac);
+}
+
 export function isMac(): boolean {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }

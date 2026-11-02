@@ -6,8 +6,8 @@
 // reader is looking at.
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MenuItem } from "@/components/ui/Menu";
 import { RemoteReferenceLines, type RemotePlane } from "@/components/viewer/RemoteReferenceLines";
+import type { MenuCommand, MenuEntry } from "@flowrad/viewer-core";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/Spinner";
 import { clampCineFps, createScrollDirectionState, directionalPrefetchIndexes, trackScrollDirection } from "@flowrad/viewer-core";
@@ -55,8 +55,10 @@ export interface StackViewportProps {
   eraser?: boolean;
   onAnnotationsDeleted?: (count: number, scope: "one" | "image" | "series") => void;
   onCopied?: (text: string) => void;
-  /** Right-click menu items from the app ("Open in new window", "Send to Monitor 2"). */
-  menuExtra?: readonly { label: string; hint?: string; onSelect: () => void }[];
+  /** The right-click menu of this pane (shared contextMenu.ts), built when it opens. */
+  imageMenu?: () => MenuEntry[];
+  onMenuCommand?: (command: MenuCommand) => void;
+  menuShortcut?: (command: MenuCommand) => string | undefined;
   /** Image planes shown in other windows: drawn here as reference lines. */
   remotePlanes?: readonly RemotePlane[];
 }
@@ -94,7 +96,9 @@ function StackViewportImpl({
   eraser = false,
   onAnnotationsDeleted,
   onCopied,
-  menuExtra,
+  imageMenu,
+  onMenuCommand,
+  menuShortcut,
   remotePlanes,
 }: StackViewportProps) {
   const elementRef = useRef<HTMLDivElement>(null);
@@ -583,15 +587,9 @@ function StackViewportImpl({
             eraser={eraser}
             onDeleted={onAnnotationsDeleted}
             onCopied={onCopied}
-            extraItems={
-              menuExtra?.length ? (
-                <>
-                  {menuExtra.map((m) => (
-                    <MenuItem key={m.label} label={m.label} hint={m.hint} onSelect={m.onSelect} />
-                  ))}
-                </>
-              ) : undefined
-            }
+            imageMenu={imageMenu}
+            onCommand={onMenuCommand}
+            menuShortcut={menuShortcut}
           />
         </Suspense>
       )}

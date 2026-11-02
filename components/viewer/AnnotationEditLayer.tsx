@@ -18,10 +18,15 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { annotationEditing as ae } from "@flowrad/viewer-core";
 import { Menu, MenuItem, MenuSeparator } from "@/components/ui/Menu";
+import { annotationMenu, type MenuCommand, type MenuEntry } from "@flowrad/viewer-core";
+import { ViewerContextMenu } from "./ViewerContextMenu";
 import { cn } from "@/components/ui/cn";
 
 type Ctx = ae.EditingContext;
 type Ann = ae.AnnotationLike;
+
+/** Touch: hold this long without moving to open the menu. */
+const LONG_PRESS_MS = 550;
 
 const isTyping = (t: EventTarget | null) => {
   const el = t as HTMLElement | null;
@@ -48,6 +53,15 @@ export interface AnnotationEditLayerProps {
   menuContainer?: HTMLElement | null;
   /** App items shown above the annotation items, e.g. "Send to Monitor 2". */
   extraItems?: ReactNode;
+  /**
+   * The full viewer menu (shared contextMenu.ts): right-click / long-press
+   * opens it, with the annotation's own items first when one is under the
+   * pointer. Commands other than "ann:…" go to `onCommand`.
+   */
+  imageMenu?: () => MenuEntry[];
+  onCommand?: (command: MenuCommand) => void;
+  /** Shortcut shown beside an annotation command. */
+  menuShortcut?: (command: MenuCommand) => string | undefined;
 }
 
 export function AnnotationEditLayer({
@@ -59,6 +73,9 @@ export function AnnotationEditLayer({
   onCopied,
   menuContainer,
   extraItems,
+  imageMenu,
+  onCommand,
+  menuShortcut,
 }: AnnotationEditLayerProps) {
   const [, setVersion] = useState(0);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
@@ -76,6 +93,9 @@ export function AnnotationEditLayer({
   );
   const ctxRef = useRef(ctx);
   ctxRef.current = ctx;
+  const imageMenuRef = useRef(imageMenu);
+  imageMenuRef.current = imageMenu;
+  const longPress = useRef(0);
 
   // Change notifications (selection, add, remove, modify, history) and redraws.
   useEffect(() => {
@@ -117,6 +137,31 @@ export function AnnotationEditLayer({
     };
     const down = (e: PointerEvent) => {
       if (e.button === 2) press.current = { x: e.clientX, y: e.clientY };
+      // Touch: a long press (no movement) opens the same menu as a right-click.
+      if (e.pointerType === "touch" && imageMenuRef.current) {
+        const x0 = e.clientX;
+        const y0 = e.clientY;
+        window.clearTimeout(longPress.current);
+        const cancel = (ev: PointerEvent) => {
+          if (ev.type !== "pointermove" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) {
+            window.clearTimeout(longPress.current);
+            window.removeEventListener("pointermove", cancel, true);
+            window.removeEventListener("pointerup", cancel, true);
+          }
+        };
+        window.addEventListener("pointermove", cancel, true);
+        window.addEventListener("pointerup", cancel, true);
+        longPress.current = window.setTimeout(() => {
+          window.removeEventListener("pointermove", cancel, true);
+          window.removeEventListener("pointerup", cancel, true);
+          const r = el.getBoundingClientRect();
+          const at: [number, number] = [x0 - r.left, y0 - r.top];
+          const target = ae.annotationAt(ctx, at, 12);
+          if (target) ae.select(ctx, target);
+          ctx.tools.cancelActiveManipulations?.(el);
+          setMenu({ x: at[0], y: at[1], target });
+        }, LONG_PRESS_MS);
+      }
       if (e.button !== 0 || !eraser) return;
       // The eraser never draws or windows: it only deletes.
       e.preventDefault();
@@ -206,6 +251,50 @@ export function AnnotationEditLayer({
     .filter((a) => a.metadata?.referencedImageId === image);
   const target = menu?.target ?? null;
   const isArrow = target?.metadata?.toolName === "ArrowAnnotate";
+
+  const styles = (ctx.tools as { annotation?: { config?: { style?: { setAnnotationStyles?(uid: string, s: Record<string, string>): void; getAnnotationStyles?(uid: string): { color?: string } | undefined } } } }).annotation?.config?.style;
+  /** The menu: the image menu, or (on an annotation) its own items with the image menu nested. */
+  const menuEntries = (): MenuEntry[] => {
+    const image = imageMenu?.() ?? [];
+    if (!target) return image;
+    const value = isArrow ? undefined : ae.describeAnnotation(target);
+    const own = annotationMenu({
+      labelled: isArrow,
+      hasLabel: !!ae.cleanLabel(target.data?.label),
+      value,
+      color: target.annotationUID ? styles?.getAnnotationStyles?.(target.annotationUID)?.color : undefined,
+      onImage: here.length,
+      inSeries: series.length,
+      shortcut: menuShortcut ?? (() => undefined),
+    });
+    // Short and focused: the annotation's own items, the image menu one level down.
+    return image.length ? [...own, { kind: "sep" }, { kind: "sub", id: "image", label: "Image", items: () => image }] : own;
+  };
+  const runCommand = (command: MenuCommand) => {
+    const c = ctxRef.current;
+    const at = menu ? { x: menu.x, y: menu.y } : { x: 0, y: 0 };
+    setMenu(null);
+    if (!c) return;
+    if (command === "ann:label" && target) return openLabel(target, at);
+    if (command.startsWith("ann:color:") && target?.annotationUID) {
+      const color = command.slice("ann:color:".length);
+      styles?.setAnnotationStyles?.(target.annotationUID, { color, colorHighlighted: color, colorSelected: color, textBoxColor: color, textBoxColorHighlighted: color, textBoxColorSelected: color });
+      c.core.getEnabledElement(c.element)?.viewport?.render?.();
+      return bump();
+    }
+    if (command === "ann:copy" && target) {
+      const text = ae.describeAnnotation(target);
+      void navigator.clipboard?.writeText(text).then(
+        () => onCopied?.(text),
+        () => onCopied?.(text),
+      );
+      return;
+    }
+    if (command === "ann:delete" && target) return deleteSome([target], "one");
+    if (command === "ann:deleteImage") return deleteSome(here, "image");
+    if (command === "ann:deleteSeries") return deleteSome(series, "series");
+    onCommand?.(command);
+  };
 
   const openLabel = (a: Ann, at: { x: number; y: number }) => {
     // Cornerstone may have started a drag on the first click: end it.
@@ -322,7 +411,18 @@ export function AnnotationEditLayer({
         </form>
       )}
 
-      {menu && (
+      {menu && imageMenu && (
+        <ViewerContextMenu
+          at={{ x: menu.x, y: menu.y }}
+          position="absolute"
+          label={target ? "Annotation" : "Image"}
+          container={menuContainer}
+          entries={menuEntries()}
+          onSelect={runCommand}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {menu && !imageMenu && (
         // React events from the portalled menu bubble through this tree: keep
         // a host's "press focuses the image" handler from stealing focus (and
         // closing the menu) before the item is chosen.
