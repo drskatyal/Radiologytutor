@@ -1371,6 +1371,7 @@ dependencies = [
 name = "flowrad-viewer"
 version = "0.8.1"
 dependencies = [
+ "base64 0.23.1",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-encoding",
@@ -1382,11 +1383,13 @@ dependencies = [
  "libmimalloc-sys",
  "memmap2",
  "mimalloc",
+ "minisign-verify",
  "parking_lot",
  "percent-encoding",
  "png",
  "rayon",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "sysinfo",
