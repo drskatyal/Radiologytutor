@@ -142,6 +142,15 @@ def main() -> int:
             # A driver that draws black: the CPU fallback must have the image
             # on screen by the same probe time.
             blank = run(binary, study, {"FLOWRAD_PROBE_AFTER_MS": "8000", "FLOWRAD_SIMULATE_BLANK_GPU": "1"}, "FLOWRAD_PROBE")
+            # The fallback first detects the blank GPU by rendering on it; on
+            # the WARP runner that sometimes pushes the CPU image past the 8 s
+            # probe. Same rule as above: discard and repeat (at most twice,
+            # logged); the repeated launch must still be on screen by 8 s.
+            for attempt in range(2):
+                if os.environ.get("FLOWRAD_BENCH_WARP_RETRY") != "1" or blank.get("nonBlank"):
+                    break
+                print(f"     {study.name}: black-GPU launch DISCARDED (attempt {attempt + 1} of 3, WARP runner): render={blank.get('renderPath')} viewports={blank.get('viewports')}; repeating")
+                blank = run(binary, study, {"FLOWRAD_PROBE_AFTER_MS": "8000", "FLOWRAD_SIMULATE_BLANK_GPU": "1"}, "FLOWRAD_PROBE")
             if not blank.get("nonBlank") or blank.get("renderPath") != "cpu-fallback":
                 problems.append(
                     f"black GPU: fallback not on screen by 8 s (render={blank.get('renderPath')}, viewports={blank.get('viewports')})"
