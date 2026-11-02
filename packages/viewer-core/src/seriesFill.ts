@@ -34,3 +34,30 @@ export function fillBudget(
   if (!(bytesPerSlice > 0) || !(cacheBytes > 0)) return 0;
   return Math.max(0, Math.min(count - 1, Math.floor((cacheBytes * share) / bytesPerSlice)));
 }
+
+/**
+ * Run `start` over `items` with at most `concurrency` in flight, in order,
+ * until `signal` aborts. Unstarted items are never started after an abort;
+ * started ones finish on their own. A synchronous throw or a rejection only
+ * skips that item. Resolves when the last started item settles.
+ */
+export function runBounded<T>(
+  items: readonly T[],
+  start: (item: T) => Promise<unknown> | void,
+  options: { signal: AbortSignal; concurrency: number }
+): Promise<void> {
+  const { signal } = options;
+  const concurrency = Math.max(1, Math.floor(options.concurrency));
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (!signal.aborted && next < items.length) {
+      const item = items[next++];
+      try {
+        await start(item);
+      } catch {
+        /* one slice failing never stops the fill */
+      }
+    }
+  };
+  return Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, lane)).then(() => undefined);
+}
