@@ -52,6 +52,7 @@ export async function driveNativeTools(setTool: (t: string) => void) {
   undo();
   const afterUndo = allAnnotations().length;
   redo();
+  const afterRedo = allAnnotations().length;
   const drawn = document.querySelectorAll("[data-native-viewport] [data-annotation]").length;
 
   // HP 0.8.0: keys, menus and cursors in native mode, with every error counted.
@@ -59,7 +60,7 @@ export async function driveNativeTools(setTool: (t: string) => void) {
   setTool("StackScroll");
   // Real OS input (the e2e moves the mouse and types): see watchOsInput.
   void watchOsInput(setTool);
-  return { annotations: results, count: before, afterUndo, afterRedo: allAnnotations().length, drawnOnScreen: drawn, ...keys };
+  return { annotations: results, count: before, afterUndo, afterRedo, drawnOnScreen: drawn, ...keys };
 }
 
 /** Errors thrown or logged while `run` runs (window errors, rejections, console.error). */
