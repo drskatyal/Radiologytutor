@@ -73,6 +73,11 @@
     user-select: none;
     -webkit-user-select: none;
   }
+  /* Phase 2 native renderer: the GPU surface under the page shows through. */
+  html.native-transparent,
+  html.native-transparent body {
+    background: transparent;
+  }
   input,
   textarea,
   select {
