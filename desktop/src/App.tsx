@@ -863,11 +863,19 @@ export default function App() {
             // before it is window + WebView2/WebKit start-up, after it is ours.
             const now = performance.now();
             const marks = await invoke<Record<string, number | null>>("startup_marks").catch(() => ({}));
+            // First paint = the browser's own first-contentful-paint (Paint
+            // Timing, relative to navigation start), placed on the process
+            // clock. The time this callback runs is later by two frames and
+            // three IPC round trips; it is kept as paintReportedMs.
+            const fcp = performance.getEntriesByName?.("first-contentful-paint")[0]?.startTime;
+            const navAt = Math.max(0, ms - now);
             await benchReport({
               coldStart: true,
               ...marks,
-              firstPaintMs: ms,
-              webviewNavStartMs: Math.max(0, ms - now),
+              firstPaintMs: fcp != null ? navAt + fcp : ms,
+              firstPaintSource: fcp != null ? "first-contentful-paint" : "double-rAF",
+              paintReportedMs: ms,
+              webviewNavStartMs: navAt,
               jsStartMs: (window as unknown as { __jsStartMs?: number }).__jsStartMs,
               pageToPaintMs: now,
               windowReadyMs: bench.current.marks.windowReadyMs,
