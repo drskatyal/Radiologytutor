@@ -45,20 +45,38 @@ def run_report(exe: str, env: dict, args: list[str], timeout: float = 120) -> tu
     proc = subprocess.Popen([exe, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     box: dict = {}
     tail: list[str] = []
+    # Every report, in order (the tools mode reads the later OS-input ones).
+    REPORTS.clear()
 
     def read() -> None:
         assert proc.stdout
         for line in proc.stdout:
             tail.append(line.rstrip())
             del tail[:-40]
-            if line.startswith("FLOWRAD_BENCH ") and "r" not in box:
-                box["r"] = json.loads(line[len("FLOWRAD_BENCH "):])
+            if line.startswith("FLOWRAD_BENCH "):
+                r = json.loads(line[len("FLOWRAD_BENCH "):])
+                REPORTS.append(r)
+                if "r" not in box and r.get("view") != "native-tools-os":
+                    box["r"] = r
 
     threading.Thread(target=read, daemon=True).start()
     deadline = time.time() + timeout
     while "r" not in box and time.time() < deadline and proc.poll() is None:
         time.sleep(0.2)
     return proc, box.get("r"), tail
+
+
+REPORTS: list[dict] = []
+
+
+def wait_report(pred, timeout: float = 20) -> dict | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for r in reversed(REPORTS):
+            if pred(r):
+                return r
+        time.sleep(0.15)
+    return None
 
 
 def app_mode(exe: str, study: str, out_dir: Path) -> None:
@@ -118,15 +136,86 @@ def tools_mode(exe: str, study: str) -> None:
             ("Probe reads a value", (a.get("Probe") or {}).get("value") is not None),
             ("undo removes one, redo restores it", t.get("count") == 4 and t.get("afterUndo") == 3 and t.get("afterRedo") == 4),
             ("annotations are drawn over the native image", (t.get("drawnOnScreen") or 0) >= 4),
+            # HP 0.8.0: Esc threw on every press (a Cornerstone call with a native element).
+            ("Esc, tool keys, display / sync / reset keys: no error", not t.get("keyErrors"), ),
+            ("Ctrl+Z / Ctrl+Y undo / redo one native step", (lambda k: k.get("afterUndo") == k.get("before", 0) - 1 and k.get("afterRedo") == k.get("before"))(t.get("keyUndo") or {})),
+            ("each tool shows its own cursor on the native viewport", (lambda c: all("url(" in c.get(k, "") for k in ("StackScroll", "WindowLevel", "Zoom")) and "grab" in c.get("Pan", "") and c.get("Length") == "crosshair")(t.get("cursors") or {})),
+            ("the series thumbnail's right-click menu has items", (t.get("thumbMenuItems") or 0) >= 2),
         ]
+        if t.get("keyErrors"):
+            print("errors:", json.dumps(t.get("keyErrors"), indent=2))
         bad = 0
         for name, ok in checks:
             print(f"{'PASS' if ok else 'FAIL'}  tools: {name}")
             bad += 0 if ok else 1
+        bad += os_input_checks()
         if bad:
             sys.exit(1)
     finally:
         proc.kill()
+
+
+def os_input_checks() -> int:
+    """Real mouse and keyboard (SendInput), not dispatched DOM events: a
+    Length drag must draw on the native layer, and Ctrl+Z must take it away
+    (HP 0.8.0: scripted drags showed nothing)."""
+    if sys.platform != "win32":
+        print("SKIP  tools (OS input): Windows only")
+        return 0
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    user32.SetProcessDPIAware()
+    ready = wait_report(lambda r: r.get("view") == "native-tools-os" and r.get("phase") == "ready", 20)
+    if not ready or not ready.get("cellScreen"):
+        print("FAIL  tools (OS input): no ready report with the layer's screen rect")
+        return 1
+    c = ready["cellScreen"]
+    start = ready.get("count", 0)
+    y = c["y"] + int(c["h"] * 0.72)
+    x0, x1 = c["x"] + int(c["w"] * 0.25), c["x"] + int(c["w"] * 0.75)
+    LEFTDOWN, LEFTUP = 0x0002, 0x0004
+    user32.SetCursorPos(x0, y)
+    time.sleep(0.2)
+    user32.mouse_event(LEFTDOWN, 0, 0, 0, 0)
+    for i in range(1, 21):
+        user32.SetCursorPos(x0 + (x1 - x0) * i // 20, y)
+        time.sleep(0.03)
+    user32.mouse_event(LEFTUP, 0, 0, 0, 0)
+    drawn = wait_report(lambda r: r.get("view") == "native-tools-os" and r.get("phase") == "count" and r.get("count", 0) > start, 10)
+    from PIL import ImageGrab
+
+    def coloured_on_line() -> int:
+        img = ImageGrab.grab(bbox=(x0, y - 3, x1, y + 4), all_screens=True).convert("RGB")
+        px = img.load()
+        return sum(1 for i in range(img.width) for j in range(img.height) if max(px[i, j]) - min(px[i, j]) > 60)
+
+    time.sleep(0.4)
+    on_line = coloured_on_line()
+    bad = 0
+    ok = bool(drawn) and (drawn.get("lengths") or 0) >= 1 and (drawn.get("drawn") or 0) >= 1
+    print(f"{'PASS' if ok else 'FAIL'}  tools (OS input): a real mouse drag with Length adds a measurement — {json.dumps(drawn)}")
+    bad += 0 if ok else 1
+    ok = on_line > 20
+    print(f"{'PASS' if ok else 'FAIL'}  tools (OS input): the line is on screen over the native image ({on_line} coloured px)")
+    bad += 0 if ok else 1
+    # Ctrl+Z with the real keyboard.
+    CTRL, Z, KEYUP = 0x11, 0x5A, 0x0002
+    user32.keybd_event(CTRL, 0, 0, 0)
+    user32.keybd_event(Z, 0, 0, 0)
+    user32.keybd_event(Z, 0, KEYUP, 0)
+    user32.keybd_event(CTRL, 0, KEYUP, 0)
+    n = (drawn or {}).get("count", start + 1)
+    undone = wait_report(lambda r: r.get("view") == "native-tools-os" and r.get("phase") == "count" and r.get("count", 99) == n - 1, 10)
+    time.sleep(0.4)
+    after = coloured_on_line()
+    ok = bool(undone) and after < on_line // 2
+    print(f"{'PASS' if ok else 'FAIL'}  tools (OS input): real Ctrl+Z removes it ({after} coloured px left) — {json.dumps(undone)}")
+    bad += 0 if ok else 1
+    errs = [e for r in REPORTS if r.get("view") == "native-tools-os" for e in (r.get("errors") or [])]
+    ok = not errs
+    print(f"{'PASS' if ok else 'FAIL'}  tools (OS input): no page errors {json.dumps(errs) if errs else ''}")
+    return bad + (0 if ok else 1)
 
 
 def main() -> None:
