@@ -55,6 +55,7 @@ import {
   enterNativeVolumeMemory,
   getEngine,
   prewarmEngine,
+  preloadEngineChunks,
   setGroupLeftTool,
   setReferenceSource,
   setScaleOverlay,
@@ -464,6 +465,9 @@ export default function App() {
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
+          // The study is on screen and its preview is loading: compile the
+          // engine meanwhile (not at page load: on a cold disk that delayed the preview).
+          preloadEngineChunks();
           setScan(null); // progressive: the viewer takes over, progress moves to the status bar
           hangFirst(built);
         }
@@ -794,7 +798,11 @@ export default function App() {
         const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
         // Soon after the start screen paints, not 1.5 s later: a reader who
         // opens a study within two seconds still found the engine cold.
-        window.setTimeout(() => (idle ? idle(() => prewarmEngine(), { timeout: 1000 }) : prewarmEngine()), 300);
+        window.setTimeout(() => {
+          preloadEngineChunks();
+          if (idle) idle(() => prewarmEngine(), { timeout: 1000 });
+          else prewarmEngine();
+        }, 300);
       }
       if (!initial.length && (await benchEnabled())) {
         // Cold-start probe: report once the start screen has painted.

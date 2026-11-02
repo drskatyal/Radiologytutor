@@ -98,6 +98,23 @@ export function decodeWorkers(): { live: number; releaseIdle(): void } {
 }
 
 /** Start loading the engine chunks without initialising (idle pre-warm). */
+let preloaded = false;
+/**
+ * Fetch + compile the engine's chunks without running them (modulepreload),
+ * from the list vite.config.ts writes into the page. Cheap to call often.
+ */
+export function preloadEngineChunks(): void {
+  if (preloaded || typeof document === "undefined") return;
+  preloaded = true;
+  const list = document.querySelector<HTMLMetaElement>('meta[name="flowrad-engine-chunks"]')?.content;
+  for (const href of list?.split(" ").filter(Boolean) ?? []) {
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+}
+
 export function prewarmEngine(): void {
   void import("@cornerstonejs/core");
   void import("@cornerstonejs/tools");

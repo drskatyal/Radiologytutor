@@ -10,8 +10,8 @@ import path from "node:path";
 const root = path.resolve(__dirname, "..");
 
 /**
- * Preload (fetch + compile, NOT evaluate) the viewer engine's chunks from the
- * page itself. The engine stays a dynamic import — nothing runs until a study
+ * List the viewer engine's chunks in the page so the app can preload them
+ * (fetch + compile, NOT evaluate) at the right moment. The engine stays a dynamic import — nothing runs until a study
  * opens — but its ~3 MB no longer has to be fetched and compiled on the
  * critical path between the instant preview and the first real image.
  */
@@ -35,13 +35,19 @@ function preloadEngineChunks(): Plugin {
         for (const chunk of Object.values(bundle)) {
           if (chunk.type === "chunk" && chunk.isDynamicEntry && chunk.facadeModuleId && engine.test(chunk.facadeModuleId)) add(chunk.fileName);
         }
+        // A list, not <link rel=modulepreload> tags: preloading 3 MB at page
+        // load competed with the instant preview on a cold disk (perf-windows
+        // cold CT: preview 816 ms). The app starts the preload when it is
+        // cheap (engine.ts preloadEngineChunks).
         return {
           html,
-          tags: [...files].map((file) => ({
-            tag: "link",
-            attrs: { rel: "modulepreload", href: `/${file}` },
-            injectTo: "head" as const,
-          })),
+          tags: [
+            {
+              tag: "meta",
+              attrs: { name: "flowrad-engine-chunks", content: [...files].map((f) => `/${f}`).join(" ") },
+              injectTo: "head" as const,
+            },
+          ],
         };
       },
     },
