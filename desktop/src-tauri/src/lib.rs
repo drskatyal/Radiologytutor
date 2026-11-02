@@ -28,6 +28,7 @@ mod scan;
 mod sources;
 mod store;
 mod sync;
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1034,6 +1035,7 @@ pub fn run() {
         .manage(state)
         .manage(viewer_windows::WindowHandoff::default())
         .manage(native::Shared::default())
+        .manage(updates::Staged::default())
         // Closing the main window ends the session: viewer windows on other
         // monitors go with it (their webviews and memory with them).
         .on_window_event(|window, event| {
@@ -1142,6 +1144,13 @@ pub fn run() {
             native_cell_plane,
             native_cell_render3d,
             native_mouse_wanted,
+            updates::update_check,
+            updates::update_apply,
+            updates::update_mark_healthy,
+            updates::entitlement_get,
+            updates::config_refresh,
+            updates::licence_set,
+            updates::licence_clear,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");
@@ -1149,6 +1158,9 @@ pub fn run() {
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
     #[cfg(target_os = "macos")]
     mac_mouse::install(app.handle());
+    // Update rollback rule (cheap: one small file read). A version that failed
+    // to start healthily is replaced by the previous one in the background.
+    updates::on_startup(app.handle());
     // Native mode (Phase 2): the GPU surface paints the window at once, while
     // WebView2 is still starting; the webview is transparent over it.
     if native::enabled() {

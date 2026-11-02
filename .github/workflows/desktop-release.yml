@@ -9,8 +9,11 @@
 # Secrets (all optional — without them the build is unsigned and has no
 # working auto-update, which is fine for a smoke build):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-#       from `npx tauri signer generate`; the matching public key goes in the
-#       repository VARIABLE TAURI_UPDATER_PUBKEY.
+#       the private half of the updater key whose PUBLIC half is committed in
+#       desktop/src-tauri/tauri.conf.json (plugins.updater.pubkey). With it the
+#       build signs its bundles and attaches a signed latest.json; without it
+#       the build still CHECKS signed updates but its own bundles can't be
+#       offered as one. docs/UPDATES.md has the key, rollout and rollback.
 #   APPLE_CERTIFICATE (base64 .p12 "Developer ID Application"),
 #   APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
 #   APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_PRIVATE_KEY (.p8 contents)
@@ -81,7 +84,6 @@ jobs:
       - name: Configure updater and signing for this build
         shell: bash
         env:
-          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
           HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
@@ -92,10 +94,11 @@ jobs:
           const fs = require("fs");
           const p = "desktop/src-tauri/tauri.conf.json";
           const c = JSON.parse(fs.readFileSync(p, "utf8"));
-          if (process.env.HAS_UPDATER_KEY === "true" && process.env.PUBKEY) {
-            c.plugins.updater.pubkey = process.env.PUBKEY;
-          } else {
-            console.log("No updater key: building without update artifacts.");
+          // The public key is committed (tauri.conf.json): every build, signed
+          // or not, verifies updates against it. Only the private key decides
+          // whether THIS build's bundles are signed as updates.
+          if (process.env.HAS_UPDATER_KEY !== "true") {
+            console.log("::warning::No TAURI_SIGNING_PRIVATE_KEY secret: building without update artifacts (latest.json). The app still verifies future updates with the committed public key; see docs/UPDATES.md.");
             c.bundle.createUpdaterArtifacts = false;
           }
           if (process.env.IS_WINDOWS === "true" && process.env.HAS_AZURE === "true") {
@@ -174,3 +177,33 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  # The signed update manifest. tauri-action merges each platform's entry into
+  # one latest.json on the draft release; this checks it (Windows and macOS
+  # present, HTTPS, signed) and keeps a copy as a workflow artifact. It is NOT
+  # rolled out: that is a reviewed PR to lib/desktopChannel.ts after the HP
+  # test passes and the release is published (docs/UPDATES.md).
+  updater-manifest:
+    needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect and check latest.json from the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          tag="desktop-v$version"
+          mkdir -p out
+          if gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p latest.json -D out --clobber 2>/dev/null; then
+            node scripts/check-updater-manifest.mjs out/latest.json "$version" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::No latest.json on $tag (TAURI_SIGNING_PRIVATE_KEY is not set): no update artifacts. The app still checks for signed updates."
+            echo "No signed update manifest on $tag: the TAURI_SIGNING_PRIVATE_KEY secret is not set (docs/UPDATES.md)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ hashFiles('out/latest.json') != '' }}
+        with:
+          name: updater-manifest
+          path: out/latest.json

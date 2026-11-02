@@ -1,0 +1,2 @@
+# Signed fixtures: the signature covers the exact bytes, so never convert line endings.
+desktop/src-tauri/testdata/** -text
