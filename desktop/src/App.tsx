@@ -1228,7 +1228,10 @@ export default function App() {
     setVoiceProgress(null);
     setVoice((v) => ({ ...v, state: "loading" }));
     const voiceModule = await import("@/components/viewer/voice/voiceSession");
-    voiceSession.current = await voiceModule.startVoice({
+    await voiceModule.startVoice({
+      onSession: (session) => {
+        voiceSession.current = session;
+      },
       modelUrl: voiceModule.VOICE_MODEL_URL,
       workerUrl: voiceModule.VOICE_WORKER_URL,
       onAction: (action, heard) => {
