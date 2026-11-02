@@ -53,8 +53,15 @@ pub fn downsample(gray: &[u8], rows: usize, cols: usize, max_dim: usize) -> (Vec
 pub fn render_png_sized(path: &Path, max_dim: Option<usize>) -> Option<Vec<u8>> {
     let obj = open_file(path).ok()?;
     let ts = obj.meta().transfer_syntax().trim_end_matches('\0').to_string();
-    if !UNCOMPRESSED.contains(&ts.as_str()) || int(&obj, tags::SAMPLES_PER_PIXEL).unwrap_or(1) != 1 {
+    if int(&obj, tags::SAMPLES_PER_PIXEL).unwrap_or(1) != 1 {
         return None;
+    }
+    if !UNCOMPRESSED.contains(&ts.as_str()) {
+        // Compressed greyscale: series THUMBNAILS still come from Rust (the
+        // native image core decodes every transfer syntax), so a compressed
+        // study never starts the JS engine just to draw its series cards.
+        // The full-size first-image preview stays uncompressed-only.
+        return max_dim.and_then(|m| render_decoded_thumbnail(path, m));
     }
     let rows = int(&obj, tags::ROWS)? as usize;
     let cols = int(&obj, tags::COLUMNS)? as usize;
@@ -101,6 +108,39 @@ pub fn render_png_sized(path: &Path, max_dim: Option<usize>) -> Option<Vec<u8>> 
         Some(m) => downsample(&gray, rows, cols, m),
         None => (gray, rows, cols),
     };
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, cols as u32, rows as u32);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Fast);
+        let mut writer = enc.write_header().ok()?;
+        writer.write_image_data(&gray).ok()?;
+    }
+    Some(out)
+}
+
+/// A thumbnail through the native image core (any transfer syntax), at the
+/// file's window as the native viewport opens it.
+fn render_decoded_thumbnail(path: &Path, max_dim: usize) -> Option<Vec<u8>> {
+    let slice = crate::image_store::decode_slice(path).ok()?;
+    let (rows, cols) = (slice.rows, slice.cols);
+    if rows == 0 || cols == 0 || slice.data.len() < rows * cols {
+        return None;
+    }
+    let (center, width) = match slice.window {
+        Some((c, w)) if w > 1.0 => (c, w),
+        _ => {
+            let (lo, hi) = slice.data.iter().fold((i16::MAX, i16::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+            ((lo as f64 + hi as f64) / 2.0, (hi as f64 - lo as f64).max(1.0))
+        }
+    };
+    let lower = center - width / 2.0;
+    let gray: Vec<u8> = slice.data[..rows * cols]
+        .iter()
+        .map(|&v| (((v as f64 - lower) / width) * 255.0).clamp(0.0, 255.0) as u8)
+        .collect();
+    let (gray, rows, cols) = downsample(&gray, rows, cols, max_dim);
     let mut out = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut out, cols as u32, rows as u32);
