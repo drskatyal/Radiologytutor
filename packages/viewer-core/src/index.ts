@@ -29,3 +29,4 @@ export * from "./positionSync";
 export * from "./curvedMpr";
 export * from "./volume3d";
 export * as annotationEditing from "./annotationEditing";
+export * from "./voiceCommands";
