@@ -31,6 +31,11 @@ import time
 from pathlib import Path
 
 
+# Windows consoles default to cp1252: print the check names (arrows, dashes) as UTF-8.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 def fail(msg: str) -> None:
     print(f"FAIL  {msg}")
     sys.exit(1)
