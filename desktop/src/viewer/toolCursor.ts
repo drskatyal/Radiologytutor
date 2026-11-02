@@ -100,7 +100,10 @@ export function cursorCss(kind: CursorKind): string[] {
 
 const KINDS: CursorKind[] = ["scroll", "wl", "zoom", "pan", "crosshair", "eraser", "default"];
 /** The image surfaces a tool cursor applies to (not the viewport's own UI). */
-const SURFACE = (scope: string) => `${scope} .cs-viewport, ${scope} .cs-viewport canvas, ${scope} .cs-viewport svg`;
+// Native viewports (Phase 2) too: the element and its annotation layer. Before
+// this only Pan showed its cursor there (HP 0.8.0), everything else crosshair.
+const SURFACE = (scope: string) =>
+  `${scope} .cs-viewport, ${scope} .cs-viewport canvas, ${scope} .cs-viewport svg, ${scope} [data-native-viewport], ${scope} [data-native-viewport] svg`;
 
 function stylesheet(): string {
   const rules: string[] = [];
@@ -111,7 +114,7 @@ function stylesheet(): string {
     rules.push(`.tool-cursor-${kind} { ${values.replace(/ !important/g, "")} }`);
   }
   // Pan: closed hand while the button is down.
-  rules.push(`${SURFACE('body[data-tool-cursor="pan"]').split(", ").map((s) => s.replace(".cs-viewport", ".cs-viewport:active")).join(", ")} { cursor: grabbing !important; }`);
+  rules.push(`${SURFACE('body[data-tool-cursor="pan"]').split(", ").map((s) => s.replace(".cs-viewport", ".cs-viewport:active").replace("[data-native-viewport]", "[data-native-viewport]:active")).join(", ")} { cursor: grabbing !important; }`);
   rules.push(`.tool-cursor-pan:active { cursor: grabbing; }`);
   return rules.join("\n");
 }

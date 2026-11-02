@@ -47,7 +47,9 @@ import { setScrollPreferences } from "@flowrad/viewer-core";
 import { hangingPlanFor } from "./hanging";
 import { withKeyImageSeries, type DicomDocument } from "./documents";
 import type { VolumeMode } from "./viewer/VolumeWorkspace";
-import { getHandle, onHandlesChanged } from "./viewer/handles";
+import { engineViewportIds, getHandle, isNativeHandle, onHandlesChanged } from "./viewer/handles";
+// Native viewports' annotation store (tiny, no engine): undo / redo / clear / F12.
+import * as nativeAnnotations from "./native/annotations";
 import {
   getStackOffset,
   clearAnnotations,
@@ -382,8 +384,7 @@ export default function App() {
       }
       return;
     }
-    if (!engine) return;
-    leaveVolumeMemory(engine);
+    if (engine) leaveVolumeMemory(engine);
     // Give the freed volume back to the OS: a short Low memory-target pulse
     // makes WebView2 trim the renderer and GPU process (a no-op elsewhere).
     if (!isTauri) return;
@@ -1027,7 +1028,7 @@ export default function App() {
     setSyncScroll((on) => {
       if (!on) {
         void getEngine().then((engine) => {
-          const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
+          const ids = engineViewportIds(cells.flatMap((uid, i) => (uid ? [{ key: cellKey(i), id: viewportIdFor(i) }] : [])));
           if (ids.length > 1) linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
         });
       }
@@ -1045,11 +1046,13 @@ export default function App() {
     let cancelled = false;
     getEngine().then((engine) => {
       if (cancelled) return;
-      const ids = visibleCells.filter((c) => c.uid && getHandle(cellKey(c.i))).map((c) => viewportIdFor(c.i));
+      // Cornerstone synchronizers and reference lines only over the stacks the
+      // engine draws: a native viewport id is unknown to it.
+      const ids = engineViewportIds(visibleCells.filter((c) => c.uid).map((c) => ({ key: cellKey(c.i), id: viewportIdFor(c.i) })));
       setSynchronized(engine, "slice", ids, syncScroll);
       setSynchronized(engine, "voi", ids, syncVoi);
       setSynchronized(engine, "zoompan", ids, syncZoom);
-      const activeId = getHandle(cellKey(activeCell)) ? viewportIdFor(activeCell) : null;
+      const activeId = engineViewportIds([{ key: cellKey(activeCell), id: viewportIdFor(activeCell) }])[0] ?? null;
       setReferenceSource(engine, activeId, referenceLines && ids.length > 1);
       setScaleOverlay(engine, settings.scaleBar);
     });
@@ -1061,7 +1064,7 @@ export default function App() {
   /** Register the visible stacks at what each shows now (a prior, or a series with another FOV / frame). */
   const linkAtCurrent = useCallback(() => {
     void getEngine().then((engine) => {
-      const ids = cells.flatMap((uid, i) => (uid && getHandle(cellKey(i)) ? [viewportIdFor(i)] : []));
+      const ids = engineViewportIds(cells.flatMap((uid, i) => (uid ? [{ key: cellKey(i), id: viewportIdFor(i) }] : [])));
       if (ids.length < 2) return toast({ title: "Linking needs two viewports", variant: "info", duration: 2500 });
       linkStacksAtCurrent(engine, ids, viewportIdFor(activeCell));
       setSyncScroll(true);
@@ -1071,6 +1074,10 @@ export default function App() {
 
   useEffect(() => {
     if (!studies.length) return;
+    // F12 hides native annotations too (their own layer reads this).
+    nativeAnnotations.setAnnotationsHidden(!annotationsVisible);
+    // Native-only reading: no engine to load just to hide its (empty) annotations.
+    if (!enginePeek() && nativeRef.current) return;
     getEngine().then((engine) => {
       const { annotation } = engine.tools;
       for (const a of annotation.state.getAllAnnotations()) {
@@ -1514,10 +1521,17 @@ export default function App() {
         case "escape": {
           // 1) a measurement being drawn → cancel it; 2) a tool other than
           // browsing → back to browsing; 3) then leave modes / full screen.
+          // Native viewports have no Cornerstone enabled element: the engine's
+          // cancel would destructure `renderingEngineId` of undefined (HP 0.8.0,
+          // every Esc). Their own layer cancels a drawing on Escape.
           const element = handle?.element;
-          if (element && enginePeek()) {
-            const cancelled = enginePeek()!.tools.cancelActiveManipulations(element);
-            if (cancelled) return;
+          if (element && !isNativeHandle(handle) && enginePeek()) {
+            try {
+              const cancelled = enginePeek()!.tools.cancelActiveManipulations(element);
+              if (cancelled) return;
+            } catch {
+              /* no manipulation to cancel */
+            }
           }
           if (leftTool !== "StackScroll" && view === "grid") {
             setLeftTool("StackScroll");
@@ -1636,11 +1650,19 @@ export default function App() {
           return toggleView("3d");
         case "fusion":
           return toggleView("fusion");
+        // Native viewports keep their annotations in their own store (undo stack
+        // included); the engine's HistoryMemo only knows Cornerstone's.
         case "redoAnnotation":
+          if (isNativeHandle(handle)) return void nativeAnnotations.redo();
           return void getEngine().then((e) => annotationHistory(e, "redo"));
         case "undoAnnotation":
+          if (isNativeHandle(handle)) return void nativeAnnotations.undo();
           return void getEngine().then((e) => annotationHistory(e, "undo"));
         case "clearAnnotations":
+          if (isNativeHandle(handle)) {
+            nativeAnnotations.removeAnnotations(nativeAnnotations.allAnnotations().map((a) => a.id));
+            return;
+          }
           return void getEngine().then((e) => clearAnnotations(e));
         case "voice":
           return void toggleVoiceRef.current();

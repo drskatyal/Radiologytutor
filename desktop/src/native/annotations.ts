@@ -264,6 +264,17 @@ export function redo(): boolean {
   return true;
 }
 
+// F12: annotations hidden (kept, not drawn), the same switch as the JS path.
+let hidden = false;
+export function setAnnotationsHidden(v: boolean): void {
+  if (hidden === v) return;
+  hidden = v;
+  emit();
+}
+export function annotationsHidden(): boolean {
+  return hidden;
+}
+
 /** Study closed. */
 export function clearAnnotations(): void {
   items.clear();

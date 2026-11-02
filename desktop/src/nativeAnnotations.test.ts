@@ -1,6 +1,8 @@
 // P2.3: measurement math and the annotation store (undo / redo) for native viewports.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { engineViewportIds, isNativeHandle, registerHandle, type ViewportHandle } from "./viewer/handles";
+import { annotationsHidden, setAnnotationsHidden } from "./native/annotations";
 import {
   addAnnotation,
   annotationsFor,
@@ -58,4 +60,33 @@ test("store: add, update, remove with undo / redo", () => {
   redo();
   assert.deepEqual(annotationsFor("s", 3)[0].points[1], [5, 5]);
   assert.equal(annotationsFor("s", 2).length, 0);
+});
+
+// HP 0.8.0: engine calls (Esc's cancelActiveManipulations, synchronizers,
+// reference lines) must never be given a native viewport.
+test("native viewports are told apart from Cornerstone ones and left out of engine ids", () => {
+  const el = (native: boolean) => ({ hasAttribute: (n: string) => native && n === "data-native-viewport" }) as unknown as HTMLDivElement;
+  const handle = (native: boolean) => ({ element: el(native) }) as unknown as ViewportHandle;
+  const offA = registerHandle("a", handle(true));
+  const offB = registerHandle("b", handle(false));
+  assert.equal(isNativeHandle(handle(true)), true);
+  assert.equal(isNativeHandle(handle(false)), false);
+  assert.equal(isNativeHandle(undefined), false);
+  assert.deepEqual(
+    engineViewportIds([
+      { key: "a", id: "vp-a" },
+      { key: "b", id: "vp-b" },
+      { key: "missing", id: "vp-c" },
+    ]),
+    ["vp-b"]
+  );
+  offA();
+  offB();
+});
+
+test("F12 hides native annotations without dropping them", () => {
+  setAnnotationsHidden(true);
+  assert.equal(annotationsHidden(), true);
+  setAnnotationsHidden(false);
+  assert.equal(annotationsHidden(), false);
 });
