@@ -159,7 +159,12 @@ jobs:
       MPR_MAX_MS: "2000"
       MPR_MAX_MB: "1200"
       IDLE_MAX_MB: "400"
+      # CI runner: WebView2 alone takes ~0.4-0.5 s before our page loads, so CI
+      # gates the app's own share (window build + page load -> first paint)
+      # and keeps the total as a backstop. The 500 ms total is checked on real
+      # hardware (HP) before a release is published.
       COLDSTART_MAX_MS: "900"
+      COLDSTART_APP_MAX_MS: "150"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
@@ -228,8 +233,8 @@ jobs:
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2
-      - name: Cold start (median of 5, first paint in-process)
-        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
+      - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
+        run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }}
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
