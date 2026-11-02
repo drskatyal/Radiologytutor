@@ -290,6 +290,8 @@ jobs:
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2
+      - name: P2.1 — native renderer on the 848-slice CT (first image, scroll, whole tree; informational)
+        run: node desktop/scripts/bench.mjs native desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3
       - name: Cold start (median of 5, first paint in-process)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }}
       - name: Open + first image (cold and warm)

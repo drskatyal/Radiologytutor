@@ -12,6 +12,7 @@
 mod anonymize;
 mod documents;
 mod header;
+mod image_store;
 mod native;
 mod pacs;
 mod pet;
@@ -458,6 +459,47 @@ async fn native_set_wl(window: tauri::WebviewWindow, center: f32, width: f32, na
     native.render(window.scale_factor().unwrap_or(1.0))
 }
 
+/// P2.1: open the study given on the command line natively (its largest
+/// series), decode + draw the first slice. Times from the call and from
+/// process start, so the bench has a native "first image".
+#[tauri::command]
+async fn native_open_launch_study(window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) -> Result<serde_json::Value, String> {
+    let started = std::time::Instant::now();
+    let roots: Vec<PathBuf> = launch_args().into_iter().map(PathBuf::from).collect();
+    if roots.is_empty() {
+        return Err("no study on the command line".into());
+    }
+    let series = tauri::async_runtime::spawn_blocking(move || native::largest_series(&roots)).await.map_err(|e| e.to_string())?;
+    if series.is_empty() {
+        return Err("no DICOM images found".into());
+    }
+    let listed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let shown = native.open_series(series, window.scale_factor().unwrap_or(1.0))?;
+    Ok(serde_json::json!({
+        "listMs": listed_ms,
+        "firstImageMs": started.elapsed().as_secs_f64() * 1000.0,
+        "firstImageSinceStartMs": startup_elapsed_ms(),
+        "first": shown,
+    }))
+}
+
+/// P2.1: scroll the native series by `delta` slices.
+#[tauri::command]
+async fn native_scroll(window: tauri::WebviewWindow, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
+    native.scroll(delta, window.scale_factor().unwrap_or(1.0))
+}
+
+/// P2.1: close the native series: texture and decoded slices freed.
+#[tauri::command]
+fn native_close(native: tauri::State<'_, native::Shared>) {
+    native.close_series();
+}
+
+#[tauri::command]
+fn native_store_stats(native: tauri::State<'_, native::Shared>) -> image_store::StoreStats {
+    native.store().stats()
+}
+
 /// Test hook: FLOWRAD_SIMULATE_BLANK_GPU=1 makes the paint check read the GPU
 /// path as black, to exercise the CPU fallback on any machine.
 #[tauri::command]
@@ -729,6 +771,10 @@ pub fn run() {
             native_init,
             native_set_cells,
             native_set_wl,
+            native_open_launch_study,
+            native_scroll,
+            native_close,
+            native_store_stats,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");

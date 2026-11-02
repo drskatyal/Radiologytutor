@@ -5,6 +5,7 @@
 //   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5] [--max-ms N]
 //   node desktop/scripts/bench.mjs interact <binary> <study-path> [--max-frame-p95-ms 16.7] [--max-dropped 0]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
+//   node desktop/scripts/bench.mjs native <binary> <study-path> [--runs 3]   # Phase 2 native renderer
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
 //   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N] [--max-settled-mb N]
 //   (FLOWRAD_BENCH_VIEW=grid: the study open in 2D instead, i.e. idle memory with a study open)
@@ -507,7 +508,47 @@ async function benchMpr(binary, study) {
   }
 }
 
+// Phase 2 (P2.1): the study opened by the NATIVE renderer (FLOWRAD_NATIVE=1,
+// native-spike view): first image (decode + upload + draw), 120 slices of
+// scrolling one call each, and the whole tree's memory at the report.
+//   --max-first-image-ms N  warm (median) native first image, from the open call
+//   --max-scroll-p95-ms N   per-slice scroll call p95
+//   --max-idle-mb N         whole-tree working set at the report (study open)
+async function benchNative(binary, study) {
+  const runs = flag("runs", 3);
+  const reports = [];
+  for (let i = 0; i < runs; i += 1) {
+    const report = await runApp(binary, [study], { FLOWRAD_NATIVE: "1", ...benchEnv({ BENCH_VIEW: "native-spike" }) });
+    if (!report.study) throw new Error(`no native study report: ${JSON.stringify(report).slice(0, 400)}`);
+    reports.push(report);
+    const st = report.study;
+    console.error(
+      `run ${i + 1}: ${report.native?.adapter} (${report.native?.backend}) · list ${r0(st.listMs)} ms · first image ${r0(st.firstImageMs)} ms (decode ${r0(st.firstDecodeMs)}, frame ${st.firstFrameMs?.toFixed(1)}; ${r0(st.firstImageSinceStartMs)} ms after process start) · scroll p50 ${report.scroll?.p50Ms} p95 ${report.scroll?.p95Ms} max ${report.scroll?.maxMs} ms (cached ${Math.round((report.scroll?.cachedShare ?? 0) * 100)}%) · store ${report.store?.usedMb?.toFixed?.(1)} / ${report.store?.budgetMb} MB · tree ${report.tree?.wsMb} MB ws (${report.tree?.processes} processes) · long tasks max ${r0(report.longTasks?.maxMs)} ms`
+    );
+  }
+  const warm = reports.slice(1).length ? reports.slice(1) : reports;
+  const summary = {
+    mode: "native",
+    study,
+    images: reports[0].study.images,
+    firstImageMs: r0(median(warm.map((r) => r.study.firstImageMs))),
+    scrollP95Ms: Math.max(...reports.map((r) => r.scroll?.p95Ms ?? 0)),
+    treeWsMb: Math.max(...reports.map((r) => r.tree?.wsMb ?? 0)),
+    adapter: reports[0].native?.adapter,
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  const over = [];
+  if (summary.firstImageMs > flag("max-first-image-ms", Infinity)) over.push(`first image ${summary.firstImageMs} ms`);
+  if (summary.scrollP95Ms > flag("max-scroll-p95-ms", Infinity)) over.push(`scroll p95 ${summary.scrollP95Ms} ms`);
+  if (summary.treeWsMb > flag("max-idle-mb", Infinity)) over.push(`whole tree ${summary.treeWsMb} MB`);
+  if (over.length) {
+    console.error(`native gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
 const modes = {
+  native: () => benchNative(positional[0], positional[1]),
   interact: () => benchInteract(positional[0], positional[1]),
   leak: () => benchLeak(positional[0], positional[1]),
   multiwindow: () => benchMultiWindow(positional[0], positional[1]),
@@ -518,7 +559,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak|multiwindow …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak|multiwindow|native …  (see header)");
   process.exit(2);
 }
 await modes[mode]();
