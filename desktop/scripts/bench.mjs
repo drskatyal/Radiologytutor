@@ -166,6 +166,22 @@ async function benchDesktop(binary, study) {
     console.error(`first-image gate failed: ${firstImage} ms > ${budget} ms`);
     process.exitCode = 1;
   }
+  // One-time open / start-up tasks (engine start, first render, series list),
+  // every run cold and warm: the slowest main-thread task.
+  const taskBudget = flag("max-long-task-ms", Infinity);
+  const slowestTask = Math.max(...reports.map((r) => r.longTasks?.maxMs ?? 0));
+  if (!(slowestTask <= taskBudget)) {
+    console.error(`long-task gate failed: ${r0(slowestTask)} ms > ${taskBudget} ms (${reports.flatMap((r) => r.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")})`);
+    process.exitCode = 1;
+  }
+  // The GPU path must paint: a CPU fallback means it drew blank.
+  if (rest.includes("--require-gpu")) {
+    const fell = reports.map((r, i) => [i + 1, r.viewport?.renderPath]).filter(([, p]) => p && p !== "gpu");
+    if (fell.length) {
+      console.error(`render-path gate failed: ${fell.map(([n, p]) => `run ${n} ${p}`).join(", ")}`);
+      process.exitCode = 1;
+    }
+  }
   const visibleBudget = flag("max-first-visible-ms", Infinity);
   const firstVisible = runs > 1 ? summary.warm.firstVisibleMs : summary.cold.firstVisibleMs;
   if (!(firstVisible <= visibleBudget)) {
@@ -239,6 +255,10 @@ async function benchInteract(binary, study) {
     if (i[k].p95 > maxP95) over.push(`${k} p95 ${i[k].p95} ms > ${maxP95} ms`);
   }
   if (i.frames.over33 > maxDropped) over.push(`${i.frames.over33} dropped frames (> 33 ms) > ${maxDropped}`);
+  // Freeze during interaction: the slowest single step of scroll, zoom, W/L.
+  const maxStep = flag("max-interaction-ms", Infinity);
+  const slowest = Math.max(i.frames.max ?? 0, ...["scroll", "zoom", "windowLevel"].map((k) => i[k].max ?? 0));
+  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms`);
   if (over.length) {
     console.error(`frame-time gate failed: ${over.join("; ")}`);
     process.exitCode = 1;

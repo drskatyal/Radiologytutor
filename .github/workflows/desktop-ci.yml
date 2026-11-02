@@ -165,6 +165,12 @@ jobs:
       # hardware (HP) before a release is published.
       COLDSTART_MAX_MS: "900"
       COLDSTART_APP_MAX_MS: "150"
+      # Freezes, split (CI runner renders with WARP, a software GPU):
+      # interaction (scroll / W-L / zoom steps) <= 50 ms; one-time open and
+      # start-up tasks (engine start, first render, series list) <= 150 ms.
+      # The strict <= 50 ms everywhere is checked on real hardware (HP).
+      INTERACTION_MAX_MS: "50"
+      OPEN_LONG_TASK_MAX_MS: "150"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
@@ -232,11 +238,11 @@ jobs:
           node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }}
       - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }} --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }} --require-gpu
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
@@ -262,7 +268,7 @@ jobs:
             echo "::endgroup::"
           done
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
-        run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }}
+        run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }} --max-interaction-ms ${{ env.INTERACTION_MAX_MS }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)
         run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: Gate — multi-monitor (a second viewer window opens, paints, follows; closing it returns memory)
