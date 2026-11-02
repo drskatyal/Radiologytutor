@@ -45,3 +45,4 @@ export { Stepper } from "./Stepper";
 export type { StepperProps, StepperStep } from "./Stepper";
 export { Tooltip } from "./Tooltip";
 export { Menu, MenuItem, MenuSeparator, MenuLabel } from "./Menu";
+export { CollapsiblePanel } from "./CollapsiblePanel";
