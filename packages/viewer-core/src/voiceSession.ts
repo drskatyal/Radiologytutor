@@ -240,6 +240,9 @@ function spawnRecognizer(modelUrl: string, workerUrl: string): Recognizer {
 // ── warm-up: start loading on hover / focus of the mic, so a click is ready at once ──
 /** Sessions loading or listening: no warm-up while one exists (it would only leak a worker). */
 let activeSessions = 0;
+/** When a session last ended: no warm-up right after "off" (the pointer is still on the mic). */
+let lastSessionEnd = -Infinity;
+const WARM_COOLDOWN_MS = 30_000;
 let warm: { key: string; rec: Recognizer; timer: ReturnType<typeof setTimeout> } | null = null;
 
 /**
@@ -249,6 +252,10 @@ let warm: { key: string; rec: Recognizer; timer: ReturnType<typeof setTimeout> }
  */
 export function prewarmVoice(modelUrl: string, workerUrl: string, keepMs = 45_000): void {
   if (activeSessions > 0) return;
+  // The reader just switched voice off (or it failed) with the pointer still
+  // over the mic: a re-render or layout shift re-fires pointerenter / focus,
+  // and a warm-up then would leave a recognizer worker running after "off".
+  if (Date.now() - lastSessionEnd < WARM_COOLDOWN_MS) return;
   const key = `${workerUrl} ${modelUrl}`;
   if (warm?.key === key) {
     clearTimeout(warm.timer);
@@ -325,6 +332,9 @@ export async function startVoice(opts: VoiceOptions): Promise<VoiceSession> {
   const release = () => {
     if (counted) activeSessions -= 1;
     counted = false;
+    lastSessionEnd = Date.now();
+    // Nothing warm may outlive the session.
+    dropWarm();
   };
   const stop = () => {
     if (stopped) return;
