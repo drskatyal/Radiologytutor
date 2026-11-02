@@ -70,6 +70,11 @@ pub struct ImageStore {
     inner: Mutex<Inner>,
     /// Bumped by every prefetch request; queued work from an older one is dropped.
     generation: AtomicU64,
+    /// Bumped by `clear` (study closed). A decode that started before the
+    /// clear is not cached after it, and warm jobs queued before it do
+    /// nothing: work in flight at close must not refill the cache (CI close
+    /// gate: 26 slices were back in the cache after close).
+    epoch: AtomicU64,
     /// Slices being decoded right now: a second `get` of one waits for that
     /// decode instead of starting its own (the speculative first-slice
     /// decode at open and the viewport's own request race by design).
@@ -96,6 +101,7 @@ impl ImageStore {
             budget,
             inner: Mutex::new(Inner::default()),
             generation: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
             inflight: Mutex::new(HashSet::new()),
             decoded: Condvar::new(),
         }
@@ -136,11 +142,15 @@ impl ImageStore {
             }
             busy.insert(path.to_path_buf());
         }
+        let epoch = self.epoch.load(Ordering::SeqCst);
         let started = Instant::now();
         let decoded = decode_slice(path).map(Arc::new);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         if let Ok(slice) = &decoded {
-            self.insert(path, slice.clone(), ms);
+            // Closed meanwhile: the caller gets its slice, the cache keeps nothing.
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                self.insert(path, slice.clone(), ms);
+            }
         }
         self.inflight.lock().remove(path);
         self.decoded.notify_all();
@@ -150,10 +160,13 @@ impl ImageStore {
     /// Decode `paths` now on the rayon pool, without superseding the
     /// scroll prefetch (study open: the slice the first viewport will ask for).
     pub fn warm(self: &Arc<Self>, paths: Vec<PathBuf>) {
+        let epoch = self.epoch.load(Ordering::SeqCst);
         for path in paths {
             let store = self.clone();
             rayon::spawn(move || {
-                let _ = store.get(&path);
+                if store.epoch.load(Ordering::SeqCst) == epoch {
+                    let _ = store.get(&path);
+                }
             });
         }
     }
@@ -221,6 +234,7 @@ impl ImageStore {
         g.entries.shrink_to_fit();
         g.used = 0;
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn stats(&self) -> StoreStats {
@@ -351,7 +365,14 @@ mod tests {
         eprintln!("store after close: {:.3} MB in {} slices (before {:.3} MB in {})", after.used_mb, after.slices, before.used_mb, before.slices);
         assert_eq!((after.slices, after.used_mb), (0, 0.0));
         assert!(weak.upgrade().is_none(), "a closed study's slice is still referenced");
-        assert!(store.inflight.lock().is_empty());
+        // Work queued before the close (warm jobs) or decoding across it
+        // never refills the cache.
+        store.warm(paths.clone());
+        let stale = store.epoch.load(Ordering::SeqCst);
+        store.clear();
+        assert_eq!(store.epoch.load(Ordering::SeqCst), stale + 1);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(store.stats().slices, 0, "work from before the close refilled the cache");
     }
 
     #[test]

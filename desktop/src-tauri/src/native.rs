@@ -636,6 +636,25 @@ impl Native {
         report
     }
 
+    /// No viewport left (study closed): drop whatever slices landed in the
+    /// cache since, plus any cell an in-flight call re-created. Returns the
+    /// slices dropped, or None when viewports exist (a study is open again).
+    pub fn sweep_if_idle(&self) -> Option<usize> {
+        let cells = self.cells.lock();
+        if cells.values().any(|c| !c.series.is_empty() || c.plane.is_some()) {
+            return None;
+        }
+        drop(cells);
+        self.cells.lock().clear();
+        let store = self.store.get()?;
+        let n = store.stats().slices;
+        store.clear();
+        if let Some(gpu) = self.gpu.lock().as_ref() {
+            let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+        }
+        Some(n)
+    }
+
     /// Image pixel value under a cell point (CSS px), modality units.
     pub fn pick(&self, id: &str, x: f32, y: f32) -> Option<(f32, f32, i16)> {
         let (path, t) = {
