@@ -40,6 +40,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 dicom-pixeldata = { version = "0.10", default-features = false, features = ["jpeg", "openjpeg-sys", "rle", "rayon", "charls"] }
 memmap2 = "0.9"
+# Global allocator: returns freed pages to the OS (purge) instead of keeping
+# them committed, so closing a study brings private bytes back to baseline.
+mimalloc = { version = "0.1", default-features = false }
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
 # Phase 2 native renderer (FLOWRAD_NATIVE=1): DX12 on Windows, Metal on macOS, Vulkan/GL on Linux.
 wgpu = "30"
 
@@ -57,7 +61,7 @@ panic = "abort"
 strip = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console", "Win32_System_Memory"] }
 # WebView2's MemoryUsageTargetLevel (idle footprint). Same versions wry uses.
 webview2-com = "0.39"
 windows = "0.62"

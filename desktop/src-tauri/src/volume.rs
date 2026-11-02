@@ -99,6 +99,11 @@ pub fn release(key: u64) {
     }
 }
 
+/// Bytes of the volume held right now (0 when none).
+pub fn held_bytes() -> usize {
+    CURRENT.lock().as_ref().map(|(v, _)| v.data.len() * 2).unwrap_or(0)
+}
+
 /// Drop whatever is held (tests, study closed).
 pub fn close() {
     *CURRENT.lock() = None;
