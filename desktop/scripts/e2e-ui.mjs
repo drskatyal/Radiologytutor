@@ -20,6 +20,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+// Pages here run under the app's CSP (no 'unsafe-eval'), and Playwright's
+// waitForFunction evaluates its predicate with eval in the page, which that CSP
+// refuses. Poll with page.evaluate (no eval) instead. Rejects on timeout, like
+// waitForFunction (default 30 s).
+async function waitUntil(target, predicate, arg = null, { timeout = 30_000, polling = 100 } = {}) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const value = await target.evaluate(predicate, arg).catch(() => undefined);
+    if (value) return value;
+    if (Date.now() >= until) throw new Error(`waitUntil: timed out after ${timeout} ms`);
+    await new Promise((r) => setTimeout(r, polling));
+  }
+}
+
+
 const args = process.argv.slice(2);
 const study = args.find((a) => !a.startsWith("--"));
 const flag = (name) => {
@@ -143,7 +158,7 @@ await page.waitForSelector("text=Open a study");
 await page.locator('input[type="file"]').first().setInputFiles(await listFiles(study));
 await page.waitForSelector('[data-has-series="1"]', { timeout: 60_000 });
 // The engine paints after the preview; wait for the "Im n / N" overlay.
-await page.waitForFunction(() => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
+await waitUntil(page, () => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
 await settle(800);
 
 const cell = (i) => page.locator(`[data-drop-cell="${i}"]`);
@@ -228,7 +243,7 @@ if (want("dnd")) {
 if (want("keys")) {
   await focusImage();
   await page.keyboard.press("Shift+Digit1"); // 1×1
-  await page.waitForFunction(() => !document.querySelector('[data-drop-cell="1"]'));
+  await waitUntil(page, () => !document.querySelector('[data-drop-cell="1"]'));
   await settle(400);
   await page.keyboard.press("Home");
   await settle();
@@ -658,8 +673,7 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     const popErrors = [];
     popup.on("pageerror", (e) => popErrors.push(String(e)));
     await popup.setViewportSize({ width: 1200, height: 800 });
-    const painted = await popup
-      .waitForFunction(() => /Im \d+ \/ 300/.test(document.body.innerText), null, { timeout: 60_000 })
+    const painted = await waitUntil(popup, () => /Im \d+ \/ 300/.test(document.body.innerText), null, { timeout: 60_000 })
       .then(() => true, () => false);
     check("multiwindow: the new window shows the series (Im n / 300)", painted);
     const badge = async (pg) => (await pg.getByTestId("monitor-badge").first().getAttribute("data-number").catch(() => null));
@@ -685,8 +699,7 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     await settle(300);
     const before = await popImage();
     for (let k = 0; k < 20; k += 1) await page.keyboard.press("ArrowDown");
-    const moved = await popup
-      .waitForFunction((b) => {
+    const moved = await waitUntil(popup, (b) => {
         const m = document.querySelector('[data-drop-cell="0"]')?.textContent?.match(/Im (\d+) \/ 300/);
         return m && Number(m[1]) !== b;
       }, before, { timeout: 8000 })
@@ -709,8 +722,7 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     await settle(300);
     const wl = async (pg) => ((await pg.locator('[data-drop-cell="0"]').innerText()).match(/W (\d+) · L (-?\d+)/) ?? []).slice(1, 3).join("/");
     const wlMain = await wl(page);
-    const wlLinked = await popup
-      .waitForFunction((w) => (document.querySelector('[data-drop-cell="0"]')?.textContent ?? "").replace(/\s+/g, " ").includes(`W ${w.split("/")[0]}`), wlMain, { timeout: 5000 })
+    const wlLinked = await waitUntil(popup, (w) => (document.querySelector('[data-drop-cell="0"]')?.textContent ?? "").replace(/\s+/g, " ").includes(`W ${w.split("/")[0]}`), wlMain, { timeout: 5000 })
       .then(() => true, () => false);
     check("multiwindow: window / level is linked across windows", wlLinked && !!wlMain, `${wlMain} → ${await wl(popup)}`);
 
@@ -720,8 +732,7 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     const r2 = await center(tile(2));
     await page.mouse.move(r2.x, r2.y, { steps: 4 });
     await page.mouse.up();
-    const reused = await popup
-      .waitForFunction(() => /Im \d+ \/ 47/.test(document.body.innerText), null, { timeout: 20_000 })
+    const reused = await waitUntil(popup, () => /Im \d+ \/ 47/.test(document.body.innerText), null, { timeout: 20_000 })
       .then(() => true, () => false);
     check("multiwindow: a second drop on the same monitor reuses its window", reused && context.pages().length === pagesBefore, `${context.pages().length} pages`);
 
@@ -778,7 +789,7 @@ if (want("contextmenu")) {
     // 2-core CI runner (software GL) that work overlapped the first opens
     // (100 / 93 ms, then 1.2 ms once it was done). Let it finish first: this
     // measures the menu, not a series load.
-    await page.waitForFunction(() => document.querySelectorAll('[data-loading="1"]').length === 0, null, { timeout: 10_000 }).catch(() => undefined);
+    await waitUntil(page, () => document.querySelectorAll('[data-loading="1"]').length === 0, null, { timeout: 10_000 }).catch(() => undefined);
     await settle(2500);
   }
   const b0 = await box(0);
@@ -799,7 +810,7 @@ if (want("contextmenu")) {
     });
     await page.mouse.click(...at(0.15, 0.15), { button: "right" });
     await imageMenu.waitFor({ timeout: 3000 }).catch(() => undefined);
-    await page.waitForFunction(() => window.__menuOpenMs != null, null, { timeout: 2000 }).catch(() => undefined);
+    await waitUntil(page, () => window.__menuOpenMs != null, null, { timeout: 2000 }).catch(() => undefined);
     return page.evaluate(() => window.__menuOpenMs ?? null);
   };
   const closeMenu = async () => {
@@ -925,8 +936,7 @@ if (want("fusion") && only?.includes("fusion")) {
   check(`fusion: opens ${isMr ? "MR" : "PET"} / CT fusion`, opened);
   if (!opened) await shot("fusion-not-open");
   else {
-    const ready = await page
-      .waitForFunction(
+    const ready = await waitUntil(page,
         () => !/Building volume/.test(document.body.innerText),
         null,
         { timeout: 120_000 },
