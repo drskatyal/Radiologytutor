@@ -55,9 +55,22 @@ async function listFiles(dir) {
 // --prod-csp: serve the page with the CSP the installed app ships with
 // (tauri.conf.json; Tauri sends it with HTML only). Without it this e2e
 // passed while the installed app's recognizer was blocked by that CSP.
+//
+// Tauri also MODIFIES that CSP for its assets: it adds a nonce to script-src
+// and style-src (and the nonce to the page's inline <script> / <style>),
+// unless the directive is listed in dangerousDisableAssetCspModification. A
+// nonce makes the browser ignore 'unsafe-inline', which is how 0.8.1 logged
+// "Applying inline style ... violates the following Content Security Policy"
+// on every render while this e2e (serving the CSP as written) stayed green.
+// The same modification is reproduced here.
+const tauriSecurity = JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security;
+const CSP_NONCE = "e2e0nonce";
+const unmodified = new Set(
+  tauriSecurity.dangerousDisableAssetCspModification === true ? ["script-src", "style-src"] : (tauriSecurity.dangerousDisableAssetCspModification || [])
+);
 const prodCsp = args.includes("--prod-csp")
-  ? Object.entries(JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security.csp)
-      .map(([k, v]) => `${k} ${v}`)
+  ? Object.entries(tauriSecurity.csp)
+      .map(([k, v]) => `${k} ${v}${(k === "script-src" || k === "style-src") && !unmodified.has(k) ? ` 'nonce-${CSP_NONCE}'` : ""}`)
       .join("; ")
   : null;
 const types = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html", ".svg": "image/svg+xml" };
@@ -65,8 +78,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const file = path.join(dist, url.pathname === "/" ? "index.html" : url.pathname);
   try {
-    const body = await readFile(file);
+    let body = await readFile(file);
     const type = types[path.extname(file)] ?? "application/octet-stream";
+    // As Tauri does: its nonce on the page's own inline <script> / <style>.
+    if (prodCsp && type === "text/html") body = Buffer.from(body.toString("utf8").replace(/<(script|style)(?=[\s>])/g, `<$1 nonce="${CSP_NONCE}"`));
     res.writeHead(200, { "Content-Type": type, ...(prodCsp && type === "text/html" ? { "Content-Security-Policy": prodCsp } : {}) });
     res.end(body);
   } catch {
@@ -107,7 +122,19 @@ const voiceRequests = [];
 context.on("request", (r) => /\/assets\/vosk-|recognizer-worker|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
 const page = await context.newPage();
 const consoleErrors = [];
-page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
+const cspErrors = [];
+page.on("console", (m) => {
+  if (m.type() !== "error") return;
+  consoleErrors.push(m.text());
+  if (/Content Security Policy/i.test(m.text())) cspErrors.push(m.text());
+});
+// Violations that never reach the console (style attributes set from script
+// report only through the event): record those too.
+await context.addInitScript(() => {
+  document.addEventListener("securitypolicyviolation", (e) => {
+    console.error(`Content Security Policy violation: ${e.violatedDirective} blocked ${e.blockedURI || "inline"} (${e.sourceFile || "?"}:${e.lineNumber || 0})`);
+  });
+});
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 page.on("response", (r) => r.status() >= 400 && !/favicon/.test(r.url()) && consoleErrors.push(`${r.status()} ${r.url()}`));
 // The arrow tool must never open a browser prompt.
@@ -1118,6 +1145,7 @@ if (want("voice")) {
   }
 }
 
+if (prodCsp) check("no CSP violations under the production CSP (as Tauri modifies it)", cspErrors.length === 0, `${cspErrors.length}: ${cspErrors.slice(0, 2).join(" | ")}`);
 const unexpected = consoleErrors.filter((e) => !/favicon|DevTools|GPU stall|WebGL|Failed to load resource/i.test(e));
 check("no uncaught errors in the page", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 
