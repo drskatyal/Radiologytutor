@@ -17,6 +17,7 @@ mod pet;
 mod preview;
 mod procmem;
 mod volume;
+mod viewer_windows;
 mod render3d;
 mod scan;
 mod sources;
@@ -625,6 +626,16 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
+        .manage(viewer_windows::WindowHandoff::default())
+        // Closing the main window ends the session: viewer windows on other
+        // monitors go with it (their webviews and memory with them).
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::Destroyed = event {
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .on_page_load(|_webview, payload| match payload.event() {
             tauri::webview::PageLoadEvent::Started => mark(1),
             tauri::webview::PageLoadEvent::Finished => mark(2),
@@ -690,6 +701,12 @@ pub fn run() {
             sync::sync_sign_in,
             sync::sync_sign_out,
             sync::sync_upload_study,
+            viewer_windows::list_monitors,
+            viewer_windows::window_monitor,
+            viewer_windows::open_viewer_window,
+            viewer_windows::take_window_payload,
+            viewer_windows::viewer_windows,
+            viewer_windows::close_viewer_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building FlowRad Viewer");

@@ -229,6 +229,35 @@ async function benchInteract(binary, study) {
 }
 
 /**
+ * Multi-monitor: with a CT open, open a second viewer window (its own webview),
+ * check it reports in, paints and follows the main window over the window
+ * bus, close it, twice; the process tree is sampled before, during and after.
+ *   --max-window-leak-mb N   after closing − baseline (memory back to baseline)
+ *   --max-window-mb N        what one open window costs
+ *   --max-long-tasks N       main-thread tasks over 50 ms while windows open and close
+ */
+async function benchMultiWindow(binary, study) {
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "multiwindow", BENCH_TIMEOUT_MS: String(240_000) }));
+  const mw = report.multiWindow;
+  if (!mw) throw new Error(`no multi-window report (marks: ${Object.keys(report).join(", ")}; timedOut: ${report.timedOut ?? "?"})`);
+  // mw.longTasks: during the window cycle only; startupLongTasks: the whole run.
+  console.log(JSON.stringify({ mode: "multiwindow", study, ...mw, startupLongTasks: report.longTasks }, null, 2));
+  const over = [];
+  if (!mw.ok) over.push(`a window did not open / paint / follow: ${JSON.stringify(mw.runs)}`);
+  const gate = (name, value, label) => {
+    const max = flag(name, Infinity);
+    if (value != null && value > max) over.push(`${label} ${value} > ${max}`);
+  };
+  gate("max-window-leak-mb", mw.leakMb, "MB not returned after closing the window");
+  gate("max-window-mb", mw.perWindowMb, "MB per open window");
+  gate("max-long-tasks", (mw.longTasks ?? report.longTasks)?.count ?? 0, "long tasks while opening/closing windows");
+  if (over.length) {
+    console.error(`multi-window gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
+/**
  * Feature on/off leak test: CT open in 2D, every feature (MPR, 3D, cine,
  * tools, export, settings, PACS) opened and closed twice; the app samples its
  * whole process tree (working set) at baseline and after each round.
@@ -481,6 +510,7 @@ async function benchMpr(binary, study) {
 const modes = {
   interact: () => benchInteract(positional[0], positional[1]),
   leak: () => benchLeak(positional[0], positional[1]),
+  multiwindow: () => benchMultiWindow(positional[0], positional[1]),
   mpr: () => benchMpr(positional[0], positional[1]),
   desktop: () => benchDesktop(positional[0], positional[1]),
   coldstart: () => benchColdStart(positional[0]),
@@ -488,7 +518,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak|multiwindow …  (see header)");
   process.exit(2);
 }
 await modes[mode]();

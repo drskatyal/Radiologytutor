@@ -22,7 +22,7 @@ import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./worker
 import { annotationEditing, tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { markPhase } from "../perfWatch";
-import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack } from "@flowrad/viewer-core";
+import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack, type XVec3 as Vec3 } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
 const MB = 1024 * 1024;
@@ -417,6 +417,11 @@ type AnyViewport = any;
 
 /** Registration offsets (mm) by a stack's first imageId: prior studies. */
 const stackOffsets = new Map<string, number>();
+/** A stack's registration offset (mm), keyed by its first imageId. */
+export function getStackOffset(firstImageId: string): number | undefined {
+  return stackOffsets.get(firstImageId);
+}
+
 export function setStackOffset(firstImageId: string, offsetMm: number | null): void {
   if (offsetMm == null) stackOffsets.delete(firstImageId);
   else stackOffsets.set(firstImageId, offsetMm);
@@ -494,6 +499,44 @@ export function linkStacksAtCurrent(engine: Engine, viewportIds: string[], refer
  * 3D cursor: send every other stack viewport in the same frame of reference
  * to the slice nearest `world` (mm, patient). Returns how many moved.
  */
+// ── across windows (multiWindow.ts carries these between webviews) ──
+
+/** Where a stack viewport is, in the shared frame (position + registration offset), for other windows. */
+export function slicePosition(engine: Engine, viewportId: string): { frame: string; normal: [number, number, number]; z: number } | null {
+  const vp = engine.renderingEngine.getViewport(viewportId) as AnyViewport | undefined;
+  const stack = vp ? syncStackOf(engine, vp) : null;
+  const frame: string | undefined = vp?.getFrameOfReferenceUID?.();
+  if (!vp || !stack?.normal || !frame) return null;
+  const z = stack.positions[vp.getCurrentImageIdIndex()];
+  if (!Number.isFinite(z)) return null;
+  return { frame, normal: [stack.normal[0], stack.normal[1], stack.normal[2]], z: z + (stack.offsetMm ?? 0) };
+}
+
+/** Another window scrolled to `z`: move this window's parallel stacks of the same frame there. */
+export function applyRemoteSlice(engine: Engine, viewportIds: readonly string[], at: { frame: string; normal: readonly number[]; z: number }): void {
+  for (const id of viewportIds) {
+    const vp = engine.renderingEngine.getViewport(id) as AnyViewport | undefined;
+    if (!vp || vp.getFrameOfReferenceUID?.() !== at.frame) continue;
+    const stack = syncStackOf(engine, vp);
+    const n = stack?.normal;
+    if (!stack || !n || Math.abs(n[0] * at.normal[0] + n[1] * at.normal[1] + n[2] * at.normal[2]) < 0.95) continue;
+    const index = nearestIndex(stack.positions, at.z - (stack.offsetMm ?? 0));
+    if (index >= 0 && index !== vp.getCurrentImageIdIndex()) void vp.setImageIdIndex(index);
+  }
+}
+
+/** The visible image plane's corners (world mm), for reference lines in other windows. */
+export function viewportCorners(engine: Engine, viewportId: string): { frame: string; corners: [Vec3, Vec3, Vec3, Vec3] } | null {
+  const vp = engine.renderingEngine.getViewport(viewportId) as AnyViewport | undefined;
+  const frame: string | undefined = vp?.getFrameOfReferenceUID?.();
+  const canvas: HTMLCanvasElement | undefined = vp?.canvas;
+  if (!vp || !frame || !canvas?.clientWidth) return null;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const at = (x: number, y: number) => vp.canvasToWorld([x, y]) as Vec3;
+  return { frame, corners: [at(0, 0), at(w, 0), at(w, h), at(0, h)] };
+}
+
 export function jumpTo3dPoint(engine: Engine, sourceViewportId: string, world: readonly number[]): number {
   const source = engine.renderingEngine.getViewport(sourceViewportId);
   const frame = source?.getFrameOfReferenceUID?.();

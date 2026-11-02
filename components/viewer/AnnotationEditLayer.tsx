@@ -15,7 +15,7 @@
 // Right-drag stays window/level: the menu opens only for a right click that
 // did not move.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { annotationEditing as ae } from "@flowrad/viewer-core";
 import { Menu, MenuItem, MenuSeparator } from "@/components/ui/Menu";
 import { cn } from "@/components/ui/cn";
@@ -46,6 +46,8 @@ export interface AnnotationEditLayerProps {
   onCopied?: (text: string) => void;
   /** Portal container for the menu (fullscreen element). */
   menuContainer?: HTMLElement | null;
+  /** App items shown above the annotation items, e.g. "Send to Monitor 2". */
+  extraItems?: ReactNode;
 }
 
 export function AnnotationEditLayer({
@@ -56,6 +58,7 @@ export function AnnotationEditLayer({
   onDeleted,
   onCopied,
   menuContainer,
+  extraItems,
 }: AnnotationEditLayerProps) {
   const [, setVersion] = useState(0);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
@@ -374,6 +377,12 @@ export function AnnotationEditLayer({
                     );
                   }}
                 />
+                <MenuSeparator />
+              </>
+            )}
+            {extraItems && (
+              <>
+                {extraItems}
                 <MenuSeparator />
               </>
             )}
