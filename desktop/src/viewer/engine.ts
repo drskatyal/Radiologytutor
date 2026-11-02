@@ -22,6 +22,7 @@ import { decodePoolSize, installLazyWorkerPool, type PoolHandle } from "./worker
 import { annotationEditing, tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { markPhase } from "../perfWatch";
+import { MOUSE_DEFAULTS, WHEEL_DEFAULTS } from "./mouseBindings";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack, type XVec3 as Vec3 } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
@@ -287,25 +288,41 @@ function bindingsFor(engine: Engine) {
 }
 
 /**
- * Mouse map (RadiAnt-compatible where it matters):
- *   left   = the toolbar tool (default: browse slices)
- *   wheel  = slice;  Ctrl+wheel = zoom
- *   right  = window / level
- *   middle = pan
+ * A navigation tool's fixed (non-left) bindings, read from the shared gesture
+ * table (mouseBindings.ts MOUSE_DEFAULTS / WHEEL_DEFAULTS) so the JS path and
+ * the native viewports cannot drift apart: right = window / level, middle =
+ * pan, Ctrl+right = zoom, wheel = slice, Ctrl+wheel = zoom.
  */
+function fixedBindings(engine: Engine, tool: string): { mouseButton: number; modifierKey?: number }[] {
+  const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
+  const button: Record<number, number> = { 1: MouseBindings.Auxiliary, 2: MouseBindings.Secondary };
+  const mod = (m: { ctrl?: boolean; shift?: boolean; alt?: boolean }) =>
+    m.ctrl ? KeyboardBindings.Ctrl : m.shift ? KeyboardBindings.Shift : m.alt ? KeyboardBindings.Alt : undefined;
+  const out: { mouseButton: number; modifierKey?: number }[] = [];
+  for (const b of MOUSE_DEFAULTS) {
+    if (b.command !== tool || button[b.button] === undefined) continue;
+    const modifierKey = mod(b.mods);
+    out.push(modifierKey === undefined ? { mouseButton: button[b.button] } : { mouseButton: button[b.button], modifierKey });
+  }
+  for (const w of WHEEL_DEFAULTS) {
+    const wheelTool = w.command === "scroll" ? "StackScroll" : "Zoom"; // a stack has no slab: Ctrl+wheel zooms
+    if (wheelTool !== tool) continue;
+    const modifierKey = mod(w.mods);
+    out.push(modifierKey === undefined ? { mouseButton: MouseBindings.Wheel } : { mouseButton: MouseBindings.Wheel, modifierKey });
+  }
+  return out;
+}
+
+const FIXED_TOOLS = ["StackScroll", "Zoom", "WindowLevel", "Pan"] as const;
+
+/** Mouse map: left = the toolbar tool (default: browse slices); the rest from MOUSE_DEFAULTS. */
 function buildStackGroup(engine: Engine) {
   const { tools } = engine;
-  const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
   const group = tools.ToolGroupManager.createToolGroup(STACK_GROUP)!;
   for (const name of [...LEFT_TOOLS, "ReferenceLines", "ScaleOverlay"]) group.addTool(name);
   // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
   group.addTool("ArrowAnnotate", annotationEditing.arrowAnnotateConfig);
-  group.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
-  group.setToolActive("Zoom", {
-    bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl }],
-  });
-  group.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
-  group.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
+  for (const name of FIXED_TOOLS) group.setToolActive(name, { bindings: fixedBindings(engine, name) });
   for (const name of MEASUREMENT_TOOLS) group.setToolPassive(name);
   tuneStackScrollTool(group.getToolInstance("StackScroll"));
   leftByGroup.set(STACK_GROUP, null);
@@ -342,13 +359,7 @@ export function setGroupLeftTool(engine: Engine, groupId: string, name: string):
 
 /** A tool that lost the left button keeps its fixed button (wheel / right / middle / Ctrl+wheel). */
 function restoreFixedBindings(engine: Engine, group: { setToolActive(name: string, o: unknown): void }, previous: string | null | undefined) {
-  const { MouseBindings, KeyboardBindings } = bindingsFor(engine);
-  if (previous === "StackScroll") group.setToolActive("StackScroll", { bindings: [{ mouseButton: MouseBindings.Wheel }] });
-  if (previous === "WindowLevel") group.setToolActive("WindowLevel", { bindings: [{ mouseButton: MouseBindings.Secondary }] });
-  if (previous === "Pan") group.setToolActive("Pan", { bindings: [{ mouseButton: MouseBindings.Auxiliary }] });
-  if (previous === "Zoom") {
-    group.setToolActive("Zoom", { bindings: [{ mouseButton: MouseBindings.Wheel, modifierKey: KeyboardBindings.Ctrl }] });
-  }
+  if (previous && (FIXED_TOOLS as readonly string[]).includes(previous)) group.setToolActive(previous, { bindings: fixedBindings(engine, previous) });
 }
 
 export function addViewportToGroup(engine: Engine, groupId: string, viewportId: string): void {
