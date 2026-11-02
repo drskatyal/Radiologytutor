@@ -28,6 +28,7 @@ import { invoke } from "../platform";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
+import { cursorForTool } from "../viewer/toolCursor";
 import { onNativeLayoutApplied, registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
 import { toCell, toImage, transformFor, type NativeTransform, type NativeView } from "./transform";
 import NativeAnnotationLayer, { isAnnotationTool } from "./NativeAnnotationLayer";
@@ -390,7 +391,8 @@ export default function NativeStackViewport({
       data-viewport-id={viewportId}
       role="img"
       aria-label={series ? `${series.description || "Series"}, image ${(shown?.index ?? 0) + 1} of ${count}` : "Empty viewport"}
-      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", tool === "Pan" ? "cursor-grab" : "cursor-crosshair")}
+      // The tool's own cursor (viewer/toolCursor.ts); the body-level rule wins when installed.
+      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", `tool-cursor-${cursorForTool(tool)}`)}
       onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

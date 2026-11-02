@@ -156,6 +156,16 @@ fn rotate(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
     (dir, right, up)
 }
 
+/// Deterministic per-pixel offset in [0, 1) (integer hash; same frame every time).
+#[inline]
+fn jitter(x: usize, y: usize) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    (h >> 8) as f32 / (1u32 << 24) as f32
+}
+
 pub struct Frame {
     pub w: usize,
     pub h: usize,
@@ -224,7 +234,11 @@ pub fn render(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f
                     (o[2] + dir[2] * s) / sp[2] - 0.5,
                 ]
             };
-            let mut s = t0;
+            // Start each ray a pixel-dependent fraction of a step in: with every
+            // ray sampling at the same depths, faint surfaces (skin band, table,
+            // blanket) alias into horizontal "wood-grain" stripes across the
+            // background (HP 0.8.0). The offset turns that into fine noise.
+            let mut s = t0 + step * jitter(px, py);
             if mode == Mode::Mip {
                 let mut best = f32::MIN;
                 while s < t1 {
@@ -337,6 +351,26 @@ mod tests {
         let f = render(&v, Mode::Mip, 0.0, 0.0, 1.0, 0.0, 2000.0, 32, false);
         let centre = f.rgb[(16 * 32 + 16) * 3];
         assert!(centre > 200, "max of the sphere is near white: {centre}");
+    }
+
+    #[test]
+    fn ray_start_jitter_is_in_one_step_and_spread() {
+        let mut sum = 0.0f64;
+        let mut row = [0usize; 4];
+        for y in 0..64 {
+            for x in 0..64 {
+                let j = jitter(x, y);
+                assert!((0.0..1.0).contains(&j));
+                sum += j as f64;
+                row[(j * 4.0) as usize] += 1;
+            }
+        }
+        let mean = sum / 4096.0;
+        assert!((mean - 0.5).abs() < 0.03, "mean {mean}");
+        // Neighbouring rows do not share one offset (that would be a stripe).
+        assert!(row.iter().all(|&n| n > 800), "quartiles {row:?}");
+        assert_ne!(jitter(10, 3), jitter(10, 4));
+        assert_eq!(jitter(7, 9), jitter(7, 9), "deterministic");
     }
 }
 
