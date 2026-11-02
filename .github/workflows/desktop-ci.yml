@@ -135,6 +135,10 @@ jobs:
         run: npx tauri build --debug --no-bundle
         working-directory: desktop
       - name: e2e — normal launch paints real pixels in the main viewport
+        env:
+          # WARP runner: an unforced CPU-fallback launch is discarded and
+          # repeated (max 2, logged); the check itself is unchanged.
+          FLOWRAD_BENCH_WARP_RETRY: "1"
         run: python desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer.exe
 
   # Performance gate on WebView2 (the platform readers install on), release
@@ -198,6 +202,10 @@ jobs:
       MPR_MAX_MS: "2000"
       MPR_MAX_MB: "1200"
       IDLE_MAX_MB: "400"
+      # WARP (software GPU) on the runner: a JS-renderer run that falls back to
+      # the CPU or hits a long one-time engine task is discarded and repeated
+      # (max 2, logged); thresholds unchanged. Never set on the HP.
+      FLOWRAD_BENCH_WARP_RETRY: "1"
       # CI runner: WebView2 alone takes ~0.4-0.5 s before our page loads, so CI
       # gates the app's own share (window build + page load -> first paint)
       # and keeps the total as a backstop. The 500 ms total is checked on real
@@ -231,12 +239,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pydicom numpy
+      - run: pip install pydicom numpy pillow
       - run: npm ci
       - run: npm ci --prefix desktop
       - name: Build the app (release, no installer)
         run: npx tauri build --no-bundle
         working-directory: desktop
+      # Phase 2 (docs/NATIVE_RENDERER.md), P2.0: the WebView2 UI floor — the
+      # whole tree with only the UI in the webview (no image engine) — then the
+      # same with the native wgpu surface and its test image, then the
+      # compositing e2e (native pixels under the transparent page, page on top).
+      - name: P2.0 — WebView2 UI floor (start screen, native mode, whole tree, after 10 s)
+        env:
+          FLOWRAD_NATIVE: "1"
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+      - name: P2.0 — floor + native surface (spike view, whole tree, after 10 s)
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_BENCH_VIEW: native-spike
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+      - name: P2.0 e2e — native wgpu surface under a transparent WebView2 (screen grab)
+        run: python desktop/scripts/e2e-native.py desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/native-shots"
+      - name: Upload the P2.0 screen grab
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-spike-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/native-shots
+          if-no-files-found: warn
+          retention-days: 14
       - name: Synthetic CT, 848 slices (deterministic)
         run: python scripts/make-test-ct.py "${{ runner.temp }}/ct848" --slices 848
       # Real-size studies (HP: CT 4,332 images, MRI 10,310 images), synthetic
