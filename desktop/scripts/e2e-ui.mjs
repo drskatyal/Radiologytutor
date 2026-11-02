@@ -1081,7 +1081,9 @@ if (want("voice")) {
     else console.error(`SKIP  voice: ${why}`);
   } else {
     check("voice: nothing loaded before the mic is switched on", voiceRequests.length === 0, voiceRequests.join(" "));
-    const workersBefore = page.workers().length;
+    // The recognizer's own worker, by URL: other workers (series thumbnails)
+    // come and go, so a count of all page workers says nothing.
+    const recognizers = () => page.workers().filter((w) => /recognizer-worker/.test(w.url())).length;
     await focusImage();
     await page.keyboard.press("Shift+Digit1");
     await settle(400);
@@ -1093,7 +1095,7 @@ if (want("voice")) {
     await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
     const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
     check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
-    check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
+    check("voice: the recognizer runs in its own worker", recognizers() === 1, page.workers().map((w) => w.url().split("/").pop()).join(", "));
     // The WAV says: "layout two", "lung window", "zoom in" (looped by Chromium).
     const heard = new Set();
     // The recording loops; give it two full passes to hear every phrase.
@@ -1114,7 +1116,7 @@ if (want("voice")) {
     await page.keyboard.press("Control+Shift+V");
     await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
-    check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
+    check("voice: switching off frees the recognizer (worker gone)", recognizers() === 0, page.workers().map((w) => w.url().split("/").pop()).join(", "));
   }
 }
 
