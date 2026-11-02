@@ -673,15 +673,36 @@ pub(crate) fn heap_committed_mb() -> Option<f64> {
 /// waiting for a collect that an idle thread never runs.
 const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
+/// mimalloc option `purge_decommits` (v3 `mi_option_e` index 5, default 1):
+/// a purge decommits instead of resetting.
+const MI_OPTION_PURGE_DECOMMITS: libmimalloc_sys::mi_option_t = 5;
+
 /// This process's committed memory (private bytes), MB, from the allocator's
-/// view of the OS counters.
+/// view of the OS counters. macOS: the physical footprint instead (what
+/// Activity Monitor and the bench report): mimalloc decommits there with
+/// MADV_FREE_REUSABLE, which leaves the pages in the resident size its
+/// counter reads but takes them out of the footprint at once.
 pub(crate) fn commit_mb() -> f64 {
+    #[cfg(target_os = "macos")]
+    if let Some(mb) = footprint_mb() {
+        return mb;
+    }
     let (mut z, mut commit) = (0usize, 0usize);
     let (mut a, mut b, mut c, mut d, mut e, mut f) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     unsafe {
         libmimalloc_sys::mi_process_info(&mut z, &mut a, &mut b, &mut c, &mut d, &mut commit, &mut e, &mut f);
     }
     (commit as f64 / 1_048_576.0 * 10.0).round() / 10.0
+}
+
+/// macOS: this process's physical footprint, MB (`ri_phys_footprint`, the
+/// "Memory" column of Activity Monitor; the bench gates on the same number).
+#[cfg(target_os = "macos")]
+pub(crate) fn footprint_mb() -> Option<f64> {
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a rusage_info_v2, the flavour asked for.
+    let rc = unsafe { libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t) };
+    (rc == 0).then(|| (info.ri_phys_footprint as f64 / 1_048_576.0 * 10.0).round() / 10.0)
 }
 
 // ───────────── P2.2: native viewports in the app (one per layout cell) ─────────────
@@ -989,8 +1010,14 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
-    // Freed memory goes back to the OS at once (see MI_OPTION_PURGE_DELAY).
-    unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+    // Freed memory goes back to the OS at once (see MI_OPTION_PURGE_DELAY),
+    // and a purge decommits (MADV_FREE_REUSABLE on macOS, out of the
+    // footprint at once) rather than resets (MADV_FREE: counted until the
+    // system is short of memory).
+    unsafe {
+        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
+        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DECOMMITS, 1);
+    }
     // The GPU device and pipelines build on their own thread from here, in
     // parallel with WebView2 starting (native.rs `prewarm`).
     native::prewarm();
@@ -1165,10 +1192,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    /// What this process holds, MB: private bytes on Windows / macOS (the
-    /// allocator's view of the OS commit), anonymous resident memory on Linux
-    /// (mimalloc purges there with MADV_DONTNEED, which its commit counter
-    /// does not see).
+    /// What this process holds, MB: private bytes on Windows (the allocator's
+    /// view of the OS commit), the physical footprint on macOS (mimalloc
+    /// decommits with MADV_FREE_REUSABLE: out of the footprint at once, still
+    /// in RSS), anonymous resident memory on Linux (mimalloc purges there with
+    /// MADV_DONTNEED, which its commit counter does not see).
     fn held_mb() -> f64 {
         #[cfg(target_os = "linux")]
         {
@@ -1186,6 +1214,8 @@ mod tests {
     fn mimalloc_purge_option_and_heap_stat() {
         let delay = unsafe { libmimalloc_sys::mi_option_get(super::MI_OPTION_PURGE_DELAY) };
         assert!(delay == 1000 || delay == 0, "option {} is not purge_delay (value {delay})", super::MI_OPTION_PURGE_DELAY);
+        let decommits = unsafe { libmimalloc_sys::mi_option_get(super::MI_OPTION_PURGE_DECOMMITS) };
+        assert_eq!(decommits, 1, "option {} is not purge_decommits, or it is off", super::MI_OPTION_PURGE_DECOMMITS);
         let heap = super::heap_committed_mb().expect("mimalloc stats JSON");
         assert!(heap > 0.0, "heap committed {heap} MB");
     }
