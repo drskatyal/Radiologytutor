@@ -7,7 +7,7 @@
 // image the reader is looking at. Drag a card onto
 // any viewport, click to load it in the active one.
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useDeferredValue, useEffect, useRef, useState } from "react";
 import { Layers, Film, Box, FileText } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { Badge } from "@/components/ui/Badge";
@@ -140,7 +140,11 @@ interface Props {
   onSeriesCommand?: (uid: string, command: MenuCommand) => void;
 }
 
-function SeriesBrowserImpl({ studies, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries, documents = [], onOpenReport, hidden, onShowHidden, menuFor, onSeriesCommand }: Props) {
+function SeriesBrowserImpl({ studies: studiesNow, onScreen, activeSeriesUid, growing, compact = false, hidePatient = false, onOpenSeries, documents = [], onOpenReport, hidden, onShowHidden, menuFor, onSeriesCommand }: Props) {
+  // The cards render at low priority (React time-slices them): a study with
+  // hundreds of series streaming in no longer freezes the viewer for the
+  // 50-100 ms one full re-render of the browser took (HP, 0.8.0).
+  const studies = useDeferredValue(studiesNow);
   const [menu, setMenu] = useState<{ uid: string; x: number; y: number } | null>(null);
   const contextMenu = (uid: string) =>
     menuFor
