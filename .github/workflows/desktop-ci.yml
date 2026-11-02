@@ -435,8 +435,17 @@ jobs:
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }} --max-interaction-ms ${{ env.INTERACTION_MAX_MS }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)
+        # Runs even when the frame-time step above fails (software GPU on this runner),
+        # so the leak / multi-window / MPR gates are always measured and still gate.
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: Gate — multi-monitor (a second viewer window opens, paints, follows; closing it returns memory)
+        # Runs even when the frame-time step above fails (software GPU on this runner),
+        # so the leak / multi-window / MPR gates are always measured and still gate.
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs multiwindow desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-window-leak-mb ${{ env.WINDOW_LEAK_MAX_MB }} --max-long-tasks 0
       - name: MPR build time and peak memory (whole process tree)
+        # Runs even when the frame-time step above fails (software GPU on this runner),
+        # so the leak / multi-window / MPR gates are always measured and still gate.
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
