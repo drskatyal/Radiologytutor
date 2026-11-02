@@ -167,53 +167,6 @@ function yieldToMain(): Promise<void> {
   });
 }
 
-const GPU_PROBE_KEY = "flowrad.gpuProbe.v1";
-
-/**
- * What core.init() would probe (norm16 textures, WebGL at all), one probe per
- * task and cached per browser + app build, so engine start-up creates no
- * throwaway WebGL contexts in one long task (vite.config.ts feeds the result
- * to Cornerstone). A stale cache is caught by the paint self-check
- * (paintCheck.ts), which falls back to CPU rendering on a blank GPU paint.
- */
-async function probeGpu(): Promise<void> {
-  const g = globalThis as unknown as {
-    __flowradGpu?: { norm16: boolean; webgl: boolean };
-    __flowradNorm16Probe?: (linear: boolean) => boolean;
-  };
-  const key = `${navigator.userAgent}|${import.meta.env.VITE_APP_VERSION ?? ""}`;
-  try {
-    const cached = JSON.parse(localStorage.getItem(GPU_PROBE_KEY) ?? "null") as { key: string; norm16: boolean; webgl: boolean } | null;
-    if (cached?.key === key) {
-      g.__flowradGpu = { norm16: cached.norm16, webgl: cached.webgl };
-      return;
-    }
-  } catch {
-    /* no storage: probe */
-  }
-  const webgl = (() => {
-    const gl = document.createElement("canvas").getContext("webgl2");
-    gl?.getExtension("WEBGL_lose_context")?.loseContext();
-    return !!gl;
-  })();
-  await yieldToMain();
-  let norm16 = false;
-  if (webgl && g.__flowradNorm16Probe) {
-    norm16 = g.__flowradNorm16Probe(false);
-    await yieldToMain();
-    norm16 = norm16 && g.__flowradNorm16Probe(true);
-    await yieldToMain();
-  }
-  // Without the seam (dev server, Cornerstone upgrade) Cornerstone probes itself.
-  if (!g.__flowradNorm16Probe) return;
-  g.__flowradGpu = { norm16, webgl };
-  try {
-    localStorage.setItem(GPU_PROBE_KEY, JSON.stringify({ key, norm16, webgl }));
-  } catch {
-    /* not cached: probe again next launch */
-  }
-}
-
 async function createEngine(): Promise<Engine> {
   const steps: Record<string, number> = {};
   engineTimings.steps = steps;
@@ -236,8 +189,6 @@ async function createEngine(): Promise<Engine> {
   const loader = await loaderP;
   step("importMs");
   await yieldToMain();
-  await probeGpu();
-  step("gpuProbeMs");
   const profile = detectDeviceProfile();
   // Desktop: never the mobile profile, whatever the pointer says.
   profile.isMobile = false;
