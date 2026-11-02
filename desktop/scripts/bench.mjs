@@ -404,6 +404,7 @@ function treeMemory(pid) {
     }
     return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
   }
+  if (process.platform === "darwin") return treeMemoryMac(pid);
   const ps = execFileSync("ps", ["-e", "-o", "pid=,ppid=,comm="]).toString();
   const rows = ps.trim().split("\n").map((l) => l.trim().split(/\s+/));
   const kids = new Map();
@@ -427,6 +428,69 @@ function treeMemory(pid) {
     procs.push({ name: name.get(p), wsMb: Math.round(rss / 1024), privateMb: Math.round(priv / 1024) });
     stack.push(...(kids.get(p) ?? []));
   }
+  return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
+}
+
+/** "[[dd-]hh:]mm:ss" (ps etime) → seconds. */
+function etimeSeconds(t) {
+  const [d, rest] = t.includes("-") ? t.split("-") : ["0", t];
+  return rest.split(":").map(Number).reduce((a, n) => a * 60 + n, 0) + Number(d) * 86400;
+}
+
+/** top's MEM column ("123M", "1.2G", "512K", "40M+") → MB. */
+function topMb(v) {
+  const m = /^([\d.]+)([KMGB]?)/.exec(v ?? "");
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  return m[2] === "G" ? n * 1024 : m[2] === "K" ? n / 1024 : m[2] === "B" ? n / 1048576 : n;
+}
+
+/**
+ * macOS: WKWebView's WebContent / GPU / Networking processes are XPC
+ * services started by launchd (parent pid 1), not children of the app, so a
+ * parent walk misses them. The tree is the app, its descendants, and every
+ * com.apple.WebKit.* process started after it (CI runners run nothing else on
+ * WebKit). "private" is the physical footprint (top's MEM, what Activity
+ * Monitor shows); "ws" is RSS.
+ */
+function treeMemoryMac(pid) {
+  const rows = [];
+  for (const line of execFileSync("ps", ["-axo", "pid=,ppid=,etime=,rss=,comm="]).toString().split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), age: etimeSeconds(m[3]), rssKb: Number(m[4]), comm: m[5] });
+  }
+  const app = rows.find((r) => r.pid === pid);
+  if (!app) return { wsMb: 0, privateMb: 0, processes: [] };
+  const kids = new Map();
+  for (const r of rows) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r]);
+  const tree = [];
+  const stack = [app];
+  const seen = new Set();
+  while (stack.length) {
+    const r = stack.pop();
+    if (seen.has(r.pid)) continue;
+    seen.add(r.pid);
+    tree.push(r);
+    stack.push(...(kids.get(r.pid) ?? []));
+  }
+  for (const r of rows) if (!seen.has(r.pid) && /com\.apple\.WebKit\./.test(r.comm) && r.age <= app.age + 2) tree.push(r);
+  const footprint = new Map();
+  try {
+    const args = ["-l", "1", "-s", "0", "-stats", "pid,mem"];
+    for (const r of tree) args.push("-pid", String(r.pid));
+    for (const line of execFileSync("top", args, { encoding: "utf8" }).split("\n")) {
+      const m = /^\s*(\d+)\s+(\S+)\s*$/.exec(line);
+      if (m) footprint.set(Number(m[1]), topMb(m[2]));
+    }
+  } catch {
+    /* top unavailable: fall back to RSS */
+  }
+  const kind = (r) =>
+    r.pid === pid ? "app" : /WebContent/.test(r.comm) ? "renderer" : /GPU/.test(r.comm) ? "gpu-process" : /Networking/.test(r.comm) ? "utility" : "child";
+  const procs = tree.map((r) => {
+    const wsMb = Math.round(r.rssKb / 1024);
+    return { name: path.basename(r.comm), type: kind(r), wsMb, privateMb: Math.round(footprint.get(r.pid) ?? wsMb) };
+  });
   return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
 }
 
