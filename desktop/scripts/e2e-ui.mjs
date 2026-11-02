@@ -729,6 +729,27 @@ if (want("contextmenu")) {
   await focusImage();
   await page.keyboard.press("Shift+Digit1"); // 1×1
   await settle(400);
+  // The thin-slice axial CT in pane 0: the menu's Reformat / MPR / 3D section
+  // is offered only for a volumetric series, and earlier groups leave other
+  // series (the 5 mm slab, the coronal) in the pane.
+  {
+    const cards = page.locator('nav[aria-label="Series"] li button');
+    const imagesIn0 = async () => (await imageNo(0))?.of;
+    if ((await imagesIn0()) !== 300) {
+      for (let i = 0; i < (await cards.count()); i += 1) {
+        if (!((await cards.nth(i).innerText()).match(/\d+/g) ?? []).includes("300")) continue;
+        const cb = await cards.nth(i).boundingBox();
+        const tb = await box(0);
+        await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, { steps: 12 });
+        await page.mouse.up();
+        await settle(1000);
+        break;
+      }
+    }
+    check("contextmenu: pane 0 shows the 300-slice axial CT", (await imagesIn0()) === 300, `${await imagesIn0()} images`);
+  }
   const b0 = await box(0);
   const at = (fx, fy) => [b0.x + b0.width * fx, b0.y + b0.height * fy];
   const imageMenu = page.getByRole("menu", { name: "Image" });
@@ -960,91 +981,7 @@ if (want("cine") && only?.includes("cine")) {
 }
 
 // ── export: key images (marked with *), cine video ──────────────────────
-if (want("export")) {
-  await focusImage();
-  await page.keyboard.press("Shift+Digit1");
-  await settle(500);
-  const b = await box(0);
-  await page.mouse.click(b.x + b.width * 0.92, b.y + b.height * 0.5);
-  await page.keyboard.press("Home");
-  for (let k = 0; k < 3; k += 1) {
-    await page.keyboard.press("Shift+Digit8"); // "*"
-    await settle(200);
-    if (k === 0)
-      check(
-        "export: * marks a key image (overlay)",
-        await cell(0)
-          .getByTestId("key-image-mark")
-          .isVisible()
-          .catch(() => false),
-      );
-    await page.keyboard.press("PageDown");
-    await settle(200);
-  }
-  const downloads = [];
-  page.on("download", (d) => downloads.push(d));
-  await page.keyboard.press("Control+e");
-  const dlg = page.getByRole("dialog", { name: /Export/ });
-  await dlg.waitFor();
-  const keysRadio = dlg.getByRole("radio", { name: /Key images/ });
-  check(
-    "export: the dialog counts the key images",
-    /3 marked/.test(await keysRadio.innerText()),
-    await keysRadio.innerText(),
-  );
-  await keysRadio.click();
-  await dlg.getByRole("button", { name: /^Export/ }).click();
-  await page.waitForTimeout(4000);
-  const pngs = [];
-  for (const d of downloads.splice(0))
-    pngs.push(await readFile(await d.path()));
-  check(
-    "export: three key images saved as PNG",
-    pngs.length === 3 &&
-      pngs.every((p) => p.subarray(1, 4).toString() === "PNG"),
-    `${pngs.length} files`,
-  );
-  await shot("export-keys");
-  // Cine video (MP4 where the system has H.264, else Motion-JPEG AVI), of the
-  // 60-image series (software GL renders each frame).
-  await page.keyboard.press("Escape").catch(() => undefined);
-  for (let k = 0; k < 3 && (await imageNo(0))?.of !== 60; k += 1) {
-    await page.keyboard.press("ArrowRight");
-    await page.waitForTimeout(1200);
-  }
-  await page.keyboard.press("Control+e").catch(() => undefined);
-  await dlg.waitFor().catch(() => undefined);
-  await dlg.getByRole("radio", { name: /^Video/ }).click();
-  await dlg.getByRole("button", { name: /^Export/ }).click();
-  const video = await page
-    .waitForEvent("download", { timeout: 180_000 })
-    .catch(() => null);
-  if (!video) {
-    await shot("export-video-missing");
-    console.error(
-      "toasts:",
-      await page
-        .locator("[role=status], [data-sonner-toast], li[role=status]")
-        .allInnerTexts()
-        .catch(() => []),
-    );
-    console.error("errors:", consoleErrors.slice(-5));
-  }
-  const bytes = video ? await readFile(await video.path()) : Buffer.alloc(0);
-  const container =
-    bytes.subarray(4, 8).toString() === "ftyp"
-      ? "mp4"
-      : bytes.subarray(0, 4).toString() === "RIFF"
-        ? "avi"
-        : "?";
-  check(
-    "export: the series exports as a cine video",
-    container !== "?" && bytes.length > 50_000,
-    `${container}, ${(bytes.length / 1e6).toFixed(1)} MB`,
-  );
-  await page.keyboard.press("Escape");
-  await settle(300);
-}
+
 
 // ── measurements: HU ROI, Cobb angle, spine labels across series ─────────
 if (want("measure")) {

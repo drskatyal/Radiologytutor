@@ -324,3 +324,14 @@ test("re-mapped shortcuts: the new key fires, the default no longer does, clashe
   assert.equal(conflictFor("Shift+W", "invert", overrides, false)?.id, "tool.w", "re-mapped keys are claimed");
   assert.ok(shortcutSheet(false, overrides).some((r) => r.custom && r.keys === "Shift+W"));
 });
+
+test("files with the same name in two series keep their own headers (browser drop of two folders)", () => {
+  // Same file names, different series: the 1 mm stack must stay 1 mm (and volumetric).
+  const thin = [0, 1, 2, 3].map((i) => ct(0 - i || 0, i + 1, { fileName: `IM${i + 1}`, seriesInstanceUID: "thin", fileId: i }));
+  const thick = [0, 1].map((i) => ct(-5 * i - 0.5, i + 1, { fileName: `IM${i + 1}`, seriesInstanceUID: "thick", fileId: 10 + i }));
+  const [study] = buildStudies([...thin, ...thick]);
+  const byUid = new Map(study.series.map((s) => [s.uid, s]));
+  assert.deepEqual(byUid.get("thin")!.headers.map((h) => h.imagePositionPatient![2]), [0, -1, -2, -3]);
+  assert.equal(byUid.get("thin")!.volumetric, true);
+  assert.deepEqual(byUid.get("thick")!.headers.map((h) => h.imagePositionPatient![2]), [-0.5, -5.5]);
+});
