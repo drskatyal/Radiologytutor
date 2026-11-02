@@ -24,7 +24,8 @@ import {
   type OverlayMode,
 } from "../viewer/exporter";
 
-type Kind = "image" | "series" | "video" | "dicom";
+export type ExportKind = "image" | "series" | "video" | "dicom";
+type Kind = ExportKind;
 
 interface Props {
   open: boolean;
@@ -32,6 +33,8 @@ interface Props {
   handle: ViewportHandle | undefined;
   series: ViewerSeries | null;
   study: ViewerStudy | null;
+  /** Where the dialog opens (right-click "Save as PNG…": image, PNG, no burned-in text). */
+  initial?: { kind?: Kind; format?: "png" | "jpeg"; overlay?: OverlayMode };
 }
 
 const KINDS: { id: Kind; label: string; hint: string; icon: typeof FileImage }[] = [
@@ -56,11 +59,11 @@ function frameText(series: ViewerSeries, study: ViewerStudy | null, index: numbe
   };
 }
 
-export function ExportDialog({ open, onClose, handle, series, study }: Props) {
+export function ExportDialog({ open, onClose, handle, series, study, initial }: Props) {
   const { toast } = useToast();
-  const [kind, setKind] = useState<Kind>("image");
-  const [format, setFormat] = useState<"png" | "jpeg">("png");
-  const [overlay, setOverlay] = useState<OverlayMode>("anonymous");
+  const [kind, setKind] = useState<Kind>(initial?.kind ?? "image");
+  const [format, setFormat] = useState<"png" | "jpeg">(initial?.format ?? "png");
+  const [overlay, setOverlay] = useState<OverlayMode>(initial?.overlay ?? "anonymous");
   const [annotations, setAnnotations] = useState(true);
   const [fps, setFps] = useState(15);
   const [dicomScope, setDicomScope] = useState<"series" | "study">("series");

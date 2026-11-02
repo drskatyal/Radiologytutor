@@ -85,11 +85,14 @@ export function headFirst(ordered: DesktopHeader[]): DesktopHeader[] {
 }
 
 export function buildStudies(headers: readonly DesktopHeader[]): ViewerStudy[] {
-  const byFile = new Map(headers.map((h) => [h.fileName, h]));
   const grouped = groupLocalStudies(headers);
   return grouped.map((study) => {
     const series: ViewerSeries[] = study.series.map((s) => {
-      const ordered = headFirst(s.instances.map((i) => byFile.get(i.fileName)!).filter(Boolean));
+      // The grouped instances ARE our headers. (They used to be looked up again
+      // by file name, and two files with the same name in different folders,
+      // e.g. a browser drop of IM000001 from two series, swapped headers between
+      // series: the 1 mm CT came out mixed with the 5 mm one and not volumetric.)
+      const ordered = headFirst(s.instances as DesktopHeader[]);
       const imageIds: string[] = [];
       const perImage: DesktopHeader[] = [];
       for (const h of ordered) {

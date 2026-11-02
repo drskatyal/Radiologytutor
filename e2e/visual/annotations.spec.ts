@@ -81,8 +81,8 @@ test("annotations: optional arrow label, select/delete, undo/redo, menu, eraser"
   await page.keyboard.press("Control+z");
   await expect.poll(() => state(page)).toMatchObject({ onImage: 1 });
 
-  // Right-click menu: delete everything on this image, then undo.
-  await page.mouse.click(...P(0.15, 0.8), { button: "right" });
+  // Right-click the arrow: its menu deletes everything on this image; then undo.
+  await page.mouse.click(...P(0.425, 0.425), { button: "right" });
   const menu = page.getByRole("menu", { name: "Annotation" });
   await expect(menu).toBeVisible();
   await menu.getByRole("menuitemradio", { name: /^Delete all on this image/ }).click();

@@ -6,7 +6,7 @@ import type { Config } from "tailwindcss";
 
 const config: Config = {
   ...base,
-  content: ["./index.html", "./src/**/*.{ts,tsx}", "../components/ui/**/*.{ts,tsx}"],
+  content: ["./index.html", "./src/**/*.{ts,tsx}", "../components/ui/**/*.{ts,tsx}", "../components/viewer/**/*.{ts,tsx}"],
 };
 
 export default config;

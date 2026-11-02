@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getScrollPreferences, slicesForNotch } from "@flowrad/viewer-core";
 import { cn } from "@/components/ui/cn";
+import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
 import { Spinner } from "@/components/ui/Spinner";
 import { invoke } from "../platform";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
@@ -73,8 +74,14 @@ export default function NativeStackViewport({
   onDoubleClick,
   onFirstPaint,
   onAnnotationsDeleted,
+  imageMenu,
+  onMenuCommand,
   tool = "StackScroll",
 }: Props) {
+  // Right-click menu (#111, shared contextMenu.ts): a right press that did not
+  // drag (a right drag zooms) opens it at the pointer.
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const rightMoved = useRef(false);
   const elementRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState<NativeShow | null>(null);
   const shownRef = useRef<NativeShow | null>(null);
@@ -268,6 +275,7 @@ export default function NativeStackViewport({
     }
     // Annotation tools are handled by the annotation layer (it stops the event).
     if (e.button === 0 && !NAV_TOOLS.has(tool)) return;
+    if (e.button === 2) rightMoved.current = false;
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY, button: e.button, start: shown, acc: 0 };
   };
@@ -277,6 +285,7 @@ export default function NativeStackViewport({
     if (!d) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
+    if (d.button === 2 && Math.abs(dx) + Math.abs(dy) > 3) rightMoved.current = true;
     const mode = d.button === 2 ? "Zoom" : d.button === 1 ? "Pan" : tool;
     const v = d.start.view;
     if (mode === "WindowLevel") {
@@ -370,7 +379,12 @@ export default function NativeStackViewport({
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (rightMoved.current || !imageMenu) return;
+        onActivate();
+        setMenuAt({ x: e.clientX, y: e.clientY });
+      }}
       onDoubleClick={onDoubleClick}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
@@ -434,6 +448,18 @@ export default function NativeStackViewport({
         </div>
       )}
       {!series && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted">Drop a series here</div>}
+      {menuAt && imageMenu && (
+        <ViewerContextMenu
+          at={menuAt}
+          label="Image"
+          entries={imageMenu()}
+          onSelect={(command) => {
+            setMenuAt(null);
+            onMenuCommand?.(command);
+          }}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
       <ViewportFrame active={active} hover={dropHover} />
     </div>
   );
