@@ -798,6 +798,8 @@ export default function CornerstoneViewer({
   paneLabel,
   onChunkLoadError,
   onSeriesStep,
+  voiceOn = false,
+  onVoiceChange,
 }: {
   /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
   paneLabel?: string;
@@ -832,6 +834,13 @@ export default function CornerstoneViewer({
    * themselves (the free viewer). Without it, the `series` prop is stepped.
    */
   onSeriesStep?: (delta: number) => void;
+  /**
+   * Voice commands were on in the viewer this one replaces (another series):
+   * switch them back on once this one is ready. Paired with `onVoiceChange`,
+   * which reports the reader turning voice on or off (not an unmount).
+   */
+  voiceOn?: boolean;
+  onVoiceChange?: (on: boolean) => void;
   /**
    * The viewer's code could not be fetched even after retries (a deploy
    * swapped the build under this tab, or the network dropped it). The host
@@ -3725,10 +3734,33 @@ export default function CornerstoneViewer({
         setVoice({ state });
         if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSessionRef.current = null;
+        // The reader's choice, so the next series' viewer keeps it (not an unmount).
+        if (!unmountingRef.current && (state === "listening" || state === "off" || state === "error")) {
+          onVoiceChangeRef.current?.(state === "listening");
+        }
       },
     });
   };
-  useEffect(() => () => voiceSessionRef.current?.stop(), []);
+  const unmountingRef = useRef(false);
+  const onVoiceChangeRef = useRef(onVoiceChange);
+  onVoiceChangeRef.current = onVoiceChange;
+  useEffect(
+    () => () => {
+      unmountingRef.current = true;
+      voiceSessionRef.current?.stop();
+    },
+    []
+  );
+  // "Next series" by voice remounts the viewer for the new series: carry the
+  // mic over (the model is in the HTTP cache, the permission already given).
+  const voiceResumedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || !canVoice || !voiceOn || voiceResumedRef.current) return;
+    voiceResumedRef.current = true;
+    if (!voiceSessionRef.current) void toggleVoice();
+    // Once per mount; toggleVoice reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, canVoice, voiceOn]);
 
   // Markers live in stack-image fractions. Report MPR only while the volume
   // is on screen (or still mounting). A failed reconstruction keeps the stack.
