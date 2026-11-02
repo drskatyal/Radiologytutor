@@ -15,6 +15,7 @@ import {
   segmentMidMs,
 } from "../captureSession";
 import { measurementsFromTrack } from "../findingMeasurements";
+import { teacherMarkerInWindow } from "../teacherSketch";
 import { guideForFindingTrack } from "../teachingGuide";
 import type {
   CaptureSession,
@@ -71,7 +72,11 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
     if (!seg.label?.trim()) continue;
 
     const mid = segmentMidMs(seg.tStartMs, seg.tEndMs);
+    // The teacher's own numbered marker beats a cursor sample: it is where
+    // they pressed M, on the image they pressed it on.
+    const pinned = teacherMarkerInWindow(track, seg.tStartMs, seg.tEndMs);
     const marker: Marker =
+      pinned?.marker ??
       seg.suggestedMarker ??
       markerNearTime(track, mid) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" };
     const sub = sliceTrack(track, seg.tStartMs, seg.tEndMs);
@@ -91,10 +96,12 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
     }
 
     const sliceIndex =
+      pinned?.sliceIndex ??
       seg.suggestedSliceIndex ??
       landingSlice ??
       0;
     const seriesUID =
+      pinned?.seriesInstanceUID ||
       seriesNearTime(track, mid) ||
       input.seriesInstanceUID ||
       undefined;
@@ -103,7 +110,7 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       sliceIndex,
       ww,
       wc,
-      sopInstanceUID: input.sopInstanceUID,
+      sopInstanceUID: pinned?.sopInstanceUID ?? input.sopInstanceUID,
     };
 
     const anchor: FindingAnchor = {

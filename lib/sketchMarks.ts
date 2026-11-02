@@ -12,6 +12,7 @@
 import type { Finding, FindingMeasurement } from "./types";
 import type { LiveFinding, LiveTeachingPack } from "./liveTeachingPack";
 import { drawDurationMs, INK, STROKE_GAP_MS } from "./inkStroke";
+import { sketchItemsOf } from "./teacherSketch";
 
 /** Authored ink is marker yellow; a learner tap is rose. No third colour. */
 export const SKETCH_STROKE = {
@@ -185,18 +186,48 @@ function arrowFromMeasurement(
   return { from: point(tail[0], tail[1]), to: point(tip[0], tip[1]) };
 }
 
+/**
+ * The last kept teacher arrow / ellipse drawn on the finding's slice in the
+ * Recording Studio. Authored coordinates — the AI sketch tool may redraw
+ * exactly these and nothing else.
+ */
+function teacherInk(finding: Finding): {
+  ellipse?: { rx: number; ry: number };
+  arrow?: { from: SketchPoint; to: SketchPoint };
+} {
+  const items = sketchItemsOf(finding.track);
+  if (!items.length) return {};
+  const slice = finite(finding.sliceIndex);
+  const onSlice = items.filter((item) => slice == null || item.image.sliceIndex === slice);
+  const last = (kind: "ellipse" | "arrow") => [...onSlice].reverse().find((item) => item.kind === kind && item.points.length >= 2);
+  const out: { ellipse?: { rx: number; ry: number }; arrow?: { from: SketchPoint; to: SketchPoint } } = {};
+  const ell = last("ellipse");
+  if (ell) {
+    out.ellipse = handlesBox(ell.points.map((p) => [p.x_pct, p.y_pct] as [number, number]));
+  }
+  const arr = last("arrow");
+  if (arr) {
+    const a = arr.points[0]!;
+    const b = arr.points[arr.points.length - 1]!;
+    out.arrow = { from: point(a.x_pct, a.y_pct), to: point(b.x_pct, b.y_pct) };
+  }
+  return out;
+}
+
 /** Anchor copied from the saved finding. Model JSON is not an input. */
 export function buildLiveSketch(finding: Finding): LiveSketchAnchor | undefined {
   const x = finite(finding.marker?.x_pct);
   const y = finite(finding.marker?.y_pct);
   if (x == null || y == null || x < 0 || x > 1 || y < 0 || y > 1) return undefined;
   const marker = point(x, y);
+  // The teacher's own Studio ink on this finding's take, kept on its slice.
+  const teacher = teacherInk(finding);
   const ellipseMeas = (finding.measurements ?? []).find((item) => item.kind === "ellipse");
-  const ellipse = ellipseMeas ? handlesBox(ellipseMeas.handles) : undefined;
+  const ellipse = ellipseMeas ? handlesBox(ellipseMeas.handles) : teacher.ellipse;
   const arrowMeas = (finding.measurements ?? []).find(
     (item) => item.kind === "arrow" || item.kind === "length"
   );
-  let arrow = arrowMeas ? arrowFromMeasurement(arrowMeas, marker) : undefined;
+  let arrow = arrowMeas ? arrowFromMeasurement(arrowMeas, marker) : teacher.arrow;
   let authored = Boolean(arrow);
   if (!arrow) {
     for (const event of finding.track?.events ?? []) {
