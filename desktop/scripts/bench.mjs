@@ -17,8 +17,12 @@
 // and the study on the command line; the renderer reports one JSON line
 // (scan, first image painted, scan done) and the app exits. The first run is
 // cold (empty scan cache); the rest are warm (cache hits). `coldstart` times
-// process start → first painted start screen, measured in-process AND from the
-// outside (spawn → report). `idle` sums RSS over the app's process tree (the
+// process start → first visible frame, measured in-process AND from the
+// outside (spawn → report). First visible = whichever reaches the screen
+// first: the native splash (Windows: GDI, the same splash as the page's,
+// timed once DWM has composed it; src-tauri/src/splash.rs) or the page's
+// first contentful paint. --max-ms gates first visible; --max-app-ms gates
+// the page's own share as before. `idle` sums RSS over the app's process tree (the
 // WebView runs in child processes) after it settles. `browser` serves the
 // built renderer and drives Chromium through the browser fallback, which is
 // `lib/localDicomFiles.ts` — the same loader /viewer/local uses on the web.
@@ -241,13 +245,20 @@ async function benchDesktop(binary, study) {
 async function benchColdStart(binary) {
   const runs = flag("runs", 5);
   const inProc = [];
+  const visible = [];
+  const native = [];
   const external = [];
-  const stages = { windowBuiltMs: [], navStartMs: [], jsStartMs: [], navDoneMs: [] };
+  const stages = { windowBuiltMs: [], webviewBuiltMs: [], navStartMs: [], jsStartMs: [], navDoneMs: [] };
   const appShare = [];
   const webviewShare = [];
   for (let i = 0; i < runs; i += 1) {
     const report = await runApp(binary, []);
     inProc.push(report.firstPaintMs);
+    // What the reader sees first. The native splash counts only when the app
+    // reports it composed on screen (nativeFirstPaintMs, splash.rs).
+    const nativeMs = typeof report.nativeFirstPaintMs === "number" ? report.nativeFirstPaintMs : Infinity;
+    if (Number.isFinite(nativeMs)) native.push(nativeMs);
+    visible.push(Math.min(nativeMs, report.firstPaintMs));
     if (typeof report.navStartMs === "number" && typeof report.windowBuiltMs === "number") {
       appShare.push(report.windowBuiltMs + (report.firstPaintMs - report.navStartMs));
       webviewShare.push(report.navStartMs - report.windowBuiltMs);
@@ -255,16 +266,18 @@ async function benchColdStart(binary) {
     external.push(report.externalMs);
     for (const k of Object.keys(stages)) if (typeof report[k] === "number") stages[k].push(report[k]);
     console.error(
-      `run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms · window built ${r0(report.windowBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms${report.nativeFirstPaintMs != null ? ` · native first paint ${r0(report.nativeFirstPaintMs)} ms` : ""}`
+      `run ${i + 1}: first visible ${r0(visible[visible.length - 1])} ms · page first paint ${r0(report.firstPaintMs)} ms · app built ${r0(report.windowBuiltMs)} · webview built ${r0(report.webviewBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms${report.nativeFirstPaintMs != null ? ` · native first paint (${report.nativeFirstPaintSource ?? "native"}) ${r0(report.nativeFirstPaintMs)} ms` : " · no native first paint"}`
     );
     // The page's share, from its navigation start: what arrived when, and
     // what the first paint waited for.
     const pt = report.pageTiming;
     if (pt) console.error(`  page: html ${pt.html} · css ${pt.css} · entry js ${pt.js} · parsed ${pt.interactive} · DOMContentLoaded ${pt.dcl} · load ${pt.load} · first paint ${pt.fcp} ms`);
   }
-  // Where the time goes before first paint: Rust + window creation
-  // (windowBuiltMs), WebView2 start until it begins loading the page
-  // (navStartMs), page JS start, first paint.
+  // Where the time goes before the page's first paint: Rust + Tauri's build
+  // (windowBuiltMs: the app is built; the window itself is created when the
+  // event loop starts), main window + webview built (webviewBuiltMs), WebView2
+  // start until it begins loading the page (navStartMs), page JS start, first
+  // paint.
   const breakdown = Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, v.length ? r0(median(v)) : null]));
   // Split the total into the two parts with different owners:
   //   webview2Ms  window built → WebView2 starts loading our page (the runtime's
@@ -274,14 +287,30 @@ async function benchColdStart(binary) {
   const webview2Ms = r0(median(webviewShare));
   console.log(
     JSON.stringify(
-      { mode: "coldstart", firstRunMs: r0(inProc[0]), medianMs: r0(median(inProc)), medianExternalMs: r0(median(external)), appMs, webview2Ms, median: breakdown },
+      {
+        mode: "coldstart",
+        // First visible: native splash or page paint, whichever came first (gated).
+        firstVisibleMs: r0(median(visible)),
+        firstRunVisibleMs: r0(visible[0]),
+        nativeFirstPaintMs: native.length ? r0(median(native)) : null,
+        nativeRuns: native.length,
+        // The page's own first paint (as before 0.8.3).
+        firstRunMs: r0(inProc[0]),
+        medianMs: r0(median(inProc)),
+        medianExternalMs: r0(median(external)),
+        appMs,
+        webview2Ms,
+        median: breakdown,
+      },
       null,
       2
     )
   );
   const budget = flag("max-ms", Infinity);
-  if (!(median(inProc) <= budget)) {
-    console.error(`cold-start gate failed: median first paint ${r0(median(inProc))} ms > ${budget} ms`);
+  if (!(median(visible) <= budget)) {
+    console.error(
+      `cold-start gate failed: median first visible ${r0(median(visible))} ms > ${budget} ms (native first paint ${native.length ? `${r0(median(native))} ms in ${native.length}/${runs} runs` : "none"}, page first paint ${r0(median(inProc))} ms)`
+    );
     process.exitCode = 1;
   }
   const appBudget = flag("max-app-ms", Infinity);
