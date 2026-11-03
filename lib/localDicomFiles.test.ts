@@ -38,6 +38,7 @@ const FULL = {
   x0020000d: " 1.2.840.1 ",
   x0020000e: "1.2.840.2",
   x00080018: "1.2.840.3",
+  x00080016: "1.2.840.10008.5.1.4.1.1.2",
   x00200013: "42",
   x00200032: "-250.0\\-250.0\\ 17.5",
   x00200037: "1\\0\\0\\0\\1\\0",
@@ -59,6 +60,7 @@ test("a full header maps every tag the grouping needs", () => {
   assert.equal(header.studyInstanceUID, "1.2.840.1", "whitespace trimmed");
   assert.equal(header.seriesInstanceUID, "1.2.840.2");
   assert.equal(header.sopInstanceUID, "1.2.840.3");
+  assert.equal(header.sopClassUID, "1.2.840.10008.5.1.4.1.1.2", "tells images from SR/KO documents");
   assert.equal(header.instanceNumber, 42);
   assert.deepEqual(header.imagePositionPatient, [-250, -250, 17.5]);
   assert.deepEqual(header.imageOrientationPatient, [1, 0, 0, 0, 1, 0]);

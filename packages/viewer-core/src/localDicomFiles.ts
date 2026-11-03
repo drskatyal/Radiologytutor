@@ -29,10 +29,12 @@ import {
   instanceImageCount,
   isDicomDir,
   isObviouslyNotDicom,
+  withKeyImageSeries,
   type LocalInstanceHeader,
   type LocalSeries,
   type LocalStudy,
 } from "./localStudy";
+import { documentFromDataSet, isStructuredDocumentClass, type DicomDocument, type SrDataSet } from "./srDocument";
 
 export {
   HEADER_BYTES,
@@ -81,6 +83,34 @@ export interface LocalOpenResult {
   dicomDirCount: number;
   /** Non-fatal problems worth telling the user about. */
   warnings: string[];
+  /** Structured Reports and key-image notes found among the files. */
+  documents: DicomDocument[];
+}
+
+/**
+ * Largest SR/KO read whole. Reports are a few KB; anything far past this is
+ * not a document worth holding in memory just to list it.
+ */
+export const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * A report or key-image note: no pixels, so it is read whole (they are small)
+ * for its content tree instead of becoming an "image". Call it for headers
+ * whose `isStructuredDocumentClass(sopClassUID)` holds. Null when it is too
+ * large or unreadable; never throws.
+ */
+export async function readLocalDocument(
+  parser: DicomHeaderParser,
+  file: Blob,
+  name: string
+): Promise<DicomDocument | null> {
+  if (file.size > MAX_DOCUMENT_BYTES) return null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return documentFromDataSet(parser.parseDicom(bytes) as unknown as SrDataSet, name);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -100,6 +130,7 @@ export async function openLocalFiles(
   const headers: LocalInstanceHeader[] = [];
   const imageIdsByFile = new Map<string, string[]>();
   const warnings: string[] = [];
+  const documents: DicomDocument[] = [];
   let skipped = 0;
   let dicomDirCount = 0;
   let read = 0;
@@ -133,6 +164,13 @@ export async function openLocalFiles(
       options?.onProgress?.({ read, accepted: headers.length, total: files.length });
       continue;
     }
+    if (isStructuredDocumentClass(header.sopClassUID)) {
+      const doc = await readLocalDocument(parser, file, name);
+      if (doc) documents.push(doc);
+      else warnings.push(`${name}: this report could not be read`);
+      options?.onProgress?.({ read, accepted: headers.length, total: files.length });
+      continue;
+    }
 
     const baseImageId = fileManager.add(file);
     imageIdsByFile.set(name, imageIdsForInstance(baseImageId, instanceImageCount(header)));
@@ -147,11 +185,12 @@ export async function openLocalFiles(
   }
 
   return {
-    studies: groupLocalStudies(headers),
+    studies: withKeyImageSeries(groupLocalStudies(headers), documents),
     imageIdsByFile,
     skipped,
     dicomDirCount,
     warnings,
+    documents,
   };
 }
 
