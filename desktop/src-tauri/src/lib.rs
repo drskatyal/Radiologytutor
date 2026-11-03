@@ -710,8 +710,8 @@ fn start_gpu_release_watch(native: native::Shared, window: tauri::WebviewWindow)
                     );
                 }
                 // The GPU runtime gives some of the device back later than
-                // the drop (CI, WARP: private bytes unchanged right after it,
-                // ~80 MB lower 15 s on): collect again once it has, and say
+                // the drop (CI, WARP: ~11 MB of its allocations still there right
+                // after it, gone 5 s on): collect again once it has, and say
                 // what is left. Its own thread: this watcher ends now, so a
                 // study opened meanwhile gets a watcher of its own.
                 let native = native.clone();

@@ -463,12 +463,6 @@ jobs:
             timeout 150 node desktop/scripts/bench.mjs coldstart $exe --runs 5 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.indexOf("{")<0){console.log(`COLD ${process.env.VARIANT}: no report`);return}const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.env.VARIANT||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})'
             echo "::endgroup::"
           done
-          # Lazy GPU release: the instance (DXGI factory, D3D12 runtime,
-          # driver DLLs) now goes with the device. The same close round
-          # keeping it, for the after-close residual it accounts for.
-          echo "::group::close round keeping the GPU instance (FLOWRAD_GPU_KEEP_INSTANCE=1)"
-          FLOWRAD_GPU_KEEP_INSTANCE=1 timeout 200 node desktop/scripts/bench.mjs close $exe "${{ runner.temp }}/ct848" --settle 20 --after-close 30 > /dev/null
-          echo "::endgroup::"
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }} --max-interaction-ms ${{ env.INTERACTION_MAX_MS }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)

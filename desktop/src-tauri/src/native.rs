@@ -476,7 +476,6 @@ impl Native {
         let Some(gpu) = self.gpu.lock().take() else { return false };
         flush_and_wait(&gpu);
         drop(gpu);
-        drop_shared_instance();
         let mut s = self.status.lock();
         s.ready = false;
         s.releases += 1;
@@ -1254,28 +1253,14 @@ pub fn prewarm() {
 /// How long the latest device build took (ms).
 static LAST_WARM_MS: parking_lot::Mutex<Option<f64>> = parking_lot::Mutex::new(None);
 
-/// The default-backend instance (the DXGI factory, its adapters and the
-/// D3D12 / DXGI runtime libraries it loaded), shared by the launch-time and
-/// on-demand device builds.
-static INSTANCE: std::sync::Mutex<Option<wgpu::Instance>> = std::sync::Mutex::new(None);
-
+/// The default-backend instance, kept across GPU releases: it holds the DXGI
+/// factory and the loaded runtime libraries, not a device or driver heaps, so
+/// a rebuild after a release does not load them again. (Dropping it with the
+/// device was measured, CI 0.8.3: the closed app's private bytes were the
+/// same within noise, 33 MB either way.)
 fn shared_instance() -> wgpu::Instance {
+    static INSTANCE: std::sync::Mutex<Option<wgpu::Instance>> = std::sync::Mutex::new(None);
     INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| new_instance(None)).clone()
-}
-
-/// Lazy GPU release: the instance goes with the device, so what it loaded
-/// (the d3d12 / dxgi runtime and, through its adapters, the driver's
-/// user-mode DLL or WARP) can unload, and a closed study leaves the empty
-/// app's footprint rather than the empty app plus a GPU runtime. Keeping it
-/// only saved those library loads on the next open, and that rebuild runs off
-/// the open path anyway (`prewarm`, from the page's open hint).
-/// `FLOWRAD_GPU_KEEP_INSTANCE=1` keeps it, for A/B runs.
-fn drop_shared_instance() {
-    if crate::flowrad_env("GPU_KEEP_INSTANCE").as_deref() == Ok("1") {
-        return;
-    }
-    let instance = INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).take();
-    drop(instance);
 }
 
 fn take_warm() -> Option<WarmJob> {
