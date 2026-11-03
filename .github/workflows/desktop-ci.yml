@@ -172,22 +172,30 @@ jobs:
       # worker could not run under the app's CSP. The built app, its production
       # CSP and bundled model: voice must become ready, report download
       # progress, and recognise spoken commands (Windows speech synthesis).
-      - name: e2e — voice commands in the built app (ready, progress, spoken commands recognised)
+      # Commands are whole phrases matched as the whole utterance (0.8.3), so
+      # each is spoken as its own utterance: 1.2 s of silence between them, as
+      # make-voice-wav.py does.
+      - name: e2e — voice commands in the built app (ready, progress, whole spoken phrases recognised)
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Speech
           $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
           $s.Rate = -2
           $s.SetOutputToWaveFile("$env:RUNNER_TEMP\voice.wav")
-          $s.Speak("next series. ")
-          $s.Speak("zoom in. ")
-          $s.Speak("lung window. ")
+          $p = New-Object System.Speech.Synthesis.PromptBuilder
+          foreach ($phrase in "next series", "zoom in", "lung window") {
+            $p.AppendBreak([TimeSpan]::FromMilliseconds(1200))
+            $p.AppendText($phrase)
+          }
+          $p.AppendBreak([TimeSpan]::FromMilliseconds(1200))
+          $s.Speak($p)
           $s.Dispose()
           python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" "$env:RUNNER_TEMP\voice.wav"
       # The committed recording (speech through a simulated speaker-to-mic room
       # path; desktop/scripts/make-voice-wav.py --room): every phrase must be
-      # recognised and performed, not just one.
-      - name: e2e — voice from a fixed recording (next series, zoom in, lung window all recognised)
+      # recognised as the whole utterance and performed, not just one. Its
+      # phrases are already full phrases (no single words): no re-recording.
+      - name: e2e — voice from a fixed recording (next series, zoom in, lung window all recognised as whole phrases)
         shell: pwsh
         run: python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" e2e/fixtures/voice/commands-room.wav --expect "next series" "zoom in" "lung window"
 
