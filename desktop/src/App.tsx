@@ -100,6 +100,7 @@ import {
   type WindowHandoff,
 } from "./multiWindow";
 import { useCrossWindow } from "./viewer/useCrossWindow";
+import { preloadable } from "./lazyView";
 import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
 import { setToolCursor } from "./viewer/toolCursor";
 import type { VoiceProgress, VoiceSession, VoiceState } from "@/components/viewer/voice/voiceSession";
@@ -121,12 +122,19 @@ import {
 function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T {
   return lazy(() => load().then((m) => ({ default: m[key] as React.ComponentType }))) as unknown as T;
 }
-const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => import("./components/Toolbar"), "Toolbar");
-const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
-const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
+// The study view (toolbar, series browser, viewports) is fetched when an open
+// starts (`preloadStudyView`), in parallel with the scan, not when the first
+// series renders (lazyView.tsx: that was a chunk waterfall before the first image).
+const Toolbar = preloadable(() => import("./components/Toolbar").then((m) => m.Toolbar));
+const SeriesBrowser = preloadable(() => import("./viewer/SeriesBrowser").then((m) => m.SeriesBrowser));
+const StackViewport = preloadable(() => import("./viewer/StackViewport").then((m) => m.StackViewport));
 // Phase 2 (FLOWRAD_NATIVE=1): monochrome single-frame series are drawn by the
 // native renderer; everything else stays on the JS viewer (per series).
-const NativeStackViewport = lazy(() => import("./native/NativeStackViewport"));
+const NativeStackViewport = preloadable(() => import("./native/NativeStackViewport").then((m) => m.default));
+/** Start fetching the study view's chunks (idempotent; failures retry on render). */
+function preloadStudyView(): Promise<unknown> {
+  return Promise.all([Toolbar, SeriesBrowser, StackViewport, NativeStackViewport].map((v) => v.preload().catch(() => undefined)));
+}
 const Native3DView = named<typeof import("./viewer/Native3DView").Native3DView>(() => import("./viewer/Native3DView"), "Native3DView");
 const NativePlaneView = named<typeof import("./viewer/NativePlaneView").NativePlaneView>(() => import("./viewer/NativePlaneView"), "NativePlaneView");
 const NativeMprView = named<typeof import("./viewer/NativeMprView").NativeMprView>(() => import("./viewer/NativeMprView"), "NativeMprView");
@@ -180,6 +188,9 @@ const firstImageOf = (fullRes?: number | null, engine?: number | null): number |
   const ms = Math.min(fullRes ?? Infinity, engine ?? Infinity);
   return Number.isFinite(ms) ? ms : null;
 };
+
+/** The native viewport's first show, as `onFirstPaint` passes it (bench timeline). */
+type FirstNativeShow = { cached: boolean; decodeMs: number; frameMs: number; totalMs: number; acquireMs?: number };
 
 /** Series the native renderer draws (P2.2): monochrome, one frame per file. */
 function nativeCapable(series: { multiframe?: boolean; headers: readonly { photometricInterpretation?: string }[] }): boolean {
@@ -333,7 +344,7 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown; steps?: unknown; hooks?: unknown; openClose?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; nativeFirst?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown; steps?: unknown; hooks?: unknown; openClose?: unknown };
     pendingVolume?: () => Promise<void>;
     /** Open/close rounds (BENCH_VIEW=openclose): the round now open. Survives the re-open's mark reset. */
     openCloseRound?: number;
@@ -615,6 +626,11 @@ export default function App() {
       bench.current.t0 = t0;
       bench.current.marks = { windowReadyMs: bench.current.marks.windowReadyMs ?? 0 };
       bench.current.firstPaint = undefined;
+      // The study view's chunks load while Rust scans (they were fetched one
+      // after another once the first series hung: the first image waited on them).
+      void preloadStudyView().then(() => {
+        if (seq === openSeq.current) bench.current.marks.viewChunksMs = performance.now() - t0;
+      });
       resetWorkspace();
       const label = paths[0].split(/[\\/]/).filter(Boolean).pop() || paths[0];
       setScan({ label, progress: null });
@@ -727,6 +743,18 @@ export default function App() {
           // Hanging protocol (CT / MR / projection / current vs prior) from the
           // viewer core; otherwise the study's primary series alone.
           const plan = hangingPlanFor(built);
+          // The complete series is sorted now: slice 0 of each hung series is
+          // what its viewport asks for next. Decode it while React re-renders.
+          if (nativeRef.current) {
+            const study = built[0];
+            const hung = plan ? plan.cells : [study?.series[primarySeriesIndex(study)]?.uid];
+            const all = built.flatMap((st) => st.series);
+            const ids = hung.flatMap((uid) => {
+              const sr = uid ? all.find((x) => x.uid === uid) : undefined;
+              return sr && nativeCapable(sr) ? [sr.headers[0].fileId] : [];
+            });
+            if (ids.length) void invoke("native_warm", { fileIds: ids }).catch(() => undefined);
+          }
           if (plan) {
             setLayout({ rows: plan.rows, cols: plan.cols });
             setCells(plan.cells);
@@ -2356,8 +2384,22 @@ export default function App() {
     prewarmJsEngine();
   }, [prewarmJsEngine]);
 
-  const onFirstPaint = useCallback(() => {
-    if (bench.current.firstPaint == null) bench.current.firstPaint = performance.now() - bench.current.t0;
+  const onFirstPaint = useCallback((ms?: number, _health?: unknown, nativeShow?: FirstNativeShow) => {
+    if (bench.current.firstPaint != null) return;
+    const at = performance.now() - bench.current.t0;
+    bench.current.firstPaint = at;
+    // Native: where the last stretch went (viewport asked → Rust's own split).
+    if (nativeShow && ms != null) {
+      bench.current.marks.firstViewportSentMs = at - ms;
+      bench.current.marks.nativeFirst = {
+        roundTripMs: Math.round(ms * 10) / 10,
+        cached: nativeShow.cached,
+        decodeMs: Math.round(nativeShow.decodeMs * 10) / 10,
+        frameMs: Math.round(nativeShow.frameMs * 10) / 10,
+        acquireMs: nativeShow.acquireMs != null ? Math.round(nativeShow.acquireMs * 10) / 10 : null,
+        rustMs: Math.round(nativeShow.totalMs * 10) / 10,
+      };
+    }
   }, []);
 
   // ───────────── render ─────────────
