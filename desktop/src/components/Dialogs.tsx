@@ -18,6 +18,8 @@ import {
   type ScrollPreferences,
 } from "@flowrad/viewer-core";
 import { DESKTOP_COMMANDS, conflictFor, shortcutSheet, type ShortcutOverrides } from "../shortcuts";
+import { VoiceCommandList, VoiceTrigger } from "./VoiceCommands";
+import { VOICE_COMMANDS } from "@flowrad/viewer-core";
 import type { ViewerSettings } from "../settings";
 import { mouseSheetLine } from "../viewer/mouseBindings";
 import { isMac } from "@flowrad/viewer-core/bindings";
@@ -26,32 +28,59 @@ import { cacheUsage, clearCache, listMedia, pickSavePath, writeExport, type Medi
 // Settings › Mouse & Keyboard: its own chunk, loaded when the reader opens it.
 const BindingsPanel = lazy(() => import("@/components/bindings/BindingsPanel"));
 
-export function ShortcutsDialog({ open, onClose, overrides }: { open: boolean; onClose: () => void; overrides?: ShortcutOverrides }) {
-  const rows = shortcutSheet(undefined, overrides);
+export function ShortcutsDialog({
+  open,
+  onClose,
+  overrides,
+  hidden,
+  voice,
+}: {
+  open: boolean;
+  onClose: () => void;
+  overrides?: ShortcutOverrides;
+  /** Commands not offered now (multi-monitor ones on a single display). */
+  hidden?: ReadonlySet<string>;
+  /** Voice commands are available here: list them, with the key that toggles voice. */
+  voice?: { keys?: string };
+}) {
+  const rows = shortcutSheet(undefined, overrides, hidden);
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
     <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description={`${mouseSheetLine(overrides)} Change them in Settings › Mouse & Keyboard.`} size="xl">
-      <div className="grid max-h-[60vh] grid-cols-1 gap-x-8 gap-y-5 overflow-y-auto pr-1 md:grid-cols-2">
-        {groups.map((group) => (
-          <section key={group}>
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{group}</h3>
-            <dl className="flex flex-col gap-1.5">
-              {rows
-                .filter((r) => r.group === group)
-                .map((r) => (
-                  <div key={r.keys + r.does} className="flex items-baseline justify-between gap-4 text-sm" data-shortcut-row={r.does}>
-                    <dt className="text-secondary">
-                      {r.does}
-                      {r.custom && <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-accent">custom</span>}
-                    </dt>
-                    <dd className="shrink-0">
-                      <Kbd>{r.keys}</Kbd>
-                    </dd>
-                  </div>
-                ))}
-            </dl>
+      <div className="flex max-h-[60vh] flex-col gap-6 overflow-y-auto pr-1">
+        <div className="grid grid-cols-1 gap-x-8 gap-y-5 md:grid-cols-2">
+          {groups.map((group) => (
+            <section key={group}>
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{group}</h3>
+              <dl className="flex flex-col gap-1.5">
+                {rows
+                  .filter((r) => r.group === group)
+                  .map((r) => (
+                    <div key={r.keys + r.does} className="flex items-baseline justify-between gap-4 text-sm" data-shortcut-row={r.does}>
+                      <dt className="text-secondary">
+                        {r.does}
+                        {r.custom && <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-accent">custom</span>}
+                      </dt>
+                      <dd className="shrink-0">
+                        <Kbd>{r.keys}</Kbd>
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+        {voice && (
+          <section aria-labelledby="voice-commands-heading" className="border-t border-subtle pt-5" data-testid="voice-help">
+            <h3 id="voice-commands-heading" className="mb-1 text-sm font-semibold text-primary">
+              Voice commands
+            </h3>
+            <div className="mb-4">
+              <VoiceTrigger keys={voice.keys} />
+            </div>
+            <VoiceCommandList />
           </section>
-        ))}
+        )}
       </div>
     </Modal>
   );
@@ -280,6 +309,8 @@ export function SettingsDialog({
   onChange,
   version,
   extra,
+  hiddenCommands,
+  voice,
 }: {
   open: boolean;
   onClose: () => void;
@@ -288,8 +319,13 @@ export function SettingsDialog({
   version: string;
   /** Account / update sections contributed by later stages. */
   extra?: React.ReactNode;
+  /** Commands not offered now (multi-monitor ones on a single display). */
+  hiddenCommands?: ReadonlySet<string>;
+  /** Voice commands are available here: how to switch them on, and the list. */
+  voice?: { keys?: string };
 }) {
   const [usage, setUsage] = useState<number | null>(null);
+  const [voiceListOpen, setVoiceListOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [bindingsOpen, setBindingsOpen] = useState(false);
   useEffect(() => {
@@ -410,6 +446,22 @@ export function SettingsDialog({
             </Button>
           </div>
         </section>
+        {voice && (
+          <section className="py-3" data-testid="settings-voice">
+            <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Voice commands</h3>
+            <div className="flex items-start justify-between gap-4 py-2">
+              <VoiceTrigger keys={voice.keys} />
+              <Button size="sm" variant="secondary" aria-expanded={voiceListOpen} aria-controls="settings-voice-list" onClick={() => setVoiceListOpen((v) => !v)}>
+                {voiceListOpen ? "Hide commands" : `Show all ${VOICE_COMMANDS.length}`}
+              </Button>
+            </div>
+            {voiceListOpen && (
+              <div id="settings-voice-list" className="pt-2">
+                <VoiceCommandList />
+              </div>
+            )}
+          </section>
+        )}
         {extra}
         <section className="pt-3 text-xs text-muted">
           <p>
@@ -430,6 +482,7 @@ export function SettingsDialog({
               onChange={(bindings) => onChange({ bindings })}
               surface="desktop"
               storedWhere="on this computer (settings.json)"
+              hidden={hiddenCommands}
               reserved={(spec) => {
                 const hit = conflictFor(spec, "", settings.bindings ?? {});
                 return hit && !hit.id ? { id: `range:${hit.keys}`, label: hit.does, group: hit.group, kind: "action", defaults: [] } : null;
