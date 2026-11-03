@@ -71,5 +71,20 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32
 webview2-com = "0.39"
 windows = "0.62"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# AppKit event monitor for side mouse buttons and tilt wheels (mac_mouse.rs).
+# Same versions tao / wry already use.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
+# proc_pid_rusage: the process's physical footprint (commit_mb on macOS).
+libc = "0.2"
+# MTLDevice currentAllocatedSize for the close report (Metal has no wgpu allocator report).
+objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLDevice"] }
+# WKWebsiteDataStore: empty WebKit's memory cache when a study closes (mac_webkit.rs).
+# Same versions wry already uses.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSSet", "NSString", "NSDate"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord"] }
+
 [dev-dependencies]
 tempfile = "3"

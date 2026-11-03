@@ -103,6 +103,15 @@ export function wheelRules(table: BindingTable, overrides: BindingOverrides = {}
   return rules.sort((a, b) => weight(b) - weight(a));
 }
 
+/**
+ * The engine's KeyboardBindings name for a rule's modifiers (Cornerstone:
+ * Shift, Ctrl, Alt, Meta, ShiftCtrl, ShiftAlt, ShiftMeta, CtrlAlt, AltMeta).
+ * "Mod" is ⌘ (Meta) on macOS and Ctrl elsewhere; "" when none is held.
+ */
+export function engineModifierName(m: { mod?: boolean; alt?: boolean; shift?: boolean }, mac: boolean): string {
+  return `${m.shift ? "Shift" : ""}${m.mod && !mac ? "Ctrl" : ""}${m.alt ? "Alt" : ""}${m.mod && mac ? "Meta" : ""}`;
+}
+
 function eventMods(e: ModState, mac: boolean) {
   return { mod: mac ? !!e.metaKey : !!e.ctrlKey || !!e.metaKey, alt: !!e.altKey, shift: !!e.shiftKey };
 }
