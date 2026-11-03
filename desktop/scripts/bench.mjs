@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // FlowRad Viewer benchmark harness.
 //
-//   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N]
+//   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N] [--max-group-slice-ms N]
 //   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5] [--max-ms N] [--max-app-ms N]
 //   node desktop/scripts/bench.mjs interact <binary> <study-path> [--max-frame-p95-ms 16.7] [--max-dropped 0]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
@@ -162,7 +162,7 @@ async function benchDesktop(binary, study) {
     if (!Number.isFinite(report.firstImageMs)) report.firstImageMs = null;
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"}${report.native?.initMs != null ? ` (native init ${r0(report.native.initMs)} ms${report.native.surfaceWaitMs != null ? `, main-thread wait ${r0(report.native.surfaceWaitMs)}` : ""})` : ""} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"}${report.native?.initMs != null ? ` (native init ${r0(report.native.initMs)} ms${report.native.surfaceWaitMs != null ? `, main-thread wait ${r0(report.native.surfaceWaitMs)}` : ""})` : ""} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · grouping ${report.groupSlices ?? "?"} slices, max ${r0(report.groupMaxSliceMs)} ms · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
     // The open on one clock (ms after the open; the scan command's marks come
     // from the process clock): where a late first series spent its time.
@@ -196,6 +196,7 @@ async function benchDesktop(binary, study) {
       enginePaintMs: r0(reports[0].enginePaintMs),
       firstVisibleMs: r0(visible(reports[0])),
       allReadyMs: r0(reports[0].scanDoneMs),
+      maxGroupSliceMs: r0(reports[0].groupMaxSliceMs),
     },
     warm: {
       rustScanMs: r0(median(warm.map((r) => r.rust?.totalMs))),
@@ -205,6 +206,7 @@ async function benchDesktop(binary, study) {
       firstPreviewMs: r0(median(warm.map((r) => r.paint?.firstPreviewMs))),
       firstVisibleMs: r0(median(warm.map(visible))),
       maxLongTaskMs: r0(Math.max(...warm.map((r) => r.longTasks?.maxMs ?? 0))),
+      maxGroupSliceMs: r0(Math.max(...warm.map((r) => r.groupMaxSliceMs ?? 0))),
       allReadyMs: r0(median(warm.map((r) => r.scanDoneMs))),
       engineInitMs: r0(median(warm.map((r) => r.engineInitMs))),
     },
@@ -224,6 +226,18 @@ async function benchDesktop(binary, study) {
   if (!(slowestTask <= taskBudget)) {
     console.error(`long-task gate failed: ${r0(slowestTask)} ms > ${taskBudget} ms (${reports.flatMap((r) => r.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")})`);
     process.exitCode = 1;
+  }
+  // Series grouping is time-sliced (desktop/src/study.ts buildStudiesSliced):
+  // the app measures its slowest slice itself (every rebuild of the open, cold
+  // and warm), which no other long task can be booked against.
+  const groupBudget = flag("max-group-slice-ms", Infinity);
+  if (Number.isFinite(groupBudget)) {
+    const slices = reports.map((r) => r.groupMaxSliceMs);
+    const slowestSlice = Math.max(...slices.map((x) => x ?? Infinity));
+    if (!(slowestSlice <= groupBudget)) {
+      console.error(`grouping gate failed: slowest series-grouping slice ${slices.map((x) => (x == null ? "not reported" : `${r0(x)} ms`)).join(", ")} > ${groupBudget} ms`);
+      process.exitCode = 1;
+    }
   }
   // The GPU path must paint: a CPU fallback means it drew blank.
   if (rest.includes("--require-gpu")) {
