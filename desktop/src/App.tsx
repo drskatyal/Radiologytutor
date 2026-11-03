@@ -10,7 +10,7 @@ import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
-import type { OrientationCommand, WindowPreset } from "@flowrad/viewer-core";
+import type { OrientationCommand, SliceStats, WindowPreset } from "@flowrad/viewer-core";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import type { ExportKind } from "./components/ExportDialog";
@@ -37,7 +37,7 @@ import {
   takeLaunchPaths,
 } from "./platform";
 import { headersFromBrowserFiles } from "./browserSource";
-import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
+import { buildStudiesSliced, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
@@ -599,11 +599,34 @@ export default function App() {
       const acc = new Map<string, DesktopHeader>();
       let timer = 0;
       let firstShown = false;
-      const rebuild = () => {
+      // Grouping is time-sliced (`buildStudiesSliced`): on the HP's 10,310-image,
+      // 242-series MRI it was one 66-75 ms main-thread task. One progressive
+      // rebuild runs at a time; batches that land meanwhile ask for another.
+      // The final build (scan done) supersedes any rebuild still in flight.
+      let building = false;
+      let rebuildAgain = false;
+      let scanDone = false;
+      const marks = bench.current.marks;
+      const groupStats = (s: SliceStats) => {
+        marks.groupSlices = (marks.groupSlices ?? 0) + s.slices;
+        marks.groupMaxSliceMs = Math.max(marks.groupMaxSliceMs ?? 0, s.maxSliceMs);
+        marks.groupBusyMs = s.busyMs;
+      };
+      const rebuild = async () => {
         timer = 0;
-        if (seq !== openSeq.current) return;
+        if (seq !== openSeq.current || scanDone) return;
+        if (building) {
+          rebuildAgain = true;
+          return;
+        }
+        building = true;
         markPhase("study: group series");
-        const built = buildStudies([...acc.values()]);
+        const built = await buildStudiesSliced([...acc.values()], {
+          isCancelled: () => seq !== openSeq.current || scanDone,
+          onStats: groupStats,
+        });
+        building = false;
+        if (!built || seq !== openSeq.current || scanDone) return;
         // After the first series is up, later batches re-render at low
         // priority (time-sliced) instead of one long task per batch.
         if (firstShown) startTransition(() => setStudies(built));
@@ -620,6 +643,12 @@ export default function App() {
           setScan(null); // progressive: the viewer takes over, progress moves to the status bar
           hangFirst(built);
         }
+        // Batches that landed while this one was grouping: the next rebuild
+        // (right away until a series is up, then at the usual 250 ms pace).
+        if (rebuildAgain) {
+          rebuildAgain = false;
+          if (!timer) timer = window.setTimeout(rebuild, firstShown ? 250 : 0);
+        }
       };
 
       try {
@@ -634,17 +663,23 @@ export default function App() {
             if (seq !== openSeq.current) return;
             if (!bench.current.marks.firstHeaderMs) bench.current.marks.firstHeaderMs = performance.now() - t0;
             for (const h of batch) acc.set(h.fileName, { ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` });
-            if (!firstShown) rebuild();
+            if (!firstShown) void rebuild();
             else if (!timer) timer = window.setTimeout(rebuild, 250);
           },
         });
         if (seq !== openSeq.current) return;
         window.clearTimeout(timer);
+        scanDone = true; // cancels a progressive rebuild still in flight
         const headers = result.headers.map((h) => ({ ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` }));
         const docs = result.documents ?? [];
-        // Key-image notes become series of the images they select.
         markPhase("study: group series");
-        const built = withKeyImageSeries(buildStudies(headers), docs);
+        const grouped = await buildStudiesSliced(headers, {
+          isCancelled: () => seq !== openSeq.current,
+          onStats: groupStats,
+        });
+        if (!grouped || seq !== openSeq.current) return;
+        // Key-image notes become series of the images they select.
+        const built = withKeyImageSeries(grouped, docs);
         rawOpen.current = { headers, documents: docs };
         setDocuments(docs);
         setStudies(built);
@@ -946,7 +981,8 @@ export default function App() {
           setScan((s) => (s ? { ...s, progress: { phase: "reading", read, accepted, total } } : s))
         );
         if (seq !== openSeq.current) return;
-        const built = buildStudies(headers);
+        const built = await buildStudiesSliced(headers, { isCancelled: () => seq !== openSeq.current });
+        if (!built || seq !== openSeq.current) return;
         rawOpen.current = { files };
         setStudies(built);
         setScan(null);
@@ -1610,10 +1646,11 @@ export default function App() {
       if (!h) return;
       autoHung.current = false;
       if (h.headers) {
+        const grouped = (await buildStudiesSliced(h.headers)) ?? [];
         rawOpen.current = { headers: h.headers, documents: h.documents };
         const docs = (h.documents ?? []) as DicomDocument[];
         setDocuments(docs);
-        setStudies(withKeyImageSeries(buildStudies(h.headers), docs));
+        setStudies(withKeyImageSeries(grouped, docs));
         setSource({ key: h.studyKey ?? `window:${windowId}`, paths: [], kind: "files", label: h.sourceLabel });
       } else if (h.files) {
         await openBrowserFiles(h.files);
