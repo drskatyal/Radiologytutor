@@ -157,38 +157,99 @@ export default function NativeStackViewport({
   }, [change]);
 
   // ── the series ──
+  // What this cell last sent to Rust (cell, series and its file ids, in
+  // order). A streaming series grows in batches: when the new list starts
+  // with what was sent, only the new files are appended
+  // (`native_cell_series_append`), so the shown slice keeps its view and no
+  // slice is decoded, re-uploaded or re-prefetched. A full re-send (reset
+  // to slice 0, re-read, 24 prefetches) per batch is what had the store
+  // serve 5x as many requests as slices during an open.
+  //
+  // One call in flight per cell: growth that arrives while the first send
+  // is still drawing waits and goes as one append after it (an append can
+  // never reach Rust before the cell exists, and the first image is never
+  // dropped by a later batch).
+  type Sent = { cell: string; uid: string; ids: number[] };
+  const sentRef = useRef<Sent | null>(null); // what Rust holds
+  const wantRef = useRef<Sent | null>(null); // what the cell should hold
+  const busyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const onFirstPaintRef = useRef(onFirstPaint);
+  onFirstPaintRef.current = onFirstPaint;
   useEffect(() => {
-    if (!series || series.headers.length === 0) {
-      setShown(null);
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+  const syncSeries = useCallback(() => {
+    if (busyRef.current) return;
+    const want = wantRef.current;
+    const sent = sentRef.current;
+    if (!want) return;
+    const same = sent !== null && sent.cell === want.cell && sent.uid === want.uid;
+    if (same && sent.ids.length === want.ids.length && sent.ids.every((id, i) => want.ids[i] === id)) return;
+    const grows = same && want.ids.length > sent.ids.length && sent.ids.every((id, i) => want.ids[i] === id);
+    busyRef.current = true;
+    if (grows) {
+      const from = sent.ids.length;
+      void invoke<number | null>("native_cell_series_append", { id: want.cell, from, fileIds: want.ids.slice(from) }).then(
+        (count) => {
+          busyRef.current = false;
+          // `null`: Rust no longer holds what was sent (cell recreated): send it all.
+          sentRef.current = count == null ? null : want;
+          if (!aliveRef.current) return;
+          if (count != null) setShown((s) => (s ? { ...s, count } : s));
+          syncSeries();
+        },
+        () => {
+          busyRef.current = false;
+          sentRef.current = null;
+          if (aliveRef.current) syncSeries();
+        }
+      );
       return;
     }
-    let cancelled = false;
     const started = performance.now();
     setLoading(true);
     setError(null);
-    void invoke<NativeShow>("native_cell_series", {
-      id: cellKey,
-      fileIds: series.headers.map((h) => h.fileId),
-      index: 0,
-    })
-      .then((r) => {
-        if (cancelled) return;
+    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0 }).then(
+      (r) => {
+        busyRef.current = false;
+        sentRef.current = want;
+        if (!aliveRef.current) return;
+        const now = wantRef.current;
+        // Superseded (another series or cell) while drawing: send that one.
+        if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setShown(r);
         setLoading(false);
         noteActivity();
         // Native paint: the frame was presented when the call returned. Blank
         // detection on this path is the e2e's screen grab, not a canvas readback.
-        onFirstPaint?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
+        onFirstPaintRef.current?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
+        syncSeries();
+      },
+      (e: unknown) => {
+        busyRef.current = false;
+        sentRef.current = null;
+        if (!aliveRef.current) return;
+        const now = wantRef.current;
+        if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setLoading(false);
         setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-    // A growing series re-sends its full list (the same cell keeps its slice).
+      }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!series || series.headers.length === 0) {
+      wantRef.current = null;
+      sentRef.current = null;
+      setShown(null);
+      return;
+    }
+    wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
+    syncSeries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cellKey, series?.uid, series?.headers.length]);
 
