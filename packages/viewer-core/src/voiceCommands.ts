@@ -7,6 +7,11 @@
  * acronyms are not words in the model's vocabulary. Unknown words in the
  * grammar are ignored by the recognizer, so alternatives are cheap.
  *
+ * Every phrase is at least two words and only a whole utterance matches, so
+ * a lone word ("bone") or a command inside dictation ("the lung window looks
+ * fine") never fires anything. The help sheet and Settings list these exact
+ * phrases from this table.
+ *
  * Pure: the app maps `VoiceAction` onto its own action handlers.
  */
 
@@ -28,74 +33,78 @@ export type VoiceAction =
   | { type: "preset"; name: "lung" | "bone" | "brain" | "abdomen" }
   | { type: "stop" };
 
-/** Every phrase the recognizer may return, with its action. */
+/**
+ * Every phrase the recognizer may return, with its action. Each phrase is two
+ * or more words ("bone window", never "bone") and only the WHOLE utterance
+ * matches (parseVoiceCommand), so dictation or conversation that happens to
+ * contain a command word never fires one.
+ */
 export const VOICE_COMMANDS: readonly { phrases: readonly string[]; action: VoiceAction; label: string }[] = [
   { label: "Next series", phrases: ["next series"], action: { type: "series", delta: 1 } },
-  { label: "Previous series", phrases: ["previous series", "last series", "back series"], action: { type: "series", delta: -1 } },
-  { label: "Next slice", phrases: ["next slice", "next image", "scroll down", "down"], action: { type: "slice", delta: 1 } },
-  { label: "Previous slice", phrases: ["previous slice", "previous image", "scroll up", "up"], action: { type: "slice", delta: -1 } },
+  { label: "Previous series", phrases: ["previous series", "last series"], action: { type: "series", delta: -1 } },
+  { label: "Next slice", phrases: ["next slice", "next image", "scroll down"], action: { type: "slice", delta: 1 } },
+  { label: "Previous slice", phrases: ["previous slice", "previous image", "scroll up"], action: { type: "slice", delta: -1 } },
   { label: "Page down", phrases: ["page down"], action: { type: "page", dir: 1 } },
   { label: "Page up", phrases: ["page up"], action: { type: "page", dir: -1 } },
   { label: "Zoom in", phrases: ["zoom in"], action: { type: "zoom", factor: 1.25 } },
   { label: "Zoom out", phrases: ["zoom out"], action: { type: "zoom", factor: 0.8 } },
-  { label: "Zoom tool", phrases: ["zoom"], action: { type: "tool", tool: "Zoom" } },
-  { label: "Pan", phrases: ["pan", "move"], action: { type: "tool", tool: "Pan" } },
-  { label: "Window / level", phrases: ["window level", "window", "contrast"], action: { type: "tool", tool: "WindowLevel" } },
-  { label: "Scroll tool", phrases: ["scroll", "browse"], action: { type: "tool", tool: "StackScroll" } },
-  { label: "Measure", phrases: ["measure", "length", "ruler"], action: { type: "tool", tool: "Length" } },
-  { label: "Ellipse", phrases: ["ellipse", "circle", "region"], action: { type: "tool", tool: "EllipticalROI" } },
-  { label: "Angle", phrases: ["angle"], action: { type: "tool", tool: "Angle" } },
-  { label: "Arrow", phrases: ["arrow", "pointer"], action: { type: "tool", tool: "ArrowAnnotate" } },
-  { label: "Reset", phrases: ["reset"], action: { type: "reset" } },
-  { label: "Invert", phrases: ["invert"], action: { type: "invert" } },
-  { label: "MPR", phrases: ["m p r", "multi planar", "reformat"], action: { type: "mpr" } },
-  { label: "3D", phrases: ["three d", "volume", "three dimensional"], action: { type: "volume3d" } },
-  { label: "MIP", phrases: ["m i p", "maximum", "maximum intensity"], action: { type: "slab", mode: "mip" } },
-  { label: "MinIP", phrases: ["min i p", "minimum", "minimum intensity"], action: { type: "slab", mode: "minip" } },
+  { label: "Zoom tool", phrases: ["zoom tool"], action: { type: "tool", tool: "Zoom" } },
+  { label: "Pan", phrases: ["pan tool", "move tool"], action: { type: "tool", tool: "Pan" } },
+  { label: "Window / level", phrases: ["window level", "contrast tool"], action: { type: "tool", tool: "WindowLevel" } },
+  { label: "Scroll tool", phrases: ["scroll tool", "browse tool"], action: { type: "tool", tool: "StackScroll" } },
+  { label: "Measure", phrases: ["measure tool", "length tool", "ruler tool"], action: { type: "tool", tool: "Length" } },
+  { label: "Ellipse", phrases: ["ellipse tool", "circle tool"], action: { type: "tool", tool: "EllipticalROI" } },
+  { label: "Angle", phrases: ["angle tool"], action: { type: "tool", tool: "Angle" } },
+  { label: "Arrow", phrases: ["arrow tool", "pointer tool"], action: { type: "tool", tool: "ArrowAnnotate" } },
+  { label: "Reset view", phrases: ["reset view"], action: { type: "reset" } },
+  { label: "Invert", phrases: ["invert image", "invert colors"], action: { type: "invert" } },
+  { label: "MPR", phrases: ["m p r", "multi planar"], action: { type: "mpr" } },
+  { label: "3D", phrases: ["three d", "three dimensional", "volume rendering"], action: { type: "volume3d" } },
+  { label: "MIP", phrases: ["m i p", "maximum intensity"], action: { type: "slab", mode: "mip" } },
+  { label: "MinIP", phrases: ["min i p", "minimum intensity"], action: { type: "slab", mode: "minip" } },
   { label: "Slab off", phrases: ["single slice", "slab off"], action: { type: "slab", mode: "off" } },
-  { label: "Thicker", phrases: ["thicker"], action: { type: "slabThickness", deltaMm: 5 } },
-  { label: "Thinner", phrases: ["thinner"], action: { type: "slabThickness", deltaMm: -5 } },
-  { label: "Layout one", phrases: ["layout one", "one up", "single"], action: { type: "layout", rows: 1, cols: 1 } },
+  { label: "Thicker slab", phrases: ["thicker slab"], action: { type: "slabThickness", deltaMm: 5 } },
+  { label: "Thinner slab", phrases: ["thinner slab"], action: { type: "slabThickness", deltaMm: -5 } },
+  { label: "Layout one", phrases: ["layout one", "one up"], action: { type: "layout", rows: 1, cols: 1 } },
   { label: "Layout two", phrases: ["layout two", "two up", "side by side"], action: { type: "layout", rows: 1, cols: 2 } },
-  { label: "Layout four", phrases: ["layout four", "four up", "grid"], action: { type: "layout", rows: 2, cols: 2 } },
-  { label: "Lung window", phrases: ["lung window", "lung", "lungs"], action: { type: "preset", name: "lung" } },
-  { label: "Bone window", phrases: ["bone window", "bone", "bones"], action: { type: "preset", name: "bone" } },
-  { label: "Brain window", phrases: ["brain window", "brain"], action: { type: "preset", name: "brain" } },
-  { label: "Abdomen window", phrases: ["abdomen window", "abdomen", "soft tissue"], action: { type: "preset", name: "abdomen" } },
+  { label: "Layout four", phrases: ["layout four", "four up"], action: { type: "layout", rows: 2, cols: 2 } },
+  { label: "Lung window", phrases: ["lung window"], action: { type: "preset", name: "lung" } },
+  { label: "Bone window", phrases: ["bone window"], action: { type: "preset", name: "bone" } },
+  { label: "Brain window", phrases: ["brain window"], action: { type: "preset", name: "brain" } },
+  { label: "Abdomen window", phrases: ["abdomen window", "soft tissue window"], action: { type: "preset", name: "abdomen" } },
   { label: "Stop listening", phrases: ["stop listening", "voice off"], action: { type: "stop" } },
 ];
+
+/** Words in a command phrase: never fewer (a lone word is too easy to say by accident). */
+export const MIN_PHRASE_WORDS = 2;
 
 const BY_PHRASE = new Map<string, VoiceAction>();
 for (const c of VOICE_COMMANDS) for (const p of c.phrases) BY_PHRASE.set(p, c.action);
 
-/** The recognizer grammar (JSON array of phrases, "[unk]" catches the rest). */
+/**
+ * The recognizer grammar (Vosk / Kaldi: a list of whole-utterance
+ * alternatives). "[unk]" is the garbage path: speech that is not one of the
+ * phrases comes back as "[unk]" instead of being forced onto a command.
+ */
 export function voiceGrammar(): string[] {
   return [...BY_PHRASE.keys(), "[unk]"];
 }
 
+/** Case and spacing only: "  Lung   Window " → "lung window". Words (and "[unk]") are kept. */
 export function normalizeUtterance(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/\[unk\]/g, " ")
-    .replace(/[^a-z ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /**
- * The action for a recognized utterance, or null. Exact phrase first; then
- * the longest known phrase inside the utterance ("uh next series please").
+ * The action for a recognized utterance, or null. Only an utterance that IS a
+ * command phrase matches (allowing for case and surrounding whitespace): a
+ * single word, or a phrase inside longer speech ("[unk] lung window", "the
+ * lung window looks fine"), fires nothing.
  */
 export function parseVoiceCommand(text: string): VoiceAction | null {
   const said = normalizeUtterance(text);
   if (!said) return null;
-  const exact = BY_PHRASE.get(said);
-  if (exact) return exact;
-  let best: { phrase: string; action: VoiceAction } | null = null;
-  for (const [phrase, action] of BY_PHRASE) {
-    if ((` ${said} `).includes(` ${phrase} `) && (!best || phrase.length > best.phrase.length)) best = { phrase, action };
-  }
-  return best?.action ?? null;
+  return BY_PHRASE.get(said) ?? null;
 }
 
 /** For the help sheet: one row per command with its phrases. */

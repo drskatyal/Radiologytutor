@@ -68,7 +68,8 @@ def main() -> int:
         failures.append(f"no spoken command was recognised (heard: {voice.get('heard')})")
     recognised = [h.strip().lower() for h in voice.get("heard") or [] if not h.rstrip().endswith("?")]
     for phrase in expect:
-        if not any(phrase.lower() in h for h in recognised):
+        # Whole phrases only (voiceCommands.ts): the recognised utterance IS the phrase.
+        if not any(phrase.lower() == h for h in recognised):
             failures.append(f"'{phrase}' was not recognised (heard: {voice.get('heard')})")
     for f in failures:
         print(f"FAIL  voice: {f}")

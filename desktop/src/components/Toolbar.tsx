@@ -56,6 +56,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
+import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
 import { ORIENTATION_COMMANDS, type OrientationCommand, type WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
@@ -532,7 +533,8 @@ export function Toolbar(props: ToolbarProps) {
               onClick={props.voice.onToggle}
               onWarm={props.voice.onWarm}
             >
-              {props.voice.state === "listening" ? <Mic /> : <MicOff />}
+              {/* Starting: a quiet spinner on the mic itself (no card once the model was prepared before). */}
+              {props.voice.state === "listening" ? <Mic /> : props.voice.state === "loading" ? <Spinner size="sm" /> : <MicOff />}
             </Tool>
             {props.voice.state === "listening" && (
               <span aria-hidden className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-accent-foreground" />
