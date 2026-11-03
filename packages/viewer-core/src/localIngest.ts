@@ -13,6 +13,14 @@
 //   onFirstImage(...)  ← the viewer paints this slice while the rest parse
 //        ▼
 //   groupLocalStudies(...) → ordered series (localStudy.ts)
+//        ▼
+//   withKeyImageSeries(...) → each key-image note (KO) as a series, first
+//
+// Structured Reports and key-image notes (SR-family SOP classes, told apart by
+// the header's SOPClassUID) carry no pixels: they are read whole on the main
+// thread (srDocument.ts; a few KB each, capped at MAX_DOCUMENT_BYTES) into
+// `documents` and never become images, so they cannot be the first image, hold
+// a file-manager slot, or count against the decoded-cache budget.
 //
 // Why a main-thread lane: a worker costs a chunk download + boot (~30–80 ms
 // cold). The very first header is ~0.2 ms of parse on the main thread with the
@@ -27,7 +35,12 @@
 
 import { HEADER_BYTES, parseLocalHeaderProgressive, type DicomHeaderParser } from "./localHeader";
 import type { HeaderJob, HeaderJobResult } from "./localHeaderWorker";
-import { loadHeaderParser, type LocalOpenProgress, type LocalOpenResult } from "./localDicomFiles";
+import {
+  loadHeaderParser,
+  readLocalDocument,
+  type LocalOpenProgress,
+  type LocalOpenResult,
+} from "./localDicomFiles";
 import {
   compareFileNames,
   groupLocalStudies,
@@ -35,8 +48,10 @@ import {
   instanceImageCount,
   isDicomDir,
   isObviouslyNotDicom,
+  withKeyImageSeries,
   type LocalInstanceHeader,
 } from "./localStudy";
+import { isStructuredDocumentClass, type DicomDocument } from "./srDocument";
 import { listZipFile, looksLikeZipName } from "./zipArchive";
 import { localDecodedCacheBudget } from "./localMemoryBudget";
 import { detectDeviceProfile, imageCacheBytes } from "./viewerRuntime";
@@ -273,6 +288,8 @@ export async function ingestLocalFiles(
   const headers: LocalInstanceHeader[] = [];
   const imageIdsByFile = new Map<string, string[]>();
   const registeredIds: string[] = [];
+  const documents: DicomDocument[] = [];
+  let unreadableDocuments = 0;
   // A holder, not a `let`: lanes assign it across awaits, which TS flow
   // analysis would otherwise narrow away.
   const found: { first: FirstLocalImage | null } = { first: null };
@@ -338,6 +355,16 @@ export async function ingestLocalFiles(
     } catch {
       unreadable += 1;
     }
+    if (header && isStructuredDocumentClass(header.sopClassUID)) {
+      // A report or key-image note: read whole for its content tree, never an image.
+      if (signal?.aborted) return;
+      const doc = await readLocalDocument(parser as DicomHeaderParser, file, item.path);
+      read += 1;
+      if (doc) documents.push(doc);
+      else unreadableDocuments += 1;
+      progress();
+      return;
+    }
     read += 1;
     if (signal?.aborted) return;
     if (header) accept(file, header);
@@ -378,6 +405,9 @@ export async function ingestLocalFiles(
   if (unreadable > 0) {
     warnings.push(`${unreadable} file${unreadable === 1 ? "" : "s"} could not be read.`);
   }
+  if (unreadableDocuments > 0) {
+    warnings.push(`${unreadableDocuments} report${unreadableDocuments === 1 ? "" : "s"} could not be read.`);
+  }
   if (headers.length === 0 && dicomDirCount > 0) {
     warnings.push(
       "This is a DICOM CD index (DICOMDIR) with no images beside it — open the whole disc or the folder that contains the image files."
@@ -385,11 +415,12 @@ export async function ingestLocalFiles(
   }
 
   return {
-    studies: groupLocalStudies(headers),
+    studies: withKeyImageSeries(groupLocalStudies(headers), documents),
     imageIdsByFile,
     skipped,
     dicomDirCount,
     warnings,
+    documents,
     first: found.first,
     zipCount,
     registeredIds,
