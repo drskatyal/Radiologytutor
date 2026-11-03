@@ -40,7 +40,7 @@ import { headersFromBrowserFiles } from "./browserSource";
 import { buildStudiesSliced, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
-import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { DESKTOP_COMMANDS, MULTI_MONITOR_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { inputIndex, isMac, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
@@ -102,6 +102,8 @@ import {
 import { useCrossWindow } from "./viewer/useCrossWindow";
 import { preloadable } from "./lazyView";
 import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
+import { hasMultipleMonitors, sameMonitors, watchMonitors } from "./monitorWatch";
+import { VOICE_PROGRESS_DELAY_MS, voiceStatusShown } from "./voiceUi";
 import { setToolCursor } from "./viewer/toolCursor";
 import type { VoiceProgress, VoiceSession, VoiceState } from "@/components/viewer/voice/voiceSession";
 import { VoiceStatus } from "@/components/viewer/voice/VoiceStatus";
@@ -1461,6 +1463,10 @@ export default function App() {
   // ───────────── offline voice commands ─────────────
   // The mic toggle loads the recognizer and model only when switched on and
   // frees them entirely when off (components/viewer/voice/voiceSession.ts).
+  // The model is bundled with the app: nothing is downloaded. Preparing it is
+  // shown (with its size) only the first time on this computer and only when
+  // it takes over a second; after that, switching voice on just turns it on
+  // and the mic button shows it is starting (voiceUi.ts).
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
   const voiceSession = useRef<VoiceSession | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
@@ -1486,6 +1492,18 @@ export default function App() {
     void import("@/components/viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
   }, []);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  /** Loading for longer than VOICE_PROGRESS_DELAY_MS. */
+  const [voiceSlow, setVoiceSlow] = useState(false);
+  /** A Retry after an error: show how the load goes, even when the model was prepared before. */
+  const [voiceRetrying, setVoiceRetrying] = useState(false);
+  useEffect(() => {
+    setVoiceSlow(false);
+    if (voice.state !== "loading") return;
+    const t = window.setTimeout(() => setVoiceSlow(true), VOICE_PROGRESS_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [voice.state]);
+  const voiceReadyRef = useRef(settings.voiceReady);
+  voiceReadyRef.current = settings.voiceReady;
   const toggleVoiceRef = useRef<() => Promise<void>>(async () => undefined);
   toggleVoiceRef.current = async () => {
     if (voiceSession.current || voice.state === "loading") {
@@ -1513,10 +1531,18 @@ export default function App() {
         setVoice((v) => ({ ...v, state }));
         if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSession.current = null;
+        if (state !== "loading") setVoiceRetrying(false);
+        // Prepared once on this computer: later starts are quiet.
+        if (state === "listening" && !voiceReadyRef.current) {
+          voiceReadyRef.current = true;
+          updateSettings({ voiceReady: true });
+        }
       },
     });
   };
   useEffect(() => () => stopVoice(), [stopVoice]);
+  /** Voice can run here (desktop, or a browser with a microphone API): the mic, the help sheet and Settings offer it. */
+  const voiceAvailable = isTauri || typeof navigator.mediaDevices?.getUserMedia === "function";
 
   // ───────────── several windows / monitors (multiWindow.ts) ─────────────
   // Main + secondary viewer windows act as one reading station: a series can
@@ -1529,34 +1555,21 @@ export default function App() {
   const otherWindows = useRef<Record<string, { monitor?: string; rows: number; cols: number; cells: (string | null)[]; studyKey?: string }>>({});
   const refreshMonitors = useCallback(async () => {
     const [list, mine] = await Promise.all([listMonitors(), currentMonitorName()]);
-    setMonitors(list);
+    // An unchanged desk (most re-reads) re-renders nothing.
+    setMonitors((prev) => (sameMonitors(prev, list) ? prev : list));
     setMyMonitor(mine);
     return list;
   }, []);
+  // Follow the desk live (monitorWatch.ts): plugging a monitor in or out shows
+  // or hides the multi-monitor UI. No polling on the start screen.
+  const monitorWatchActive = studies.length > 0;
   useEffect(() => {
     if (!monitorsAvailable()) return;
     void refreshMonitors();
-    const onFocus = () => void refreshMonitors();
-    window.addEventListener("focus", onFocus);
-    let timer = 0;
-    let off: (() => void) | undefined;
-    if (isTauri) {
-      // Dragged to another monitor, or its scaling changed: re-read (debounced).
-      const later = () => {
-        window.clearTimeout(timer);
-        timer = window.setTimeout(() => void refreshMonitors(), 300);
-      };
-      void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        const w = getCurrentWindow();
-        void Promise.all([w.onMoved(later), w.onScaleChanged(later)]).then((uns) => (off = () => uns.forEach((u) => u())));
-      });
-    }
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      window.clearTimeout(timer);
-      off?.();
-    };
-  }, [refreshMonitors]);
+    return watchMonitors({ refresh: () => void refreshMonitors(), active: monitorWatchActive, tauri: isTauri });
+  }, [refreshMonitors, monitorWatchActive]);
+  /** Two or more monitors: the multi-monitor UI (send to monitor, picker, badge, Mod+Shift+N / Mod+Alt+N) is offered. */
+  const multiMonitor = hasMultipleMonitors(monitors);
   const myMonitorIndex = monitors.findIndex((m) => m.name === myMonitor);
 
   /** Main window: remember the other windows' monitors and layouts for next launch. */
@@ -1649,15 +1662,19 @@ export default function App() {
     [monitors, handoffFor, layout, cells, source, persistArrangements, openedToast]
   );
 
-  /** Mod+Shift+N / Mod+Alt+N: to the next monitor (or a new window with one monitor). */
+  /** Mod+Shift+N / Mod+Alt+N: to the next monitor. Offered only with two or more monitors. */
   const sendToMonitor = useCallback(
     async (scope: "viewport" | "layout") => {
       const list = await refreshMonitors();
+      if (!hasMultipleMonitors(list)) {
+        toast({ title: "Only one monitor connected", description: "Connect a second monitor to open a series or layout on it.", variant: "info", duration: 2500 });
+        return;
+      }
       const target = nextMonitor(list, myMonitor)?.name ?? null;
       if (scope === "layout") return sendLayoutToMonitor(target);
       if (activeSeriesUid) return sendSeriesToMonitor(activeSeriesUid, target);
     },
-    [refreshMonitors, myMonitor, sendLayoutToMonitor, sendSeriesToMonitor, activeSeriesUid]
+    [refreshMonitors, myMonitor, sendLayoutToMonitor, sendSeriesToMonitor, activeSeriesUid, toast]
   );
 
   // The monitor picker on series cards.
@@ -1974,8 +1991,8 @@ export default function App() {
   const [exportInitial, setExportInitial] = useState<{ kind?: ExportKind; format?: "png" | "jpeg"; overlay?: "none" | "anonymous" | "full" } | undefined>();
   const [tagsView, setTagsView] = useState<{ imageId: string; title?: string; description?: string; summary?: { label: string; value: string }[] } | null>(null);
   const menuMonitors = useMemo(
-    () => (monitors.length > 1 ? monitors.map((m, i) => ({ name: m.name, number: i + 1, color: monitorColor(i), current: m.name === myMonitor })) : []),
-    [monitors, myMonitor]
+    () => (multiMonitor ? monitors.map((m, i) => ({ name: m.name, number: i + 1, color: monitorColor(i), current: m.name === myMonitor })) : []),
+    [multiMonitor, monitors, myMonitor]
   );
   const priorEntries = useMemo(
     () => (isTauri && source && studies.length === 1 ? priorsFor(history, { key: source.key, patientId: studies[0]?.patient.id, studyDate: studies[0]?.date }) : []),
@@ -2491,20 +2508,23 @@ export default function App() {
         </>
       )}
 
-      <VoiceStatus
-        className="fixed right-3 top-12 z-50"
-        state={voice.state}
-        progress={voiceProgress}
-        error={voiceError}
-        onRetry={() => {
-          setVoice((v) => ({ ...v, state: "off" }));
-          void toggleVoiceRef.current();
-        }}
-        onDismiss={() => {
-          stopVoice();
-          setVoice((v) => ({ ...v, state: "off" }));
-        }}
-      />
+      {voiceStatusShown({ state: voice.state, slow: voiceSlow, firstLoad: !settings.voiceReady || voiceRetrying, stage: voiceProgress?.stage }) && (
+        <VoiceStatus
+          className="fixed right-3 top-12 z-50"
+          state={voice.state}
+          progress={voiceProgress}
+          error={voiceError}
+          onRetry={() => {
+            setVoiceRetrying(true);
+            setVoice((v) => ({ ...v, state: "off" }));
+            void toggleVoiceRef.current();
+          }}
+          onDismiss={() => {
+            stopVoice();
+            setVoice((v) => ({ ...v, state: "off" }));
+          }}
+        />
+      )}
       {/* Mounted (hidden) as soon as an open starts: the toolbar's Radix menus
           and tooltips were a good part of the commit that mounts the study
           view when the first series hangs (CI "ye ... MessagePort.onmessage").
@@ -2547,7 +2567,7 @@ export default function App() {
           }}
           onOpen={(w) => void openDialog(w)}
           onHome={goHome}
-          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current(), onWarm: warmVoice } : undefined}
+          voice={voiceAvailable ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current(), onWarm: warmVoice } : undefined}
           onUndo={() => runAction({ type: "undoAnnotation" })}
           onRedo={() => runAction({ type: "redoAnnotation" })}
           onClear={() => runAction({ type: "clearAnnotations" })}
@@ -2861,7 +2881,7 @@ export default function App() {
 
       {hasStudy && !distractionFree && (
         <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-subtle bg-surface px-3 text-[11px] text-muted tabular-nums">
-          {monitors.length > 1 && myMonitorIndex >= 0 && <MonitorBadge number={myMonitorIndex + 1} color={monitorColor(myMonitorIndex)} />}
+          {multiMonitor && myMonitorIndex >= 0 && <MonitorBadge number={myMonitorIndex + 1} color={monitorColor(myMonitorIndex)} />}
           <span className="flex items-center gap-1 text-success">
             <ShieldCheck className="h-3 w-3" aria-hidden /> Offline
           </span>
@@ -2905,7 +2925,13 @@ export default function App() {
         </div>
       )}
       {dialog === "help" && (
-      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.bindings} />
+      <ShortcutsDialog
+        open={dialog === "help"}
+        onClose={() => setDialog(null)}
+        overrides={settings.bindings}
+        hidden={multiMonitor ? undefined : MULTI_MONITOR_COMMANDS}
+        voice={voiceAvailable ? { keys: keysForAction({ type: "voice" }, settings.bindings) } : undefined}
+      />
       )}
       {dialog === "window" && (
       <CustomWindowDialog
@@ -2967,6 +2993,8 @@ export default function App() {
         settings={settings}
         onChange={updateSettings}
         version={version}
+        hiddenCommands={multiMonitor ? undefined : MULTI_MONITOR_COMMANDS}
+        voice={voiceAvailable ? { keys: keysForAction({ type: "voice" }, settings.bindings) } : undefined}
         extra={
           <>
             <section className="py-3">
