@@ -44,10 +44,30 @@ function Root() {
   return <App />;
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ToastProvider>
-      <Root />
-    </ToastProvider>
-  </StrictMode>
+// The app stylesheet loads without holding the splash's first paint
+// (vite.config.ts nonBlockingAppCss); switch it on before React renders.
+function appStylesheet(): Promise<void> {
+  const link = document.querySelector<HTMLLinkElement>("link[data-app-css]");
+  if (!link) return Promise.resolve(); // dev server: Vite injects the CSS itself
+  return new Promise<void>((resolve) => {
+    const on = () => {
+      link.media = "all";
+      resolve();
+    };
+    if (link.sheet) on();
+    else {
+      link.addEventListener("load", on, { once: true });
+      link.addEventListener("error", on, { once: true });
+    }
+  });
+}
+
+void appStylesheet().then(() =>
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <ToastProvider>
+        <Root />
+      </ToastProvider>
+    </StrictMode>
+  )
 );

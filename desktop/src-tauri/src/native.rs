@@ -163,6 +163,11 @@ pub struct ClosedReport {
     /// wgpu's GPU allocator after the close (D3D12): live, and reserved in blocks.
     pub gpu_allocated_mb: Option<f64>,
     pub gpu_reserved_mb: Option<f64>,
+    /// macOS: Metal's count with the cells dropped but before the queue was
+    /// flushed (what the flush below gives back: textures an upload still
+    /// referenced, staging buffers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_allocated_unflushed_mb: Option<f64>,
 }
 
 /// The 16-bit test image: a horizontal ramp with concentric rings, so window
@@ -649,7 +654,11 @@ impl Native {
         // with them, on a later poll: wait for that now rather than at the
         // next frame (none may come on the home screen).
         if let Some(gpu) = self.gpu.lock().as_ref() {
-            let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+            #[cfg(target_os = "macos")]
+            {
+                report.gpu_allocated_unflushed_mb = metal_allocated_mb(&gpu.device);
+            }
+            flush_and_wait(gpu);
             if let Some(r) = gpu.device.generate_allocator_report() {
                 report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
                 report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
@@ -678,7 +687,7 @@ impl Native {
         let n = store.stats().slices;
         store.clear();
         if let Some(gpu) = self.gpu.lock().as_ref() {
-            let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+            flush_and_wait(gpu);
         }
         Some(n)
     }
@@ -986,6 +995,18 @@ impl Native {
     }
 }
 
+/// Give back what dropped GPU resources still hold. wgpu frees a dropped
+/// texture or buffer only once no submission uses it, and an upload not yet
+/// submitted (write_texture / write_buffer: its staging buffer and target)
+/// counts as one until the next submit, which on the home screen may never
+/// come (CI, macOS: Metal held 7.3 MB after close, 6.2 MB with the study
+/// open). An empty submit flushes those writes; the wait then lets wgpu
+/// destroy everything that was only waiting on the GPU.
+fn flush_and_wait(gpu: &Gpu) {
+    gpu.queue.submit(std::iter::empty());
+    let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+}
+
 fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("cell"),
@@ -1209,6 +1230,20 @@ pub(crate) fn present_mode_for(modes: &[wgpu::PresentMode]) -> wgpu::PresentMode
     }
 }
 
+/// Frames the swapchain may queue (wgpu: drawables = this + 1). macOS: 2,
+/// so CAMetalLayer keeps three drawables. With two, one is on screen and the
+/// other still queued at the window server right after the first image and
+/// the layout frame, so the next frame (CI: scroll step 0) waited 63.5 ms
+/// for one to come back, Immediate or not. Elsewhere 1 (Mailbox / flip
+/// model never waits on the display).
+pub(crate) fn frame_latency() -> u32 {
+    if cfg!(target_os = "macos") {
+        2
+    } else {
+        1
+    }
+}
+
 /// macOS: MB of GPU resources the Metal device holds (MTLDevice
 /// currentAllocatedSize), for the close report.
 #[cfg(target_os = "macos")]
@@ -1289,7 +1324,7 @@ fn finish(
         // Never wait for the display's vblank (Fifo made every scroll call
         // wait ~16 ms+): see present_mode_for.
         present_mode: present_mode_for(&caps.present_modes),
-        desired_maximum_frame_latency: 1,
+        desired_maximum_frame_latency: frame_latency(),
         alpha_mode: caps.alpha_modes[0],
         color_space: wgpu::SurfaceColorSpace::Auto,
         view_formats: vec![],
@@ -1439,6 +1474,13 @@ mod tests {
         assert_eq!(super::present_mode_for(&[Fifo]), Fifo);
         let metal = super::present_mode_for(&[Fifo, Immediate]);
         assert_eq!(metal, if cfg!(target_os = "macos") { Immediate } else { Fifo });
+    }
+
+    #[test]
+    fn metal_keeps_a_spare_drawable() {
+        // macOS: three drawables (latency 2), so a frame never waits for the
+        // window server to hand one back; Windows unchanged.
+        assert_eq!(super::frame_latency(), if cfg!(target_os = "macos") { 2 } else { 1 });
     }
 
     #[test]
