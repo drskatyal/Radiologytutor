@@ -328,7 +328,7 @@ jobs:
           FLOWRAD_NATIVE: "1"
           FLOWRAD_BENCH_VIEW: native-spike
         run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
-      - name: P2.1 — cold start in native mode (native first paint before WebView2 loads; informational)
+      - name: P2.1 — cold start in native mode (native splash before WebView2 loads; informational)
         env:
           FLOWRAD_NATIVE: "1"
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5
@@ -426,7 +426,7 @@ jobs:
         env:
           FLOWRAD_BENCH_VIEW: grid
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --settle 20 --cold
-      - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
+      - name: Cold start (median of 5, in-process; first visible = native splash or page paint, gated; page share gated; WebView2 phase logged)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }} --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }} --require-gpu

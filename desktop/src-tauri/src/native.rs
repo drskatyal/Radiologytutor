@@ -1211,8 +1211,11 @@ static WARM: std::sync::Mutex<Option<WarmJob>> = std::sync::Mutex::new(None);
 /// How long the background device build took (ms), for the startup report.
 pub static WARM_MS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
 
-/// Start building the device and pipelines now, off the main thread. Call
-/// once, before the Tauri builder. No-op when native mode is off.
+/// Start building the device and pipelines now, off the main thread. No-op
+/// while a build is in flight or untaken. Called
+/// only while no device exists (at launch, and by `create_gpu` under the init
+/// lock, which takes the job at once), so a build never outlives the GPU it
+/// was for: one lock (`WARM`), one device. No-op when native mode is off.
 pub fn prewarm() {
     if !enabled() {
         return;
