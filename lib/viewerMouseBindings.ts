@@ -9,7 +9,9 @@
 
 import {
   dragRules,
+  engineModifierName,
   getLiveBindings,
+  isMac,
   wheelRules,
   type BindingOverrides,
 } from "@flowrad/viewer-core/bindings";
@@ -28,27 +30,33 @@ export interface EngineBinding {
 /** Engine tool for a wheel action: the web stack has no slab, so Ctrl+wheel zooms. */
 const WHEEL_TOOL = { scroll: "StackScroll", zoom: "Zoom", slab: "Zoom" } as const;
 
-function modifierKey(enums: EngineEnums, m: { mod: boolean; alt: boolean; shift: boolean }): number | null | undefined {
-  const name = `${m.shift ? "Shift" : ""}${m.mod ? "Ctrl" : ""}${m.alt ? "Alt" : ""}`;
+function modifierKey(enums: EngineEnums, m: { mod: boolean; alt: boolean; shift: boolean }, mac: boolean): number | null | undefined {
+  // "Mod" is ⌘ (the engine's Meta) on macOS, Ctrl elsewhere.
+  const name = engineModifierName(m, mac);
   if (!name) return undefined;
   const v = enums.KeyboardBindings[name];
   return typeof v === "number" ? v : null;
 }
 
 /** The engine bindings `tool` holds besides the left button, from the effective mouse bindings. */
-export function viewerFixedBindings(enums: EngineEnums, tool: string, overrides: BindingOverrides = getLiveBindings()): EngineBinding[] {
+export function viewerFixedBindings(
+  enums: EngineEnums,
+  tool: string,
+  overrides: BindingOverrides = getLiveBindings(),
+  mac: boolean = isMac()
+): EngineBinding[] {
   const mb = enums.MouseBindings as Record<string, number>;
   const button: Record<number, number | undefined> = { 1: mb.Auxiliary, 2: mb.Secondary, 3: mb.Fourth_Button, 4: mb.Fifth_Button };
   const out: EngineBinding[] = [];
   for (const r of dragRules(WEB_COMMANDS, overrides)) {
     if (r.tool !== tool || button[r.button] === undefined) continue;
-    const key = modifierKey(enums, r.mods);
+    const key = modifierKey(enums, r.mods, mac);
     if (key === null) continue; // a combination the engine can't express
     out.push(key === undefined ? { mouseButton: button[r.button]! } : { mouseButton: button[r.button]!, modifierKey: key });
   }
   for (const r of wheelRules(WEB_COMMANDS, overrides)) {
     if (WHEEL_TOOL[r.action] !== tool) continue;
-    const key = modifierKey(enums, r.mods);
+    const key = modifierKey(enums, r.mods, mac);
     if (key === null) continue;
     out.push(key === undefined ? { mouseButton: mb.Wheel } : { mouseButton: mb.Wheel, modifierKey: key });
   }

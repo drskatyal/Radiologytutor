@@ -61,7 +61,7 @@ export type CaptureEvent =
   | ({ type: "keydown" } & KeyLike)
   | ({ type: "pointerdown" | "pointerup" | "mousedown" | "mouseup" | "auxclick"; button: number; clientX: number; clientY: number } & ModState)
   | ({ type: "pointermove" | "mousemove"; clientX: number; clientY: number } & ModState)
-  | ({ type: "wheel"; deltaX: number; deltaY: number } & ModState);
+  | ({ type: "wheel"; deltaX: number; deltaY: number; deltaMode?: number; wheelDeltaX?: number } & ModState);
 
 /**
  * "Press the button or key you want to bind." Feed it raw events; it returns

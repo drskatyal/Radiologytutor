@@ -290,7 +290,19 @@ export function BindingsPanel({ table, overrides, onChange, surface, reserved, s
         if (e.button >= 3) e.preventDefault();
       }}
       onContextMenu={(e) => e.preventDefault()}
-      onWheel={(e) => feedPad({ type: "wheel", deltaX: e.deltaX, deltaY: e.deltaY, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey })}
+      onWheel={(e) =>
+        feedPad({
+          type: "wheel",
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaMode: e.deltaMode,
+          wheelDeltaX: (e.nativeEvent as WheelEvent & { wheelDeltaX?: number }).wheelDeltaX,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+        })
+      }
       className="mt-2 flex min-h-16 select-none items-center justify-center rounded-lg border border-dashed border-accent/60 bg-accent/5 px-3 py-3 text-center text-sm text-secondary"
     >
       {pending?.error ? (
