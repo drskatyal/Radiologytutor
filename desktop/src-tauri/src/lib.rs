@@ -15,6 +15,8 @@ mod header;
 mod image_store;
 #[cfg(target_os = "macos")]
 mod mac_mouse;
+#[cfg(target_os = "macos")]
+mod mac_webkit;
 mod native;
 mod native_view;
 mod pacs;
@@ -124,6 +126,7 @@ async fn scan_sources(
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<ScanResult, String> {
+    let entered_at = startup_elapsed_ms();
     let cache = cache_dir(&app)?;
     let cancel = state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
@@ -132,6 +135,7 @@ async fn scan_sources(
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     tauri::async_runtime::spawn_blocking(move || {
         let batch_emitter = emitter.clone();
+        let first_batch_at = std::sync::OnceLock::<f64>::new();
         let mut result = scan::scan(
             &paths,
             &cache,
@@ -143,9 +147,13 @@ async fn scan_sources(
                 header.file_id = registry.lock().register(header);
             },
             &|batch| {
+                first_batch_at.get_or_init(startup_elapsed_ms);
                 let _ = batch_emitter.emit("scan-batch", batch);
             },
         )?;
+        result.timings.entered_at_ms = Some(entered_at);
+        result.timings.first_batch_at_ms = first_batch_at.get().copied();
+        result.timings.done_at_ms = Some(startup_elapsed_ms());
         {
             let mut reg = registry.lock();
             for header in result.headers.iter_mut() {
@@ -607,7 +615,7 @@ fn native_warm(file_ids: Vec<u32>, state: tauri::State<'_, AppState>, native: ta
 
 /// P2.1: close the native series: texture and decoded slices freed.
 #[tauri::command]
-fn native_close(native: tauri::State<'_, native::Shared>) {
+fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) {
     // Study closed: every viewport, decoded slice and GPU texture, then the
     // allocator's slack (reformat volumes are freed by their views' unmount,
     // volume_close). Back to the empty-app footprint (bench `close` gate:
@@ -622,10 +630,19 @@ fn native_close(native: tauri::State<'_, native::Shared>) {
     // slices back (CI: 26 slices, 13 MB, after close). Once they have
     // drained, and if no viewport exists by then (nothing open, so the cache
     // serves nobody), empty the cache again and collect.
+    // macOS: WebKit keeps the study's decoded thumbnails / previews in its
+    // memory cache after the page lets go (WebView2 does not): empty it now
+    // and again after the late sweep (requests in flight at the close).
+    #[cfg(target_os = "macos")]
+    mac_webkit::drop_memory_cache(&_window);
     let native = native.inner().clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(2));
         let swept = native.sweep_if_idle();
+        #[cfg(target_os = "macos")]
+        if swept.is_some() {
+            mac_webkit::drop_memory_cache(&_window);
+        }
         release_memory();
         if bench_on() {
             bench_emit(
