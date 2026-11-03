@@ -47,7 +47,8 @@ export interface StackViewportProps {
   onActivate: () => void;
   onDropSeries: (seriesUid: string) => void;
   onDoubleClick: () => void;
-  onFirstPaint?: (ms: number, health: PaintHealth) => void;
+  /** `native`: the native viewport's first show (its Rust timings), for the bench. */
+  onFirstPaint?: (ms: number, health: PaintHealth, native?: { cached: boolean; decodeMs: number; frameMs: number; totalMs: number; acquireMs?: number }) => void;
   /** Teaching / screen sharing: no name, ID or birth date in the overlay. */
   hidePatient?: boolean;
   /**

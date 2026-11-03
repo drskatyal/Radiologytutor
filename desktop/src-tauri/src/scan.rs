@@ -285,16 +285,20 @@ pub fn scan(
         accepted: 0,
         total: 0,
     });
-    let (files, kind, used_dicomdir, stamps) = list_candidates(paths, cache_dir, &mut warnings);
-    let list_ms = started.elapsed().as_secs_f64() * 1000.0;
-
     let cache_key = paths
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("|");
     let cache_file = cache_path(cache_dir, &cache_key);
-    let cached = load_cache(&cache_file);
+    // The cache is keyed by the selection, not the listing: parse it while
+    // the folder is walked (a warm open waits on both before its first header).
+    let ((files, kind, used_dicomdir, stamps), cached) = std::thread::scope(|s| {
+        let loader = s.spawn(|| load_cache(&cache_file));
+        let listing = list_candidates(paths, cache_dir, &mut warnings);
+        (listing, loader.join().unwrap_or_default())
+    });
+    let list_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let total = files.len();
     let read = AtomicUsize::new(0);

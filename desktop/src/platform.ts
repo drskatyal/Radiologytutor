@@ -126,14 +126,22 @@ export interface ScanHandlers {
 }
 
 export async function scanPaths(paths: string[], handlers: ScanHandlers = {}): Promise<ScanResult> {
-  const off = await Promise.all([
-    listen<ScanProgress>("scan-progress", (p) => handlers.onProgress?.(p)),
-    listen<DesktopHeader[]>("scan-batch", (b) => handlers.onBatch?.(b)),
-  ]);
+  // Progress and batches come back on channels carried by the call itself:
+  // creating one is local (no IPC), so the scan starts on the first round
+  // trip instead of after two `listen` round trips (warm open: the scan
+  // entered Rust 40-60 ms after it was called).
+  const { Channel } = await import("@tauri-apps/api/core");
+  let live = true;
+  const progress = new Channel<ScanProgress>();
+  progress.onmessage = (p) => live && handlers.onProgress?.(p);
+  const batches = new Channel<DesktopHeader[]>();
+  batches.onmessage = (b) => live && handlers.onBatch?.(b);
   try {
-    return await invoke<ScanResult>("scan_sources", { paths });
+    return await invoke<ScanResult>("scan_sources", { paths, onProgress: progress, onBatch: batches });
   } finally {
-    off.forEach((fn) => fn());
+    // The result holds every header: a batch delivered after it is dropped,
+    // as an unlistened event was.
+    live = false;
   }
 }
 

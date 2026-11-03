@@ -555,10 +555,15 @@ impl Native {
     // ───────────── series and views ─────────────
 
     /// Show `paths` (display order) in cell `id` at `index`, with the file's window.
-    pub fn set_series(&self, id: &str, paths: Vec<PathBuf>, index: usize, scale: f64) -> Result<ShowResult, String> {
+    /// `rect`: the cell's rectangle when the page knows it (a viewport's
+    /// first series), so this frame draws it in place.
+    pub fn set_series(&self, id: &str, paths: Vec<PathBuf>, index: usize, rect: Option<Cell>, scale: f64) -> Result<ShowResult, String> {
         {
             let mut cells = self.cells.lock();
             let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], plane: None, view: View::default(), gpu: None });
+            if let Some(r) = rect.filter(|r| r.w > 0.0 && r.h > 0.0) {
+                c.rect = r;
+            }
             c.series = paths;
             c.plane = None;
             c.view = View { index: index.min(c.series.len().saturating_sub(1)), ..View::default() };
@@ -1005,7 +1010,7 @@ impl Native {
 
     pub fn open_series(&self, paths: Vec<PathBuf>, scale: f64) -> Result<ShowResult, String> {
         self.store().clear();
-        self.set_series(SPIKE, paths, 0, scale)
+        self.set_series(SPIKE, paths, 0, None, scale)
     }
 
     pub fn scroll_spike(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
