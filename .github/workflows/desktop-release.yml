@@ -17,7 +17,10 @@
 #   APPLE_CERTIFICATE (base64 .p12 "Developer ID Application"),
 #   APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
 #   APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_PRIVATE_KEY (.p8 contents)
+#       or APPLE_ID, APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID
 #       for signing + notarisation (stapled, so first launch works offline).
+#       Without them the universal .dmg ships unsigned (Gatekeeper: right-click
+#       the app → Open the first time).
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET plus variables
 #   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
 #       for Windows signing with Azure Artifact Signing.
@@ -117,6 +120,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           # The Tauri CLI tries to import APPLE_CERTIFICATE whenever the variable
           # exists, so it is exported only when it decodes to a PKCS#12 that opens
@@ -135,6 +141,11 @@ jobs:
             if [ -n "$APPLE_API_PRIVATE_KEY" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_ISSUER" ]; then
               mkdir -p "$RUNNER_TEMP/apple" && printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/apple/AuthKey.p8"
               { echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple/AuthKey.p8"; echo "APPLE_API_KEY=$APPLE_API_KEY"; echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"; } >> "$GITHUB_ENV"
+            elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              # Notarisation with an Apple ID and an app-specific password.
+              { echo "APPLE_ID=$APPLE_ID"; echo "APPLE_PASSWORD=$APPLE_PASSWORD"; echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"; } >> "$GITHUB_ENV"
+            else
+              echo "::notice::Signed but not notarised: add APPLE_API_* or APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID to notarise."
             fi
           else
             echo "::warning::APPLE_CERTIFICATE is set but is not a base64 PKCS#12 that opens with APPLE_CERTIFICATE_PASSWORD. Building unsigned; re-export the Developer ID Application certificate as .p12 and base64 it."
@@ -157,6 +168,11 @@ jobs:
           releaseBody: |
             Free, offline DICOM viewer for Windows, macOS and Linux. Not for diagnostic use.
             See docs/RADIANT_BENCHMARK.md for what is in this build.
+
+            **macOS:** one universal .dmg for Apple Silicon and Intel Macs (native Metal renderer).
+            If this build is not notarised, macOS says it "can't be opened" the first time:
+            right-click (or Control-click) FlowRad Viewer in Applications → **Open** → **Open**,
+            or allow it under System Settings → Privacy & Security. Later launches open normally.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

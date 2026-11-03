@@ -20,6 +20,7 @@ import {
 import { DESKTOP_COMMANDS, conflictFor, shortcutSheet, type ShortcutOverrides } from "../shortcuts";
 import type { ViewerSettings } from "../settings";
 import { mouseSheetLine } from "../viewer/mouseBindings";
+import { isMac } from "@flowrad/viewer-core/bindings";
 import { cacheUsage, clearCache, listMedia, pickSavePath, writeExport, type MediaVolume } from "../platform";
 
 // Settings › Mouse & Keyboard: its own chunk, loaded when the reader opens it.
@@ -294,6 +295,12 @@ export function SettingsDialog({
   useEffect(() => {
     if (open) cacheUsage().then(setUsage, () => setUsage(null));
   }, [open]);
+  // macOS: while the panel is open, the shell forwards every side button and
+  // tilt so "press the button you want to bind" sees what WKWebView can't.
+  useEffect(() => {
+    if (!isMac()) return;
+    void import("../macMouse").then((m) => m.setNativeMouseCapturing(bindingsOpen));
+  }, [bindingsOpen]);
   return (
     <>
     <Modal open={open} onClose={onClose} title="Settings" size="lg">

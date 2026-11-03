@@ -23,7 +23,7 @@ import { annotationEditing, tuneStackScrollTool } from "@flowrad/viewer-core";
 import { installDatasetTrim } from "./memory";
 import { markPhase } from "../perfWatch";
 import { mouseBindings, wheelBindings, type MouseMods } from "./mouseBindings";
-import { subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
+import { engineModifierName, isMac, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
 import { nearestIndex, positionsAlong, sliceNormalOf, syncTargetIndex, type SyncStack, type XVec3 as Vec3 } from "@flowrad/viewer-core";
 
 /** Decoded-image budget: holds a 1,500-slice 512² CT, or a 2,000-slice 256² MR, with room for an MPR. */
@@ -305,8 +305,10 @@ function fixedBindings(engine: Engine, tool: string): { mouseButton: number; mod
     4: MouseBindings.Fifth_Button,
   };
   const kb = KeyboardBindings as unknown as Record<string, number | undefined>;
+  // Mod (MouseMods.ctrl) is ⌘ on macOS: the engine's Meta binding there.
+  const mac = isMac();
   const mod = (m: MouseMods) => {
-    const name = `${m.shift ? "Shift" : ""}${m.ctrl ? "Ctrl" : ""}${m.alt ? "Alt" : ""}`;
+    const name = engineModifierName({ mod: m.ctrl, alt: m.alt, shift: m.shift }, mac);
     return name ? kb[name] : undefined;
   };
   const out: { mouseButton: number; modifierKey?: number }[] = [];
