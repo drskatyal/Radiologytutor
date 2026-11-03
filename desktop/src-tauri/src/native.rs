@@ -69,6 +69,14 @@ pub struct NativeStatus {
     pub backend: Option<String>,
     pub error: Option<String>,
     pub init_ms: Option<f64>,
+    /// macOS: of `init_ms`, time spent waiting for the main thread to create
+    /// the surface (it is busy while WKWebView loads the page).
+    pub surface_wait_ms: Option<f64>,
+    /// macOS: MB of GPU resources the Metal device holds now, and right after
+    /// init (the empty app): what a study adds on the GPU, and what a close
+    /// gives back (with the close report's figure).
+    pub gpu_allocated_mb: Option<f64>,
+    pub gpu_allocated_init_mb: Option<f64>,
     /// Last frame: CPU time to record + submit (not GPU time).
     pub last_frame_ms: Option<f64>,
     pub frames: u64,
@@ -155,6 +163,11 @@ pub struct ClosedReport {
     /// wgpu's GPU allocator after the close (D3D12): live, and reserved in blocks.
     pub gpu_allocated_mb: Option<f64>,
     pub gpu_reserved_mb: Option<f64>,
+    /// macOS: Metal's count with the cells dropped but before the queue was
+    /// flushed (what the flush below gives back: textures an upload still
+    /// referenced, staging buffers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_allocated_unflushed_mb: Option<f64>,
 }
 
 /// The 16-bit test image: a horizontal ramp with concentric rings, so window
@@ -247,6 +260,8 @@ pub struct ShowResult {
     pub cached: bool,
     pub decode_ms: f64,
     pub frame_ms: f64,
+    /// Of `frame_ms`: waiting for the surface's next drawable / swap-chain image.
+    pub acquire_ms: f64,
     pub total_ms: f64,
     pub rows: usize,
     pub cols: usize,
@@ -362,6 +377,10 @@ impl Native {
         let mut s = self.status.lock().clone();
         s.enabled = enabled();
         s.cells = self.cells.lock().len();
+        #[cfg(target_os = "macos")]
+        if let Some(gpu) = self.gpu.lock().as_ref() {
+            s.gpu_allocated_mb = metal_allocated_mb(&gpu.device);
+        }
         s
     }
 
@@ -380,12 +399,20 @@ impl Native {
         match create_gpu(window).await {
             Ok((gpu, adapter, backend)) => {
                 *self.gpu.lock() = Some(gpu);
+                // Read before taking the status lock (render takes gpu, then status).
+                #[cfg(target_os = "macos")]
+                let init_metal = self.gpu.lock().as_ref().and_then(|g| metal_allocated_mb(&g.device));
                 let mut s = self.status.lock();
                 s.ready = true;
                 s.adapter = Some(adapter);
                 s.backend = Some(backend);
                 s.error = None;
                 s.init_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                s.surface_wait_ms = SURFACE_WAIT_MS.lock().take();
+                #[cfg(target_os = "macos")]
+                {
+                    s.gpu_allocated_init_mb = init_metal;
+                }
             }
             Err(e) => self.status.lock().error = Some(e),
         }
@@ -643,10 +670,22 @@ impl Native {
         // with them, on a later poll: wait for that now rather than at the
         // next frame (none may come on the home screen).
         if let Some(gpu) = self.gpu.lock().as_ref() {
-            let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+            #[cfg(target_os = "macos")]
+            {
+                report.gpu_allocated_unflushed_mb = metal_allocated_mb(&gpu.device);
+            }
+            flush_and_wait(gpu);
+            #[cfg(target_os = "macos")]
+            release_spare_drawables(gpu);
             if let Some(r) = gpu.device.generate_allocator_report() {
                 report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
                 report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
+            }
+            // Metal has no allocator report: the device's own count of every
+            // resource it holds (on Apple silicon this is in our footprint).
+            #[cfg(target_os = "macos")]
+            if report.gpu_allocated_mb.is_none() {
+                report.gpu_allocated_mb = metal_allocated_mb(&gpu.device);
             }
         }
         report
@@ -666,7 +705,7 @@ impl Native {
         let n = store.stats().slices;
         store.clear();
         if let Some(gpu) = self.gpu.lock().as_ref() {
-            let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+            flush_and_wait(gpu);
         }
         Some(n)
     }
@@ -741,6 +780,7 @@ impl Native {
                 cached: false,
                 decode_ms,
                 frame_ms,
+                acquire_ms: last_acquire_ms(),
                 total_ms: started.elapsed().as_secs_f64() * 1000.0,
                 rows: h,
                 cols: w,
@@ -820,6 +860,7 @@ impl Native {
             cached,
             decode_ms,
             frame_ms,
+            acquire_ms: last_acquire_ms(),
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
             rows,
             cols,
@@ -879,6 +920,7 @@ impl Native {
         let started = Instant::now();
         let mut guard = self.gpu.lock();
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
+        let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return Ok(0.0),
@@ -891,6 +933,7 @@ impl Native {
                 }
             }
         };
+        LAST_ACQUIRE_US.store(acquiring.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (sw, sh) = (gpu.config.width, gpu.config.height);
         let s = scale as f32;
@@ -968,6 +1011,38 @@ impl Native {
     pub fn scroll_spike(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
         self.scroll(SPIKE, delta, scale)
     }
+}
+
+/// Give back what dropped GPU resources still hold. wgpu frees a dropped
+/// texture or buffer only once no submission uses it, and an upload not yet
+/// submitted (write_texture / write_buffer: its staging buffer and target)
+/// counts as one until the next submit, which on the home screen may never
+/// come (CI, macOS: Metal held 7.3 MB after close, 6.2 MB with the study
+/// open). An empty submit flushes those writes; the wait then lets wgpu
+/// destroy everything that was only waiting on the GPU. Windows / Linux:
+/// just the wait, as before (the empty submit is the macOS fix; keeping
+/// D3D12 unchanged keeps the Windows close gate comparable).
+fn flush_and_wait(gpu: &Gpu) {
+    #[cfg(target_os = "macos")]
+    gpu.queue.submit(std::iter::empty());
+    let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+}
+
+/// macOS, study closed: the CAMetalLayer keeps its pool of drawables (up to
+/// frame latency + 1, each a window-sized IOSurface counted in the Metal
+/// device's allocations and our footprint) for as long as their size holds.
+/// The home screen draws nothing natively, so the pool the study filled stays
+/// allocated (CI: IOSurface +5.3 MB, IOAccelerator +5.7 MB after close against
+/// the empty app). Changing drawableSize makes the layer drop its pool; the
+/// next frame allocates one drawable at the restored size, as at start.
+#[cfg(target_os = "macos")]
+fn release_spare_drawables(gpu: &Gpu) {
+    let full = gpu.config.clone();
+    let mut tiny = full.clone();
+    tiny.width = 1;
+    tiny.height = 1;
+    gpu.surface.configure(&gpu.device, &tiny);
+    gpu.surface.configure(&gpu.device, &full);
 }
 
 fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
@@ -1169,9 +1244,90 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
     }
 }
 
+/// Last frame: µs spent waiting for the next drawable (render → ShowResult).
+static LAST_ACQUIRE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn last_acquire_ms() -> f64 {
+    LAST_ACQUIRE_US.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0
+}
+
+/// A frame never waits for the display's vblank: Mailbox (D3D12 / Vulkan:
+/// the newest frame wins, no tearing). Metal offers only Fifo and Immediate,
+/// and with Fifo and two drawables a step waited for a free drawable over
+/// several display refreshes (CI macOS: scroll step 1, 60 ms of a 62 ms
+/// step was the frame): Immediate presents at once (CAMetalLayer
+/// displaySyncEnabled = false; the window server composites it, so no
+/// tearing in a window). Fifo where neither is offered.
+pub(crate) fn present_mode_for(modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    if modes.contains(&wgpu::PresentMode::Mailbox) {
+        wgpu::PresentMode::Mailbox
+    } else if cfg!(target_os = "macos") && modes.contains(&wgpu::PresentMode::Immediate) {
+        wgpu::PresentMode::Immediate
+    } else {
+        wgpu::PresentMode::Fifo
+    }
+}
+
+/// Frames the swapchain may queue (wgpu: drawables = this + 1). macOS: 2,
+/// so CAMetalLayer keeps three drawables. With two, one is on screen and the
+/// other still queued at the window server right after the first image and
+/// the layout frame, so the next frame (CI: scroll step 0) waited 63.5 ms
+/// for one to come back, Immediate or not. Elsewhere 1 (Mailbox / flip
+/// model never waits on the display).
+pub(crate) fn frame_latency() -> u32 {
+    if cfg!(target_os = "macos") {
+        2
+    } else {
+        1
+    }
+}
+
+/// macOS: MB of GPU resources the Metal device holds (MTLDevice
+/// currentAllocatedSize), for the close report.
+#[cfg(target_os = "macos")]
+fn metal_allocated_mb(device: &wgpu::Device) -> Option<f64> {
+    use objc2_metal::MTLDevice;
+    // SAFETY: only reads a counter; the device outlives the guard.
+    let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }?;
+    Some((hal.raw_device().currentAllocatedSize() as f64 / 1_048_576.0 * 10.0).round() / 10.0)
+}
+
+/// macOS: the last surface creation's wait for the main thread, ms (reported
+/// in the status; the bench prints it with the first image).
+static SURFACE_WAIT_MS: parking_lot::Mutex<Option<f64>> = parking_lot::Mutex::new(None);
+
+/// The window's surface. macOS: creating it attaches a CAMetalLayer to the
+/// window's NSView, and AppKit views are main-thread only (raw-window-metal
+/// panics elsewhere: "can only access NSView on the main thread"), so it is
+/// created on the main thread and handed back. Configuring, acquiring and
+/// presenting touch only the layer, which wgpu-hal does off the main thread.
+/// Windows / Linux: created here, as before.
+fn create_surface(instance: &wgpu::Instance, window: &tauri::WebviewWindow) -> Result<wgpu::Surface<'static>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Already on the main thread: create it directly (waiting would deadlock).
+        if objc2::MainThreadMarker::new().is_some() {
+            return instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (instance, target) = (instance.clone(), window.as_ref().window());
+        let asked = Instant::now();
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(instance.create_surface(target).map_err(|e| format!("surface: {e}")));
+            })
+            .map_err(|e| format!("surface: main thread unavailable: {e}"))?;
+        let surface = rx.recv().map_err(|e| format!("surface: main thread dropped the request: {e}"))?;
+        *SURFACE_WAIT_MS.lock() = Some(asked.elapsed().as_secs_f64() * 1000.0);
+        surface
+    }
+    #[cfg(not(target_os = "macos"))]
+    instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))
+}
+
 fn finish_warm(window: &tauri::WebviewWindow, warm: Warm) -> Result<(Gpu, String, String), String> {
     let Warm { instance, adapter, device, queue, pipes } = warm;
-    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    let surface = create_surface(&instance, window)?;
     if !adapter.is_surface_supported(&surface) {
         return Err("adapter cannot present to this window".into());
     }
@@ -1180,7 +1336,7 @@ fn finish_warm(window: &tauri::WebviewWindow, warm: Warm) -> Result<(Gpu, String
 
 async fn create_gpu_on(window: &tauri::WebviewWindow, force: Option<wgpu::Backends>) -> Result<(Gpu, String, String), String> {
     let instance = new_instance(force);
-    let surface = instance.create_surface(window.as_ref().window()).map_err(|e| format!("surface: {e}"))?;
+    let surface = create_surface(&instance, window)?;
     let (adapter, device, queue) = request_device(&instance, Some(&surface)).await?;
     finish(window, &adapter, surface, device, queue, None)
 }
@@ -1203,11 +1359,10 @@ fn finish(
         format,
         width: size.width.max(1),
         height: size.height.max(1),
-        // Mailbox: a frame never waits for the display's vblank (Fifo made
-        // every scroll call wait ~16 ms+); the newest frame wins. Fifo where
-        // mailbox is not offered.
-        present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) { wgpu::PresentMode::Mailbox } else { wgpu::PresentMode::Fifo },
-        desired_maximum_frame_latency: 1,
+        // Never wait for the display's vblank (Fifo made every scroll call
+        // wait ~16 ms+): see present_mode_for.
+        present_mode: present_mode_for(&caps.present_modes),
+        desired_maximum_frame_latency: frame_latency(),
         alpha_mode: caps.alpha_modes[0],
         color_space: wgpu::SurfaceColorSpace::Auto,
         view_formats: vec![],
@@ -1348,6 +1503,24 @@ pub fn device_clip(x: f32, y: f32, w: f32, h: f32, scale: f32, sw: u32, sh: u32)
 
 #[cfg(test)]
 mod tests {
+    /// No vblank wait: Mailbox where offered (D3D12, Vulkan), Immediate on
+    /// Metal (it offers only Fifo / Immediate), Fifo as the last resort.
+    #[test]
+    fn present_mode_never_waits_for_vblank_when_it_can() {
+        use wgpu::PresentMode::*;
+        assert_eq!(super::present_mode_for(&[Fifo, Mailbox, Immediate]), Mailbox);
+        assert_eq!(super::present_mode_for(&[Fifo]), Fifo);
+        let metal = super::present_mode_for(&[Fifo, Immediate]);
+        assert_eq!(metal, if cfg!(target_os = "macos") { Immediate } else { Fifo });
+    }
+
+    #[test]
+    fn metal_keeps_a_spare_drawable() {
+        // macOS: three drawables (latency 2), so a frame never waits for the
+        // window server to hand one back; Windows unchanged.
+        assert_eq!(super::frame_latency(), if cfg!(target_os = "macos") { 2 } else { 1 });
+    }
+
     #[test]
     fn scissor_tiles_neighbours_without_overlap_at_fractional_dpi() {
         for scale in [1.0f32, 1.25, 1.5, 1.75] {

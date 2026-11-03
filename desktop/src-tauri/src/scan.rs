@@ -39,6 +39,15 @@ pub struct ScanTimings {
     pub list_ms: f64,
     pub parse_ms: f64,
     pub total_ms: f64,
+    /// Process clock (ms since start), set by the app's scan command: the
+    /// command entered, its first batch emitted, the scan returned. Places
+    /// the scan on the same timeline as the page's open (bench).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entered_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_batch_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_at_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -438,6 +447,7 @@ pub fn scan(
             list_ms,
             parse_ms,
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
+            ..Default::default()
         },
     })
 }

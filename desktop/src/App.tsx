@@ -41,7 +41,7 @@ import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } fro
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
 import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
-import { inputIndex, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
+import { inputIndex, isMac, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
 import { useSyncStatus } from "./components/syncStatus";
@@ -623,6 +623,7 @@ export default function App() {
       };
 
       try {
+        bench.current.marks.scanCalledMs = performance.now() - t0;
         const result = await scanPaths(paths, {
           onProgress: (progress) => {
             if (seq !== openSeq.current) return;
@@ -705,6 +706,9 @@ export default function App() {
             const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             await benchReport({
               source: paths,
+              // The open on the process clock (ms since start), to line it up
+              // with the scan command's own timeline (rust.enteredAtMs …).
+              openAtProcessMs: startup ? Math.round(startup - (performance.now() - t0)) : null,
               files: result.inspected,
               images: built.reduce((n, s) => n + s.imageCount, 0),
               studies: built.length,
@@ -1047,7 +1051,26 @@ export default function App() {
             // three IPC round trips; it is kept as paintReportedMs.
             const fcp = performance.getEntriesByName?.("first-contentful-paint")[0]?.startTime;
             const navAt = Math.max(0, ms - now);
+            // Where the page's own share goes (ms from navigation start): the
+            // document, the stylesheet and entry script arriving, parsing
+            // done, the entry script run (DOMContentLoaded), load.
+            const r1 = (x: number | undefined) => (x == null || !(x > 0) ? null : Math.round(x));
+            const nav = performance.getEntriesByType?.("navigation")[0] as PerformanceNavigationTiming | undefined;
+            const loaded = (re: RegExp) =>
+              r1((performance.getEntriesByType?.("resource") as PerformanceResourceTiming[] | undefined)?.find((e) => re.test(e.name))?.responseEnd);
+            const pageTiming = nav
+              ? {
+                  html: r1(nav.responseEnd),
+                  css: loaded(/\/assets\/index-[^/]*\.css/),
+                  js: loaded(/\/assets\/index-[^/]*\.js/),
+                  interactive: r1(nav.domInteractive),
+                  dcl: r1(nav.domContentLoadedEventEnd),
+                  load: r1(nav.loadEventStart),
+                  fcp: r1(fcp),
+                }
+              : null;
             await benchReport({
+              pageTiming,
               coldStart: true,
               ...marks,
               firstPaintMs: fcp != null ? navAt + fcp : ms,
@@ -2107,6 +2130,28 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [runAction, dialog, settings.bindings]);
+
+  // macOS: WKWebView can't tell side buttons from the middle one, nor a tilt
+  // wheel from a trackpad, so the shell forwards them (src/macMouse.ts). Only
+  // what the bindings use (or the open Mouse & Keyboard panel) is forwarded.
+  const macBindingSpecs = useMemo(() => [...inputIndex(DESKTOP_COMMANDS, settings.bindings ?? {}).keys()], [settings.bindings]);
+  useEffect(() => {
+    if (!isMac()) return;
+    let stop: (() => void) | null = null;
+    let gone = false;
+    void import("./macMouse").then((m) => {
+      if (gone) return;
+      stop = m.startNativeMouse();
+    });
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (!isMac()) return;
+    void import("./macMouse").then((m) => m.setNativeMouseBindings(macBindingSpecs));
+  }, [macBindingSpecs]);
 
   // Mouse buttons (middle, back / forward, any extra button of a gaming or
   // programmable mouse) and wheel tilt bound to commands in Settings. Only

@@ -162,8 +162,18 @@ async function benchDesktop(binary, study) {
     if (!Number.isFinite(report.firstImageMs)) report.firstImageMs = null;
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"}${report.native?.initMs != null ? ` (native init ${r0(report.native.initMs)} ms${report.native.surfaceWaitMs != null ? `, main-thread wait ${r0(report.native.surfaceWaitMs)}` : ""})` : ""} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
+    // The open on one clock (ms after the open; the scan command's marks come
+    // from the process clock): where a late first series spent its time.
+    const at = report.openAtProcessMs;
+    const rs = report.rust ?? {};
+    if (at != null && rs.enteredAtMs != null) {
+      const rel = (x) => (x == null ? "?" : r0(x - at));
+      console.error(
+        `  open timeline: open at ${r0(at)} ms after process start · scan called ${r0(report.scanCalledMs)} · Rust entered ${rel(rs.enteredAtMs)} · first batch sent ${rel(rs.firstBatchAtMs)} · scan returned ${rel(rs.doneAtMs)} · first batch received ${r0(report.firstHeaderMs)} · first series hung ${r0(report.firstSeriesHungMs)}`
+      );
+    }
   }
   if (discarded.length) console.error(`${discarded.length} run(s) discarded and repeated on the WARP runner: ${JSON.stringify(discarded)}`);
   const warm = reports.slice(1);
@@ -247,6 +257,10 @@ async function benchColdStart(binary) {
     console.error(
       `run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms · window built ${r0(report.windowBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms${report.nativeFirstPaintMs != null ? ` · native first paint ${r0(report.nativeFirstPaintMs)} ms` : ""}`
     );
+    // The page's share, from its navigation start: what arrived when, and
+    // what the first paint waited for.
+    const pt = report.pageTiming;
+    if (pt) console.error(`  page: html ${pt.html} · css ${pt.css} · entry js ${pt.js} · parsed ${pt.interactive} · DOMContentLoaded ${pt.dcl} · load ${pt.load} · first paint ${pt.fcp} ms`);
   }
   // Where the time goes before first paint: Rust + window creation
   // (windowBuiltMs), WebView2 start until it begins loading the page
@@ -296,7 +310,8 @@ async function benchInteract(binary, study) {
   // Freeze during interaction: the slowest single step of scroll, zoom, W/L.
   const maxStep = flag("max-interaction-ms", Infinity);
   const slowest = Math.max(i.frames.max ?? 0, ...["scroll", "zoom", "windowLevel"].map((k) => i[k].max ?? 0));
-  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms`);
+  const where = i.slowest ? ` (${i.slowest.kind} step ${i.slowest.step}: Rust ${i.slowest.rustMs} ms = decode ${i.slowest.decodeMs} + frame ${i.slowest.frameMs}${i.slowest.acquireMs != null ? `, of which waiting for a drawable ${i.slowest.acquireMs}` : ""})` : "";
+  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms${where}`);
   if (over.length) {
     console.error(`frame-time gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
@@ -404,6 +419,7 @@ function treeMemory(pid) {
     }
     return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
   }
+  if (process.platform === "darwin") return treeMemoryMac(pid);
   const ps = execFileSync("ps", ["-e", "-o", "pid=,ppid=,comm="]).toString();
   const rows = ps.trim().split("\n").map((l) => l.trim().split(/\s+/));
   const kids = new Map();
@@ -428,6 +444,107 @@ function treeMemory(pid) {
     stack.push(...(kids.get(p) ?? []));
   }
   return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
+}
+
+/** "[[dd-]hh:]mm:ss" (ps etime) → seconds. */
+function etimeSeconds(t) {
+  const [d, rest] = t.includes("-") ? t.split("-") : ["0", t];
+  return rest.split(":").map(Number).reduce((a, n) => a * 60 + n, 0) + Number(d) * 86400;
+}
+
+/** top's MEM column ("123M", "1.2G", "512K", "40M+") → MB. */
+function topMb(v) {
+  const m = /^([\d.]+)([KMGB]?)/.exec(v ?? "");
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  return m[2] === "G" ? n * 1024 : m[2] === "K" ? n / 1024 : m[2] === "B" ? n / 1048576 : n;
+}
+
+/**
+ * macOS: WKWebView's WebContent / GPU / Networking processes are XPC
+ * services started by launchd (parent pid 1), not children of the app, so a
+ * parent walk misses them. The tree is the app, its descendants, and every
+ * com.apple.WebKit.* process started after it (CI runners run nothing else on
+ * WebKit). "private" is the physical footprint (top's MEM, what Activity
+ * Monitor shows); "ws" is RSS.
+ */
+function treeMemoryMac(pid) {
+  const rows = [];
+  for (const line of execFileSync("ps", ["-axo", "pid=,ppid=,etime=,rss=,comm="]).toString().split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), age: etimeSeconds(m[3]), rssKb: Number(m[4]), comm: m[5] });
+  }
+  const app = rows.find((r) => r.pid === pid);
+  if (!app) return { wsMb: 0, privateMb: 0, processes: [] };
+  const kids = new Map();
+  for (const r of rows) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r]);
+  const tree = [];
+  const stack = [app];
+  const seen = new Set();
+  while (stack.length) {
+    const r = stack.pop();
+    if (seen.has(r.pid)) continue;
+    seen.add(r.pid);
+    tree.push(r);
+    stack.push(...(kids.get(r.pid) ?? []));
+  }
+  for (const r of rows) if (!seen.has(r.pid) && /com\.apple\.WebKit\./.test(r.comm) && r.age <= app.age + 2) tree.push(r);
+  const footprint = new Map();
+  try {
+    const args = ["-l", "1", "-s", "0", "-stats", "pid,mem"];
+    for (const r of tree) args.push("-pid", String(r.pid));
+    for (const line of execFileSync("top", args, { encoding: "utf8" }).split("\n")) {
+      const m = /^\s*(\d+)\s+(\S+)\s*$/.exec(line);
+      if (m) footprint.set(Number(m[1]), topMb(m[2]));
+    }
+  } catch {
+    /* top unavailable: fall back to RSS */
+  }
+  const kind = (r) =>
+    r.pid === pid ? "app" : /WebContent/.test(r.comm) ? "renderer" : /GPU/.test(r.comm) ? "gpu-process" : /Networking/.test(r.comm) ? "utility" : "child";
+  const procs = tree.map((r) => {
+    const wsMb = Math.round(r.rssKb / 1024);
+    return { pid: r.pid, name: path.basename(r.comm), type: kind(r), wsMb, privateMb: Math.round(footprint.get(r.pid) ?? wsMb) };
+  });
+  return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
+}
+
+/**
+ * macOS: a process's footprint by category (`footprint`: dirty MB per memory
+ * kind: MALLOC_*, IOSurface, IOAccelerator, WebKit / JavaScriptCore, …), so a
+ * close delta names what stayed. Null where `footprint` cannot read the
+ * process.
+ */
+function footprintCategories(pid) {
+  if (process.platform !== "darwin" || !pid) return null;
+  const mb = (v) => {
+    const m = /^([\d.]+)\s*([KMG]?)B$/.exec(v.trim());
+    return m ? Number(m[1]) * ({ "": 1 / 1048576, K: 1 / 1024, M: 1, G: 1024 }[m[2]]) : NaN;
+  };
+  for (const cmd of [["sudo", ["-n", "/usr/bin/footprint", String(pid)]], ["/usr/bin/footprint", [String(pid)]]]) {
+    try {
+      const out = execFileSync(cmd[0], cmd[1], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 20_000 });
+      const cats = {};
+      for (const line of out.split("\n")) {
+        // "  20 MB   0 B   0 B   150   MALLOC_SMALL": dirty, clean, reclaimable, regions, category.
+        const m = /^\s*([\d.]+ ?[KMG]?B)\s+([\d.]+ ?[KMG]?B)\s+([\d.]+ ?[KMG]?B)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+        if (m && m[5] !== "TOTAL") cats[m[5]] = Math.round(mb(m[1]) * 10) / 10;
+      }
+      if (Object.keys(cats).length) return cats;
+    } catch {
+      /* not permitted / not installed: try the next way */
+    }
+  }
+  return null;
+}
+
+/** The categories that moved most between two footprints (MB, signed). */
+function footprintDelta(a, b, top = 8) {
+  if (!a || !b) return "unavailable";
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const d = [...keys].map((k) => [k, Math.round(((b[k] ?? 0) - (a[k] ?? 0)) * 10) / 10]).filter(([, v]) => Math.abs(v) >= 0.5);
+  d.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]));
+  return d.length ? d.slice(0, top).map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${v}`).join(", ") : "no category moved by 0.5 MB";
 }
 
 async function benchIdle(binary) {
@@ -696,6 +813,9 @@ async function benchClose(binary, study) {
   empty.stderr.on("data", () => undefined);
   await sleep(baselineSeconds * 1000);
   const baseline = empty.exitCode == null ? treeMemory(empty.pid) : null;
+  // macOS: what each process holds, by kind, to name what a close leaves.
+  const cats = (m) => Object.fromEntries((m?.processes ?? []).filter((p) => p.type === "app" || p.type === "renderer").map((p) => [p.type, footprintCategories(p.pid)]));
+  const baselineCats = cats(baseline);
   empty.kill("SIGKILL");
   await sleep(2000);
   if (!baseline?.processes.length) throw new Error("close: the empty app is not running for its baseline");
@@ -737,9 +857,11 @@ async function benchClose(binary, study) {
   // Sample just before the app closes it: the study open and settled.
   await sleep(Math.max(0, settle * 1000 - 1500));
   const open = treeMemory(child.pid);
+  const openCats = cats(open);
   await until(() => reports.some((r) => r.closed), settle * 1000 + 30_000, "close report");
   await sleep(afterClose * 1000);
   const closed = treeMemory(child.pid);
+  const closedCats = cats(closed);
   child.kill("SIGKILL");
 
   const report = reports.find((r) => !r.closed);
@@ -768,6 +890,20 @@ async function benchClose(binary, study) {
     `CLOSE: private baseline ${baseline.privateMb} MB (${line(baseline)}) · open ${open.privateMb} MB (${line(open)}) · closed +${afterClose} s ${closed.privateMb} MB (${line(closed)}) · delta ${summary.closeDeltaPrivateMb} MB · ws ${baseline.wsMb} / ${open.wsMb} / ${closed.wsMb} MB`
   );
   for (const c of shellClose) console.error(`CLOSE (app process): ${JSON.stringify(c)}`);
+  if (process.platform === "darwin") {
+    // By kind of memory (footprint, dirty MB): closed vs. the empty app, and
+    // closed vs. open (what the close did not give back).
+    for (const kind of ["app", "renderer"]) {
+      console.error(`CLOSE (${kind}, by kind): closed − baseline: ${footprintDelta(baselineCats[kind], closedCats[kind])} · closed − open: ${footprintDelta(openCats[kind], closedCats[kind])}`);
+    }
+  }
+  // macOS: Metal's own count (in the app's footprint on Apple silicon): after
+  // init (empty app), with the study open, after the close.
+  const metal = report?.native?.gpuAllocatedMb;
+  if (metal != null || report?.native?.gpuAllocatedInitMb != null) {
+    const after = shellClose.find((c) => c.held)?.held?.gpuAllocatedMb;
+    console.error(`CLOSE (Metal): init ${report.native.gpuAllocatedInitMb} MB · open ${metal} MB · after close ${after} MB`);
+  }
   const over = [];
   const maxBaseline = flag("max-baseline-private-mb", Infinity);
   const maxOpen = flag("max-open-private-mb", Infinity);
