@@ -193,6 +193,14 @@ async fn scan_sources(
         if bench_on() {
             bench_scan_line(&result);
         }
+        // Every header already reached the page in a batch (`on_batch`, with
+        // the same file ids). Sending them all again made the page parse the
+        // whole study twice: on the 10,310-image MRI a ~15 MB response, whose
+        // JSON parse (no script, then GC) was the open's last long task. The
+        // page keeps the batches; only the count and the patient fields that
+        // cache hits got after streaming come back.
+        result.streamed = Some(result.headers.len());
+        result.headers = Vec::new();
         // A 4,000-file scan parses on every core; each thread keeps its
         // pages afterwards. Hand the slack back so an open study stays lean.
         release_memory();

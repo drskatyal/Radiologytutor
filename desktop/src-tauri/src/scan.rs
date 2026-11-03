@@ -65,6 +65,56 @@ pub struct ScanResult {
     pub used_dicomdir: bool,
     pub warnings: Vec<String>,
     pub timings: ScanTimings,
+    /// Patient identifiers for headers that came from the scan cache (which
+    /// holds none): what `headers` got after the batches carrying them were
+    /// sent. A page that kept the streamed batches applies these instead of
+    /// receiving every header a second time (see `streamed`).
+    pub patient_patches: Vec<PatientPatch>,
+    /// Set when `headers` was left out because every one of them already
+    /// reached the page in a batch: how many there were. The page waits for
+    /// that many, then applies `patient_patches`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streamed: Option<usize>,
+}
+
+/// The patient fields `Header::copy_patient_fields_from` copies, named as in
+/// `Header` (camelCase), so the page can assign them over a streamed header.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PatientFields {
+    pub patient_name: Option<String>,
+    pub patient_id: Option<String>,
+    pub patient_birth_date: Option<String>,
+    pub patient_sex: Option<String>,
+    pub patient_age: Option<String>,
+    pub patient_weight: Option<f64>,
+    pub referring_physician_name: Option<String>,
+    pub institution_name: Option<String>,
+    pub accession_number: Option<String>,
+}
+
+impl PatientFields {
+    pub fn of(h: &Header) -> Self {
+        PatientFields {
+            patient_name: h.patient_name.clone(),
+            patient_id: h.patient_id.clone(),
+            patient_birth_date: h.patient_birth_date.clone(),
+            patient_sex: h.patient_sex.clone(),
+            patient_age: h.patient_age.clone(),
+            patient_weight: h.patient_weight,
+            referring_physician_name: h.referring_physician_name.clone(),
+            institution_name: h.institution_name.clone(),
+            accession_number: h.accession_number.clone(),
+        }
+    }
+}
+
+/// One study's patient fields and the (registry) file ids they apply to.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatientPatch {
+    pub file_ids: Vec<u32>,
+    pub fields: PatientFields,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -419,14 +469,26 @@ pub fn scan(
             fresh_by_study.insert(uid, fresh);
         }
     }
+    // By study, in first-seen order (deterministic: `headers` is in file order).
+    let mut patches: Vec<(String, PatientPatch)> = Vec::new();
     for (h, from_cache) in headers.iter_mut() {
         if *from_cache {
-            if let Some(src) = h
+            if let Some((uid, src)) = h
                 .study_instance_uid
-                .as_ref()
-                .and_then(|u| fresh_by_study.get(u))
+                .clone()
+                .and_then(|u| fresh_by_study.get(&u).map(|src| (u, src)))
             {
                 h.copy_patient_fields_from(src);
+                match patches.iter_mut().find(|(u, _)| *u == uid) {
+                    Some((_, patch)) => patch.file_ids.push(h.file_id),
+                    None => patches.push((
+                        uid,
+                        PatientPatch {
+                            file_ids: vec![h.file_id],
+                            fields: PatientFields::of(src),
+                        },
+                    )),
+                }
             }
         }
     }
@@ -453,6 +515,8 @@ pub fn scan(
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
             ..Default::default()
         },
+        patient_patches: patches.into_iter().map(|(_, p)| p).collect(),
+        streamed: None,
     })
 }
 
@@ -513,6 +577,24 @@ mod tests {
             second.headers.iter().all(|h| h.patient_name.is_some()),
             "names re-read, not cached"
         );
+        // The streamed (cache) copies had none: every one gets a patch, and
+        // the patch is what the header ended up with.
+        assert!(
+            first.patient_patches.is_empty(),
+            "nothing came from the cache"
+        );
+        assert_eq!(
+            second
+                .patient_patches
+                .iter()
+                .map(|p| p.file_ids.len())
+                .sum::<usize>(),
+            84
+        );
+        assert!(second
+            .patient_patches
+            .iter()
+            .all(|p| p.fields.patient_name.is_some()));
 
         // The on-disk cache holds no patient identifiers.
         let cached: String = walkdir::WalkDir::new(cache.path().join("scan"))
