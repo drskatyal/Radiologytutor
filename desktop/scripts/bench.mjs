@@ -12,6 +12,32 @@
 //    --max-settled-private-mb / --max-peak-private-mb gate private bytes)
 //   node desktop/scripts/bench.mjs close <binary> <study-path> [--settle 20] [--after-close 30]
 //        [--max-baseline-private-mb N] [--max-open-private-mb N] [--max-close-delta-mb 30]
+//   node desktop/scripts/bench.mjs openclose <binary> <study-path> [--rounds 5] [--hold 20] [--after-close 30]
+//        [--baseline-seconds 10] [--max-round-growth-mb N] [--max-close-delta-mb N]
+//   node desktop/scripts/bench.mjs steps <binary> <study-path> [--max-step-p95-ms N] [--max-step-ms N] [--max-long-tasks N]
+//   node desktop/scripts/bench.mjs hooks <binary> <study-path>
+//
+// Real-hardware runs (the HP; PowerShell from the repo root, the release exe or
+// the installed one, e.g. $exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"):
+//   node desktop/scripts/bench.mjs openclose $exe D:\studies\ct --rounds 5 --hold 20 --after-close 30
+//     Open/close rounds: the empty app's baseline, then the CT opened, closed (Home)
+//     and re-opened by the app's own open path, N rounds. Per round: whole-tree
+//     PRIVATE MB with the study open and after the close, and growth over the
+//     previous close; then growth first → last close (and per round) and the last
+//     close − the empty app. Informational unless --max-round-growth-mb /
+//     --max-close-delta-mb are given.
+//   node desktop/scripts/bench.mjs steps $exe D:\studies\ct
+//     Scripted interaction pass: scroll 120 slices, 60 window/level steps, 24 × 90°
+//     rotations, one step per frame, each timed to its drawn frame. p50 / p95 / max
+//     per kind and overall, the slowest step, and the long-task count (> 50 ms)
+//     during the pass. Informational unless a --max-* flag is given.
+//   node desktop/scripts/bench.mjs hooks $exe D:\studies\ct
+//     The test hook's self-test (window.__flowradTest; bench/test mode only):
+//     rotation and flips applied AND drawn, thumbnails rendered and one per series,
+//     bindings set → resolve → saved → reset all → every command on its preset
+//     (the reader's own bindings are put back afterwards). Exit 1 on any failure.
+//   `leak` is the feature on/off test with the study kept open (MPR, 3D, cine,
+//   tools, dialogs); `close` is one open/close round with gates; `openclose` is N.
 //
 // `desktop` launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1
 // and the study on the command line; the renderer reports one JSON line
@@ -810,6 +836,182 @@ async function benchNative(binary, study) {
   }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The empty app's whole tree after `seconds` (as a reader starts it), then killed. */
+async function emptyAppBaseline(binary, seconds, cats = () => ({})) {
+  const empty = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
+  empty.stdout.on("data", () => undefined);
+  empty.stderr.on("data", () => undefined);
+  await sleep(seconds * 1000);
+  const baseline = empty.exitCode == null ? treeMemory(empty.pid) : null;
+  const baselineCats = cats(baseline);
+  empty.kill("SIGKILL");
+  await sleep(2000);
+  if (!baseline?.processes.length) throw new Error("the empty app is not running for its baseline");
+  return { baseline, baselineCats };
+}
+
+/**
+ * A long-lived bench app (no BENCH_EXIT): every FLOWRAD_BENCH line it prints
+ * is collected; `until` waits for a condition on them (or fails with the
+ * app's output tail when it exits or times out).
+ */
+function spawnBenchApp(binary, args, env) {
+  const child = spawn(binary, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let partial = "";
+  const reports = [];
+  child.stdout.on("data", (d) => {
+    out = (out + d).slice(-8000);
+    const lines = (partial + d).split("\n");
+    partial = lines.pop() ?? "";
+    for (const l of lines) if (REPORT.test(l)) reports.push(JSON.parse(l.replace(REPORT, "")));
+  });
+  child.stderr.on("data", (d) => (out = (out + d).slice(-8000)));
+  const until = async (ok, ms, what) => {
+    const deadline = performance.now() + ms;
+    while (!ok()) {
+      if (child.exitCode != null || performance.now() > deadline) {
+        child.kill("SIGKILL");
+        throw new Error(`no ${what} (exit ${child.exitCode}); output:\n${out.slice(-2000)}`);
+      }
+      await sleep(100);
+    }
+  };
+  return { child, reports, until };
+}
+
+// Open/close rounds: the HP's "memory after close, per round" (0.7.2: +87-228
+// MB, growing 200-340 MB per round). 0.8.2's `close` mode measures one round
+// only, so per-round growth was not measurable. Private bytes, whole tree:
+//   1. baseline   the empty app after --baseline-seconds (default 10);
+//   2. round r    the study open (r > 1: re-opened by the app's own open path
+//                 after the previous close), sampled --hold s (default 20)
+//                 after its report; closed (Home), sampled --hold s later, just
+//                 before the next open; --rounds N (default 5);
+//   3. final      after the last close, sampled --after-close s (default 30) later.
+// Gates (optional): --max-round-growth-mb (last closed − first closed),
+// --max-close-delta-mb (last closed − baseline).
+async function benchOpenClose(binary, study) {
+  const rounds = flag("rounds", 5);
+  const hold = flag("hold", 20);
+  const afterClose = flag("after-close", 30);
+  const { baseline } = await emptyAppBaseline(binary, flag("baseline-seconds", 10));
+  const started = performance.now();
+  const app = spawnBenchApp(binary, [study], benchEnv({ BENCH: "1", BENCH_VIEW: "openclose", BENCH_CLOSE_AFTER_MS: String(hold * 1000), LEAK_ROUNDS: String(rounds) }));
+  const per = [];
+  try {
+    for (let r = 1; r <= rounds; r += 1) {
+      const opened = (x) => !x.closed && x.openClose?.round === r;
+      const closed = (x) => x.closed && x.openClose?.round === r;
+      await app.until(() => app.reports.some(opened), r === 1 ? 180_000 : hold * 1000 + 120_000, `open report for round ${r}`);
+      const openReport = app.reports.find(opened);
+      // Just before the app closes it: the study open and settled.
+      await sleep(Math.max(0, hold * 1000 - 1500));
+      const open = treeMemory(app.child.pid);
+      await app.until(() => app.reports.some(closed), hold * 1000 + 30_000, `close report for round ${r}`);
+      // Just before the app re-opens it (after the last round: --after-close s).
+      await sleep(r < rounds ? Math.max(0, hold * 1000 - 1500) : afterClose * 1000);
+      const shut = treeMemory(app.child.pid);
+      const prev = per[per.length - 1];
+      const row = {
+        round: r,
+        firstImageMs: r0(openReport.firstImageMs),
+        openPrivateMb: open.privateMb,
+        closedPrivateMb: shut.privateMb,
+        growthMb: shut.privateMb - (prev ? prev.closedPrivateMb : baseline.privateMb),
+        openWsMb: open.wsMb,
+        closedWsMb: shut.wsMb,
+        closedByProcess: shut.processes.map((p) => ({ type: p.type ?? p.name, privateMb: p.privateMb })),
+      };
+      per.push(row);
+      console.error(
+        `round ${r}/${rounds}: open ${row.openPrivateMb} MB private · closed ${row.closedPrivateMb} MB (${row.growthMb >= 0 ? "+" : ""}${row.growthMb} MB vs ${prev ? "the previous close" : "the empty app"}) · ws ${row.openWsMb} / ${row.closedWsMb} MB · first image ${row.firstImageMs} ms · ${row.closedByProcess.map((p) => `${p.type} ${p.privateMb}`).join(", ")}`
+      );
+    }
+  } finally {
+    app.child.kill("SIGKILL");
+  }
+  const first = per[0];
+  const last = per[per.length - 1];
+  const summary = {
+    mode: "openclose",
+    study,
+    rounds,
+    holdSeconds: hold,
+    afterCloseSeconds: afterClose,
+    totalSeconds: r0((performance.now() - started) / 1000),
+    baselinePrivateMb: baseline.privateMb,
+    baselineWsMb: baseline.wsMb,
+    perRound: per,
+    // Last close − first close: a steady leak, apart from the first open's warm-up.
+    roundGrowthMb: last.closedPrivateMb - first.closedPrivateMb,
+    perRoundGrowthMb: per.length > 1 ? Math.round(((last.closedPrivateMb - first.closedPrivateMb) / (per.length - 1)) * 10) / 10 : 0,
+    finalClosedPrivateMb: last.closedPrivateMb,
+    closeDeltaPrivateMb: last.closedPrivateMb - baseline.privateMb,
+    maxOpenPrivateMb: Math.max(...per.map((p) => p.openPrivateMb)),
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  console.error(
+    `OPEN/CLOSE: empty app ${baseline.privateMb} MB private · closed ${per.map((p) => p.closedPrivateMb).join(" → ")} MB · first → last close ${summary.roundGrowthMb >= 0 ? "+" : ""}${summary.roundGrowthMb} MB (${summary.perRoundGrowthMb} MB/round) · last close − empty app ${summary.closeDeltaPrivateMb} MB`
+  );
+  const over = [];
+  const maxGrowth = flag("max-round-growth-mb", Infinity);
+  const maxDelta = flag("max-close-delta-mb", Infinity);
+  if (summary.roundGrowthMb > maxGrowth) over.push(`closed private grew ${summary.roundGrowthMb} MB over ${rounds} rounds > ${maxGrowth} MB`);
+  if (summary.closeDeltaPrivateMb > maxDelta) over.push(`after the last close ${summary.finalClosedPrivateMb} MB private = empty app + ${summary.closeDeltaPrivateMb} MB > + ${maxDelta} MB`);
+  if (over.length) {
+    console.error(`open/close gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
+// Scripted interaction pass (desktop/src/benchSteps.ts): with the study open,
+// scroll 120 slices, 60 window/level steps and 24 × 90° rotations, one step
+// per frame, each timed to its drawn frame. p50 / p95 / max per kind and
+// overall, the slowest step, long tasks (> 50 ms) during the pass. Gates
+// (optional): --max-step-p95-ms (each kind's p95), --max-step-ms (slowest
+// step), --max-long-tasks (count during the pass).
+async function benchSteps(binary, study) {
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "steps" }));
+  const st = report.steps;
+  if (!st || st.error) throw new Error(`no steps report: ${JSON.stringify(st ?? report).slice(0, 400)}`);
+  console.log(JSON.stringify({ mode: "steps", study, ...st }, null, 2));
+  const line = (k) => `${k} p50 ${st[k].p50} / p95 ${st[k].p95} / max ${st[k].max} ms (n ${st[k].n})`;
+  console.error(
+    `STEPS (${st.renderPath}): ${["scroll", "windowLevel", "rotate", "all"].map(line).join(" · ")} · slowest ${st.slowest?.kind} step ${st.slowest?.step} ${st.slowest?.ms} ms · long tasks ${st.longTasks.count} (max ${st.longTasks.maxMs} ms${st.longTasks.recent.length ? `: ${st.longTasks.recent.map((t) => `${t.name}:${t.ms}`).join(", ")}` : ""}) · frames > 33 ms ${st.frames.over33}`
+  );
+  const over = [];
+  const maxP95 = flag("max-step-p95-ms", Infinity);
+  const maxStep = flag("max-step-ms", Infinity);
+  const maxTasks = flag("max-long-tasks", Infinity);
+  for (const k of ["scroll", "windowLevel", "rotate"]) if (st[k].p95 > maxP95) over.push(`${k} p95 ${st[k].p95} ms > ${maxP95} ms`);
+  if (st.all.max > maxStep) over.push(`slowest step ${st.all.max} ms > ${maxStep} ms`);
+  if (st.longTasks.count > maxTasks) over.push(`${st.longTasks.count} long tasks > ${maxTasks}`);
+  if (over.length) {
+    console.error(`steps gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
+// Test hook self-test (desktop/src/testHook.ts, window.__flowradTest): with
+// the study open, rotate / flip / reset (state applied AND drawn), thumbnails
+// (one per series, all rendered), bindings (custom set → resolves and saved →
+// reset all → every command back on its preset; the reader's own bindings
+// are put back). Exit 1 on any failed check.
+async function benchHooks(binary, study) {
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "hooks", BENCH_TIMEOUT_MS: String(180_000) }));
+  const h = report.hooks;
+  if (!h) throw new Error(`no hooks report: ${JSON.stringify(report).slice(0, 400)}`);
+  for (const c of h.checks ?? []) console.error(`${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? `  — ${c.detail}` : ""}`);
+  console.log(JSON.stringify({ mode: "hooks", study, ok: h.ok, error: h.error, orientation: h.orientation, thumbnails: h.thumbnails, failed: (h.checks ?? []).filter((c) => !c.ok) }, null, 2));
+  if (!h.ok) {
+    console.error(`hooks failed: ${h.error ?? `${(h.checks ?? []).filter((c) => !c.ok).length} check(s)`}`);
+    process.exitCode = 1;
+  }
+}
+
 // Close lifecycle, in PRIVATE bytes over the whole process tree (the HP's
 // numbers for 0.8.1: empty app 362 MB; a CT open 473-497 MB settled; the
 // study closed, 454 MB 30 s later — 90 MB never came back):
@@ -822,21 +1024,12 @@ async function benchClose(binary, study) {
   const baselineSeconds = flag("baseline-seconds", 10);
   const settle = flag("settle", 20);
   const afterClose = flag("after-close", 30);
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const brief = (m) => m && { privateMb: m.privateMb, wsMb: m.wsMb, processes: m.processes.length, byProcess: m.processes.map((p) => ({ type: p.type ?? p.name, privateMb: p.privateMb, wsMb: p.wsMb })) };
 
   // 1. Baseline: the empty app, as a reader starts it.
-  const empty = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
-  empty.stdout.on("data", () => undefined);
-  empty.stderr.on("data", () => undefined);
-  await sleep(baselineSeconds * 1000);
-  const baseline = empty.exitCode == null ? treeMemory(empty.pid) : null;
   // macOS: what each process holds, by kind, to name what a close leaves.
   const cats = (m) => Object.fromEntries((m?.processes ?? []).filter((p) => p.type === "app" || p.type === "renderer").map((p) => [p.type, footprintCategories(p.pid)]));
-  const baselineCats = cats(baseline);
-  empty.kill("SIGKILL");
-  await sleep(2000);
-  if (!baseline?.processes.length) throw new Error("close: the empty app is not running for its baseline");
+  const { baseline, baselineCats } = await emptyAppBaseline(binary, baselineSeconds, cats);
 
   // 2 + 3. The study opened, held, closed.
   const started = performance.now();
@@ -937,6 +1130,9 @@ async function benchClose(binary, study) {
 
 const modes = {
   close: () => benchClose(positional[0], positional[1]),
+  openclose: () => benchOpenClose(positional[0], positional[1]),
+  steps: () => benchSteps(positional[0], positional[1]),
+  hooks: () => benchHooks(positional[0], positional[1]),
   native: () => benchNative(positional[0], positional[1]),
   interact: () => benchInteract(positional[0], positional[1]),
   leak: () => benchLeak(positional[0], positional[1]),
@@ -948,7 +1144,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|close|interact|leak|multiwindow|native …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|close|openclose|steps|hooks|interact|leak|multiwindow|native …  (see header)");
   process.exit(2);
 }
 await modes[mode]();

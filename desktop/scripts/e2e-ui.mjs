@@ -9,6 +9,8 @@
 //   cursors    each tool has its own cursor on the image; the UI keeps the arrow
 //   orient     R / Shift+R / H, toolbar rotate dropdown; edge letters follow
 //   panel      Ctrl+B collapses the series panel to a rail; handle reopens; remembered
+//   hooks      (--only hooks) the bench/test hook window.__flowradTest: absent without ?bench;
+//              rotation / flips drawn, thumbnails one per series and rendered, bindings reset
 //   annotate   arrow with no prompt; inline label; select + Delete; undo / redo;
 //              right-click menu (delete, delete all on image / series); eraser
 //
@@ -1218,6 +1220,39 @@ if (want("cine") && only?.includes("cine")) {
 
 
 
+
+// ── test hook (window.__flowradTest, bench/test mode only): --only hooks.
+// Rotation / flips applied and drawn, thumbnails rendered and one per series,
+// bindings set → reset all → preset, driven through the hook the bench uses.
+if (want("hooks") && only?.includes("hooks")) {
+  check("hooks: not installed outside bench/test mode", (await page.evaluate(() => typeof window.__flowradTest)) === "undefined");
+  await page.goto(`http://127.0.0.1:${port}/?bench`);
+  await page.waitForSelector("text=Open a study");
+  await page.locator('input[type="file"]').first().setInputFiles(await listFiles(study));
+  await page.waitForSelector('[data-has-series="1"]', { timeout: 60_000 });
+  await page.waitForFunction(() => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
+  await settle(800);
+  check("hooks: installed in bench/test mode", (await page.evaluate(() => window.__flowradTest?.version ?? null)) === 1);
+  const edgesBefore = await edgesOf();
+  const result = await page.evaluate(() => window.__flowradTest.selfTest());
+  for (const c of result.checks) check(`hooks: ${c.name}`, c.ok, c.detail);
+  check("hooks: thumbnails counted against the open study", result.thumbnails?.expected >= 2, JSON.stringify(result.thumbnails));
+  // The hook's rotate is the app's: the edge letters follow it, and its reset puts them back.
+  const turned = await page.evaluate(() => window.__flowradTest.rotate(90));
+  await settle(200);
+  const edgesTurned = await edgesOf();
+  check("hooks: rotate(90) is drawn (edge letters turn)", turned.ok && edgesTurned.top === edgesBefore.left, `${JSON.stringify(turned.after)} ${JSON.stringify(edgesTurned)}`);
+  await page.evaluate(() => window.__flowradTest.resetOrientation());
+  await settle(200);
+  check("hooks: resetOrientation() restores the edge letters", JSON.stringify(await edgesOf()) === JSON.stringify(edgesBefore), JSON.stringify(await edgesOf()));
+  // Reset to defaults also holds for real keys: ↓ (the preset for slice.next) steps again.
+  await focusImage();
+  const at = await imageNo();
+  await page.keyboard.press("ArrowDown");
+  await settle(300);
+  check("hooks: after reset, ↓ (preset) moves to the next image", (await imageNo())?.at === (at?.at ?? 0) + 1, `${at?.at} → ${(await imageNo())?.at}`);
+  await shot("hooks");
+}
 
 // ── voice commands ──────────────────────────────────────────────────────
 if (want("voice")) {

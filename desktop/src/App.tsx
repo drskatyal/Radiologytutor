@@ -83,7 +83,7 @@ import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
 import { onActivity } from "./activity";
-import { nativeEnabled } from "./native/nativeLayout";
+import { nativeEnabled, nativeKnown, settleNativeAtStart, warmNative } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
 import {
   announceClosing,
@@ -199,9 +199,13 @@ function nativeCapable(series: { multiframe?: boolean; headers: readonly { photo
   return pi.startsWith("MONOCHROME");
 }
 
-/** Whether this window renders natively; false at once outside Tauri. */
+/**
+ * Whether this window renders natively; false at once outside Tauri. Waits
+ * for the answer without asking: on Windows the GPU (and so the answer) comes
+ * with the first open, and nothing that waits here is needed before one.
+ */
 function whenNativeKnown(): Promise<boolean> {
-  return isTauri ? nativeEnabled() : Promise.resolve(false);
+  return isTauri ? nativeKnown() : Promise.resolve(false);
 }
 
 export default function App() {
@@ -245,13 +249,27 @@ export default function App() {
       if (engine) fn(engine);
     });
   }, []);
-  /** Start the JS engine early only where it will be the renderer. */
+  /**
+   * A study is about to open (Open dialog, drag over the window, the preview
+   * up): warm its renderer. Native: the GPU device (built on demand on
+   * Windows, so the empty app holds none). JS: the engine.
+   */
   const prewarmJsEngine = useCallback(() => {
-    void whenNativeKnown().then((on) => !on && void getEngine());
+    if (!isTauri) return void getEngine();
+    void warmNative().then((on) => !on && void getEngine());
+  }, []);
+  /**
+   * Start screen, pointer on a recent study or a disc: native mode builds the
+   * GPU (released again if no study follows); the JS path compiles the engine.
+   */
+  const warmForOpen = useCallback(() => {
+    if (!isTauri) return prewarmEngine();
+    void warmNative().then((on) => !on && prewarmEngine());
   }, []);
   useEffect(() => {
     if (!isTauri) return;
-    void nativeEnabled().then((on) => {
+    settleNativeAtStart();
+    void nativeKnown().then((on) => {
       nativeRef.current = on;
       setNativeMode(on);
       if (on) document.documentElement.classList.add("native-transparent");
@@ -326,8 +344,10 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; nativeFirst?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; nativeFirst?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown; steps?: unknown; hooks?: unknown; openClose?: unknown };
     pendingVolume?: () => Promise<void>;
+    /** Open/close rounds (BENCH_VIEW=openclose): the round now open. Survives the re-open's mark reset. */
+    openCloseRound?: number;
     volumeT0?: number;
   }>({
     enabled: false,
@@ -479,7 +499,8 @@ export default function App() {
         low = true;
         const engine = enginePeek();
         if (engine) enterIdleMemory(engine);
-        void invoke("set_memory_mode", { low: true }).catch(() => undefined);
+        // trim: Rust's decoded-slice cache keeps the slices around this one.
+        void invoke("set_memory_mode", { low: true, trim: true }).catch(() => undefined);
       }, 10_000);
     };
     const events = ["pointerdown", "pointermove", "wheel", "keydown"] as const;
@@ -596,6 +617,10 @@ export default function App() {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
       }
+      // Build the GPU while the scan runs (on Windows it is not built at
+      // start-up, or was released after the last study closed); the first
+      // viewport finds it ready. A no-op while it is up.
+      void warmNative();
       const seq = ++openSeq.current;
       const t0 = performance.now();
       bench.current.t0 = t0;
@@ -958,6 +983,49 @@ export default function App() {
                 void (async () => {
                   const { runVoiceBench } = await import("./voiceBench");
                   bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "openclose") {
+                // Open/close rounds (bench.mjs `openclose`): like `close`, but
+                // the same study is re-opened through the app's own open path
+                // after each close, N rounds (FLOWRAD_LEAK_ROUNDS). Each round
+                // reports open, holds BENCH_CLOSE_AFTER_MS, closes (Home),
+                // reports closed, holds again, re-opens; the bench samples the
+                // whole tree's private bytes at each report.
+                void (async () => {
+                  const round = (bench.current.openCloseRound ?? 0) + 1;
+                  bench.current.openCloseRound = round;
+                  const rounds = await invoke<number>("bench_leak_rounds").catch(() => 2);
+                  const hold = await invoke<number>("bench_close_after_ms").catch(() => 20_000);
+                  bench.current.marks.openClose = { round, rounds, holdMs: hold };
+                  await report();
+                  window.setTimeout(() => {
+                    goHomeRef.current();
+                    void benchReport({ closed: true, openClose: { round, rounds }, closedAtMs: Math.round(performance.now() - t0) });
+                    if (round < rounds) window.setTimeout(() => void openPathsRef.current(paths), hold);
+                  }, hold);
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "steps") {
+                // Scripted interaction pass: scroll, W/L, rotate, timed per step.
+                void (async () => {
+                  const { runStepsPass, nativeDriver, engineDriver } = await import("./benchSteps");
+                  const engine = enginePeek();
+                  const vp = engine?.renderingEngine.getViewport(viewportIdFor(0));
+                  const driver =
+                    nativeRef.current && document.querySelector("[data-native-viewport]")
+                      ? await nativeDriver(cellKey(0))
+                      : engine && vp
+                        ? engineDriver(engine.core, vp as unknown as Parameters<typeof engineDriver>[1])
+                        : null;
+                  bench.current.marks.steps = driver ? await runStepsPass(driver) : { error: "no viewport to drive" };
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "hooks") {
+                // Test hook self-test (testHook.ts): rotation / flips drawn,
+                // thumbnails rendered and counted, bindings set → reset → preset.
+                void (async () => {
+                  const hook = (window as unknown as { __flowradTest?: import("./testHook").FlowradTestHook }).__flowradTest;
+                  bench.current.marks.hooks = hook ? await hook.selfTest().catch((e: unknown) => ({ ok: false, error: String(e) })) : { ok: false, error: "test hook not installed" };
                   void report();
                 })();
               } else if (bench.current.firstPaint != null && benchView === "close") {
@@ -1370,6 +1438,9 @@ export default function App() {
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
   /** The Home action, for the close-lifecycle bench (opened before `goHome` is defined). */
   const goHomeRef = useRef<() => void>(() => undefined);
+  /** The open flow, for the bench's open/close rounds (it re-opens from inside an open). */
+  const openPathsRef = useRef<(paths: string[]) => Promise<void>>(async () => undefined);
+  openPathsRef.current = (paths) => openPaths(paths);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
     setVoice((v) => ({ ...v, heard }));
@@ -2272,6 +2343,35 @@ export default function App() {
   }, [resetWorkspace, native]);
   goHomeRef.current = goHome;
 
+  // Bench / e2e test hook (window.__flowradTest): bench or test mode only,
+  // gated like benchReport (FLOWRAD_BENCH=1, or ?bench in the browser build).
+  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell });
+  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell };
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void benchEnabled().then(async (on) => {
+      if (!on || cancelled) return;
+      const { installTestHook } = await import("./testHook");
+      if (cancelled) return;
+      const st = () => testHookState.current;
+      off = installTestHook({
+        activeHandle: () => getHandle(cellKey(st().activeCell)),
+        activeCellKey: () => cellKey(st().activeCell),
+        studies: () => st().studies,
+        hiddenSeries: () => st().hiddenSeries,
+        seriesPanel: () => ({ collapsed: st().seriesPanel.collapsed, compact: !!st().settings.compactSeries }),
+        openSeriesPanel: () => st().seriesPanel.collapsed && st().seriesPanel.toggle(),
+        bindings: () => st().settings.bindings ?? {},
+        updateBindings: (next) => updateSettings({ bindings: Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]])) }),
+      });
+    }, () => undefined);
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [updateSettings]);
+
   const onPreview = useCallback((fullRes: boolean) => {
     const at = performance.now() - bench.current.t0;
     if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = at;
@@ -2675,6 +2775,7 @@ export default function App() {
             dragging={dragging}
             onSettings={() => setDialog("settings")}
             onHelp={() => setDialog("help")}
+            onIntent={warmForOpen}
           />
         )}
 

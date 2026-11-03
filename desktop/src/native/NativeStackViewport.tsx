@@ -292,6 +292,8 @@ export default function NativeStackViewport({
       wc: shown.window[0],
       zoom: shown.view.zoom,
       rotation: shown.view.rotation,
+      flipH: shown.view.flipH,
+      flipV: shown.view.flipV,
     };
   }, [shown, series]);
   const readoutRef = useRef(readout);

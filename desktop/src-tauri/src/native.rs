@@ -40,6 +40,28 @@ pub fn enabled() -> bool {
     }
 }
 
+/// When the GPU device exists. Windows: only while a study needs it. The
+/// D3D12 device, the driver's user-mode heaps, the swap chain and pipelines
+/// were built at launch and held for the whole session, study or not (HP
+/// 0.8.2: 1,038 ms of warm-up, held by a 358 MB empty app). Now they are
+/// built when a study is about to open (a study on the command line, the
+/// Open dialog, a drag over the window, a history / PACS open) and released
+/// once no viewport has used them for `GPU_IDLE_RELEASE` (study closed,
+/// dialog cancelled). macOS / Linux keep the launch-time device.
+/// `FLOWRAD_GPU_WARM=eager|lazy` overrides, for A/B runs.
+pub fn lazy_gpu() -> bool {
+    match crate::flowrad_env("GPU_WARM").as_deref() {
+        Ok("eager") => false,
+        Ok("lazy") => true,
+        _ => cfg!(target_os = "windows"),
+    }
+}
+
+/// Lazy mode: how long the GPU may sit unused with no viewport before it is
+/// released (well inside the close bench's 30 s sample, well past the gap
+/// between a close and the next open's first native call).
+pub const GPU_IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// A viewport rectangle in CSS pixels of the page (its top-left origin is
 /// the window's client-area origin: the webview fills the window).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Default)]
@@ -85,6 +107,13 @@ pub struct NativeStatus {
     pub scale: Option<f64>,
     /// Native viewports alive.
     pub cells: usize,
+    /// The GPU is built on demand (`lazy_gpu`), not at launch: the page asks
+    /// for it when a study is about to open instead of at start-up.
+    pub lazy: bool,
+    /// Last device build, ms (lazy mode: the one a study open overlapped).
+    pub warm_ms: Option<f64>,
+    /// Times the GPU was released for being idle (lazy mode).
+    pub releases: u32,
 }
 
 const TEST_SIZE: u32 = 512;
@@ -146,6 +175,8 @@ pub struct Native {
     /// Serialises init (start-up paint and the page's native_init can race:
     /// two surfaces on one window would fail).
     init_lock: tauri::async_runtime::Mutex<()>,
+    /// Last time the GPU was created or drew a frame (lazy mode's idle release).
+    last_use: Mutex<Option<Instant>>,
 }
 
 pub type Shared = Arc<Native>;
@@ -376,6 +407,8 @@ impl Native {
     pub fn status(&self) -> NativeStatus {
         let mut s = self.status.lock().clone();
         s.enabled = enabled();
+        s.lazy = lazy_gpu();
+        s.warm_ms = *LAST_WARM_MS.lock();
         s.cells = self.cells.lock().len();
         #[cfg(target_os = "macos")]
         if let Some(gpu) = self.gpu.lock().as_ref() {
@@ -399,6 +432,7 @@ impl Native {
         match create_gpu(window).await {
             Ok((gpu, adapter, backend)) => {
                 *self.gpu.lock() = Some(gpu);
+                *self.last_use.lock() = Some(Instant::now());
                 // Read before taking the status lock (render takes gpu, then status).
                 #[cfg(target_os = "macos")]
                 let init_metal = self.gpu.lock().as_ref().and_then(|g| metal_allocated_mb(&g.device));
@@ -417,6 +451,35 @@ impl Native {
             Err(e) => self.status.lock().error = Some(e),
         }
         self.status()
+    }
+
+    pub fn has_gpu(&self) -> bool {
+        self.gpu.lock().is_some()
+    }
+
+    /// The GPU should be (re)built before drawing: not there, and the last
+    /// attempt did not fail (a failed init is not retried on every call; the
+    /// page has fallen back to the JS renderer then).
+    pub fn needs_gpu(&self) -> bool {
+        enabled() && self.gpu.lock().is_none() && self.status.lock().error.is_none()
+    }
+
+    /// Lazy mode: drop the device, swap chain and pipelines when no viewport
+    /// exists and nothing has drawn or asked for the GPU for `idle`. Returns
+    /// true when it released them; the next study rebuilds them (`init`).
+    pub fn release_gpu_if_idle(&self, idle: std::time::Duration) -> bool {
+        // Never while an init is running (it is about to hand out a GPU).
+        let Ok(_serial) = self.init_lock.try_lock() else { return false };
+        if !self.cells.lock().is_empty() || self.last_use.lock().is_some_and(|t| t.elapsed() < idle) {
+            return false;
+        }
+        let Some(gpu) = self.gpu.lock().take() else { return false };
+        flush_and_wait(&gpu);
+        drop(gpu);
+        let mut s = self.status.lock();
+        s.ready = false;
+        s.releases += 1;
+        true
     }
 
     pub fn resize(&self, width: u32, height: u32) {
@@ -925,6 +988,7 @@ impl Native {
         let started = Instant::now();
         let mut guard = self.gpu.lock();
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
+        *self.last_use.lock() = Some(Instant::now());
         let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -1153,9 +1217,13 @@ pub fn prewarm() {
     if !enabled() {
         return;
     }
+    let mut slot = WARM.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
+        return; // already building (or built and not yet taken)
+    }
     let job = std::thread::Builder::new().name("flowrad-gpu-warm".into()).spawn(|| {
         let started = Instant::now();
-        let instance = new_instance(None);
+        let instance = shared_instance();
         let warm = futures_util::FutureExt::now_or_never(Box::pin(async {
             let (adapter, device, queue) = request_device(&instance, None).await?;
             let pipes = build_pipes(&device, &queue, LIKELY_FORMAT);
@@ -1168,12 +1236,26 @@ pub fn prewarm() {
             // ever does not, `init` builds everything itself.
             None => Err("adapter request did not complete synchronously".into()),
         };
-        let _ = WARM_MS.set(started.elapsed().as_secs_f64() * 1000.0);
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        // The first build is the startup report's; the latest is the status's.
+        let _ = WARM_MS.set(ms);
+        *LAST_WARM_MS.lock() = Some(ms);
         r
     });
     if let Ok(job) = job {
-        *WARM.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
+        *slot = Some(job);
     }
+}
+
+/// How long the latest device build took (ms).
+static LAST_WARM_MS: parking_lot::Mutex<Option<f64>> = parking_lot::Mutex::new(None);
+
+/// The default-backend instance, kept across GPU releases: it holds the DXGI
+/// factory and the loaded runtime libraries, not a device or driver heaps, so
+/// a rebuild after a release does not load them again.
+fn shared_instance() -> wgpu::Instance {
+    static INSTANCE: std::sync::Mutex<Option<wgpu::Instance>> = std::sync::Mutex::new(None);
+    INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| new_instance(None)).clone()
 }
 
 fn take_warm() -> Option<WarmJob> {
@@ -1231,7 +1313,11 @@ async fn request_device(
 }
 
 async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
-    // The device built in the background at launch, when it suits this window.
+    // The device built in the background (at launch, or since the page said a
+    // study is about to open), when it suits this window. None in flight
+    // (lazy GPU, or released since): build it on that thread now, not on an
+    // async worker.
+    prewarm();
     if let Some(job) = take_warm() {
         let joined = tauri::async_runtime::spawn_blocking(move || job.join()).await;
         if let Ok(Ok(Ok(warm))) = joined {
