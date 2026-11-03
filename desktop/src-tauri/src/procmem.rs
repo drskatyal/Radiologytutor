@@ -66,7 +66,8 @@ pub fn current_tree() -> TreeMem {
         true,
         ProcessRefreshKind::nothing().with_memory().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
     );
-    let all: Vec<(u32, Option<u32>, String, u64)> = sys
+    #[allow(unused_mut)]
+    let mut all: Vec<(u32, Option<u32>, String, u64)> = sys
         .processes()
         .iter()
         // Linux lists every thread as a task with the process's own RSS.
@@ -77,7 +78,40 @@ pub fn current_tree() -> TreeMem {
             (pid.as_u32(), p.parent().map(Pid::as_u32), labelled(&name, &cmd), p.memory())
         })
         .collect();
+    #[cfg(target_os = "macos")]
+    mac_tree(&sys, &mut all);
     tree_of(std::process::id(), &all)
+}
+
+/// macOS: the same tree the bench measures (desktop/scripts/bench.mjs
+/// `treeMemoryMac`). WKWebView's WebContent / GPU / Networking processes are
+/// launchd's children, not ours, so every com.apple.WebKit.* process started
+/// after the app joins the tree. Each process counts its physical footprint
+/// (Activity Monitor's "Memory"), not RSS: RSS keeps the pages mimalloc hands
+/// back with MADV_FREE_REUSABLE (a closed study's volume stayed "resident"),
+/// and on Apple silicon the footprint also covers the process's Metal memory.
+#[cfg(target_os = "macos")]
+fn mac_tree(sys: &System, all: &mut [(u32, Option<u32>, String, u64)]) {
+    let me = std::process::id();
+    let born = sys.process(Pid::from_u32(me)).map(|p| p.start_time()).unwrap_or(0);
+    for entry in all.iter_mut() {
+        let Some(p) = sys.process(Pid::from_u32(entry.0)) else { continue };
+        if entry.0 != me && entry.2.starts_with("com.apple.WebKit.") && p.start_time() >= born {
+            entry.1 = Some(me);
+        }
+        if let Some(bytes) = footprint_of(entry.0) {
+            entry.3 = bytes;
+        }
+    }
+}
+
+/// A process's physical footprint, bytes (proc_pid_rusage, same user only).
+#[cfg(target_os = "macos")]
+fn footprint_of(pid: u32) -> Option<u64> {
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a rusage_info_v2, the flavour asked for.
+    let rc = unsafe { libc::proc_pid_rusage(pid as libc::c_int, libc::RUSAGE_INFO_V2, &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t) };
+    (rc == 0).then_some(info.ri_phys_footprint)
 }
 
 #[cfg(test)]

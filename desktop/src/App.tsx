@@ -40,7 +40,8 @@ import { headersFromBrowserFiles } from "./browserSource";
 import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
-import { keyLabel, keysForAction, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { inputIndex, isMac, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
 import { useSyncStatus } from "./components/syncStatus";
@@ -267,7 +268,7 @@ export default function App() {
   const rawOpen = useRef<{ headers?: DesktopHeader[]; documents?: unknown[]; files?: File[] }>({});
   const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const [handlesVersion, setHandlesVersion] = useState(0);
-  const updater = useUpdater(settings.checkUpdates);
+  const updater = useUpdater(settings.checkUpdates, scan !== null);
   const sync = useSyncStatus();
   const [, setTick] = useState(0);
   const browserFileInput = useRef<HTMLInputElement>(null);
@@ -291,7 +292,9 @@ export default function App() {
   /** Quick reformats by cell: that cell shows one native plane of its series. */
   const [reformats, setReformats] = useState<Record<number, { uid: string; plane: "axial" | "coronal" | "sagittal" }>>({});
   /** Slab shortcut (T, Ctrl+[ ]) for the active reformat; `seq` re-fires the same command. */
-  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; mm?: number; seq: number } | undefined>();
+  const [slabCommand, setSlabCommand] = useState<{ mode?: "off" | "mip" | "minip" | "avg"; deltaMm?: number; mm?: number; seq: number; cell?: number } | undefined>();
+  /** Each reformat's slab as shown, for the right-click menu's checks. */
+  const [cellSlabs, setCellSlabs] = useState<Record<number, { mode: "off" | "mip" | "minip" | "avg"; mm: number }>>({});
   const slabCycle = useRef<"off" | "mip" | "minip" | "avg">("off");
   /** Slab a voice command asked for before a reformat was open. */
   const [voiceSlab, setVoiceSlab] = useState<{ mode: "off" | "mip" | "minip" | "avg"; mm: number } | undefined>();
@@ -326,8 +329,19 @@ export default function App() {
     appVersion().then(setVersion, () => setVersion("dev"));
     settingsGet<ViewerSettings>().then((s) => {
       const merged = { ...DEFAULT_SETTINGS, ...s };
+      // ≤ 0.8.1 kept re-mapped keys as `shortcuts` (id → spec): carry them over once.
+      setLiveBindings(merged.bindings ?? {});
       setSettings(merged);
       setOverlay(merged.showOverlay);
+      if (merged.shortcuts && Object.keys(merged.shortcuts).length && !Object.keys(merged.bindings ?? {}).length) {
+        // Rare, once: loaded only for a reader upgrading with re-mapped keys.
+        void import("@flowrad/viewer-core/bindings/storage").then(({ migrateShortcutOverrides }) => {
+          const bindings = migrateShortcutOverrides(merged.shortcuts, DESKTOP_COMMANDS);
+          setLiveBindings(bindings);
+          setSettings((cur) => ({ ...cur, bindings, shortcuts: {} }));
+          void settingsSet<ViewerSettings>({ bindings, shortcuts: {} });
+        });
+      }
     });
     historyList<HistoryEntry>().then(setHistory, () => setHistory([]));
     benchEnabled().then((on) => (bench.current.enabled = on));
@@ -370,10 +384,14 @@ export default function App() {
   nothingOpenRef.current = nothingOpen;
   useEffect(() => {
     if (!isTauri) return;
-    const timer = window.setTimeout(
-      () => void invoke("set_memory_mode", { low: nothingOpen }).catch(() => undefined),
-      nothingOpen ? 1500 : 0
-    );
+    const timer = window.setTimeout(() => {
+      // A study was just closed: collect its headers, series and view state
+      // now (the start screen may sit idle for a long while), then let
+      // WebView2 trim. `gc` exists because the app starts V8 with
+      // --expose-gc (tauri.conf.json); absent elsewhere.
+      if (nothingOpen) (globalThis as { gc?: () => void }).gc?.();
+      void invoke("set_memory_mode", { low: nothingOpen }).catch(() => undefined);
+    }, nothingOpen ? 1500 : 0);
     return () => window.clearTimeout(timer);
   }, [nothingOpen]);
 
@@ -387,6 +405,8 @@ export default function App() {
   }, [settings.scrollSlicesPerNotch, settings.scrollDragPx, settings.scrollAcceleration]);
 
   const updateSettings = useCallback((patch: Partial<ViewerSettings>) => {
+    // Bindings apply to every viewport, tooltip and sheet at once.
+    if (patch.bindings) setLiveBindings(patch.bindings);
     setSettings((s) => ({ ...s, ...patch }));
     if (patch.showOverlay != null) setOverlay(patch.showOverlay);
     void settingsSet<ViewerSettings>(patch);
@@ -532,16 +552,23 @@ export default function App() {
       if (prev.some(Boolean) || built.length === 0) return prev;
       const study = built[0];
       const first = study.series[primarySeriesIndex(study)];
-      // Ask Rust for the instant preview now, while the viewport chunk loads:
-      // the <img> it renders then comes from the webview's memory cache.
-      if (first && isTauri && first.headers[0]) {
-        try {
-          const img = new Image();
-          img.decoding = "async";
-          img.src = previewUrlFor(first.headers[0].fileId);
-        } catch {
-          /* protocol not ready: the viewport asks itself */
-        }
+      // Start on the first image now, while the viewport mounts. Native
+      // mode: Rust decodes the slice the native viewport shows first (index
+      // 0) into its store, so `native_cell_series` only uploads and draws (no
+      // PNG preview: nothing would show it). JS path: the instant preview,
+      // whose <img> then comes from the webview's memory cache.
+      const head = first?.headers[0];
+      if (head && isTauri) {
+        void nativeEnabled().then((on) => {
+          if (on) return void invoke("native_warm", { fileIds: [head.fileId] }).catch(() => undefined);
+          try {
+            const img = new Image();
+            img.decoding = "async";
+            img.src = previewUrlFor(head.fileId);
+          } catch {
+            /* protocol not ready: the viewport asks itself */
+          }
+        });
       }
       return first ? [first.uid, ...prev.slice(1)] : prev;
     });
@@ -596,6 +623,7 @@ export default function App() {
       };
 
       try {
+        bench.current.marks.scanCalledMs = performance.now() - t0;
         const result = await scanPaths(paths, {
           onProgress: (progress) => {
             if (seq !== openSeq.current) return;
@@ -678,6 +706,9 @@ export default function App() {
             const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             await benchReport({
               source: paths,
+              // The open on the process clock (ms since start), to line it up
+              // with the scan command's own timeline (rust.enteredAtMs …).
+              openAtProcessMs: startup ? Math.round(startup - (performance.now() - t0)) : null,
               files: result.inspected,
               images: built.reduce((n, s) => n + s.imageCount, 0),
               studies: built.length,
@@ -866,6 +897,19 @@ export default function App() {
                   bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
                   void report();
                 })();
+              } else if (bench.current.firstPaint != null && benchView === "close") {
+                // Close lifecycle (bench.mjs `close`): report with the study
+                // open, hold it open while the bench samples it settled, then
+                // close it like the Home button and say so; the bench samples
+                // again after 30 s against the empty-app baseline.
+                void (async () => {
+                  await report();
+                  const after = await invoke<number>("bench_close_after_ms").catch(() => 20_000);
+                  window.setTimeout(() => {
+                    goHomeRef.current();
+                    void benchReport({ closed: true, closedAtMs: Math.round(performance.now() - t0) });
+                  }, after);
+                })();
               } else if (bench.current.firstPaint != null) void report();
               else if (performance.now() > deadline) void report(true);
               else window.setTimeout(waitPaint, 20);
@@ -1007,7 +1051,26 @@ export default function App() {
             // three IPC round trips; it is kept as paintReportedMs.
             const fcp = performance.getEntriesByName?.("first-contentful-paint")[0]?.startTime;
             const navAt = Math.max(0, ms - now);
+            // Where the page's own share goes (ms from navigation start): the
+            // document, the stylesheet and entry script arriving, parsing
+            // done, the entry script run (DOMContentLoaded), load.
+            const r1 = (x: number | undefined) => (x == null || !(x > 0) ? null : Math.round(x));
+            const nav = performance.getEntriesByType?.("navigation")[0] as PerformanceNavigationTiming | undefined;
+            const loaded = (re: RegExp) =>
+              r1((performance.getEntriesByType?.("resource") as PerformanceResourceTiming[] | undefined)?.find((e) => re.test(e.name))?.responseEnd);
+            const pageTiming = nav
+              ? {
+                  html: r1(nav.responseEnd),
+                  css: loaded(/\/assets\/index-[^/]*\.css/),
+                  js: loaded(/\/assets\/index-[^/]*\.js/),
+                  interactive: r1(nav.domInteractive),
+                  dcl: r1(nav.domContentLoadedEventEnd),
+                  load: r1(nav.loadEventStart),
+                  fcp: r1(fcp),
+                }
+              : null;
             await benchReport({
+              pageTiming,
               coldStart: true,
               ...marks,
               firstPaintMs: fcp != null ? navAt + fcp : ms,
@@ -1186,7 +1249,7 @@ export default function App() {
       if (scope === "one") return;
       toast({
         title: `${count} annotation${count === 1 ? "" : "s"} deleted ${scope === "image" ? "from this image" : "from the series"}`,
-        description: `${keyLabel("Mod+Z")} brings ${count === 1 ? "it" : "them"} back.`,
+        description: `${keysForAction({ type: "undoAnnotation" }) ?? "Undo"} brings ${count === 1 ? "it" : "them"} back.`,
         variant: "info",
       });
     },
@@ -1241,6 +1304,8 @@ export default function App() {
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
   const voiceSession = useRef<VoiceSession | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
+  /** The Home action, for the close-lifecycle bench (opened before `goHome` is defined). */
+  const goHomeRef = useRef<() => void>(() => undefined);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
     setVoice((v) => ({ ...v, heard }));
@@ -1633,17 +1698,17 @@ export default function App() {
           if (view !== "grid") setView("grid");
           return setReformat(activeReformat?.plane === action.plane ? null : action.plane);
         case "slabCycle": {
-          if (!activeReformat) {
+          if (!activeReformat && view !== "mpr") {
             toast({ title: "Slab works on a reformat or MPR", description: "Press Alt+C, Alt+S or Alt+A for a reformat, then T or Ctrl+wheel.", variant: "info" });
             return;
           }
           const order = ["off", "mip", "minip", "avg"] as const;
           slabCycle.current = order[(order.indexOf(slabCycle.current) + 1) % order.length];
-          return setSlabCommand((c) => ({ mode: slabCycle.current, seq: (c?.seq ?? 0) + 1 }));
+          return setSlabCommand((c) => ({ mode: slabCycle.current, seq: (c?.seq ?? 0) + 1, cell: activeCell }));
         }
         case "slabThickness":
-          if (!activeReformat) return;
-          return setSlabCommand((c) => ({ deltaMm: action.deltaMm, seq: (c?.seq ?? 0) + 1 }));
+          if (!activeReformat && view !== "mpr") return;
+          return setSlabCommand((c) => ({ deltaMm: action.deltaMm, seq: (c?.seq ?? 0) + 1, cell: activeCell }));
         case "sliceEdge":
           return handle?.goTo(action.where);
         case "series": {
@@ -1855,7 +1920,7 @@ export default function App() {
             return setReformat("axial", cell);
           }
           slabCycle.current = mode;
-          return setSlabCommand((c) => ({ mode, seq: (c?.seq ?? 0) + 1 }));
+          return setSlabCommand((c) => ({ mode, seq: (c?.seq ?? 0) + 1, cell }));
         }
         case "slab-mm": {
           const mm = Number(arg);
@@ -1863,7 +1928,7 @@ export default function App() {
             setVoiceSlab({ mode: "mip", mm });
             return setReformat("axial", cell);
           }
-          return setSlabCommand((c) => ({ mm, seq: (c?.seq ?? 0) + 1 }));
+          return setSlabCommand((c) => ({ mm, seq: (c?.seq ?? 0) + 1, cell }));
         }
         case "monitor":
           return uid ? void sendSeriesToMonitor(uid, arg) : undefined;
@@ -1918,7 +1983,7 @@ export default function App() {
         overlay,
         annotations: annotationsVisible,
         cine: multi ? { playing: !!cine?.playing, fps: cine?.fps ?? 15 } : null,
-        slab: isTauri && volume ? { mode: reformatAt(cell) ? slabCycle.current : "off", mm: 10 } : null,
+        slab: isTauri && volume ? (reformatAt(cell) ? (cellSlabs[cell] ?? { mode: slabCycle.current, mm: 10 }) : { mode: "off", mm: 10 }) : null,
         layout,
         seriesPanel: distractionFree ? null : { shown: !seriesPanel.collapsed },
         can: {
@@ -1934,11 +1999,11 @@ export default function App() {
         },
         shortcut: (id) => {
           const a = commandAction(id, cellPresets);
-          return a ? keysForAction(a, settings.shortcuts) : undefined;
+          return a ? keysForAction(a, settings.bindings) : undefined;
         },
       });
     },
-    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.shortcuts, distractionFree, seriesPanel.collapsed]
+    [cells, seriesByUid, leftTool, menuMonitors, syncScroll, syncVoi, syncZoom, referenceLines, overlay, annotationsVisible, layout, priorEntries, commandAction, settings.bindings, distractionFree, seriesPanel.collapsed]
   );
   const annotationShortcut = useCallback(
     (id: MenuCommand) => (id === "ann:delete" ? "Del" : undefined),
@@ -2034,7 +2099,7 @@ export default function App() {
           return runAction({ type: "reformat", plane: "axial" });
         }
         slabCycle.current = a.mode;
-        return setSlabCommand((c) => ({ mode: a.mode, seq: (c?.seq ?? 0) + 1 }));
+        return setSlabCommand((c) => ({ mode: a.mode, seq: (c?.seq ?? 0) + 1, cell: activeCell }));
       case "slabThickness":
         return runAction({ type: "slabThickness", deltaMm: a.deltaMm });
       case "layout":
@@ -2057,14 +2122,74 @@ export default function App() {
       if (dialog) return;
       // Tab switches series only from the image; on a control it still moves focus.
       if (e.key === "Tab" && target && target !== document.body && target.closest("button, a, [role=menuitem], [tabindex]")) return;
-      const action = resolveShortcut(e, undefined, settings.shortcuts);
+      const action = resolveShortcut(e, undefined, settings.bindings);
       if (!action) return;
       e.preventDefault();
       runAction(action);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runAction, dialog, settings.shortcuts]);
+  }, [runAction, dialog, settings.bindings]);
+
+  // macOS: WKWebView can't tell side buttons from the middle one, nor a tilt
+  // wheel from a trackpad, so the shell forwards them (src/macMouse.ts). Only
+  // what the bindings use (or the open Mouse & Keyboard panel) is forwarded.
+  const macBindingSpecs = useMemo(() => [...inputIndex(DESKTOP_COMMANDS, settings.bindings ?? {}).keys()], [settings.bindings]);
+  useEffect(() => {
+    if (!isMac()) return;
+    let stop: (() => void) | null = null;
+    let gone = false;
+    void import("./macMouse").then((m) => {
+      if (gone) return;
+      stop = m.startNativeMouse();
+    });
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (!isMac()) return;
+    void import("./macMouse").then((m) => m.setNativeMouseBindings(macBindingSpecs));
+  }, [macBindingSpecs]);
+
+  // Mouse buttons (middle, back / forward, any extra button of a gaming or
+  // programmable mouse) and wheel tilt bound to commands in Settings. Only
+  // inside the viewports; browser defaults are suppressed only when bound.
+  // Loaded with the first study (not at startup).
+  // Attached once per open study: the handler reads the current action and
+  // bindings through refs, so streaming scan batches (which change runAction)
+  // don't re-attach it on every render.
+  const studyOpen = studies.length > 0;
+  const runActionRef = useRef(runAction);
+  runActionRef.current = runAction;
+  const bindingsRef = useRef(settings.bindings);
+  bindingsRef.current = settings.bindings;
+  useEffect(() => {
+    if (dialog || !studyOpen) return;
+    let detach: (() => void) | null = null;
+    let gone = false;
+    void import("@flowrad/viewer-core/bindings/dom").then(({ attachMouseCommands }) => {
+      if (gone) return;
+      detach = attachMouseCommands(window, {
+        within: (t) => {
+          const el = t instanceof Element ? t : null;
+          return !!el?.closest("main") && !el.closest("aside, [role=menu], [role=dialog], button, input, textarea, select, [data-series-panel]");
+        },
+        isBound: (spec) => inputIndex(DESKTOP_COMMANDS, bindingsRef.current ?? {}).has(normalizeSpec(spec)),
+        run: (spec) => {
+          const action = resolveInput(spec, bindingsRef.current ?? {});
+          if (!action) return false;
+          runActionRef.current(action);
+          return true;
+        },
+      });
+    });
+    return () => {
+      gone = true;
+      detach?.();
+    };
+  }, [dialog, studyOpen]);
 
   const goHome = useCallback(() => {
     openSeq.current += 1;
@@ -2080,6 +2205,7 @@ export default function App() {
     resetWorkspace();
     historyList<HistoryEntry>().then(setHistory, () => undefined);
   }, [resetWorkspace, native]);
+  goHomeRef.current = goHome;
 
   const onPreview = useCallback((fullRes: boolean) => {
     const at = performance.now() - bench.current.t0;
@@ -2174,6 +2300,7 @@ export default function App() {
       />
       {hasStudy && !distractionFree && (
         <Toolbar
+          shortcuts={settings.bindings}
           leftTool={leftTool}
           onTool={setLeftTool}
           presets={presets}
@@ -2252,7 +2379,7 @@ export default function App() {
                 tone="surface"
                 collapsed={seriesPanel.collapsed}
                 onToggle={seriesPanel.toggle}
-                shortcut={[keyLabel("Mod+B")]}
+                shortcut={[keysForAction({ type: "toggleBrowser" }) ?? ""]}
                 widthClassName="w-[244px]"
               >
                 <SeriesBrowser
@@ -2297,6 +2424,7 @@ export default function App() {
               <NativeMprView
                 series={volumeSeries}
                 initialSlab={benchSlab}
+                slabCommand={slabCommand}
                 onExit={() => setView("grid")}
                 onUnsupported={() => setNativeMprUnsupported(volumeSeries.uid)}
                 onVolumeReady={(t) => {
@@ -2377,8 +2505,11 @@ export default function App() {
                         setActiveCell(i);
                       }}
                       onClose={() => setReformat(null, i)}
-                      slabCommand={i === activeCell ? slabCommand : undefined}
+                      slabCommand={slabCommand}
                       initialSlab={benchSlab ?? voiceSlab}
+                      onSlabChange={(slab) => setCellSlabs((m) => (m[i]?.mode === slab.mode && m[i]?.mm === slab.mm ? m : { ...m, [i]: slab }))}
+                      imageMenu={imageMenuFor(i)}
+                      onMenuCommand={(command) => runMenuCommand(command, i)}
                       onPainted={(t) => {
                         bench.current.marks.reformat = { plane: reformat.plane, ms: Math.round(t.ms), maxLum: t.maxLum, slab: `${t.slab.mode}:${t.slab.mm}` };
                         const pending = bench.current.pendingVolume;
@@ -2555,7 +2686,7 @@ export default function App() {
         </div>
       )}
       {dialog === "help" && (
-      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.shortcuts} />
+      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.bindings} />
       )}
       {dialog === "window" && (
       <CustomWindowDialog
@@ -2623,8 +2754,11 @@ export default function App() {
               <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Updates</h3>
               <label className="flex cursor-pointer items-start justify-between gap-4 py-2">
                 <span>
-                  <span className="block text-sm font-medium text-primary">Check for updates on launch</span>
-                  <span className="block text-xs text-muted">Asks before installing. Never updates silently.</span>
+                  <span className="block text-sm font-medium text-primary">Check for updates automatically</span>
+                  <span className="block text-xs text-muted">
+                    On launch and every few hours. Updates download in the background and install only when you restart. Only the update
+                    check is sent: no study, patient or personal data.
+                  </span>
                 </span>
                 <input
                   type="checkbox"
@@ -2640,7 +2774,7 @@ export default function App() {
                     : updater.status.state === "current"
                       ? "You have the latest version."
                       : updater.status.state === "available"
-                        ? `Version ${updater.status.update.version} is available.`
+                        ? `Version ${updater.status.update.version} is ready: restart to install.`
                         : updater.status.state === "unavailable"
                           ? updater.status.reason
                           : ""}

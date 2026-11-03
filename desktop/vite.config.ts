@@ -55,9 +55,50 @@ function preloadEngineChunks(): Plugin {
   };
 }
 
+/**
+ * Old CommonJS globals shims (`new Function("return this")()`) ask for eval,
+ * which the app's CSP (script-src without 'unsafe-eval') refuses: one guarded
+ * shim in the bundle reached it on every start and logged a CSP violation.
+ * `globalThis` is what they compute; swap it in.
+ */
+function noEvalGlobalShim(): Plugin {
+  const shim = /(?:new )?Function\("return this"\)\(\)/g;
+  return {
+    name: "flowrad-no-eval-global-shim",
+    apply: "build",
+    renderChunk(code) {
+      if (!code.includes('Function("return this")')) return null;
+      return { code: code.replace(shim, "globalThis"), map: null };
+    },
+  };
+}
+
+/**
+ * The app stylesheet off the first paint's critical path: the splash in
+ * index.html is styled inline, but a stylesheet in <head> still holds the
+ * first paint until it has loaded (WebKit: no paint while a head sheet is
+ * pending). Loaded as `media="print"` (fetched, not render-blocking); main.tsx
+ * waits for it and switches it on before React renders, so nothing ever
+ * paints unstyled.
+ */
+function nonBlockingAppCss(): Plugin {
+  return {
+    name: "flowrad-non-blocking-css",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return html.replace(/<link rel="stylesheet"([^>]*?)>/g, (tag, attrs: string) =>
+          attrs.includes("media=") ? tag : `<link rel="stylesheet"${attrs} media="print" data-app-css>`
+        );
+      },
+    },
+  };
+}
+
 export default defineConfig({
   root: __dirname,
-  plugins: [react(), viteCommonjs(), preloadEngineChunks()],
+  plugins: [react(), viteCommonjs(), preloadEngineChunks(), noEvalGlobalShim(), nonBlockingAppCss()],
   clearScreen: false,
   resolve: {
     alias: [

@@ -9,6 +9,7 @@
 // arrow keys scroll the active pane, double-click resets.
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { dragModeFor, resolveWheel } from "./mouseBindings";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Slider } from "@/components/ui/Slider";
@@ -18,6 +19,9 @@ import { invoke, volumePlaneUrl } from "../platform";
 import { useNativeMode } from "../native/nativeLayout";
 import type { ViewerSeries } from "../types";
 import { installToolCursors } from "./toolCursor";
+import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
+import type { MenuCommand, MenuEntry } from "@flowrad/viewer-core";
+import { applySlabChange, mprPaneMenu, slabChangeOf, SLAB_MAX_MM, type Slab, type SlabChange, type SlabMode } from "./slabCommands";
 
 // Phase 2: in native mode the plane is drawn by Rust, not loaded as a PNG.
 const NativePlaneSurface = lazy(() => import("../native/NativePlaneSurface"));
@@ -26,19 +30,14 @@ installToolCursors();
 
 export type Plane = "axial" | "coronal" | "sagittal";
 
-export type SlabMode = "off" | "mip" | "minip" | "avg";
-export interface Slab {
-  mode: SlabMode;
-  /** Thickness in mm (0 = a single slice). */
-  mm: number;
-}
+export type { Slab, SlabMode } from "./slabCommands";
+export { SLAB_MAX_MM } from "./slabCommands";
 export const SLAB_MODES: { mode: SlabMode; label: string }[] = [
   { mode: "off", label: "Slice" },
   { mode: "mip", label: "MIP" },
   { mode: "minip", label: "MinIP" },
   { mode: "avg", label: "AvgIP" },
 ];
-export const SLAB_MAX_MM = 100;
 export function slabLabel(s: Slab): string | null {
   if (s.mode === "off" || s.mm <= 0) return null;
   return `${SLAB_MODES.find((m) => m.mode === s.mode)?.label} ${s.mm.toFixed(s.mm < 10 ? 1 : 0)} mm`;
@@ -75,6 +74,8 @@ interface Props {
   onVolumeReady?: (t: { shellMs: number; loadedMs: number }) => void;
   /** Start with a slab (bench / shortcut); default a single slice. */
   initialSlab?: Slab;
+  /** Slab change from outside (keys, voice, menu); applied when `seq` bumps. */
+  slabCommand?: SlabChange & { seq: number };
   /** Bench: every pane has drawn its first plane (brightest pixel per pane). */
   onPainted?: (t: { ms: number; maxLum: Record<string, number> }) => void;
 }
@@ -190,6 +191,8 @@ export function Pane({
   slab,
   onSlab,
   crosshair: showCrosshair = true,
+  menu,
+  onMenuCommand,
 }: {
   info: VolumeInfo;
   plane: Plane;
@@ -209,6 +212,9 @@ export function Pane({
   onSlab: (deltaMm: number) => void;
   /** Draw the crosshair (MPR); a single-plane reformat hides it. */
   crosshair?: boolean;
+  /** The pane's right-click menu (shared contextMenu.ts), built when it opens. */
+  menu?: () => readonly MenuEntry[];
+  onMenuCommand?: (command: MenuCommand) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
@@ -236,7 +242,11 @@ export function Pane({
   const failed = native ? !!nativeError : img.failed;
   const [cx, cy] = crosshair(info, plane, at);
 
-  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const drag = useRef<{ x: number; y: number; moved: boolean; button: number } | null>(null);
+  // A right press that did not drag opens the image menu (a right drag
+  // windows, like every other viewport). The browser menu never shows.
+  const rightMoved = useRef(false);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   return (
     <div
       ref={box}
@@ -251,8 +261,11 @@ export function Pane({
         e.preventDefault();
       }}
       onWheel={(e) => {
-        // Ctrl+wheel: slab thickness (Shift: ×5); plain wheel pages the slab.
-        if (e.ctrlKey || e.metaKey) {
+        // Tilt notches are commands (bindings, App); the vertical wheel follows
+        // the bindings: Ctrl+wheel = slab thickness by default (Shift: ×5).
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+        const action = resolveWheel({ ctrl: e.ctrlKey || e.metaKey, alt: e.altKey })?.command;
+        if (action === "slab" || action === "zoom") {
           e.preventDefault();
           onSlab((e.deltaY > 0 ? -1 : 1) * (e.shiftKey ? 5 : 1));
         } else onScroll((e.deltaY > 0 ? 1 : -1) * (e.shiftKey ? 5 : 1));
@@ -260,7 +273,8 @@ export function Pane({
       onPointerDown={(e) => {
         onActivate();
         (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-        drag.current = { x: e.clientX, y: e.clientY, moved: false };
+        drag.current = { x: e.clientX, y: e.clientY, moved: false, button: e.button };
+        if (e.button === 2) rightMoved.current = false;
       }}
       onPointerMove={(e) => {
         const d = drag.current;
@@ -269,18 +283,29 @@ export function Pane({
         const dy = e.clientY - d.y;
         if (!d.moved && Math.abs(dx) + Math.abs(dy) < 3) return;
         d.moved = true;
+        if (d.button === 2) rightMoved.current = true;
         d.x = e.clientX;
         d.y = e.clientY;
+        // Left drag windows here (a click places the crosshair); other buttons
+        // window only where the bindings say so (default: right drag).
+        if (d.button !== 0 && dragModeFor(d.button, "", { ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey }) !== "WindowLevel") return;
         onWindow(dy * 2, dx * 4);
       }}
       onPointerUp={(e) => {
         const d = drag.current;
         drag.current = null;
-        if (!d || d.moved || !rect.w) return;
+        // Only a left click moves the crosshair (a right click opens the menu).
+        if (!d || d.moved || d.button !== 0 || !rect.w) return;
         const b = box.current!.getBoundingClientRect();
         const fx = (e.clientX - b.left - rect.x) / rect.w;
         const fy = (e.clientY - b.top - rect.y) / rect.h;
         if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) onPoint(fx, fy);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (rightMoved.current || !menu) return;
+        onActivate();
+        setMenuAt({ x: e.clientX, y: e.clientY });
       }}
       onDoubleClick={onReset}
       className={cn(
@@ -347,24 +372,43 @@ export function Pane({
           {slabText}
         </div>
       )}
+      {menuAt && menu && (
+        <ViewerContextMenu
+          at={menuAt}
+          label={label}
+          entries={menu()}
+          onSelect={(command) => {
+            setMenuAt(null);
+            onMenuCommand?.(command);
+          }}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
     </div>
   );
 }
 
-export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted, initialSlab }: Props) {
+export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted, initialSlab, slabCommand }: Props) {
   const [info, setInfo] = useState<VolumeInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [at, setAt] = useState<Record<Plane, number>>({ axial: 0, coronal: 0, sagittal: 0 });
   const [voi, setVoi] = useState<{ center: number; width: number }>({ center: 40, width: 400 });
   const [active, setActive] = useState<Plane>("axial");
   const [slab, setSlab] = useState<Slab>(initialSlab ?? { mode: "off", mm: 0 });
-  const changeSlab = (deltaMm: number) =>
-    setSlab((s) => {
-      const mm = Math.max(0, Math.min(SLAB_MAX_MM, s.mm + deltaMm));
-      // Thickening from a single slice starts a MIP (RadiAnt's default).
-      return { mode: mm === 0 ? "off" : s.mode === "off" ? "mip" : s.mode, mm };
-    });
-  const pickSlabMode = (mode: SlabMode) => setSlab((s) => ({ mode, mm: mode === "off" ? 0 : s.mm || 10 }));
+  const changeSlab = (deltaMm: number) => setSlab((s) => applySlabChange(s, { deltaMm }));
+  const pickSlabMode = (mode: SlabMode) => setSlab((s) => applySlabChange(s, { mode }));
+  // Keys / voice / the app menu (0.8.1 never forwarded them to the MPR).
+  useEffect(() => {
+    if (slabCommand) setSlab((s) => applySlabChange(s, slabCommand));
+    // Applied once per command.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slabCommand?.seq]);
+  const runPaneCommand = (command: MenuCommand) => {
+    const change = slabChangeOf(command);
+    if (change) setSlab((s) => applySlabChange(s, change));
+    else if (command === "reset" && info) reset(info);
+    else if (command === "exit") onExit();
+  };
   // Keyed on the SET of files, not the series object: a cold open rebuilds the
   // study list (new objects, same files) and must not rebuild the volume.
   const filesKey = useMemo(() => series.headers.map((h) => h.fileId).sort((a, b) => a - b).join(","), [series]);
@@ -521,6 +565,8 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
               onPainted={(lum) => notePaint(plane, lum)}
               slab={slab}
               onSlab={changeSlab}
+              menu={() => mprPaneMenu(slab)}
+              onMenuCommand={runPaneCommand}
             />
           ))}
           <div className="flex items-center justify-center p-4 text-center text-xs text-white/50">

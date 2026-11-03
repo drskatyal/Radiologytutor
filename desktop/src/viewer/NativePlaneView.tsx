@@ -13,17 +13,9 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { invoke } from "../platform";
 import type { ViewerSeries } from "../types";
-import {
-  Pane,
-  SLAB_MAX_MM,
-  SLAB_MODES,
-  depthOf,
-  reducedNote,
-  type Plane,
-  type Slab,
-  type SlabMode,
-  type VolumeInfo,
-} from "./NativeMprView";
+import type { MenuCommand, MenuEntry } from "@flowrad/viewer-core";
+import { Pane, SLAB_MODES, depthOf, reducedNote, type Plane, type VolumeInfo } from "./NativeMprView";
+import { applySlabChange, type Slab, type SlabChange } from "./slabCommands";
 import { ViewportFrame } from "./StackViewport";
 
 const PLANE_LABEL: Record<Plane, string> = {
@@ -40,9 +32,14 @@ interface Props {
   dropHover?: boolean;
   onActivate: () => void;
   onClose: () => void;
-  /** Slab mode change from outside (shortcut); bumps when it changes. */
-  slabCommand?: { mode?: SlabMode; deltaMm?: number; mm?: number; seq: number };
+  /** Slab change from outside (keys, voice, menu); `cell` targets one viewport. */
+  slabCommand?: SlabChange & { seq: number; cell?: number };
   initialSlab?: Slab;
+  /** The slab now shown (the app's menu checks the right items). */
+  onSlabChange?: (slab: Slab) => void;
+  /** The cell's right-click menu (shared contextMenu.ts) and its commands. */
+  imageMenu?: () => readonly MenuEntry[];
+  onMenuCommand?: (command: MenuCommand) => void;
   /** Bench: the plane is on screen (brightest pixel). */
   onPainted?: (t: {
     ms: number;
@@ -61,6 +58,9 @@ export function NativePlaneView({
   onClose,
   slabCommand,
   initialSlab,
+  onSlabChange,
+  imageMenu,
+  onMenuCommand,
   onPainted,
 }: Props) {
   const [info, setInfo] = useState<VolumeInfo | null>(null);
@@ -131,26 +131,27 @@ export function NativePlaneView({
     if (info) setIndex(Math.floor(depthOf(info, plane) / 2));
   }, [plane, info]);
 
-  const changeSlab = (deltaMm: number) =>
-    setSlab((s) => {
-      const mm = Math.max(0, Math.min(SLAB_MAX_MM, s.mm + deltaMm));
-      return { mode: mm === 0 ? "off" : s.mode === "off" ? "mip" : s.mode, mm };
-    });
+  const changeSlab = (deltaMm: number) => setSlab((s) => applySlabChange(s, { deltaMm }));
 
-  // Shortcuts act on the active viewport: mode change or thickness step.
+  // Keys / voice / menu: each command once, and only by the cell it targets.
+  // 0.8.1 handed the latest command to whichever cell was active and keyed
+  // on its seq, so a cell becoming active (or mounting) re-ran an old
+  // command over the reader's newer choice (HP: 10 mm then 20 mm "did not
+  // register").
+  const seenSeq = useRef(slabCommand?.seq);
   useEffect(() => {
-    if (!slabCommand || !active) return;
-    if (slabCommand.mode) {
-      const mode = slabCommand.mode;
-      setSlab((s) => ({ mode, mm: mode === "off" ? 0 : s.mm || 10 }));
-    }
-    if (slabCommand.deltaMm) changeSlab(slabCommand.deltaMm);
-    if (slabCommand.mm) {
-      const mm = Math.max(1, Math.min(SLAB_MAX_MM, slabCommand.mm));
-      setSlab((s) => ({ mode: s.mode === "off" ? "mip" : s.mode, mm }));
-    }
+    if (!slabCommand || slabCommand.seq === seenSeq.current) return;
+    seenSeq.current = slabCommand.seq;
+    if (slabCommand.cell !== undefined ? slabCommand.cell !== cellIndex : !active) return;
+    setSlab((s) => applySlabChange(s, slabCommand));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slabCommand?.seq]);
+  // The app's menu shows this cell's real slab.
+  const slabCb = useRef(onSlabChange);
+  slabCb.current = onSlabChange;
+  useEffect(() => {
+    slabCb.current?.(slab);
+  }, [slab]);
 
   const depth = info ? depthOf(info, plane) : 1;
   const at = info
@@ -213,6 +214,8 @@ export function NativePlaneView({
             slab={slab}
             onSlab={changeSlab}
             crosshair={false}
+            menu={imageMenu}
+            onMenuCommand={onMenuCommand}
             onPainted={(lum) => {
               if (painted.current) return;
               painted.current = true;

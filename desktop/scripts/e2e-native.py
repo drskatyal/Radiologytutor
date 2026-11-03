@@ -92,9 +92,26 @@ def app_mode(exe: str, study: str, out_dir: Path) -> None:
         native, cell = report.get("native") or {}, report.get("nativeCell")
         print(json.dumps({k: report.get(k) for k in ("firstImagePaintedMs", "native", "nativeCell", "nativeStore", "longTasks")}, indent=2, default=str))
         if not native.get("ready"):
-            fail(f"app mode: native renderer not ready: {native.get('error')}")
+            # Say why: the whole report (which view, which watchdog fired) and the
+            # app's last output lines, not just the renderer's error field.
+            fail(
+                f"app mode: native renderer not ready: {native.get('error')}\n"
+                + json.dumps(report, indent=2, default=str)
+                + "\n--- app output (last 40 lines) ---\n"
+                + "\n".join(tail)
+            )
         if not cell:
             fail("app mode: no native viewport on screen (the series went to the JS path?)")
+        if sys.platform == "darwin" and os.environ.get("FLOWRAD_E2E_GRAB") != "1":
+            # macOS runners: a screen grab needs Screen Recording permission
+            # (without it the window is missing from the capture), so the gate
+            # is the renderer's own report: Metal ready, a native viewport on
+            # screen and the first image painted.
+            painted = report.get("firstImagePaintedMs")
+            if painted is None:
+                fail("app mode: the first image was never painted\n" + json.dumps(report, indent=2, default=str))
+            print(f"PASS  app mode (macOS): native renderer ready on {native.get('backend')} ({native.get('adapter')}), first image painted in {painted:.0f} ms")
+            return
         time.sleep(0.8)
         from PIL import ImageGrab
 

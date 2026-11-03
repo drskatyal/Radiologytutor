@@ -5,7 +5,7 @@
 //   border     the active viewport has a 3 px accent outline; clicking another moves it
 //   dnd        dragging a series card onto a viewport shows it there (ghost + drop hint)
 //   keys       ↑/↓ slice, ←/→ series, PgUp/PgDn 10 %, Home/End, Shift+digit layouts, ? sheet
-//   remap      Settings → change a shortcut → the new key works, the old one doesn't
+//   bindings   Settings › Mouse & Keyboard: right drag → zoom, W → Shift+K, F13 and mouse button 5 → commands; all survive a reload and show in F1
 //   cursors    each tool has its own cursor on the image; the UI keeps the arrow
 //   orient     R / Shift+R / H, toolbar rotate dropdown; edge letters follow
 //   panel      Ctrl+B collapses the series panel to a rail; handle reopens; remembered
@@ -55,9 +55,22 @@ async function listFiles(dir) {
 // --prod-csp: serve the page with the CSP the installed app ships with
 // (tauri.conf.json; Tauri sends it with HTML only). Without it this e2e
 // passed while the installed app's recognizer was blocked by that CSP.
+//
+// Tauri also MODIFIES that CSP for its assets: it adds a nonce to script-src
+// and style-src (and the nonce to the page's inline <script> / <style>),
+// unless the directive is listed in dangerousDisableAssetCspModification. A
+// nonce makes the browser ignore 'unsafe-inline', which is how 0.8.1 logged
+// "Applying inline style ... violates the following Content Security Policy"
+// on every render while this e2e (serving the CSP as written) stayed green.
+// The same modification is reproduced here.
+const tauriSecurity = JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security;
+const CSP_NONCE = "e2e0nonce";
+const unmodified = new Set(
+  tauriSecurity.dangerousDisableAssetCspModification === true ? ["script-src", "style-src"] : (tauriSecurity.dangerousDisableAssetCspModification || [])
+);
 const prodCsp = args.includes("--prod-csp")
-  ? Object.entries(JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security.csp)
-      .map(([k, v]) => `${k} ${v}`)
+  ? Object.entries(tauriSecurity.csp)
+      .map(([k, v]) => `${k} ${v}${(k === "script-src" || k === "style-src") && !unmodified.has(k) ? ` 'nonce-${CSP_NONCE}'` : ""}`)
       .join("; ")
   : null;
 const types = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html", ".svg": "image/svg+xml" };
@@ -65,8 +78,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const file = path.join(dist, url.pathname === "/" ? "index.html" : url.pathname);
   try {
-    const body = await readFile(file);
+    let body = await readFile(file);
     const type = types[path.extname(file)] ?? "application/octet-stream";
+    // As Tauri does: its nonce on the page's own inline <script> / <style>.
+    if (prodCsp && type === "text/html") body = Buffer.from(body.toString("utf8").replace(/<(script|style)(?=[\s>])/g, `<$1 nonce="${CSP_NONCE}"`));
     res.writeHead(200, { "Content-Type": type, ...(prodCsp && type === "text/html" ? { "Content-Security-Policy": prodCsp } : {}) });
     res.end(body);
   } catch {
@@ -107,7 +122,19 @@ const voiceRequests = [];
 context.on("request", (r) => /\/assets\/vosk-|recognizer-worker|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
 const page = await context.newPage();
 const consoleErrors = [];
-page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
+const cspErrors = [];
+page.on("console", (m) => {
+  if (m.type() !== "error") return;
+  consoleErrors.push(m.text());
+  if (/Content Security Policy/i.test(m.text())) cspErrors.push(m.text());
+});
+// Violations that never reach the console (style attributes set from script
+// report only through the event): record those too.
+await context.addInitScript(() => {
+  document.addEventListener("securitypolicyviolation", (e) => {
+    console.error(`Content Security Policy violation: ${e.violatedDirective} blocked ${e.blockedURI || "inline"} (${e.sourceFile || "?"}:${e.lineNumber || 0})`);
+  });
+});
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 page.on("response", (r) => r.status() >= 400 && !/favicon/.test(r.url()) && consoleErrors.push(`${r.status()} ${r.url()}`));
 // The arrow tool must never open a browser prompt.
@@ -311,43 +338,163 @@ if (want("keys")) {
   await settle();
 }
 
-// ── re-map a shortcut in Settings ───────────────────────────────────────
-if (want("remap")) {
+// ── Settings › Mouse & Keyboard: rebind, any mouse, survives a reload ────
+// Right drag → zoom; W → Shift+K; F13 (what mouse software sends) → flip
+// horizontal; mouse button 5 (a gaming mouse's 6th button) → rotate. Then
+// RELOAD and check each one still applies and shows in the F1 sheet.
+const openStudy = async () => {
+  await page.waitForSelector("text=Open a study");
+  await page.locator('input[type="file"]').first().setInputFiles(await listFiles(study));
+  await page.waitForSelector('[data-has-series="1"]', { timeout: 60_000 });
+  await page.waitForFunction(() => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
+  await settle(800);
+};
+const pressButton = (locator, button) =>
+  locator.evaluate((el, b) => {
+    const r = el.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, composed: true, button: b, buttons: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 7, pointerType: "mouse" };
+    el.dispatchEvent(new PointerEvent("pointerdown", at));
+    el.dispatchEvent(new PointerEvent("pointerup", at));
+    el.dispatchEvent(new MouseEvent("mouseup", at));
+    el.dispatchEvent(new MouseEvent("auxclick", at));
+  }, button);
+/** F13: what mouse software sends for a programmed button (Playwright's keyboard stops at F12). */
+const pressF13 = (pg) =>
+  pg.evaluate(() => {
+    const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
+    for (const type of ["keydown", "keyup"]) target.dispatchEvent(new KeyboardEvent(type, { key: "F13", code: "F13", bubbles: true, cancelable: true, composed: true }));
+  });
+const cellText = async () => cell(0).innerText();
+const zoomOf = async () => (await cellText()).match(/Zoom (\d+)%/)?.[1] ?? null;
+const wlOf = async () => (await cellText()).match(/W (-?\d+) · L (-?\d+)/)?.slice(1).join("/") ?? null;
+const rightDrag = async () => {
+  const b = await box(0);
+  const x = b.x + b.width / 2;
+  const y = b.y + b.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down({ button: "right" });
+  for (let i = 1; i <= 8; i += 1) await page.mouse.move(x + i * 4, y - i * 12);
+  await page.mouse.up({ button: "right" });
+  await settle(400);
+  await page.keyboard.press("Escape").catch(() => undefined);
+};
+const openBindings = async () => {
   await page.getByRole("button", { name: /settings/i }).first().click();
   const dialog = page.getByRole("dialog", { name: "Settings" });
   await dialog.waitFor();
-  const row = dialog.locator('[data-shortcut-id="tool.w"]');
-  await row.scrollIntoViewIfNeeded();
-  await row.getByRole("button", { name: /Change the shortcut/ }).click();
-  await page.keyboard.press("Shift+K");
+  await dialog.getByRole("button", { name: /Mouse & Keyboard/ }).click();
+  const panel = page.locator("[data-bindings-panel=desktop]");
+  await panel.waitFor({ timeout: 15_000 });
+  return panel;
+};
+const closeDialogs = async () => {
+  for (let i = 0; i < 6 && (await page.getByRole("dialog").count()); i += 1) {
+    await page.keyboard.press("Escape");
+    await settle(450);
+  }
+};
+if (want("bindings")) {
+  await page.keyboard.press("Shift+Digit1");
+  await settle(400);
+  await focusImage();
+  // Default: right drag windows.
+  const wl0 = await wlOf();
+  const z0 = await zoomOf();
+  await rightDrag();
+  check("bindings: right drag = window / level by default", (await wlOf()) !== wl0 && (await zoomOf()) === z0, `${wl0} → ${await wlOf()}, zoom ${z0} → ${await zoomOf()}`);
+  await page.keyboard.press("Backspace"); // reset view
+  await settle(300);
+
+  const panel = await openBindings();
+  // Lazy: the panel is its own chunk.
+  check("bindings: Settings › Mouse & Keyboard opens (lazy chunk)", await panel.isVisible());
+  await panel.getByRole("combobox", { name: "Command for Right drag" }).selectOption({ label: "Zoom" });
   await settle();
-  const shown = await row.locator("kbd").innerText();
-  check("remap: the new key is recorded", /Shift\+K|⇧K/.test(shown), shown);
-  // A clash is refused.
-  await row.getByRole("button", { name: /Change the shortcut/ }).click();
+  check("bindings: right drag rebound to Zoom", /Right drag → Zoom/.test(await panel.getByRole("status").innerText().catch(() => "")));
+
+  await panel.getByRole("tab", { name: /Keyboard/ }).click();
+  const row = (id) => panel.locator(`[data-binding-row="${id}"]`);
+  // W → Shift+K.
+  await row("tool.w").getByRole("button", { name: /Change the binding/ }).click();
+  await page.keyboard.press("Shift+K");
+  await row("tool.w").getByRole("button", { name: "Save" }).click();
+  await settle();
+  check("bindings: a key is recorded (W → Shift+K)", /Shift\+K|⇧K/.test(await row("tool.w").innerText()), await row("tool.w").innerText());
+  // A clash asks first.
+  await row("tool.w").getByRole("button", { name: /Change the binding/ }).click();
   await page.keyboard.press("z");
   await settle();
-  const clash = await row.getByRole("alert").innerText().catch(() => "");
-  check("remap: a key already in use is refused with a reason", /already/.test(clash), clash);
-  await shot("remap");
-  await page.keyboard.press("Escape");
-  await settle(400);
+  const clash = await row("tool.w").getByRole("alert").innerText().catch(() => "");
+  check("bindings: a key in use asks swap or cancel", /already Zoom — swap or cancel\?/.test(clash), clash);
+  await row("tool.w").getByRole("button", { name: "Cancel" }).click();
+  // F13 → flip horizontal.
+  await row("flip.h").getByRole("button", { name: /Change the binding/ }).click();
+  await pressF13(page);
+  await settle();
+  check("bindings: F13 (mouse software) is captured", /F13/.test(await row("flip.h").innerText()));
+  await row("flip.h").getByRole("button", { name: "Save" }).click();
+  // Mouse button 5 → rotate (added next to R).
+  await row("rotate").getByRole("button", { name: /Add another input/ }).click();
+  await pressButton(page.locator("[data-binding-capture]").first(), 5);
+  await settle();
+  check("bindings: mouse button 5 is captured as “Mouse button 6”", /Mouse button 6/.test(await row("rotate").innerText()), await row("rotate").innerText());
+  await row("rotate").getByRole("button", { name: "Save" }).click();
+  await settle();
+  await shot("bindings-panel");
+  await closeDialogs();
+
+  // ── reload: everything persists (settings.json; localStorage in this harness) ──
+  await page.reload();
+  await openStudy();
   await focusImage();
   await page.keyboard.press("b");
   await page.keyboard.press("Shift+K");
   await settle();
-  const tool = await page.evaluate(() => document.body.dataset.toolCursor);
-  check("remap: the new key selects Window / level", tool === "wl", tool);
+  check("bindings (after reload): Shift+K selects Window / level", (await page.evaluate(() => document.body.dataset.toolCursor)) === "wl");
   await page.keyboard.press("b");
   await page.keyboard.press("w");
   await settle();
-  check("remap: the old key no longer does", (await page.evaluate(() => document.body.dataset.toolCursor)) === "scroll");
-  // Back to the default.
-  await page.getByRole("button", { name: /settings/i }).first().click();
-  await dialog.waitFor();
-  await dialog.locator('[data-shortcut-id="tool.w"]').getByRole("button", { name: /Restore the default/ }).click();
-  await page.keyboard.press("Escape");
-  await settle(400);
+  check("bindings (after reload): W no longer does", (await page.evaluate(() => document.body.dataset.toolCursor)) === "scroll");
+  const e0 = await edgesOf();
+  await pressF13(page);
+  await settle(300);
+  const e1 = await edgesOf();
+  check("bindings (after reload): F13 flips horizontally", e1.left === e0.right && e1.right === e0.left, `${JSON.stringify(e0)} → ${JSON.stringify(e1)}`);
+  await pressF13(page);
+  await settle(300);
+  await pressButton(cell(0).locator("[data-viewport-id], .cs-viewport").first(), 5);
+  await settle(300);
+  const e2 = await edgesOf();
+  check("bindings (after reload): mouse button 5 rotates 90° clockwise", e2.bottom === e0.right && e2.top === e0.left, `${JSON.stringify(e0)} → ${JSON.stringify(e2)}`);
+  await page.keyboard.press("Shift+R");
+  await settle(300);
+  const wl1 = await wlOf();
+  const z1 = await zoomOf();
+  await rightDrag();
+  check("bindings (after reload): right drag zooms, window unchanged", (await zoomOf()) !== z1 && (await wlOf()) === wl1, `zoom ${z1} → ${await zoomOf()}, ${wl1} → ${await wlOf()}`);
+  await page.keyboard.press("F1");
+  const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await sheet.waitFor({ timeout: 3000 }).catch(() => undefined);
+  const sheetText = (await sheet.innerText().catch(() => "")) + (await sheet.getAttribute("aria-describedby").then((id) => (id ? page.locator(`#${id}`).innerText() : "")).catch(() => ""));
+  check("bindings (after reload): the F1 sheet shows F13, Mouse button 6 and Right drag = zoom", /F13/.test(sheetText) && /Mouse button 6/.test(sheetText) && /Right drag = zoom/.test(sheetText), sheetText.slice(0, 200));
+  await shot("bindings-sheet");
+  await closeDialogs();
+
+  // Back to the preset so later groups start clean.
+  const p2 = await openBindings();
+  await p2.getByRole("button", { name: "Reset all" }).click();
+  await settle();
+  await closeDialogs();
+  await focusImage();
+  await page.keyboard.press("Backspace");
+  await settle(300);
+  const left = await page.getByRole("dialog").count();
+  if (left) console.error("open dialogs:", await page.getByRole("dialog").evaluateAll((els) => els.map((e) => e.getAttribute("aria-labelledby") && document.getElementById(e.getAttribute("aria-labelledby"))?.textContent)));
+  await page.keyboard.press("z");
+  await settle();
+  check("bindings: Reset all restores the preset (Z = zoom again)", left === 0 && (await page.evaluate(() => document.body.dataset.toolCursor)) === "zoom", `${left} dialog(s) open, cursor ${await page.evaluate(() => document.body.dataset.toolCursor)}`);
+  await page.keyboard.press("b");
+  await settle();
 }
 
 // ── cursors ─────────────────────────────────────────────────────────────
@@ -1081,7 +1228,9 @@ if (want("voice")) {
     else console.error(`SKIP  voice: ${why}`);
   } else {
     check("voice: nothing loaded before the mic is switched on", voiceRequests.length === 0, voiceRequests.join(" "));
-    const workersBefore = page.workers().length;
+    // The recognizer's own worker, by URL: other workers (series thumbnails)
+    // come and go, so a count of all page workers says nothing.
+    const recognizers = () => page.workers().filter((w) => /recognizer-worker/.test(w.url())).length;
     await focusImage();
     await page.keyboard.press("Shift+Digit1");
     await settle(400);
@@ -1093,7 +1242,7 @@ if (want("voice")) {
     await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
     const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
     check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
-    check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
+    check("voice: the recognizer runs in its own worker", recognizers() === 1, page.workers().map((w) => w.url().split("/").pop()).join(", "));
     // The WAV says: "layout two", "lung window", "zoom in" (looped by Chromium).
     const heard = new Set();
     // The recording loops; give it two full passes to hear every phrase.
@@ -1114,10 +1263,11 @@ if (want("voice")) {
     await page.keyboard.press("Control+Shift+V");
     await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
-    check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
+    check("voice: switching off frees the recognizer (worker gone)", recognizers() === 0, page.workers().map((w) => w.url().split("/").pop()).join(", "));
   }
 }
 
+if (prodCsp) check("no CSP violations under the production CSP (as Tauri modifies it)", cspErrors.length === 0, `${cspErrors.length}: ${cspErrors.slice(0, 2).join(" | ")}`);
 const unexpected = consoleErrors.filter((e) => !/favicon|DevTools|GPU stall|WebGL|Failed to load resource/i.test(e));
 check("no uncaught errors in the page", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 

@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::header::{mtime_secs, read_header, Header};
 use crate::sources::{
-    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, walk_folder, SourceKind,
+    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, stamp_of, walk_folder_stamped, SourceKind,
+    Stamp,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +39,15 @@ pub struct ScanTimings {
     pub list_ms: f64,
     pub parse_ms: f64,
     pub total_ms: f64,
+    /// Process clock (ms since start), set by the app's scan command: the
+    /// command entered, its first batch emitted, the scan returned. Places
+    /// the scan on the same timeline as the page's open (bench).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entered_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_batch_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_at_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,21 +119,22 @@ fn save_cache(path: &Path, headers: &[Header]) {
 /// Header reads are I/O-latency bound (open, antivirus callback, first 64 KB),
 /// not CPU bound, so the scan runs on its own pool with twice the cores:
 /// while half the threads wait on the disk the other half parse.
-fn scan_pool() -> &'static rayon::ThreadPool {
-    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        // Opening files is the cold cost (Windows: an antivirus callback per
-        // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
-        // it overlaps well: keep many opens in flight, not just one per core.
-        rayon::ThreadPoolBuilder::new()
-            .num_threads((cores * 4).clamp(16, 64))
-            .thread_name(|i| format!("scan-{i}"))
-            .build()
-            .expect("scan thread pool")
-    })
+///
+/// Built per scan and dropped with it: its 16-64 threads (stacks, per-thread
+/// allocator heaps) exit when the scan ends instead of idling for the rest of
+/// the session with the scan's leftovers (the 0.8.2 close gate).
+fn scan_pool() -> rayon::ThreadPool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Opening files is the cold cost (Windows: an antivirus callback per
+    // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
+    // it overlaps well: keep many opens in flight, not just one per core.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads((cores * 4).clamp(16, 64))
+        .thread_name(|i| format!("scan-{i}"))
+        .build()
+        .expect("scan thread pool")
 }
 
 /// `dir` when it holds exactly one folder and nothing else (dotfiles aside).
@@ -152,15 +163,31 @@ fn label_for(path: &Path) -> String {
 }
 
 /// Expand the selection into candidate files. Returns the files, the kind of
-/// source, whether a DICOMDIR drove the listing, and any warnings.
+/// source, whether a DICOMDIR drove the listing, the size / mtime the folder
+/// walk already knows (saves a stat per file), and any warnings.
 fn list_candidates(
     paths: &[PathBuf],
     cache_dir: &Path,
     warnings: &mut Vec<String>,
-) -> (Vec<PathBuf>, SourceKind, bool) {
+) -> (Vec<PathBuf>, SourceKind, bool, HashMap<PathBuf, Stamp>) {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut kind = SourceKind::Files;
     let mut used_dicomdir = false;
+    let stamps: std::cell::RefCell<HashMap<PathBuf, Stamp>> = Default::default();
+    let walk_folder = |dir: &Path| -> Vec<PathBuf> {
+        let listed = walk_folder_stamped(dir);
+        let mut st = stamps.borrow_mut();
+        st.reserve(listed.len());
+        listed
+            .into_iter()
+            .map(|(p, stamp)| {
+                if let Some(stamp) = stamp {
+                    st.insert(p.clone(), stamp);
+                }
+                p
+            })
+            .collect()
+    };
 
     let expand_dir = |dir: &Path, out: &mut Vec<PathBuf>, warnings: &mut Vec<String>| -> bool {
         if let Some(index) = find_dicomdir(dir) {
@@ -239,7 +266,7 @@ fn list_candidates(
     }
     let mut seen = HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
-    (out, kind, used_dicomdir)
+    (out, kind, used_dicomdir, stamps.into_inner())
 }
 
 pub fn scan(
@@ -258,7 +285,7 @@ pub fn scan(
         accepted: 0,
         total: 0,
     });
-    let (files, kind, used_dicomdir) = list_candidates(paths, cache_dir, &mut warnings);
+    let (files, kind, used_dicomdir, stamps) = list_candidates(paths, cache_dir, &mut warnings);
     let list_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let cache_key = paths
@@ -299,7 +326,8 @@ pub fn scan(
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_micros);
-    let mut headers: Vec<(Header, bool)> = scan_pool().install(|| {
+    let pool = scan_pool();
+    let mut headers: Vec<(Header, bool)> = pool.install(|| {
         files
             .par_iter()
             .filter_map(|path| {
@@ -310,9 +338,11 @@ pub fn scan(
                     std::thread::sleep(d);
                 }
                 let key = path.to_string_lossy();
-                let meta = fs::metadata(path).ok();
-                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let mtime = meta.as_ref().map(mtime_secs).unwrap_or(0);
+                let (size, mtime) = stamps
+                    .get(path)
+                    .copied()
+                    .or_else(|| fs::metadata(path).ok().map(|m| stamp_of(&m)))
+                    .unwrap_or((0, 0));
                 let result = match cached.get(key.as_ref()) {
                     Some(hit) if hit.size_bytes == size && hit.mtime == mtime => {
                         hits.fetch_add(1, Ordering::Relaxed);
@@ -417,6 +447,7 @@ pub fn scan(
             list_ms,
             parse_ms,
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
+            ..Default::default()
         },
     })
 }
