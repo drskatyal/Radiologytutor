@@ -257,6 +257,22 @@ export default function NativeStackViewport({
       return;
     }
     wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
+    // A cell's first series goes with the cell's rect, and measuring it here,
+    // in the commit that mounts the study view, forced the layout of the whole
+    // new view inside React's task: a quarter of the open's longest main-thread
+    // task (the CI "view: grid ... MessagePort.onmessage" one). A one-shot
+    // ResizeObserver hands the rect over in the same frame, right after the
+    // browser's own layout, at no extra cost. Later sends (growth, another
+    // series) find layout clean and go at once.
+    const el = elementRef.current;
+    if (sentRef.current === null && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        syncSeries();
+      });
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
     syncSeries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cellKey, series?.uid, series?.headers.length]);

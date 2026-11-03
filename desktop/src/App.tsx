@@ -703,7 +703,12 @@ export default function App() {
           onBatch: (batch) => {
             if (seq !== openSeq.current) return;
             if (!bench.current.marks.firstHeaderMs) bench.current.marks.firstHeaderMs = performance.now() - t0;
-            for (const h of batch) acc.set(h.fileName, { ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` });
+            // The batch's own objects (fresh from IPC, ours): no copy per
+            // header; the scan result hands these same objects back.
+            for (const h of batch) {
+              h.baseImageId = `wadouri:${imageUrlFor(h.fileId)}`;
+              acc.set(h.fileName, h);
+            }
             if (!firstShown) void rebuild();
             else if (!timer) timer = window.setTimeout(rebuild, 250);
           },
@@ -711,7 +716,10 @@ export default function App() {
         if (seq !== openSeq.current) return;
         window.clearTimeout(timer);
         scanDone = true; // cancels a progressive rebuild still in flight
-        const headers = result.headers.map((h) => ({ ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` }));
+        // The streamed headers (scanPaths): imageIds already set, unless the
+        // shell sent the full list.
+        const headers = result.headers;
+        for (const h of headers) h.baseImageId ??= `wadouri:${imageUrlFor(h.fileId)}`;
         const docs = result.documents ?? [];
         markPhase("study: group series");
         const grouped = await buildStudiesSliced(headers, {
@@ -722,11 +730,20 @@ export default function App() {
         // Key-image notes become series of the images they select.
         const built = withKeyImageSeries(grouped, docs);
         rawOpen.current = { headers, documents: docs };
-        setDocuments(docs);
-        setStudies(built);
-        setGrowing(false);
-        setScan(null);
-        setScanProgress(null);
+        // With the first series already on screen (progressive open), the
+        // complete study and its hanging plan render as one transition:
+        // time-sliced instead of one long render + commit task. The scan is
+        // over, so no urgent progress update can restart it. Nothing on
+        // screen yet (the whole scan beat the first rebuild): urgent, as the
+        // first image waits on it.
+        const settle = firstShown ? startTransition : (update: () => void) => update();
+        settle(() => {
+          setDocuments(docs);
+          setStudies(built);
+          setGrowing(false);
+          setScan(null);
+          setScanProgress(null);
+        });
         if (built.length === 0) {
           toast({
             title: "No DICOM images found",
@@ -756,11 +773,13 @@ export default function App() {
             if (ids.length) void invoke("native_warm", { fileIds: ids }).catch(() => undefined);
           }
           if (plan) {
-            setLayout({ rows: plan.rows, cols: plan.cols });
-            setCells(plan.cells);
-            setActiveCell(0);
-            setSyncScroll(plan.syncScroll);
-            setHangingLabel(plan.label);
+            settle(() => {
+              setLayout({ rows: plan.rows, cols: plan.cols });
+              setCells(plan.cells);
+              setActiveCell(0);
+              setSyncScroll(plan.syncScroll);
+              setHangingLabel(plan.label);
+            });
             if (plan.compare) {
               // Prior positions + offset land in the current study's frame.
               const prior = built.flatMap((st) => st.series).find((x) => x.uid === plan.compare!.priorSeries);
@@ -769,10 +788,10 @@ export default function App() {
           } else {
             const study = built[0];
             const primary = study.series[primarySeriesIndex(study)]?.uid;
-            if (primary) setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)]));
+            if (primary) settle(() => setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)])));
           }
         } else {
-          hangFirst(built);
+          settle(() => hangFirst(built));
         }
         const opened: OpenedSource = {
           key: sourceKey(paths),
@@ -780,7 +799,7 @@ export default function App() {
           kind: kindHint ?? result.kind,
           label: labelOverride ?? result.label,
         };
-        setSource(opened);
+        settle(() => setSource(opened));
         void finishOpen(opened, built);
         for (const w of result.warnings.slice(0, 2)) toast({ title: "Heads up", description: w, variant: "warning", duration: 8000 });
         bench.current.marks.scanDoneMs = performance.now() - t0;

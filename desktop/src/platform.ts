@@ -7,6 +7,7 @@
 // tested against exactly one interface.
 
 import type { DesktopHeader, ScanProgress, ScanResult } from "./types";
+import { assembleStreamedHeaders } from "./streamedScan";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>, options?: { headers?: Record<string, string> }) => Promise<T>;
 
@@ -134,16 +135,45 @@ export async function scanPaths(paths: string[], handlers: ScanHandlers = {}): P
   let live = true;
   const progress = new Channel<ScanProgress>();
   progress.onmessage = (p) => live && handlers.onProgress?.(p);
+  // Every header streams in a batch; the result no longer repeats them
+  // (streamedScan.ts). Kept here by reference, no copy.
+  const streamed: DesktopHeader[] = [];
+  let expected = Infinity;
+  let allStreamed: (() => void) | null = null;
   const batches = new Channel<DesktopHeader[]>();
-  batches.onmessage = (b) => live && handlers.onBatch?.(b);
+  batches.onmessage = (b) => {
+    if (!live) return;
+    for (const h of b) streamed.push(h);
+    handlers.onBatch?.(b);
+    if (streamed.length >= expected) allStreamed?.();
+  };
   try {
-    return await invoke<ScanResult>("scan_sources", { paths, onProgress: progress, onBatch: batches });
+    const result = await invoke<ScanResult>("scan_sources", { paths, onProgress: progress, onBatch: batches });
+    if (result.streamed == null) return result; // the shell sent the full list
+    expected = result.streamed;
+    // A batch is fetched separately from the result and may land after it.
+    if (streamed.length < expected) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(
+          () => reject(new Error(`The scan sent ${streamed.length.toLocaleString()} of ${expected.toLocaleString()} headers.`)),
+          STREAM_WAIT_MS
+        );
+        allStreamed = () => {
+          window.clearTimeout(timer);
+          resolve();
+        };
+      });
+    }
+    return { ...result, headers: assembleStreamedHeaders(streamed, result.patientPatches) };
   } finally {
-    // The result holds every header: a batch delivered after it is dropped,
-    // as an unlistened event was.
+    // The result (with the batches it waited for) holds every header: a batch
+    // delivered after it is dropped, as an unlistened event was.
     live = false;
   }
 }
+
+/** How long a scan's last batches may trail its result before the open fails. */
+const STREAM_WAIT_MS = 30_000;
 
 export async function cancelScan(): Promise<void> {
   if (isTauri) await invoke("cancel_scan");
