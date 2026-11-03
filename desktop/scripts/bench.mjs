@@ -296,7 +296,7 @@ async function benchInteract(binary, study) {
   // Freeze during interaction: the slowest single step of scroll, zoom, W/L.
   const maxStep = flag("max-interaction-ms", Infinity);
   const slowest = Math.max(i.frames.max ?? 0, ...["scroll", "zoom", "windowLevel"].map((k) => i[k].max ?? 0));
-  const where = i.slowest ? ` (${i.slowest.kind} step ${i.slowest.step}: Rust ${i.slowest.rustMs} ms = decode ${i.slowest.decodeMs} + frame ${i.slowest.frameMs})` : "";
+  const where = i.slowest ? ` (${i.slowest.kind} step ${i.slowest.step}: Rust ${i.slowest.rustMs} ms = decode ${i.slowest.decodeMs} + frame ${i.slowest.frameMs}${i.slowest.acquireMs != null ? `, of which waiting for a drawable ${i.slowest.acquireMs}` : ""})` : "";
   if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms${where}`);
   if (over.length) {
     console.error(`frame-time gate failed: ${over.join("; ")}`);
@@ -833,6 +833,13 @@ async function benchClose(binary, study) {
     `CLOSE: private baseline ${baseline.privateMb} MB (${line(baseline)}) · open ${open.privateMb} MB (${line(open)}) · closed +${afterClose} s ${closed.privateMb} MB (${line(closed)}) · delta ${summary.closeDeltaPrivateMb} MB · ws ${baseline.wsMb} / ${open.wsMb} / ${closed.wsMb} MB`
   );
   for (const c of shellClose) console.error(`CLOSE (app process): ${JSON.stringify(c)}`);
+  // macOS: Metal's own count (in the app's footprint on Apple silicon): after
+  // init (empty app), with the study open, after the close.
+  const metal = report?.native?.gpuAllocatedMb;
+  if (metal != null || report?.native?.gpuAllocatedInitMb != null) {
+    const after = shellClose.find((c) => c.held)?.held?.gpuAllocatedMb;
+    console.error(`CLOSE (Metal): init ${report.native.gpuAllocatedInitMb} MB · open ${metal} MB · after close ${after} MB`);
+  }
   const over = [];
   const maxBaseline = flag("max-baseline-private-mb", Infinity);
   const maxOpen = flag("max-open-private-mb", Infinity);

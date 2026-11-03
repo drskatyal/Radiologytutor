@@ -72,6 +72,11 @@ pub struct NativeStatus {
     /// macOS: of `init_ms`, time spent waiting for the main thread to create
     /// the surface (it is busy while WKWebView loads the page).
     pub surface_wait_ms: Option<f64>,
+    /// macOS: MB of GPU resources the Metal device holds now, and right after
+    /// init (the empty app): what a study adds on the GPU, and what a close
+    /// gives back (with the close report's figure).
+    pub gpu_allocated_mb: Option<f64>,
+    pub gpu_allocated_init_mb: Option<f64>,
     /// Last frame: CPU time to record + submit (not GPU time).
     pub last_frame_ms: Option<f64>,
     pub frames: u64,
@@ -250,6 +255,8 @@ pub struct ShowResult {
     pub cached: bool,
     pub decode_ms: f64,
     pub frame_ms: f64,
+    /// Of `frame_ms`: waiting for the surface's next drawable / swap-chain image.
+    pub acquire_ms: f64,
     pub total_ms: f64,
     pub rows: usize,
     pub cols: usize,
@@ -365,6 +372,10 @@ impl Native {
         let mut s = self.status.lock().clone();
         s.enabled = enabled();
         s.cells = self.cells.lock().len();
+        #[cfg(target_os = "macos")]
+        if let Some(gpu) = self.gpu.lock().as_ref() {
+            s.gpu_allocated_mb = metal_allocated_mb(&gpu.device);
+        }
         s
     }
 
@@ -383,6 +394,9 @@ impl Native {
         match create_gpu(window).await {
             Ok((gpu, adapter, backend)) => {
                 *self.gpu.lock() = Some(gpu);
+                // Read before taking the status lock (render takes gpu, then status).
+                #[cfg(target_os = "macos")]
+                let init_metal = self.gpu.lock().as_ref().and_then(|g| metal_allocated_mb(&g.device));
                 let mut s = self.status.lock();
                 s.ready = true;
                 s.adapter = Some(adapter);
@@ -390,6 +404,10 @@ impl Native {
                 s.error = None;
                 s.init_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
                 s.surface_wait_ms = SURFACE_WAIT_MS.lock().take();
+                #[cfg(target_os = "macos")]
+                {
+                    s.gpu_allocated_init_mb = init_metal;
+                }
             }
             Err(e) => self.status.lock().error = Some(e),
         }
@@ -735,6 +753,7 @@ impl Native {
                 cached: false,
                 decode_ms,
                 frame_ms,
+                acquire_ms: last_acquire_ms(),
                 total_ms: started.elapsed().as_secs_f64() * 1000.0,
                 rows: h,
                 cols: w,
@@ -814,6 +833,7 @@ impl Native {
             cached,
             decode_ms,
             frame_ms,
+            acquire_ms: last_acquire_ms(),
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
             rows,
             cols,
@@ -873,6 +893,7 @@ impl Native {
         let started = Instant::now();
         let mut guard = self.gpu.lock();
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
+        let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return Ok(0.0),
@@ -885,6 +906,7 @@ impl Native {
                 }
             }
         };
+        LAST_ACQUIRE_US.store(acquiring.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (sw, sh) = (gpu.config.width, gpu.config.height);
         let s = scale as f32;
@@ -1163,6 +1185,30 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
     }
 }
 
+/// Last frame: µs spent waiting for the next drawable (render → ShowResult).
+static LAST_ACQUIRE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn last_acquire_ms() -> f64 {
+    LAST_ACQUIRE_US.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0
+}
+
+/// A frame never waits for the display's vblank: Mailbox (D3D12 / Vulkan:
+/// the newest frame wins, no tearing). Metal offers only Fifo and Immediate,
+/// and with Fifo and two drawables a step waited for a free drawable over
+/// several display refreshes (CI macOS: scroll step 1, 60 ms of a 62 ms
+/// step was the frame): Immediate presents at once (CAMetalLayer
+/// displaySyncEnabled = false; the window server composites it, so no
+/// tearing in a window). Fifo where neither is offered.
+pub(crate) fn present_mode_for(modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    if modes.contains(&wgpu::PresentMode::Mailbox) {
+        wgpu::PresentMode::Mailbox
+    } else if cfg!(target_os = "macos") && modes.contains(&wgpu::PresentMode::Immediate) {
+        wgpu::PresentMode::Immediate
+    } else {
+        wgpu::PresentMode::Fifo
+    }
+}
+
 /// macOS: MB of GPU resources the Metal device holds (MTLDevice
 /// currentAllocatedSize), for the close report.
 #[cfg(target_os = "macos")]
@@ -1240,10 +1286,9 @@ fn finish(
         format,
         width: size.width.max(1),
         height: size.height.max(1),
-        // Mailbox: a frame never waits for the display's vblank (Fifo made
-        // every scroll call wait ~16 ms+); the newest frame wins. Fifo where
-        // mailbox is not offered.
-        present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) { wgpu::PresentMode::Mailbox } else { wgpu::PresentMode::Fifo },
+        // Never wait for the display's vblank (Fifo made every scroll call
+        // wait ~16 ms+): see present_mode_for.
+        present_mode: present_mode_for(&caps.present_modes),
         desired_maximum_frame_latency: 1,
         alpha_mode: caps.alpha_modes[0],
         color_space: wgpu::SurfaceColorSpace::Auto,
@@ -1385,6 +1430,17 @@ pub fn device_clip(x: f32, y: f32, w: f32, h: f32, scale: f32, sw: u32, sh: u32)
 
 #[cfg(test)]
 mod tests {
+    /// No vblank wait: Mailbox where offered (D3D12, Vulkan), Immediate on
+    /// Metal (it offers only Fifo / Immediate), Fifo as the last resort.
+    #[test]
+    fn present_mode_never_waits_for_vblank_when_it_can() {
+        use wgpu::PresentMode::*;
+        assert_eq!(super::present_mode_for(&[Fifo, Mailbox, Immediate]), Mailbox);
+        assert_eq!(super::present_mode_for(&[Fifo]), Fifo);
+        let metal = super::present_mode_for(&[Fifo, Immediate]);
+        assert_eq!(metal, if cfg!(target_os = "macos") { Immediate } else { Fifo });
+    }
+
     #[test]
     fn scissor_tiles_neighbours_without_overlap_at_fractional_dpi() {
         for scale in [1.0f32, 1.25, 1.5, 1.75] {
