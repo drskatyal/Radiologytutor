@@ -107,6 +107,9 @@ jobs:
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only voice --prod-csp --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
           # Multi-monitor: monitor picker, a second window, linked scroll / W/L / reference lines (pretend two-monitor desk).
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only multiwindow --shots "$RUNNER_TEMP/ui-shots"
+          # Bench/test hook (window.__flowradTest, ?bench only): rotation / flips drawn,
+          # thumbnails one per series and rendered, bindings set → reset all → preset.
+          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only hooks --shots "$RUNNER_TEMP/ui-shots"
       - name: Upload UI e2e screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -311,6 +314,15 @@ jobs:
         env:
           FLOWRAD_NATIVE: "1"
         run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10 --max-private-mb ${{ env.BASELINE_PRIVATE_MAX_MB }}
+      # Informational: the same empty app with the GPU device built at launch
+      # (0.8.2 behaviour) instead of on the first open, so the run shows what
+      # deferring it saves (step above vs this one, app process private).
+      - name: P2.0 — empty app with the GPU built at launch (FLOWRAD_GPU_WARM=eager; informational)
+        continue-on-error: true
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_GPU_WARM: eager
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
       - name: P2.0 — floor + native surface (spike view, whole tree, after 10 s)
         env:
           FLOWRAD_NATIVE: "1"
@@ -434,11 +446,13 @@ jobs:
         run: |
           # Keep going when a variant fails (no report = that flag set breaks the app).
           set +e +o pipefail
-          base=$(node -p "require('./desktop/src-tauri/tauri.conf.json').app.windows[0].additionalBrowserArgs")
+          # FLOWRAD_WEBVIEW2_EXTRA_ARGS appends to the app's own flags inside
+          # the app (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS never reached the
+          # browser: every variant ran the same 7 processes).
           exe=desktop/src-tauri/target/release/flowrad-viewer.exe
-          for variant in "" "--in-process-gpu" "--enable-features=NetworkServiceInProcess2" "--in-process-gpu --enable-features=NetworkServiceInProcess2"; do
+          for variant in "" "--in-process-gpu" "--enable-features=NetworkServiceInProcess2" "--in-process-gpu --enable-features=NetworkServiceInProcess2" "--disable-features=AudioServiceOutOfProcess"; do
             echo "::group::variant: ${variant:-app defaults}"
-            export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="$base $variant" VARIANT="${variant:-defaults}"
+            export FLOWRAD_WEBVIEW2_EXTRA_ARGS="$variant" VARIANT="${variant:-defaults}"
             FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=grid timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" --settle 20 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`IDLE ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`IDLE ${process.env.VARIANT||"defaults"}: settled ws ${r.settledWsMb} MB private ${r.settledPrivateMb} MB, ${r.processes} processes`)})'
             FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=mpr timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`MPR  ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`MPR  ${process.env.VARIANT||"defaults"}: peak ws ${r.peakWsMb} MB private ${r.peakPrivateMb} MB, ${r.processes} processes`)})'
             timeout 150 node desktop/scripts/bench.mjs coldstart $exe --runs 3 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.indexOf("{")<0){console.log(`COLD ${process.env.VARIANT}: no report`);return}const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.env.VARIANT||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})'
@@ -461,6 +475,24 @@ jobs:
         # so the leak / multi-window / MPR gates are always measured and still gate.
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
+      # Informational (0.8.3 bench hooks): logged for comparison with the HP, never
+      # gate. They run even when an earlier step failed (the frame-time step is
+      # known to fail on this runner's software GPU). No thresholds are passed.
+      - name: Open/close rounds — CT opened, closed, re-opened ×3; private MB per round (whole tree; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: node desktop/scripts/bench.mjs openclose desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --hold 15 --after-close 30
+      - name: Scripted interaction pass — scroll, window/level, rotate; per-step p50 / p95 / max and long tasks (informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs steps desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
+      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs hooks desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
 
   # macOS (0.8.2): the same app on Apple Silicon with the native renderer on
   # Metal (the runner has a real, paravirtualised Apple GPU). Build, smoke and

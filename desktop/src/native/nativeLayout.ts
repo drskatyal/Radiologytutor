@@ -89,13 +89,56 @@ if (typeof window !== "undefined") {
   window.addEventListener("transitionend", scheduleNativeLayout, true);
 }
 
-/** Native mode is on (FLOWRAD_NATIVE=1, Tauri only); cached after the first ask. */
+/**
+ * Native mode is on (FLOWRAD_NATIVE=1, Tauri only); cached after the first ask.
+ * Asking builds the GPU (`native_init`). On Windows that happens when a study
+ * is about to open, not at start-up (Rust `lazy_gpu`), so call this from an
+ * open, never from a mount; `nativeKnown` waits for the answer without asking.
+ */
 let nativeOn: Promise<boolean> | null = null;
+let settleKnown: (on: boolean) => void = () => undefined;
+const known = new Promise<boolean>((resolve) => (settleKnown = resolve));
 export function nativeEnabled(): Promise<boolean> {
   nativeOn ??= invoke<{ enabled: boolean; ready: boolean }>("native_init")
     .then((s) => !!s.enabled && !!s.ready)
-    .catch(() => false);
+    .catch(() => false)
+    .then((on) => {
+      settleKnown(on);
+      return on;
+    });
   return nativeOn;
+}
+
+/** Resolves with `nativeEnabled()`'s answer once something has asked; never asks itself. */
+export function nativeKnown(): Promise<boolean> {
+  return known;
+}
+
+/**
+ * A study is about to open (Open dialog, drag over the window, an open
+ * starting): build the GPU now so it is ready by the first image. Rust
+ * releases it once a closed study leaves it idle; this rebuilds it then
+ * (idempotent and cheap while it is up). Resolves with native mode on/off.
+ */
+export function warmNative(): Promise<boolean> {
+  if (!nativeOn) return nativeEnabled();
+  return nativeOn.then((on) => {
+    if (on) void invoke("native_init").catch(() => undefined);
+    return on;
+  });
+}
+
+/**
+ * Start-up: settle the mode at once where nothing is deferred (native off,
+ * macOS / Linux, viewer windows); leave it for the first open where the GPU
+ * is lazy (Windows main window), so the empty app holds no GPU device.
+ */
+export function settleNativeAtStart(): void {
+  void invoke<{ enabled: boolean; lazy?: boolean }>("native_status")
+    .then((s) => {
+      if (!s.enabled || !s.lazy) void nativeEnabled();
+    })
+    .catch(() => void nativeEnabled());
 }
 
 /** React: true once native mode is confirmed (false on the web and until then). */
