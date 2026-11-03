@@ -91,6 +91,11 @@ Rust answers with view-state events. Pointer drags are coalesced to one command 
 
 The first step measures the WebView2 floor on the HP: the start screen, whole tree, with no Cornerstone loaded. If the floor alone is over ~280 MB, the 400 MB gate cannot be met with any WebView2 UI. We would then report that number and decide between a native UI and adjusting the gate.
 
+**0.8.3, idle trims (Windows).**
+- The GPU device is not built at launch. It is built when a study is about to open: a study on the command line (at launch, as before), the Open dialog, a drag over the window, the pointer on a recent study or disc, or any open starting. It is released once no viewport has drawn for 15 s, for example after a close or a cancelled dialog. The empty app holds no D3D12 device, driver heaps, swap chain or pipelines. `FLOWRAD_GPU_WARM=eager` restores the launch-time device.
+- When the viewer has been idle for 10 s with a study open, the decoded-slice LRU keeps only its 16 MB most recently used (the slices around the one on screen). The budget is unchanged, so the next scroll refills it.
+- WebView2 features an offline viewer never uses are off: autofill, password saving, SmartScreen reputation checks, the status bubble, swipe navigation and tracking prevention.
+
 ## Phases — one draft PR each into `claude/epic-noether-3nvcbf`
 
 Each phase sits behind a `nativeViewer` setting plus the `FLOWRAD_NATIVE=1` env var until P2.6. Each ships an x64 installer artifact for an HP re-bench. Each keeps all existing e2e green, on the JS path and on the native path (windows-e2e).
