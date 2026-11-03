@@ -7,7 +7,7 @@
 // image the reader is looking at. Drag a card onto
 // any viewport, click to load it in the active one.
 
-import { memo, useDeferredValue, useEffect, useRef, useState } from "react";
+import { memo, startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Layers, Film, Box, FileText } from "lucide-react";
 import { cn } from "@/components/ui/cn";
@@ -24,6 +24,9 @@ import { isTauri, previewUrlFor } from "../platform";
 import { beginSeriesPointer } from "./seriesDrag";
 
 const THUMB = 112;
+/** Series cards in the commit that mounts the browser; the rest follow in transitions of MORE_CARDS. */
+const FIRST_CARDS = 16;
+const MORE_CARDS = 32;
 
 // One queue for the whole window, newest request last.
 let queue: Promise<void> = Promise.resolve();
@@ -147,6 +150,24 @@ function SeriesBrowserImpl({ studies: studiesNow, onScreen, activeSeriesUid, gro
   // hundreds of series streaming in no longer freezes the viewer for the
   // 50-100 ms one full re-render of the browser took (HP, 0.8.0).
   const studies = useDeferredValue(studiesNow);
+  // Cards mount a batch at a time. A deferred value is not deferred on mount,
+  // and a warm open of the 10,310-image MRI hands the browser all 242 series
+  // at once: that commit (plus the layout it left) was one 78 ms task on CI.
+  // The first cards come with the study view, the rest in small transitions.
+  const visibleCount = studies.reduce((n, st) => n + st.series.filter((x) => !hidden?.has(x.uid)).length, 0);
+  const [cardLimit, setCardLimit] = useState(FIRST_CARDS);
+  useEffect(() => {
+    if (cardLimit < visibleCount) startTransition(() => setCardLimit((n) => n + MORE_CARDS));
+  }, [cardLimit, visibleCount]);
+  // Thumbnails likewise: they wait for the scan (see Thumbnail), and when it
+  // ends every waiting card swapped its placeholder for an image in one
+  // commit. They start a batch at a time instead.
+  const [thumbLimit, setThumbLimit] = useState(growing ? 0 : FIRST_CARDS);
+  useEffect(() => {
+    if (!growing && thumbLimit < visibleCount) startTransition(() => setThumbLimit((n) => n + MORE_CARDS));
+  }, [growing, thumbLimit, visibleCount]);
+  let cardsLeft = cardLimit;
+  let cardIndex = 0;
   const [menu, setMenu] = useState<{ uid: string; x: number; y: number } | null>(null);
   const contextMenu = (uid: string) =>
     menuFor
@@ -205,7 +226,9 @@ function SeriesBrowserImpl({ studies: studiesNow, onScreen, activeSeriesUid, gro
             </div>
           </header>
           <ul className={compact ? "flex flex-col gap-0.5" : "grid grid-cols-2 gap-2"}>
-            {study.series.filter((series) => !hidden?.has(series.uid)).map((series) => {
+            {study.series.filter((series) => !hidden?.has(series.uid)).slice(0, Math.max(0, cardsLeft)).map((series) => {
+              cardsLeft -= 1;
+              const thumbDeferred = growing || cardIndex++ >= thumbLimit;
               const cells = onScreen.flatMap((uid, i) => (uid === series.uid ? [i + 1] : []));
               const isActive = series.uid === activeSeriesUid;
               // Pointer-driven drag (seriesDrag.ts): works on Windows, where
@@ -265,7 +288,7 @@ function SeriesBrowserImpl({ studies: studiesNow, onScreen, activeSeriesUid, gro
                     )}
                   >
                     <div className="relative">
-                      <Thumbnail series={series} deferred={growing} />
+                      <Thumbnail series={series} deferred={thumbDeferred} />
                       <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[10px] font-semibold text-white tabular-nums">
                         {series.modality}
                         {series.number != null ? ` ${series.number}` : ""}

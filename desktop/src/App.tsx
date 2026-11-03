@@ -668,10 +668,13 @@ export default function App() {
         });
         building = false;
         if (!built || seq !== openSeq.current || scanDone) return;
-        // After the first series is up, later batches re-render at low
-        // priority (time-sliced) instead of one long task per batch.
-        if (firstShown) startTransition(() => setStudies(built));
-        else setStudies(built);
+        // Every rebuild renders at low priority (time-sliced) instead of as
+        // one long task, the first one too: it mounts the study view, and on
+        // a warm open (all scan-cache hits) it already holds the whole study,
+        // e.g. all 242 series of the 10,310-image MRI (CI: one 78 ms task).
+        // Scan progress is a transition as well (below), so nothing urgent
+        // arrives to restart this render while the scan streams.
+        startTransition(() => setStudies(built));
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
@@ -681,8 +684,10 @@ export default function App() {
           // does not draw; it loads on demand then, not up front.
           if (!isTauri) preloadEngineChunks();
           else void nativeEnabled().then((on) => !on && preloadEngineChunks());
-          setScan(null); // progressive: the viewer takes over, progress moves to the status bar
-          hangFirst(built);
+          startTransition(() => {
+            setScan(null); // progressive: the viewer takes over, progress moves to the status bar
+            hangFirst(built);
+          });
         }
         // Batches that landed while this one was grouping: the next rebuild
         // (right away until a series is up, then at the usual 250 ms pace).
@@ -697,8 +702,12 @@ export default function App() {
         const result = await scanPaths(paths, {
           onProgress: (progress) => {
             if (seq !== openSeq.current) return;
-            setScan((s) => (s ? { ...s, progress } : s));
-            setScanProgress(progress);
+            // A transition, like the rebuilds: an urgent update would restart
+            // the rebuild render it lands in.
+            startTransition(() => {
+              setScan((s) => (s ? { ...s, progress } : s));
+              setScanProgress(progress);
+            });
           },
           onBatch: (batch) => {
             if (seq !== openSeq.current) return;
@@ -2496,7 +2505,16 @@ export default function App() {
           setVoice((v) => ({ ...v, state: "off" }));
         }}
       />
-      {hasStudy && !distractionFree && (
+      {/* Mounted (hidden) as soon as an open starts: the toolbar's Radix menus
+          and tooltips were a good part of the commit that mounts the study
+          view when the first series hangs (CI "ye ... MessagePort.onmessage").
+          While the scan reads, nothing waits on the main thread; the first
+          series then only re-renders it. `contents` keeps the layout as if
+          the wrapper were not there; its own boundary keeps a chunk still
+          loading from suspending the whole app. */}
+      {(hasStudy || scan != null) && !distractionFree && (
+        <div className={hasStudy ? "contents" : "hidden"}>
+        <Suspense fallback={null}>
         <Toolbar
           shortcuts={settings.bindings}
           leftTool={leftTool}
@@ -2560,6 +2578,8 @@ export default function App() {
             } : undefined,
           }}
         />
+        </Suspense>
+        </div>
       )}
 
       <main className="relative flex min-h-0 flex-1">
