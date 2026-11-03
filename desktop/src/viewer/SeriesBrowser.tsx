@@ -91,7 +91,8 @@ function Thumbnail({ series, deferred }: { series: ViewerSeries; deferred: boole
   }, [middle, native, deferred]);
 
   return (
-    <div className="relative aspect-square w-full overflow-hidden rounded-md bg-imaging">
+    // data-thumbnail / data-thumb-state: read by the bench/e2e test hook (testHook.ts).
+    <div className="relative aspect-square w-full overflow-hidden rounded-md bg-imaging" data-thumbnail={series.uid} data-thumb-state={state}>
       {native ? (
         <img
           src={native}

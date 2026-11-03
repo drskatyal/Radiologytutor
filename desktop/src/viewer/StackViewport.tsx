@@ -204,6 +204,8 @@ function StackViewportImpl({
         wc: voi?.wc,
         zoom,
         rotation: vp.getViewPresentation?.()?.rotation,
+        flipH: camera?.flipHorizontal,
+        flipV: camera?.flipVertical,
         edges,
         header,
         rows: header?.rows,
