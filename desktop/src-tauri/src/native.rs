@@ -1137,17 +1137,31 @@ struct Pipes {
 const LIKELY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 type WarmJob = std::thread::JoinHandle<Result<Warm, String>>;
-static WARM: std::sync::Mutex<Option<WarmJob>> = std::sync::Mutex::new(None);
+/// The background build, and whether one may still start: `claimed` is set by
+/// the first `prewarm` and by `init` (which takes the job, or builds the
+/// device itself), so a late `prewarm` never leaves a second device behind.
+struct WarmSlot {
+    claimed: bool,
+    job: Option<WarmJob>,
+}
+static WARM: std::sync::Mutex<WarmSlot> = std::sync::Mutex::new(WarmSlot { claimed: false, job: None });
 
 /// How long the background device build took (ms), for the startup report.
 pub static WARM_MS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
 
-/// Start building the device and pipelines now, off the main thread. Call
-/// once, before the Tauri builder. No-op when native mode is off.
+/// Start building the device and pipelines now, off the main thread. Only
+/// the first call does anything, and none once `init` has run (lib.rs calls
+/// it at launch with a study on the command line, else once WebView2 starts
+/// loading the page). No-op when native mode is off.
 pub fn prewarm() {
     if !enabled() {
         return;
     }
+    let mut slot = WARM.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.claimed {
+        return;
+    }
+    slot.claimed = true;
     let job = std::thread::Builder::new().name("flowrad-gpu-warm".into()).spawn(|| {
         let started = Instant::now();
         let instance = new_instance(None);
@@ -1166,13 +1180,14 @@ pub fn prewarm() {
         let _ = WARM_MS.set(started.elapsed().as_secs_f64() * 1000.0);
         r
     });
-    if let Ok(job) = job {
-        *WARM.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
-    }
+    slot.job = job.ok();
 }
 
+/// For `init`: the background build if there is one; no later `prewarm` starts one.
 fn take_warm() -> Option<WarmJob> {
-    WARM.lock().unwrap_or_else(|e| e.into_inner()).take()
+    let mut slot = WARM.lock().unwrap_or_else(|e| e.into_inner());
+    slot.claimed = true;
+    slot.job.take()
 }
 
 fn backends_for(force: Option<wgpu::Backends>) -> wgpu::Backends {

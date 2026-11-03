@@ -1044,7 +1044,7 @@ export default function App() {
             // ms − now() ≈ when the webview began loading the page: everything
             // before it is window + WebView2/WebKit start-up, after it is ours.
             const now = performance.now();
-            const marks = await invoke<Record<string, number | null>>("startup_marks").catch(() => ({}));
+            const marks = await invoke<Record<string, number | string | null>>("startup_marks").catch(() => ({}));
             // First paint = the browser's own first-contentful-paint (Paint
             // Timing, relative to navigation start), placed on the process
             // clock. The time this callback runs is later by two frames and
