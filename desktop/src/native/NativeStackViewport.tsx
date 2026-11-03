@@ -30,6 +30,7 @@ import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport"
 import { noteActivity } from "../activity";
 import { cursorForTool } from "../viewer/toolCursor";
 import { onNativeLayoutApplied, registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
+import { dragModeFor, resolveWheel } from "../viewer/mouseBindings";
 import { toCell, toImage, transformFor, type NativeTransform, type NativeView } from "./transform";
 import NativeAnnotationLayer, { isAnnotationTool } from "./NativeAnnotationLayer";
 
@@ -87,7 +88,7 @@ export default function NativeStackViewport({
   tool = "StackScroll",
 }: Props) {
   // Right-click menu (#111, shared contextMenu.ts): a right press that did not
-  // drag (a right drag zooms) opens it at the pointer.
+  // drag (a right drag windows, MOUSE_DEFAULTS) opens it at the pointer.
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const rightMoved = useRef(false);
   const elementRef = useRef<HTMLDivElement>(null);
@@ -156,38 +157,99 @@ export default function NativeStackViewport({
   }, [change]);
 
   // ── the series ──
+  // What this cell last sent to Rust (cell, series and its file ids, in
+  // order). A streaming series grows in batches: when the new list starts
+  // with what was sent, only the new files are appended
+  // (`native_cell_series_append`), so the shown slice keeps its view and no
+  // slice is decoded, re-uploaded or re-prefetched. A full re-send (reset
+  // to slice 0, re-read, 24 prefetches) per batch is what had the store
+  // serve 5x as many requests as slices during an open.
+  //
+  // One call in flight per cell: growth that arrives while the first send
+  // is still drawing waits and goes as one append after it (an append can
+  // never reach Rust before the cell exists, and the first image is never
+  // dropped by a later batch).
+  type Sent = { cell: string; uid: string; ids: number[] };
+  const sentRef = useRef<Sent | null>(null); // what Rust holds
+  const wantRef = useRef<Sent | null>(null); // what the cell should hold
+  const busyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const onFirstPaintRef = useRef(onFirstPaint);
+  onFirstPaintRef.current = onFirstPaint;
   useEffect(() => {
-    if (!series || series.headers.length === 0) {
-      setShown(null);
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+  const syncSeries = useCallback(() => {
+    if (busyRef.current) return;
+    const want = wantRef.current;
+    const sent = sentRef.current;
+    if (!want) return;
+    const same = sent !== null && sent.cell === want.cell && sent.uid === want.uid;
+    if (same && sent.ids.length === want.ids.length && sent.ids.every((id, i) => want.ids[i] === id)) return;
+    const grows = same && want.ids.length > sent.ids.length && sent.ids.every((id, i) => want.ids[i] === id);
+    busyRef.current = true;
+    if (grows) {
+      const from = sent.ids.length;
+      void invoke<number | null>("native_cell_series_append", { id: want.cell, from, fileIds: want.ids.slice(from) }).then(
+        (count) => {
+          busyRef.current = false;
+          // `null`: Rust no longer holds what was sent (cell recreated): send it all.
+          sentRef.current = count == null ? null : want;
+          if (!aliveRef.current) return;
+          if (count != null) setShown((s) => (s ? { ...s, count } : s));
+          syncSeries();
+        },
+        () => {
+          busyRef.current = false;
+          sentRef.current = null;
+          if (aliveRef.current) syncSeries();
+        }
+      );
       return;
     }
-    let cancelled = false;
     const started = performance.now();
     setLoading(true);
     setError(null);
-    void invoke<NativeShow>("native_cell_series", {
-      id: cellKey,
-      fileIds: series.headers.map((h) => h.fileId),
-      index: 0,
-    })
-      .then((r) => {
-        if (cancelled) return;
+    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0 }).then(
+      (r) => {
+        busyRef.current = false;
+        sentRef.current = want;
+        if (!aliveRef.current) return;
+        const now = wantRef.current;
+        // Superseded (another series or cell) while drawing: send that one.
+        if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setShown(r);
         setLoading(false);
         noteActivity();
         // Native paint: the frame was presented when the call returned. Blank
         // detection on this path is the e2e's screen grab, not a canvas readback.
-        onFirstPaint?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
+        onFirstPaintRef.current?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
+        syncSeries();
+      },
+      (e: unknown) => {
+        busyRef.current = false;
+        sentRef.current = null;
+        if (!aliveRef.current) return;
+        const now = wantRef.current;
+        if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setLoading(false);
         setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-    // A growing series re-sends its full list (the same cell keeps its slice).
+      }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!series || series.headers.length === 0) {
+      wantRef.current = null;
+      sentRef.current = null;
+      setShown(null);
+      return;
+    }
+    wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
+    syncSeries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cellKey, series?.uid, series?.headers.length]);
 
@@ -271,16 +333,25 @@ export default function NativeStackViewport({
     return registerHandle(cellKey, handle);
   }, [cellKey, viewportId, series?.uid, change, step, goTo, count]);
 
-  // ── input: wheel scrolls; left = the app's tool; right = zoom; middle = pan ──
+  // ── input (Settings › Mouse & Keyboard): wheel scrolls; left = the app's tool; right = W/L; middle = pan ──
   const notchRun = useRef({ at: 0, n: 0 });
   const onWheel = (e: React.WheelEvent) => {
     if (!shown) return;
+    // Tilt notches are commands (bindings, App), not slices.
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    // Ctrl+wheel zooms a plain image (the bindings; slab is a reformat's).
+    const wheel = resolveWheel({ ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey })?.command;
+    if (!wheel) return;
+    if (wheel !== "scroll") {
+      void change({ zoom: shown.view.zoom * Math.exp(-Math.sign(e.deltaY) * 0.1) });
+      return;
+    }
     const now = performance.now();
     const run = now - notchRun.current.at < 140 ? notchRun.current.n + 1 : 1;
     notchRun.current = { at: now, n: run };
     void step(Math.sign(e.deltaY) * slicesForNotch(getScrollPreferences(), run));
   };
-  const drag = useRef<{ x: number; y: number; button: number; start: NativeShow; acc: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; button: number; ctrl: boolean; start: NativeShow; acc: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     onActivate();
     if (!shown) return;
@@ -292,8 +363,11 @@ export default function NativeStackViewport({
     // Annotation tools are handled by the annotation layer (it stops the event).
     if (e.button === 0 && !NAV_TOOLS.has(tool)) return;
     if (e.button === 2) rightMoved.current = false;
+    // Other buttons drag only when bound to a drag tool; a click of an extra
+    // button is a command (App's bindings listener).
+    if (e.button !== 0 && !dragModeFor(e.button, "", { ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey })) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, y: e.clientY, button: e.button, start: shown, acc: 0 };
+    drag.current = { x: e.clientX, y: e.clientY, button: e.button, ctrl: e.ctrlKey || e.metaKey, start: shown, acc: 0 };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (lens) moveLens(e);
@@ -302,7 +376,10 @@ export default function NativeStackViewport({
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (d.button === 2 && Math.abs(dx) + Math.abs(dy) > 3) rightMoved.current = true;
-    const mode = d.button === 2 ? "Zoom" : d.button === 1 ? "Pan" : tool;
+    // Right drag = window / level, middle = pan, as on the JS path (engine.ts
+    // MouseBindings.Secondary / Auxiliary), the toolbar tooltip and the F1
+    // sheet. (0.8.1 zoomed on right drag: HP report.) Zoom is Ctrl+wheel / Z.
+    const mode = dragModeFor(d.button, tool, { ctrl: d.ctrl, alt: e.altKey, shift: e.shiftKey });
     const v = d.start.view;
     if (mode === "WindowLevel") {
       const k = Math.max(1, v.wl[1] / 256);

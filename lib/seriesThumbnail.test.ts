@@ -77,3 +77,17 @@ test("the cache holds JPEG bytes under its cap and revokes what it drops", () =>
   assert.deepEqual(revoked.sort(), ["blob:a", "blob:b", "blob:c"]);
   assert.equal(cache.bytes(), 0);
 });
+
+test("a rescaled CT with no file window is windowed over its MODALITY range (not the engine's stored-value default)", () => {
+  // pydicom CT_small: stored 0…2200-ish, intercept −1024, no Window Center / Width.
+  const stored = new Int16Array(64 * 64).map((_, i) => (i % 64 < 32 ? 100 : 2100));
+  const s = sampleForThumb({ pixelData: stored, columns: 64, rows: 64, components: 1, slope: 1, intercept: -1024 })!;
+  const win = defaultThumbWindow(s, null);
+  assert.deepEqual(win, { ww: 2000, wc: 76 }); // −924 … 1076 HU
+  const out = renderThumbRgba(s, win);
+  assert.equal(out.rgba[0], 0);
+  assert.equal(out.rgba[(out.width - 1) * 4], 255, "the bright half is white, not black");
+  // The engine's fallback (centre of the STORED range) applied to HU would be ~1024 too high: mostly black.
+  const wrong = renderThumbRgba(s, { ww: 2000, wc: 1100 });
+  assert.ok(wrong.rgba[(out.width - 1) * 4] < 140, "documents the bug this guards against");
+});

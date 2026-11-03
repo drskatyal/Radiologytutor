@@ -99,7 +99,9 @@ jobs:
           # The CT phantom plus a coronal reformat (reference lines need non-parallel planes).
           mkdir -p "$RUNNER_TEMP/ui-study" && cp -r "$RUNNER_TEMP/fixtures/ct-phantom/." "$RUNNER_TEMP/ui-study/"
           python3 desktop/scripts/make-ortho-series.py "$RUNNER_TEMP/fixtures/ct-phantom" "$RUNNER_TEMP/ui-study/coronal"
-          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --shots "$RUNNER_TEMP/ui-shots" --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
+          # Under the production CSP as Tauri modifies it (nonce on script-src / style-src
+          # unless opted out): any CSP violation fails the run (HP 0.8.1 inline-style errors).
+          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --prod-csp --shots "$RUNNER_TEMP/ui-shots" --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
           # Voice again under the installed app's production CSP (0.8.1 P0: the
           # recognizer was blocked by it and the mic spun forever).
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only voice --prod-csp --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
@@ -179,6 +181,12 @@ jobs:
           $s.Speak("lung window. ")
           $s.Dispose()
           python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" "$env:RUNNER_TEMP\voice.wav"
+      # The committed recording (speech through a simulated speaker-to-mic room
+      # path; desktop/scripts/make-voice-wav.py --room): every phrase must be
+      # recognised and performed, not just one.
+      - name: e2e — voice from a fixed recording (next series, zoom in, lung window all recognised)
+        shell: pwsh
+        run: python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" e2e/fixtures/voice/commands-room.wav --expect "next series" "zoom in" "lung window"
 
   # Performance gate on WebView2 (the platform readers install on), release
   # build, synthetic 848-slice CT (scripts/make-test-ct.py): first image, MPR
@@ -262,6 +270,13 @@ jobs:
       LEAK_MAX_MB: "400"
       WINDOW_LEAK_MAX_MB: "60"
       LEAK_ROUND_GROWTH_MAX_MB: "100"
+      # 0.8.2 (HP 0.8.1: empty app 362 MB private, CT open 473-497, closed
+      # +90 MB): PRIVATE bytes, whole tree. The CT open gate is the HP's own
+      # 400 MB; the empty-app gate is this runner's floor (~190 MB on WARP)
+      # with headroom; a closed study must give back all but 30 MB.
+      BASELINE_PRIVATE_MAX_MB: "240"
+      CT_OPEN_PRIVATE_MAX_MB: "400"
+      CLOSE_DELTA_MAX_MB: "30"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -288,10 +303,10 @@ jobs:
       # whole tree with only the UI in the webview (no image engine) — then the
       # same with the native wgpu surface and its test image, then the
       # compositing e2e (native pixels under the transparent page, page on top).
-      - name: P2.0 — WebView2 UI floor (start screen, native mode, whole tree, after 10 s)
+      - name: P2.0 — WebView2 UI floor (start screen, native mode, whole tree, after 10 s; private gated)
         env:
           FLOWRAD_NATIVE: "1"
-        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10 --max-private-mb ${{ env.BASELINE_PRIVATE_MAX_MB }}
       - name: P2.0 — floor + native surface (spike view, whole tree, after 10 s)
         env:
           FLOWRAD_NATIVE: "1"
@@ -390,7 +405,7 @@ jobs:
       - name: Gate — idle after a COLD open, native mode (848-slice CT; no scan cache, OS file cache dropped; whole tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
-        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --require-no-engine --cold
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --max-settled-private-mb ${{ env.CT_OPEN_PRIVATE_MAX_MB }} --require-no-engine --cold
       - name: Idle after a COLD open of the 10,310-image MRI, native mode (whole tree, after 20 s; informational)
         env:
           FLOWRAD_BENCH_VIEW: grid
@@ -402,7 +417,9 @@ jobs:
       - name: Idle memory with the CT open in 2D (whole process tree, after 20 s)
         env:
           FLOWRAD_BENCH_VIEW: grid
-        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }}
+        run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --max-settled-mb ${{ env.IDLE_MAX_MB }} --max-settled-private-mb ${{ env.CT_OPEN_PRIVATE_MAX_MB }}
+      - name: Gate — private bytes over a study's life (empty app, CT open, 30 s after closing it; whole tree)
+        run: node desktop/scripts/bench.mjs close desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --settle 20 --after-close 30 --max-baseline-private-mb ${{ env.BASELINE_PRIVATE_MAX_MB }} --max-open-private-mb ${{ env.CT_OPEN_PRIVATE_MAX_MB }} --max-close-delta-mb ${{ env.CLOSE_DELTA_MAX_MB }}
       # Informational A/B (never fails the job): WebView2 process model vs
       # idle and MPR memory. The flags are the app's own plus one variant.
       - name: A/B — WebView2 process model vs idle / MPR memory / cold start (informational)
@@ -426,8 +443,17 @@ jobs:
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
         run: node desktop/scripts/bench.mjs interact desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-frame-p95-ms ${{ env.FRAME_P95_MAX_MS }} --max-dropped ${{ env.DROPPED_MAX }} --max-interaction-ms ${{ env.INTERACTION_MAX_MS }}
       - name: Feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3; whole process tree)
+        # Runs even when the frame-time step above fails (software GPU on this runner),
+        # so the leak / multi-window / MPR gates are always measured and still gate.
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs leak desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --max-leak-mb ${{ env.LEAK_MAX_MB }} --max-round-growth-mb ${{ env.LEAK_ROUND_GROWTH_MAX_MB }}
       - name: Gate — multi-monitor (a second viewer window opens, paints, follows; closing it returns memory)
+        # Runs even when the frame-time step above fails (software GPU on this runner),
+        # so the leak / multi-window / MPR gates are always measured and still gate.
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs multiwindow desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-window-leak-mb ${{ env.WINDOW_LEAK_MAX_MB }} --max-long-tasks 0
       - name: MPR build time and peak memory (whole process tree)
+        # Runs even when the frame-time step above fails (software GPU on this runner),
+        # so the leak / multi-window / MPR gates are always measured and still gate.
+        if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}

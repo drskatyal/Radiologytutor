@@ -25,7 +25,7 @@ import {
   pointsNeeded,
   removeAnnotations,
   roiShape,
-  segmentDistance,
+  hitAnnotation,
   subscribe,
   updateAnnotation,
   type Annotation,
@@ -37,6 +37,7 @@ import {
 import { toCell, toImage, type NativeTransform } from "./transform";
 
 const HIT_PX = 7;
+const ERASER_PX = 10;
 const HANDLE_PX = 5;
 
 interface Props {
@@ -85,16 +86,9 @@ export default function NativeAnnotationLayer({ cellKey, seriesUid, imageIndex, 
   );
 
   // Hit test in screen space.
-  const hit = (q: Pt): { a: Annotation; handle: number | "body" } | null => {
-    for (const a of [...list].reverse()) {
-      const pts = a.points.map(cell);
-      const h = pts.findIndex((p) => Math.hypot(p[0] - q[0], p[1] - q[1]) <= HANDLE_PX + 3);
-      if (h >= 0 && a.id === selected) return { a, handle: h };
-      for (const [s0, s1] of segments(a)) if (segmentDistance(q, cell(s0), cell(s1)) <= HIT_PX) return { a, handle: "body" };
-      if (pts.length === 1 && Math.hypot(pts[0][0] - q[0], pts[0][1] - q[1]) <= HIT_PX) return { a, handle: "body" };
-    }
-    return null;
-  };
+  const hit = (q: Pt, eraser = false) =>
+    // The eraser is more forgiving (a wider band, and inside a closed ROI).
+    hitAnnotation(list, q, cell, eraser ? ERASER_PX : HIT_PX, { selected, handlePx: HANDLE_PX + 3, insideCloses: eraser });
 
   const finish = useCallback(
     async (a: Annotation) => {
@@ -118,7 +112,7 @@ export default function NativeAnnotationLayer({ cellKey, seriesUid, imageIndex, 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
     const q = local(e);
-    const h = hit(q);
+    const h = hit(q, tool === "Eraser");
     if (tool === "Eraser") {
       if (h) onDeleted?.(removeAnnotations([h.a.id]));
       e.stopPropagation();
@@ -279,28 +273,6 @@ function undoMark() {
   return revision;
 }
 
-/** Segments used for hit testing, in image coordinates. */
-function segments(a: Annotation): [Pt, Pt][] {
-  const p = a.points;
-  const chain = (q: Pt[]): [Pt, Pt][] => q.slice(1).map((b, i) => [q[i], b]);
-  switch (a.tool) {
-    case "RectangleROI":
-    case "EllipticalROI":
-      return chain([p[0], [p[1][0], p[0][1]], p[1], [p[0][0], p[1][1]], p[0]]);
-    case "CircleROI": {
-      const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
-      return chain(Array.from({ length: 25 }, (_, i) => [p[0][0] + r * Math.cos((i / 24) * 2 * Math.PI), p[0][1] + r * Math.sin((i / 24) * 2 * Math.PI)] as Pt));
-    }
-    case "PlanarFreehandROI":
-      return chain([...p, p[0]]);
-    case "CobbAngle":
-    case "Bidirectional":
-      return p.length >= 4 ? [[p[0], p[1]], [p[2], p[3]]] : chain(p);
-    default:
-      return chain(p);
-  }
-}
-
 function Shape({
   a,
   cell,
@@ -400,21 +372,57 @@ function Shape({
   );
 }
 
-function LabelEditor({ at, initial, onDone }: { at: Pt; initial: string; onDone: (label: string) => void }) {
+/**
+ * The arrow's inline label box. It must never hold the keyboard: Enter / Tab /
+ * a click anywhere else commit, Esc cancels, and after either the input is
+ * blurred so the app's shortcuts work at once (HP 0.8.1: the box kept focus,
+ * every key landed in it until Enter). A click away does not always blur an
+ * input: the toolbar's menu triggers and the viewport's pointer capture
+ * prevent the focus change, so a document-level pointerdown commits too.
+ */
+export function LabelEditor({ at, initial, onDone }: { at: Pt; initial: string; onDone: (label: string) => void }) {
   const [value, setValue] = useState(initial);
+  const input = useRef<HTMLInputElement>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const done = useRef(false);
+  const finish = useCallback(
+    (label: string) => {
+      if (done.current) return;
+      done.current = true;
+      onDone(label);
+      input.current?.blur();
+    },
+    [onDone]
+  );
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      if (e.target instanceof Node && input.current?.contains(e.target)) return;
+      finish(valueRef.current.trim());
+    };
+    document.addEventListener("pointerdown", away, true);
+    return () => document.removeEventListener("pointerdown", away, true);
+  }, [finish]);
   return (
     <input
+      ref={input}
       autoFocus
       aria-label="Arrow label"
       value={value}
       placeholder="Label (optional)"
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
+        // Typing stays in the box; these three end it.
         e.stopPropagation();
-        if (e.key === "Enter") onDone(value.trim());
-        if (e.key === "Escape") onDone(initial);
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          finish(value.trim());
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          finish(initial);
+        }
       }}
-      onBlur={() => onDone(value.trim())}
+      onBlur={() => finish(value.trim())}
       className="absolute z-40 w-44 rounded-md border border-strong bg-elevated px-2 py-1 text-xs text-primary shadow-lg outline-none focus-visible:ring-2 focus-visible:ring-accent"
       // Dynamic position next to the arrow's tail.
       style={{ left: at[0] + 8, top: at[1] + 8 }}

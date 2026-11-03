@@ -719,6 +719,26 @@ export interface Progress {
 }
 
 /** Saved-for-later course (Udemy wishlist pattern). */
+/**
+ * A user's viewer preferences, synced across devices when signed in. Scoped
+ * by org (one document per user per org). `bindings` is the shared bindings
+ * file (packages/viewer-core/src/bindings/storage.ts BindingsFile).
+ */
+export interface UserPrefs {
+  /** `${orgId}:${userId}` */
+  id: string;
+  orgId: string;
+  userId: string;
+  bindings?: {
+    format: "flowrad-bindings";
+    version: number;
+    surface: "desktop" | "web";
+    updatedAt?: string;
+    overrides: Record<string, string[]>;
+  };
+  updatedAt: string;
+}
+
 export interface WishlistItem {
   id: string;
   userId: string;
