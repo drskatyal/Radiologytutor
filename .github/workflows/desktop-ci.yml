@@ -265,6 +265,10 @@ jobs:
       # The strict <= 50 ms everywhere is checked on real hardware (HP).
       INTERACTION_MAX_MS: "50"
       OPEN_LONG_TASK_MAX_MS: "150"
+      # Series grouping is time-sliced: its slowest slice, measured in the app
+      # on the 10,310-image MRI open (one 66-75 ms task on the HP before), stays
+      # under the 50 ms long-task line. CPU-only work, so no WARP allowance.
+      GROUP_SLICE_MAX_MS: "50"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
@@ -366,7 +370,7 @@ jobs:
           node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }} --max-group-slice-ms ${{ env.GROUP_SLICE_MAX_MS }}
       - name: P2.1 — native renderer on the 848-slice CT (first image, scroll, whole tree; informational)
         run: node desktop/scripts/bench.mjs native desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3
       - name: P2.2 e2e — the app's first viewport drawn natively (848-slice CT, screen grab)
