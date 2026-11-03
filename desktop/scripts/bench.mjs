@@ -869,8 +869,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The empty app's whole tree after `seconds` (as a reader starts it), then killed. */
 async function emptyAppBaseline(binary, seconds, cats = () => ({})) {
-  const empty = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
-  empty.stdout.on("data", () => undefined);
+  // The app's own account of its private bytes by owner, 1 s before the sample.
+  const empty = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FLOWRAD_MEM_REPORT_MS: String(Math.max(0, seconds * 1000 - 1000)) } });
+  let appMemory = null;
+  let partial = "";
+  empty.stdout.on("data", (d) => {
+    const lines = (partial + d).split("\n");
+    partial = lines.pop() ?? "";
+    for (const l of lines) if (l.startsWith("FLOWRAD_BENCH_MEM ")) appMemory = JSON.parse(l.slice("FLOWRAD_BENCH_MEM ".length));
+  });
   empty.stderr.on("data", () => undefined);
   await sleep(seconds * 1000);
   const baseline = empty.exitCode == null ? treeMemory(empty.pid) : null;
@@ -878,7 +885,7 @@ async function emptyAppBaseline(binary, seconds, cats = () => ({})) {
   empty.kill("SIGKILL");
   await sleep(2000);
   if (!baseline?.processes.length) throw new Error("the empty app is not running for its baseline");
-  return { baseline, baselineCats };
+  return { baseline, baselineCats, appMemory };
 }
 
 /**
@@ -1058,7 +1065,7 @@ async function benchClose(binary, study) {
   // 1. Baseline: the empty app, as a reader starts it.
   // macOS: what each process holds, by kind, to name what a close leaves.
   const cats = (m) => Object.fromEntries((m?.processes ?? []).filter((p) => p.type === "app" || p.type === "renderer").map((p) => [p.type, footprintCategories(p.pid)]));
-  const { baseline, baselineCats } = await emptyAppBaseline(binary, baselineSeconds, cats);
+  const { baseline, baselineCats, appMemory: emptyApp } = await emptyAppBaseline(binary, baselineSeconds, cats);
 
   // 2 + 3. The study opened, held, closed.
   const started = performance.now();
@@ -1120,6 +1127,7 @@ async function benchClose(binary, study) {
     closedWsMb: closed.wsMb,
     afterCloseSeconds: afterClose,
     shellClose,
+    emptyApp,
     baseline: brief(baseline),
     open: brief(open),
     closed: brief(closed),
@@ -1130,6 +1138,18 @@ async function benchClose(binary, study) {
     `CLOSE: private baseline ${baseline.privateMb} MB (${line(baseline)}) · open ${open.privateMb} MB (${line(open)}) · closed +${afterClose} s ${closed.privateMb} MB (${line(closed)}) · delta ${summary.closeDeltaPrivateMb} MB · ws ${baseline.wsMb} / ${open.wsMb} / ${closed.wsMb} MB`
   );
   for (const c of shellClose) console.error(`CLOSE (app process): ${JSON.stringify(c)}`);
+  // The app process's private bytes by owner (FLOWRAD_BENCH_MEM / the close
+  // reports' `app`): empty app, study open and idle, then after the GPU release.
+  const owners = (m) =>
+    m &&
+    `private ${m.privateMb} = rust heap ${m.heapMb ?? "?"} + windows heaps ${m.winHeapsMb} (${m.winHeaps}) + stacks ${m.stacksMb} (${m.threads} threads) + other ${m.otherPrivateMb}` +
+    ` [biggest: ${(m.top ?? []).slice(0, 4).map((a) => `${a.committedMb}/${a.reservedMb}`).join(", ")}] · written DLL pages ${m.imageWrittenMb} [${(m.modules ?? []).slice(0, 4).map(([n, v]) => `${n} ${v}`).join(", ")}]`;
+  const byOwner = [
+    ["empty app", emptyApp?.app],
+    ["study open", shellClose.find((c) => c.openApp)?.openApp],
+    ...shellClose.filter((c) => c.app).map((c) => [c.afterS != null ? `${c.afterS} s after the GPU release` : c.step, c.app]),
+  ].filter(([, m]) => m);
+  for (const [when, m] of byOwner) console.error(`CLOSE (app by owner, MB) ${when}: ${owners(m)}`);
   if (process.platform === "darwin") {
     // By kind of memory (footprint, dirty MB): closed vs. the empty app, and
     // closed vs. open (what the close did not give back).
