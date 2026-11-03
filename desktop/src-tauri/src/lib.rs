@@ -28,9 +28,11 @@ mod viewer_windows;
 mod render3d;
 mod scan;
 mod sources;
+mod splash;
 mod store;
 mod sync;
 mod updates;
+mod webview2_early;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -439,9 +441,11 @@ fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// Startup marks (ms since process start), for the cold-start breakdown:
-/// window built (Tauri `build()` returned: window + WebView2 requested), page
-/// navigation started and finished (the webview actually loading the page).
-static MARKS: parking_lot::Mutex<[Option<f64>; 3]> = parking_lot::Mutex::new([None; 3]);
+/// [0] app built (Tauri `build()` returned; no window yet: Tauri creates
+/// windows when its event loop starts), [1] / [2] page navigation started /
+/// finished (the webview actually loading the page), [3] main window and its
+/// webview built (on Windows wry has the WebView2 controller by then).
+static MARKS: parking_lot::Mutex<[Option<f64>; 4]> = parking_lot::Mutex::new([None; 4]);
 
 fn mark(i: usize) {
     if let Some(t) = STARTED.get() {
@@ -452,10 +456,6 @@ fn mark(i: usize) {
     }
 }
 
-/// Native mode: when Rust first presented a frame in the window (before
-/// WebView2 has loaded the page), ms since process start.
-static NATIVE_FIRST_PAINT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
@@ -463,9 +463,20 @@ fn startup_marks() -> serde_json::Value {
         "windowBuiltMs": m[0],
         "navStartMs": m[1],
         "navDoneMs": m[2],
-        "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+        "webviewBuiltMs": m[3],
+        // The native splash on screen (DWM composed it): the first thing the
+        // reader sees, before WebView2 has loaded the page (splash.rs).
+        "nativeFirstPaintMs": splash::painted_ms(),
+        "nativeFirstPaintSource": splash::painted_ms().map(|_| "splash"),
         "gpuWarmMs": native::WARM_MS.get(),
     })
+}
+
+/// The page has painted its splash (the same as the native one): the native
+/// splash goes (splash.rs). No-op where there is none.
+#[tauri::command]
+fn splash_done() {
+    splash::dismiss();
 }
 
 /// Milliseconds since the process started — the renderer calls this at first
@@ -1050,12 +1061,27 @@ pub fn run() {
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DECOMMITS, 1);
     }
-    // The GPU device and pipelines build on their own thread from here, in
-    // parallel with WebView2 starting (native.rs `prewarm`).
-    native::prewarm();
+    let context = tauri::generate_context!();
+    let main_window = context.config().app.windows.iter().find(|w| w.label == "main").cloned();
+    // Windows: the WebView2 browser process starts now, in parallel with the
+    // rest of start-up, not after the window exists (webview2_early.rs).
+    webview2_early::launch(
+        main_window.as_ref().and_then(|w| w.additional_browser_args.as_deref()),
+        &context.config().identifier,
+    );
+    let launch = launch_args();
+    // A study on the command line: the GPU device and pipelines build on their
+    // own thread from here (native.rs `prewarm`), the first image waits on
+    // them. The start screen draws nothing on the GPU: the build waits until
+    // WebView2 has started loading the page (on_page_load), so it does not
+    // compete with WebView2's own start-up (browser and GPU processes, the
+    // same driver) for the first paint.
+    if !launch.is_empty() {
+        native::prewarm();
+    }
     attach_bench_console();
     let state = AppState::default();
-    *state.launch_paths.lock() = launch_args();
+    *state.launch_paths.lock() = launch;
     start_bench_watchdog();
     let registry = state.registry.clone();
 
@@ -1083,9 +1109,40 @@ pub fn run() {
                 }
             }
         })
-        .on_page_load(|_webview, payload| match payload.event() {
-            tauri::webview::PageLoadEvent::Started => mark(1),
-            tauri::webview::PageLoadEvent::Finished => mark(2),
+        .on_page_load(|webview, payload| {
+            let main = webview.label() == "main";
+            match payload.event() {
+                tauri::webview::PageLoadEvent::Started => {
+                    mark(1);
+                    if main {
+                        // The main webview has its environment: the early one
+                        // can go; the GPU build may start (see above).
+                        webview2_early::release();
+                        native::prewarm();
+                    }
+                }
+                tauri::webview::PageLoadEvent::Finished => {
+                    mark(2);
+                    // The page reports its first paint (`splash_done`); if it
+                    // never does, the native splash still goes.
+                    if main {
+                        splash::dismiss_after(1000);
+                    }
+                }
+            }
+        })
+        // The main window is built here, not by Tauri from the config
+        // ("create": false): the native splash is armed first, so it paints
+        // the moment the window is on screen, while WebView2 starts.
+        .setup(move |app| {
+            if let Some(config) = &main_window {
+                if let Some(t0) = STARTED.get() {
+                    splash::arm(*t0, &config.title);
+                }
+                tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
+                mark(3);
+            }
+            Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("dicom", move |_ctx, request, responder| {
             let registry = registry.clone();
@@ -1135,6 +1192,7 @@ pub fn run() {
             set_memory_mode,
             startup_elapsed_ms,
             startup_marks,
+            splash_done,
             store::history_list,
             store::history_record,
             store::history_remove,
@@ -1184,7 +1242,7 @@ pub fn run() {
             updates::licence_set,
             updates::licence_clear,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building FlowRad Viewer");
     mark(0);
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
@@ -1193,24 +1251,10 @@ pub fn run() {
     // Update rollback rule (cheap: one small file read). A version that failed
     // to start healthily is replaced by the previous one in the background.
     updates::on_startup(app.handle());
-    // Native mode (Phase 2): the GPU surface paints the window at once, while
-    // WebView2 is still starting; the webview is transparent over it.
-    if native::enabled() {
-        if let (Some(window), Some(native)) = (app.get_webview_window("main"), app.try_state::<native::Shared>()) {
-            let native = native.inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let status = native.init(&window).await;
-                if status.ready {
-                    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    if native.render(window.scale_factor().unwrap_or(1.0)).is_ok() {
-                        if let Some(t) = STARTED.get() {
-                            let _ = NATIVE_FIRST_PAINT.set(t.elapsed().as_secs_f64() * 1000.0);
-                        }
-                    }
-                }
-            });
-        }
-    }
+    // The first frame on screen is the native splash (splash.rs), painted
+    // with GDI as soon as the main window exists. (A GPU first frame here
+    // never ran: no window exists until the event loop starts, and the
+    // device build took ~1 s on the HP, longer than WebView2 itself.)
     // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
     store::migrate_legacy_data(app.handle());
 
