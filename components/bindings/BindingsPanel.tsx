@@ -58,6 +58,12 @@ export interface BindingsPanelProps {
   saveExport?: (text: string, fileName: string) => Promise<void> | void;
   /** Where the reader's bindings are kept, for the footer ("this computer", "your account"). */
   storedWhere?: string;
+  /**
+   * Commands not offered right now (desktop: "next monitor" on a single
+   * display). Left out of the rows and choices only: their bindings are kept
+   * and still count for conflicts.
+   */
+  hidden?: ReadonlySet<string>;
   mac?: boolean;
 }
 
@@ -76,7 +82,7 @@ const MOUSE_BUTTON_ROWS = [1, 2, 3, 4];
 const WHEEL_ROWS = ["Wheel", "Mod+Wheel", "Shift+Wheel", "Alt+Wheel"];
 const TILT_ROWS = ["WheelLeft", "WheelRight"];
 
-export function BindingsPanel({ table, overrides, onChange, surface, reserved, saveExport, storedWhere, mac = isMac() }: BindingsPanelProps) {
+export function BindingsPanel({ table, overrides, onChange, surface, reserved, saveExport, storedWhere, hidden, mac = isMac() }: BindingsPanelProps) {
   const [tab, setTab] = useState<Tab>("mouse");
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
@@ -209,14 +215,16 @@ export function BindingsPanel({ table, overrides, onChange, surface, reserved, s
     }
   };
 
-  const optionsFor = (kind: "drag" | "click" | "wheel" | "tilt") =>
-    table.filter((c) => (kind === "drag" ? c.kind === "drag" : kind === "wheel" ? c.kind === "wheel" : c.kind === "action"));
+  /** Commands a mouse input can take (a hidden one only while it already holds it). */
+  const optionsFor = (kind: "drag" | "click" | "wheel" | "tilt", holder?: string) =>
+    table.filter((c) => (!hidden?.has(c.id) || c.id === holder) && (kind === "drag" ? c.kind === "drag" : kind === "wheel" ? c.kind === "wheel" : c.kind === "action"));
 
   // ── keyboard rows: command → inputs ──
   const q = query.trim().toLowerCase();
   const keyboardRows = table.filter(
     (c) =>
       c.kind === "action" &&
+      !hidden?.has(c.id) &&
       (!q ||
         c.label.toLowerCase().includes(q) ||
         c.group.toLowerCase().includes(q) ||
@@ -382,7 +390,7 @@ export function BindingsPanel({ table, overrides, onChange, surface, reserved, s
           <ul className="flex flex-col">
             {mouseRows.map((row) => {
               const holder = index.get(row.spec);
-              const options = optionsFor(row.kind);
+              const options = optionsFor(row.kind, holder);
               return (
                 <li key={row.spec} className="flex items-center gap-3 py-1.5" data-binding-input={row.spec}>
                   <span className="min-w-0 flex-1 truncate text-sm text-primary">{inputLabel(row.spec, mac)}</span>

@@ -32,6 +32,11 @@ export interface ViewerSettings {
   shortcuts?: Record<string, string>;
   /** Viewer windows on other monitors at last exit, reopened on the next study. */
   windowArrangements?: WindowArrangement[];
+  /**
+   * Voice commands have started on this computer before. The model is bundled
+   * (nothing to download); later starts show no loading card, just the mic.
+   */
+  voiceReady?: boolean;
 }
 
 export const DEFAULT_SETTINGS: ViewerSettings = {
