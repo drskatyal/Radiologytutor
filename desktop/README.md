@@ -138,7 +138,8 @@ Bench environment:
 | `FLOWRAD_BENCH_OUT` | also append every report line to this file; default `flowrad-bench.jsonl` in the temp folder (`%TEMP%` on Windows) |
 | `FLOWRAD_BENCH_PIXELS=1` | include decoded-pixel stats (used by `codec-check.py`) |
 | `FLOWRAD_PROBE_AFTER_MS=8000` | on a normal launch, report every viewport's on-screen pixels after that long (`FLOWRAD_PROBE {json}`) |
-| `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | Windows: override WebView2 flags to A/B memory experiments, e.g. `--in-process-gpu` |
+| `FLOWRAD_WEBVIEW2_EXTRA_ARGS` | Windows: WebView2 flags appended to the app's own (every window), to A/B memory experiments, e.g. `--in-process-gpu` |
+| `FLOWRAD_GPU_WARM=eager\|lazy` | when the native renderer's GPU device is built. Default on Windows `lazy`: when a study is about to open (command line, Open dialog, drag over the window, pointer on a recent study), released 15 s after the last study closed. `eager`: at launch, held all session (0.8.2; macOS / Linux default) |
 
 ### Real-hardware runs (open/close rounds, interaction pass, test hook)
 

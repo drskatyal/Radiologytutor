@@ -83,7 +83,7 @@ import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
 import { onActivity } from "./activity";
-import { nativeEnabled } from "./native/nativeLayout";
+import { nativeEnabled, nativeKnown, settleNativeAtStart, warmNative } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
 import {
   announceClosing,
@@ -188,9 +188,13 @@ function nativeCapable(series: { multiframe?: boolean; headers: readonly { photo
   return pi.startsWith("MONOCHROME");
 }
 
-/** Whether this window renders natively; false at once outside Tauri. */
+/**
+ * Whether this window renders natively; false at once outside Tauri. Waits
+ * for the answer without asking: on Windows the GPU (and so the answer) comes
+ * with the first open, and nothing that waits here is needed before one.
+ */
 function whenNativeKnown(): Promise<boolean> {
-  return isTauri ? nativeEnabled() : Promise.resolve(false);
+  return isTauri ? nativeKnown() : Promise.resolve(false);
 }
 
 export default function App() {
@@ -234,13 +238,27 @@ export default function App() {
       if (engine) fn(engine);
     });
   }, []);
-  /** Start the JS engine early only where it will be the renderer. */
+  /**
+   * A study is about to open (Open dialog, drag over the window, the preview
+   * up): warm its renderer. Native: the GPU device (built on demand on
+   * Windows, so the empty app holds none). JS: the engine.
+   */
   const prewarmJsEngine = useCallback(() => {
-    void whenNativeKnown().then((on) => !on && void getEngine());
+    if (!isTauri) return void getEngine();
+    void warmNative().then((on) => !on && void getEngine());
+  }, []);
+  /**
+   * Start screen, pointer on a recent study or a disc: native mode builds the
+   * GPU (released again if no study follows); the JS path compiles the engine.
+   */
+  const warmForOpen = useCallback(() => {
+    if (!isTauri) return prewarmEngine();
+    void warmNative().then((on) => !on && prewarmEngine());
   }, []);
   useEffect(() => {
     if (!isTauri) return;
-    void nativeEnabled().then((on) => {
+    settleNativeAtStart();
+    void nativeKnown().then((on) => {
       nativeRef.current = on;
       setNativeMode(on);
       if (on) document.documentElement.classList.add("native-transparent");
@@ -470,7 +488,8 @@ export default function App() {
         low = true;
         const engine = enginePeek();
         if (engine) enterIdleMemory(engine);
-        void invoke("set_memory_mode", { low: true }).catch(() => undefined);
+        // trim: Rust's decoded-slice cache keeps the slices around this one.
+        void invoke("set_memory_mode", { low: true, trim: true }).catch(() => undefined);
       }, 10_000);
     };
     const events = ["pointerdown", "pointermove", "wheel", "keydown"] as const;
@@ -587,6 +606,10 @@ export default function App() {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
       }
+      // Build the GPU while the scan runs (on Windows it is not built at
+      // start-up, or was released after the last study closed); the first
+      // viewport finds it ready. A no-op while it is up.
+      void warmNative();
       const seq = ++openSeq.current;
       const t0 = performance.now();
       bench.current.t0 = t0;
@@ -2710,6 +2733,7 @@ export default function App() {
             dragging={dragging}
             onSettings={() => setDialog("settings")}
             onHelp={() => setDialog("help")}
+            onIntent={warmForOpen}
           />
         )}
 
