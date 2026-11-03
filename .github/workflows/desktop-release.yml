@@ -152,6 +152,20 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/cert.p12"
 
+      # Release notes say plainly whether this build can update itself.
+      - name: Release notes — update signing status
+        id: notes
+        shell: bash
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_UPDATER_KEY" = "true" ]; then
+            msg='**Updates:** this build ships signed update artefacts (latest.json, ed25519). The self-update feed goes live only when lib/desktopChannel.ts is pointed at this release after the HP / MacBook tests (docs/UPDATES.md).'
+          else
+            msg='**Updates: NOT LIVE in this build.** The TAURI_SIGNING_PRIVATE_KEY secret was not set, so the update artefacts are unsigned / absent (no latest.json) and the self-update feed is not live. Installers work normally; the app still checks for future updates against the committed public key. Add the secret and cut the next release to make self-update live (docs/UPDATES.md).'
+          fi
+          echo "updates=$msg" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -173,6 +187,8 @@ jobs:
             If this build is not notarised, macOS says it "can't be opened" the first time:
             right-click (or Control-click) FlowRad Viewer in Applications → **Open** → **Open**,
             or allow it under System Settings → Privacy & Security. Later launches open normally.
+
+            ${{ steps.notes.outputs.updates }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
