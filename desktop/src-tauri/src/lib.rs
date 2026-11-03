@@ -40,7 +40,9 @@ use parking_lot::Mutex;
 use tauri::http::{header as http_header, Response, StatusCode};
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
 
 use crate::scan::ScanResult;
 
@@ -120,35 +122,61 @@ fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_cache_dir().map_err(|e| e.to_string())
 }
 
+/// Whether the native renderer draws this file (mirrors the page's
+/// `nativeCapable`: monochrome, one frame per file).
+fn native_draws(header: &header::Header) -> bool {
+    let mono = header.photometric_interpretation.as_deref().map(|p| p.to_ascii_uppercase().starts_with("MONOCHROME")).unwrap_or(true);
+    mono && header.number_of_frames.unwrap_or(1) <= 1
+}
+
+/// Scan a selection. Progress and header batches stream back over the two
+/// channels the call carries (not app-wide events): no `listen` round trips
+/// before the scan can start, and only the window that opened gets them.
 #[tauri::command]
 async fn scan_sources(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    native: tauri::State<'_, native::Shared>,
     paths: Vec<String>,
+    on_progress: tauri::ipc::Channel<scan::ScanProgress>,
+    on_batch: tauri::ipc::Channel<Vec<header::Header>>,
 ) -> Result<ScanResult, String> {
     let entered_at = startup_elapsed_ms();
     let cache = cache_dir(&app)?;
     let cancel = state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
     let registry = state.registry.clone();
-    let emitter = app.clone();
+    let native = native::enabled().then(|| native.inner().clone());
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     tauri::async_runtime::spawn_blocking(move || {
-        let batch_emitter = emitter.clone();
         let first_batch_at = std::sync::OnceLock::<f64>::new();
         let mut result = scan::scan(
             &paths,
             &cache,
             &cancel,
             &|progress| {
-                let _ = emitter.emit("scan-progress", progress);
+                let _ = on_progress.send(progress);
             },
             &|header| {
                 header.file_id = registry.lock().register(header);
             },
             &|batch| {
-                first_batch_at.get_or_init(startup_elapsed_ms);
-                let _ = batch_emitter.emit("scan-batch", batch);
+                let mut first = false;
+                first_batch_at.get_or_init(|| {
+                    first = true;
+                    startup_elapsed_ms()
+                });
+                // The first batch is the file the page hangs first: decode it
+                // now, while the page groups it and mounts the viewport, so
+                // `native_cell_series` finds it in the store.
+                if first {
+                    if let (Some(native), Some(h)) = (&native, batch.first()) {
+                        if native_draws(h) {
+                            native.store().warm(vec![PathBuf::from(&h.file_name)]);
+                        }
+                    }
+                }
+                let _ = on_batch.send(batch);
             },
         )?;
         result.timings.entered_at_ms = Some(entered_at);
@@ -832,6 +860,7 @@ async fn native_cell_series(
     id: String,
     file_ids: Vec<u32>,
     index: usize,
+    rect: Option<native::Cell>,
     state: tauri::State<'_, AppState>,
     native: tauri::State<'_, native::Shared>,
 ) -> Result<native::ShowResult, String> {
@@ -839,9 +868,16 @@ async fn native_cell_series(
     let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().collect::<Option<Vec<_>>>().ok_or("unknown file id")?;
     ensure_native(&window, native.inner()).await;
     let scale = window.scale_factor().unwrap_or(1.0);
+    // A new viewport's frame lands in its own rect: the page sends it with
+    // the series, so the first image does not wait for the next `native_layout`.
+    if rect.is_some() {
+        if let Ok(size) = window.inner_size() {
+            native.resize(size.width, size.height);
+        }
+    }
     tauri::async_runtime::spawn_blocking({
         let native = native.inner().clone();
-        move || native.set_series(&id, paths, index, scale)
+        move || native.set_series(&id, paths, index, rect, scale)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1397,6 +1433,21 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_warms_only_slices_the_native_renderer_draws() {
+        let h = |pi: Option<&str>, frames: Option<i64>| crate::header::Header {
+            photometric_interpretation: pi.map(str::to_string),
+            number_of_frames: frames,
+            ..Default::default()
+        };
+        assert!(super::native_draws(&h(None, None)));
+        assert!(super::native_draws(&h(Some("MONOCHROME2"), Some(1))));
+        assert!(super::native_draws(&h(Some("monochrome1"), None)));
+        assert!(!super::native_draws(&h(Some("RGB"), None)));
+        assert!(!super::native_draws(&h(Some("YBR_FULL_422"), Some(1))));
+        assert!(!super::native_draws(&h(Some("MONOCHROME2"), Some(30))));
+    }
+
     /// What this process holds, MB: private bytes on Windows (the allocator's
     /// view of the OS commit), the physical footprint on macOS (mimalloc
     /// decommits with MADV_FREE_REUSABLE: out of the footprint at once, still
