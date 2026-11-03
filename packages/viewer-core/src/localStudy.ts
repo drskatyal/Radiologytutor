@@ -22,6 +22,8 @@
 //   3. File name, natural-sorted, as the last resort — `IM10` must not sort
 //      before `IM9`.
 
+import { runToCompletion, type SlicedWork } from "./timeSlice";
+
 /** DICOM Part 10 files carry "DICM" at byte offset 128. */
 export const DICM_PREAMBLE_OFFSET = 128;
 
@@ -209,12 +211,32 @@ export function instanceImageCount(instance: LocalInstanceHeader): number {
 export function groupLocalStudies(
   headers: readonly LocalInstanceHeader[]
 ): LocalStudy[] {
+  return runToCompletion(groupLocalStudiesSteps(headers));
+}
+
+/** Headers bucketed between yields in `groupLocalStudiesSteps`' first pass. */
+const GROUP_HEADERS_PER_STEP = 1024;
+
+/**
+ * `groupLocalStudies` as slice-able work: the same grouping, yielding every
+ * {@link GROUP_HEADERS_PER_STEP} headers and after each series is ordered, so
+ * `runSliced` can keep a 10,310-image open off the long-task list. The result
+ * is identical to `groupLocalStudies` (which is this, run to completion).
+ */
+export function* groupLocalStudiesSteps(
+  headers: readonly LocalInstanceHeader[]
+): SlicedWork<LocalStudy[]> {
   const studies = new Map<string, LocalStudy>();
   // Series by study + UID: a linear find per header was ~1.2M compares for a
   // 10,310-image MRI (242 series) and showed up as a 60 ms freeze per rebuild.
   const seriesIndex = new Map<string, LocalStudy["series"][number]>();
 
+  let sinceYield = 0;
   for (const header of headers) {
+    if (++sinceYield > GROUP_HEADERS_PER_STEP) {
+      sinceYield = 1;
+      yield;
+    }
     const studyUid = header.studyInstanceUID?.trim() || "local.unknown.study";
     const seriesUid =
       header.seriesInstanceUID?.trim() ||
@@ -262,6 +284,7 @@ export function groupLocalStudies(
         (total, instance) => total + instanceImageCount(instance),
         0
       );
+      yield;
     }
     study.series.sort(
       (a, b) =>

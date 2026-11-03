@@ -8,6 +8,9 @@ export interface ViewportReadout {
   wc?: number;
   zoom?: number;
   rotation?: number;
+  /** Mirrors as drawn (renderer convention); read by the bench/e2e test hook. */
+  flipH?: boolean;
+  flipV?: boolean;
 }
 
 export interface ViewportHandle {

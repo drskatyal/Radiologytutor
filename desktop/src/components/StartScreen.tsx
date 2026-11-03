@@ -25,6 +25,11 @@ interface Props {
   dragging: boolean;
   onSettings: () => void;
   onHelp: () => void;
+  /**
+   * The pointer is on a study it may open next: warm what the open will need
+   * (the GPU in native mode, the JS engine otherwise). Default: the engine.
+   */
+  onIntent?: () => void;
 }
 
 function relativeTime(iso: string): string {
@@ -48,7 +53,7 @@ const KIND_ICON = {
   disc: Disc3,
 } as const;
 
-export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp, hidePatient = false }: Props) {
+export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp, hidePatient = false, onIntent = prewarmEngine }: Props) {
   const [media, setMedia] = useState<MediaVolume[] | null>(null);
   const [filter, setFilter] = useState("");
   const needle = filter.trim().toLowerCase();
@@ -145,7 +150,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               {media.map((v) => {
                 const Icon = v.kind === "optical" ? Disc3 : Usb;
                 return (
-                  <li key={v.path} onPointerEnter={prewarmEngine}>
+                  <li key={v.path} onPointerEnter={onIntent}>
                     <button
                       type="button"
                       onClick={() => onOpenPaths([v.path], "disc")}
@@ -204,7 +209,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               {shown.map((entry) => {
                 const Icon = KIND_ICON[entry.kind] ?? FolderTree;
                 return (
-                  <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated" onPointerEnter={prewarmEngine}>
+                  <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated" onPointerEnter={onIntent}>
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
