@@ -27,6 +27,7 @@ import {
   ChevronUp,
   ExternalLink,
   FileArchive,
+  FileText,
   FolderOpen,
   HardDrive,
   Layers,
@@ -46,9 +47,17 @@ import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
+import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
-import { primarySeriesIndexByProtocol, stopParkedVoice, thumbnailImageId } from "@flowrad/viewer-core";
+import {
+  isKeyImageSeries,
+  primarySeriesIndexByProtocol,
+  reportsForStudy,
+  stopParkedVoice,
+  thumbnailImageId,
+  type DicomDocument,
+} from "@flowrad/viewer-core";
 import { createLocalThumbnailer, type LocalThumbnailer } from "@flowrad/viewer-core/localThumbnails";
 import { LocalSeriesThumb } from "@/components/viewer/LocalSeriesThumb";
 import {
@@ -145,8 +154,10 @@ function mark(name: string): void {
 
 function seriesContaining(result: LocalIngestResult, fileName: string): { study: number; series: number } | null {
   for (let s = 0; s < result.studies.length; s += 1) {
-    const index = result.studies[s].series.findIndex((series) =>
-      series.instances.some((instance) => instance.fileName === fileName)
+    // Key-image series only borrow instances: the slice belongs to its real series.
+    const index = result.studies[s].series.findIndex(
+      (series) =>
+        !isKeyImageSeries(series) && series.instances.some((instance) => instance.fileName === fileName)
     );
     if (index >= 0) return { study: s, series: index };
   }
@@ -198,6 +209,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   /** Phones: the series list is a bottom drawer, and the stage can go fullscreen. */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  /** The structured report being read (dialog), if any. */
+  const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const swipeRef = useRef<{ x: number; y: number; t: number } | null>(null);
@@ -389,6 +402,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     abortRef.current = null;
     setDrawerOpen(false);
     setExpanded(false);
+    setOpenReport(null);
     setPhase({ state: "idle" });
     setRestore(null);
     void clearStudyHandles();
@@ -527,7 +541,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         void rememberStudyHandles(openingHandles.current);
         // Decoded + raw must fit the device budget, not decoded alone (see
         // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
-        const headers = result.studies.flatMap((study) => study.series.flatMap((series) => series.instances));
+        // Key-image series borrow their instances: count each file once.
+        const headers = result.studies.flatMap((study) =>
+          study.series.flatMap((series) => (isKeyImageSeries(series) ? [] : series.instances))
+        );
         void import("@/components/CornerstoneViewer")
           .then((module) => module.ensureViewerEngine())
           .then(() => (controller.signal.aborted ? 0 : applyLocalCacheBudget(headers)))
@@ -747,6 +764,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           activeStudy={activeStudy}
           activeSeries={activeSeries}
           onPick={pickStudySeries}
+          onOpenReport={setOpenReport}
           dark={reading}
           thumbs={thumbs}
           imageIdsFor={imageIdsFor}
@@ -1016,6 +1034,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 activeStudy={activeStudy}
                 activeSeries={activeSeries}
                 onPick={pickStudySeries}
+                onOpenReport={(doc) => {
+                  setDrawerOpen(false);
+                  setOpenReport(doc);
+                }}
                 hideHeading
                 thumbs={thumbs}
                 imageIdsFor={imageIdsFor}
@@ -1124,6 +1146,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           )}
         </div>
       )}
+      <StructuredReportDialog report={openReport} onClose={() => setOpenReport(null)} />
     </div>
   );
 }
@@ -1203,6 +1226,7 @@ function SeriesList({
   activeStudy,
   activeSeries,
   onPick,
+  onOpenReport,
   hideHeading = false,
   dark = false,
   thumbs,
@@ -1213,6 +1237,8 @@ function SeriesList({
   activeSeries: number;
   /** A series of any study was chosen (switches study when needed). */
   onPick: (studyIndex: number, seriesIndex: number) => void;
+  /** A structured report (listed under its study) was chosen. */
+  onOpenReport: (report: DicomDocument) => void;
   hideHeading?: boolean;
   dark?: boolean;
   thumbs: LocalThumbnailer | null;
@@ -1306,8 +1332,59 @@ function SeriesList({
               );
             })}
           </ul>
+          <StudyReports
+            reports={reportsForStudy(study.studyInstanceUID, result.documents)}
+            onOpen={onOpenReport}
+            dark={dark}
+          />
         </section>
       ))}
+    </div>
+  );
+}
+
+/** A study's Structured Reports (key-image notes are series instead). */
+function StudyReports({
+  reports,
+  onOpen,
+  dark,
+}: {
+  reports: DicomDocument[];
+  onOpen: (report: DicomDocument) => void;
+  dark: boolean;
+}) {
+  if (reports.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <h4
+        className={cn(
+          "px-1 text-[11px] font-semibold uppercase tracking-wide",
+          dark ? "text-white/50" : "text-muted"
+        )}
+      >
+        Reports
+      </h4>
+      <ul aria-label="Reports" className="flex flex-col gap-1">
+        {reports.map((doc) => (
+          <li key={doc.sopInstanceUid ?? doc.fileName}>
+            <button
+              type="button"
+              onClick={() => onOpen(doc)}
+              className={cn(
+                "flex min-h-11 w-full items-center gap-2 rounded-lg border border-transparent px-2 py-2 text-left text-xs transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                dark
+                  ? "text-white/70 hover:border-white/15 hover:bg-white/[0.05] hover:text-white"
+                  : "text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
+              )}
+            >
+              <FileText className={cn("h-4 w-4 shrink-0", dark ? "text-white/50" : "text-muted")} aria-hidden />
+              <span className="min-w-0 flex-1 truncate font-medium">{doc.title}</span>
+              <span className={cn("shrink-0 tabular-nums", dark ? "text-white/50" : "text-muted")}>SR</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

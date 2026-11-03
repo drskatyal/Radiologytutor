@@ -16,6 +16,7 @@ export * from "./zipArchive";
 export * from "./localMemoryBudget";
 export * from "./seriesThumbnail";
 export * from "./safeLog";
+export * from "./srDocument";
 export * from "./mpr";
 export * from "./mprSession";
 export * from "./pointerTween";
