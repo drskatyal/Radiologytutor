@@ -56,6 +56,7 @@ import type {
   Enrollment,
   Progress,
   WishlistItem,
+  UserPrefs,
   Review,
   Certificate,
   Assessment,
@@ -230,7 +231,8 @@ type CollectionName =
   | "deidReports"
   | "assessments"
   | "attempts"
-  | "caseShares";
+  | "caseShares"
+  | "userPrefs";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -495,6 +497,7 @@ const assessmentsStore = collection<Assessment>("assessments");
 const attemptsStore = collection<Attempt>("attempts");
 const deidReportsStore = collection<StoredDeidReport>("deidReports");
 const caseSharesStore = collection<CaseShare>("caseShares");
+const userPrefsStore = collection<UserPrefs>("userPrefs");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
 export const DEMO_USER_ID = "user_demo";
@@ -2390,4 +2393,35 @@ export async function ensureDemoIdentity(): Promise<void> {
   if (author && !author.userId) {
     await updateAuthor(DEFAULT_ORG_ID, author.id, { userId: DEMO_TEACHER_USER_ID });
   }
+}
+
+// ---------------------------------------------------------------------------
+// User preferences (viewer mouse & keyboard bindings) — org-scoped, per user.
+// ---------------------------------------------------------------------------
+
+const prefsId = (orgId: string, userId: string) => `${orgId}:${userId}`;
+
+export async function getUserPrefs(orgId: string, userId: string): Promise<UserPrefs | null> {
+  const doc = await userPrefsStore.get(prefsId(orgId, userId));
+  return doc && doc.orgId === orgId && doc.userId === userId ? doc : null;
+}
+
+/** Save the bindings file; the newer copy wins (a stale device can't overwrite a newer one). */
+export async function saveUserBindings(
+  orgId: string,
+  userId: string,
+  bindings: NonNullable<UserPrefs["bindings"]>
+): Promise<UserPrefs> {
+  const existing = await getUserPrefs(orgId, userId);
+  const incomingAt = bindings.updatedAt ?? nowIso();
+  if (existing?.bindings?.updatedAt && existing.bindings.updatedAt > incomingAt) return existing;
+  const next: UserPrefs = {
+    id: prefsId(orgId, userId),
+    orgId,
+    userId,
+    bindings: { ...bindings, updatedAt: incomingAt },
+    updatedAt: nowIso(),
+  };
+  await userPrefsStore.put(next);
+  return next;
 }

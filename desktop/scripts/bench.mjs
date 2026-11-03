@@ -8,7 +8,10 @@
 //   node desktop/scripts/bench.mjs native <binary> <study-path> [--runs 3]   # Phase 2 native renderer
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
 //   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N] [--max-settled-mb N]
-//   (FLOWRAD_BENCH_VIEW=grid: the study open in 2D instead, i.e. idle memory with a study open)
+//   (FLOWRAD_BENCH_VIEW=grid: the study open in 2D instead, i.e. idle memory with a study open;
+//    --max-settled-private-mb / --max-peak-private-mb gate private bytes)
+//   node desktop/scripts/bench.mjs close <binary> <study-path> [--settle 20] [--after-close 30]
+//        [--max-baseline-private-mb N] [--max-open-private-mb N] [--max-close-delta-mb 30]
 //
 // `desktop` launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1
 // and the study on the command line; the renderer reports one JSON line
@@ -453,6 +456,12 @@ async function benchIdle(binary) {
     `IDLE (${view}${process.env.FLOWRAD_NATIVE === "1" ? ", native" : ""}): whole tree ${mem.wsMb} MB working set (private ${mem.privateMb}) · app ${app?.wsMb ?? "?"} MB · webview ${webviewWs} MB · ${mem.processes.length} processes: ${mem.processes.map((p) => `${p.type ?? p.name} ${p.wsMb}`).join(", ")}`
   );
   console.log(JSON.stringify({ mode: "idle", view, afterSeconds: seconds, appWsMb: app?.wsMb ?? null, webviewWsMb: webviewWs, tree: mem }, null, 2));
+  console.error(`IDLE private by process: ${mem.processes.map((p) => `${p.type ?? p.name} ${p.privateMb}`).join(", ")}`);
+  const maxPrivate = flag("max-private-mb", Infinity);
+  if (mem.privateMb > maxPrivate) {
+    console.error(`idle gate failed: whole tree ${mem.privateMb} MB private > ${maxPrivate} MB`);
+    process.exitCode = 1;
+  }
 }
 
 function listFiles(dir) {
@@ -531,6 +540,8 @@ async function benchMpr(binary, study) {
   const maxMb = flag("max-mb", Infinity);
   const maxMs = flag("max-ms", Infinity);
   const maxSettledMb = flag("max-settled-mb", Infinity);
+  const maxSettledPrivateMb = flag("max-settled-private-mb", Infinity);
+  const maxPeakPrivateMb = flag("max-peak-private-mb", Infinity);
   // --cold: the first open after a cache clear (HP: 988 MB idle cold vs
   // ~330-410 MB warm). No scan cache, and the OS file cache dropped.
   if (rest.includes("--cold")) {
@@ -611,6 +622,9 @@ async function benchMpr(binary, study) {
   if (summary.peakWsMb > maxMb) over.push(`peak working set ${summary.peakWsMb} MB > ${maxMb} MB`);
   if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
   if (summary.settledWsMb > maxSettledMb) over.push(`settled working set ${summary.settledWsMb} MB > ${maxSettledMb} MB`);
+  // Private bytes (the HP 0.8.2 gates: commit the app holds, not what is paged in).
+  if (summary.settledPrivateMb > maxSettledPrivateMb) over.push(`settled private ${summary.settledPrivateMb} MB > ${maxSettledPrivateMb} MB`);
+  if (summary.peakPrivateMb > maxPeakPrivateMb) over.push(`peak private ${summary.peakPrivateMb} MB > ${maxPeakPrivateMb} MB`);
   // Native mode draws without the JS engine; starting it costs ~350 ms of
   // main thread on open plus its WebGL context and decode worker.
   if (rest.includes("--require-no-engine") && summary.engineStarted) over.push("the JS engine started in native mode");
@@ -661,7 +675,114 @@ async function benchNative(binary, study) {
   }
 }
 
+// Close lifecycle, in PRIVATE bytes over the whole process tree (the HP's
+// numbers for 0.8.1: empty app 362 MB; a CT open 473-497 MB settled; the
+// study closed, 454 MB 30 s later — 90 MB never came back):
+//   1. baseline   the empty app after --baseline-seconds (default 10);
+//   2. open       the study open in 2D (BENCH_VIEW=close), --settle s (default 20) after its report;
+//   3. closed     the app closes it (Home), sampled --after-close s (default 30) later.
+// Gates: --max-baseline-private-mb, --max-open-private-mb, --max-close-delta-mb
+// (closed − baseline). Working set is reported alongside.
+async function benchClose(binary, study) {
+  const baselineSeconds = flag("baseline-seconds", 10);
+  const settle = flag("settle", 20);
+  const afterClose = flag("after-close", 30);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const brief = (m) => m && { privateMb: m.privateMb, wsMb: m.wsMb, processes: m.processes.length, byProcess: m.processes.map((p) => ({ type: p.type ?? p.name, privateMb: p.privateMb, wsMb: p.wsMb })) };
+
+  // 1. Baseline: the empty app, as a reader starts it.
+  const empty = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
+  empty.stdout.on("data", () => undefined);
+  empty.stderr.on("data", () => undefined);
+  await sleep(baselineSeconds * 1000);
+  const baseline = empty.exitCode == null ? treeMemory(empty.pid) : null;
+  empty.kill("SIGKILL");
+  await sleep(2000);
+  if (!baseline?.processes.length) throw new Error("close: the empty app is not running for its baseline");
+
+  // 2 + 3. The study opened, held, closed.
+  const started = performance.now();
+  const child = spawn(binary, [study], {
+    env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: "close", BENCH_CLOSE_AFTER_MS: String(settle * 1000) }) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  const reports = [];
+  const shellClose = [];
+  let partial = "";
+  child.stdout.on("data", (d) => {
+    out = (out + d).slice(-8000);
+    const lines = (partial + d).split("\n");
+    partial = lines.pop() ?? "";
+    for (const l of lines) {
+      if (REPORT.test(l)) reports.push(JSON.parse(l.replace(REPORT, "")));
+      // The shell's own account of the close: what each cache held, and the
+      // process's commit before / after clearing / after the allocator release.
+      else if (l.startsWith("FLOWRAD_BENCH_CLOSE ")) shellClose.push(JSON.parse(l.slice("FLOWRAD_BENCH_CLOSE ".length)));
+    }
+  });
+  child.stderr.on("data", (d) => (out = (out + d).slice(-8000)));
+  const until = async (ok, ms, what) => {
+    const deadline = performance.now() + ms;
+    while (!ok()) {
+      if (child.exitCode != null || performance.now() > deadline) {
+        child.kill("SIGKILL");
+        throw new Error(`close: no ${what} (exit ${child.exitCode}); output:\n${out.slice(-2000)}`);
+      }
+      await sleep(100);
+    }
+  };
+  await until(() => reports.some((r) => !r.closed), 180_000, "report with the study open");
+  const openedAt = performance.now();
+  // Sample just before the app closes it: the study open and settled.
+  await sleep(Math.max(0, settle * 1000 - 1500));
+  const open = treeMemory(child.pid);
+  await until(() => reports.some((r) => r.closed), settle * 1000 + 30_000, "close report");
+  await sleep(afterClose * 1000);
+  const closed = treeMemory(child.pid);
+  child.kill("SIGKILL");
+
+  const report = reports.find((r) => !r.closed);
+  const summary = {
+    mode: "close",
+    study,
+    images: report.images,
+    native: process.env.FLOWRAD_NATIVE ?? null,
+    openReportMs: r0(openedAt - started),
+    baselinePrivateMb: baseline.privateMb,
+    openPrivateMb: open.privateMb,
+    closedPrivateMb: closed.privateMb,
+    closeDeltaPrivateMb: closed.privateMb - baseline.privateMb,
+    baselineWsMb: baseline.wsMb,
+    openWsMb: open.wsMb,
+    closedWsMb: closed.wsMb,
+    afterCloseSeconds: afterClose,
+    shellClose,
+    baseline: brief(baseline),
+    open: brief(open),
+    closed: brief(closed),
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  const line = (m) => m.processes.map((p) => `${p.type ?? p.name} ${p.privateMb}`).join(", ");
+  console.error(
+    `CLOSE: private baseline ${baseline.privateMb} MB (${line(baseline)}) · open ${open.privateMb} MB (${line(open)}) · closed +${afterClose} s ${closed.privateMb} MB (${line(closed)}) · delta ${summary.closeDeltaPrivateMb} MB · ws ${baseline.wsMb} / ${open.wsMb} / ${closed.wsMb} MB`
+  );
+  for (const c of shellClose) console.error(`CLOSE (app process): ${JSON.stringify(c)}`);
+  const over = [];
+  const maxBaseline = flag("max-baseline-private-mb", Infinity);
+  const maxOpen = flag("max-open-private-mb", Infinity);
+  const maxDelta = flag("max-close-delta-mb", Infinity);
+  if (summary.baselinePrivateMb > maxBaseline) over.push(`empty app ${summary.baselinePrivateMb} MB private > ${maxBaseline} MB`);
+  if (summary.openPrivateMb > maxOpen) over.push(`study open ${summary.openPrivateMb} MB private > ${maxOpen} MB`);
+  if (summary.closeDeltaPrivateMb > maxDelta) over.push(`after close ${summary.closedPrivateMb} MB private = baseline + ${summary.closeDeltaPrivateMb} MB > + ${maxDelta} MB`);
+  if (over.length) {
+    console.error(`close gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
 const modes = {
+  close: () => benchClose(positional[0], positional[1]),
   native: () => benchNative(positional[0], positional[1]),
   interact: () => benchInteract(positional[0], positional[1]),
   leak: () => benchLeak(positional[0], positional[1]),
@@ -673,7 +794,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak|multiwindow|native …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|close|interact|leak|multiwindow|native …  (see header)");
   process.exit(2);
 }
 await modes[mode]();

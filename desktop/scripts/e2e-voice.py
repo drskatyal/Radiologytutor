@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Voice commands in the BUILT app (production CSP, bundled model).
 
-    python desktop/scripts/e2e-voice.py <flowrad-viewer exe> <study dir> <phrases.wav>
+    python desktop/scripts/e2e-voice.py <flowrad-viewer exe> <study dir> <phrases.wav> [--expect "next series" "zoom in" …]
 
 Launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_VIEW=voice: once the
 study's first image is up, the app switches voice on (silent input: the runner
@@ -11,7 +11,8 @@ performs what it recognises (desktop/src/voiceBench.ts).
 
 Fails unless: the recognizer becomes ready (no error, no endless loading),
 model download progress was reported, and at least one spoken command was
-recognised. 0.6.4-0.8.0 hung here: the recognizer's worker could not run
+recognised. With --expect, EVERY listed phrase must be recognised (heard as
+that command, not "?") and performed. 0.6.4-0.8.0 hung here: the recognizer's worker could not run
 under the app's CSP, and nothing reported the failure.
 """
 from __future__ import annotations
@@ -31,6 +32,8 @@ def main() -> int:
         print(__doc__)
         return 2
     exe, study, wav = sys.argv[1:4]
+    rest = sys.argv[4:]
+    expect = rest[rest.index("--expect") + 1 :] if "--expect" in rest else []
     env = {**os.environ, "FLOWRAD_BENCH": "1", "FLOWRAD_BENCH_VIEW": "voice", "FLOWRAD_BENCH_VOICE_WAV": os.path.abspath(wav)}
     env.pop("FLOWRAD_BENCH_EXIT", None)
     proc = subprocess.Popen([exe, study], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
@@ -63,6 +66,10 @@ def main() -> int:
         failures.append("no model download progress was reported")
     if not voice.get("actions"):
         failures.append(f"no spoken command was recognised (heard: {voice.get('heard')})")
+    recognised = [h.strip().lower() for h in voice.get("heard") or [] if not h.rstrip().endswith("?")]
+    for phrase in expect:
+        if not any(phrase.lower() in h for h in recognised):
+            failures.append(f"'{phrase}' was not recognised (heard: {voice.get('heard')})")
     for f in failures:
         print(f"FAIL  voice: {f}")
     if failures:

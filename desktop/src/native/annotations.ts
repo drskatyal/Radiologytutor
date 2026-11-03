@@ -174,6 +174,72 @@ export function segmentDistance(q: Pt, a: Pt, b: Pt): number {
   return Math.hypot(q[0] - (a[0] + t * dx), q[1] - (a[1] + t * dy));
 }
 
+/** The drawn outline of an annotation as segments (image space). */
+export function segments(a: Annotation): [Pt, Pt][] {
+  const p = a.points;
+  const chain = (q: Pt[]): [Pt, Pt][] => q.slice(1).map((b, i) => [q[i], b]);
+  const ring = (cx: number, cy: number, rx: number, ry: number): [Pt, Pt][] =>
+    chain(Array.from({ length: 37 }, (_, i) => [cx + rx * Math.cos((i / 36) * 2 * Math.PI), cy + ry * Math.sin((i / 36) * 2 * Math.PI)] as Pt));
+  if (p.length < 2) return [];
+  switch (a.tool) {
+    case "RectangleROI":
+      return chain([p[0], [p[1][0], p[0][1]], p[1], [p[0][0], p[1][1]], p[0]]);
+    case "EllipticalROI":
+      // The ellipse inscribed in the drag box (what Shape draws), not the box.
+      return ring((p[0][0] + p[1][0]) / 2, (p[0][1] + p[1][1]) / 2, Math.abs(p[1][0] - p[0][0]) / 2, Math.abs(p[1][1] - p[0][1]) / 2);
+    case "CircleROI": {
+      const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
+      return ring(p[0][0], p[0][1], r, r);
+    }
+    case "PlanarFreehandROI":
+      return chain([...p, p[0]]);
+    case "CobbAngle":
+    case "Bidirectional":
+      return p.length >= 4 ? [[p[0], p[1]], [p[2], p[3]]] : chain(p);
+    default:
+      return chain(p);
+  }
+}
+
+const CLOSED = new Set(["RectangleROI", "EllipticalROI", "CircleROI", "PlanarFreehandROI"]);
+
+function insidePolygon(q: Pt, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    if (yi > q[1] !== yj > q[1] && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * The annotation under screen point `q` (topmost first), by distance to its
+ * drawn segments in SCREEN px: a click anywhere along a measurement line hits
+ * it, not just near its end points. `toScreen` maps image → cell px.
+ * `insideCloses`: the eraser also takes a click inside a closed ROI.
+ */
+export function hitAnnotation(
+  list: readonly Annotation[],
+  q: Pt,
+  toScreen: (p: Pt) => Pt,
+  tolerancePx: number,
+  opts: { selected?: string | null; handlePx?: number; insideCloses?: boolean } = {}
+): { a: Annotation; handle: number | "body" } | null {
+  for (const a of [...list].reverse()) {
+    const pts = a.points.map(toScreen);
+    if (a.id === opts.selected) {
+      const h = pts.findIndex((p) => Math.hypot(p[0] - q[0], p[1] - q[1]) <= (opts.handlePx ?? tolerancePx));
+      if (h >= 0) return { a, handle: h };
+    }
+    const segs = segments(a).map(([s0, s1]) => [toScreen(s0), toScreen(s1)] as [Pt, Pt]);
+    if (segs.some(([s0, s1]) => segmentDistance(q, s0, s1) <= tolerancePx)) return { a, handle: "body" };
+    if (pts.length === 1 && Math.hypot(pts[0][0] - q[0], pts[0][1] - q[1]) <= tolerancePx) return { a, handle: "body" };
+    if (opts.insideCloses && CLOSED.has(a.tool) && segs.length && insidePolygon(q, segs.map((s) => s[0]))) return { a, handle: "body" };
+  }
+  return null;
+}
+
 // ───────────── store: per study, with undo / redo ─────────────
 
 type Op = { kind: "add" | "remove"; items: Annotation[] } | { kind: "update"; before: Annotation; after: Annotation };
