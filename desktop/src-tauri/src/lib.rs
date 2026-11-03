@@ -716,6 +716,20 @@ async fn native_cell_series(
     .map_err(|e| e.to_string())?
 }
 
+/// A streaming series grew: append only the new files to the cell's list.
+/// `None`: the cell no longer matches (`from` is stale); re-send the series.
+#[tauri::command]
+fn native_cell_series_append(
+    id: String,
+    from: usize,
+    file_ids: Vec<u32>,
+    state: tauri::State<'_, AppState>,
+    native: tauri::State<'_, native::Shared>,
+) -> Result<Option<usize>, String> {
+    let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().collect::<Option<Vec<_>>>().ok_or("unknown file id")?;
+    Ok(native.append_series(&id, from, paths))
+}
+
 /// Change a cell's view: slice, window/level, zoom, pan, rotation, flip, invert.
 #[tauri::command]
 async fn native_cell_view(
@@ -1096,6 +1110,7 @@ pub fn run() {
             native_store_stats,
             native_layout,
             native_cell_series,
+            native_cell_series_append,
             native_cell_view,
             native_cell_scroll,
             native_cell_close,
