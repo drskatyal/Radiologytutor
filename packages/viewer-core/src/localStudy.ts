@@ -157,10 +157,28 @@ export function sliceNormal(
 
 /** Signed distance of an instance along the slice normal, or null. */
 export function slicePosition(instance: LocalInstanceHeader): number | null {
-  const normal = sliceNormal(instance.imageOrientationPatient);
-  const position = finiteTriple(instance.imagePositionPatient);
-  if (!normal || !position) return null;
-  return normal[0] * position[0] + normal[1] * position[1] + normal[2] * position[2];
+  // `sliceNormal` · `finiteTriple(position)`, the same arithmetic in the same
+  // order, without their temporary arrays: every series is re-sorted on every
+  // progressive rebuild, and on a 10,310-image MRI those ~10 small arrays per
+  // header were garbage the open's GC pauses had to collect.
+  const o = instance.imageOrientationPatient;
+  const p = instance.imagePositionPatient;
+  if (!o || o.length < 6 || !p || p.length < 3) return null;
+  const r0 = o[0], r1 = o[1], r2 = o[2], c0 = o[3], c1 = o[4], c2 = o[5];
+  const p0 = p[0], p1 = p[1], p2 = p[2];
+  if (!isFiniteNumber(r0) || !isFiniteNumber(r1) || !isFiniteNumber(r2)) return null;
+  if (!isFiniteNumber(c0) || !isFiniteNumber(c1) || !isFiniteNumber(c2)) return null;
+  if (!isFiniteNumber(p0) || !isFiniteNumber(p1) || !isFiniteNumber(p2)) return null;
+  const n0 = r1 * c2 - r2 * c1;
+  const n1 = r2 * c0 - r0 * c2;
+  const n2 = r0 * c1 - r1 * c0;
+  const length = Math.hypot(n0, n1, n2);
+  if (!Number.isFinite(length) || length < 1e-6) return null;
+  return (n0 / length + 0) * p0 + (n1 / length + 0) * p1 + (n2 / length + 0) * p2;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 /**

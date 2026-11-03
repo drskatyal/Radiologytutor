@@ -139,7 +139,15 @@ function viewerSeriesOf(s: LocalSeries): ViewerSeries {
   const perImage: DesktopHeader[] = [];
   for (const h of ordered) {
     if (!h.baseImageId) continue;
-    const ids = imageIdsForInstance(h.baseImageId, instanceImageCount(h));
+    const frames = instanceImageCount(h);
+    if (frames === 1) {
+      // The common case without the one-element array per image (rebuilt
+      // for every image on every progressive rebuild).
+      imageIds.push(h.baseImageId);
+      perImage.push(h);
+      continue;
+    }
+    const ids = imageIdsForInstance(h.baseImageId, frames);
     imageIds.push(...ids);
     for (let i = 0; i < ids.length; i += 1) perImage.push(h);
   }

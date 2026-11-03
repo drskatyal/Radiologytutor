@@ -61,6 +61,14 @@ export interface ScanResult {
   timings: { listMs: number; parseMs: number; totalMs: number };
   /** Structured reports and key-image notes found alongside the images. */
   documents?: import("./documents").DicomDocument[];
+  /**
+   * Set when the shell left `headers` out because every header already came
+   * in a batch: how many. `scanPaths` waits for them and fills `headers` back
+   * in (streamedScan.ts), so callers always get the full list.
+   */
+  streamed?: number;
+  /** Patient fields cache hits got after they streamed (scan.rs `PatientPatch`). */
+  patientPatches?: import("./streamedScan").PatientPatch[];
 }
 
 export interface PatientInfo {

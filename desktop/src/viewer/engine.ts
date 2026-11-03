@@ -494,7 +494,16 @@ export function setStackOffset(firstImageId: string, offsetMm: number | null): v
  */
 const geometry = new Map<string, { ipp?: readonly number[]; iop?: readonly number[] }>();
 export function registerGeometry(imageIds: readonly string[], planes: readonly { imagePositionPatient?: readonly number[]; imageOrientationPatient?: readonly number[] }[]): void {
-  imageIds.forEach((id, i) => geometry.set(id, { ipp: planes[i]?.imagePositionPatient, iop: planes[i]?.imageOrientationPatient }));
+  for (let i = 0; i < imageIds.length; i += 1) {
+    const ipp = planes[i]?.imagePositionPatient;
+    const iop = planes[i]?.imageOrientationPatient;
+    // Every progressive rebuild registers the whole study again with the same
+    // header arrays: keep the entry instead of a new object per image (10,310
+    // per rebuild on the big MRI, all garbage by the next one).
+    const known = geometry.get(imageIds[i]);
+    if (known && known.ipp === ipp && known.iop === iop) continue;
+    geometry.set(imageIds[i], { ipp, iop });
+  }
 }
 
 const syncStacks = new WeakMap<readonly string[], SyncStack>();
