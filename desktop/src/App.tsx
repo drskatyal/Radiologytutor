@@ -315,8 +315,10 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown; steps?: unknown; hooks?: unknown; openClose?: unknown };
     pendingVolume?: () => Promise<void>;
+    /** Open/close rounds (BENCH_VIEW=openclose): the round now open. Survives the re-open's mark reset. */
+    openCloseRound?: number;
     volumeT0?: number;
   }>({
     enabled: false,
@@ -897,6 +899,49 @@ export default function App() {
                   bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
                   void report();
                 })();
+              } else if (bench.current.firstPaint != null && benchView === "openclose") {
+                // Open/close rounds (bench.mjs `openclose`): like `close`, but
+                // the same study is re-opened through the app's own open path
+                // after each close, N rounds (FLOWRAD_LEAK_ROUNDS). Each round
+                // reports open, holds BENCH_CLOSE_AFTER_MS, closes (Home),
+                // reports closed, holds again, re-opens; the bench samples the
+                // whole tree's private bytes at each report.
+                void (async () => {
+                  const round = (bench.current.openCloseRound ?? 0) + 1;
+                  bench.current.openCloseRound = round;
+                  const rounds = await invoke<number>("bench_leak_rounds").catch(() => 2);
+                  const hold = await invoke<number>("bench_close_after_ms").catch(() => 20_000);
+                  bench.current.marks.openClose = { round, rounds, holdMs: hold };
+                  await report();
+                  window.setTimeout(() => {
+                    goHomeRef.current();
+                    void benchReport({ closed: true, openClose: { round, rounds }, closedAtMs: Math.round(performance.now() - t0) });
+                    if (round < rounds) window.setTimeout(() => void openPathsRef.current(paths), hold);
+                  }, hold);
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "steps") {
+                // Scripted interaction pass: scroll, W/L, rotate, timed per step.
+                void (async () => {
+                  const { runStepsPass, nativeDriver, engineDriver } = await import("./benchSteps");
+                  const engine = enginePeek();
+                  const vp = engine?.renderingEngine.getViewport(viewportIdFor(0));
+                  const driver =
+                    nativeRef.current && document.querySelector("[data-native-viewport]")
+                      ? await nativeDriver(cellKey(0))
+                      : engine && vp
+                        ? engineDriver(engine.core, vp as unknown as Parameters<typeof engineDriver>[1])
+                        : null;
+                  bench.current.marks.steps = driver ? await runStepsPass(driver) : { error: "no viewport to drive" };
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "hooks") {
+                // Test hook self-test (testHook.ts): rotation / flips drawn,
+                // thumbnails rendered and counted, bindings set → reset → preset.
+                void (async () => {
+                  const hook = (window as unknown as { __flowradTest?: import("./testHook").FlowradTestHook }).__flowradTest;
+                  bench.current.marks.hooks = hook ? await hook.selfTest().catch((e: unknown) => ({ ok: false, error: String(e) })) : { ok: false, error: "test hook not installed" };
+                  void report();
+                })();
               } else if (bench.current.firstPaint != null && benchView === "close") {
                 // Close lifecycle (bench.mjs `close`): report with the study
                 // open, hold it open while the bench samples it settled, then
@@ -1306,6 +1351,9 @@ export default function App() {
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
   /** The Home action, for the close-lifecycle bench (opened before `goHome` is defined). */
   const goHomeRef = useRef<() => void>(() => undefined);
+  /** The open flow, for the bench's open/close rounds (it re-opens from inside an open). */
+  const openPathsRef = useRef<(paths: string[]) => Promise<void>>(async () => undefined);
+  openPathsRef.current = (paths) => openPaths(paths);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
     setVoice((v) => ({ ...v, heard }));
@@ -2206,6 +2254,35 @@ export default function App() {
     historyList<HistoryEntry>().then(setHistory, () => undefined);
   }, [resetWorkspace, native]);
   goHomeRef.current = goHome;
+
+  // Bench / e2e test hook (window.__flowradTest): bench or test mode only,
+  // gated like benchReport (FLOWRAD_BENCH=1, or ?bench in the browser build).
+  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell });
+  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell };
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void benchEnabled().then(async (on) => {
+      if (!on || cancelled) return;
+      const { installTestHook } = await import("./testHook");
+      if (cancelled) return;
+      const st = () => testHookState.current;
+      off = installTestHook({
+        activeHandle: () => getHandle(cellKey(st().activeCell)),
+        activeCellKey: () => cellKey(st().activeCell),
+        studies: () => st().studies,
+        hiddenSeries: () => st().hiddenSeries,
+        seriesPanel: () => ({ collapsed: st().seriesPanel.collapsed, compact: !!st().settings.compactSeries }),
+        openSeriesPanel: () => st().seriesPanel.collapsed && st().seriesPanel.toggle(),
+        bindings: () => st().settings.bindings ?? {},
+        updateBindings: (next) => updateSettings({ bindings: Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]])) }),
+      });
+    }, () => undefined);
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [updateSettings]);
 
   const onPreview = useCallback((fullRes: boolean) => {
     const at = performance.now() - bench.current.t0;
