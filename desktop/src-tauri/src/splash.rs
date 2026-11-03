@@ -23,8 +23,19 @@
 //! and only if the main window is visible and not minimised. That is what
 //! `bench.mjs coldstart` reports as the native first paint.
 //!
-//! `FLOWRAD_NATIVE_SPLASH=0` turns it off (A/B, diagnosis). macOS / Linux: no
-//! native splash yet (WebKit paints the page's splash); the calls are no-ops.
+//! macOS (mac_splash.rs): an AppKit view over the window's content, above
+//! the WKWebView, added the moment the main window and its webview are built
+//! (`attach`), click-through, resized with the window. WKWebView needs ~1 s
+//! more before the page paints (0.8.3: 1183 ms median on an Intel MacBook).
+//! The view is drawn and its frame committed to the WindowServer at once
+//! (`CATransaction flush`, the counterpart of DwmFlush), and `painted_ms` is
+//! set then, if the window is visible and not minimised. It goes the same
+//! three ways as on Windows: `splash_done`, 1 s after the page loaded, 15 s.
+//! With `FLOWRAD_BENCH=1` its dismissal is reported as a `FLOWRAD_SPLASH`
+//! line (how, when, and that no splash view was left in the window).
+//!
+//! `FLOWRAD_NATIVE_SPLASH=0` turns it off (A/B, diagnosis). Linux: no native
+//! splash (WebKitGTK paints the page's splash); the calls are no-ops.
 
 // The drawing helpers are used by the Windows painter (and the tests) only.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -37,7 +48,7 @@ pub const INK: [u8; 3] = [0xa9, 0xc4, 0xb9];
 pub const LABEL: &str = "FLOWRAD VIEWER";
 
 /// The mark: the same 112 px PNG (2x of 56 CSS px) inlined in index.html.
-const MARK_PNG: &[u8] = include_bytes!("../icons/splash-owl.png");
+pub(crate) const MARK_PNG: &[u8] = include_bytes!("../icons/splash-owl.png");
 
 // `.boot` (index.html), CSS px: a centred column of the 56 px mark, a 20 px
 // gap and a 12 px line (font 600 12px/1, letter-spacing 0.18em), 8 px of
@@ -46,7 +57,7 @@ const MARK_PX: f64 = 56.0;
 const GAP_PX: f64 = 20.0;
 const LINE_PX: f64 = 12.0;
 const PAD_BOTTOM_PX: f64 = 8.0;
-const LETTER_SPACING_EM: f64 = 0.18;
+pub(crate) const LETTER_SPACING_EM: f64 = 0.18;
 
 /// Where the splash draws, in physical pixels of a `width` x `height` client
 /// area at `scale` (physical px per CSS px).
@@ -526,35 +537,192 @@ mod imp {
     }
 }
 
-/// Windows: show the native splash on the main window as soon as it is on
-/// screen. Call on the main thread right before the main window is built.
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    use objc2::MainThreadMarker;
+
+    /// Runs a closure on the main thread (Tauri's `run_on_main_thread`).
+    pub type OnMain = Box<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
+
+    const LAST_RESORT_MS: u64 = 15_000;
+    /// If the window is not on screen yet when the splash goes on, look again
+    /// every 10 ms for up to 5 s (as the Windows scout does).
+    const RETRY_EVERY_MS: u64 = 10;
+    const RETRIES: u32 = 500;
+
+    static T0: OnceLock<Instant> = OnceLock::new();
+    static ON_MAIN: OnceLock<OnMain> = OnceLock::new();
+    /// On the window (attached, not yet removed).
+    static SHOWN: AtomicBool = AtomicBool::new(false);
+    /// Dismissed (or turned off): never show it (again).
+    static DONE: AtomicBool = AtomicBool::new(false);
+    static PAINTED_MS: OnceLock<f64> = OnceLock::new();
+
+    fn now_ms() -> Option<f64> {
+        T0.get().map(|t0| t0.elapsed().as_secs_f64() * 1000.0)
+    }
+
+    fn on_main(f: impl FnOnce() + Send + 'static) {
+        if MainThreadMarker::new().is_some() {
+            f();
+        } else if let Some(run) = ON_MAIN.get() {
+            run(Box::new(f));
+        }
+    }
+
+    fn after(ms: u64, f: impl FnOnce() + Send + 'static) {
+        let _ = std::thread::Builder::new().name("flowrad-splash".into()).spawn(move || {
+            std::thread::sleep(Duration::from_millis(ms));
+            f();
+        });
+    }
+
+    pub fn arm(t0: Instant) {
+        if super::disabled() {
+            DONE.store(true, Ordering::Release);
+            return;
+        }
+        let _ = T0.set(t0);
+    }
+
+    /// Main thread, right after the main window and its webview are built.
+    pub fn attach(ns_window: *mut c_void, run_on_main: OnMain) {
+        if DONE.load(Ordering::Acquire) || T0.get().is_none() || MainThreadMarker::new().is_none() {
+            return;
+        }
+        let _ = ON_MAIN.set(run_on_main);
+        if !crate::mac_splash::attach(ns_window) {
+            return;
+        }
+        SHOWN.store(true, Ordering::Release);
+        after(LAST_RESORT_MS, || go("timeout"));
+        if !time_paint() {
+            retry_paint(0);
+        }
+    }
+
+    /// Main thread: commit the splash to the WindowServer and time it, once.
+    /// True when there is nothing left to do (timed, or gone).
+    fn time_paint() -> bool {
+        if PAINTED_MS.get().is_some() || DONE.load(Ordering::Acquire) {
+            return true;
+        }
+        if !crate::mac_splash::flush() {
+            return false;
+        }
+        if let Some(ms) = now_ms() {
+            let _ = PAINTED_MS.set(ms);
+        }
+        true
+    }
+
+    fn retry_paint(tries: u32) {
+        if tries >= RETRIES {
+            return;
+        }
+        after(RETRY_EVERY_MS, move || {
+            on_main(move || {
+                if !time_paint() {
+                    retry_paint(tries + 1);
+                }
+            })
+        });
+    }
+
+    /// Take the splash off (once), from any thread.
+    pub fn go(by: &'static str) {
+        if !SHOWN.load(Ordering::Acquire) || DONE.swap(true, Ordering::AcqRel) {
+            // Not on yet (or off): it must not come on afterwards either.
+            DONE.store(true, Ordering::Release);
+            return;
+        }
+        on_main(move || {
+            let Some(stale) = crate::mac_splash::remove() else { return };
+            SHOWN.store(false, Ordering::Release);
+            if crate::bench_on() {
+                crate::bench_emit(
+                    "FLOWRAD_SPLASH",
+                    &serde_json::json!({
+                        "platform": "macos",
+                        "paintedMs": PAINTED_MS.get(),
+                        "dismissedMs": now_ms(),
+                        "dismissedBy": by,
+                        "staleViews": stale,
+                    }),
+                );
+            }
+        });
+    }
+
+    pub fn dismiss_after(ms: u32) {
+        if SHOWN.load(Ordering::Acquire) {
+            after(ms as u64, || go("load"));
+        }
+    }
+
+    pub fn painted_ms() -> Option<f64> {
+        PAINTED_MS.get().copied()
+    }
+}
+
+/// Call on the main thread right before the main window is built. Windows:
+/// show the native splash on the main window as soon as it is on screen.
+/// macOS: start its clock (it goes on in `attach`).
 pub fn arm(t0: std::time::Instant, title: &str) {
     #[cfg(windows)]
     imp::arm(t0, title);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::arm(t0);
+        let _ = title;
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (t0, title, disabled());
+}
+
+/// macOS: put the splash over the main window (`ns_window`). Main thread,
+/// right after the window and its webview are built. `run_on_main` runs a
+/// closure on the main thread (the dismissal comes from other threads).
+#[cfg(target_os = "macos")]
+pub fn attach(
+    ns_window: *mut std::ffi::c_void,
+    run_on_main: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync + 'static,
+) {
+    mac::attach(ns_window, Box::new(run_on_main));
 }
 
 /// The page has painted its own splash: the native one can go. Any thread.
 pub fn dismiss() {
     #[cfg(windows)]
     imp::dismiss();
+    #[cfg(target_os = "macos")]
+    mac::go("page");
 }
 
 /// The page has loaded: if it never reports a paint, go after `ms` anyway.
 pub fn dismiss_after(ms: u32) {
     #[cfg(windows)]
     imp::dismiss_after(ms);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    mac::dismiss_after(ms);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = ms;
 }
 
-/// When the native splash was first on screen (DWM composed it), ms since
-/// process start. None: no native splash (yet, or on this platform).
+/// When the native splash was first on screen, ms since process start
+/// (Windows: DWM composed it; macOS: committed to the WindowServer for a
+/// visible window). None: no native splash (yet, or on this platform).
 pub fn painted_ms() -> Option<f64> {
     #[cfg(windows)]
     return imp::painted_ms();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    return mac::painted_ms();
+    #[cfg(not(any(windows, target_os = "macos")))]
     None
 }
 

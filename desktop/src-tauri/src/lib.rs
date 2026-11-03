@@ -16,6 +16,8 @@ mod image_store;
 #[cfg(target_os = "macos")]
 mod mac_mouse;
 #[cfg(target_os = "macos")]
+mod mac_splash;
+#[cfg(target_os = "macos")]
 mod mac_webkit;
 mod native;
 mod native_view;
@@ -565,8 +567,9 @@ fn startup_marks() -> serde_json::Value {
         "navStartMs": m[1],
         "navDoneMs": m[2],
         "webviewBuiltMs": m[3],
-        // The native splash on screen (DWM composed it): the first thing the
-        // reader sees, before WebView2 has loaded the page (splash.rs).
+        // The native splash on screen (Windows: DWM composed it; macOS:
+        // committed to the WindowServer): the first thing the reader sees,
+        // before the webview has loaded the page (splash.rs).
         "nativeFirstPaintMs": splash::painted_ms(),
         "nativeFirstPaintSource": splash::painted_ms().map(|_| "splash"),
         "gpuWarmMs": native::WARM_MS.get(),
@@ -1441,6 +1444,15 @@ pub fn run() {
                 }
                 let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
                 mark(3);
+                // macOS: the splash goes over the window's content now, above
+                // the WKWebView (its frame is on screen ~1 s before the page's).
+                #[cfg(target_os = "macos")]
+                if let Ok(ns_window) = _window.ns_window() {
+                    let handle = app.handle().clone();
+                    splash::attach(ns_window, move |f| {
+                        let _ = handle.run_on_main_thread(f);
+                    });
+                }
                 // Here, not after `build()`: the window exists only now.
                 #[cfg(windows)]
                 trim_webview2(&_window);

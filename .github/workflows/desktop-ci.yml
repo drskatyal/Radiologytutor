@@ -576,6 +576,12 @@ jobs:
       - name: Smoke — launches, the native renderer is ready on Metal, the first image paints
         if: ${{ !cancelled() }}
         run: python desktop/scripts/e2e-native.py "$APP" "$RUNNER_TEMP/native-shots" --study "$RUNNER_TEMP/ct40"
+      # The native splash (splash.rs / mac_splash.rs): on screen before the
+      # page's first paint, taken off by the page's splash_done with nothing
+      # left over the webview, and off with FLOWRAD_NATIVE_SPLASH=0.
+      - name: Smoke — native splash shown first, then dismissed by the page
+        if: ${{ !cancelled() }}
+        run: python desktop/scripts/e2e-splash.py "$APP"
       - name: Gate — empty app (whole tree, physical footprint)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs idle "$APP" --seconds 10 --max-private-mb "$BASELINE_PRIVATE_MAX_MB"
@@ -588,7 +594,7 @@ jobs:
         run: |
           swiftc -O desktop/scripts/wk-baseline.swift -o "$RUNNER_TEMP/wk-baseline"
           for i in 1 2 3 4 5; do echo "control run $i: $("$RUNNER_TEMP/wk-baseline")"; done
-      - name: Gate — cold start
+      - name: Gate — cold start (first visible = native splash or page paint)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS"
       - name: Gate — open + first image (cold and warm), no long tasks
