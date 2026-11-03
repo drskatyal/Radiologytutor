@@ -244,6 +244,31 @@ impl ImageStore {
         });
     }
 
+    /// The viewer went idle: keep only the most recently used slices, up to
+    /// `bytes` (always the latest one), and stop queued prefetch from
+    /// refilling. The budget is unchanged: the next scroll refills the cache.
+    /// Returns the slices dropped.
+    pub fn trim_to(&self, bytes: usize) -> usize {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let mut g = self.inner.lock();
+        let mut by_age: Vec<(u64, PathBuf, usize)> = g.entries.iter().map(|(p, e)| (e.last_use, p.clone(), e.slice.bytes())).collect();
+        by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        let mut kept = 0usize;
+        let mut dropped = 0usize;
+        for (i, (_, path, size)) in by_age.into_iter().enumerate() {
+            if i == 0 || kept + size <= bytes {
+                kept += size;
+            } else if let Some(e) = g.entries.remove(&path) {
+                g.used -= e.slice.bytes();
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            g.entries.shrink_to_fit();
+        }
+        dropped
+    }
+
     /// Free everything (study closed): back to baseline.
     pub fn clear(&self) {
         let mut g = self.inner.lock();
@@ -413,6 +438,30 @@ mod tests {
         store.clear();
         assert_eq!(store.stats().slices, 0);
         assert_eq!(store.stats().used_mb, 0.0);
+    }
+
+    #[test]
+    fn idle_trim_keeps_the_most_recent_slices() {
+        let d = tmp("trim");
+        let a = write_ct(&d, "a.dcm", 32, 32, 1); // 2 KB each
+        let b = write_ct(&d, "b.dcm", 32, 32, 2);
+        let c = write_ct(&d, "c.dcm", 32, 32, 3);
+        let store = ImageStore::new(1 << 20);
+        store.get(&a).unwrap();
+        store.get(&b).unwrap();
+        store.get(&c).unwrap();
+        store.get(&a).unwrap(); // most recent: a, then c, then b
+        assert_eq!(store.trim_to(2 * 32 * 32 * 2), 1);
+        assert!(store.peek(&a).is_some() && store.peek(&c).is_some());
+        assert!(store.peek(&b).is_none());
+        // Below one slice: the latest stays (the one on screen).
+        assert_eq!(store.trim_to(0), 1);
+        assert_eq!(store.stats().slices, 1);
+        assert!(store.peek(&c).is_some(), "peek above made c the most recent");
+        assert_eq!(store.stats().used_mb * 1_048_576.0, (32 * 32 * 2) as f64);
+        // The budget is unchanged: the cache refills.
+        store.get(&b).unwrap();
+        assert_eq!(store.stats().slices, 2);
     }
 
     /// FLOWRAD_FIXTURES=<make-fixtures.py output> cargo test fixture_matrix -- --ignored --nocapture
