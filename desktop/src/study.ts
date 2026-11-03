@@ -7,10 +7,16 @@
 // clean volume (MPR / 3D / fusion eligible).
 
 import {
-  groupLocalStudies,
+  groupLocalStudiesSteps,
   imageIdsForInstance,
   instanceImageCount,
+  runSliced,
+  runToCompletion,
   sliceNormal,
+  type LocalSeries,
+  type LocalStudy,
+  type RunSlicedOptions,
+  type SlicedWork,
 } from "@flowrad/viewer-core";
 import type { DesktopHeader, ViewerSeries, ViewerStudy } from "./types";
 
@@ -85,63 +91,108 @@ export function headFirst(ordered: DesktopHeader[]): DesktopHeader[] {
 }
 
 export function buildStudies(headers: readonly DesktopHeader[]): ViewerStudy[] {
-  const grouped = groupLocalStudies(headers);
-  return grouped.map((study) => {
-    const series: ViewerSeries[] = study.series.map((s) => {
-      // The grouped instances ARE our headers. (They used to be looked up again
-      // by file name, and two files with the same name in different folders,
-      // e.g. a browser drop of IM000001 from two series, swapped headers between
-      // series: the 1 mm CT came out mixed with the 5 mm one and not volumetric.)
-      const ordered = headFirst(s.instances as DesktopHeader[]);
-      const imageIds: string[] = [];
-      const perImage: DesktopHeader[] = [];
-      for (const h of ordered) {
-        if (!h.baseImageId) continue;
-        const ids = imageIdsForInstance(h.baseImageId, instanceImageCount(h));
-        imageIds.push(...ids);
-        for (let i = 0; i < ids.length; i += 1) perImage.push(h);
-      }
-      const first = ordered[0];
-      return {
-        uid: s.seriesInstanceUID,
-        studyUid: s.studyInstanceUID,
-        modality: (s.modality || "OT").toUpperCase(),
-        number: s.seriesNumber,
-        description: s.description?.trim() || first?.protocolName || "",
-        imageIds,
-        headers: perImage,
-        imageCount: imageIds.length,
-        frameRate: frameRateOf(first),
-        multiframe: ordered.some((h) => (h.numberOfFrames ?? 1) > 1),
-        frameOfReferenceUid: first?.frameOfReferenceUID,
-        volumetric: isVolumetric(ordered),
-      };
-    });
-    const first = series[0]?.headers[0];
-    const modalities = [...new Set(series.map((s) => s.modality))].sort(
-      (a, b) =>
-        (MODALITY_ORDER.indexOf(a) + 1 || 99) - (MODALITY_ORDER.indexOf(b) + 1 || 99) || a.localeCompare(b)
-    );
-    return {
-      uid: study.studyInstanceUID,
-      description: study.description?.trim() || "",
-      date: study.studyDate,
-      time: first?.studyTime,
-      accession: first?.accessionNumber,
-      institution: first?.institutionName,
-      patient: {
-        name: first?.patientName,
-        id: first?.patientId,
-        sex: first?.patientSex,
-        birthDate: first?.patientBirthDate,
-        age: first?.patientAge,
-        weight: first?.patientWeight,
-      },
-      modalities,
-      series,
-      imageCount: series.reduce((n, s) => n + s.imageCount, 0),
-    };
-  });
+  return runToCompletion(buildStudiesSteps(headers));
+}
+
+/**
+ * `buildStudies` off the long-task list: the same work, cut into slices that
+ * give the main thread back in between (8 ms budget by default). Grouping the
+ * HP's 10,310-image, 242-series MRI was one 66-75 ms task; sliced, no task of
+ * it comes near 50 ms. Same result as `buildStudies`, or undefined when
+ * `isCancelled` turned true (a newer open or rebuild superseded it). The work
+ * reads `headers` across slices: pass an array nobody appends to meanwhile.
+ */
+export function buildStudiesSliced(
+  headers: readonly DesktopHeader[],
+  options?: RunSlicedOptions
+): Promise<ViewerStudy[] | undefined> {
+  return runSliced(buildStudiesSteps(headers), options);
+}
+
+/**
+ * Headers → studies as slice-able work: yields while grouping (see
+ * `groupLocalStudiesSteps`) and after each series is built. `buildStudies` is
+ * this run to completion, `buildStudiesSliced` a slice at a time: one code
+ * path, so both give the same studies, series, order and primary series.
+ */
+export function* buildStudiesSteps(headers: readonly DesktopHeader[]): SlicedWork<ViewerStudy[]> {
+  const grouped = yield* groupLocalStudiesSteps(headers);
+  const studies: ViewerStudy[] = [];
+  for (const study of grouped) {
+    const series: ViewerSeries[] = [];
+    for (const s of study.series) {
+      series.push(viewerSeriesOf(s));
+      yield;
+    }
+    studies.push(viewerStudyOf(study, series));
+  }
+  return studies;
+}
+
+function viewerSeriesOf(s: LocalSeries): ViewerSeries {
+  // The grouped instances ARE our headers. (They used to be looked up again
+  // by file name, and two files with the same name in different folders,
+  // e.g. a browser drop of IM000001 from two series, swapped headers between
+  // series: the 1 mm CT came out mixed with the 5 mm one and not volumetric.)
+  const ordered = headFirst(s.instances as DesktopHeader[]);
+  const imageIds: string[] = [];
+  const perImage: DesktopHeader[] = [];
+  for (const h of ordered) {
+    if (!h.baseImageId) continue;
+    const frames = instanceImageCount(h);
+    if (frames === 1) {
+      // The common case without the one-element array per image (rebuilt
+      // for every image on every progressive rebuild).
+      imageIds.push(h.baseImageId);
+      perImage.push(h);
+      continue;
+    }
+    const ids = imageIdsForInstance(h.baseImageId, frames);
+    imageIds.push(...ids);
+    for (let i = 0; i < ids.length; i += 1) perImage.push(h);
+  }
+  const first = ordered[0];
+  return {
+    uid: s.seriesInstanceUID,
+    studyUid: s.studyInstanceUID,
+    modality: (s.modality || "OT").toUpperCase(),
+    number: s.seriesNumber,
+    description: s.description?.trim() || first?.protocolName || "",
+    imageIds,
+    headers: perImage,
+    imageCount: imageIds.length,
+    frameRate: frameRateOf(first),
+    multiframe: ordered.some((h) => (h.numberOfFrames ?? 1) > 1),
+    frameOfReferenceUid: first?.frameOfReferenceUID,
+    volumetric: isVolumetric(ordered),
+  };
+}
+
+function viewerStudyOf(study: LocalStudy, series: ViewerSeries[]): ViewerStudy {
+  const first = series[0]?.headers[0];
+  const modalities = [...new Set(series.map((s) => s.modality))].sort(
+    (a, b) =>
+      (MODALITY_ORDER.indexOf(a) + 1 || 99) - (MODALITY_ORDER.indexOf(b) + 1 || 99) || a.localeCompare(b)
+  );
+  return {
+    uid: study.studyInstanceUID,
+    description: study.description?.trim() || "",
+    date: study.studyDate,
+    time: first?.studyTime,
+    accession: first?.accessionNumber,
+    institution: first?.institutionName,
+    patient: {
+      name: first?.patientName,
+      id: first?.patientId,
+      sex: first?.patientSex,
+      birthDate: first?.patientBirthDate,
+      age: first?.patientAge,
+      weight: first?.patientWeight,
+    },
+    modalities,
+    series,
+    imageCount: series.reduce((n, s) => n + s.imageCount, 0),
+  };
 }
 
 /** The series to put on screen first: the biggest cross-sectional stack. */

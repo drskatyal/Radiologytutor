@@ -10,7 +10,7 @@ import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
-import type { OrientationCommand, WindowPreset } from "@flowrad/viewer-core";
+import type { OrientationCommand, SliceStats, WindowPreset } from "@flowrad/viewer-core";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import type { ExportKind } from "./components/ExportDialog";
@@ -37,10 +37,10 @@ import {
   takeLaunchPaths,
 } from "./platform";
 import { headersFromBrowserFiles } from "./browserSource";
-import { buildStudies, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
+import { buildStudiesSliced, describeSeries, formatDicomDate, primarySeriesIndex } from "./study";
 import { historyEntryFor, priorsFor, sourceKey, type HistoryEntry } from "./history";
 import type { DesktopHeader, OpenedSource, ScanProgress, SourceKind, ViewerSeries, ViewerStudy } from "./types";
-import { DESKTOP_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
+import { DESKTOP_COMMANDS, MULTI_MONITOR_COMMANDS, keysForAction, resolveInput, resolveShortcut, type ShortcutAction } from "./shortcuts";
 import { inputIndex, isMac, normalizeSpec, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { StartScreen } from "./components/StartScreen";
 import { useUpdater } from "./components/useUpdater";
@@ -83,7 +83,7 @@ import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
 import { onActivity } from "./activity";
-import { nativeEnabled } from "./native/nativeLayout";
+import { nativeEnabled, nativeKnown, settleNativeAtStart, warmNative } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
 import {
   announceClosing,
@@ -100,7 +100,10 @@ import {
   type WindowHandoff,
 } from "./multiWindow";
 import { useCrossWindow } from "./viewer/useCrossWindow";
+import { preloadable } from "./lazyView";
 import { MonitorBadge, MonitorPicker } from "./components/MonitorPicker";
+import { hasMultipleMonitors, sameMonitors, watchMonitors } from "./monitorWatch";
+import { VOICE_PROGRESS_DELAY_MS, voiceStatusShown } from "./voiceUi";
 import { setToolCursor } from "./viewer/toolCursor";
 import type { VoiceProgress, VoiceSession, VoiceState } from "@/components/viewer/voice/voiceSession";
 import { VoiceStatus } from "@/components/viewer/voice/VoiceStatus";
@@ -121,12 +124,19 @@ import {
 function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T {
   return lazy(() => load().then((m) => ({ default: m[key] as React.ComponentType }))) as unknown as T;
 }
-const Toolbar = named<typeof import("./components/Toolbar").Toolbar>(() => import("./components/Toolbar"), "Toolbar");
-const SeriesBrowser = named<typeof import("./viewer/SeriesBrowser").SeriesBrowser>(() => import("./viewer/SeriesBrowser"), "SeriesBrowser");
-const StackViewport = named<typeof import("./viewer/StackViewport").StackViewport>(() => import("./viewer/StackViewport"), "StackViewport");
+// The study view (toolbar, series browser, viewports) is fetched when an open
+// starts (`preloadStudyView`), in parallel with the scan, not when the first
+// series renders (lazyView.tsx: that was a chunk waterfall before the first image).
+const Toolbar = preloadable(() => import("./components/Toolbar").then((m) => m.Toolbar));
+const SeriesBrowser = preloadable(() => import("./viewer/SeriesBrowser").then((m) => m.SeriesBrowser));
+const StackViewport = preloadable(() => import("./viewer/StackViewport").then((m) => m.StackViewport));
 // Phase 2 (FLOWRAD_NATIVE=1): monochrome single-frame series are drawn by the
 // native renderer; everything else stays on the JS viewer (per series).
-const NativeStackViewport = lazy(() => import("./native/NativeStackViewport"));
+const NativeStackViewport = preloadable(() => import("./native/NativeStackViewport").then((m) => m.default));
+/** Start fetching the study view's chunks (idempotent; failures retry on render). */
+function preloadStudyView(): Promise<unknown> {
+  return Promise.all([Toolbar, SeriesBrowser, StackViewport, NativeStackViewport].map((v) => v.preload().catch(() => undefined)));
+}
 const Native3DView = named<typeof import("./viewer/Native3DView").Native3DView>(() => import("./viewer/Native3DView"), "Native3DView");
 const NativePlaneView = named<typeof import("./viewer/NativePlaneView").NativePlaneView>(() => import("./viewer/NativePlaneView"), "NativePlaneView");
 const NativeMprView = named<typeof import("./viewer/NativeMprView").NativeMprView>(() => import("./viewer/NativeMprView"), "NativeMprView");
@@ -181,6 +191,9 @@ const firstImageOf = (fullRes?: number | null, engine?: number | null): number |
   return Number.isFinite(ms) ? ms : null;
 };
 
+/** The native viewport's first show, as `onFirstPaint` passes it (bench timeline). */
+type FirstNativeShow = { cached: boolean; decodeMs: number; frameMs: number; totalMs: number; acquireMs?: number };
+
 /** Series the native renderer draws (P2.2): monochrome, one frame per file. */
 function nativeCapable(series: { multiframe?: boolean; headers: readonly { photometricInterpretation?: string }[] }): boolean {
   if (series.multiframe || series.headers.length === 0) return false;
@@ -188,9 +201,13 @@ function nativeCapable(series: { multiframe?: boolean; headers: readonly { photo
   return pi.startsWith("MONOCHROME");
 }
 
-/** Whether this window renders natively; false at once outside Tauri. */
+/**
+ * Whether this window renders natively; false at once outside Tauri. Waits
+ * for the answer without asking: on Windows the GPU (and so the answer) comes
+ * with the first open, and nothing that waits here is needed before one.
+ */
 function whenNativeKnown(): Promise<boolean> {
-  return isTauri ? nativeEnabled() : Promise.resolve(false);
+  return isTauri ? nativeKnown() : Promise.resolve(false);
 }
 
 export default function App() {
@@ -234,13 +251,27 @@ export default function App() {
       if (engine) fn(engine);
     });
   }, []);
-  /** Start the JS engine early only where it will be the renderer. */
+  /**
+   * A study is about to open (Open dialog, drag over the window, the preview
+   * up): warm its renderer. Native: the GPU device (built on demand on
+   * Windows, so the empty app holds none). JS: the engine.
+   */
   const prewarmJsEngine = useCallback(() => {
-    void whenNativeKnown().then((on) => !on && void getEngine());
+    if (!isTauri) return void getEngine();
+    void warmNative().then((on) => !on && void getEngine());
+  }, []);
+  /**
+   * Start screen, pointer on a recent study or a disc: native mode builds the
+   * GPU (released again if no study follows); the JS path compiles the engine.
+   */
+  const warmForOpen = useCallback(() => {
+    if (!isTauri) return prewarmEngine();
+    void warmNative().then((on) => !on && prewarmEngine());
   }, []);
   useEffect(() => {
     if (!isTauri) return;
-    void nativeEnabled().then((on) => {
+    settleNativeAtStart();
+    void nativeKnown().then((on) => {
       nativeRef.current = on;
       setNativeMode(on);
       if (on) document.documentElement.classList.add("native-transparent");
@@ -315,8 +346,10 @@ export default function App() {
     enabled: boolean;
     t0: number;
     firstPaint?: number;
-    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown };
+    marks: Record<string, number> & { nativeTools?: unknown; interaction?: unknown; leak?: unknown; longTasks?: unknown; volumeStuck?: unknown; mprPanes?: unknown; vrPanes?: unknown; nativeFirst?: unknown; mprSlab?: unknown; reformat?: unknown; multiWindow?: unknown; voice?: unknown; steps?: unknown; hooks?: unknown; openClose?: unknown };
     pendingVolume?: () => Promise<void>;
+    /** Open/close rounds (BENCH_VIEW=openclose): the round now open. Survives the re-open's mark reset. */
+    openCloseRound?: number;
     volumeT0?: number;
   }>({
     enabled: false,
@@ -468,7 +501,8 @@ export default function App() {
         low = true;
         const engine = enginePeek();
         if (engine) enterIdleMemory(engine);
-        void invoke("set_memory_mode", { low: true }).catch(() => undefined);
+        // trim: Rust's decoded-slice cache keeps the slices around this one.
+        void invoke("set_memory_mode", { low: true, trim: true }).catch(() => undefined);
       }, 10_000);
     };
     const events = ["pointerdown", "pointermove", "wheel", "keydown"] as const;
@@ -585,11 +619,20 @@ export default function App() {
         toast({ title: "Use Open files or drop files", description: "Opening by path needs the desktop app.", variant: "info" });
         return;
       }
+      // Build the GPU while the scan runs (on Windows it is not built at
+      // start-up, or was released after the last study closed); the first
+      // viewport finds it ready. A no-op while it is up.
+      void warmNative();
       const seq = ++openSeq.current;
       const t0 = performance.now();
       bench.current.t0 = t0;
       bench.current.marks = { windowReadyMs: bench.current.marks.windowReadyMs ?? 0 };
       bench.current.firstPaint = undefined;
+      // The study view's chunks load while Rust scans (they were fetched one
+      // after another once the first series hung: the first image waited on them).
+      void preloadStudyView().then(() => {
+        if (seq === openSeq.current) bench.current.marks.viewChunksMs = performance.now() - t0;
+      });
       resetWorkspace();
       const label = paths[0].split(/[\\/]/).filter(Boolean).pop() || paths[0];
       setScan({ label, progress: null });
@@ -599,15 +642,41 @@ export default function App() {
       const acc = new Map<string, DesktopHeader>();
       let timer = 0;
       let firstShown = false;
-      const rebuild = () => {
+      // Grouping is time-sliced (`buildStudiesSliced`): on the HP's 10,310-image,
+      // 242-series MRI it was one 66-75 ms main-thread task. One progressive
+      // rebuild runs at a time; batches that land meanwhile ask for another.
+      // The final build (scan done) supersedes any rebuild still in flight.
+      let building = false;
+      let rebuildAgain = false;
+      let scanDone = false;
+      const marks = bench.current.marks;
+      const groupStats = (s: SliceStats) => {
+        marks.groupSlices = (marks.groupSlices ?? 0) + s.slices;
+        marks.groupMaxSliceMs = Math.max(marks.groupMaxSliceMs ?? 0, s.maxSliceMs);
+        marks.groupBusyMs = s.busyMs;
+      };
+      const rebuild = async () => {
         timer = 0;
-        if (seq !== openSeq.current) return;
+        if (seq !== openSeq.current || scanDone) return;
+        if (building) {
+          rebuildAgain = true;
+          return;
+        }
+        building = true;
         markPhase("study: group series");
-        const built = buildStudies([...acc.values()]);
-        // After the first series is up, later batches re-render at low
-        // priority (time-sliced) instead of one long task per batch.
-        if (firstShown) startTransition(() => setStudies(built));
-        else setStudies(built);
+        const built = await buildStudiesSliced([...acc.values()], {
+          isCancelled: () => seq !== openSeq.current || scanDone,
+          onStats: groupStats,
+        });
+        building = false;
+        if (!built || seq !== openSeq.current || scanDone) return;
+        // Every rebuild renders at low priority (time-sliced) instead of as
+        // one long task, the first one too: it mounts the study view, and on
+        // a warm open (all scan-cache hits) it already holds the whole study,
+        // e.g. all 242 series of the 10,310-image MRI (CI: one 78 ms task).
+        // Scan progress is a transition as well (below), so nothing urgent
+        // arrives to restart this render while the scan streams.
+        startTransition(() => setStudies(built));
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
@@ -617,8 +686,16 @@ export default function App() {
           // does not draw; it loads on demand then, not up front.
           if (!isTauri) preloadEngineChunks();
           else void nativeEnabled().then((on) => !on && preloadEngineChunks());
-          setScan(null); // progressive: the viewer takes over, progress moves to the status bar
-          hangFirst(built);
+          startTransition(() => {
+            setScan(null); // progressive: the viewer takes over, progress moves to the status bar
+            hangFirst(built);
+          });
+        }
+        // Batches that landed while this one was grouping: the next rebuild
+        // (right away until a series is up, then at the usual 250 ms pace).
+        if (rebuildAgain) {
+          rebuildAgain = false;
+          if (!timer) timer = window.setTimeout(rebuild, firstShown ? 250 : 0);
         }
       };
 
@@ -627,30 +704,57 @@ export default function App() {
         const result = await scanPaths(paths, {
           onProgress: (progress) => {
             if (seq !== openSeq.current) return;
-            setScan((s) => (s ? { ...s, progress } : s));
-            setScanProgress(progress);
+            // A transition, like the rebuilds: an urgent update would restart
+            // the rebuild render it lands in.
+            startTransition(() => {
+              setScan((s) => (s ? { ...s, progress } : s));
+              setScanProgress(progress);
+            });
           },
           onBatch: (batch) => {
             if (seq !== openSeq.current) return;
             if (!bench.current.marks.firstHeaderMs) bench.current.marks.firstHeaderMs = performance.now() - t0;
-            for (const h of batch) acc.set(h.fileName, { ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` });
-            if (!firstShown) rebuild();
+            // The batch's own objects (fresh from IPC, ours): no copy per
+            // header; the scan result hands these same objects back.
+            for (const h of batch) {
+              h.baseImageId = `wadouri:${imageUrlFor(h.fileId)}`;
+              acc.set(h.fileName, h);
+            }
+            if (!firstShown) void rebuild();
             else if (!timer) timer = window.setTimeout(rebuild, 250);
           },
         });
         if (seq !== openSeq.current) return;
         window.clearTimeout(timer);
-        const headers = result.headers.map((h) => ({ ...h, baseImageId: `wadouri:${imageUrlFor(h.fileId)}` }));
+        scanDone = true; // cancels a progressive rebuild still in flight
+        // The streamed headers (scanPaths): imageIds already set, unless the
+        // shell sent the full list.
+        const headers = result.headers;
+        for (const h of headers) h.baseImageId ??= `wadouri:${imageUrlFor(h.fileId)}`;
         const docs = result.documents ?? [];
-        // Key-image notes become series of the images they select.
         markPhase("study: group series");
-        const built = withKeyImageSeries(buildStudies(headers), docs);
+        const grouped = await buildStudiesSliced(headers, {
+          isCancelled: () => seq !== openSeq.current,
+          onStats: groupStats,
+        });
+        if (!grouped || seq !== openSeq.current) return;
+        // Key-image notes become series of the images they select.
+        const built = withKeyImageSeries(grouped, docs);
         rawOpen.current = { headers, documents: docs };
-        setDocuments(docs);
-        setStudies(built);
-        setGrowing(false);
-        setScan(null);
-        setScanProgress(null);
+        // With the first series already on screen (progressive open), the
+        // complete study and its hanging plan render as one transition:
+        // time-sliced instead of one long render + commit task. The scan is
+        // over, so no urgent progress update can restart it. Nothing on
+        // screen yet (the whole scan beat the first rebuild): urgent, as the
+        // first image waits on it.
+        const settle = firstShown ? startTransition : (update: () => void) => update();
+        settle(() => {
+          setDocuments(docs);
+          setStudies(built);
+          setGrowing(false);
+          setScan(null);
+          setScanProgress(null);
+        });
         if (built.length === 0) {
           toast({
             title: "No DICOM images found",
@@ -667,12 +771,26 @@ export default function App() {
           // Hanging protocol (CT / MR / projection / current vs prior) from the
           // viewer core; otherwise the study's primary series alone.
           const plan = hangingPlanFor(built);
+          // The complete series is sorted now: slice 0 of each hung series is
+          // what its viewport asks for next. Decode it while React re-renders.
+          if (nativeRef.current) {
+            const study = built[0];
+            const hung = plan ? plan.cells : [study?.series[primarySeriesIndex(study)]?.uid];
+            const all = built.flatMap((st) => st.series);
+            const ids = hung.flatMap((uid) => {
+              const sr = uid ? all.find((x) => x.uid === uid) : undefined;
+              return sr && nativeCapable(sr) ? [sr.headers[0].fileId] : [];
+            });
+            if (ids.length) void invoke("native_warm", { fileIds: ids }).catch(() => undefined);
+          }
           if (plan) {
-            setLayout({ rows: plan.rows, cols: plan.cols });
-            setCells(plan.cells);
-            setActiveCell(0);
-            setSyncScroll(plan.syncScroll);
-            setHangingLabel(plan.label);
+            settle(() => {
+              setLayout({ rows: plan.rows, cols: plan.cols });
+              setCells(plan.cells);
+              setActiveCell(0);
+              setSyncScroll(plan.syncScroll);
+              setHangingLabel(plan.label);
+            });
             if (plan.compare) {
               // Prior positions + offset land in the current study's frame.
               const prior = built.flatMap((st) => st.series).find((x) => x.uid === plan.compare!.priorSeries);
@@ -681,10 +799,10 @@ export default function App() {
           } else {
             const study = built[0];
             const primary = study.series[primarySeriesIndex(study)]?.uid;
-            if (primary) setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)]));
+            if (primary) settle(() => setCells((prev) => (prev[0] === primary ? prev : [primary, ...prev.slice(1)])));
           }
         } else {
-          hangFirst(built);
+          settle(() => hangFirst(built));
         }
         const opened: OpenedSource = {
           key: sourceKey(paths),
@@ -692,7 +810,7 @@ export default function App() {
           kind: kindHint ?? result.kind,
           label: labelOverride ?? result.label,
         };
-        setSource(opened);
+        settle(() => setSource(opened));
         void finishOpen(opened, built);
         for (const w of result.warnings.slice(0, 2)) toast({ title: "Heads up", description: w, variant: "warning", duration: 8000 });
         bench.current.marks.scanDoneMs = performance.now() - t0;
@@ -897,6 +1015,49 @@ export default function App() {
                   bench.current.marks.voice = await runVoiceBench((a) => voiceAction.current(a));
                   void report();
                 })();
+              } else if (bench.current.firstPaint != null && benchView === "openclose") {
+                // Open/close rounds (bench.mjs `openclose`): like `close`, but
+                // the same study is re-opened through the app's own open path
+                // after each close, N rounds (FLOWRAD_LEAK_ROUNDS). Each round
+                // reports open, holds BENCH_CLOSE_AFTER_MS, closes (Home),
+                // reports closed, holds again, re-opens; the bench samples the
+                // whole tree's private bytes at each report.
+                void (async () => {
+                  const round = (bench.current.openCloseRound ?? 0) + 1;
+                  bench.current.openCloseRound = round;
+                  const rounds = await invoke<number>("bench_leak_rounds").catch(() => 2);
+                  const hold = await invoke<number>("bench_close_after_ms").catch(() => 20_000);
+                  bench.current.marks.openClose = { round, rounds, holdMs: hold };
+                  await report();
+                  window.setTimeout(() => {
+                    goHomeRef.current();
+                    void benchReport({ closed: true, openClose: { round, rounds }, closedAtMs: Math.round(performance.now() - t0) });
+                    if (round < rounds) window.setTimeout(() => void openPathsRef.current(paths), hold);
+                  }, hold);
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "steps") {
+                // Scripted interaction pass: scroll, W/L, rotate, timed per step.
+                void (async () => {
+                  const { runStepsPass, nativeDriver, engineDriver } = await import("./benchSteps");
+                  const engine = enginePeek();
+                  const vp = engine?.renderingEngine.getViewport(viewportIdFor(0));
+                  const driver =
+                    nativeRef.current && document.querySelector("[data-native-viewport]")
+                      ? await nativeDriver(cellKey(0))
+                      : engine && vp
+                        ? engineDriver(engine.core, vp as unknown as Parameters<typeof engineDriver>[1])
+                        : null;
+                  bench.current.marks.steps = driver ? await runStepsPass(driver) : { error: "no viewport to drive" };
+                  void report();
+                })();
+              } else if (bench.current.firstPaint != null && benchView === "hooks") {
+                // Test hook self-test (testHook.ts): rotation / flips drawn,
+                // thumbnails rendered and counted, bindings set → reset → preset.
+                void (async () => {
+                  const hook = (window as unknown as { __flowradTest?: import("./testHook").FlowradTestHook }).__flowradTest;
+                  bench.current.marks.hooks = hook ? await hook.selfTest().catch((e: unknown) => ({ ok: false, error: String(e) })) : { ok: false, error: "test hook not installed" };
+                  void report();
+                })();
               } else if (bench.current.firstPaint != null && benchView === "close") {
                 // Close lifecycle (bench.mjs `close`): report with the study
                 // open, hold it open while the bench samples it settled, then
@@ -946,7 +1107,8 @@ export default function App() {
           setScan((s) => (s ? { ...s, progress: { phase: "reading", read, accepted, total } } : s))
         );
         if (seq !== openSeq.current) return;
-        const built = buildStudies(headers);
+        const built = await buildStudiesSliced(headers, { isCancelled: () => seq !== openSeq.current });
+        if (!built || seq !== openSeq.current) return;
         rawOpen.current = { files };
         setStudies(built);
         setScan(null);
@@ -1044,7 +1206,7 @@ export default function App() {
             // ms − now() ≈ when the webview began loading the page: everything
             // before it is window + WebView2/WebKit start-up, after it is ours.
             const now = performance.now();
-            const marks = await invoke<Record<string, number | null>>("startup_marks").catch(() => ({}));
+            const marks = await invoke<Record<string, number | string | null>>("startup_marks").catch(() => ({}));
             // First paint = the browser's own first-contentful-paint (Paint
             // Timing, relative to navigation start), placed on the process
             // clock. The time this callback runs is later by two frames and
@@ -1301,11 +1463,18 @@ export default function App() {
   // ───────────── offline voice commands ─────────────
   // The mic toggle loads the recognizer and model only when switched on and
   // frees them entirely when off (components/viewer/voice/voiceSession.ts).
+  // The model is bundled with the app: nothing is downloaded. Preparing it is
+  // shown (with its size) only the first time on this computer and only when
+  // it takes over a second; after that, switching voice on just turns it on
+  // and the mic button shows it is starting (voiceUi.ts).
   const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
   const voiceSession = useRef<VoiceSession | null>(null);
   const voiceAction = useRef<(a: VoiceAction) => void>(() => undefined);
   /** The Home action, for the close-lifecycle bench (opened before `goHome` is defined). */
   const goHomeRef = useRef<() => void>(() => undefined);
+  /** The open flow, for the bench's open/close rounds (it re-opens from inside an open). */
+  const openPathsRef = useRef<(paths: string[]) => Promise<void>>(async () => undefined);
+  openPathsRef.current = (paths) => openPaths(paths);
   const heardTimer = useRef(0);
   const showHeard = useCallback((heard: string) => {
     setVoice((v) => ({ ...v, heard }));
@@ -1323,6 +1492,18 @@ export default function App() {
     void import("@/components/viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
   }, []);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  /** Loading for longer than VOICE_PROGRESS_DELAY_MS. */
+  const [voiceSlow, setVoiceSlow] = useState(false);
+  /** A Retry after an error: show how the load goes, even when the model was prepared before. */
+  const [voiceRetrying, setVoiceRetrying] = useState(false);
+  useEffect(() => {
+    setVoiceSlow(false);
+    if (voice.state !== "loading") return;
+    const t = window.setTimeout(() => setVoiceSlow(true), VOICE_PROGRESS_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [voice.state]);
+  const voiceReadyRef = useRef(settings.voiceReady);
+  voiceReadyRef.current = settings.voiceReady;
   const toggleVoiceRef = useRef<() => Promise<void>>(async () => undefined);
   toggleVoiceRef.current = async () => {
     if (voiceSession.current || voice.state === "loading") {
@@ -1350,10 +1531,18 @@ export default function App() {
         setVoice((v) => ({ ...v, state }));
         if (state === "error") setVoiceError(detail ?? null);
         if (state === "off" || state === "error") voiceSession.current = null;
+        if (state !== "loading") setVoiceRetrying(false);
+        // Prepared once on this computer: later starts are quiet.
+        if (state === "listening" && !voiceReadyRef.current) {
+          voiceReadyRef.current = true;
+          updateSettings({ voiceReady: true });
+        }
       },
     });
   };
   useEffect(() => () => stopVoice(), [stopVoice]);
+  /** Voice can run here (desktop, or a browser with a microphone API): the mic, the help sheet and Settings offer it. */
+  const voiceAvailable = isTauri || typeof navigator.mediaDevices?.getUserMedia === "function";
 
   // ───────────── several windows / monitors (multiWindow.ts) ─────────────
   // Main + secondary viewer windows act as one reading station: a series can
@@ -1366,34 +1555,21 @@ export default function App() {
   const otherWindows = useRef<Record<string, { monitor?: string; rows: number; cols: number; cells: (string | null)[]; studyKey?: string }>>({});
   const refreshMonitors = useCallback(async () => {
     const [list, mine] = await Promise.all([listMonitors(), currentMonitorName()]);
-    setMonitors(list);
+    // An unchanged desk (most re-reads) re-renders nothing.
+    setMonitors((prev) => (sameMonitors(prev, list) ? prev : list));
     setMyMonitor(mine);
     return list;
   }, []);
+  // Follow the desk live (monitorWatch.ts): plugging a monitor in or out shows
+  // or hides the multi-monitor UI. No polling on the start screen.
+  const monitorWatchActive = studies.length > 0;
   useEffect(() => {
     if (!monitorsAvailable()) return;
     void refreshMonitors();
-    const onFocus = () => void refreshMonitors();
-    window.addEventListener("focus", onFocus);
-    let timer = 0;
-    let off: (() => void) | undefined;
-    if (isTauri) {
-      // Dragged to another monitor, or its scaling changed: re-read (debounced).
-      const later = () => {
-        window.clearTimeout(timer);
-        timer = window.setTimeout(() => void refreshMonitors(), 300);
-      };
-      void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        const w = getCurrentWindow();
-        void Promise.all([w.onMoved(later), w.onScaleChanged(later)]).then((uns) => (off = () => uns.forEach((u) => u())));
-      });
-    }
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      window.clearTimeout(timer);
-      off?.();
-    };
-  }, [refreshMonitors]);
+    return watchMonitors({ refresh: () => void refreshMonitors(), active: monitorWatchActive, tauri: isTauri });
+  }, [refreshMonitors, monitorWatchActive]);
+  /** Two or more monitors: the multi-monitor UI (send to monitor, picker, badge, Mod+Shift+N / Mod+Alt+N) is offered. */
+  const multiMonitor = hasMultipleMonitors(monitors);
   const myMonitorIndex = monitors.findIndex((m) => m.name === myMonitor);
 
   /** Main window: remember the other windows' monitors and layouts for next launch. */
@@ -1486,15 +1662,19 @@ export default function App() {
     [monitors, handoffFor, layout, cells, source, persistArrangements, openedToast]
   );
 
-  /** Mod+Shift+N / Mod+Alt+N: to the next monitor (or a new window with one monitor). */
+  /** Mod+Shift+N / Mod+Alt+N: to the next monitor. Offered only with two or more monitors. */
   const sendToMonitor = useCallback(
     async (scope: "viewport" | "layout") => {
       const list = await refreshMonitors();
+      if (!hasMultipleMonitors(list)) {
+        toast({ title: "Only one monitor connected", description: "Connect a second monitor to open a series or layout on it.", variant: "info", duration: 2500 });
+        return;
+      }
       const target = nextMonitor(list, myMonitor)?.name ?? null;
       if (scope === "layout") return sendLayoutToMonitor(target);
       if (activeSeriesUid) return sendSeriesToMonitor(activeSeriesUid, target);
     },
-    [refreshMonitors, myMonitor, sendLayoutToMonitor, sendSeriesToMonitor, activeSeriesUid]
+    [refreshMonitors, myMonitor, sendLayoutToMonitor, sendSeriesToMonitor, activeSeriesUid, toast]
   );
 
   // The monitor picker on series cards.
@@ -1610,10 +1790,11 @@ export default function App() {
       if (!h) return;
       autoHung.current = false;
       if (h.headers) {
+        const grouped = (await buildStudiesSliced(h.headers)) ?? [];
         rawOpen.current = { headers: h.headers, documents: h.documents };
         const docs = (h.documents ?? []) as DicomDocument[];
         setDocuments(docs);
-        setStudies(withKeyImageSeries(buildStudies(h.headers), docs));
+        setStudies(withKeyImageSeries(grouped, docs));
         setSource({ key: h.studyKey ?? `window:${windowId}`, paths: [], kind: "files", label: h.sourceLabel });
       } else if (h.files) {
         await openBrowserFiles(h.files);
@@ -1810,8 +1991,8 @@ export default function App() {
   const [exportInitial, setExportInitial] = useState<{ kind?: ExportKind; format?: "png" | "jpeg"; overlay?: "none" | "anonymous" | "full" } | undefined>();
   const [tagsView, setTagsView] = useState<{ imageId: string; title?: string; description?: string; summary?: { label: string; value: string }[] } | null>(null);
   const menuMonitors = useMemo(
-    () => (monitors.length > 1 ? monitors.map((m, i) => ({ name: m.name, number: i + 1, color: monitorColor(i), current: m.name === myMonitor })) : []),
-    [monitors, myMonitor]
+    () => (multiMonitor ? monitors.map((m, i) => ({ name: m.name, number: i + 1, color: monitorColor(i), current: m.name === myMonitor })) : []),
+    [multiMonitor, monitors, myMonitor]
   );
   const priorEntries = useMemo(
     () => (isTauri && source && studies.length === 1 ? priorsFor(history, { key: source.key, patientId: studies[0]?.patient.id, studyDate: studies[0]?.date }) : []),
@@ -2207,6 +2388,35 @@ export default function App() {
   }, [resetWorkspace, native]);
   goHomeRef.current = goHome;
 
+  // Bench / e2e test hook (window.__flowradTest): bench or test mode only,
+  // gated like benchReport (FLOWRAD_BENCH=1, or ?bench in the browser build).
+  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell });
+  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell };
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void benchEnabled().then(async (on) => {
+      if (!on || cancelled) return;
+      const { installTestHook } = await import("./testHook");
+      if (cancelled) return;
+      const st = () => testHookState.current;
+      off = installTestHook({
+        activeHandle: () => getHandle(cellKey(st().activeCell)),
+        activeCellKey: () => cellKey(st().activeCell),
+        studies: () => st().studies,
+        hiddenSeries: () => st().hiddenSeries,
+        seriesPanel: () => ({ collapsed: st().seriesPanel.collapsed, compact: !!st().settings.compactSeries }),
+        openSeriesPanel: () => st().seriesPanel.collapsed && st().seriesPanel.toggle(),
+        bindings: () => st().settings.bindings ?? {},
+        updateBindings: (next) => updateSettings({ bindings: Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]])) }),
+      });
+    }, () => undefined);
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [updateSettings]);
+
   const onPreview = useCallback((fullRes: boolean) => {
     const at = performance.now() - bench.current.t0;
     if (bench.current.marks.firstPreviewMs == null) bench.current.marks.firstPreviewMs = at;
@@ -2219,8 +2429,22 @@ export default function App() {
     prewarmJsEngine();
   }, [prewarmJsEngine]);
 
-  const onFirstPaint = useCallback(() => {
-    if (bench.current.firstPaint == null) bench.current.firstPaint = performance.now() - bench.current.t0;
+  const onFirstPaint = useCallback((ms?: number, _health?: unknown, nativeShow?: FirstNativeShow) => {
+    if (bench.current.firstPaint != null) return;
+    const at = performance.now() - bench.current.t0;
+    bench.current.firstPaint = at;
+    // Native: where the last stretch went (viewport asked → Rust's own split).
+    if (nativeShow && ms != null) {
+      bench.current.marks.firstViewportSentMs = at - ms;
+      bench.current.marks.nativeFirst = {
+        roundTripMs: Math.round(ms * 10) / 10,
+        cached: nativeShow.cached,
+        decodeMs: Math.round(nativeShow.decodeMs * 10) / 10,
+        frameMs: Math.round(nativeShow.frameMs * 10) / 10,
+        acquireMs: nativeShow.acquireMs != null ? Math.round(nativeShow.acquireMs * 10) / 10 : null,
+        rustMs: Math.round(nativeShow.totalMs * 10) / 10,
+      };
+    }
   }, []);
 
   // ───────────── render ─────────────
@@ -2284,21 +2508,33 @@ export default function App() {
         </>
       )}
 
-      <VoiceStatus
-        className="fixed right-3 top-12 z-50"
-        state={voice.state}
-        progress={voiceProgress}
-        error={voiceError}
-        onRetry={() => {
-          setVoice((v) => ({ ...v, state: "off" }));
-          void toggleVoiceRef.current();
-        }}
-        onDismiss={() => {
-          stopVoice();
-          setVoice((v) => ({ ...v, state: "off" }));
-        }}
-      />
-      {hasStudy && !distractionFree && (
+      {voiceStatusShown({ state: voice.state, slow: voiceSlow, firstLoad: !settings.voiceReady || voiceRetrying, stage: voiceProgress?.stage }) && (
+        <VoiceStatus
+          className="fixed right-3 top-12 z-50"
+          state={voice.state}
+          progress={voiceProgress}
+          error={voiceError}
+          onRetry={() => {
+            setVoiceRetrying(true);
+            setVoice((v) => ({ ...v, state: "off" }));
+            void toggleVoiceRef.current();
+          }}
+          onDismiss={() => {
+            stopVoice();
+            setVoice((v) => ({ ...v, state: "off" }));
+          }}
+        />
+      )}
+      {/* Mounted (hidden) as soon as an open starts: the toolbar's Radix menus
+          and tooltips were a good part of the commit that mounts the study
+          view when the first series hangs (CI "ye ... MessagePort.onmessage").
+          While the scan reads, nothing waits on the main thread; the first
+          series then only re-renders it. `contents` keeps the layout as if
+          the wrapper were not there; its own boundary keeps a chunk still
+          loading from suspending the whole app. */}
+      {(hasStudy || scan != null) && !distractionFree && (
+        <div className={hasStudy ? "contents" : "hidden"}>
+        <Suspense fallback={null}>
         <Toolbar
           shortcuts={settings.bindings}
           leftTool={leftTool}
@@ -2331,7 +2567,7 @@ export default function App() {
           }}
           onOpen={(w) => void openDialog(w)}
           onHome={goHome}
-          voice={isTauri || typeof navigator.mediaDevices?.getUserMedia === "function" ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current(), onWarm: warmVoice } : undefined}
+          voice={voiceAvailable ? { state: voice.state, heard: voice.heard, onToggle: () => void toggleVoiceRef.current(), onWarm: warmVoice } : undefined}
           onUndo={() => runAction({ type: "undoAnnotation" })}
           onRedo={() => runAction({ type: "redoAnnotation" })}
           onClear={() => runAction({ type: "clearAnnotations" })}
@@ -2362,6 +2598,8 @@ export default function App() {
             } : undefined,
           }}
         />
+        </Suspense>
+        </div>
       )}
 
       <main className="relative flex min-h-0 flex-1">
@@ -2596,6 +2834,7 @@ export default function App() {
             dragging={dragging}
             onSettings={() => setDialog("settings")}
             onHelp={() => setDialog("help")}
+            onIntent={warmForOpen}
           />
         )}
 
@@ -2642,7 +2881,7 @@ export default function App() {
 
       {hasStudy && !distractionFree && (
         <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-subtle bg-surface px-3 text-[11px] text-muted tabular-nums">
-          {monitors.length > 1 && myMonitorIndex >= 0 && <MonitorBadge number={myMonitorIndex + 1} color={monitorColor(myMonitorIndex)} />}
+          {multiMonitor && myMonitorIndex >= 0 && <MonitorBadge number={myMonitorIndex + 1} color={monitorColor(myMonitorIndex)} />}
           <span className="flex items-center gap-1 text-success">
             <ShieldCheck className="h-3 w-3" aria-hidden /> Offline
           </span>
@@ -2686,7 +2925,13 @@ export default function App() {
         </div>
       )}
       {dialog === "help" && (
-      <ShortcutsDialog open={dialog === "help"} onClose={() => setDialog(null)} overrides={settings.bindings} />
+      <ShortcutsDialog
+        open={dialog === "help"}
+        onClose={() => setDialog(null)}
+        overrides={settings.bindings}
+        hidden={multiMonitor ? undefined : MULTI_MONITOR_COMMANDS}
+        voice={voiceAvailable ? { keys: keysForAction({ type: "voice" }, settings.bindings) } : undefined}
+      />
       )}
       {dialog === "window" && (
       <CustomWindowDialog
@@ -2748,6 +2993,8 @@ export default function App() {
         settings={settings}
         onChange={updateSettings}
         version={version}
+        hiddenCommands={multiMonitor ? undefined : MULTI_MONITOR_COMMANDS}
+        voice={voiceAvailable ? { keys: keysForAction({ type: "voice" }, settings.bindings) } : undefined}
         extra={
           <>
             <section className="py-3">

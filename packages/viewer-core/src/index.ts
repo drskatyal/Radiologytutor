@@ -11,6 +11,7 @@ export * from "./frameTransfer";
 export * from "./hangingLayout";
 export * from "./localDicomFiles";
 export * from "./localStudy";
+export * from "./timeSlice";
 export * from "./zipArchive";
 export * from "./localMemoryBudget";
 export * from "./seriesThumbnail";

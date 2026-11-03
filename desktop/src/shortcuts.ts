@@ -399,12 +399,25 @@ export interface SheetRow {
   id?: string;
 }
 
-/** Rows for the shortcut sheet: every input bound to each command (keys, extra mouse buttons, tilt), in the platform's words. */
-export function shortcutSheet(mac = isMac(), overrides: ShortcutOverrides = getLiveBindings()): SheetRow[] {
+/**
+ * Commands that only make sense with two or more monitors (a window on the
+ * next monitor). The sheet and Settings › Mouse & Keyboard leave them out on a
+ * single display; their keys then say so instead of opening a window.
+ */
+export const MULTI_MONITOR_COMMANDS: ReadonlySet<string> = new Set(["window.sendViewport", "window.sendLayout"]);
+
+const NONE: ReadonlySet<string> = new Set();
+
+/**
+ * Rows for the shortcut sheet: every input bound to each command (keys, extra
+ * mouse buttons, tilt), in the platform's words. `hidden`: command ids left
+ * out (MULTI_MONITOR_COMMANDS on a single display).
+ */
+export function shortcutSheet(mac = isMac(), overrides: ShortcutOverrides = getLiveBindings(), hidden: ReadonlySet<string> = NONE): SheetRow[] {
   const eff = effectiveInputs(DESKTOP_COMMANDS, overrides);
   const rows: SheetRow[] = [];
   for (const b of BINDINGS) {
-    if (!b.keys) continue;
+    if (!b.keys || (b.id && hidden.has(b.id))) continue;
     if (!b.id) {
       rows.push({ group: b.group, does: b.does, keys: keyLabel(b.keys, mac), custom: false });
       continue;

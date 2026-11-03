@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "flowrad-viewer"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "base64 0.23.1",
  "block2",
@@ -1380,6 +1380,7 @@ dependencies = [
  "dicom-pixeldata",
  "dicom-transfer-syntax-registry",
  "dicom-ul",
+ "dirs",
  "futures-util",
  "libc",
  "libmimalloc-sys",

@@ -107,6 +107,9 @@ jobs:
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only voice --prod-csp --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
           # Multi-monitor: monitor picker, a second window, linked scroll / W/L / reference lines (pretend two-monitor desk).
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only multiwindow --shots "$RUNNER_TEMP/ui-shots"
+          # Bench/test hook (window.__flowradTest, ?bench only): rotation / flips drawn,
+          # thumbnails one per series and rendered, bindings set → reset all → preset.
+          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only hooks --shots "$RUNNER_TEMP/ui-shots"
       - name: Upload UI e2e screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -169,22 +172,30 @@ jobs:
       # worker could not run under the app's CSP. The built app, its production
       # CSP and bundled model: voice must become ready, report download
       # progress, and recognise spoken commands (Windows speech synthesis).
-      - name: e2e — voice commands in the built app (ready, progress, spoken commands recognised)
+      # Commands are whole phrases matched as the whole utterance (0.8.3), so
+      # each is spoken as its own utterance: 1.2 s of silence between them, as
+      # make-voice-wav.py does.
+      - name: e2e — voice commands in the built app (ready, progress, whole spoken phrases recognised)
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Speech
           $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
           $s.Rate = -2
           $s.SetOutputToWaveFile("$env:RUNNER_TEMP\voice.wav")
-          $s.Speak("next series. ")
-          $s.Speak("zoom in. ")
-          $s.Speak("lung window. ")
+          $p = New-Object System.Speech.Synthesis.PromptBuilder
+          foreach ($phrase in "next series", "zoom in", "lung window") {
+            $p.AppendBreak([TimeSpan]::FromMilliseconds(1200))
+            $p.AppendText($phrase)
+          }
+          $p.AppendBreak([TimeSpan]::FromMilliseconds(1200))
+          $s.Speak($p)
           $s.Dispose()
           python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" "$env:RUNNER_TEMP\voice.wav"
       # The committed recording (speech through a simulated speaker-to-mic room
       # path; desktop/scripts/make-voice-wav.py --room): every phrase must be
-      # recognised and performed, not just one.
-      - name: e2e — voice from a fixed recording (next series, zoom in, lung window all recognised)
+      # recognised as the whole utterance and performed, not just one. Its
+      # phrases are already full phrases (no single words): no re-recording.
+      - name: e2e — voice from a fixed recording (next series, zoom in, lung window all recognised as whole phrases)
         shell: pwsh
         run: python desktop/scripts/e2e-voice.py desktop/src-tauri/target/debug/flowrad-viewer.exe "$env:RUNNER_TEMP\ct40" e2e/fixtures/voice/commands-room.wav --expect "next series" "zoom in" "lung window"
 
@@ -265,6 +276,10 @@ jobs:
       # The strict <= 50 ms everywhere is checked on real hardware (HP).
       INTERACTION_MAX_MS: "50"
       OPEN_LONG_TASK_MAX_MS: "150"
+      # Series grouping is time-sliced: its slowest slice, measured in the app
+      # on the 10,310-image MRI open (one 66-75 ms task on the HP before), stays
+      # under the 50 ms long-task line. CPU-only work, so no WARP allowance.
+      GROUP_SLICE_MAX_MS: "50"
       FRAME_P95_MAX_MS: "33"
       DROPPED_MAX: "3"
       LEAK_MAX_MB: "400"
@@ -307,12 +322,21 @@ jobs:
         env:
           FLOWRAD_NATIVE: "1"
         run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10 --max-private-mb ${{ env.BASELINE_PRIVATE_MAX_MB }}
+      # Informational: the same empty app with the GPU device built at launch
+      # (0.8.2 behaviour) instead of on the first open, so the run shows what
+      # deferring it saves (step above vs this one, app process private).
+      - name: P2.0 — empty app with the GPU built at launch (FLOWRAD_GPU_WARM=eager; informational)
+        continue-on-error: true
+        env:
+          FLOWRAD_NATIVE: "1"
+          FLOWRAD_GPU_WARM: eager
+        run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
       - name: P2.0 — floor + native surface (spike view, whole tree, after 10 s)
         env:
           FLOWRAD_NATIVE: "1"
           FLOWRAD_BENCH_VIEW: native-spike
         run: node desktop/scripts/bench.mjs idle desktop/src-tauri/target/release/flowrad-viewer.exe --seconds 10
-      - name: P2.1 — cold start in native mode (native first paint before WebView2 loads; informational)
+      - name: P2.1 — cold start in native mode (native splash before WebView2 loads; informational)
         env:
           FLOWRAD_NATIVE: "1"
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5
@@ -366,7 +390,7 @@ jobs:
           node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
           FLOWRAD_BENCH_VIEW=3d node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigct" --max-mb ${{ env.MPR_MAX_MB }}
       - name: Cold open of the 10,310-image MRI (scan + first image)
-        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }}
+        run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --runs 2 --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }} --max-group-slice-ms ${{ env.GROUP_SLICE_MAX_MS }}
       - name: P2.1 — native renderer on the 848-slice CT (first image, scroll, whole tree; informational)
         run: node desktop/scripts/bench.mjs native desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3
       - name: P2.2 e2e — the app's first viewport drawn natively (848-slice CT, screen grab)
@@ -410,7 +434,7 @@ jobs:
         env:
           FLOWRAD_BENCH_VIEW: grid
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/bigmr" --settle 20 --cold
-      - name: Cold start (median of 5, first paint in-process; app share gated, WebView2 phase logged)
+      - name: Cold start (median of 5, in-process; first visible = native splash or page paint, gated; page share gated; WebView2 phase logged)
         run: node desktop/scripts/bench.mjs coldstart desktop/src-tauri/target/release/flowrad-viewer.exe --runs 5 --max-ms ${{ env.COLDSTART_MAX_MS }} --max-app-ms ${{ env.COLDSTART_APP_MAX_MS }}
       - name: Open + first image (cold and warm)
         run: node desktop/scripts/bench.mjs desktop desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --runs 3 --max-first-image-ms ${{ env.FIRST_IMAGE_MAX_MS }} --max-first-visible-ms ${{ env.FIRST_VISIBLE_MAX_MS }} --max-long-task-ms ${{ env.OPEN_LONG_TASK_MAX_MS }} --require-gpu
@@ -423,6 +447,8 @@ jobs:
       # Informational A/B (never fails the job): WebView2 process model vs
       # idle and MPR memory. The flags are the app's own plus one variant.
       - name: A/B — WebView2 process model vs idle / MPR memory / cold start (informational)
+        # Runs even when a gate above failed: the flag decision needs it.
+        if: ${{ !cancelled() }}
         continue-on-error: true
         shell: bash
         env:
@@ -430,14 +456,19 @@ jobs:
         run: |
           # Keep going when a variant fails (no report = that flag set breaks the app).
           set +e +o pipefail
-          base=$(node -p "require('./desktop/src-tauri/tauri.conf.json').app.windows[0].additionalBrowserArgs")
+          # FLOWRAD_WEBVIEW2_EXTRA_ARGS appends to the app's own flags inside
+          # the app (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS never reached the
+          # browser: every variant ran the same 7 processes).
           exe=desktop/src-tauri/target/release/flowrad-viewer.exe
-          for variant in "" "--in-process-gpu" "--enable-features=NetworkServiceInProcess2" "--in-process-gpu --enable-features=NetworkServiceInProcess2"; do
+          # The app ships --enable-features=NetworkServiceInProcess2 (0.8.3);
+          # "!--flag" takes one of the app's own flags out, so the second
+          # variant is the process model before it.
+          for variant in "" "!--enable-features=NetworkServiceInProcess2" "--in-process-gpu" "--disable-features=AudioServiceOutOfProcess"; do
             echo "::group::variant: ${variant:-app defaults}"
-            export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="$base $variant" VARIANT="${variant:-defaults}"
+            export FLOWRAD_WEBVIEW2_EXTRA_ARGS="$variant" VARIANT="${variant:-defaults}"
             FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=grid timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" --settle 20 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`IDLE ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`IDLE ${process.env.VARIANT||"defaults"}: settled ws ${r.settledWsMb} MB private ${r.settledPrivateMb} MB, ${r.processes} processes`)})'
             FLOWRAD_BENCH_TIMEOUT_MS=60000 FLOWRAD_BENCH_VIEW=mpr timeout 150 node desktop/scripts/bench.mjs mpr $exe "${{ runner.temp }}/ct848" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(!s.trim()){console.log(`MPR  ${process.env.VARIANT}: no report`);return}const r=JSON.parse(s);console.log(`MPR  ${process.env.VARIANT||"defaults"}: peak ws ${r.peakWsMb} MB private ${r.peakPrivateMb} MB, ${r.processes} processes`)})'
-            timeout 150 node desktop/scripts/bench.mjs coldstart $exe --runs 3 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.indexOf("{")<0){console.log(`COLD ${process.env.VARIANT}: no report`);return}const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.env.VARIANT||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})'
+            timeout 150 node desktop/scripts/bench.mjs coldstart $exe --runs 5 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.indexOf("{")<0){console.log(`COLD ${process.env.VARIANT}: no report`);return}const j=s.slice(s.indexOf("{"));const r=JSON.parse(j);console.log(`COLD ${process.env.VARIANT||"defaults"}: first paint median ${r.medianMs} ms, nav start ${r.median?.navStartMs} ms`)})'
             echo "::endgroup::"
           done
       - name: Frame times — scroll 120 slices, zoom, window/level (one step per frame)
@@ -457,6 +488,24 @@ jobs:
         # so the leak / multi-window / MPR gates are always measured and still gate.
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
+      # Informational (0.8.3 bench hooks): logged for comparison with the HP, never
+      # gate. They run even when an earlier step failed (the frame-time step is
+      # known to fail on this runner's software GPU). No thresholds are passed.
+      - name: Open/close rounds — CT opened, closed, re-opened ×3; private MB per round (whole tree; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: node desktop/scripts/bench.mjs openclose desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --hold 15 --after-close 30
+      - name: Scripted interaction pass — scroll, window/level, rotate; per-step p50 / p95 / max and long tasks (informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs steps desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
+      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs hooks desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
 
   # macOS (0.8.2): the same app on Apple Silicon with the native renderer on
   # Metal (the runner has a real, paravirtualised Apple GPU). Build, smoke and
@@ -561,9 +610,46 @@ jobs:
       - name: Gate — feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs leak "$APP" "$RUNNER_TEMP/ct848" --rounds 3 --max-leak-mb "$LEAK_MAX_MB" --max-round-growth-mb "$LEAK_ROUND_GROWTH_MAX_MB"
+      # The gate is unchanged; the RUNNER lines around it are informational.
+      # Identical trees have built this volume in 108 ms and in 2,039 ms on
+      # different runners (0.8.3: #272 vs #271), and the WKWebView control
+      # above does not track it (the build is file reads + a parallel decode,
+      # not WebKit start-up). So the step also prints the runner's load, the
+      # busiest processes while the bench runs (e.g. Spotlight indexing the
+      # new CT), and a CPU / file-read index taken AFTER the bench, so the
+      # gate's own conditions are unchanged. A slow build with a slow index or
+      # a busy top is the runner; a slow build on a quiet, normal-speed runner
+      # is ours.
       - name: Gate — MPR build time and peak memory
         if: ${{ !cancelled() }}
-        run: node desktop/scripts/bench.mjs mpr "$APP" "$RUNNER_TEMP/ct848" --max-ms "$MPR_MAX_MS" --max-mb "$MPR_MAX_MB"
+        run: |
+          echo "RUNNER: $(sysctl -n hw.ncpu) CPUs, $(sysctl -n hw.memsize | awk '{printf "%d GB", $1 / 1073741824}'), $(uptime | sed 's/.*load averages*: /load /')"
+          top -l 8 -s 1 -o cpu -n 6 -stats pid,command,cpu,mem > "$RUNNER_TEMP/mpr-top.txt" 2>&1 &
+          sampler=$!
+          rc=0
+          node desktop/scripts/bench.mjs mpr "$APP" "$RUNNER_TEMP/ct848" --max-ms "$MPR_MAX_MS" --max-mb "$MPR_MAX_MB" || rc=$?
+          wait "$sampler" || true
+          echo "RUNNER: busiest processes while the bench ran (top, 1 s apart; the first sample's CPU% is since boot):"
+          grep -Ev '^(Processes|SharedLibs|MemRegions|PhysMem|VM|Networks|Disks):|^$' "$RUNNER_TEMP/mpr-top.txt" || true
+          python3 - "$RUNNER_TEMP/ct848" <<'PY' || true
+          import concurrent.futures, hashlib, os, sys, time
+          d, cpus = sys.argv[1], os.cpu_count() or 1
+          t = time.perf_counter()
+          n = sum(len(open(os.path.join(d, f), "rb").read()) for f in os.listdir(d))
+          read_ms = (time.perf_counter() - t) * 1000
+          buf = bytes(range(256)) * (1 << 18)  # 64 MB
+          t = time.perf_counter()
+          hashlib.sha256(buf).digest()
+          one_ms = (time.perf_counter() - t) * 1000
+          t = time.perf_counter()
+          with concurrent.futures.ThreadPoolExecutor(cpus) as ex:  # hashlib drops the GIL
+              list(ex.map(lambda _: hashlib.sha256(buf).digest(), range(cpus)))
+          all_ms = (time.perf_counter() - t) * 1000
+          print(f"RUNNER (after the bench): read the CT's {n >> 20} MB in {read_ms:.0f} ms; "
+                f"sha256 of 64 MB in {one_ms:.0f} ms on one core, x{cpus} in parallel in {all_ms:.0f} ms; "
+                f"load {os.getloadavg()[0]:.2f}")
+          PY
+          exit $rc
       # The release leg: universal binary (Apple Silicon + Intel) in a .dmg,
       # unsigned here (the release workflow signs when the secrets exist).
       - name: Build the universal .dmg (arm64 + x86_64)

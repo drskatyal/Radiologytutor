@@ -12,7 +12,7 @@
 // measurement / ROI / probe / arrow / eraser tool on an SVG layer
 // (NativeAnnotationLayer), and Magnify as a second native viewport at 3×.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   applyOrientation,
   getScrollPreferences,
@@ -102,8 +102,9 @@ export default function NativeStackViewport({
   const cineRef = useRef(cine);
   cineRef.current = cine;
 
-  // Register the cell's rectangle with the native layout.
-  useEffect(() => {
+  // Register the cell's rectangle with the native layout. Layout effect: the
+  // layout flush is scheduled for this frame, not after the browser has painted.
+  useLayoutEffect(() => {
     const el = elementRef.current;
     if (!el) return;
     return registerNativeCell(cellKey, el);
@@ -213,7 +214,11 @@ export default function NativeStackViewport({
     const started = performance.now();
     setLoading(true);
     setError(null);
-    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0 }).then(
+    // The cell's rect goes with the series: the first frame draws in place
+    // instead of at 0 x 0 until the layout flush lands.
+    const box = elementRef.current?.getBoundingClientRect();
+    const rect = box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, w: box.width, h: box.height } : null;
+    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0, rect }).then(
       (r) => {
         busyRef.current = false;
         sentRef.current = want;
@@ -226,7 +231,7 @@ export default function NativeStackViewport({
         noteActivity();
         // Native paint: the frame was presented when the call returned. Blank
         // detection on this path is the e2e's screen grab, not a canvas readback.
-        onFirstPaintRef.current?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
+        onFirstPaintRef.current?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" }, r);
         syncSeries();
       },
       (e: unknown) => {
@@ -241,7 +246,10 @@ export default function NativeStackViewport({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(() => {
+  // Layout effect: the series goes to Rust in the commit that mounts the
+  // viewport, not after the browser's next paint (a passive effect), which
+  // put a frame between the first series being hung and the decode + draw.
+  useLayoutEffect(() => {
     if (!series || series.headers.length === 0) {
       wantRef.current = null;
       sentRef.current = null;
@@ -249,6 +257,26 @@ export default function NativeStackViewport({
       return;
     }
     wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
+    // A full send (a cell's first series, or another series: the hanging
+    // plan swapping in the primary when the scan ends) goes with the cell's
+    // rect, and measuring it here, in a commit that mounts or refills the
+    // study view, forced the layout of the whole new view inside React's
+    // task (the CI "ye index.js:14955 via MessagePort.onmessage" one; on the
+    // warm 10,310-image MRI with all 242 series cards just committed). A
+    // one-shot ResizeObserver hands the rect over in the same frame, right
+    // after the browser's own layout, at no extra cost. Growth of the series
+    // the cell already holds is an append (no rect) and goes at once.
+    const el = elementRef.current;
+    const sent = sentRef.current;
+    const full = sent === null || sent.cell !== cellKey || sent.uid !== series.uid;
+    if (full && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        syncSeries();
+      });
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
     syncSeries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cellKey, series?.uid, series?.headers.length]);
@@ -284,6 +312,8 @@ export default function NativeStackViewport({
       wc: shown.window[0],
       zoom: shown.view.zoom,
       rotation: shown.view.rotation,
+      flipH: shown.view.flipH,
+      flipV: shown.view.flipV,
     };
   }, [shown, series]);
   const readoutRef = useRef(readout);

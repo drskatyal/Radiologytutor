@@ -1,6 +1,6 @@
 [package]
 name = "flowrad-viewer"
-version = "0.8.2"
+version = "0.8.3"
 description = "FlowRad Viewer — a free, offline DICOM viewer for Windows, macOS and Linux"
 authors = ["FlowRad"]
 license = "UNLICENSED"
@@ -66,10 +66,15 @@ panic = "abort"
 strip = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console", "Win32_System_Memory"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 # WebView2's MemoryUsageTargetLevel (idle footprint). Same versions wry uses.
 webview2-com = "0.39"
-windows = "0.62"
+# Cold start: the native splash (GDI popup, splash.rs) and the early WebView2
+# environment (webview2_early.rs). Same version webview2-com uses.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+# Tauri's webview data directory (app_local_data_dir), for the early
+# environment: the same crate and version Tauri resolves it with.
+dirs = "7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # AppKit event monitor for side mouse buttons and tilt wheels (mac_mouse.rs).

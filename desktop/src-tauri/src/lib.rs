@@ -28,9 +28,11 @@ mod viewer_windows;
 mod render3d;
 mod scan;
 mod sources;
+mod splash;
 mod store;
 mod sync;
 mod updates;
+mod webview2_early;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,7 +42,9 @@ use parking_lot::Mutex;
 use tauri::http::{header as http_header, Response, StatusCode};
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
 
 use crate::scan::ScanResult;
 
@@ -75,6 +79,39 @@ pub(crate) fn release_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
         malloc_trim(0);
+    }
+}
+
+/// The app, for `release_memory_everywhere` (set in `setup`).
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// `release_memory`, and the same on the threads it cannot reach: the main
+/// thread (sync commands, the dicom:// protocol's file reads) and the async
+/// runtime's workers (async commands; slices a viewport decoded on a miss).
+/// mimalloc keeps a thread's emptied pages (one "retired" page a size class,
+/// blocks other threads freed into its pages) until THAT thread allocates
+/// enough again or collects, and an idle thread does neither: CI, after a
+/// close and the GPU release, the Rust heap stayed at 46 MB against the empty
+/// app's 14. Only at idle points (study closed, GPU released, viewer idle):
+/// each worker spins until every worker has collected, at most 50 ms.
+pub(crate) fn release_memory_everywhere() {
+    release_memory();
+    if let Some(app) = APP.get() {
+        let _ = app.run_on_main_thread(|| unsafe { libmimalloc_sys::mi_collect(true) });
+    }
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for _ in 0..workers {
+        let done = done.clone();
+        tauri::async_runtime::spawn(async move {
+            unsafe { libmimalloc_sys::mi_collect(true) };
+            done.fetch_add(1, Ordering::SeqCst);
+            // Hold this worker so the next task lands on another one.
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            while done.load(Ordering::SeqCst) < workers && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
+        });
     }
 }
 
@@ -120,35 +157,61 @@ fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_cache_dir().map_err(|e| e.to_string())
 }
 
+/// Whether the native renderer draws this file (mirrors the page's
+/// `nativeCapable`: monochrome, one frame per file).
+fn native_draws(header: &header::Header) -> bool {
+    let mono = header.photometric_interpretation.as_deref().map(|p| p.to_ascii_uppercase().starts_with("MONOCHROME")).unwrap_or(true);
+    mono && header.number_of_frames.unwrap_or(1) <= 1
+}
+
+/// Scan a selection. Progress and header batches stream back over the two
+/// channels the call carries (not app-wide events): no `listen` round trips
+/// before the scan can start, and only the window that opened gets them.
 #[tauri::command]
 async fn scan_sources(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    native: tauri::State<'_, native::Shared>,
     paths: Vec<String>,
+    on_progress: tauri::ipc::Channel<scan::ScanProgress>,
+    on_batch: tauri::ipc::Channel<Vec<header::Header>>,
 ) -> Result<ScanResult, String> {
     let entered_at = startup_elapsed_ms();
     let cache = cache_dir(&app)?;
     let cancel = state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
     let registry = state.registry.clone();
-    let emitter = app.clone();
+    let native = native::enabled().then(|| native.inner().clone());
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     tauri::async_runtime::spawn_blocking(move || {
-        let batch_emitter = emitter.clone();
         let first_batch_at = std::sync::OnceLock::<f64>::new();
         let mut result = scan::scan(
             &paths,
             &cache,
             &cancel,
             &|progress| {
-                let _ = emitter.emit("scan-progress", progress);
+                let _ = on_progress.send(progress);
             },
             &|header| {
                 header.file_id = registry.lock().register(header);
             },
             &|batch| {
-                first_batch_at.get_or_init(startup_elapsed_ms);
-                let _ = batch_emitter.emit("scan-batch", batch);
+                let mut first = false;
+                first_batch_at.get_or_init(|| {
+                    first = true;
+                    startup_elapsed_ms()
+                });
+                // The first batch is the file the page hangs first: decode it
+                // now, while the page groups it and mounts the viewport, so
+                // `native_cell_series` finds it in the store.
+                if first {
+                    if let (Some(native), Some(h)) = (&native, batch.first()) {
+                        if native_draws(h) {
+                            native.store().warm(vec![PathBuf::from(&h.file_name)]);
+                        }
+                    }
+                }
+                let _ = on_batch.send(batch);
             },
         )?;
         result.timings.entered_at_ms = Some(entered_at);
@@ -163,6 +226,14 @@ async fn scan_sources(
         if bench_on() {
             bench_scan_line(&result);
         }
+        // Every header already reached the page in a batch (`on_batch`, with
+        // the same file ids). Sending them all again made the page parse the
+        // whole study twice: on the 10,310-image MRI a ~15 MB response, whose
+        // JSON parse (no script, then GC) was the open's last long task. The
+        // page keeps the batches; only the count and the patient fields that
+        // cache hits got after streaming come back.
+        result.streamed = Some(result.headers.len());
+        result.headers = Vec::new();
         // A 4,000-file scan parses on every core; each thread keeps its
         // pages afterwards. Hand the slack back so an open study stays lean.
         release_memory();
@@ -344,6 +415,21 @@ fn bench_scan_line(result: &ScanResult) {
     *LAST_SCAN.lock() = Some(line);
 }
 
+/// `FLOWRAD_MEM_REPORT_MS=<ms>`: print this process's memory by owner once,
+/// that long after start (`FLOWRAD_BENCH_MEM {…}`), with no other bench hook
+/// on: the bench's empty-app baseline, so a close report's breakdown has an
+/// empty app to compare with.
+fn start_mem_report() {
+    let Some(ms) = flowrad_env("MEM_REPORT_MS").ok().and_then(|v| v.parse::<u64>().ok()) else { return };
+    let _ = std::thread::Builder::new().name("flowrad-mem-report".into()).spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        bench_emit(
+            "FLOWRAD_BENCH_MEM",
+            &serde_json::json!({ "atMs": ms, "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb(), "app": procmem::app_memory(), "heap": heap_stats() }),
+        );
+    });
+}
+
 /// `FLOWRAD_BENCH_EXIT=1` must never leave a benchmark hanging: if the
 /// renderer has not reported by `FLOWRAD_BENCH_TIMEOUT_MS` (default 120 s),
 /// print what the shell knows and exit with status 3.
@@ -399,8 +485,21 @@ fn bench_paint_timeout_ms() -> u64 {
 /// WebView2's MemoryUsageTargetLevel to Low, which trims the renderer's
 /// working set and drops caches; Normal again as soon as a study opens.
 /// Other platforms have no equivalent knob; it is a no-op there.
+///
+/// `trim = true` (the viewer idle with a study open): our own share too. The
+/// native renderer's decoded-slice cache keeps only its most recently used
+/// `IDLE_STORE_KEEP_MB` (the slices around the one on screen) and the
+/// allocator gives the rest back; the cache refills from the next scroll.
 #[tauri::command]
-fn set_memory_mode(window: tauri::WebviewWindow, low: bool) {
+fn set_memory_mode(window: tauri::WebviewWindow, low: bool, trim: Option<bool>, native: tauri::State<'_, native::Shared>) {
+    // The cache serves the main window's native viewports: only its idle trims it.
+    if low && trim == Some(true) && window.label() == "main" {
+        if let Some(store) = native.store.get() {
+            store.trim_to(IDLE_STORE_KEEP_MB << 20);
+        }
+        // Idle: whatever the threads that served the study let go, too.
+        release_memory_everywhere();
+    }
     #[cfg(windows)]
     {
         let _ = window.with_webview(move |webview| unsafe {
@@ -438,10 +537,16 @@ fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
 
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// What the decoded-slice cache keeps while the viewer is idle (MB): about
+/// 32 CT slices of 512 x 512, the neighbourhood of the slice on screen.
+const IDLE_STORE_KEEP_MB: usize = 16;
+
 /// Startup marks (ms since process start), for the cold-start breakdown:
-/// window built (Tauri `build()` returned: window + WebView2 requested), page
-/// navigation started and finished (the webview actually loading the page).
-static MARKS: parking_lot::Mutex<[Option<f64>; 3]> = parking_lot::Mutex::new([None; 3]);
+/// [0] app built (Tauri `build()` returned; no window yet: Tauri creates
+/// windows when its event loop starts), [1] / [2] page navigation started /
+/// finished (the webview actually loading the page), [3] main window and its
+/// webview built (on Windows wry has the WebView2 controller by then).
+static MARKS: parking_lot::Mutex<[Option<f64>; 4]> = parking_lot::Mutex::new([None; 4]);
 
 fn mark(i: usize) {
     if let Some(t) = STARTED.get() {
@@ -452,10 +557,6 @@ fn mark(i: usize) {
     }
 }
 
-/// Native mode: when Rust first presented a frame in the window (before
-/// WebView2 has loaded the page), ms since process start.
-static NATIVE_FIRST_PAINT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
@@ -463,9 +564,20 @@ fn startup_marks() -> serde_json::Value {
         "windowBuiltMs": m[0],
         "navStartMs": m[1],
         "navDoneMs": m[2],
-        "nativeFirstPaintMs": NATIVE_FIRST_PAINT.get(),
+        "webviewBuiltMs": m[3],
+        // The native splash on screen (DWM composed it): the first thing the
+        // reader sees, before WebView2 has loaded the page (splash.rs).
+        "nativeFirstPaintMs": splash::painted_ms(),
+        "nativeFirstPaintSource": splash::painted_ms().map(|_| "splash"),
         "gpuWarmMs": native::WARM_MS.get(),
     })
+}
+
+/// The page has painted its splash (the same as the native one): the native
+/// splash goes (splash.rs). No-op where there is none.
+#[tauri::command]
+fn splash_done() {
+    splash::dismiss();
 }
 
 /// Milliseconds since the process started — the renderer calls this at first
@@ -525,8 +637,12 @@ async fn process_memory() -> procmem::TreeMem {
 // ───────────── Phase 2 native renderer (native.rs, FLOWRAD_NATIVE=1) ─────────────
 
 #[tauri::command]
-fn native_status(native: tauri::State<'_, native::Shared>) -> native::NativeStatus {
-    native.status()
+fn native_status(window: tauri::WebviewWindow, native: tauri::State<'_, native::Shared>) -> native::NativeStatus {
+    let mut s = native.status();
+    // Viewer windows on other monitors never build the GPU (JS renderer):
+    // nothing for them to wait for.
+    s.lazy &= window.label() == "main";
+    s
 }
 
 /// Create the GPU surface under the page and make the webview transparent.
@@ -540,20 +656,103 @@ async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, nati
     if window.label() != "main" {
         return Ok(native::NativeStatus { enabled: false, ..Default::default() });
     }
-    let status = native.init(&window).await;
+    Ok(init_native(&window, native.inner()).await)
+}
+
+/// Build the GPU on the main window (idempotent) and put it under the page.
+async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> native::NativeStatus {
+    let was_ready = native.has_gpu();
+    let status = native.init(window).await;
     if status.ready {
-        // Where the page draws nothing, the native surface shows through.
-        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
         let scale = window.scale_factor().unwrap_or(1.0);
         let origin = window.inner_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
         native.set_window_facts(origin, scale);
     }
-    Ok(native.status())
+    if status.ready && !was_ready {
+        if native::lazy_gpu() {
+            // Built on demand, with the page already up: present a frame (the
+            // canvas colour) before the webview turns transparent, so the page
+            // never sits over a swap chain that has shown nothing yet.
+            let _ = native.render(window.scale_factor().unwrap_or(1.0));
+            start_gpu_release_watch(native.clone(), window.clone());
+        }
+        // Where the page draws nothing, the native surface shows through.
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    }
+    native.status()
+}
+
+/// Lazy GPU: a native call that draws found the GPU released (study closed,
+/// then a new one opened): rebuild it first. One check when it is there.
+async fn ensure_native(window: &tauri::WebviewWindow, native: &native::Shared) {
+    if window.label() == "main" && native.needs_gpu() {
+        init_native(window, native).await;
+    }
+}
+
+/// Lazy GPU: watch for the GPU going unused (no viewport, nothing drawn for
+/// `GPU_IDLE_RELEASE`) and release it then, so a closed study (or an Open
+/// dialog that was cancelled) leaves the app at its empty footprint. One
+/// watcher at a time; it ends with the release.
+fn start_gpu_release_watch(native: native::Shared, window: tauri::WebviewWindow) {
+    static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WATCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("flowrad-gpu-idle".into()).spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if !native.has_gpu() {
+                break;
+            }
+            if native.release_gpu_if_idle(native::GPU_IDLE_RELEASE) {
+                // Nothing under the page now: the webview paints its own
+                // opaque canvas colour again (as before the first study).
+                let _ = window.set_background_color(Some(tauri::window::Color(0x0B, 0x0D, 0x10, 0xFF)));
+                let before = commit_mb();
+                release_memory_everywhere();
+                if bench_on() {
+                    bench_emit(
+                        "FLOWRAD_BENCH_CLOSE",
+                        &serde_json::json!({ "step": "gpu released", "idleS": native::GPU_IDLE_RELEASE.as_secs(), "commitMb": { "beforeRelease": before, "after": commit_mb() }, "app": procmem::app_memory(), "heap": heap_stats() }),
+                    );
+                }
+                // The GPU runtime gives some of the device back later than
+                // the drop (CI, WARP: ~11 MB of its allocations still there right
+                // after it, gone 5 s on): collect again once it has, and say
+                // what is left. Its own thread: this watcher ends now, so a
+                // study opened meanwhile gets a watcher of its own.
+                let native = native.clone();
+                let _ = std::thread::Builder::new().name("flowrad-gpu-released".into()).spawn(move || {
+                    for after_s in [5u64, 15] {
+                        std::thread::sleep(std::time::Duration::from_secs(if after_s == 5 { 5 } else { 10 }));
+                        if native.has_gpu() {
+                            return; // a study opened meanwhile
+                        }
+                        release_memory_everywhere();
+                        if bench_on() {
+                            std::thread::sleep(std::time::Duration::from_millis(300)); // the workers collect
+                            bench_emit(
+                                "FLOWRAD_BENCH_CLOSE",
+                                &serde_json::json!({ "step": "after gpu release", "afterS": after_s, "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb(), "app": procmem::app_memory(), "heap": heap_stats() }),
+                            );
+                        }
+                    }
+                });
+                break;
+            }
+        }
+        WATCHING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+    if spawned.is_err() {
+        WATCHING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// The page's viewport rectangles (CSS px); draws a frame. Returns its CPU ms.
 #[tauri::command]
 async fn native_set_cells(window: tauri::WebviewWindow, cells: Vec<native::Cell>, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    ensure_native(&window, native.inner()).await;
     native.set_cells(cells);
     let scale = window.scale_factor().unwrap_or(1.0);
     if let Ok(size) = window.inner_size() {
@@ -587,6 +786,7 @@ async fn native_open_launch_study(window: tauri::WebviewWindow, native: tauri::S
         return Err("no DICOM images found".into());
     }
     let listed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    ensure_native(&window, native.inner()).await;
     let shown = native.open_series(series, window.scale_factor().unwrap_or(1.0))?;
     Ok(serde_json::json!({
         "listMs": listed_ms,
@@ -621,6 +821,9 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
     // volume_close). Back to the empty-app footprint (bench `close` gate:
     // within 30 MB of baseline).
     let before = commit_mb();
+    // The study open and idle, by owner (bench only: it walks the address space).
+    let open_app = bench_on().then(procmem::app_memory);
+    let open_heap = bench_on().then(heap_stats);
     let held = native.close_all();
     let after_clear = commit_mb();
     release_memory();
@@ -643,7 +846,7 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
         if swept.is_some() {
             mac_webkit::drop_memory_cache(&_window);
         }
-        release_memory();
+        release_memory_everywhere();
         if bench_on() {
             bench_emit(
                 "FLOWRAD_BENCH_CLOSE",
@@ -658,6 +861,8 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
                 "held": held,
                 "commitMb": { "before": before, "afterClear": after_clear, "afterRelease": after_release },
                 "heapCommittedMb": heap_committed_mb(),
+                "openApp": open_app,
+                "openHeap": open_heap,
             }),
         );
     }
@@ -672,6 +877,11 @@ extern "C" {
 /// What mimalloc itself has committed, MB (the Rust heap's share of the
 /// process's private bytes; the rest is D3D / WARP, DLLs, stacks).
 pub(crate) fn heap_committed_mb() -> Option<f64> {
+    let current = mi_stats()?.get("committed")?.get("current")?.as_f64()?;
+    Some((current / 1_048_576.0 * 10.0).round() / 10.0)
+}
+
+fn mi_stats() -> Option<serde_json::Value> {
     let json = unsafe {
         let p = mi_stats_get_json(0, std::ptr::null_mut());
         if p.is_null() {
@@ -681,9 +891,25 @@ pub(crate) fn heap_committed_mb() -> Option<f64> {
         libmimalloc_sys::mi_free(p.cast());
         s
     };
-    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
-    let current = v.get("committed")?.get("current")?.as_f64()?;
-    Some((current / 1_048_576.0 * 10.0).round() / 10.0)
+    serde_json::from_str(&json).ok()
+}
+
+/// mimalloc's own account (bench reports): committed, of which inside pages,
+/// pages (and abandoned ones: their thread exited with blocks still live),
+/// threads with a heap, and the live bytes it knows of (0 when the build
+/// keeps no allocation statistics).
+pub(crate) fn heap_stats() -> serde_json::Value {
+    let Some(v) = mi_stats() else { return serde_json::Value::Null };
+    let cur = |k: &str| v.get(k).and_then(|c| c.get("current")).and_then(|c| c.as_f64()).unwrap_or(0.0);
+    let mb = |x: f64| (x / 1_048_576.0 * 10.0).round() / 10.0;
+    serde_json::json!({
+        "committedMb": mb(cur("committed")),
+        "pageCommittedMb": mb(cur("page_committed")),
+        "pages": cur("pages"),
+        "pagesAbandoned": cur("pages_abandoned"),
+        "threads": cur("threads"),
+        "liveMb": mb(cur("malloc_normal") + cur("malloc_huge")),
+    })
 }
 
 /// mimalloc option `purge_delay` (v3 `mi_option_e` index 15): ms before
@@ -728,6 +954,13 @@ pub(crate) fn footprint_mb() -> Option<f64> {
 /// Every layout cell's rectangle (CSS px); cells not listed are freed. Draws.
 #[tauri::command]
 async fn native_layout(window: tauri::WebviewWindow, cells: Vec<native::CellRect>, native: tauri::State<'_, native::Shared>) -> Result<f64, String> {
+    // No viewport (study closed) and no GPU (released): nothing to draw, and
+    // an empty layout must not rebuild it.
+    if cells.is_empty() && !native.has_gpu() {
+        native.set_layout(cells);
+        return Ok(0.0);
+    }
+    ensure_native(&window, native.inner()).await;
     native.set_layout(cells);
     if let Ok(size) = window.inner_size() {
         native.resize(size.width, size.height);
@@ -742,15 +975,24 @@ async fn native_cell_series(
     id: String,
     file_ids: Vec<u32>,
     index: usize,
+    rect: Option<native::Cell>,
     state: tauri::State<'_, AppState>,
     native: tauri::State<'_, native::Shared>,
 ) -> Result<native::ShowResult, String> {
     // Only files the user opened (the registry), like the dicom:// protocol.
     let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().collect::<Option<Vec<_>>>().ok_or("unknown file id")?;
+    ensure_native(&window, native.inner()).await;
     let scale = window.scale_factor().unwrap_or(1.0);
+    // A new viewport's frame lands in its own rect: the page sends it with
+    // the series, so the first image does not wait for the next `native_layout`.
+    if rect.is_some() {
+        if let Ok(size) = window.inner_size() {
+            native.resize(size.width, size.height);
+        }
+    }
     tauri::async_runtime::spawn_blocking({
         let native = native.inner().clone();
-        move || native.set_series(&id, paths, index, scale)
+        move || native.set_series(&id, paths, index, rect, scale)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -808,6 +1050,7 @@ async fn native_cell_plane(
     let key: u64 = key.parse().map_err(|_| "bad volume key")?;
     let plane = volume::Plane::parse(&plane).ok_or("bad plane")?;
     let slab = slab.as_deref().and_then(volume::Slab::parse).unwrap_or(volume::Slab::Off);
+    ensure_native(&window, native.inner()).await;
     let scale = window.scale_factor().unwrap_or(1.0);
     let native = native.inner().clone();
     tauri::async_runtime::spawn_blocking(move || native.set_plane(&id, key, plane, index, slab, mm.unwrap_or(0.0), max_dim.unwrap_or(1024), wl, scale))
@@ -834,6 +1077,7 @@ async fn native_cell_render3d(
 ) -> Result<native::Render3dResult, String> {
     let key: u64 = key.parse().map_err(|_| "bad volume key")?;
     let mode = render3d::Mode::parse(&mode).ok_or("bad 3D mode")?;
+    ensure_native(&window, native.inner()).await;
     let scale = window.scale_factor().unwrap_or(1.0);
     let native = native.inner().clone();
     tauri::async_runtime::spawn_blocking(move || native.show_render3d(&id, key, mode, yaw, pitch, zoom, center, width, size, fast, scale))
@@ -1031,6 +1275,69 @@ fn inflate_to_explicit_le(path: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// The app's context. `FLOWRAD_WEBVIEW2_EXTRA_ARGS` appends WebView2 browser
+/// arguments to the configured ones (A/B runs of process-model and memory
+/// flags; every window takes the main window's, see viewer_windows.rs).
+/// WebView2's own WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS did not reach the
+/// browser in CI (the A/B's process count never changed), this does.
+fn context() -> tauri::Context<tauri::Wry> {
+    let mut context = tauri::generate_context!();
+    if let Ok(extra) = flowrad_env("WEBVIEW2_EXTRA_ARGS") {
+        if let Some(w) = context.config_mut().app.windows.first_mut() {
+            let base = w.additional_browser_args.take().unwrap_or_default();
+            w.additional_browser_args = Some(merge_browser_args(&base, &extra));
+        }
+    }
+    context
+}
+
+/// The configured browser arguments plus `extra`'s. An `extra` argument
+/// written `!--arg` takes `--arg` out instead (an A/B against a flag the app
+/// ships, e.g. `!--enable-features=NetworkServiceInProcess2`).
+fn merge_browser_args(base: &str, extra: &str) -> String {
+    let drop: Vec<&str> = extra.split_whitespace().filter_map(|a| a.strip_prefix('!')).collect();
+    base.split_whitespace()
+        .filter(|a| !drop.contains(a))
+        .chain(extra.split_whitespace().filter(|a| !a.starts_with('!')))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// WebView2 features an offline viewer never uses, off for the session:
+/// form autofill and password saving (their managers and stores live in the
+/// browser process), SmartScreen reputation checks (also off by flag), the
+/// URL status bubble, swipe navigation, and tracking prevention (it loads
+/// and matches a block list on every request; only local content loads).
+#[cfg(windows)]
+fn trim_webview2(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2Profile3, ICoreWebView2Settings4, ICoreWebView2Settings6, ICoreWebView2Settings8, ICoreWebView2_13,
+            COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_NONE,
+        };
+        use windows::core::Interface;
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        if let Ok(settings) = core.Settings() {
+            let _ = settings.SetIsStatusBarEnabled(false);
+            if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
+                let _ = s4.SetIsGeneralAutofillEnabled(false);
+                let _ = s4.SetIsPasswordAutosaveEnabled(false);
+            }
+            if let Ok(s6) = settings.cast::<ICoreWebView2Settings6>() {
+                let _ = s6.SetIsSwipeNavigationEnabled(false);
+            }
+            if let Ok(s8) = settings.cast::<ICoreWebView2Settings8>() {
+                let _ = s8.SetIsReputationCheckingRequired(false);
+            }
+        }
+        if let Ok(profile) = core.cast::<ICoreWebView2_13>().and_then(|c| c.Profile()) {
+            if let Ok(p3) = profile.cast::<ICoreWebView2Profile3>() {
+                let _ = p3.SetPreferredTrackingPreventionLevel(COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_NONE);
+            }
+        }
+    });
+}
+
 fn launch_args() -> Vec<String> {
     std::env::args()
         .skip(1)
@@ -1050,13 +1357,32 @@ pub fn run() {
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DECOMMITS, 1);
     }
+    let context = context();
+    let main_window = context.config().app.windows.iter().find(|w| w.label == "main").cloned();
+    // Windows: the WebView2 browser process starts now, in parallel with the
+    // rest of start-up, not after the window exists (webview2_early.rs). The
+    // arguments are the context's (FLOWRAD_WEBVIEW2_EXTRA_ARGS included), so
+    // the environment wry creates later matches this one.
+    webview2_early::launch(
+        main_window.as_ref().and_then(|w| w.additional_browser_args.as_deref()),
+        &context.config().identifier,
+    );
     // The GPU device and pipelines build on their own thread from here, in
-    // parallel with WebView2 starting (native.rs `prewarm`).
-    native::prewarm();
+    // parallel with WebView2 starting (native.rs `prewarm`), when a study is
+    // about to need them: always on macOS / Linux, and on Windows when one is
+    // on the command line (it opens at once, its first image waits on the
+    // GPU). Started empty, Windows builds them when a study is about to open
+    // (native.rs `lazy_gpu`): the empty app holds no device.
+    let launch_paths = launch_args();
+    let gpu_at_launch = native::enabled() && (!native::lazy_gpu() || !launch_paths.is_empty());
+    if gpu_at_launch {
+        native::prewarm();
+    }
     attach_bench_console();
     let state = AppState::default();
-    *state.launch_paths.lock() = launch_args();
+    *state.launch_paths.lock() = launch_paths;
     start_bench_watchdog();
+    start_mem_report();
     let registry = state.registry.clone();
 
     let app = tauri::Builder::default()
@@ -1083,9 +1409,43 @@ pub fn run() {
                 }
             }
         })
-        .on_page_load(|_webview, payload| match payload.event() {
-            tauri::webview::PageLoadEvent::Started => mark(1),
-            tauri::webview::PageLoadEvent::Finished => mark(2),
+        .on_page_load(|webview, payload| {
+            let main = webview.label() == "main";
+            match payload.event() {
+                tauri::webview::PageLoadEvent::Started => {
+                    mark(1);
+                    if main {
+                        // The main webview has its environment: the early
+                        // one can go.
+                        webview2_early::release();
+                    }
+                }
+                tauri::webview::PageLoadEvent::Finished => {
+                    mark(2);
+                    // The page reports its first paint (`splash_done`); if it
+                    // never does, the native splash still goes.
+                    if main {
+                        splash::dismiss_after(1000);
+                    }
+                }
+            }
+        })
+        // The main window is built here, not by Tauri from the config
+        // ("create": false): the native splash is armed first, so it paints
+        // the moment the window is on screen, while WebView2 starts.
+        .setup(move |app| {
+            let _ = APP.set(app.handle().clone());
+            if let Some(config) = &main_window {
+                if let Some(t0) = STARTED.get() {
+                    splash::arm(*t0, &config.title);
+                }
+                let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
+                mark(3);
+                // Here, not after `build()`: the window exists only now.
+                #[cfg(windows)]
+                trim_webview2(&_window);
+            }
+            Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("dicom", move |_ctx, request, responder| {
             let registry = registry.clone();
@@ -1135,6 +1495,7 @@ pub fn run() {
             set_memory_mode,
             startup_elapsed_ms,
             startup_marks,
+            splash_done,
             store::history_list,
             store::history_record,
             store::history_remove,
@@ -1184,7 +1545,7 @@ pub fn run() {
             updates::licence_set,
             updates::licence_clear,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building FlowRad Viewer");
     mark(0);
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
@@ -1193,24 +1554,12 @@ pub fn run() {
     // Update rollback rule (cheap: one small file read). A version that failed
     // to start healthily is replaced by the previous one in the background.
     updates::on_startup(app.handle());
-    // Native mode (Phase 2): the GPU surface paints the window at once, while
-    // WebView2 is still starting; the webview is transparent over it.
-    if native::enabled() {
-        if let (Some(window), Some(native)) = (app.get_webview_window("main"), app.try_state::<native::Shared>()) {
-            let native = native.inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let status = native.init(&window).await;
-                if status.ready {
-                    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    if native.render(window.scale_factor().unwrap_or(1.0)).is_ok() {
-                        if let Some(t) = STARTED.get() {
-                            let _ = NATIVE_FIRST_PAINT.set(t.elapsed().as_secs_f64() * 1000.0);
-                        }
-                    }
-                }
-            });
-        }
-    }
+    // The first frame on screen is the native splash (splash.rs), painted
+    // with GDI as soon as the main window exists. No window exists yet at
+    // this point (Tauri creates windows when its event loop starts): the
+    // WebView2 trim runs in `setup`, and the GPU surface goes under the page
+    // when the page asks (`native_init`), its device prewarmed above when
+    // `gpu_at_launch`.
     // Settings and history from pre-rename builds (app.radlearn.viewer, com.flowrad.tori).
     store::migrate_legacy_data(app.handle());
 
@@ -1236,6 +1585,48 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extra_browser_args_append_and_bang_removes() {
+        let base = "--disable-features=A,B --renderer-process-limit=1 --enable-features=NetworkServiceInProcess2";
+        assert_eq!(super::merge_browser_args(base, "--in-process-gpu"), format!("{base} --in-process-gpu"));
+        assert_eq!(
+            super::merge_browser_args(base, "!--enable-features=NetworkServiceInProcess2 --in-process-gpu"),
+            "--disable-features=A,B --renderer-process-limit=1 --in-process-gpu"
+        );
+        assert_eq!(super::merge_browser_args(base, ""), base);
+        assert_eq!(super::merge_browser_args("", " --x "), "--x");
+    }
+
+    /// The shipped WebView2 process model (0.8.3, idle-with-CT memory): the
+    /// network service runs in the browser process (one process fewer, CI
+    /// A/B 278 -> 269 MB private idle with the CT); the GPU process stays out
+    /// of process (no `--in-process-gpu`: a GPU / driver crash would take the
+    /// browser process, and the whole window, with it).
+    #[test]
+    fn webview2_process_model_flags() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = conf["app"]["windows"].as_array().unwrap().iter().find(|w| w["label"] == "main").unwrap();
+        let args: Vec<&str> = main["additionalBrowserArgs"].as_str().unwrap().split_whitespace().collect();
+        assert!(args.contains(&"--enable-features=NetworkServiceInProcess2"), "{args:?}");
+        assert!(!args.contains(&"--in-process-gpu"), "{args:?}");
+        assert_eq!(args.iter().filter(|a| a.starts_with("--enable-features=")).count(), 1, "Chromium keeps only the last --enable-features");
+    }
+
+    #[test]
+    fn open_warms_only_slices_the_native_renderer_draws() {
+        let h = |pi: Option<&str>, frames: Option<i64>| crate::header::Header {
+            photometric_interpretation: pi.map(str::to_string),
+            number_of_frames: frames,
+            ..Default::default()
+        };
+        assert!(super::native_draws(&h(None, None)));
+        assert!(super::native_draws(&h(Some("MONOCHROME2"), Some(1))));
+        assert!(super::native_draws(&h(Some("monochrome1"), None)));
+        assert!(!super::native_draws(&h(Some("RGB"), None)));
+        assert!(!super::native_draws(&h(Some("YBR_FULL_422"), Some(1))));
+        assert!(!super::native_draws(&h(Some("MONOCHROME2"), Some(30))));
+    }
+
     /// What this process holds, MB: private bytes on Windows (the allocator's
     /// view of the OS commit), the physical footprint on macOS (mimalloc
     /// decommits with MADV_FREE_REUSABLE: out of the footprint at once, still

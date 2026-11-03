@@ -9,6 +9,8 @@
 //   cursors    each tool has its own cursor on the image; the UI keeps the arrow
 //   orient     R / Shift+R / H, toolbar rotate dropdown; edge letters follow
 //   panel      Ctrl+B collapses the series panel to a rail; handle reopens; remembered
+//   hooks      (--only hooks) the bench/test hook window.__flowradTest: absent without ?bench;
+//              rotation / flips drawn, thumbnails one per series and rendered, bindings reset
 //   annotate   arrow with no prompt; inline label; select + Delete; undo / redo;
 //              right-click menu (delete, delete all on image / series); eraser
 //
@@ -333,8 +335,29 @@ if (want("keys")) {
   const sheetOk = await sheet.isVisible();
   const rows = sheetOk ? await sheet.locator("[data-shortcut-row]").count() : 0;
   check("keys: ? opens the cheat sheet", sheetOk && rows > 30, `${rows} rows`);
+  // One monitor (no pretend desk here): nothing about other monitors.
+  const monitorRows = sheetOk ? await sheet.locator("[data-shortcut-row*='monitor']").count() : -1;
+  check("keys: single monitor — the sheet lists no multi-monitor shortcuts", monitorRows === 0, `${monitorRows} rows`);
+  // Voice commands, generated from the recognizer's table: full phrases, how to switch on.
+  const voiceHelp = sheet.getByTestId("voice-help");
+  const voiceRows = await voiceHelp.locator("[data-voice-command]").count().catch(() => 0);
+  const boneRow = await voiceHelp.locator('[data-voice-command="Bone window"]').innerText().catch(() => "");
+  const trigger = await voiceHelp.getByTestId("voice-trigger").innerText().catch(() => "");
+  check("keys: the sheet lists the voice commands", voiceRows >= 30, `${voiceRows} commands`);
+  check("keys: voice commands are full phrases (“bone window”)", /“bone window”/.test(boneRow) && !/“bone”/.test(boneRow), boneRow);
+  check("keys: the sheet says how to switch voice on (mic / key, a toggle)", /mic button/.test(trigger) && /Shift\+V/.test(trigger) && /toggle, not push-to-talk/.test(trigger), trigger);
   await shot("cheat-sheet");
   await page.keyboard.press("Escape");
+  await settle();
+  // Settings lists the same commands.
+  await page.getByRole("button", { name: /settings/i }).first().click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  await settingsDialog.waitFor({ timeout: 3000 }).catch(() => undefined);
+  await settingsDialog.getByRole("button", { name: /^Show all \d+/ }).click().catch(() => undefined);
+  const settingsVoice = await settingsDialog.locator("[data-voice-command]").count().catch(() => 0);
+  check("keys: Settings lists the voice commands", settingsVoice === voiceRows && settingsVoice > 0, `${settingsVoice} vs ${voiceRows}`);
+  await page.keyboard.press("Escape");
+  await settingsDialog.waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
   await settle();
 }
 
@@ -926,6 +949,52 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     check("multiwindow: the main window's slice shows as a reference line in the other window, and moves", hasLine && y1 != null && y2 != null && y1 !== y2, `${y1} → ${y2}`);
     await popup.screenshot({ path: shots ? path.join(shots, "multiwindow-second.png") : undefined }).catch(() => undefined);
 
+    // Monitors follow the desk live (monitorWatch.ts): with two, the sheet and
+    // the image menu offer "next monitor"; unplug one and they go, while the
+    // window already open keeps working; plug it back and they return.
+    await page.bringToFront();
+    const monitorRows = async () => {
+      await focusImage();
+      await page.keyboard.press("Shift+Slash");
+      const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+      await sheet.waitFor({ timeout: 3000 }).catch(() => undefined);
+      const n = await sheet.locator("[data-shortcut-row*='next monitor']").count();
+      await page.keyboard.press("Escape");
+      await sheet.waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
+      return n;
+    };
+    const sendToMonitorItem = async () => {
+      const b = await box(0);
+      await page.mouse.click(b.x + b.width * 0.2, b.y + b.height * 0.2, { button: "right" });
+      const menu = page.getByRole("menu", { name: "Image" });
+      await menu.waitFor({ timeout: 3000 }).catch(() => undefined);
+      const n = await menu.getByRole("menuitem", { name: /^Send to monitor/ }).count();
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "detached", timeout: 2000 }).catch(() => undefined);
+      return n;
+    };
+    const setDesk = async (count) => {
+      await page.evaluate((n) => {
+        window.__flowradTestMonitors = window.__flowradTestMonitors.slice(0, 1).concat(
+          n > 1 ? [{ name: "DISPLAY2", x: 1920, y: -180, width: 2560, height: 1440, scale: 1.5 }] : []
+        );
+        window.dispatchEvent(new Event("focus"));
+      }, count);
+      await settle(800);
+    };
+    check("multiwindow: two monitors — the sheet lists the next-monitor shortcuts", (await monitorRows()) === 2);
+    check("multiwindow: two monitors — the image menu offers Send to monitor", (await sendToMonitorItem()) === 1);
+    await setDesk(1);
+    check("multiwindow: monitor unplugged — next-monitor shortcuts leave the sheet", (await monitorRows()) === 0);
+    check("multiwindow: monitor unplugged — no Send to monitor in the image menu", (await sendToMonitorItem()) === 0);
+    check("multiwindow: monitor unplugged — no monitor badge", (await page.getByTestId("monitor-badge").count()) === 0);
+    check(
+      "multiwindow: monitor unplugged — the window already open stays open and showing its series",
+      !popup.isClosed() && /Im \d+ \/ \d+/.test(await popup.locator("body").innerText().catch(() => ""))
+    );
+    await setDesk(2);
+    check("multiwindow: monitor plugged back in — the shortcuts return", (await monitorRows()) === 2);
+
     // Closing the other window is clean (its lines go, nothing breaks here).
     await popup.close();
     await settle(500);
@@ -1219,6 +1288,39 @@ if (want("cine") && only?.includes("cine")) {
 
 
 
+// ── test hook (window.__flowradTest, bench/test mode only): --only hooks.
+// Rotation / flips applied and drawn, thumbnails rendered and one per series,
+// bindings set → reset all → preset, driven through the hook the bench uses.
+if (want("hooks") && only?.includes("hooks")) {
+  check("hooks: not installed outside bench/test mode", (await page.evaluate(() => typeof window.__flowradTest)) === "undefined");
+  await page.goto(`http://127.0.0.1:${port}/?bench`);
+  await page.waitForSelector("text=Open a study");
+  await page.locator('input[type="file"]').first().setInputFiles(await listFiles(study));
+  await page.waitForSelector('[data-has-series="1"]', { timeout: 60_000 });
+  await page.waitForFunction(() => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
+  await settle(800);
+  check("hooks: installed in bench/test mode", (await page.evaluate(() => window.__flowradTest?.version ?? null)) === 1);
+  const edgesBefore = await edgesOf();
+  const result = await page.evaluate(() => window.__flowradTest.selfTest());
+  for (const c of result.checks) check(`hooks: ${c.name}`, c.ok, c.detail);
+  check("hooks: thumbnails counted against the open study", result.thumbnails?.expected >= 2, JSON.stringify(result.thumbnails));
+  // The hook's rotate is the app's: the edge letters follow it, and its reset puts them back.
+  const turned = await page.evaluate(() => window.__flowradTest.rotate(90));
+  await settle(200);
+  const edgesTurned = await edgesOf();
+  check("hooks: rotate(90) is drawn (edge letters turn)", turned.ok && edgesTurned.top === edgesBefore.left, `${JSON.stringify(turned.after)} ${JSON.stringify(edgesTurned)}`);
+  await page.evaluate(() => window.__flowradTest.resetOrientation());
+  await settle(200);
+  check("hooks: resetOrientation() restores the edge letters", JSON.stringify(await edgesOf()) === JSON.stringify(edgesBefore), JSON.stringify(await edgesOf()));
+  // Reset to defaults also holds for real keys: ↓ (the preset for slice.next) steps again.
+  await focusImage();
+  const at = await imageNo();
+  await page.keyboard.press("ArrowDown");
+  await settle(300);
+  check("hooks: after reset, ↓ (preset) moves to the next image", (await imageNo())?.at === (at?.at ?? 0) + 1, `${at?.at} → ${(await imageNo())?.at}`);
+  await shot("hooks");
+}
+
 // ── voice commands ──────────────────────────────────────────────────────
 if (want("voice")) {
   const hasModel = existsSync(path.join(dist, "voice", "model.tar.gz"));
@@ -1264,6 +1366,34 @@ if (want("voice")) {
     await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
     check("voice: switching off frees the recognizer (worker gone)", recognizers() === 0, page.workers().map((w) => w.url().split("/").pop()).join(", "));
+
+    // Second time: the model was prepared once, so switching on just turns it
+    // on — no loading card with the model size, at any point of the load.
+    await page.evaluate(() => {
+      window.__voiceCardSeen = [];
+      window.__voiceCardObs?.disconnect();
+      const look = () => {
+        const card = document.querySelector('[data-testid="voice-status"]');
+        if (card) window.__voiceCardSeen.push(card.textContent ?? "");
+      };
+      window.__voiceCardObs = new MutationObserver(look);
+      window.__voiceCardObs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+    await focusImage();
+    await page.keyboard.press("Control+Shift+V");
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
+    const again = await page.getByRole("button", { name: /^Voice commands on/ }).count();
+    const seen = await page.evaluate(() => {
+      window.__voiceCardObs?.disconnect();
+      return window.__voiceCardSeen;
+    });
+    check("voice: switching on a second time starts listening", again === 1);
+    check("voice: switching on a second time shows no loading / size notice", seen.length === 0, seen.slice(0, 2).join(" | "));
+    check("voice: …and never mentions the model size", !seen.some((t) => /MB/.test(t)), seen.slice(0, 2).join(" | "));
+    await page.keyboard.press("Control+Shift+V");
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
+    await settle(800);
+    check("voice: switching off again frees the recognizer", recognizers() === 0, page.workers().map((w) => w.url().split("/").pop()).join(", "));
   }
 }
 

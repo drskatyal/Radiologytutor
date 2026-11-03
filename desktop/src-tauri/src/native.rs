@@ -40,6 +40,28 @@ pub fn enabled() -> bool {
     }
 }
 
+/// When the GPU device exists. Windows: only while a study needs it. The
+/// D3D12 device, the driver's user-mode heaps, the swap chain and pipelines
+/// were built at launch and held for the whole session, study or not (HP
+/// 0.8.2: 1,038 ms of warm-up, held by a 358 MB empty app). Now they are
+/// built when a study is about to open (a study on the command line, the
+/// Open dialog, a drag over the window, a history / PACS open) and released
+/// once no viewport has used them for `GPU_IDLE_RELEASE` (study closed,
+/// dialog cancelled). macOS / Linux keep the launch-time device.
+/// `FLOWRAD_GPU_WARM=eager|lazy` overrides, for A/B runs.
+pub fn lazy_gpu() -> bool {
+    match crate::flowrad_env("GPU_WARM").as_deref() {
+        Ok("eager") => false,
+        Ok("lazy") => true,
+        _ => cfg!(target_os = "windows"),
+    }
+}
+
+/// Lazy mode: how long the GPU may sit unused with no viewport before it is
+/// released (well inside the close bench's 30 s sample, well past the gap
+/// between a close and the next open's first native call).
+pub const GPU_IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// A viewport rectangle in CSS pixels of the page (its top-left origin is
 /// the window's client-area origin: the webview fills the window).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Default)]
@@ -85,6 +107,13 @@ pub struct NativeStatus {
     pub scale: Option<f64>,
     /// Native viewports alive.
     pub cells: usize,
+    /// The GPU is built on demand (`lazy_gpu`), not at launch: the page asks
+    /// for it when a study is about to open instead of at start-up.
+    pub lazy: bool,
+    /// Last device build, ms (lazy mode: the one a study open overlapped).
+    pub warm_ms: Option<f64>,
+    /// Times the GPU was released for being idle (lazy mode).
+    pub releases: u32,
 }
 
 const TEST_SIZE: u32 = 512;
@@ -146,6 +175,8 @@ pub struct Native {
     /// Serialises init (start-up paint and the page's native_init can race:
     /// two surfaces on one window would fail).
     init_lock: tauri::async_runtime::Mutex<()>,
+    /// Last time the GPU was created or drew a frame (lazy mode's idle release).
+    last_use: Mutex<Option<Instant>>,
 }
 
 pub type Shared = Arc<Native>;
@@ -376,6 +407,8 @@ impl Native {
     pub fn status(&self) -> NativeStatus {
         let mut s = self.status.lock().clone();
         s.enabled = enabled();
+        s.lazy = lazy_gpu();
+        s.warm_ms = *LAST_WARM_MS.lock();
         s.cells = self.cells.lock().len();
         #[cfg(target_os = "macos")]
         if let Some(gpu) = self.gpu.lock().as_ref() {
@@ -399,6 +432,7 @@ impl Native {
         match create_gpu(window).await {
             Ok((gpu, adapter, backend)) => {
                 *self.gpu.lock() = Some(gpu);
+                *self.last_use.lock() = Some(Instant::now());
                 // Read before taking the status lock (render takes gpu, then status).
                 #[cfg(target_os = "macos")]
                 let init_metal = self.gpu.lock().as_ref().and_then(|g| metal_allocated_mb(&g.device));
@@ -417,6 +451,35 @@ impl Native {
             Err(e) => self.status.lock().error = Some(e),
         }
         self.status()
+    }
+
+    pub fn has_gpu(&self) -> bool {
+        self.gpu.lock().is_some()
+    }
+
+    /// The GPU should be (re)built before drawing: not there, and the last
+    /// attempt did not fail (a failed init is not retried on every call; the
+    /// page has fallen back to the JS renderer then).
+    pub fn needs_gpu(&self) -> bool {
+        enabled() && self.gpu.lock().is_none() && self.status.lock().error.is_none()
+    }
+
+    /// Lazy mode: drop the device, swap chain and pipelines when no viewport
+    /// exists and nothing has drawn or asked for the GPU for `idle`. Returns
+    /// true when it released them; the next study rebuilds them (`init`).
+    pub fn release_gpu_if_idle(&self, idle: std::time::Duration) -> bool {
+        // Never while an init is running (it is about to hand out a GPU).
+        let Ok(_serial) = self.init_lock.try_lock() else { return false };
+        if !self.cells.lock().is_empty() || self.last_use.lock().is_some_and(|t| t.elapsed() < idle) {
+            return false;
+        }
+        let Some(gpu) = self.gpu.lock().take() else { return false };
+        flush_and_wait(&gpu);
+        drop(gpu);
+        let mut s = self.status.lock();
+        s.ready = false;
+        s.releases += 1;
+        true
     }
 
     pub fn resize(&self, width: u32, height: u32) {
@@ -555,10 +618,15 @@ impl Native {
     // ───────────── series and views ─────────────
 
     /// Show `paths` (display order) in cell `id` at `index`, with the file's window.
-    pub fn set_series(&self, id: &str, paths: Vec<PathBuf>, index: usize, scale: f64) -> Result<ShowResult, String> {
+    /// `rect`: the cell's rectangle when the page knows it (a viewport's
+    /// first series), so this frame draws it in place.
+    pub fn set_series(&self, id: &str, paths: Vec<PathBuf>, index: usize, rect: Option<Cell>, scale: f64) -> Result<ShowResult, String> {
         {
             let mut cells = self.cells.lock();
             let c = cells.entry(id.to_string()).or_insert(CellState { rect: Cell::default(), series: vec![], plane: None, view: View::default(), gpu: None });
+            if let Some(r) = rect.filter(|r| r.w > 0.0 && r.h > 0.0) {
+                c.rect = r;
+            }
             c.series = paths;
             c.plane = None;
             c.view = View { index: index.min(c.series.len().saturating_sub(1)), ..View::default() };
@@ -920,6 +988,7 @@ impl Native {
         let started = Instant::now();
         let mut guard = self.gpu.lock();
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
+        *self.last_use.lock() = Some(Instant::now());
         let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -1005,7 +1074,7 @@ impl Native {
 
     pub fn open_series(&self, paths: Vec<PathBuf>, scale: f64) -> Result<ShowResult, String> {
         self.store().clear();
-        self.set_series(SPIKE, paths, 0, scale)
+        self.set_series(SPIKE, paths, 0, None, scale)
     }
 
     pub fn scroll_spike(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
@@ -1142,15 +1211,22 @@ static WARM: std::sync::Mutex<Option<WarmJob>> = std::sync::Mutex::new(None);
 /// How long the background device build took (ms), for the startup report.
 pub static WARM_MS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
 
-/// Start building the device and pipelines now, off the main thread. Call
-/// once, before the Tauri builder. No-op when native mode is off.
+/// Start building the device and pipelines now, off the main thread. No-op
+/// while a build is in flight or untaken. Called
+/// only while no device exists (at launch, and by `create_gpu` under the init
+/// lock, which takes the job at once), so a build never outlives the GPU it
+/// was for: one lock (`WARM`), one device. No-op when native mode is off.
 pub fn prewarm() {
     if !enabled() {
         return;
     }
+    let mut slot = WARM.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
+        return; // already building (or built and not yet taken)
+    }
     let job = std::thread::Builder::new().name("flowrad-gpu-warm".into()).spawn(|| {
         let started = Instant::now();
-        let instance = new_instance(None);
+        let instance = shared_instance();
         let warm = futures_util::FutureExt::now_or_never(Box::pin(async {
             let (adapter, device, queue) = request_device(&instance, None).await?;
             let pipes = build_pipes(&device, &queue, LIKELY_FORMAT);
@@ -1163,12 +1239,28 @@ pub fn prewarm() {
             // ever does not, `init` builds everything itself.
             None => Err("adapter request did not complete synchronously".into()),
         };
-        let _ = WARM_MS.set(started.elapsed().as_secs_f64() * 1000.0);
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        // The first build is the startup report's; the latest is the status's.
+        let _ = WARM_MS.set(ms);
+        *LAST_WARM_MS.lock() = Some(ms);
         r
     });
     if let Ok(job) = job {
-        *WARM.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
+        *slot = Some(job);
     }
+}
+
+/// How long the latest device build took (ms).
+static LAST_WARM_MS: parking_lot::Mutex<Option<f64>> = parking_lot::Mutex::new(None);
+
+/// The default-backend instance, kept across GPU releases: it holds the DXGI
+/// factory and the loaded runtime libraries, not a device or driver heaps, so
+/// a rebuild after a release does not load them again. (Dropping it with the
+/// device was measured, CI 0.8.3: the closed app's private bytes were the
+/// same within noise, 33 MB either way.)
+fn shared_instance() -> wgpu::Instance {
+    static INSTANCE: std::sync::Mutex<Option<wgpu::Instance>> = std::sync::Mutex::new(None);
+    INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| new_instance(None)).clone()
 }
 
 fn take_warm() -> Option<WarmJob> {
@@ -1194,8 +1286,46 @@ fn backends_for(force: Option<wgpu::Backends>) -> wgpu::Backends {
 fn new_instance(force: Option<wgpu::Backends>) -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: backends_for(force),
+        flags: instance_flags(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     })
+}
+
+/// wgpu's build-config flags without indirect-call validation: the renderer
+/// never draws or dispatches indirectly, and with it every device compiles
+/// two validation compute pipelines and keeps their buffers.
+fn instance_flags() -> wgpu::InstanceFlags {
+    wgpu::InstanceFlags::from_build_config().difference(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
+}
+
+/// D3D12 shader-visible CBV/SRV/UAV descriptors the device reserves up front.
+/// wgpu's default (`max_non_sampler_bindings`, 1,000,000) is one descriptor
+/// heap of 32-64 MB (32 B a descriptor on WARP / NVIDIA, 64 B on some Intel
+/// parts), allocated when the device is created and resident for as long as
+/// it lives: on WARP and on integrated GPUs that is system memory, in the
+/// app's private bytes with a study open. The renderer binds two descriptors
+/// a viewport (uniforms + its slice, one bind group, rebuilt only when the
+/// slice size changes), so 8,192 is hundreds of times what it can use, in a
+/// 256-512 KB heap. Only D3D12 reads this limit; other backends ignore it.
+pub(crate) const VIEW_DESCRIPTORS: u32 = 8192;
+
+/// GPU allocator blocks (wgpu's gpu-allocator, D3D12 / Vulkan): 4 MB device
+/// and upload blocks to start with, growing to 64 / 32 MB for big uploads
+/// (MPR volumes). "MemoryUsage" starts at 8 + 4 MB; a CT viewport's texture is
+/// 0.5 MB and its staging copy the same, so the first device block sat mostly
+/// empty (CI: 12 MB reserved, 1.1 MB allocated). On an integrated GPU or WARP
+/// the blocks are system memory in our working set.
+fn memory_hints() -> wgpu::MemoryHints {
+    wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: (4 << 20)..(64 << 20) }
+}
+
+/// The limits the device is created with: downlevel defaults at the adapter's
+/// texture sizes, and a small D3D12 descriptor heap (`VIEW_DESCRIPTORS`).
+fn device_limits(adapter: wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_non_sampler_bindings: VIEW_DESCRIPTORS.min(adapter.max_non_sampler_bindings),
+        ..wgpu::Limits::downlevel_defaults().using_resolution(adapter)
+    }
 }
 
 async fn request_device(
@@ -1214,10 +1344,10 @@ async fn request_device(
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("flowrad-native"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            required_limits: device_limits(adapter.limits()),
             // Small allocator blocks: on an integrated GPU (shared memory) the
             // default "performance" blocks are resident in our working set.
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            memory_hints: memory_hints(),
             ..Default::default()
         })
         .await
@@ -1226,7 +1356,11 @@ async fn request_device(
 }
 
 async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, String), String> {
-    // The device built in the background at launch, when it suits this window.
+    // The device built in the background (at launch, or since the page said a
+    // study is about to open), when it suits this window. None in flight
+    // (lazy GPU, or released since): build it on that thread now, not on an
+    // async worker.
+    prewarm();
     if let Some(job) = take_warm() {
         let joined = tauri::async_runtime::spawn_blocking(move || job.join()).await;
         if let Ok(Ok(Ok(warm))) = joined {
@@ -1503,6 +1637,31 @@ pub fn device_clip(x: f32, y: f32, w: f32, h: f32, scale: f32, sw: u32, sh: u32)
 
 #[cfg(test)]
 mod tests {
+    /// The device asks for a small D3D12 descriptor heap (not wgpu's
+    /// 1,000,000-descriptor, 32-64 MB default), small allocator blocks, and no
+    /// indirect-call validation; everything else stays downlevel defaults.
+    #[test]
+    fn device_is_built_lean() {
+        // What wgpu's D3D12 adapter reports, and what Vulkan / Metal / GL do.
+        let d3d12 = wgpu::Limits { max_non_sampler_bindings: 1_000_000, ..wgpu::Limits::default() };
+        let l = super::device_limits(d3d12.clone());
+        assert_eq!(l.max_non_sampler_bindings, super::VIEW_DESCRIPTORS);
+        assert_eq!(l.max_texture_dimension_2d, d3d12.max_texture_dimension_2d);
+        assert_eq!(l.max_bind_groups, wgpu::Limits::downlevel_defaults().max_bind_groups);
+        let unbounded = wgpu::Limits { max_non_sampler_bindings: u32::MAX, ..wgpu::Limits::default() };
+        assert_eq!(super::device_limits(unbounded).max_non_sampler_bindings, super::VIEW_DESCRIPTORS);
+        // Never more than the adapter has (request_device would refuse it).
+        let tiny = wgpu::Limits { max_non_sampler_bindings: 100, ..wgpu::Limits::default() };
+        assert_eq!(super::device_limits(tiny).max_non_sampler_bindings, 100);
+        // Two descriptors a viewport: room for thousands of live bind groups.
+        assert!(super::VIEW_DESCRIPTORS >= 4096);
+        assert!(!super::instance_flags().contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
+        match super::memory_hints() {
+            wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: r } => assert_eq!(r, (4 << 20)..(64 << 20)),
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// No vblank wait: Mailbox where offered (D3D12, Vulkan), Immediate on
     /// Metal (it offers only Fifo / Immediate), Fifo as the last resort.
     #[test]
