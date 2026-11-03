@@ -2390,8 +2390,14 @@ export default function App() {
 
   // Bench / e2e test hook (window.__flowradTest): bench or test mode only,
   // gated like benchReport (FLOWRAD_BENCH=1, or ?bench in the browser build).
-  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell });
-  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell };
+  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell, cells, reformats });
+  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell, cells, reformats };
+  // Committed (an effect, not the render): a transition render (the hanging
+  // plan at the end of a streaming scan) may still be in progress or thrown away.
+  const openSettledRef = useRef(false);
+  useEffect(() => {
+    openSettledRef.current = scan === null && !growing && studies.length > 0;
+  }, [scan, growing, studies]);
   useEffect(() => {
     let off: (() => void) | undefined;
     let cancelled = false;
@@ -2403,6 +2409,13 @@ export default function App() {
       off = installTestHook({
         activeHandle: () => getHandle(cellKey(st().activeCell)),
         activeCellKey: () => cellKey(st().activeCell),
+        // A reformat cell is a plane of the volume, with no stack handle to drive.
+        activeSeriesUid: () => {
+          const { cells: hung, activeCell: i, reformats: planes } = st();
+          const uid = hung[i] ?? null;
+          return uid && planes[i]?.uid !== uid ? uid : null;
+        },
+        openSettled: () => openSettledRef.current,
         studies: () => st().studies,
         hiddenSeries: () => st().hiddenSeries,
         seriesPanel: () => ({ collapsed: st().seriesPanel.collapsed, compact: !!st().settings.compactSeries }),

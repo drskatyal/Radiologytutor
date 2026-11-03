@@ -610,6 +610,14 @@ jobs:
       - name: Gate — feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs leak "$APP" "$RUNNER_TEMP/ct848" --rounds 3 --max-leak-mb "$LEAK_MAX_MB" --max-round-growth-mb "$LEAK_ROUND_GROWTH_MAX_MB"
+      # Informational, as in perf-windows: the test hook on the native renderer
+      # on Metal (0.8.3: all nine orientation checks failed on the Intel MacBook
+      # and nothing on CI ran it on macOS).
+      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer on Metal; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs hooks "$APP" "$RUNNER_TEMP/ct848"
       # The gate is unchanged; the RUNNER lines around it are informational.
       # Identical trees have built this volume in 108 ms and in 2,039 ms on
       # different runners (0.8.3: #272 vs #271), and the WKWebView control

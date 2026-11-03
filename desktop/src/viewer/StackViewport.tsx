@@ -116,6 +116,8 @@ function StackViewportImpl({
   const [loading, setLoading] = useState(false);
   /** Series whose first Cornerstone frame is on screen; until then the preview shows. */
   const [paintedUid, setPaintedUid] = useState<string | null>(null);
+  const paintedUidRef = useRef(paintedUid);
+  paintedUidRef.current = paintedUid;
   // The series whose first paint has been verified. Kept apart from
   // `sameSeries`: a streaming scan can grow the stack before the first
   // setStack resolves, and that first check is then superseded, so growth
@@ -549,6 +551,8 @@ function StackViewportImpl({
         });
       },
       readout: () => readoutRef.current,
+      // The first frame of the series was verified on screen and the readout has caught up with it.
+      drawnSeriesUid: () => (paintedUidRef.current === seriesRef.current?.uid && readoutRef.current ? paintedUidRef.current : null),
     };
     return registerHandle(cellKey, handle);
   }, [engineReady, cellKey, viewportId, series?.uid, viewport]);
