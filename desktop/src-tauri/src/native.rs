@@ -659,6 +659,8 @@ impl Native {
                 report.gpu_allocated_unflushed_mb = metal_allocated_mb(&gpu.device);
             }
             flush_and_wait(gpu);
+            #[cfg(target_os = "macos")]
+            release_spare_drawables(gpu);
             if let Some(r) = gpu.device.generate_allocator_report() {
                 report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
                 report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
@@ -1005,6 +1007,23 @@ impl Native {
 fn flush_and_wait(gpu: &Gpu) {
     gpu.queue.submit(std::iter::empty());
     let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
+}
+
+/// macOS, study closed: the CAMetalLayer keeps its pool of drawables (up to
+/// frame latency + 1, each a window-sized IOSurface counted in the Metal
+/// device's allocations and our footprint) for as long as their size holds.
+/// The home screen draws nothing natively, so the pool the study filled stays
+/// allocated (CI: IOSurface +5.3 MB, IOAccelerator +5.7 MB after close against
+/// the empty app). Changing drawableSize makes the layer drop its pool; the
+/// next frame allocates one drawable at the restored size, as at start.
+#[cfg(target_os = "macos")]
+fn release_spare_drawables(gpu: &Gpu) {
+    let full = gpu.config.clone();
+    let mut tiny = full.clone();
+    tiny.width = 1;
+    tiny.height = 1;
+    gpu.surface.configure(&gpu.device, &tiny);
+    gpu.surface.configure(&gpu.device, &full);
 }
 
 fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
