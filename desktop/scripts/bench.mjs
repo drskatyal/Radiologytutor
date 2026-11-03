@@ -201,8 +201,12 @@ async function benchDesktop(binary, study) {
     if (at != null && rs.enteredAtMs != null) {
       const rel = (x) => (x == null ? "?" : r0(x - at));
       console.error(
-        `  open timeline: open at ${r0(at)} ms after process start · scan called ${r0(report.scanCalledMs)} · Rust entered ${rel(rs.enteredAtMs)} · first batch sent ${rel(rs.firstBatchAtMs)} · scan returned ${rel(rs.doneAtMs)} · first batch received ${r0(report.firstHeaderMs)} · first series hung ${r0(report.firstSeriesHungMs)}`
+        `  open timeline: open at ${r0(at)} ms after process start · scan called ${r0(report.scanCalledMs)} · Rust entered ${rel(rs.enteredAtMs)} · first batch sent ${rel(rs.firstBatchAtMs)} · scan returned ${rel(rs.doneAtMs)} · first batch received ${r0(report.firstHeaderMs)} · first series hung ${r0(report.firstSeriesHungMs)}` +
+          ` · view chunks ${r0(report.viewChunksMs)} · viewport asked ${r0(report.firstViewportSentMs)} · first image ${r0(report.firstImageMs)}`
       );
+      // The native viewport's first show: the round trip and Rust's split of it.
+      const nf = report.nativeFirst;
+      if (nf) console.error(`  first native show: round trip ${nf.roundTripMs} ms · in Rust ${nf.rustMs} (decode ${nf.decodeMs}${nf.cached ? ", from the store" : ""}, frame ${nf.frameMs}, acquire ${nf.acquireMs ?? "?"})`);
     }
   }
   if (discarded.length) console.error(`${discarded.length} run(s) discarded and repeated on the WARP runner: ${JSON.stringify(discarded)}`);
