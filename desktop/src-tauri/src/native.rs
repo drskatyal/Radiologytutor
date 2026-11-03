@@ -539,6 +539,22 @@ impl Native {
         self.show(id, None, true, scale)
     }
 
+    /// A streaming series grew: append `paths` to cell `id`'s list, keeping
+    /// its view (slice, window, zoom). No decode, upload or draw: the shown
+    /// slice is unchanged, so nothing goes back to the store. `from` is the
+    /// length the caller last sent; on any mismatch (the cell is gone, shows
+    /// a plane, or the list was rebuilt) it returns `None` and the caller
+    /// re-sends the whole series. Returns the new count.
+    pub fn append_series(&self, id: &str, from: usize, paths: Vec<PathBuf>) -> Option<usize> {
+        let mut cells = self.cells.lock();
+        let c = cells.get_mut(id)?;
+        if c.plane.is_some() || c.series.len() != from {
+            return None;
+        }
+        c.series.extend(paths);
+        Some(c.series.len())
+    }
+
     /// P2.4: show a plane (or slab) of the built volume `key` in cell `id`.
     /// Window / level, zoom, pan etc. apply as for a stack; the index pages
     /// along the plane's axis. `max_dim`: output resolution (long side).
@@ -1356,6 +1372,34 @@ mod tests {
         // Left edge dark, right edge bright on a row away from the rings' bright bands.
         assert!(px[0] < px[63]);
         assert!(px.iter().any(|&v| v > 25000));
+    }
+
+    #[test]
+    fn append_series_grows_the_list_and_keeps_the_view() {
+        use super::*;
+        let native = Native::default();
+        let view = View { index: 7, zoom: 2.0, ..View::default() };
+        let paths = |r: std::ops::Range<u32>| r.map(|i| PathBuf::from(format!("{i}.dcm"))).collect::<Vec<_>>();
+        native.cells.lock().insert(
+            "a".into(),
+            CellState { rect: Cell::default(), series: paths(0..10), plane: None, view, gpu: None },
+        );
+        // A batch that extends what Rust holds is appended, view untouched.
+        assert_eq!(native.append_series("a", 10, paths(10..25)), Some(25));
+        {
+            let cells = native.cells.lock();
+            let c = &cells["a"];
+            assert_eq!(c.series.len(), 25);
+            assert_eq!(c.series[24], PathBuf::from("24.dcm"));
+            assert_eq!(c.view, view);
+        }
+        // A stale `from` (the list changed underneath) is refused, not spliced.
+        assert_eq!(native.append_series("a", 10, paths(10..12)), None);
+        assert_eq!(native.cells.lock()["a"].series.len(), 25);
+        // Unknown cell.
+        assert_eq!(native.append_series("b", 0, paths(0..1)), None);
+        // The store was never touched: an append decodes nothing.
+        assert!(native.store.get().is_none());
     }
 }
 
