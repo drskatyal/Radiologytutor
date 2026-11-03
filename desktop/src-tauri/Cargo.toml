@@ -66,7 +66,7 @@ panic = "abort"
 strip = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console", "Win32_System_Memory"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 # WebView2's MemoryUsageTargetLevel (idle footprint). Same versions wry uses.
 webview2-com = "0.39"
 # Cold start: the native splash (GDI popup, splash.rs) and the early WebView2

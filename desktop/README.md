@@ -138,8 +138,10 @@ Bench environment:
 | `FLOWRAD_BENCH_OUT` | also append every report line to this file; default `flowrad-bench.jsonl` in the temp folder (`%TEMP%` on Windows) |
 | `FLOWRAD_BENCH_PIXELS=1` | include decoded-pixel stats (used by `codec-check.py`) |
 | `FLOWRAD_PROBE_AFTER_MS=8000` | on a normal launch, report every viewport's on-screen pixels after that long (`FLOWRAD_PROBE {json}`) |
-| `FLOWRAD_WEBVIEW2_EXTRA_ARGS` | Windows: WebView2 flags appended to the app's own (every window), to A/B memory experiments, e.g. `--in-process-gpu` |
+| `FLOWRAD_WEBVIEW2_EXTRA_ARGS` | Windows: WebView2 flags appended to the app's own (every window), to A/B memory experiments, e.g. `--in-process-gpu`; `!--flag` takes one of the app's own out, e.g. `!--enable-features=NetworkServiceInProcess2` |
 | `FLOWRAD_GPU_WARM=eager\|lazy` | when the native renderer's GPU device is built. Default on Windows `lazy`: when a study is about to open (command line, Open dialog, drag over the window, pointer on a recent study), released 15 s after the last study closed. `eager`: at launch, held all session (0.8.2; macOS / Linux default) |
+| `FLOWRAD_GPU_KEEP_INSTANCE=1` | lazy GPU: keep the wgpu instance (DXGI factory, D3D12 runtime, driver DLLs) loaded after the idle release instead of letting it go with the device; A/B only |
+| `FLOWRAD_MEM_REPORT_MS=<ms>` | print `FLOWRAD_BENCH_MEM {json}` once, that long after start: the app process's private bytes by owner (Rust heap, Windows heaps, stacks, written DLL pages, other VirtualAlloc'd memory and its biggest allocations); the bench's empty-app baseline uses it |
 
 ### Real-hardware runs (open/close rounds, interaction pass, test hook)
 
