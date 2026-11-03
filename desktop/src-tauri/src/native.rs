@@ -1019,8 +1019,11 @@ impl Native {
 /// counts as one until the next submit, which on the home screen may never
 /// come (CI, macOS: Metal held 7.3 MB after close, 6.2 MB with the study
 /// open). An empty submit flushes those writes; the wait then lets wgpu
-/// destroy everything that was only waiting on the GPU.
+/// destroy everything that was only waiting on the GPU. Windows / Linux:
+/// just the wait, as before (the empty submit is the macOS fix; keeping
+/// D3D12 unchanged keeps the Windows close gate comparable).
 fn flush_and_wait(gpu: &Gpu) {
+    #[cfg(target_os = "macos")]
     gpu.queue.submit(std::iter::empty());
     let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
 }
