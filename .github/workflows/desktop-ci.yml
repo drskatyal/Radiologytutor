@@ -602,9 +602,46 @@ jobs:
       - name: Gate — feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs leak "$APP" "$RUNNER_TEMP/ct848" --rounds 3 --max-leak-mb "$LEAK_MAX_MB" --max-round-growth-mb "$LEAK_ROUND_GROWTH_MAX_MB"
+      # The gate is unchanged; the RUNNER lines around it are informational.
+      # Identical trees have built this volume in 108 ms and in 2,039 ms on
+      # different runners (0.8.3: #272 vs #271), and the WKWebView control
+      # above does not track it (the build is file reads + a parallel decode,
+      # not WebKit start-up). So the step also prints the runner's load, the
+      # busiest processes while the bench runs (e.g. Spotlight indexing the
+      # new CT), and a CPU / file-read index taken AFTER the bench, so the
+      # gate's own conditions are unchanged. A slow build with a slow index or
+      # a busy top is the runner; a slow build on a quiet, normal-speed runner
+      # is ours.
       - name: Gate — MPR build time and peak memory
         if: ${{ !cancelled() }}
-        run: node desktop/scripts/bench.mjs mpr "$APP" "$RUNNER_TEMP/ct848" --max-ms "$MPR_MAX_MS" --max-mb "$MPR_MAX_MB"
+        run: |
+          echo "RUNNER: $(sysctl -n hw.ncpu) CPUs, $(sysctl -n hw.memsize | awk '{printf "%d GB", $1 / 1073741824}'), $(uptime | sed 's/.*load averages*: /load /')"
+          top -l 8 -s 1 -o cpu -n 6 -stats pid,command,cpu,mem > "$RUNNER_TEMP/mpr-top.txt" 2>&1 &
+          sampler=$!
+          rc=0
+          node desktop/scripts/bench.mjs mpr "$APP" "$RUNNER_TEMP/ct848" --max-ms "$MPR_MAX_MS" --max-mb "$MPR_MAX_MB" || rc=$?
+          wait "$sampler" || true
+          echo "RUNNER: busiest processes while the bench ran (top, 1 s apart; the first sample's CPU% is since boot):"
+          grep -Ev '^(Processes|SharedLibs|MemRegions|PhysMem|VM|Networks|Disks):|^$' "$RUNNER_TEMP/mpr-top.txt" || true
+          python3 - "$RUNNER_TEMP/ct848" <<'PY' || true
+          import concurrent.futures, hashlib, os, sys, time
+          d, cpus = sys.argv[1], os.cpu_count() or 1
+          t = time.perf_counter()
+          n = sum(len(open(os.path.join(d, f), "rb").read()) for f in os.listdir(d))
+          read_ms = (time.perf_counter() - t) * 1000
+          buf = bytes(range(256)) * (1 << 18)  # 64 MB
+          t = time.perf_counter()
+          hashlib.sha256(buf).digest()
+          one_ms = (time.perf_counter() - t) * 1000
+          t = time.perf_counter()
+          with concurrent.futures.ThreadPoolExecutor(cpus) as ex:  # hashlib drops the GIL
+              list(ex.map(lambda _: hashlib.sha256(buf).digest(), range(cpus)))
+          all_ms = (time.perf_counter() - t) * 1000
+          print(f"RUNNER (after the bench): read the CT's {n >> 20} MB in {read_ms:.0f} ms; "
+                f"sha256 of 64 MB in {one_ms:.0f} ms on one core, x{cpus} in parallel in {all_ms:.0f} ms; "
+                f"load {os.getloadavg()[0]:.2f}")
+          PY
+          exit $rc
       # The release leg: universal binary (Apple Silicon + Intel) in a .dmg,
       # unsigned here (the release workflow signs when the secrets exist).
       - name: Build the universal .dmg (arm64 + x86_64)
