@@ -530,6 +530,15 @@ jobs:
       - name: Gate — empty app (whole tree, physical footprint)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs idle "$APP" --seconds 10 --max-private-mb "$BASELINE_PRIVATE_MAX_MB"
+      # Control, informational: a bare WKWebView app (no FlowRad code) on this
+      # runner, same marks as ours, so a cold-start number can be read as
+      # "the runner's WebKit" vs "our start-up".
+      - name: Control — bare WKWebView start-up on this runner (5 runs; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          swiftc -O desktop/scripts/wk-baseline.swift -o "$RUNNER_TEMP/wk-baseline"
+          for i in 1 2 3 4 5; do echo "control run $i: $("$RUNNER_TEMP/wk-baseline")"; done
       - name: Gate — cold start
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS"

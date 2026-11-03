@@ -20,6 +20,8 @@ const nextFrame = () => new Promise<number>((r) => requestAnimationFrame(r));
 
 interface Shown {
   frameMs: number;
+  /** Of frameMs: waiting for the next drawable (vsync / drawable pool). */
+  acquireMs?: number;
   decodeMs: number;
   totalMs: number;
   view: { zoom: number; wl: [number, number] };
@@ -38,7 +40,7 @@ export async function profileNativeInteraction(cellId: string) {
   const rustFrame: number[] = [];
   // The slowest step and where its time went (decode / cache vs. drawing and
   // presenting the frame), so a freeze names its cause.
-  let slowest: { kind: string; step: number; ms: number; rustMs: number; decodeMs: number; frameMs: number } | null = null;
+  let slowest: { kind: string; step: number; ms: number; rustMs: number; decodeMs: number; frameMs: number; acquireMs: number | null } | null = null;
   const run = async (kind: string, steps: number, act: (i: number) => Promise<Shown>) => {
     const out: number[] = [];
     for (let i = 0; i < steps; i += 1) {
@@ -50,7 +52,7 @@ export async function profileNativeInteraction(cellId: string) {
       rustFrame.push(r.totalMs);
       if (!slowest || ms > slowest.ms) {
         const r1 = (x: number) => Math.round(x * 10) / 10;
-        slowest = { kind, step: i, ms: r1(ms), rustMs: r1(r.totalMs), decodeMs: r1(r.decodeMs), frameMs: r1(r.frameMs) };
+        slowest = { kind, step: i, ms: r1(ms), rustMs: r1(r.totalMs), decodeMs: r1(r.decodeMs), frameMs: r1(r.frameMs), acquireMs: r.acquireMs != null ? r1(r.acquireMs) : null };
       }
     }
     return out;
