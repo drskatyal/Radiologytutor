@@ -1145,11 +1145,11 @@ async function benchClose(binary, study) {
     `private ${m.privateMb} = rust heap ${m.heapMb ?? "?"} + windows heaps ${m.winHeapsMb} (${m.winHeaps}) + stacks ${m.stacksMb} (${m.threads} threads) + other ${m.otherPrivateMb}` +
     ` [biggest: ${(m.top ?? []).slice(0, 4).map((a) => `${a.committedMb}/${a.reservedMb}`).join(", ")}] · written DLL pages ${m.imageWrittenMb} [${(m.modules ?? []).slice(0, 4).map(([n, v]) => `${n} ${v}`).join(", ")}]`;
   const byOwner = [
-    ["empty app", emptyApp?.app],
-    ["study open", shellClose.find((c) => c.openApp)?.openApp],
-    ...shellClose.filter((c) => c.app).map((c) => [c.afterS != null ? `${c.afterS} s after the GPU release` : c.step, c.app]),
+    ["empty app", emptyApp?.app, emptyApp?.heap],
+    ["study open", shellClose.find((c) => c.openApp)?.openApp, shellClose.find((c) => c.openApp)?.openHeap],
+    ...shellClose.filter((c) => c.app).map((c) => [c.afterS != null ? `${c.afterS} s after the GPU release` : c.step, c.app, c.heap]),
   ].filter(([, m]) => m);
-  for (const [when, m] of byOwner) console.error(`CLOSE (app by owner, MB) ${when}: ${owners(m)}`);
+  for (const [when, m, heap] of byOwner) console.error(`CLOSE (app by owner, MB) ${when}: ${owners(m)}${heap ? ` · mimalloc ${JSON.stringify(heap)}` : ""}`);
   if (process.platform === "darwin") {
     // By kind of memory (footprint, dirty MB): closed vs. the empty app, and
     // closed vs. open (what the close did not give back).
