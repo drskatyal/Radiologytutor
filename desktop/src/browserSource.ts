@@ -2,7 +2,7 @@
 // browser and the Playwright smoke test. Delegates to the web viewer's own
 // adapter (`lib/localDicomFiles.ts`) so the two paths cannot drift.
 
-import { openLocalFiles } from "@flowrad/viewer-core";
+import { isKeyImageSeries, openLocalFiles } from "@flowrad/viewer-core";
 import type { DesktopHeader } from "./types";
 
 export async function headersFromBrowserFiles(
@@ -16,6 +16,8 @@ export async function headersFromBrowserFiles(
   let fileId = 0;
   for (const study of result.studies) {
     for (const series of study.series) {
+      // Key-image series only borrow instances already listed in their real series.
+      if (isKeyImageSeries(series)) continue;
       for (const instance of series.instances) {
         const ids = result.imageIdsByFile.get(instance.fileName);
         if (!ids?.length) continue;
