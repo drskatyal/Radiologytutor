@@ -35,6 +35,13 @@ export interface ViewportHandle {
   setCineFps(fps: number): void;
   cine(): { playing: boolean; fps: number };
   readout(): ViewportReadout | null;
+  /**
+   * The series whose image this viewport has drawn and whose readout is
+   * current: null until the first frame of `seriesUid` is on screen (the
+   * native renderer's answer has been rendered by React, or Cornerstone's
+   * first paint was verified). The bench / e2e test hook waits on it.
+   */
+  drawnSeriesUid(): string | null;
   /** Show image `i` and resolve once it has been drawn (export, video). */
   renderFrame(i: number): Promise<void>;
 }

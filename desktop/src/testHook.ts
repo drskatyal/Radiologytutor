@@ -9,6 +9,14 @@
 //                rendered frame (Cornerstone IMAGE_RENDERED / CAMERA_MODIFIED,
 //                or the native renderer's answer after it presented). Native
 //                viewports are also asked Rust directly (native_cell_view).
+//                Every action first waits for the active viewport to have an
+//                image (whenImage): the open settled, the cell's handle
+//                registered for the series the app hung there, that series
+//                drawn and its readout rendered, and (native) Rust holding the
+//                cell. The bench starts the hook as soon as the first paint is
+//                reported, which on a slower machine (the Intel MacBook, 0.8.3)
+//                is before React has rendered the native answer: the readout
+//                was still null, and all nine checks failed at once.
 //   thumbnails   the series browser's cards: one per listed series, each
 //                rendered (an <img> with pixels, or a drawn canvas).
 //   bindings     set a custom binding, check it resolves (live, and persisted
@@ -31,6 +39,10 @@ export interface TestHookDeps {
   /** The active viewport's handle and its cell key (the native renderer's cell id). */
   activeHandle(): ViewportHandle | undefined;
   activeCellKey(): string;
+  /** The series the app has hung in the active cell (null: empty, or a reformat). */
+  activeSeriesUid(): string | null;
+  /** The open has settled: scan done and its last update (hanging plan) committed. */
+  openSettled(): boolean;
   studies(): ViewerStudy[];
   hiddenSeries(): ReadonlySet<string>;
   /** Series panel collapsed / compact rows (no thumbnails either way). */
@@ -89,11 +101,46 @@ export function createTestHook(deps: TestHookDeps) {
     return state;
   }
 
+  /**
+   * Why the active viewport cannot be driven yet (null: it can). Each step is
+   * a state the app reaches by itself once the image is on screen; nothing
+   * here retries an action.
+   */
+  async function notReady(): Promise<string | null> {
+    if (!deps.openSettled()) return "the study is still opening (scan or hanging plan not committed)";
+    const key = deps.activeCellKey();
+    const want = deps.activeSeriesUid();
+    if (!want) return `the active cell ${key} has no series`;
+    const h = deps.activeHandle();
+    if (!h) return `no viewport registered for the active cell ${key}`;
+    if (h.seriesUid !== want) return `${key} is still bound to ${h.seriesUid ?? "no series"}, the app hung ${want}`;
+    if (h.drawnSeriesUid() !== want) return `${key} has not drawn ${want} yet`;
+    const r = h.readout();
+    if (!r || r.count < 1) return `${key} has no readout yet`;
+    if (isNativeHandle(h) && isTauri) {
+      const shown = await invoke<{ count: number }>("native_cell_view", { id: key, patch: {} }).catch((e: unknown) => ({ error: String(e) }));
+      if ("error" in shown) return `the native renderer has no image in ${key}: ${shown.error}`;
+      if (!(shown.count > 0)) return `the native renderer's ${key} is empty`;
+    }
+    return null;
+  }
+
+  /**
+   * Wait (frame by frame, so React renders the answers in between) until the
+   * active viewport has an image. Returns at once when it already has.
+   */
+  async function whenImage(timeoutMs = 20_000): Promise<{ ok: boolean; ms: number; why?: string }> {
+    const res = await until(notReady, (why) => why === null, timeoutMs);
+    return res.ok ? { ok: true, ms: res.ms } : { ok: false, ms: res.ms, why: `no active viewport with an image after ${res.ms} ms: ${res.value}` };
+  }
+
   /** Run one handle action and wait until the drawn state equals `expect`. */
   async function applyAndWait(act: (h: ViewportHandle) => void, expect: (before: OrientationState) => ViewOrientation, timeoutMs = 3000) {
+    const ready = await whenImage();
+    if (!ready.ok) return { ok: false, before: null, after: null, expected: null, ms: ready.ms, why: ready.why };
     const before = await orientation();
     const h = deps.activeHandle();
-    if (!before || !h) return { ok: false, before, after: null, expected: null, ms: 0, why: "no active viewport with an image" };
+    if (!before || !h) return { ok: false, before, after: null, expected: null, ms: 0, why: "the active viewport lost its image" };
     const expected = expect(before);
     act(h);
     const res = await until(orientation, (s) => sameOrientation(s, expected) && (s?.native === undefined || sameOrientation(s.native, expected)), timeoutMs);
@@ -108,6 +155,9 @@ export function createTestHook(deps: TestHookDeps) {
 
   async function checkOrientation(): Promise<{ ok: boolean; checks: Check[]; final: OrientationState | null }> {
     const checks: Check[] = [];
+    const ready = await whenImage();
+    checks.push({ name: "orientation: the active viewport has an image", ok: ready.ok, detail: ready.why ?? `ready after ${ready.ms} ms` });
+    if (!ready.ok) return { ok: false, checks, final: null };
     const step = async (name: string, run: () => Promise<{ ok: boolean; after: OrientationState | null; expected: ViewOrientation | null; ms: number; why?: string }>) => {
       const r = await run();
       checks.push({ name, ok: r.ok, detail: r.why ?? `expected ${JSON.stringify(r.expected)} drew ${JSON.stringify(r.after)} in ${r.ms} ms` });
@@ -244,6 +294,7 @@ export function createTestHook(deps: TestHookDeps) {
   return {
     version: 1,
     orientation,
+    whenImage,
     rotate,
     flip,
     resetOrientation,
