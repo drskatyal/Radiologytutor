@@ -107,6 +107,9 @@ jobs:
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only voice --prod-csp --voice-wav "$RUNNER_TEMP/voice.wav" --require-voice
           # Multi-monitor: monitor picker, a second window, linked scroll / W/L / reference lines (pretend two-monitor desk).
           node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only multiwindow --shots "$RUNNER_TEMP/ui-shots"
+          # Bench/test hook (window.__flowradTest, ?bench only): rotation / flips drawn,
+          # thumbnails one per series and rendered, bindings set → reset all → preset.
+          node desktop/scripts/e2e-ui.mjs "$RUNNER_TEMP/ui-study" --only hooks --shots "$RUNNER_TEMP/ui-shots"
       - name: Upload UI e2e screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -461,6 +464,24 @@ jobs:
         # so the leak / multi-window / MPR gates are always measured and still gate.
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs mpr desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --max-ms ${{ env.MPR_MAX_MS }} --max-mb ${{ env.MPR_MAX_MB }}
+      # Informational (0.8.3 bench hooks): logged for comparison with the HP, never
+      # gate. They run even when an earlier step failed (the frame-time step is
+      # known to fail on this runner's software GPU). No thresholds are passed.
+      - name: Open/close rounds — CT opened, closed, re-opened ×3; private MB per round (whole tree; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: node desktop/scripts/bench.mjs openclose desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848" --rounds 3 --hold 15 --after-close 30
+      - name: Scripted interaction pass — scroll, window/level, rotate; per-step p50 / p95 / max and long tasks (informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs steps desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
+      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer; informational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs hooks desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
 
   # macOS (0.8.2): the same app on Apple Silicon with the native renderer on
   # Metal (the runner has a real, paravirtualised Apple GPU). Build, smoke and

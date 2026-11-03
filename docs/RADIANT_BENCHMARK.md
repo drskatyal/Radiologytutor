@@ -272,6 +272,19 @@ node desktop/scripts/bench.mjs desktop desktop\src-tauri\target\release\radlearn
 Read idle RAM from Task Manager. On Windows the WebView2 processes appear under
 the app's group; add them all up.
 
+**0.8.3: open/close rounds, interaction pass, test hook.** The 0.8.2 `close`
+mode measures one open → close; `openclose` repeats it N rounds and reports
+whole-tree private MB per round. On the HP:
+
+```powershell
+$exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"
+node desktop/scripts/bench.mjs openclose $exe D:\studies\ct --rounds 5 --hold 20 --after-close 30
+node desktop/scripts/bench.mjs steps $exe D:\studies\ct    # scroll / W-L / rotate: p50 / p95 / max, long tasks
+node desktop/scripts/bench.mjs hooks $exe D:\studies\ct    # rotation / flips, thumbnails, bindings reset
+```
+
+See `desktop/README.md` (Benchmark) and the header of `bench.mjs` for flags.
+
 **What to expect, from the architecture.** These are not measurements yet:
 
 - **Startup.** WebView2 is Chromium, and a warm WebView2 runtime starts in a
