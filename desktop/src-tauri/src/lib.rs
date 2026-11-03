@@ -82,6 +82,39 @@ pub(crate) fn release_memory() {
     }
 }
 
+/// The app, for `release_memory_everywhere` (set in `setup`).
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// `release_memory`, and the same on the threads it cannot reach: the main
+/// thread (sync commands, the dicom:// protocol's file reads) and the async
+/// runtime's workers (async commands; slices a viewport decoded on a miss).
+/// mimalloc keeps a thread's emptied pages (one "retired" page a size class,
+/// blocks other threads freed into its pages) until THAT thread allocates
+/// enough again or collects, and an idle thread does neither: CI, after a
+/// close and the GPU release, the Rust heap stayed at 46 MB against the empty
+/// app's 14. Only at idle points (study closed, GPU released, viewer idle):
+/// each worker spins until every worker has collected, at most 50 ms.
+pub(crate) fn release_memory_everywhere() {
+    release_memory();
+    if let Some(app) = APP.get() {
+        let _ = app.run_on_main_thread(|| unsafe { libmimalloc_sys::mi_collect(true) });
+    }
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for _ in 0..workers {
+        let done = done.clone();
+        tauri::async_runtime::spawn(async move {
+            unsafe { libmimalloc_sys::mi_collect(true) };
+            done.fetch_add(1, Ordering::SeqCst);
+            // Hold this worker so the next task lands on another one.
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            while done.load(Ordering::SeqCst) < workers && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
+        });
+    }
+}
+
 /// Files the user opened this session. The `dicom://` protocol serves by index
 /// into this list, so the renderer can never name an arbitrary path.
 #[derive(Default)]
@@ -382,6 +415,21 @@ fn bench_scan_line(result: &ScanResult) {
     *LAST_SCAN.lock() = Some(line);
 }
 
+/// `FLOWRAD_MEM_REPORT_MS=<ms>`: print this process's memory by owner once,
+/// that long after start (`FLOWRAD_BENCH_MEM {…}`), with no other bench hook
+/// on: the bench's empty-app baseline, so a close report's breakdown has an
+/// empty app to compare with.
+fn start_mem_report() {
+    let Some(ms) = flowrad_env("MEM_REPORT_MS").ok().and_then(|v| v.parse::<u64>().ok()) else { return };
+    let _ = std::thread::Builder::new().name("flowrad-mem-report".into()).spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        bench_emit(
+            "FLOWRAD_BENCH_MEM",
+            &serde_json::json!({ "atMs": ms, "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb(), "app": procmem::app_memory(), "heap": heap_stats() }),
+        );
+    });
+}
+
 /// `FLOWRAD_BENCH_EXIT=1` must never leave a benchmark hanging: if the
 /// renderer has not reported by `FLOWRAD_BENCH_TIMEOUT_MS` (default 120 s),
 /// print what the shell knows and exit with status 3.
@@ -447,10 +495,10 @@ fn set_memory_mode(window: tauri::WebviewWindow, low: bool, trim: Option<bool>, 
     // The cache serves the main window's native viewports: only its idle trims it.
     if low && trim == Some(true) && window.label() == "main" {
         if let Some(store) = native.store.get() {
-            if store.trim_to(IDLE_STORE_KEEP_MB << 20) > 0 {
-                release_memory();
-            }
+            store.trim_to(IDLE_STORE_KEEP_MB << 20);
         }
+        // Idle: whatever the threads that served the study let go, too.
+        release_memory_everywhere();
     }
     #[cfg(windows)]
     {
@@ -662,13 +710,35 @@ fn start_gpu_release_watch(native: native::Shared, window: tauri::WebviewWindow)
                 // opaque canvas colour again (as before the first study).
                 let _ = window.set_background_color(Some(tauri::window::Color(0x0B, 0x0D, 0x10, 0xFF)));
                 let before = commit_mb();
-                release_memory();
+                release_memory_everywhere();
                 if bench_on() {
                     bench_emit(
                         "FLOWRAD_BENCH_CLOSE",
-                        &serde_json::json!({ "step": "gpu released", "idleS": native::GPU_IDLE_RELEASE.as_secs(), "commitMb": { "beforeRelease": before, "after": commit_mb() } }),
+                        &serde_json::json!({ "step": "gpu released", "idleS": native::GPU_IDLE_RELEASE.as_secs(), "commitMb": { "beforeRelease": before, "after": commit_mb() }, "app": procmem::app_memory(), "heap": heap_stats() }),
                     );
                 }
+                // The GPU runtime gives some of the device back later than
+                // the drop (CI, WARP: ~11 MB of its allocations still there right
+                // after it, gone 5 s on): collect again once it has, and say
+                // what is left. Its own thread: this watcher ends now, so a
+                // study opened meanwhile gets a watcher of its own.
+                let native = native.clone();
+                let _ = std::thread::Builder::new().name("flowrad-gpu-released".into()).spawn(move || {
+                    for after_s in [5u64, 15] {
+                        std::thread::sleep(std::time::Duration::from_secs(if after_s == 5 { 5 } else { 10 }));
+                        if native.has_gpu() {
+                            return; // a study opened meanwhile
+                        }
+                        release_memory_everywhere();
+                        if bench_on() {
+                            std::thread::sleep(std::time::Duration::from_millis(300)); // the workers collect
+                            bench_emit(
+                                "FLOWRAD_BENCH_CLOSE",
+                                &serde_json::json!({ "step": "after gpu release", "afterS": after_s, "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb(), "app": procmem::app_memory(), "heap": heap_stats() }),
+                            );
+                        }
+                    }
+                });
                 break;
             }
         }
@@ -751,6 +821,9 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
     // volume_close). Back to the empty-app footprint (bench `close` gate:
     // within 30 MB of baseline).
     let before = commit_mb();
+    // The study open and idle, by owner (bench only: it walks the address space).
+    let open_app = bench_on().then(procmem::app_memory);
+    let open_heap = bench_on().then(heap_stats);
     let held = native.close_all();
     let after_clear = commit_mb();
     release_memory();
@@ -773,7 +846,7 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
         if swept.is_some() {
             mac_webkit::drop_memory_cache(&_window);
         }
-        release_memory();
+        release_memory_everywhere();
         if bench_on() {
             bench_emit(
                 "FLOWRAD_BENCH_CLOSE",
@@ -788,6 +861,8 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
                 "held": held,
                 "commitMb": { "before": before, "afterClear": after_clear, "afterRelease": after_release },
                 "heapCommittedMb": heap_committed_mb(),
+                "openApp": open_app,
+                "openHeap": open_heap,
             }),
         );
     }
@@ -802,6 +877,11 @@ extern "C" {
 /// What mimalloc itself has committed, MB (the Rust heap's share of the
 /// process's private bytes; the rest is D3D / WARP, DLLs, stacks).
 pub(crate) fn heap_committed_mb() -> Option<f64> {
+    let current = mi_stats()?.get("committed")?.get("current")?.as_f64()?;
+    Some((current / 1_048_576.0 * 10.0).round() / 10.0)
+}
+
+fn mi_stats() -> Option<serde_json::Value> {
     let json = unsafe {
         let p = mi_stats_get_json(0, std::ptr::null_mut());
         if p.is_null() {
@@ -811,9 +891,25 @@ pub(crate) fn heap_committed_mb() -> Option<f64> {
         libmimalloc_sys::mi_free(p.cast());
         s
     };
-    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
-    let current = v.get("committed")?.get("current")?.as_f64()?;
-    Some((current / 1_048_576.0 * 10.0).round() / 10.0)
+    serde_json::from_str(&json).ok()
+}
+
+/// mimalloc's own account (bench reports): committed, of which inside pages,
+/// pages (and abandoned ones: their thread exited with blocks still live),
+/// threads with a heap, and the live bytes it knows of (0 when the build
+/// keeps no allocation statistics).
+pub(crate) fn heap_stats() -> serde_json::Value {
+    let Some(v) = mi_stats() else { return serde_json::Value::Null };
+    let cur = |k: &str| v.get(k).and_then(|c| c.get("current")).and_then(|c| c.as_f64()).unwrap_or(0.0);
+    let mb = |x: f64| (x / 1_048_576.0 * 10.0).round() / 10.0;
+    serde_json::json!({
+        "committedMb": mb(cur("committed")),
+        "pageCommittedMb": mb(cur("page_committed")),
+        "pages": cur("pages"),
+        "pagesAbandoned": cur("pages_abandoned"),
+        "threads": cur("threads"),
+        "liveMb": mb(cur("malloc_normal") + cur("malloc_huge")),
+    })
 }
 
 /// mimalloc option `purge_delay` (v3 `mi_option_e` index 15): ms before
@@ -1189,10 +1285,22 @@ fn context() -> tauri::Context<tauri::Wry> {
     if let Ok(extra) = flowrad_env("WEBVIEW2_EXTRA_ARGS") {
         if let Some(w) = context.config_mut().app.windows.first_mut() {
             let base = w.additional_browser_args.take().unwrap_or_default();
-            w.additional_browser_args = Some(format!("{base} {extra}").trim().to_string());
+            w.additional_browser_args = Some(merge_browser_args(&base, &extra));
         }
     }
     context
+}
+
+/// The configured browser arguments plus `extra`'s. An `extra` argument
+/// written `!--arg` takes `--arg` out instead (an A/B against a flag the app
+/// ships, e.g. `!--enable-features=NetworkServiceInProcess2`).
+fn merge_browser_args(base: &str, extra: &str) -> String {
+    let drop: Vec<&str> = extra.split_whitespace().filter_map(|a| a.strip_prefix('!')).collect();
+    base.split_whitespace()
+        .filter(|a| !drop.contains(a))
+        .chain(extra.split_whitespace().filter(|a| !a.starts_with('!')))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// WebView2 features an offline viewer never uses, off for the session:
@@ -1274,6 +1382,7 @@ pub fn run() {
     let state = AppState::default();
     *state.launch_paths.lock() = launch_paths;
     start_bench_watchdog();
+    start_mem_report();
     let registry = state.registry.clone();
 
     let app = tauri::Builder::default()
@@ -1325,6 +1434,7 @@ pub fn run() {
         // ("create": false): the native splash is armed first, so it paints
         // the moment the window is on screen, while WebView2 starts.
         .setup(move |app| {
+            let _ = APP.set(app.handle().clone());
             if let Some(config) = &main_window {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
@@ -1475,6 +1585,33 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extra_browser_args_append_and_bang_removes() {
+        let base = "--disable-features=A,B --renderer-process-limit=1 --enable-features=NetworkServiceInProcess2";
+        assert_eq!(super::merge_browser_args(base, "--in-process-gpu"), format!("{base} --in-process-gpu"));
+        assert_eq!(
+            super::merge_browser_args(base, "!--enable-features=NetworkServiceInProcess2 --in-process-gpu"),
+            "--disable-features=A,B --renderer-process-limit=1 --in-process-gpu"
+        );
+        assert_eq!(super::merge_browser_args(base, ""), base);
+        assert_eq!(super::merge_browser_args("", " --x "), "--x");
+    }
+
+    /// The shipped WebView2 process model (0.8.3, idle-with-CT memory): the
+    /// network service runs in the browser process (one process fewer, CI
+    /// A/B 278 -> 269 MB private idle with the CT); the GPU process stays out
+    /// of process (no `--in-process-gpu`: a GPU / driver crash would take the
+    /// browser process, and the whole window, with it).
+    #[test]
+    fn webview2_process_model_flags() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = conf["app"]["windows"].as_array().unwrap().iter().find(|w| w["label"] == "main").unwrap();
+        let args: Vec<&str> = main["additionalBrowserArgs"].as_str().unwrap().split_whitespace().collect();
+        assert!(args.contains(&"--enable-features=NetworkServiceInProcess2"), "{args:?}");
+        assert!(!args.contains(&"--in-process-gpu"), "{args:?}");
+        assert_eq!(args.iter().filter(|a| a.starts_with("--enable-features=")).count(), 1, "Chromium keeps only the last --enable-features");
+    }
+
     #[test]
     fn open_warms_only_slices_the_native_renderer_draws() {
         let h = |pi: Option<&str>, frames: Option<i64>| crate::header::Header {
