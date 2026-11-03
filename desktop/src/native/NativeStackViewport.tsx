@@ -257,15 +257,19 @@ export default function NativeStackViewport({
       return;
     }
     wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
-    // A cell's first series goes with the cell's rect, and measuring it here,
-    // in the commit that mounts the study view, forced the layout of the whole
-    // new view inside React's task: a quarter of the open's longest main-thread
-    // task (the CI "view: grid ... MessagePort.onmessage" one). A one-shot
-    // ResizeObserver hands the rect over in the same frame, right after the
-    // browser's own layout, at no extra cost. Later sends (growth, another
-    // series) find layout clean and go at once.
+    // A full send (a cell's first series, or another series: the hanging
+    // plan swapping in the primary when the scan ends) goes with the cell's
+    // rect, and measuring it here, in a commit that mounts or refills the
+    // study view, forced the layout of the whole new view inside React's
+    // task (the CI "ye index.js:14955 via MessagePort.onmessage" one; on the
+    // warm 10,310-image MRI with all 242 series cards just committed). A
+    // one-shot ResizeObserver hands the rect over in the same frame, right
+    // after the browser's own layout, at no extra cost. Growth of the series
+    // the cell already holds is an append (no rect) and goes at once.
     const el = elementRef.current;
-    if (sentRef.current === null && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
+    const sent = sentRef.current;
+    const full = sent === null || sent.cell !== cellKey || sent.uid !== series.uid;
+    if (full && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(() => {
         observer.disconnect();
         syncSeries();
