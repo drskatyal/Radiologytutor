@@ -1255,7 +1255,9 @@ static LAST_WARM_MS: parking_lot::Mutex<Option<f64>> = parking_lot::Mutex::new(N
 
 /// The default-backend instance, kept across GPU releases: it holds the DXGI
 /// factory and the loaded runtime libraries, not a device or driver heaps, so
-/// a rebuild after a release does not load them again.
+/// a rebuild after a release does not load them again. (Dropping it with the
+/// device was measured, CI 0.8.3: the closed app's private bytes were the
+/// same within noise, 33 MB either way.)
 fn shared_instance() -> wgpu::Instance {
     static INSTANCE: std::sync::Mutex<Option<wgpu::Instance>> = std::sync::Mutex::new(None);
     INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| new_instance(None)).clone()
@@ -1284,8 +1286,46 @@ fn backends_for(force: Option<wgpu::Backends>) -> wgpu::Backends {
 fn new_instance(force: Option<wgpu::Backends>) -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: backends_for(force),
+        flags: instance_flags(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     })
+}
+
+/// wgpu's build-config flags without indirect-call validation: the renderer
+/// never draws or dispatches indirectly, and with it every device compiles
+/// two validation compute pipelines and keeps their buffers.
+fn instance_flags() -> wgpu::InstanceFlags {
+    wgpu::InstanceFlags::from_build_config().difference(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
+}
+
+/// D3D12 shader-visible CBV/SRV/UAV descriptors the device reserves up front.
+/// wgpu's default (`max_non_sampler_bindings`, 1,000,000) is one descriptor
+/// heap of 32-64 MB (32 B a descriptor on WARP / NVIDIA, 64 B on some Intel
+/// parts), allocated when the device is created and resident for as long as
+/// it lives: on WARP and on integrated GPUs that is system memory, in the
+/// app's private bytes with a study open. The renderer binds two descriptors
+/// a viewport (uniforms + its slice, one bind group, rebuilt only when the
+/// slice size changes), so 8,192 is hundreds of times what it can use, in a
+/// 256-512 KB heap. Only D3D12 reads this limit; other backends ignore it.
+pub(crate) const VIEW_DESCRIPTORS: u32 = 8192;
+
+/// GPU allocator blocks (wgpu's gpu-allocator, D3D12 / Vulkan): 4 MB device
+/// and upload blocks to start with, growing to 64 / 32 MB for big uploads
+/// (MPR volumes). "MemoryUsage" starts at 8 + 4 MB; a CT viewport's texture is
+/// 0.5 MB and its staging copy the same, so the first device block sat mostly
+/// empty (CI: 12 MB reserved, 1.1 MB allocated). On an integrated GPU or WARP
+/// the blocks are system memory in our working set.
+fn memory_hints() -> wgpu::MemoryHints {
+    wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: (4 << 20)..(64 << 20) }
+}
+
+/// The limits the device is created with: downlevel defaults at the adapter's
+/// texture sizes, and a small D3D12 descriptor heap (`VIEW_DESCRIPTORS`).
+fn device_limits(adapter: wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_non_sampler_bindings: VIEW_DESCRIPTORS.min(adapter.max_non_sampler_bindings),
+        ..wgpu::Limits::downlevel_defaults().using_resolution(adapter)
+    }
 }
 
 async fn request_device(
@@ -1304,10 +1344,10 @@ async fn request_device(
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("flowrad-native"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            required_limits: device_limits(adapter.limits()),
             // Small allocator blocks: on an integrated GPU (shared memory) the
             // default "performance" blocks are resident in our working set.
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            memory_hints: memory_hints(),
             ..Default::default()
         })
         .await
@@ -1597,6 +1637,31 @@ pub fn device_clip(x: f32, y: f32, w: f32, h: f32, scale: f32, sw: u32, sh: u32)
 
 #[cfg(test)]
 mod tests {
+    /// The device asks for a small D3D12 descriptor heap (not wgpu's
+    /// 1,000,000-descriptor, 32-64 MB default), small allocator blocks, and no
+    /// indirect-call validation; everything else stays downlevel defaults.
+    #[test]
+    fn device_is_built_lean() {
+        // What wgpu's D3D12 adapter reports, and what Vulkan / Metal / GL do.
+        let d3d12 = wgpu::Limits { max_non_sampler_bindings: 1_000_000, ..wgpu::Limits::default() };
+        let l = super::device_limits(d3d12.clone());
+        assert_eq!(l.max_non_sampler_bindings, super::VIEW_DESCRIPTORS);
+        assert_eq!(l.max_texture_dimension_2d, d3d12.max_texture_dimension_2d);
+        assert_eq!(l.max_bind_groups, wgpu::Limits::downlevel_defaults().max_bind_groups);
+        let unbounded = wgpu::Limits { max_non_sampler_bindings: u32::MAX, ..wgpu::Limits::default() };
+        assert_eq!(super::device_limits(unbounded).max_non_sampler_bindings, super::VIEW_DESCRIPTORS);
+        // Never more than the adapter has (request_device would refuse it).
+        let tiny = wgpu::Limits { max_non_sampler_bindings: 100, ..wgpu::Limits::default() };
+        assert_eq!(super::device_limits(tiny).max_non_sampler_bindings, 100);
+        // Two descriptors a viewport: room for thousands of live bind groups.
+        assert!(super::VIEW_DESCRIPTORS >= 4096);
+        assert!(!super::instance_flags().contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
+        match super::memory_hints() {
+            wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: r } => assert_eq!(r, (4 << 20)..(64 << 20)),
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// No vblank wait: Mailbox where offered (D3D12, Vulkan), Immediate on
     /// Metal (it offers only Fifo / Immediate), Fifo as the last resort.
     #[test]
