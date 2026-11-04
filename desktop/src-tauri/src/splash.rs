@@ -597,7 +597,7 @@ mod mac {
     /// Main thread, inside the window build: the window is on screen and
     /// still holds tao's content view (no WKWebView yet).
     fn shown(ns_window: *mut c_void) {
-        if DONE.load(Ordering::Acquire) || !crate::mac_splash::attach(ns_window) {
+        if DONE.load(Ordering::Acquire) || !crate::mac_splash::attach_first_show(ns_window) {
             return;
         }
         SHOWN.store(true, Ordering::Release);

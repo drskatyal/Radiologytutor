@@ -96,6 +96,9 @@ thread_local! {
     /// While the main window is being built: NSWindow's own implementations
     /// of the wrapped selectors (to call, and to put back).
     static ORIGINALS: RefCell<Vec<(Sel, Imp)>> = const { RefCell::new(Vec::new()) };
+    /// tao's content view, hidden inside the splash from the first show until
+    /// wry has installed its own content view (`attach_first_show`).
+    static TAO_VIEW: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
     /// What to do once, when the window being built is ordered on screen.
     static ON_SHOWN: RefCell<Option<Box<dyn FnOnce(*mut c_void)>>> = const { RefCell::new(None) };
 }
@@ -241,6 +244,11 @@ pub fn attach(ns_window: *mut c_void) -> bool {
     let window: &NSWindow = unsafe { &*(ns_window as *const NSWindow) };
     let Some(content) = window.contentView() else { return false };
     if let Some(view) = VIEW.with(|v| v.borrow().clone()) {
+        // tao's view goes back as it was (wry's content view replaced it).
+        if let Some(tao) = TAO_VIEW.with(|t| t.borrow_mut().take()) {
+            tao.removeFromSuperview();
+            tao.setHidden(false);
+        }
         // Already on: keep it the topmost subview of the current content view.
         // SAFETY: -[NSView superview] on a live view (main thread).
         let parent = unsafe { view.superview() };
@@ -252,13 +260,44 @@ pub fn attach(ns_window: *mut c_void) -> bool {
         }
         return true;
     }
+    let view = new_view(mtm, content.bounds());
+    // Last subview = topmost: above the WKWebView.
+    content.addSubview(&view);
+    VIEW.with(|v| *v.borrow_mut() = Some(view));
+    true
+}
+
+fn new_view(mtm: MainThreadMarker, frame: NSRect) -> Retained<SplashView> {
     // SAFETY: -[NSView initWithFrame:] on a fresh instance of our subclass.
-    let view: Retained<SplashView> = unsafe { msg_send![SplashView::alloc(mtm), initWithFrame: content.bounds()] };
+    let view: Retained<SplashView> = unsafe { msg_send![SplashView::alloc(mtm), initWithFrame: frame] };
     view.setWantsLayer(true);
     view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
     view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
-    // Last subview = topmost: above the WKWebView.
-    content.addSubview(&view);
+    view
+}
+
+/// The window was just ordered on screen, inside tao's event callback (the
+/// main window's build), before wry creates the WKWebView: the splash becomes
+/// the window's content view, with tao's view inside it, hidden (main thread).
+///
+/// Committing the window then must not draw tao's view: its drawRect:
+/// re-enters tao's event handler, which the build is running inside, and the
+/// main thread deadlocks (CI sample: CA::Transaction::commit →
+/// NSViewBackingLayer display → TaoView drawRect: → mutex wait). Hidden, it
+/// is not drawn; it stays in the window because wry reads the window from it.
+pub fn attach_first_show(ns_window: *mut c_void) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    if ns_window.is_null() || VIEW.with(|v| v.borrow().is_some()) {
+        return false;
+    }
+    // SAFETY: the caller passes the NSWindow being shown, alive for the call.
+    let window: &NSWindow = unsafe { &*(ns_window as *const NSWindow) };
+    let Some(tao) = window.contentView() else { return false };
+    let view = new_view(mtm, tao.frame());
+    tao.setHidden(true);
+    window.setContentView(Some(&view));
+    view.addSubview(&tao);
+    TAO_VIEW.with(|t| *t.borrow_mut() = Some(tao));
     VIEW.with(|v| *v.borrow_mut() = Some(view));
     true
 }
