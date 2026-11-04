@@ -127,6 +127,16 @@ struct CellGpu {
     /// (path, GPU copy) of the image uploaded, None = the test image.
     image: Option<(PathBuf, CellImage)>,
     dims: (usize, usize),
+    /// Changes whenever the cell's GPU image is (re)written (`next_gen`), so
+    /// a frame's signature (`frame_signature`) sees new pixels under an
+    /// unchanged path (3D frames, a re-sent slice).
+    gen: u64,
+}
+
+/// A fresh value for `CellGpu::gen`.
+fn next_gen() -> u64 {
+    static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A cell's image on the GPU.
@@ -218,6 +228,9 @@ struct Gpu {
     /// staged and copied: see native_uma.rs.
     #[cfg_attr(not(windows), allow(dead_code))]
     direct_slices: bool,
+    /// The signature of the frame the surface shows (`frame_signature`);
+    /// None after any configure (new drawables, nothing on them yet).
+    shown: Option<u64>,
 }
 
 #[derive(Default)]
@@ -553,6 +566,7 @@ impl Native {
                 // Parked (no study): the next frame configures the new size.
                 if !gpu.parked {
                     gpu.surface.configure(&gpu.device, &gpu.config);
+                    gpu.shown = None;
                 }
             }
         }
@@ -638,6 +652,7 @@ impl Native {
         }
         cg.image = Some((PathBuf::from("3d"), CellImage::Rgba(texture)));
         cg.dims = (w, h);
+        cg.gen = next_gen();
         Ok(())
     }
 
@@ -1048,6 +1063,7 @@ impl Native {
                 cg.bind_group = bind_group(gpu, &cg.uniforms, &buffer);
                 cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
                 cg.dims = (slice.cols, slice.rows);
+                cg.gen = next_gen();
                 return Ok(());
             }
         }
@@ -1067,6 +1083,7 @@ impl Native {
         }
         cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
         cg.dims = (slice.cols, slice.rows);
+        cg.gen = next_gen();
         Ok(())
     }
 
@@ -1080,7 +1097,21 @@ impl Native {
         if gpu.parked {
             gpu.surface.configure(&gpu.device, &gpu.config);
             gpu.parked = false;
+            gpu.shown = None;
             diag_phase("render: UNPARKED (configure)");
+        }
+        // macOS: a frame identical to the one on screen is not drawn again.
+        // Every present holds a drawable until the window server has
+        // composited a newer one, and CAMetalLayer has three: a study's
+        // first image, then the layout pass and the view refresh it triggers
+        // (the same pixels) used all three, so the reader's first scroll
+        // waited 30-60 ms for one to come back (CI, scroll step 0).
+        let same = cfg!(target_os = "macos") && gpu.shown.is_some() && gpu.shown == Some(frame_signature(&self.cells.lock(), gpu.config.width, gpu.config.height, scale as f32));
+        diag_present(same);
+        if same && skip_same_frames() {
+            LAST_ACQUIRE_US.store(0, std::sync::atomic::Ordering::Relaxed);
+            diag_phase("render: same frame, not presented");
+            return Ok(started.elapsed().as_secs_f64() * 1000.0);
         }
         let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
@@ -1089,6 +1120,7 @@ impl Native {
             _ => {
                 // Outdated / lost (resize, display change): reconfigure once.
                 gpu.surface.configure(&gpu.device, &gpu.config);
+                gpu.shown = None;
                 match gpu.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                     _ => return Err("surface unavailable".into()),
@@ -1154,11 +1186,13 @@ impl Native {
                 pass.draw(0..6, 0..1);
             }
         }
+        let signature = cfg!(target_os = "macos").then(|| frame_signature(&cells, sw, sh, s));
         drop(cells);
         diag_phase("render: encoded");
         gpu.queue.submit(Some(encoder.finish()));
         diag_phase("render: submitted");
         gpu.queue.present(frame);
+        gpu.shown = signature;
         diag_phase("render: presented");
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut st = self.status.lock();
@@ -1177,6 +1211,42 @@ impl Native {
     pub fn scroll_spike(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
         self.scroll(SPIKE, delta, scale)
     }
+}
+
+
+/// What a frame of `cells` on a `sw` × `sh` surface draws: every cell's
+/// rectangle, view and uniforms, and which image (and which upload of it) it
+/// samples. Equal signatures draw equal pixels.
+fn frame_signature(cells: &HashMap<String, CellState>, sw: u32, sh: u32, s: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (sw, sh, s.to_bits()).hash(&mut h);
+    let mut order: Vec<(&String, &CellState)> = cells.iter().collect();
+    order.sort_by(|a, b| a.0.cmp(b.0));
+    for (id, c) in order {
+        id.hash(&mut h);
+        for x in [c.rect.x, c.rect.y, c.rect.w, c.rect.h, c.view.wl.0, c.view.wl.1] {
+            x.to_bits().hash(&mut h);
+        }
+        match &c.gpu {
+            None => 0u64.hash(&mut h),
+            Some(cg) => {
+                (cg.gen, cg.dims, cg.image.is_some(), cg.rgba()).hash(&mut h);
+                let (cols, rows) = if cg.image.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
+                let t = Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h);
+                for x in [t.scale, t.center.0, t.center.1, t.cos, t.sin, t.flip_x, t.flip_y] {
+                    x.to_bits().hash(&mut h);
+                }
+                c.view.invert.hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+/// `FLOWRAD_NATIVE_SAME_FRAME=present`: present every frame, as before (A/B).
+fn skip_same_frames() -> bool {
+    cfg!(target_os = "macos") && crate::flowrad_env("NATIVE_SAME_FRAME").as_deref() != Ok("present")
 }
 
 /// Give back what dropped GPU resources still hold. wgpu frees a dropped
@@ -1211,6 +1281,7 @@ fn park_surface(gpu: &mut Gpu) {
     tiny.height = 1;
     gpu.surface.configure(&gpu.device, &tiny);
     gpu.parked = true;
+    gpu.shown = None;
     let frame = match gpu.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
         // Occluded / no drawable: the pool is gone already; the frame on
@@ -1273,7 +1344,7 @@ fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::Buffer) -> CellGpu {
         mapped_at_creation: false,
     });
     let bind_group = bind_group(gpu, &uniforms, initial);
-    CellGpu { uniforms, bind_group, image: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize) }
+    CellGpu { uniforms, bind_group, image: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize), gen: next_gen() }
 }
 
 /// P2.1 bench / spike: the DICOM files under `roots`, grouped by series, the
@@ -1530,9 +1601,34 @@ thread_local! {
 static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_HOLDER: Mutex<(&'static str, Option<Instant>)> = Mutex::new(("none", None));
 
+fn diag_t0() -> Instant {
+    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *T0.get_or_init(Instant::now)
+}
+
+/// The last renders: (ms on the diag clock, from a show?, same frame as shown?).
+static PRESENTS: Mutex<std::collections::VecDeque<(f64, bool, bool)>> = Mutex::new(std::collections::VecDeque::new());
+
+fn diag_present(same: bool) {
+    let in_show = DIAG.with(|d| d.borrow().is_some());
+    let mut p = PRESENTS.lock();
+    if p.len() >= 16 {
+        p.pop_front();
+    }
+    p.push_back((diag_t0().elapsed().as_secs_f64() * 1000.0, in_show, same));
+}
+
 fn diag_begin(t: Instant) {
     let r = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
+    let now = diag_t0().elapsed().as_secs_f64() * 1000.0;
+    let recent: Vec<String> = PRESENTS
+        .lock()
+        .iter()
+        .filter(|(at, _, _)| now - at < 400.0)
+        .map(|(at, show, same)| format!("-{:.1}ms {}{}", now - at, if *show { "show" } else { "other" }, if *same { " (same)" } else { "" }))
+        .collect();
     DIAG.with(|d| *d.borrow_mut() = Some((t, Vec::new(), r)));
+    diag_phase_s(format!("renders in the last 400 ms: {}", recent.join(", ")));
 }
 
 pub(crate) fn diag_phase_s(label: String) {
@@ -1702,7 +1798,7 @@ fn finish(
     };
     let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_image, .. } = pipes;
     Ok((
-        Gpu { direct_slices: direct_slices(&device), surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_image, parked: false },
+        Gpu { direct_slices: direct_slices(&device), surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_image, parked: false, shown: None },
         info.name,
         format!("{:?}", info.backend),
     ))

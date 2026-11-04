@@ -1563,6 +1563,7 @@ pub fn run() {
                     // the page's main thread on the GPU for 0.5-1 s as a
                     // study opened (mac_webkit.rs `paint_on_cpu`).
                     mac_webkit::paint_on_cpu(&_window);
+                    mac_webkit::diag_pool(&_window);
                     // The app menu (Quit, Edit's copy / paste, Window): nothing
                     // can use it before the page is up, >1 s from here.
                     if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {
@@ -1705,6 +1706,11 @@ pub fn run() {
         .expect("error while building FlowRad Viewer");
     mark(0);
     trace("app built");
+    // macOS: WebKit's web content process starts (and initialises its
+    // JavaScript engine) now, in parallel with the window build, not when the
+    // webview's first navigation asks for it (mac_webkit.rs).
+    #[cfg(target_os = "macos")]
+    mac_webkit::prewarm_web_process();
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
     #[cfg(target_os = "macos")]
     mac_mouse::install(app.handle());

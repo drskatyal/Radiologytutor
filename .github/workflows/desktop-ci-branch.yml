@@ -43,41 +43,73 @@ jobs:
       - run: pip install pydicom numpy pillow
       - run: npm ci
       - run: npm ci --prefix desktop
+      - name: Rust tests (as in desktop-ci)
+        working-directory: desktop/src-tauri
+        run: cargo test --lib
       - name: Voice model (bundled, as in a release)
+        if: ${{ !cancelled() }}
         run: python scripts/fetch-voice-model.py && python scripts/fetch-voice-model.py --check
       - name: Build the app (release, no bundle)
+        if: ${{ !cancelled() }}
         run: npx tauri build --no-bundle
         working-directory: desktop
       - name: Synthetic CTs
+        if: ${{ !cancelled() }}
         run: |
           python scripts/make-test-ct.py "$RUNNER_TEMP/ct40" --slices 40
           python scripts/make-test-ct.py "$RUNNER_TEMP/ct848" --slices 848
-      - name: Smoke (as in desktop-ci, warms the runner the same way)
+      - name: Smoke (as in desktop-ci)
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: python desktop/scripts/e2e-native.py "$APP" "$RUNNER_TEMP/native-shots" --study "$RUNNER_TEMP/ct40"
+      - name: Smoke — splash (as in desktop-ci)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python desktop/scripts/e2e-splash.py "$APP"
+      - name: Empty app (as in desktop-ci)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node desktop/scripts/bench.mjs idle "$APP" --seconds 10 --max-private-mb 240
       - name: Control — bare WKWebView
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           swiftc -O desktop/scripts/wk-baseline.swift -o "$RUNNER_TEMP/wk-baseline"
           for i in 1 2 3 4 5; do echo "control run $i: $("$RUNNER_TEMP/wk-baseline")"; done
-      - name: Gate — cold start (same command)
-        continue-on-error: true
-        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS"
-      - name: DIAG — cold start report lines (trace, page timing)
+      - name: Gate — cold start (same command) + A/B prewarm off / on, traces of every run
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
-          for i in 1 2 3 4 5; do
-            FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1 "$APP" > "$RUNNER_TEMP/cs$i.txt" 2>&1 &
-            pid=$!
-            for t in $(seq 1 60); do grep -q '^FLOWRAD_BENCH ' "$RUNNER_TEMP/cs$i.txt" && break; sleep 0.25; done
-            sleep 1; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true
-            echo "== run $i"
-            grep '^FLOWRAD_BENCH ' "$RUNNER_TEMP/cs$i.txt" | sed 's/^FLOWRAD_BENCH //' | python3 -c 'import json,sys; r=json.loads(sys.stdin.read()); print(json.dumps({k:r.get(k) for k in ["windowBuiltMs","webviewBuiltMs","navStartMs","navDoneMs","firstPaintMs","webviewNavStartMs","jsStartMs","gpuWarmMs","nativeFirstPaintMs","pageTiming","trace"]}))' || true
-          done
-      - name: Gate — frame times (same command), x3
+          show() {
+            python3 - "$TMPDIR/flowrad-bench.jsonl" <<'PY'
+          import json, sys
+          for line in open(sys.argv[1]):
+              if not line.startswith("FLOWRAD_BENCH "):
+                  continue
+              r = json.loads(line[len("FLOWRAD_BENCH "):])
+              if not r.get("coldStart"):
+                  continue
+              pt = r.get("pageTiming") or {}
+              print(json.dumps({"app": round(r["windowBuiltMs"] + r["firstPaintMs"] - r["navStartMs"]), "built": round(r["windowBuiltMs"]), "nav": round(r["navStartMs"]), "fcpAfterNav": round(r["firstPaintMs"] - r["navStartMs"]), "html": pt.get("html"), "fcp": pt.get("fcp"), "trace": r.get("trace")}))
+          PY
+            rm -f "$TMPDIR/flowrad-bench.jsonl"
+          }
+          rm -f "$TMPDIR/flowrad-bench.jsonl"
+          top -l 12 -s 1 -o cpu -n 8 -stats pid,command,cpu,mem > "$RUNNER_TEMP/cs-top.txt" 2>&1 &
+          echo "### gate (prewarm on)"; node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS" || echo "GATE FAILED"; show
+          echo "### top during the gate"; grep -Ev '^(Processes|SharedLibs|MemRegions|PhysMem|VM|Networks|Disks):|^$' "$RUNNER_TEMP/cs-top.txt" | head -120 || true
+          echo "### prewarm off"; FLOWRAD_WEBKIT_PREWARM=0 node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS" || echo "GATE FAILED"; show
+          echo "### prewarm on"; node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS" || echo "GATE FAILED"; show
+          echo "### prewarm off"; FLOWRAD_WEBKIT_PREWARM=0 node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS" || echo "GATE FAILED"; show
+      - name: Gate — frame times (same command) x3, then x2 presenting every frame (A/B)
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           for i in 1 2 3; do
-            echo "== interact run $i"
+            echo "== interact run $i (same frames skipped)"
             node desktop/scripts/bench.mjs interact "$APP" "$RUNNER_TEMP/ct848" --max-frame-p95-ms "$FRAME_P95_MAX_MS" --max-dropped "$DROPPED_MAX" --max-interaction-ms "$INTERACTION_MAX_MS" || echo "run $i FAILED"
+          done
+          for i in 4 5; do
+            echo "== interact run $i (every frame presented)"
+            FLOWRAD_NATIVE_SAME_FRAME=present node desktop/scripts/bench.mjs interact "$APP" "$RUNNER_TEMP/ct848" --max-frame-p95-ms "$FRAME_P95_MAX_MS" --max-dropped "$DROPPED_MAX" --max-interaction-ms "$INTERACTION_MAX_MS" || echo "run $i FAILED"
           done

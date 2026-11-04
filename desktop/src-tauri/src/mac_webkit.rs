@@ -135,3 +135,67 @@ pub fn paint_on_cpu(window: &tauri::WebviewWindow) {
         }
     });
 }
+
+/// Start WebKit's web content process now, while the app builds its window,
+/// rather than when the webview asks for its first page.
+///
+/// A WKWebView's first navigation launches the WebContent process and only
+/// then initialises JavaScriptCore, WebCore's names and the user-agent style
+/// sheet, which the page's user scripts (Tauri's IPC bridge, injected at
+/// document start) and its first paint wait for. A prewarmed process does
+/// that work up front (WebKit's `ProcessWarming::prewarmGlobally`), and the
+/// webview's navigation takes it over.
+///
+/// `-[WKProcessPool _warmInitialProcess]` (WKProcessPoolPrivate) on the
+/// shared pool, sent only when this WebKit answers to it.
+/// `FLOWRAD_WEBKIT_PREWARM=0` skips it, for A/B runs.
+pub fn prewarm_web_process() {
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{msg_send, sel};
+    if crate::flowrad_env("WEBKIT_PREWARM").as_deref() == Ok("0") {
+        crate::trace("webkit: no prewarm (FLOWRAD_WEBKIT_PREWARM=0)");
+        return;
+    }
+    let Some(cls) = AnyClass::get(c"WKProcessPool") else { return };
+    // SAFETY: WKProcessPool class / instance methods, each sent only when the
+    // receiver answers to it; `_sharedProcessPool` returns the shared pool
+    // (checked for nil), `_warmInitialProcess` takes and returns nothing.
+    unsafe {
+        let shared: Bool = msg_send![cls, respondsToSelector: sel!(_sharedProcessPool)];
+        if !shared.as_bool() {
+            crate::trace("webkit: no shared process pool");
+            return;
+        }
+        let pool: *mut AnyObject = msg_send![cls, _sharedProcessPool];
+        if pool.is_null() {
+            return;
+        }
+        let can: Bool = msg_send![pool, respondsToSelector: sel!(_warmInitialProcess)];
+        if !can.as_bool() {
+            crate::trace("webkit: no process prewarm");
+            return;
+        }
+        let _: () = msg_send![pool, _warmInitialProcess];
+    }
+    crate::trace("webkit: web process prewarm started");
+}
+
+/// DIAG (temporary): whether the webview uses the shared process pool.
+pub fn diag_pool(window: &tauri::WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    let _ = window.with_webview(|platform| {
+        let view = platform.inner() as *mut AnyObject;
+        if view.is_null() {
+            return;
+        }
+        // SAFETY: diag only; public getters plus the SPI checked above.
+        unsafe {
+            let config: *mut AnyObject = msg_send![view, configuration];
+            let pool: *mut AnyObject = msg_send![config, processPool];
+            let Some(cls) = AnyClass::get(c"WKProcessPool") else { return };
+            let shared: *mut AnyObject = msg_send![cls, _sharedProcessPool];
+            crate::trace(if pool == shared { "DIAG webview pool = shared pool" } else { "DIAG webview pool != shared pool" });
+        }
+    });
+}
