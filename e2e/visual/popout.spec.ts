@@ -13,11 +13,22 @@ test.skip(!DIR, "TEST_CT_DIR is not set (scripts/make-test-ct.py)");
 
 const slice = async (page: Page) => Number(await page.getByRole("slider", { name: "Slice" }).first().getAttribute("aria-valuenow"));
 
+test("pop out is hidden with one monitor", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/viewer");
+  const files = fs.readdirSync(DIR!).map((f) => path.join(DIR!, f));
+  await page.locator("input[type=file]:not([webkitdirectory])").setInputFiles(files);
+  await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Pop out to new window" })).toHaveCount(0);
+});
+
 test("pop out: the series opens in a new window, scroll stays linked, and the link can be switched off", async ({ page, context }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
-  await page.goto("/viewer/local");
+  // Two monitors (Window Management API): the pop-out control only shows with 2+.
+  await page.addInitScript(() => Object.defineProperty(window.screen, "isExtended", { value: true, configurable: true }));
+  await page.goto("/viewer");
   const consent = page.getByRole("button", { name: "Continue" });
   if (await consent.count()) await consent.first().click();
   const files = fs.readdirSync(DIR!).map((f) => path.join(DIR!, f));

@@ -43,16 +43,17 @@ jobs:
       - run: npm ci
       - name: Unit tests
         run: npm test
+      - name: Shared FlowRad nav is pinned and rendered
+        run: |
+          (cd site && sha256sum --check shared/flowrad-nav.sha256)
+          python3 site/render-flowrad-nav.py --check
       - name: Voice model (served from public/voice) and spoken test commands
         run: |
           sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
           python3 scripts/fetch-voice-model.py
           python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
       - name: Production build
-        # next/font downloads Google Fonts at build time; a bad response from
-        # Google (seen on runners) fails the build with a parse error. Retry
-        # once after a pause: a real compile error fails both attempts.
-        run: npm run build || { echo "::warning::build failed, retrying once (next/font download)"; sleep 20; npm run build; }
+        run: npm run build
       - name: Free viewer shell bundle budget (/viewer ≤ 300 KB gzipped JS)
         run: node scripts/perf/viewer-bundle-budget.mjs --route /viewer --budget-kb 300 --json "$RUNNER_TEMP/bundle.json"
       - name: Synthetic studies (deterministic)

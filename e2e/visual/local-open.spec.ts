@@ -41,7 +41,7 @@ async function openFresh(browser: Browser, viewport: { width: number; height: nu
   // Turn on chooser interception before any click: Playwright enables it
   // lazily on the first waitForEvent, which can race the click itself.
   page.on("filechooser", () => undefined);
-  await page.goto("/viewer/local");
+  await page.goto("/viewer");
   return { context, page };
 }
 
@@ -79,7 +79,7 @@ test("dropping study files on the drop zone opens the study", async ({ page }) =
   const names = fs.readdirSync(dir).sort().slice(0, 12);
   const payload = names.map((n) => ({ name: n, b64: fs.readFileSync(path.join(dir, n)).toString("base64") }));
   await page.setViewportSize({ width: 1366, height: 600 });
-  await page.goto("/viewer/local");
+  await page.goto("/viewer");
   const zone = page.getByTestId("local-dropzone");
   const transfer = await page.evaluateHandle((files) => {
     const dt = new DataTransfer();
@@ -109,7 +109,7 @@ for (const name of ["Choose a folder", "Choose files"]) {
 
 test("keyboard: Enter on the focused picker opens it", async ({ page }) => {
   page.on("filechooser", () => undefined);
-  await page.goto("/viewer/local");
+  await page.goto("/viewer");
   await page.getByRole("button", { name: "Choose a folder" }).focus();
   const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 5_000 }), page.keyboard.press("Enter")]);
   expect(chooser.isMultiple()).toBe(true);

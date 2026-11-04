@@ -25,6 +25,10 @@
 #   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
 #       for Windows signing with Azure Artifact Signing.
 # Variables: RADLEARN_SERVER_URL (default address for optional sign-in).
+#   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_RELEASE_SERVICE_ACCOUNT, GCS_DOWNLOADS_BUCKET
+#       for the publish-downloads job (Terraform outputs in deploy/gcp). It runs
+#       only on a manual dispatch with publish_downloads ticked: a tested draft
+#       release is promoted to the public download links by a person, never by a push.
 name: desktop-release
 
 on:
@@ -34,6 +38,11 @@ on:
     # for contexts that can push branches but not tags or dispatch workflows.
     branches: ["claude/desktop-release"]
   workflow_dispatch:
+    inputs:
+      publish_downloads:
+        description: "After testing: copy this version's Windows and macOS installers to the public downloads bucket (viewer.flowrad.ai download links)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -223,3 +232,42 @@ jobs:
         with:
           name: updater-manifest
           path: out/latest.json
+
+  # viewer.flowrad.ai/download/{windows,macos}: copy the tested installers to
+  # the public GCS bucket and rewrite desktop/downloads.json (the site reads it).
+  # Manual only (workflow_dispatch + publish_downloads), keyless (Workload
+  # Identity Federation), and skipped when the GCP variables are not set.
+  publish-downloads:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_downloads && vars.GCS_DOWNLOADS_BUCKET != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the installers from the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p dl
+          gh release download "desktop-v$version" --repo "$GITHUB_REPOSITORY" -D dl -p '*x64-setup.exe' -p '*universal.dmg' --clobber
+          ls -l dl
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Upload installers and the downloads manifest
+        env:
+          BUCKET: ${{ vars.GCS_DOWNLOADS_BUCKET }}
+        run: |
+          node scripts/write-downloads-manifest.mjs dl "$VERSION" "https://storage.googleapis.com/$BUCKET/desktop/$VERSION" > dl/downloads.json
+          cat dl/downloads.json
+          for f in dl/*.exe dl/*.dmg; do
+            [ -e "$f" ] && gcloud storage cp "$f" "gs://$BUCKET/desktop/$VERSION/" --cache-control="public, max-age=31536000, immutable"
+          done
+          gcloud storage cp dl/downloads.json "gs://$BUCKET/desktop/downloads.json" --cache-control="public, max-age=300"
+          echo "Published $VERSION to viewer.flowrad.ai download links." >> "$GITHUB_STEP_SUMMARY"

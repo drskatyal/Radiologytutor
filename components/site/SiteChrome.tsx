@@ -45,5 +45,5 @@ export function SiteHeader({ signedIn }: { signedIn: boolean }) {
 }
 
 export function SiteFooter() {
-  return <div dangerouslySetInnerHTML={{ __html: FLOWRAD_FOOTER_HTML }} />;
+  return <div className="w" dangerouslySetInnerHTML={{ __html: FLOWRAD_FOOTER_HTML }} />;
 }

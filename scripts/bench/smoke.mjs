@@ -206,7 +206,7 @@ async function main() {
     // /viewer/local has nothing to show until a file is chosen. Feed it the
     // bundled sample through the real file input so the whole local-open path
     // runs: header parse, grouping, frame fan-out, stack load.
-    if (new URL(URL_UNDER_TEST).pathname.startsWith("/viewer/local")) {
+    if (new URL(URL_UNDER_TEST).pathname.startsWith("/viewer")) {
       const injected = await page.evaluate(`
         const deadline = Date.now() + 30000;
         let input = null;

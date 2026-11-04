@@ -8,10 +8,11 @@ import { isDesktopPlatform, loadDownloadsManifest } from "@/lib/cloud/downloads"
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest, { params }: { params: { platform: string } }) {
+export async function GET(_req: NextRequest, { params }: { params: { platform: string } }) {
   if (!isDesktopPlatform(params.platform)) return NextResponse.json({ error: "Unknown platform" }, { status: 404 });
   const manifest = await loadDownloadsManifest();
   const entry = manifest?.platforms[params.platform];
-  if (!entry) return NextResponse.redirect(new URL(`/?unavailable=${params.platform}#get-viewer`, req.url), 302);
+  // Relative Location: behind Cloud Run the request URL's host is the container's, not ours.
+  if (!entry) return new Response(null, { status: 302, headers: { Location: `/?unavailable=${params.platform}#get-viewer` } });
   return NextResponse.redirect(entry.url, 302);
 }

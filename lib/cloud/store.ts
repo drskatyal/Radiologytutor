@@ -21,7 +21,7 @@ export interface ViewerStore {
   readonly kind: "firestore" | "memory";
   getAccount(id: string): Promise<Account | null>;
   putAccount(account: Account): Promise<void>;
-  patchAccount(id: string, patch: Partial<Pick<Account, "plan" | "name">>): Promise<void>;
+  patchAccount(id: string, patch: Partial<Pick<Account, "plan" | "name" | "bindings">>): Promise<void>;
 
   listStudies(ownerId: string): Promise<Study[]>;
   getStudy(id: string): Promise<Study | null>;
@@ -63,7 +63,7 @@ class FirestoreStore implements ViewerStore {
   putAccount(a: Account) {
     return this.fs.set(COL.accounts, a.id, { ...a });
   }
-  patchAccount(id: string, patch: Partial<Pick<Account, "plan" | "name">>) {
+  patchAccount(id: string, patch: Partial<Pick<Account, "plan" | "name" | "bindings">>) {
     return this.fs.patch(COL.accounts, id, patch);
   }
   async listStudies(ownerId: string) {
@@ -147,7 +147,7 @@ export class MemoryStore implements ViewerStore {
     this.data.accounts[a.id] = clone(a);
     this.save();
   }
-  async patchAccount(id: string, patch: Partial<Pick<Account, "plan" | "name">>) {
+  async patchAccount(id: string, patch: Partial<Pick<Account, "plan" | "name" | "bindings">>) {
     const a = this.data.accounts[id];
     if (!a) throw new Error("Account not found");
     Object.assign(a, clone(patch));

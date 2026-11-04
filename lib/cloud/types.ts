@@ -15,6 +15,8 @@ export interface Account {
   plan: PlanId;
   /** Secret per-account salt for anonymised UIDs (never sent to other users). */
   uidSalt: string;
+  /** Web viewer mouse/keyboard bindings file (synced across browsers). */
+  bindings?: unknown;
   createdAt: string;
 }
 

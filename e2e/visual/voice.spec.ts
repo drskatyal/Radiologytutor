@@ -27,7 +27,7 @@ test.use({
 
 async function openStudy(page: Page) {
   await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
-  await page.goto("/viewer/local");
+  await page.goto("/viewer");
   const consent = page.getByRole("button", { name: "Continue" });
   if (await consent.count()) await consent.first().click();
   const files = fs.readdirSync(DIR!).map((f) => path.join(DIR!, f));

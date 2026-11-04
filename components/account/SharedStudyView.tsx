@@ -28,7 +28,8 @@ export function SharedStudyView({ resolved, studyId, embed = false }: { resolved
           <Eye className="h-3 w-3" aria-hidden /> View only
         </span>
         {unknown && <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white">Unknown case</span>}
-        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{unknown ? collection?.name ?? "Unknown case" : study?.title ?? collection?.name}</h1>
+        {/* An unknown never shows the study title: it often names the diagnosis. */}
+        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold text-white">{unknown ? collection?.name ?? "" : study?.title ?? collection?.name}</h1>
         {share.allowDownload && study && (
           <a
             href={`/api/s/${share.token}/download?study=${study.id}`}
