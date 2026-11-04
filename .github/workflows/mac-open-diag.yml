@@ -57,7 +57,7 @@ jobs:
           FLOWRAD_DIAG: "1"
           FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d1-open.jsonl
         run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
-      - name: open, diag, WebContent + app sampled (sudo) from WebContent launch, WebKit log
+      - name: open, diag, WebContent spindump from its launch
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         continue-on-error: true
@@ -65,30 +65,21 @@ jobs:
           FLOWRAD_DIAG: "1"
           FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d2-open-sampled.jsonl
         run: |
-          log stream --style compact --level debug --predicate 'process == "com.apple.WebKit.WebContent" OR process == "flowrad-viewer"' > "$RUNNER_TEMP/webkit-log.txt" 2>&1 &
-          logger=$!
           bash desktop/scripts/diag-sample-loop.sh "$RUNNER_TEMP/samples" 75 > "$RUNNER_TEMP/sample-loop.txt" 2>&1 &
           looper=$!
           sleep 2
           node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 || true
-          kill $logger || true
           wait $looper || true
           cat "$RUNNER_TEMP/sample-loop.txt"
       - name: timelines
         if: ${{ !cancelled() }}
         run: python3 desktop/scripts/diag-timeline.py "$RUNNER_TEMP"/d*.jsonl
-      - name: samples
+      - name: spindumps (WebContent main thread)
         if: ${{ !cancelled() }}
         run: |
           ls -la "$RUNNER_TEMP/samples"
-          python3 desktop/scripts/diag-samples.py "$RUNNER_TEMP"/samples/*.txt
-          for f in "$RUNNER_TEMP"/samples/top-*.txt; do echo "===== $f"; cat "$f"; done
-      - name: WebKit log (WebContent and app lines)
-        if: ${{ !cancelled() }}
-        run: |
-          f="$RUNNER_TEMP/webkit-log.txt"
-          echo "lines: $(wc -l < "$f")"
-          grep -vE "^\s|Filtering the log data" "$f" | cut -c1-240 | awk '{k=$4" "substr($0,index($0,$5),60); if (seen[k]++ < 3) print}' | head -900
+          for f in "$RUNNER_TEMP"/samples/wc-*.log; do echo "== $f"; head -5 "$f"; done
+          python3 desktop/scripts/diag-spindump.py "$RUNNER_TEMP"/samples/*.spindump.txt
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
