@@ -104,16 +104,27 @@ thread_local! {
 type OrderFront = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
 
 /// The wrapper: NSWindow's original first (the window goes on screen), then
-/// the one-shot `ON_SHOWN`.
+/// the one-shot `ON_SHOWN`, once the outermost wrapped call has returned
+/// (`makeKeyAndOrderFront:` may order the window front through `orderFront:`).
 unsafe extern "C-unwind" fn order_front_then_splash(this: *mut AnyObject, sel: Sel, sender: *mut AnyObject) {
+    thread_local! {
+        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
     let original = ORIGINALS.with(|o| o.borrow().iter().find(|(s, _)| *s == sel).map(|(_, imp)| *imp));
+    DEPTH.with(|d| d.set(d.get() + 1));
     if let Some(imp) = original {
         // SAFETY: `imp` is NSWindow's implementation of `sel`, which has this signature.
         let f: OrderFront = unsafe { std::mem::transmute::<Imp, OrderFront>(imp) };
         unsafe { f(this, sel, sender) };
     }
-    if let Some(shown) = ON_SHOWN.with(|s| s.borrow_mut().take()) {
-        shown(this.cast());
+    let outermost = DEPTH.with(|d| {
+        d.set(d.get() - 1);
+        d.get() == 0
+    });
+    if outermost {
+        if let Some(shown) = ON_SHOWN.with(|s| s.borrow_mut().take()) {
+            shown(this.cast());
+        }
     }
 }
 
