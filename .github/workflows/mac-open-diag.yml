@@ -49,7 +49,7 @@ jobs:
           echo "RUNNER $(sysctl -n hw.ncpu) CPUs, $(uptime)"
           sudo -n true && echo "sudo ok"
           mkdir -p "$RUNNER_TEMP/samples"
-      - name: open gate, diag (worker heartbeat)
+      - name: open gate, diag
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         continue-on-error: true
@@ -57,32 +57,23 @@ jobs:
           FLOWRAD_DIAG: "1"
           FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d1-open.jsonl
         run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
-      - name: open, diag, WebKit log stream
+      - name: open, diag, WebContent + app sampled (sudo) from WebContent launch, WebKit log
         if: ${{ !cancelled() }}
-        timeout-minutes: 6
+        timeout-minutes: 8
         continue-on-error: true
         env:
           FLOWRAD_DIAG: "1"
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d2-open-log.jsonl
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d2-open-sampled.jsonl
         run: |
-          log stream --style compact --level debug --predicate 'subsystem == "com.apple.WebKit" OR process == "runningboardd"' > "$RUNNER_TEMP/webkit-log.txt" 2>&1 &
+          log stream --style compact --level debug --predicate 'process == "com.apple.WebKit.WebContent" OR process == "flowrad-viewer"' > "$RUNNER_TEMP/webkit-log.txt" 2>&1 &
           logger=$!
+          bash desktop/scripts/diag-sample-loop.sh "$RUNNER_TEMP/samples" 75 > "$RUNNER_TEMP/sample-loop.txt" 2>&1 &
+          looper=$!
           sleep 2
           node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 || true
-          sleep 1
           kill $logger || true
-          wc -l "$RUNNER_TEMP/webkit-log.txt"
-      - name: open, diag, WebContent sampled from page load
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        continue-on-error: true
-        env:
-          FLOWRAD_DIAG: "1"
-          FLOWRAD_DIAG_SAMPLE: "1"
-          FLOWRAD_DIAG_SAMPLE_AT: load
-          FLOWRAD_DIAG_DIR: ${{ runner.temp }}/samples
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d3-open-sample.jsonl
-        run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 2
+          wait $looper || true
+          cat "$RUNNER_TEMP/sample-loop.txt"
       - name: timelines
         if: ${{ !cancelled() }}
         run: python3 desktop/scripts/diag-timeline.py "$RUNNER_TEMP"/d*.jsonl
@@ -90,14 +81,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           ls -la "$RUNNER_TEMP/samples"
-          python3 desktop/scripts/diag-samples.py "$RUNNER_TEMP"/samples/sample-*.txt
+          python3 desktop/scripts/diag-samples.py "$RUNNER_TEMP"/samples/*.txt
           for f in "$RUNNER_TEMP"/samples/top-*.txt; do echo "===== $f"; cat "$f"; done
-      - name: WebKit log (filtered)
+      - name: WebKit log (WebContent and app lines)
         if: ${{ !cancelled() }}
         run: |
           f="$RUNNER_TEMP/webkit-log.txt"
           echo "lines: $(wc -l < "$f")"
-          grep -iE "throttl|suspend|assertion|activitystate|visib|occlu|background|foreground|isinwindow|hidden|layerTreeFreeze|freeze|responsiv|hang|timeout|nap|setIsVisible|didUpdateActivityState|ProcessThrottler|WebContent\[" "$f" | grep -viE "networking|xpcproxy" | cut -c1-260 | head -600
+          grep -vE "^\s|Filtering the log data" "$f" | cut -c1-240 | awk '{k=$4" "substr($0,index($0,$5),60); if (seen[k]++ < 3) print}' | head -900
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

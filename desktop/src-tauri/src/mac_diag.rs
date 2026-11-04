@@ -204,7 +204,12 @@ pub fn on_open() {
 
 /// Everything recorded so far (bench report time).
 pub fn report() -> serde_json::Value {
+    let started_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() * 1000.0 - now_ms())
+        .unwrap_or(0.0);
     serde_json::json!({
+        "startedUnixMs": started_unix_ms.round(),
         "events": EVENTS.lock().iter().map(|(t, l, m)| serde_json::json!([t, l, m])).collect::<Vec<_>>(),
         "mainLate": GAPS.lock().iter().map(|(t, g)| serde_json::json!([t, g])).collect::<Vec<_>>(),
         "states": STATES.lock().iter().map(|(t, s)| serde_json::json!([t, s])).collect::<Vec<_>>(),

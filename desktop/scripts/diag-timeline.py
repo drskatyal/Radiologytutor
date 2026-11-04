@@ -33,6 +33,10 @@ def main():
             keys = ["openAtProcessMs", "firstSeriesHungMs", "viewChunksMs", "firstViewportSentMs", "firstImageMs", "firstPaintMs", "navStartMs", "windowBuiltMs", "webviewNavStartMs"]
             print(f"---- run {n}: " + ", ".join(f"{k}={report.get(k)}" for k in keys if report.get(k) is not None))
             print(f"     page->process offset {offset}; splash {splash}")
+            if diag and diag.get("startedUnixMs"):
+                import datetime
+                t0 = datetime.datetime.fromtimestamp(diag["startedUnixMs"] / 1000, datetime.timezone.utc)
+                print(f"     process started at {t0.strftime('%H:%M:%S.%f')[:-3]} UTC")
             if page.get("nav"):
                 print(f"     page nav {page['nav']} paints {page.get('paints')}")
             rows = []

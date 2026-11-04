@@ -5,7 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -212,6 +212,8 @@ function whenNativeKnown(): Promise<boolean> {
 }
 
 export default function App() {
+  diagMark("App render");
+  useLayoutEffect(() => diagMark("App commit"));
   const { toast } = useToast();
   const [version, setVersion] = useState("");
   const [settings, setSettings] = useState<ViewerSettings>(DEFAULT_SETTINGS);
@@ -644,6 +646,7 @@ export default function App() {
       setGrowing(true);
 
       await initProtocol();
+      diagMark("open: protocol ready");
       const acc = new Map<string, DesktopHeader>();
       let timer = 0;
       let firstShown = false;
@@ -669,10 +672,12 @@ export default function App() {
         }
         building = true;
         markPhase("study: group series");
+        diagMark("rebuild: start");
         const built = await buildStudiesSliced([...acc.values()], {
           isCancelled: () => seq !== openSeq.current || scanDone,
           onStats: groupStats,
         });
+        diagMark("rebuild: grouped");
         building = false;
         if (!built || seq !== openSeq.current || scanDone) return;
         // Every rebuild renders at low priority (time-sliced) instead of as
@@ -719,7 +724,10 @@ export default function App() {
           },
           onBatch: (batch) => {
             if (seq !== openSeq.current) return;
-            if (!bench.current.marks.firstHeaderMs) bench.current.marks.firstHeaderMs = performance.now() - t0;
+            if (!bench.current.marks.firstHeaderMs) {
+              bench.current.marks.firstHeaderMs = performance.now() - t0;
+              diagMark("open: first batch received");
+            }
             // The batch's own objects (fresh from IPC, ours): no copy per
             // header; the scan result hands these same objects back.
             for (const h of batch) {
