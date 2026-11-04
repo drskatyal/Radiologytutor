@@ -284,7 +284,9 @@ export default function App() {
     void nativeKnown().then((on) => {
       nativeRef.current = on;
       setNativeMode(on);
-      if (on) document.documentElement.classList.add("native-transparent");
+      // On, or off again: macOS sets the class from the page's first line
+      // when the GPU is built at launch (lib.rs), before this is known.
+      document.documentElement.classList.toggle("native-transparent", on);
     });
   }, []);
   const [leftTool, setLeftTool] = useState("StackScroll");

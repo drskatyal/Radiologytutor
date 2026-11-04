@@ -1560,7 +1560,19 @@ pub fn run() {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
                 }
-                let built = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build();
+                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
+                // macOS, GPU built at launch: the page is transparent over the
+                // native surface from its first line (styles.css
+                // `native-transparent`), not restyled when native_init answers
+                // (that repainted the whole live page as a study opened). If the
+                // GPU then fails, the page takes the class off again (App.tsx).
+                #[cfg(target_os = "macos")]
+                let builder = if gpu_at_launch {
+                    builder.initialization_script("document.documentElement.classList.add('native-transparent')")
+                } else {
+                    builder
+                };
+                let built = builder.build();
                 // macOS: the splash's first-show hook goes, built or not.
                 #[cfg(target_os = "macos")]
                 splash::window_built();
@@ -1576,16 +1588,17 @@ pub fn run() {
                     }
                     trace("app menu set");
                     if gpu_at_launch {
-                        // Transparent now, ~1 s before the page loads: where the
-                        // page draws nothing the native surface shows through.
-                        // Switched on a live page instead (`init_native`, as
-                        // before), WebKit redid the whole page's backing and
-                        // held its rendering updates for 0.3-0.4 s right as a
-                        // study opened (CI: the first viewport's ResizeObserver,
-                        // and so the first image, waited for it). Nothing shows
-                        // the difference: the splash covers the window until
-                        // the page has painted its own opaque canvas.
-                        if _window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0))).is_ok() {
+                        // The webview transparent now, ~1 s before the page
+                        // loads: where the page draws nothing the native surface
+                        // shows through. Switched on a live page instead
+                        // (`init_native`, as before), WebKit redid the whole
+                        // page's backing and held its rendering updates for
+                        // 0.3-0.4 s right as a study opened (CI: the first
+                        // viewport's ResizeObserver, and so the first image,
+                        // waited for it). The webview only: the window keeps
+                        // its canvas colour (#0B0D10) under the page until the
+                        // surface (cleared to the same colour) exists.
+                        if AsRef::<tauri::Webview>::as_ref(&_window).set_background_color(Some(tauri::window::Color(0, 0, 0, 0))).is_ok() {
                             WEBVIEW_CLEAR_AT_BUILD.store(true, std::sync::atomic::Ordering::Release);
                             trace("webview transparent");
                         }
