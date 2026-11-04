@@ -162,9 +162,9 @@ route answers 503 "Study storage is not configured".
    project's terms before real use.
 4. **Domain.** Verify `flowrad.ai` in the project, set `custom_domain = "viewer.flowrad.ai"`,
    create the DNS records from the `domain_dns_records` output, then retire the static site.
-5. **Repository.** Create `drskatyal/flowrad-viewer` (private) and push this branch's history to
-   it. This session could not create repositories, so the code currently lives on the
-   `claude/flowrad-viewer-extract` branch of Radiologytutor.
+5. **Repository.** Done: `drskatyal/flowrad-viewer` (private) holds the extracted history on
+   `main`. Point the release workflow's GitHub settings (secrets, variables, Workload Identity
+   `github_repository`) at this repository.
 6. **Desktop signing before any download link.** The updater private key secret, plus Apple and
    Windows code-signing. The full list and go-live order are in `docs/DESKTOP_RELEASE_READINESS.md`.
    Release uploads also need the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER`,
