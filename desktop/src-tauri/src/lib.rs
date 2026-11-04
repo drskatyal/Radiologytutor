@@ -758,13 +758,18 @@ async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> 
             start_gpu_release_watch(native.clone(), window.clone());
         }
         // Where the page draws nothing, the native surface shows through.
-        if crate::flowrad_env("DIAG_NO_CLEAR").as_deref() != Ok("1") {
+        // (macOS: already transparent since the window was built, see `setup`.)
+        if !WEBVIEW_CLEAR_AT_BUILD.load(std::sync::atomic::Ordering::Acquire) {
             let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
             trace("native init: webview transparent");
         }
     }
     native.status()
 }
+
+/// macOS: the main webview was made transparent right after it was built,
+/// before the page loaded (`setup`), so `init_native` does not switch it.
+static WEBVIEW_CLEAR_AT_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Lazy GPU: a native call that draws found the GPU released (study closed,
 /// then a new one opened): rebuild it first. One check when it is there.
@@ -1571,13 +1576,22 @@ pub fn run() {
                     }
                     trace("app menu set");
                     if gpu_at_launch {
+                        // Transparent now, ~1 s before the page loads: where the
+                        // page draws nothing the native surface shows through.
+                        // Switched on a live page instead (`init_native`, as
+                        // before), WebKit redid the whole page's backing and
+                        // held its rendering updates for 0.3-0.4 s right as a
+                        // study opened (CI: the first viewport's ResizeObserver,
+                        // and so the first image, waited for it). Nothing shows
+                        // the difference: the splash covers the window until
+                        // the page has painted its own opaque canvas.
+                        if _window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0))).is_ok() {
+                            WEBVIEW_CLEAR_AT_BUILD.store(true, std::sync::atomic::Ordering::Release);
+                            trace("webview transparent");
+                        }
                         native::prewarm();
                         trace("gpu warm started");
                     }
-                }
-                if crate::flowrad_env("DIAG_EARLY_CLEAR").as_deref() == Ok("1") {
-                    let _ = _window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    trace("diag: webview transparent at build");
                 }
                 // macOS: the splash (on since the window was first shown, before
                 // the WKWebView existed) moves over the WKWebView now.
