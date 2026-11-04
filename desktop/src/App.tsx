@@ -5,8 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { diagMark } from "./diag";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -211,16 +210,7 @@ function whenNativeKnown(): Promise<boolean> {
   return isTauri ? nativeKnown() : Promise.resolve(false);
 }
 
-let diagRenders = 0;
-let diagRenderAt = 0;
 export default function App() {
-  diagRenders += 1;
-  diagRenderAt = performance.now();
-  if (diagRenders <= 40) diagMark(`App: render ${diagRenders}`);
-  useLayoutEffect(() => {
-    if (diagRenders <= 40) diagMark(`App: render ${diagRenders} committed (${Math.round(performance.now() - diagRenderAt)} ms)`);
-  });
-  useEffect(() => diagMark("App: effects"), []);
   const { toast } = useToast();
   const [version, setVersion] = useState("");
   const [settings, setSettings] = useState<ViewerSettings>(DEFAULT_SETTINGS);
@@ -886,7 +876,10 @@ export default function App() {
                 (nativeRef.current && document.querySelector("[data-native-viewport]") ? { renderPath: "native", nonBlank: true, expectVisible: true, maxLum: 255, checkedBy: "screen grab (e2e-native.py), not a canvas readback" } : null),
               stackViewport: paintHealth.last ?? null,
               ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
-              gpu: gpuInfo(),
+              // WebGL facts matter only on the engine path. Native draws without
+              // WebGL, and probing it there started WebKit's GPU process on
+              // macOS (+6 MB for the rest of the session, in the close gate).
+              gpu: nativeRef.current ? null : gpuInfo(),
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
               ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
               engineInitMs: engineTimings.initMs,
@@ -1188,7 +1181,6 @@ export default function App() {
       // no launch paths, no start-screen warm-up, no cold-start report.
       if (isSecondaryWindow) return;
       const initial = await takeLaunchPaths();
-      diagMark("launch paths taken");
       // A study on the command line opens at once. The engine starts the
       // moment the instant preview is on screen (onPreview), not here:
       // measured, starting it with the scan put the preview at 440 ms (was 200).

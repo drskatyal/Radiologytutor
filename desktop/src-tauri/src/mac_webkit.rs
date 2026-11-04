@@ -28,39 +28,42 @@ pub fn drop_memory_cache(window: &tauri::WebviewWindow) {
     });
 }
 
-/// The page's timers and rendering at full rate from the start: WebKit's
-/// hidden-page timer throttling and visibility-based process suppression off
-/// (private WKPreferences setters, each sent only if this WebKit has it).
-/// A viewer's page is never a background tab.
-pub fn keep_page_awake(window: &tauri::WebviewWindow) {
-    use objc2::runtime::AnyObject;
+/// Collect the closed study's JavaScript garbage now.
+///
+/// JavaScriptCore collects when the page allocates; a page back on the home
+/// screen allocates almost nothing, so what the study left (its headers,
+/// series, the viewer's unmounted DOM and their wrappers) stayed in the
+/// WebContent process (CI, macOS: WebKit malloc +11 MB 30 s after a close,
+/// growing ~8 MB per open / close round, with no GC in 60 s; a full
+/// collection after the close brought it to +7 and ~1.5 MB per round).
+/// WebView2 collects on its own on idle. WKWebView has no public call for
+/// this; the process pool's `_garbageCollectJavaScriptObjectsForTesting`
+/// (WKProcessPoolPrivate, a synchronous full collection in each web process)
+/// is used when this WebKit has it, and skipped when it does not.
+pub fn collect_js_garbage(window: &tauri::WebviewWindow) {
+    use objc2::runtime::{AnyObject, Bool};
     use objc2::{msg_send, sel};
     let _ = window.with_webview(|platform| {
-        let view = platform.inner() as *const WKWebView;
+        let view = platform.inner() as *mut AnyObject;
         if view.is_null() {
             return;
         }
-        // SAFETY: as in `drop_memory_cache`. -[WKWebViewConfiguration
-        // preferences] returns the live WKPreferences; each private setter
-        // takes one BOOL and is sent only when the object responds to it.
+        // SAFETY: `inner()` is the window's WKWebView, alive for this call, on
+        // the main thread (with_webview); `configuration` and `processPool`
+        // are public and never nil; the private selector is only sent when
+        // the pool answers to it (it takes no arguments, returns nothing).
         unsafe {
-            let config = (*view).configuration();
-            let prefs: *mut AnyObject = msg_send![&*config, preferences];
-            if prefs.is_null() {
+            let config: *mut AnyObject = msg_send![view, configuration];
+            if config.is_null() {
                 return;
             }
-            let prefs = &*prefs;
-            let responds: bool = msg_send![prefs, respondsToSelector: sel!(_setHiddenPageDOMTimerThrottlingEnabled:)];
-            if responds {
-                let _: () = msg_send![prefs, _setHiddenPageDOMTimerThrottlingEnabled: false];
+            let pool: *mut AnyObject = msg_send![config, processPool];
+            if pool.is_null() {
+                return;
             }
-            let responds: bool = msg_send![prefs, respondsToSelector: sel!(_setHiddenPageDOMTimerThrottlingAutoIncreases:)];
-            if responds {
-                let _: () = msg_send![prefs, _setHiddenPageDOMTimerThrottlingAutoIncreases: false];
-            }
-            let responds: bool = msg_send![prefs, respondsToSelector: sel!(_setPageVisibilityBasedProcessSuppressionEnabled:)];
-            if responds {
-                let _: () = msg_send![prefs, _setPageVisibilityBasedProcessSuppressionEnabled: false];
+            let responds: Bool = msg_send![pool, respondsToSelector: sel!(_garbageCollectJavaScriptObjectsForTesting)];
+            if responds.as_bool() {
+                let _: () = msg_send![pool, _garbageCollectJavaScriptObjectsForTesting];
             }
         }
     });

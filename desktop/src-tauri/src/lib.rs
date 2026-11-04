@@ -566,66 +566,10 @@ static TRACE: parking_lot::Mutex<Vec<(&'static str, f64)>> = parking_lot::Mutex:
 pub(crate) fn trace(label: &'static str) {
     if let Some(t) = STARTED.get() {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
-        let ms = (ms * 10.0).round() / 10.0;
-        {
-            let mut v = TRACE.lock();
-            if v.len() < 64 {
-                v.push((label, ms));
-            }
+        let mut v = TRACE.lock();
+        if v.len() < 64 {
+            v.push((label, (ms * 10.0).round() / 10.0));
         }
-        if diag_on() {
-            bench_emit("FLOWRAD_DIAG", &serde_json::json!({ "trace": label, "at": ms }));
-        }
-    }
-}
-
-/// `FLOWRAD_DIAG=1` (diagnosis only): the app's main thread is timed from
-/// another thread (a no-op posted every 5 ms; a reply later than 40 ms is a
-/// stall), and the page reports its own stalls and resource loads, as
-/// `FLOWRAD_DIAG` lines, for the first 20 s.
-fn diag_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| crate::flowrad_env("DIAG").as_deref() == Ok("1"))
-}
-
-fn start_main_thread_probe(app: tauri::AppHandle) {
-    if !diag_on() {
-        return;
-    }
-    let _ = std::thread::Builder::new().name("flowrad-diag-main".into()).spawn(move || {
-        let Some(t0) = STARTED.get().copied() else { return };
-        let ms = |i: std::time::Instant| (i.duration_since(t0).as_secs_f64() * 10000.0).round() / 10.0;
-        while t0.elapsed() < std::time::Duration::from_secs(20) {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
-            let sent = std::time::Instant::now();
-            if app.run_on_main_thread(move || {
-                let _ = tx.send(());
-            })
-            .is_err()
-            {
-                return;
-            }
-            let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
-            let waited = sent.elapsed().as_secs_f64() * 1000.0;
-            if waited > 40.0 {
-                bench_emit("FLOWRAD_DIAG", &serde_json::json!({ "mainStallAt": ms(sent), "ms": waited.round() }));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    });
-}
-
-#[tauri::command]
-fn diag_enabled() -> bool {
-    diag_on()
-}
-
-/// The page's diagnosis lines (`FLOWRAD_DIAG=1` only), stamped with the process clock.
-#[tauri::command]
-async fn diag_log(entry: serde_json::Value) {
-    if diag_on() {
-        let at = STARTED.get().map(|t| (t.elapsed().as_secs_f64() * 10000.0).round() / 10.0);
-        bench_emit("FLOWRAD_DIAG", &serde_json::json!({ "page": entry, "loggedAt": at }));
     }
 }
 
@@ -1487,25 +1431,9 @@ pub fn run() {
         // macOS: the default menu is set once the main window is up (`setup`),
         // not built inside `build()` ahead of the window.
         .enable_macos_default_menu(false)
-        .plugin(
-            tauri::plugin::Builder::<tauri::Wry>::new("flowrad-trace-first")
-                .setup(|_, _| {
-                    trace("plugins: first");
-                    Ok(())
-                })
-                .build(),
-        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(
-            tauri::plugin::Builder::<tauri::Wry>::new("flowrad-trace-last")
-                .setup(|_, _| {
-                    trace("plugins: last");
-                    Ok(())
-                })
-                .build(),
-        )
         .manage(state)
         .manage(viewer_windows::WindowHandoff::default())
         .manage(native::Shared::default())
@@ -1555,7 +1483,6 @@ pub fn run() {
         .setup(move |app| {
             trace("setup");
             let _ = APP.set(app.handle().clone());
-            start_main_thread_probe(app.handle().clone());
             if let Some(config) = &main_window {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
@@ -1587,9 +1514,6 @@ pub fn run() {
                         let _ = app.handle().set_menu(menu);
                     }
                     trace("app menu set");
-                    if crate::flowrad_env("DIAG_NO_AWAKE").as_deref() != Ok("1") {
-                        mac_webkit::keep_page_awake(&_window);
-                    }
                     if gpu_at_launch {
                         // The webview transparent now, ~1 s before the page
                         // loads: where the page draws nothing the native surface
@@ -1673,8 +1597,6 @@ pub fn run() {
             startup_elapsed_ms,
             startup_marks,
             splash_done,
-            diag_enabled,
-            diag_log,
             store::history_list,
             store::history_record,
             store::history_remove,

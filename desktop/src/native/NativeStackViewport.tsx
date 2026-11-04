@@ -12,7 +12,6 @@
 // measurement / ROI / probe / arrow / eraser tool on an SVG layer
 // (NativeAnnotationLayer), and Magnify as a second native viewport at 3×.
 
-import { diagMark } from "../diag";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   applyOrientation,
@@ -265,7 +264,6 @@ export default function NativeStackViewport({
       return;
     }
     wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
-    diagMark("viewport: series committed");
     // A full send (a cell's first series, or another series: the hanging
     // plan swapping in the primary when the scan ends) goes with the cell's
     // rect, and measuring it here, in a commit that mounts or refills the
@@ -281,7 +279,6 @@ export default function NativeStackViewport({
     if (full && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(() => {
         observer.disconnect();
-        diagMark("viewport: resize observed");
         syncSeries();
       });
       observer.observe(el);

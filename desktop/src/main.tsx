@@ -6,7 +6,6 @@ import { initProtocol, invoke, isTauri } from "./platform";
 import "./styles.css";
 import { watchLongTasks } from "./perfWatch";
 import { installContextMenuGuard } from "./contextMenuGuard";
-import { diagMark, startDiag } from "./diag";
 
 // Benchmark: when did our JS start, relative to process start?
 if (isTauri) {
@@ -30,19 +29,7 @@ if (isTauri) {
 // Resolved in parallel with the first render: nothing on the start screen
 // needs it, and opening a study awaits it (`protocolReady`).
 void initProtocol();
-diagMark("main.tsx: imports evaluated");
-// TEMPORARY diagnosis: how long the page's first web-storage access blocks.
-{
-  const t = performance.now();
-  try {
-    localStorage.getItem("flowrad.diag.probe");
-  } catch {
-    /* no storage */
-  }
-  diagMark(`first localStorage access took ${Math.round(performance.now() - t)} ms`);
-}
 watchLongTasks();
-startDiag();
 // No browser menu (Back / Refresh / Print) anywhere but text fields.
 installContextMenuGuard();
 // Phase 2 spike (FLOWRAD_NATIVE=1 + FLOWRAD_BENCH_VIEW=native-spike): the
@@ -86,13 +73,12 @@ function appStylesheet(): Promise<void> {
   });
 }
 
-void appStylesheet().then(() => {
-  diagMark("app css ready; React render");
+void appStylesheet().then(() =>
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <ToastProvider>
         <Root />
       </ToastProvider>
     </StrictMode>
-  );
-});
+  )
+);
