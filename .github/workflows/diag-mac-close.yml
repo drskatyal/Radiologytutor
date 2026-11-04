@@ -1,0 +1,81 @@
+# DIAGNOSTIC SCRATCH BRANCH ONLY (claude/084-mac-close-diag): the macOS close
+# lifecycle, A/B over FLOWRAD_DIAG_* toggles. Not for merging.
+name: diag-mac-close
+
+on:
+  push:
+    branches: [claude/084-mac-close-diag]
+
+concurrency:
+  group: diag-mac-close-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      BASELINE_PRIVATE_MAX_MB: "240"
+      CT_OPEN_PRIVATE_MAX_MB: "400"
+      CLOSE_DELTA_MAX_MB: "30"
+      APP: desktop/src-tauri/target/release/flowrad-viewer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pydicom numpy pillow
+      - run: npm ci
+      - run: npm ci --prefix desktop
+      - name: Voice model
+        run: python scripts/fetch-voice-model.py && python scripts/fetch-voice-model.py --check
+      - name: Build the app (release, no bundle)
+        run: npx tauri build --no-bundle
+        working-directory: desktop
+      - name: Synthetic CT
+        run: python scripts/make-test-ct.py "$RUNNER_TEMP/ct848" --slices 848
+      - name: Diag A — stock (no park, WebGL probe)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG_NOPARK: "1"
+          FLOWRAD_DIAG_GPUINFO: "1"
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" stock 40
+      - name: Diag B — fix (park, no WebGL probe)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" fix 40
+      - name: Diag C — fix + forced JS GC after close
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG_JSGC: "1"
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" fix-jsgc 40
+      - name: Gate (fix) — memory back on close, run 1
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"
+      - name: Gate (stock) — memory back on close
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG_NOPARK: "1"
+          FLOWRAD_DIAG_GPUINFO: "1"
+        run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"
+      - name: Gate (fix) — memory back on close, run 2
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"
