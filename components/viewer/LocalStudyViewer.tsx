@@ -751,9 +751,13 @@ export function LocalStudyViewer({
       return result;
     },
   });
+  // Only plugins read the slice. Without them, don't re-render the whole viewer
+  // on every scrolled slice (the scroll frame-time gate measures exactly that).
+  const hasPlugins = useRef(plugins.length > 0);
+  hasPlugins.current = plugins.length > 0;
   const onViewerEventForAll = useCallback(
     (event: ViewerEvent) => {
-      if (event.type === "slice") setPluginSlice(event.index);
+      if (event.type === "slice" && hasPlugins.current) setPluginSlice(event.index);
       popOutRef.current?.(event);
     },
     []
