@@ -1111,6 +1111,45 @@ fn frame_scale(window: &tauri::WebviewWindow, native: &native::Native) -> f64 {
     window.scale_factor().unwrap_or(1.0)
 }
 
+/// DIAG (temporary, A/B): the page's entry module and app stylesheet are
+/// requested only once the splash has painted (first-contentful-paint), not
+/// by the parser: their arrival and parsing then cannot hold the first paint.
+fn diag_late_boot(res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
+    let body = String::from_utf8_lossy(res.body()).into_owned();
+    let attr = |tag: &str, name: &str| -> Option<String> {
+        let at = tag.find(&format!("{name}=\""))? + name.len() + 2;
+        Some(tag[at..at + tag[at..].find('"')?].to_string())
+    };
+    let Some(s0) = body.find("<script type=\"module\"") else { return };
+    let Some(s1) = body[s0..].find("</script>").map(|i| s0 + i + "</script>".len()) else { return };
+    let Some(js) = attr(&body[s0..s1], "src") else { return };
+    let mut out = format!("{}{}", &body[..s0], &body[s1..]);
+    let mut css = None;
+    if let Some(l0) = out.find("<link rel=\"stylesheet\"") {
+        if let Some(l1) = out[l0..].find('>').map(|i| l0 + i + 1) {
+            css = attr(&out[l0..l1], "href");
+            out = format!("{}{}", &out[..l0], &out[l1..]);
+        }
+    }
+    let css = css.unwrap_or_default();
+    let boot = format!(
+        "<script>(function(){{var done=false;function go(){{if(done)return;done=true;var c='{css}';if(c){{var l=document.createElement('link');l.rel='stylesheet';l.href=c;l.media='print';l.setAttribute('data-app-css','');document.head.appendChild(l);}}var s=document.createElement('script');s.type='module';s.src='{js}';document.head.appendChild(s);}}try{{new PerformanceObserver(function(l,o){{o.disconnect();go();}}).observe({{type:'paint',buffered:true}});}}catch(e){{}}setTimeout(go,400);}})();</script>"
+    );
+    let Some(b) = out.find("</body>") else { return };
+    out.insert_str(b, &boot);
+    let csp = res.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()).map(|v| {
+        v.split(';')
+            .map(|d| if d.trim_start().starts_with("script-src") { " script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'".to_string() } else { d.to_string() })
+            .collect::<Vec<_>>()
+            .join(";")
+    });
+    if let Some(csp) = csp.and_then(|c| tauri::http::HeaderValue::from_str(&c).ok()) {
+        res.headers_mut().insert("Content-Security-Policy", csp);
+    }
+    *res.body_mut() = std::borrow::Cow::Owned(out.into_bytes());
+    trace("DIAG late boot");
+}
+
 /// DIAG (temporary): wall-clock ms (the page's performance.timeOrigin + now()).
 fn diag_epoch_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
@@ -1560,9 +1599,13 @@ pub fn run() {
                 }
                 let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
                     // DIAG (temporary): when the page's own files are served.
-                    .on_web_resource_request(|req, _res| {
+                    .on_web_resource_request(|req, res| {
                         let p = req.uri().path();
-                        trace(if p == "/" || p.ends_with(".html") { "DIAG html served" } else if p.ends_with(".css") { "DIAG css served" } else if p.ends_with(".js") { "DIAG js served" } else { "DIAG asset served" });
+                        let html = p == "/" || p.ends_with(".html");
+                        trace(if html { "DIAG html served" } else if p.ends_with(".css") { "DIAG css served" } else if p.ends_with(".js") { "DIAG js served" } else { "DIAG asset served" });
+                        if html && flowrad_env("DIAG_LATE_BOOT").as_deref() == Ok("1") {
+                            diag_late_boot(res);
+                        }
                     });
                 // macOS, GPU built at launch: the page is transparent over the
                 // native surface from its first line (styles.css
@@ -1571,7 +1614,7 @@ pub fn run() {
                 // GPU then fails, the page takes the class off again (App.tsx).
                 #[cfg(target_os = "macos")]
                 let builder = if gpu_at_launch {
-                    builder.initialization_script("document.documentElement.classList.add('native-transparent')")
+                    builder.initialization_script("document.documentElement.classList.add('native-transparent');window.__usDone=performance.now()")
                 } else {
                     builder
                 };

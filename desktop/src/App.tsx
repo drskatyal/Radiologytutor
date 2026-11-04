@@ -1254,7 +1254,7 @@ export default function App() {
               ? {
                   html: r1(nav.responseEnd),
                   // DIAG (temporary)
-                  diag: { fetch: nav.fetchStart, request: nav.requestStart, response: nav.responseStart, responseEnd: nav.responseEnd, domLoading: (nav as unknown as { domLoading?: number }).domLoading, interactive: nav.domInteractive, paints: performance.getEntriesByType?.("paint").map((e) => [e.name, e.startTime]), timeOrigin: performance.timeOrigin },
+                  diag: { fetch: nav.fetchStart, request: nav.requestStart, response: nav.responseStart, responseEnd: nav.responseEnd, domLoading: (nav as unknown as { domLoading?: number }).domLoading, interactive: nav.domInteractive, paints: performance.getEntriesByType?.("paint").map((e) => [e.name, e.startTime]), timeOrigin: performance.timeOrigin, usDone: (window as unknown as { __usDone?: number }).__usDone },
                   css: loaded(/\/assets\/index-[^/]*\.css/),
                   js: loaded(/\/assets\/index-[^/]*\.js/),
                   interactive: r1(nav.domInteractive),

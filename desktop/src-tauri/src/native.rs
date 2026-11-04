@@ -1230,16 +1230,32 @@ impl Native {
 }
 
 
-/// What a frame of `cells` on a `sw` × `sh` surface draws: every cell's
-/// rectangle, view and uniforms, and which image (and which upload of it) it
-/// samples. Equal signatures draw equal pixels.
+/// The signature of a frame that draws no image: the canvas colour only,
+/// whatever the surface size. A surface that has presented nothing looks the
+/// same (the window's canvas colour shows through the empty layer).
+const EMPTY_FRAME: u64 = 0;
+
+/// What a frame of `cells` on a `sw` × `sh` surface draws: every drawn
+/// cell's rectangle, view and uniforms, and which image (and which upload of
+/// it) it samples. Equal signatures draw equal pixels. A cell without an
+/// image is not drawn (`render`), so it does not count: the layout pass that
+/// comes before a study's first image draws the canvas colour only.
 fn frame_signature(cells: &HashMap<String, CellState>, sw: u32, sh: u32, s: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (sw, sh, s.to_bits()).hash(&mut h);
+    let mut drawn = false;
     let mut order: Vec<(&String, &CellState)> = cells.iter().collect();
     order.sort_by(|a, b| a.0.cmp(b.0));
     for (id, c) in order {
+        // The spike cell draws its test image without one of its own.
+        let has_image = c.gpu.as_ref().is_some_and(|cg| cg.image.is_some());
+        if !has_image && id != SPIKE {
+            continue;
+        }
+        if !drawn {
+            (sw, sh, s.to_bits()).hash(&mut h);
+            drawn = true;
+        }
         id.hash(&mut h);
         for x in [c.rect.x, c.rect.y, c.rect.w, c.rect.h, c.view.wl.0, c.view.wl.1] {
             x.to_bits().hash(&mut h);
@@ -1257,7 +1273,21 @@ fn frame_signature(cells: &HashMap<String, CellState>, sw: u32, sh: u32, s: f32)
             }
         }
     }
-    h.finish()
+    if drawn {
+        h.finish() | 1
+    } else {
+        EMPTY_FRAME
+    }
+}
+
+/// What a new surface shows: nothing (macOS: an empty layer, the canvas
+/// colour of the window under it), so its first frame without an image need
+/// not be presented: a study's first image then finds three drawables free,
+/// not two, and the reader's first scroll does not wait for one (CI: 39-73 ms
+/// on scroll step 0 / 1 after a layout pass, the first image and one more
+/// frame had taken all three).
+fn initially_shown() -> Option<u64> {
+    cfg!(target_os = "macos").then_some(EMPTY_FRAME)
 }
 
 /// `FLOWRAD_NATIVE_SAME_FRAME=present`: present every frame, as before (A/B).
@@ -1814,7 +1844,7 @@ fn finish(
     };
     let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_image, .. } = pipes;
     Ok((
-        Gpu { direct_slices: direct_slices(&device), surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_image, parked: false, shown: None },
+        Gpu { direct_slices: direct_slices(&device), surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_image, parked: false, shown: initially_shown() },
         info.name,
         format!("{:?}", info.backend),
     ))

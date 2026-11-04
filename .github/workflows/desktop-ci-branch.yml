@@ -81,6 +81,18 @@ jobs:
         run: |
           swiftc -O desktop/scripts/wk-baseline.swift -o "$RUNNER_TEMP/wk-baseline"
           for i in 1 2 3 4 5; do echo "control run $i: $("$RUNNER_TEMP/wk-baseline")"; done
+      - name: DIAG — A/B late boot (entry module + app CSS after the first paint), alternating, 12 launches
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            late=$((i % 2))
+            FLOWRAD_DIAG_LATE_BOOT=$late FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1 "$APP" > "$RUNNER_TEMP/ab$i.txt" 2>&1 &
+            pid=$!
+            for t in $(seq 1 80); do grep -q '^FLOWRAD_BENCH ' "$RUNNER_TEMP/ab$i.txt" && break; sleep 0.25; done
+            sleep 0.5; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true
+            grep '^FLOWRAD_BENCH ' "$RUNNER_TEMP/ab$i.txt" | sed 's/^FLOWRAD_BENCH //' | LATE=$late python3 -c 'import json,os,sys; r=json.loads(sys.stdin.read()); pt=r.get("pageTiming") or {}; d=pt.get("diag") or {}; print("late" if os.environ["LATE"]=="1" else "base", json.dumps({"app": round(r["windowBuiltMs"] + r["firstPaintMs"] - r["navStartMs"]), "built": round(r["windowBuiltMs"]), "nav": round(r["navStartMs"]), "fcpAfterNav": round(r["firstPaintMs"] - r["navStartMs"]), "usDone": d.get("usDone"), "html": pt.get("html"), "fcp": pt.get("fcp"), "dcl": pt.get("dcl"), "js": r.get("jsStartMs")}))' || true
+          done
       - name: Gate — cold start (same command) x3, traces of every run
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -95,7 +107,7 @@ jobs:
               if not r.get("coldStart"):
                   continue
               pt = r.get("pageTiming") or {}
-              print(json.dumps({"app": round(r["windowBuiltMs"] + r["firstPaintMs"] - r["navStartMs"]), "built": round(r["windowBuiltMs"]), "nav": round(r["navStartMs"]), "fcpAfterNav": round(r["firstPaintMs"] - r["navStartMs"]), "html": pt.get("html"), "fcp": pt.get("fcp"), "trace": r.get("trace")}))
+              print(json.dumps({"app": round(r["windowBuiltMs"] + r["firstPaintMs"] - r["navStartMs"]), "built": round(r["windowBuiltMs"]), "nav": round(r["navStartMs"]), "fcpAfterNav": round(r["firstPaintMs"] - r["navStartMs"]), "html": pt.get("html"), "fcp": pt.get("fcp"), "usDone": (pt.get("diag") or {}).get("usDone"), "trace": r.get("trace")}))
           PY
             rm -f "$TMPDIR/flowrad-bench.jsonl"
           }
