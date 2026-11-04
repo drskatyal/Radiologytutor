@@ -1,11 +1,13 @@
-// viewer.flowrad.ai home. Ported from drskatyal/flowrad-viewer-site index.html:
-// the copy and layout are the same, the waitlist buttons are now real links
-// (web viewer, Windows and macOS installers), and the store-and-share account
-// features have their own section.
+// viewer.flowrad.ai home. Ported from drskatyal/flowrad-viewer-site index.html.
+// The web viewer card links to the live viewer. The Windows and macOS cards stay
+// "coming soon" with a waitlist until signed, self-updating builds exist; they
+// switch to real download links on their own when offeredInstaller() returns
+// an installer (DESKTOP_DOWNLOADS_LIVE=1 + a signed manifest entry). No code
+// change is needed to go live.
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { PLATFORM_LABEL, formatInstallerSize, loadDownloadsManifest, type DesktopPlatform } from "@/lib/cloud/downloads";
+import { PLATFORM_LABEL, downloadsLive, formatInstallerSize, loadDownloadsManifest, offeredInstaller, type DesktopPlatform } from "@/lib/cloud/downloads";
 import { PLANS } from "@/lib/cloud/plans";
 
 export const metadata: Metadata = {
@@ -26,12 +28,13 @@ export const metadata: Metadata = {
 export const revalidate = 300;
 
 const INSTALLER_NOTE: Record<DesktopPlatform, string> = {
-  windows: "Free download for Windows 10 and 11 (64-bit).",
-  macos: "Free download. One universal app for Apple silicon and Intel Macs.",
+  windows: "For Windows 10 and 11 (64-bit). Opens folders, discs and ZIPs offline.",
+  macos: "One universal app for Apple silicon and Intel Macs. Opens folders, discs and ZIPs offline.",
 };
 
 export default async function HomePage({ searchParams }: { searchParams: { unavailable?: string } }) {
-  const manifest = await loadDownloadsManifest();
+  // Don't even fetch the manifest until downloads are switched on.
+  const manifest = downloadsLive() ? await loadDownloadsManifest() : null;
   const unavailable = searchParams.unavailable === "windows" || searchParams.unavailable === "macos" ? searchParams.unavailable : null;
 
   return (
@@ -55,7 +58,7 @@ export default async function HomePage({ searchParams }: { searchParams: { unava
               Open the web viewer →
             </Link>
             <a className="b bo" href="#get-viewer">
-              Download for desktop
+              Windows and macOS apps
             </a>
           </div>
           <p className="fine">For education and research. Not for diagnostic use.</p>
@@ -86,10 +89,13 @@ export default async function HomePage({ searchParams }: { searchParams: { unava
           <h2>
             Three free tracks. <em>Choose yours.</em>
           </h2>
-          <p className="sub">The web viewer works now in any modern browser. The desktop apps open folders, discs and ZIPs offline.</p>
+          <p className="sub">
+            The web viewer works now in any modern browser. The Windows and macOS apps are coming soon: join the list to hear
+            when yours is available.
+          </p>
           {unavailable && (
             <p className="privacy-note" role="status">
-              The {PLATFORM_LABEL[unavailable]} installer is not published yet. The web viewer works today.
+              The {PLATFORM_LABEL[unavailable]} app is coming soon. The web viewer works today.
             </p>
           )}
           <div className="tracks">
@@ -102,24 +108,24 @@ export default async function HomePage({ searchParams }: { searchParams: { unava
               </Link>
             </article>
             {(["windows", "macos"] as const).map((p) => {
-              const entry = manifest?.platforms[p];
+              const entry = offeredInstaller(manifest, p);
               const size = formatInstallerSize(entry?.bytes);
               return (
-                <article key={p} className="card track">
-                  <span className={entry ? "badge" : "badge s"}>{entry ? `Version ${manifest!.version}` : "Release pending"}</span>
+                <article key={p} className="card track" data-testid={`track-${p}`}>
+                  <span className={entry ? "badge" : "badge s"}>{entry ? `Version ${manifest!.version}` : "Coming soon"}</span>
                   <h3>{PLATFORM_LABEL[p]} download</h3>
                   <p>
                     {INSTALLER_NOTE[p]}
-                    {size ? ` ${size}.` : ""}
-                    {!entry && " The installer is not published yet."}
+                    {entry && size ? ` ${size}.` : ""}
+                    {!entry && " Not available yet. Join the waitlist for release news."}
                   </p>
                   {entry ? (
                     <a className="b bp" href={`/download/${p}`} data-testid={`download-${p}`}>
                       Download for {PLATFORM_LABEL[p]} ↓
                     </a>
                   ) : (
-                    <a className="b bo" href={`mailto:support@flowrad.ai?subject=FlowRad%20Viewer%20${PLATFORM_LABEL[p]}%20release`}>
-                      Email me when it’s ready →
+                    <a className="b bo" href={`mailto:support@flowrad.ai?subject=FlowRad%20Viewer%20${PLATFORM_LABEL[p]}%20waitlist`} data-testid={`waitlist-${p}`}>
+                      Join the {PLATFORM_LABEL[p]} waitlist →
                     </a>
                   )}
                 </article>

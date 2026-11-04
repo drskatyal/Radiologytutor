@@ -55,3 +55,19 @@ test("helpers", () => {
   assert.equal(formatInstallerSize(41_000_000), "41 MB");
   assert.equal(formatInstallerSize(undefined), null);
 });
+
+test("installers are offered only when live AND signed (coming soon otherwise)", async () => {
+  const { offeredInstaller } = await import("./downloads.ts");
+  const m = parseDownloadsManifest({
+    version: "1.0.0",
+    platforms: {
+      windows: { url: "https://storage.googleapis.com/b/w.exe", fileName: "w.exe", signed: true },
+      macos: { url: "https://storage.googleapis.com/b/m.dmg", fileName: "m.dmg" },
+    },
+  });
+  const live = { DESKTOP_DOWNLOADS_LIVE: "1" } as unknown as NodeJS.ProcessEnv;
+  assert.equal(offeredInstaller(m, "windows", {} as NodeJS.ProcessEnv), null, "not live: coming soon");
+  assert.equal(offeredInstaller(m, "windows", live)?.fileName, "w.exe");
+  assert.equal(offeredInstaller(m, "macos", live), null, "unsigned entry is never offered");
+  assert.equal(offeredInstaller(null, "windows", live), null);
+});

@@ -34,8 +34,10 @@ Updates are signed with a minisign (ed25519) key.
 
 The app asks, in order:
 
-1. `https://radiologytutor-production.up.railway.app/api/desktop/update`: our site (`app/api/desktop/update/route.ts`), serving `LATEST` from `lib/desktopChannel.ts`.
-2. `https://github.com/drskatyal/Radiologytutor/releases/latest/download/latest.json`: GitHub's latest *published* release. This is a fallback only; drafts never resolve here.
+1. `https://viewer.flowrad.ai/api/desktop/update`: our site (`app/api/desktop/update/route.ts`), serving `LATEST` from `lib/desktopChannel.ts`.
+2. Optionally, `fallbackManifestUrl` in `desktop/updater.json` (none by default). Release assets of a private repository are not publicly downloadable, so the old GitHub fallback was dropped.
+
+Both values, and the public key, come from **`desktop/updater.json`**, applied by `desktop/scripts/configure-updater.mjs` (see `docs/DESKTOP_RELEASE_READINESS.md`). Builds made before FlowRad Viewer moved out of Radiologytutor still ask the old RadLearn addresses.
 
 `LATEST` is `null` until a person rolls a release out. `null` answers **204 No Content**, which the app reads as "no update". Setting it back to `null` stops a rollout within minutes. The response is cached for 5 minutes, and the app checks every 4 h.
 

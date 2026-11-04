@@ -29,14 +29,18 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
-/// Where the update channel and config live (the Next site, `app/api/desktop`).
-/// Overridable at build time for a staging channel.
+/// Where the update channel and config live: viewer.flowrad.ai (`app/api/desktop`).
+/// Set at build time from `desktop/updater.json` by
+/// `desktop/scripts/configure-updater.mjs` (FLOWRAD_UPDATE_BASE), so the
+/// endpoint lives in one committed file; a staging build can override it.
 pub const CHANNEL_BASE: &str = match option_env!("FLOWRAD_UPDATE_BASE") {
     Some(v) => v,
-    None => "https://radiologytutor-production.up.railway.app",
+    None => "https://viewer.flowrad.ai",
 };
-/// Fallback when the site is down: GitHub's "latest published release" asset.
-pub const GITHUB_LATEST: &str = "https://github.com/drskatyal/Radiologytutor/releases/latest/download/latest.json";
+/// Optional second manifest URL (FLOWRAD_UPDATE_FALLBACK at build time), e.g.
+/// a public bucket copy of latest.json. None by default: release assets of a
+/// private repository are not publicly downloadable.
+pub const UPDATE_FALLBACK: Option<&str> = option_env!("FLOWRAD_UPDATE_FALLBACK");
 
 /// Launches a new version may take without reporting healthy before it is rolled back.
 pub const MAX_UNHEALTHY_BOOTS: u32 = 2;
@@ -44,7 +48,11 @@ pub const MAX_UNHEALTHY_BOOTS: u32 = 2;
 pub const MAX_INSTALL_FAILURES: u32 = 3;
 
 pub fn update_urls() -> Vec<String> {
-    vec![format!("{CHANNEL_BASE}/api/desktop/update"), GITHUB_LATEST.to_string()]
+    let mut urls = vec![format!("{CHANNEL_BASE}/api/desktop/update")];
+    if let Some(fallback) = UPDATE_FALLBACK {
+        urls.push(fallback.to_string());
+    }
+    urls
 }
 pub fn rollback_url() -> String {
     format!("{CHANNEL_BASE}/api/desktop/update/rollback")

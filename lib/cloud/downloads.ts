@@ -1,5 +1,13 @@
 // Desktop installer downloads (Windows, macOS).
 //
+// NOT LIVE YET (Sanyam, 2026-11): installers are offered only once builds are
+// code-signed AND self-updating (Tauri updater, signed with the release key),
+// so plan-gated features can ship later without a reinstall. Until then the
+// site shows "coming soon". Two switches must BOTH be on for a link to appear:
+//   1. DESKTOP_DOWNLOADS_LIVE=1 on the server (a person flips it), and
+//   2. the manifest entry says `signed: true` (written by the release workflow
+//      only after it checked the signing secrets; see desktop-release.yml).
+//
 // The release workflow (.github/workflows/desktop-release.yml) builds the
 // installers and, when the GCS bucket is configured, uploads them with a small
 // manifest: `gs://<bucket>/desktop/downloads.json`, public-read. The site reads
@@ -15,6 +23,8 @@ export interface InstallerEntry {
   fileName: string;
   bytes?: number;
   sha256?: string;
+  /** Code-signed and update-signed (set by the release workflow's checks). */
+  signed?: boolean;
 }
 
 export interface DownloadsManifest {
@@ -67,9 +77,34 @@ export function parseDownloadsManifest(raw: unknown, extraHosts: readonly string
     if (parsed.protocol !== "https:" || !allowedInstallerHost(parsed.hostname, extraHosts)) continue;
     const bytes = typeof e?.bytes === "number" && e.bytes > 0 ? e.bytes : undefined;
     const sha256 = str(e?.sha256);
-    platforms[p] = { url: parsed.toString(), fileName, bytes, sha256: sha256 && /^[a-f0-9]{64}$/i.test(sha256) ? sha256 : undefined };
+    platforms[p] = {
+      url: parsed.toString(),
+      fileName,
+      bytes,
+      sha256: sha256 && /^[a-f0-9]{64}$/i.test(sha256) ? sha256 : undefined,
+      signed: e?.signed === true,
+    };
   }
   return { version, publishedAt: str(obj.publishedAt), platforms };
+}
+
+export function downloadsLive(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.DESKTOP_DOWNLOADS_LIVE?.trim() === "1";
+}
+
+/**
+ * The installer to offer for `platform`, or null ("coming soon"). Requires the
+ * live switch AND a signed entry: an unsigned or non-updating build is never
+ * linked from the site, whatever the manifest says.
+ */
+export function offeredInstaller(
+  manifest: DownloadsManifest | null,
+  platform: DesktopPlatform,
+  env: NodeJS.ProcessEnv = process.env
+): InstallerEntry | null {
+  if (!downloadsLive(env)) return null;
+  const entry = manifest?.platforms[platform];
+  return entry?.signed ? entry : null;
 }
 
 export function formatInstallerSize(bytes: number | undefined): string | null {

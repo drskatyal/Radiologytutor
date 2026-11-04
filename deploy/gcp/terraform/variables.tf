@@ -95,3 +95,9 @@ variable "github_repository" {
   type        = string
   default     = "drskatyal/flowrad-viewer"
 }
+
+variable "desktop_downloads_live" {
+  description = "Show Windows/macOS download links. Keep false until builds are code-signed and self-updating (docs/DESKTOP_RELEASE_READINESS.md)."
+  type        = bool
+  default     = false
+}

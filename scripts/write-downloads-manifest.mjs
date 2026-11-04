@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Write desktop/downloads.json for viewer.flowrad.ai (read by lib/cloud/downloads.ts).
 //
-//   node scripts/write-downloads-manifest.mjs <dir> <version> <publicBaseUrl>
+//   node scripts/write-downloads-manifest.mjs <dir> <version> <publicBaseUrl> [--signed]
+//
+// --signed: the release workflow passes it only after checking that the build
+// was update-signed and code-signed (publish-downloads job). The site offers
+// a link only for entries marked signed (lib/cloud/downloads.ts).
 //
 // Picks the Windows NSIS installer (*x64-setup.exe) and the universal macOS
 // .dmg from <dir>, and records each file's size and SHA-256.
@@ -10,7 +14,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
-const [dir, version, base] = process.argv.slice(2);
+const positional = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const signed = process.argv.includes("--signed");
+const [dir, version, base] = positional;
 if (!dir || !version || !base) {
   console.error("usage: write-downloads-manifest.mjs <dir> <version> <publicBaseUrl>");
   process.exit(2);
@@ -34,6 +40,7 @@ const entry = (file) => {
     fileName: file,
     bytes: statSync(full).size,
     sha256: createHash("sha256").update(readFileSync(full)).digest("hex"),
+    signed,
   };
 };
 

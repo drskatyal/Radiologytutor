@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { FirestoreClient, firestoreConfig } from "./firestore";
 import type { Account, Collection, CollectionPatch, Share, Study, StudyPatch } from "./types";
+import type { DeviceLink } from "./entitlements";
 
 export interface ViewerStore {
   readonly kind: "firestore" | "memory";
@@ -39,6 +40,12 @@ export interface ViewerStore {
   getShare(token: string): Promise<Share | null>;
   createShare(share: Share): Promise<void>;
   patchShare(token: string, patch: Partial<Pick<Share, "revokedAt" | "expiresAt" | "allowDownload">>): Promise<void>;
+
+  /** Desktop sign-in links (lib/cloud/entitlements.ts), keyed by pollId. */
+  createDeviceLink(link: DeviceLink): Promise<void>;
+  getDeviceLink(pollId: string): Promise<DeviceLink | null>;
+  findDeviceLinkByCode(userCode: string): Promise<DeviceLink | null>;
+  patchDeviceLink(pollId: string, patch: Partial<Pick<DeviceLink, "status" | "userId">>): Promise<void>;
 }
 
 /** Short random id for studies and collections (URL-safe). */
@@ -52,7 +59,13 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) => b.createdAt.lo
 // Firestore
 // ---------------------------------------------------------------------------
 
-const COL = { accounts: "viewer_accounts", studies: "viewer_studies", collections: "viewer_collections", shares: "viewer_shares" } as const;
+const COL = {
+  accounts: "viewer_accounts",
+  studies: "viewer_studies",
+  collections: "viewer_collections",
+  shares: "viewer_shares",
+  deviceLinks: "viewer_device_links",
+} as const;
 
 class FirestoreStore implements ViewerStore {
   readonly kind = "firestore" as const;
@@ -108,6 +121,19 @@ class FirestoreStore implements ViewerStore {
   patchShare(token: string, patch: Partial<Share>) {
     return this.fs.patch(COL.shares, token, patch);
   }
+  createDeviceLink(link: DeviceLink) {
+    return this.fs.set(COL.deviceLinks, link.pollId, { ...link }, true);
+  }
+  getDeviceLink(pollId: string) {
+    return this.fs.get<DeviceLink>(COL.deviceLinks, pollId);
+  }
+  async findDeviceLinkByCode(userCode: string) {
+    const rows = await this.fs.whereEqual<DeviceLink>(COL.deviceLinks, "userCode", userCode, 5);
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+  }
+  patchDeviceLink(pollId: string, patch: Partial<DeviceLink>) {
+    return this.fs.patch(COL.deviceLinks, pollId, patch);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,17 +145,19 @@ interface MemoryData {
   studies: Record<string, Study>;
   collections: Record<string, Collection>;
   shares: Record<string, Share>;
+  deviceLinks: Record<string, DeviceLink>;
 }
 
 const clone = <T>(v: T): T => (v == null ? v : (JSON.parse(JSON.stringify(v)) as T));
 
 export class MemoryStore implements ViewerStore {
   readonly kind = "memory" as const;
-  private data: MemoryData = { accounts: {}, studies: {}, collections: {}, shares: {} };
+  private data: MemoryData = { accounts: {}, studies: {}, collections: {}, shares: {}, deviceLinks: {} };
   constructor(private readonly file: string | null = null) {
     if (file && existsSync(file)) {
       try {
         this.data = { ...this.data, ...(JSON.parse(readFileSync(file, "utf8")) as Partial<MemoryData>) };
+        this.data.deviceLinks ??= {};
       } catch {
         // A corrupt dev file starts empty rather than crashing the server.
       }
@@ -208,6 +236,23 @@ export class MemoryStore implements ViewerStore {
     const s = this.data.shares[token];
     if (!s) throw new Error("Share not found");
     Object.assign(s, clone(patch));
+    this.save();
+  }
+  async createDeviceLink(link: DeviceLink) {
+    this.data.deviceLinks[link.pollId] = clone(link);
+    this.save();
+  }
+  async getDeviceLink(pollId: string) {
+    return clone(this.data.deviceLinks[pollId] ?? null);
+  }
+  async findDeviceLinkByCode(userCode: string) {
+    const hits = Object.values(this.data.deviceLinks).filter((l) => l.userCode === userCode);
+    return clone(hits.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null);
+  }
+  async patchDeviceLink(pollId: string, patch: Partial<DeviceLink>) {
+    const l = this.data.deviceLinks[pollId];
+    if (!l) throw new Error("Device link not found");
+    Object.assign(l, clone(patch));
     this.save();
   }
 }

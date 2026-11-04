@@ -40,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_downloads:
-        description: "After testing: copy this version's Windows and macOS installers to the public downloads bucket (viewer.flowrad.ai download links)"
+        description: "After testing a SIGNED, self-updating build: copy its Windows and macOS installers to the public downloads bucket. Refused unless every signing secret is set. The site still shows 'coming soon' until DESKTOP_DOWNLOADS_LIVE=1."
         type: boolean
         default: false
 
@@ -89,6 +89,14 @@ jobs:
       - name: Voice model (bundled)
         shell: bash
         run: python3 scripts/fetch-voice-model.py && python3 scripts/fetch-voice-model.py --check
+
+      # Public key + endpoint from desktop/updater.json (one committed source);
+      # exports FLOWRAD_UPDATE_BASE for the Rust build. Never touches the private key.
+      - name: Updater public key and endpoint
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node desktop/scripts/configure-updater.mjs --github-env "$GITHUB_ENV"
 
       - name: Configure updater and signing for this build
         shell: bash
@@ -236,7 +244,12 @@ jobs:
   # viewer.flowrad.ai/download/{windows,macos}: copy the tested installers to
   # the public GCS bucket and rewrite desktop/downloads.json (the site reads it).
   # Manual only (workflow_dispatch + publish_downloads), keyless (Workload
-  # Identity Federation), and skipped when the GCP variables are not set.
+  # Identity Federation), skipped when the GCP variables are not set, and
+  # REFUSED unless the build was update-signed (TAURI_SIGNING_PRIVATE_KEY),
+  # Apple-signed (APPLE_CERTIFICATE) and Windows-signed (Azure): public
+  # download links are only for builds that can update themselves, so plan
+  # gating can ship later without a reinstall. The site additionally keeps
+  # "coming soon" until a person sets DESKTOP_DOWNLOADS_LIVE=1 on Cloud Run.
   publish-downloads:
     needs: build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_downloads && vars.GCS_DOWNLOADS_BUCKET != '' }}
@@ -245,6 +258,20 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Require signed, self-updating builds
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_APPLE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          HAS_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' }}
+        run: |
+          missing=""
+          [ "$HAS_UPDATER_KEY" = "true" ] || missing="$missing TAURI_SIGNING_PRIVATE_KEY"
+          [ "$HAS_APPLE" = "true" ] || missing="$missing APPLE_CERTIFICATE(+notarisation)"
+          [ "$HAS_AZURE" = "true" ] || missing="$missing AZURE_*(Windows signing)"
+          if [ -n "$missing" ]; then
+            echo "::error::Not publishing download links: missing$missing. See docs/DESKTOP_RELEASE_READINESS.md."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - name: Fetch the installers from the release
         env:
@@ -263,8 +290,11 @@ jobs:
       - name: Upload installers and the downloads manifest
         env:
           BUCKET: ${{ vars.GCS_DOWNLOADS_BUCKET }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          node scripts/write-downloads-manifest.mjs dl "$VERSION" "https://storage.googleapis.com/$BUCKET/desktop/$VERSION" > dl/downloads.json
+          gh release download "desktop-v$VERSION" --repo "$GITHUB_REPOSITORY" -D dl -p latest.json --clobber
+          node scripts/check-updater-manifest.mjs dl/latest.json "$VERSION"
+          node scripts/write-downloads-manifest.mjs dl "$VERSION" "https://storage.googleapis.com/$BUCKET/desktop/$VERSION" --signed > dl/downloads.json
           cat dl/downloads.json
           for f in dl/*.exe dl/*.dmg; do
             [ -e "$f" ] && gcloud storage cp "$f" "gs://$BUCKET/desktop/$VERSION/" --cache-control="public, max-age=31536000, immutable"

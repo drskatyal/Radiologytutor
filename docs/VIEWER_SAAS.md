@@ -4,8 +4,9 @@ One site with three parts:
 
 1. **Free web viewer** (`/viewer`). No login. Drop a folder, ZIP or files and read them on
    the device. Nothing is uploaded.
-2. **Desktop downloads** (`/` and `/download/windows`, `/download/macos`). These replace the
-   old waitlist buttons.
+2. **Desktop downloads**: "Coming soon" with a waitlist link, until the builds are signed and
+   self-updating (see `docs/DESKTOP_RELEASE_READINESS.md`). `/download/windows` and
+   `/download/macos` are wired, so real links drop in with a single switch.
 3. **Store and share** (after sign-in). Anonymise in the browser, then store, write up, collect,
    share, embed and download. This is a Pacsbin-style feature set.
 
@@ -19,7 +20,9 @@ credentials and the domain (see the end of this file).
 | `/` | public | Marketing home (merged from `flowrad-viewer-site`), download cards |
 | `/pricing` | public | Plans by stored-study count |
 | `/viewer` | public | Free local viewer (unchanged engine) |
-| `/download/<platform>` | public | 302 to the current installer, or back to `/` saying "not published yet" |
+| `/download/<platform>` | public | Back to the "coming soon" section today. 302 to the installer once `DESKTOP_DOWNLOADS_LIVE=1` and the manifest entry is signed |
+| `/desktop/link` | owner | Confirm a desktop app's sign-in code (device link) |
+| `/api/desktop/update`, `/config`, `/entitlement`, `/link` | desktop app | Update channel (204 until rollout), remote config, plan check (advisory), device sign-in |
 | `/sign-in` | public | Identity Platform: Google or email link; dev sign-in locally |
 | `/library` | owner | Stored studies, search, tag filter, **Store studies** (upload) |
 | `/studies/<id>` | owner | Viewer + history / findings / diagnosis / tags, markup, share, collections, download, delete |
@@ -134,6 +137,7 @@ serving `viewer.flowrad.ai`.
 | `IDENTITY_PROJECT_ID`, `IDENTITY_API_KEY`, `IDENTITY_AUTH_DOMAIN` | Cloud Run | Sign-in (the API key is public by design; restrict it to the site's referrers) |
 | `SESSION_SECRET` | Secret Manager | Session cookie HMAC key |
 | `DOWNLOADS_MANIFEST_URL` | Cloud Run | `https://storage.googleapis.com/<bucket>/desktop/downloads.json` |
+| `DESKTOP_DOWNLOADS_LIVE` | Cloud Run | Unset ("coming soon") until signed, self-updating builds ship; `1` shows the download links |
 | `PUBLIC_ORIGIN` | Cloud Run | Canonical origin for metadata |
 | `VIEWER_DEV_SIGN_IN=1`, `VIEWER_STORE_FILE` | local only | Email-only dev sign-in, and a JSON store (default `.data/viewer-store.json`) |
 
@@ -161,9 +165,10 @@ route answers 503 "Study storage is not configured".
 5. **Repository.** Create `drskatyal/flowrad-viewer` (private) and push this branch's history to
    it. This session could not create repositories, so the code currently lives on the
    `claude/flowrad-viewer-extract` branch of Radiologytutor.
-6. **Release uploads.** Set repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER`,
-   `GCP_RELEASE_SERVICE_ACCOUNT` and `GCS_DOWNLOADS_BUCKET` from the Terraform outputs. After the
-   Windows (HP) and Mac tests, run **desktop-release** manually with `publish_downloads` ticked.
+6. **Desktop signing before any download link.** The updater private key secret, plus Apple and
+   Windows code-signing. The full list and go-live order are in `docs/DESKTOP_RELEASE_READINESS.md`.
+   Release uploads also need the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+   `GCP_RELEASE_SERVICE_ACCOUNT` and `GCS_DOWNLOADS_BUCKET` from the Terraform outputs.
 7. **Prices.** Replace the placeholder prices and choose a billing provider (out of scope here).
 
 ## Next

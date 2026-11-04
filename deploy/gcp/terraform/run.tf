@@ -63,6 +63,11 @@ resource "google_cloud_run_v2_service" "viewer" {
         value = "https://storage.googleapis.com/${google_storage_bucket.downloads.name}/desktop/downloads.json"
       }
       env {
+        # "Coming soon" until signed, self-updating desktop builds exist.
+        name  = "DESKTOP_DOWNLOADS_LIVE"
+        value = var.desktop_downloads_live ? "1" : "0"
+      }
+      env {
         name = "SESSION_SECRET"
         value_source {
           secret_key_ref {
