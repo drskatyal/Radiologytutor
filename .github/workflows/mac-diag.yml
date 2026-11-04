@@ -47,6 +47,17 @@ jobs:
       - run: python scripts/make-test-ct.py "$RUNNER_TEMP/ct848" --slices 848
       - name: runner
         run: echo "RUNNER $(sysctl -n hw.ncpu) CPUs, $(uptime)"
+      - name: main-thread stack after 6 s
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          FLOWRAD_BENCH=1 "$APP" > "$RUNNER_TEMP/app.out" 2>&1 &
+          pid=$!
+          sleep 6
+          sample "$pid" 2 -file "$RUNNER_TEMP/sample.txt" > /dev/null 2>&1 || true
+          kill -9 "$pid" || true
+          echo "--- app output"; head -c 4000 "$RUNNER_TEMP/app.out"
+          echo "--- main thread"; awk '/Thread_[0-9]+.*(main-thread|DispatchQueue_1)/{f=1} f&&/^    [0-9]+ Thread_/&&n++>0{exit} f' "$RUNNER_TEMP/sample.txt" | head -150
       - name: splash smoke
         if: ${{ !cancelled() }}
         timeout-minutes: 3
