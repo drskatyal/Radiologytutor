@@ -25,6 +25,15 @@ test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic h
   await page.route("**/__e2e/plugins/e2e-demo-plugin.js", (route) =>
     route.fulfill({ status: 200, contentType: "text/javascript", body: fs.readFileSync(FIXTURE) })
   );
+  // Diagnostics: if the page breaks (e.g. 3D on a GPU-less runner), say why in the CI log.
+  const pageErrors: string[] = [];
+  page.on("pageerror", (e) => pageErrors.push(`pageerror: ${e.message}`));
+  page.on("console", (m) => m.type() === "error" && pageErrors.push(`console: ${m.text().slice(0, 300)}`));
+  page.on("framenavigated", (f) => f === page.mainFrame() && pageErrors.push(`navigated: ${f.url()}`));
+  const dump = async () => {
+    const text = await page.locator("body").innerText().catch(() => "(no body)");
+    console.log(`--- plugin e2e diagnostics ---\n${pageErrors.join("\n")}\n--- visible text ---\n${text.slice(0, 1500)}`);
+  };
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/viewer");
   const files = fs.readdirSync(DIR!).map((f) => path.join(DIR!, f));
@@ -55,7 +64,13 @@ test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic h
   expect(await click("key image")).toBe(`key:image/jpeg:${start + 5}`);
   expect(await click("overlay")).toBe("ok");
   await expect(page.getByTestId("plugin-overlay").getByTestId("e2e-overlay")).toBeVisible();
-  expect(await click("3D MPR")).toBe("ok");
+  try {
+    expect(await click("3D MPR")).toBe("ok");
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+  } catch (err) {
+    await dump();
+    throw err;
+  }
   // 3D where the device has a WebGL2 volume pipeline; otherwise the viewer
   // falls back to MPR and says so. Either way the state reports the truth.
   await expect(state).toContainText(/"mode":"(3d|mpr)"/, { timeout: 60_000 });
