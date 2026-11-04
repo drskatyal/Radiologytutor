@@ -51,30 +51,15 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 3
         run: python desktop/scripts/e2e-splash.py "$APP"
-      - name: WebContent main thread during the boot block (sample)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: |
-          for arg in "" "$RUNNER_TEMP/ct848" ""; do
-            FLOWRAD_BENCH=1 "$APP" $arg > /dev/null 2>&1 &
-            pid=$!
-            sleep 1.5
-            n=0
-            for wc in $(pgrep -f com.apple.WebKit.WebContent); do
-              n=$((n+1)); sample "$wc" 2 1 -mayDie -file "$RUNNER_TEMP/wc$n.txt" > /dev/null 2>&1 &
-            done
-            wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || sleep 2.5
-            sleep 0.5
-            kill -9 "$pid" || true
-            sleep 1
-            for k in $(seq 1 $n); do
-              echo "===== app $pid (${arg:-no study}), WebContent sample $k"
-              awk '/Thread_[0-9]+.*(main-thread|DispatchQueue_1)/{f=1} f&&/^    [0-9]+ Thread_/&&c++>0{exit} f' "$RUNNER_TEMP/wc$k.txt" | sed -E 's/ *\[0x[0-9a-f]+\]//; s/  +/ /g' | awk '{ n=$2+0; if (n >= 20) print substr($0,1,220) }' | head -150
-            done
-          done
       - name: diag open (first)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
+        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
+      - name: diag open, page not kept awake
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_DIAG_NO_AWAKE: "1"
         run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
       - name: diag cold start (first)
         if: ${{ !cancelled() }}

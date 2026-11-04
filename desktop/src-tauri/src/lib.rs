@@ -1587,6 +1587,9 @@ pub fn run() {
                         let _ = app.handle().set_menu(menu);
                     }
                     trace("app menu set");
+                    if crate::flowrad_env("DIAG_NO_AWAKE").as_deref() != Ok("1") {
+                        mac_webkit::keep_page_awake(&_window);
+                    }
                     if gpu_at_launch {
                         // The webview transparent now, ~1 s before the page
                         // loads: where the page draws nothing the native surface

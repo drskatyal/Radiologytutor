@@ -27,3 +27,41 @@ pub fn drop_memory_cache(window: &tauri::WebviewWindow) {
         }
     });
 }
+
+/// The page's timers and rendering at full rate from the start: WebKit's
+/// hidden-page timer throttling and visibility-based process suppression off
+/// (private WKPreferences setters, each sent only if this WebKit has it).
+/// A viewer's page is never a background tab.
+pub fn keep_page_awake(window: &tauri::WebviewWindow) {
+    use objc2::runtime::AnyObject;
+    use objc2::{msg_send, sel};
+    let _ = window.with_webview(|platform| {
+        let view = platform.inner() as *const WKWebView;
+        if view.is_null() {
+            return;
+        }
+        // SAFETY: as in `drop_memory_cache`. -[WKWebViewConfiguration
+        // preferences] returns the live WKPreferences; each private setter
+        // takes one BOOL and is sent only when the object responds to it.
+        unsafe {
+            let config = (*view).configuration();
+            let prefs: *mut AnyObject = msg_send![&*config, preferences];
+            if prefs.is_null() {
+                return;
+            }
+            let prefs = &*prefs;
+            let responds: bool = msg_send![prefs, respondsToSelector: sel!(_setHiddenPageDOMTimerThrottlingEnabled:)];
+            if responds {
+                let _: () = msg_send![prefs, _setHiddenPageDOMTimerThrottlingEnabled: false];
+            }
+            let responds: bool = msg_send![prefs, respondsToSelector: sel!(_setHiddenPageDOMTimerThrottlingAutoIncreases:)];
+            if responds {
+                let _: () = msg_send![prefs, _setHiddenPageDOMTimerThrottlingAutoIncreases: false];
+            }
+            let responds: bool = msg_send![prefs, respondsToSelector: sel!(_setPageVisibilityBasedProcessSuppressionEnabled:)];
+            if responds {
+                let _: () = msg_send![prefs, _setPageVisibilityBasedProcessSuppressionEnabled: false];
+            }
+        }
+    });
+}
