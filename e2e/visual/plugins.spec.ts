@@ -39,8 +39,10 @@ test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic h
 
   const click = async (label: string) => {
     const b = panel.getByRole("button", { name: label, exact: true });
-    await b.click();
-    await expect(b).toHaveAttribute("data-result", /.+/);
+    // No navigation follows a command; and "3D MPR" builds a volume, which on
+    // a CI runner's software GPU keeps the page busy for a while.
+    await b.click({ noWaitAfter: true });
+    await expect(b).toHaveAttribute("data-result", /.+/, { timeout: 60_000 });
     return b.getAttribute("data-result");
   };
   // The viewer opens on the middle slice; read where it is before scrolling.
@@ -56,9 +58,9 @@ test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic h
   expect(await click("3D MPR")).toBe("ok");
   // 3D where the device has a WebGL2 volume pipeline; otherwise the viewer
   // falls back to MPR and says so. Either way the state reports the truth.
-  await expect(state).toContainText(/"mode":"(3d|mpr)"/);
+  await expect(state).toContainText(/"mode":"(3d|mpr)"/, { timeout: 60_000 });
   expect(await click("axial")).toBe("ok");
-  await expect(state).toContainText('"mode":"stack"');
+  await expect(state).toContainText('"mode":"stack"', { timeout: 60_000 });
 
   await page.locator("canvas").first().click();
   await page.keyboard.press("Alt+Shift+KeyK");
