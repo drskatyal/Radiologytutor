@@ -21,7 +21,7 @@ test("plugins are off by default: no panel, no plugin fetch", async ({ page }) =
 
 test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic hook", async ({ page }) => {
   test.skip(!process.env.PLUGIN_E2E || !DIR, "needs PLUGIN_E2E=1 and TEST_CT_DIR");
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await page.route("**/__e2e/plugins/e2e-demo-plugin.js", (route) =>
     route.fulfill({ status: 200, contentType: "text/javascript", body: fs.readFileSync(FIXTURE) })
   );
@@ -50,9 +50,11 @@ test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic h
     const b = panel.getByRole("button", { name: label, exact: true });
     // No navigation follows a command; and "3D MPR" builds a volume, which on
     // a CI runner's software GPU keeps the page busy for a while.
-    await b.click({ noWaitAfter: true });
+    // Up to 60 s per page call: on CI's software GPU the 3D volume build holds the
+    // page's main thread for longer than Playwright's default 15 s action timeout.
+    await b.click({ noWaitAfter: true, timeout: 60_000 });
     await expect(b).toHaveAttribute("data-result", /.+/, { timeout: 60_000 });
-    return b.getAttribute("data-result");
+    return b.getAttribute("data-result", { timeout: 60_000 });
   };
   // The viewer opens on the middle slice; read where it is before scrolling.
   await expect(state).toContainText('"slice":');
@@ -77,7 +79,7 @@ test("a pinned plugin gets the panel, commands, state, overlay, hotkey and mic h
   expect(await click("axial")).toBe("ok");
   await expect(state).toContainText('"mode":"stack"', { timeout: 60_000 });
 
-  await page.locator("canvas").first().click();
+  await page.locator("canvas").first().click({ timeout: 60_000 });
   await page.keyboard.press("Alt+Shift+KeyK");
   await expect(state).toHaveAttribute("data-hotkeys", "1");
   await page.keyboard.down("Alt");
