@@ -82,6 +82,7 @@ import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
+import { diagMark, diagOn, diagSnapshot } from "./diag";
 import { onActivity } from "./activity";
 import { nativeEnabled, nativeKnown, settleNativeAtStart, warmNative } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
@@ -632,7 +633,9 @@ export default function App() {
       bench.current.firstPaint = undefined;
       // The study view's chunks load while Rust scans (they were fetched one
       // after another once the first series hung: the first image waited on them).
+      diagMark("open start");
       void preloadStudyView().then(() => {
+        diagMark("view chunks loaded");
         if (seq === openSeq.current) bench.current.marks.viewChunksMs = performance.now() - t0;
       });
       resetWorkspace();
@@ -682,6 +685,7 @@ export default function App() {
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
+          diagMark("first series hung");
           // The study is on screen and its preview is loading: compile the
           // engine meanwhile (not at page load: on a cold disk that delayed the preview).
           // Native mode: the JS engine is only for series the native path
@@ -887,6 +891,7 @@ export default function App() {
               engineStartMs: engineTimings.startAt != null ? Math.round(engineTimings.startAt - bench.current.t0) : undefined,
               engineSteps: engineTimings.steps,
               longTasks: { count: longTasks.count, maxMs: longTasks.maxMs, totalMs: longTasks.totalMs, recent: longTasks.recent },
+              ...(diagOn ? { diag: diagSnapshot() } : {}),
               engineReadyMs: engineTimings.readyAt != null ? Math.round(engineTimings.readyAt - bench.current.t0) : undefined,
               processUptimeMs: startup,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
@@ -1180,7 +1185,9 @@ export default function App() {
       // A secondary window (another monitor) shows what its opener hands it:
       // no launch paths, no start-screen warm-up, no cold-start report.
       if (isSecondaryWindow) return;
+      diagMark("launch paths asked");
       const initial = await takeLaunchPaths();
+      diagMark("launch paths received");
       // A study on the command line opens at once. The engine starts the
       // moment the instant preview is on screen (onPreview), not here:
       // measured, starting it with the scan put the preview at 440 ms (was 200).
@@ -1248,6 +1255,7 @@ export default function App() {
               pageToPaintMs: now,
               windowReadyMs: bench.current.marks.windowReadyMs,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
+              ...(diagOn ? { diag: diagSnapshot(), diagProcessAtNow: ms, diagNow: now } : {}),
             });
           })
         );

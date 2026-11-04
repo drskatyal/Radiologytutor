@@ -1568,7 +1568,9 @@ fn create_surface(instance: &wgpu::Instance, window: &tauri::WebviewWindow) -> R
         let asked = Instant::now();
         window
             .run_on_main_thread(move || {
+                crate::mac_diag::event("main: create_surface start");
                 let _ = tx.send(instance.create_surface(target).map_err(|e| format!("surface: {e}")));
+                crate::mac_diag::event("main: create_surface end");
             })
             .map_err(|e| format!("surface: main thread unavailable: {e}"))?;
         let surface = rx.recv().map_err(|e| format!("surface: main thread dropped the request: {e}"))?;
