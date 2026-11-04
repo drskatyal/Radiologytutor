@@ -163,6 +163,9 @@ struct Gpu {
     pipeline_rgba: wgpu::RenderPipeline,
     layout_rgba: wgpu::BindGroupLayout,
     test_view: wgpu::TextureView,
+    /// macOS: the surface is configured 1×1 since a study closed
+    /// (`park_surface`); the next frame restores `config` first.
+    parked: bool,
 }
 
 #[derive(Default)]
@@ -487,7 +490,10 @@ impl Native {
             if width > 0 && height > 0 && (gpu.config.width != width || gpu.config.height != height) {
                 gpu.config.width = width;
                 gpu.config.height = height;
-                gpu.surface.configure(&gpu.device, &gpu.config);
+                // Parked (no study): the next frame configures the new size.
+                if !gpu.parked {
+                    gpu.surface.configure(&gpu.device, &gpu.config);
+                }
             }
         }
     }
@@ -737,14 +743,14 @@ impl Native {
         // wgpu destroys dropped textures / buffers only once the GPU is done
         // with them, on a later poll: wait for that now rather than at the
         // next frame (none may come on the home screen).
-        if let Some(gpu) = self.gpu.lock().as_ref() {
+        if let Some(gpu) = self.gpu.lock().as_mut() {
             #[cfg(target_os = "macos")]
             {
                 report.gpu_allocated_unflushed_mb = metal_allocated_mb(&gpu.device);
             }
             flush_and_wait(gpu);
             #[cfg(target_os = "macos")]
-            release_spare_drawables(gpu);
+            park_surface(gpu);
             if let Some(r) = gpu.device.generate_allocator_report() {
                 report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
                 report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
@@ -759,21 +765,29 @@ impl Native {
         report
     }
 
+    /// A viewport shows a series or a volume plane (a study is open).
+    pub fn has_viewports(&self) -> bool {
+        self.cells.lock().values().any(|c| !c.series.is_empty() || c.plane.is_some())
+    }
+
     /// No viewport left (study closed): drop whatever slices landed in the
     /// cache since, plus any cell an in-flight call re-created. Returns the
     /// slices dropped, or None when viewports exist (a study is open again).
     pub fn sweep_if_idle(&self) -> Option<usize> {
-        let cells = self.cells.lock();
-        if cells.values().any(|c| !c.series.is_empty() || c.plane.is_some()) {
+        if self.has_viewports() {
             return None;
         }
-        drop(cells);
         self.cells.lock().clear();
         let store = self.store.get()?;
         let n = store.stats().slices;
         store.clear();
-        if let Some(gpu) = self.gpu.lock().as_ref() {
+        if let Some(gpu) = self.gpu.lock().as_mut() {
             flush_and_wait(gpu);
+            // A frame drawn after the close (an in-flight call) unparked it.
+            #[cfg(target_os = "macos")]
+            if !gpu.parked {
+                park_surface(gpu);
+            }
         }
         Some(n)
     }
@@ -989,6 +1003,10 @@ impl Native {
         let mut guard = self.gpu.lock();
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
         *self.last_use.lock() = Some(Instant::now());
+        if gpu.parked {
+            gpu.surface.configure(&gpu.device, &gpu.config);
+            gpu.parked = false;
+        }
         let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -1097,21 +1115,51 @@ fn flush_and_wait(gpu: &Gpu) {
     let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(500)) });
 }
 
-/// macOS, study closed: the CAMetalLayer keeps its pool of drawables (up to
-/// frame latency + 1, each a window-sized IOSurface counted in the Metal
-/// device's allocations and our footprint) for as long as their size holds.
-/// The home screen draws nothing natively, so the pool the study filled stays
-/// allocated (CI: IOSurface +5.3 MB, IOAccelerator +5.7 MB after close against
-/// the empty app). Changing drawableSize makes the layer drop its pool; the
-/// next frame allocates one drawable at the restored size, as at start.
+/// macOS, study closed: hand back the window-sized drawables. The
+/// CAMetalLayer keeps a pool of them (up to frame latency + 1, each a
+/// window-sized IOSurface in our footprint) for as long as its drawableSize
+/// holds, and it keeps the last one presented as its contents for as long as
+/// nothing replaces it. The home screen draws nothing natively, so both
+/// stayed: changing the size dropped the pool, but the frame on screen stayed
+/// (CI: IOSurface +5.3 MB after close against the empty app, every run, with
+/// the size restored at once). Parked, the layer is 1×1 and shows one 1×1
+/// frame of the canvas colour (what a frame without cells draws); the next
+/// frame restores the window size (`render`), as at start.
 #[cfg(target_os = "macos")]
-fn release_spare_drawables(gpu: &Gpu) {
-    let full = gpu.config.clone();
-    let mut tiny = full.clone();
+fn park_surface(gpu: &mut Gpu) {
+    let mut tiny = gpu.config.clone();
     tiny.width = 1;
     tiny.height = 1;
     gpu.surface.configure(&gpu.device, &tiny);
-    gpu.surface.configure(&gpu.device, &full);
+    gpu.parked = true;
+    let frame = match gpu.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+        // Occluded / no drawable: the pool is gone already; the frame on
+        // screen goes with the next one presented.
+        _ => return,
+    };
+    let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("park") });
+    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("park"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &target,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color { r: 11.0 / 255.0, g: 13.0 / 255.0, b: 16.0 / 255.0, a: 1.0 }), // --canvas #0B0D10
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }));
+    drop(target);
+    gpu.queue.submit(Some(encoder.finish()));
+    gpu.queue.present(frame);
+    flush_and_wait(gpu);
 }
 
 fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
@@ -1508,7 +1556,7 @@ fn finish(
     };
     let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_view, .. } = pipes;
     Ok((
-        Gpu { surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_view },
+        Gpu { surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_view, parked: false },
         info.name,
         format!("{:?}", info.backend),
     ))

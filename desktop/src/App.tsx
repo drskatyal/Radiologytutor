@@ -874,7 +874,10 @@ export default function App() {
                 (nativeRef.current && document.querySelector("[data-native-viewport]") ? { renderPath: "native", nonBlank: true, expectVisible: true, maxLum: 255, checkedBy: "screen grab (e2e-native.py), not a canvas readback" } : null),
               stackViewport: paintHealth.last ?? null,
               ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
-              gpu: gpuInfo(),
+              // WebGL facts matter only on the engine path. Native draws without
+              // WebGL, and probing it there started WebKit's GPU process on
+              // macOS (+6 MB for the rest of the session, in the close gate).
+              gpu: nativeRef.current ? null : gpuInfo(),
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
               ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
               engineInitMs: engineTimings.initMs,
