@@ -595,6 +595,11 @@ fn startup_elapsed_ms() -> f64 {
 
 /// `FLOWRAD_BENCH_VIEW=mpr|3d|fusion`: switch to that view once the study is open.
 #[tauri::command]
+fn diag_flag(name: String) -> bool {
+    crate::flowrad_env(&format!("DIAG_{name}")).is_ok()
+}
+
+#[tauri::command]
 fn bench_view() -> Option<String> {
     // FLOWRAD_LEAK_ROUNDS alone used to do nothing (it only sized a leak run
     // that BENCH_VIEW=leak had to request); asking for rounds now asks for it.
@@ -841,6 +846,16 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
     // and again after the late sweep (requests in flight at the close).
     #[cfg(target_os = "macos")]
     mac_webkit::drop_memory_cache(&_window);
+    #[cfg(target_os = "macos")]
+    if crate::flowrad_env("DIAG_JSGC").is_ok() {
+        let w = _window.clone();
+        std::thread::spawn(move || {
+            for s in [3u64, 10, 10] {
+                std::thread::sleep(std::time::Duration::from_secs(s));
+                mac_webkit::diag_gc(&w);
+            }
+        });
+    }
     let native = native.inner().clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1478,6 +1493,7 @@ pub fn run() {
             });
         })
         .invoke_handler(tauri::generate_handler![
+            diag_flag,
             scan_sources,
             cancel_scan,
             pet_metadata,

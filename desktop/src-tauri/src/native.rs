@@ -750,7 +750,16 @@ impl Native {
             }
             flush_and_wait(gpu);
             #[cfg(target_os = "macos")]
-            park_surface(gpu);
+            if crate::flowrad_env("DIAG_NOPARK").is_ok() {
+                let full = gpu.config.clone();
+                let mut tiny = full.clone();
+                tiny.width = 1;
+                tiny.height = 1;
+                gpu.surface.configure(&gpu.device, &tiny);
+                gpu.surface.configure(&gpu.device, &full);
+            } else {
+                park_surface(gpu);
+            }
             if let Some(r) = gpu.device.generate_allocator_report() {
                 report.gpu_allocated_mb = Some(r.total_allocated_bytes as f64 / 1_048_576.0);
                 report.gpu_reserved_mb = Some(r.total_reserved_bytes as f64 / 1_048_576.0);
@@ -782,7 +791,7 @@ impl Native {
             flush_and_wait(gpu);
             // A frame drawn after the close (an in-flight call) unparked it.
             #[cfg(target_os = "macos")]
-            if !gpu.parked {
+            if !gpu.parked && crate::flowrad_env("DIAG_NOPARK").is_err() {
                 park_surface(gpu);
             }
         }
