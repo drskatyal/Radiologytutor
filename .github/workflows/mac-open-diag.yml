@@ -1,12 +1,15 @@
-# TEMPORARY (claude/084-mac-open diagnosis; removed before hand-off): A/B of
-# the macOS frame-time gate with the page painted on the CPU (default) and
-# WebKit's GPU painting (FLOWRAD_WEBKIT_GPU_PAINT=1), interleaved. Same
-# command and thresholds as desktop-ci.yml. Not authoritative.
+# TEMPORARY (claude/084-mac-open diagnosis; removed before hand-off): which
+# page paint holds WebKit's main thread on the GPU at an open. Variants:
+#   C  page painted on the CPU (the branch default)
+#   G  WebKit's GPU painting (FLOWRAD_WEBKIT_GPU_PAINT=1), page unchanged
+#   GN GPU painting, no backdrop-filter anywhere (FLOWRAD_DIAG_CSS=noblur)
+#   GF GPU painting, no backdrop-filter, no box-shadow (FLOWRAD_DIAG_CSS=flat)
+# Same commands and thresholds as desktop-ci.yml, interleaved. Not authoritative.
 name: mac-open-diag
 
 on:
   push:
-    branches: [claude/084-mac-open]
+    branches: [claude/084-mac-open-ci]
     paths:
       - ".github/workflows/mac-open-diag.yml"
 
@@ -44,30 +47,26 @@ jobs:
       - run: npx tauri build --no-bundle
         working-directory: desktop
       - run: python scripts/make-test-ct.py "$RUNNER_TEMP/ct848" --slices 848
-      - name: frame-time gate, A (CPU painting) / B (GPU painting), interleaved x4
+      - name: open gate and frame-time gate, variants interleaved x3
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           set +e
           echo "RUNNER $(sysctl -n hw.ncpu) CPUs, $(uptime)"
-          for i in 1 2 3 4; do
-            for v in A B; do
-              if [ "$v" = B ]; then export FLOWRAD_WEBKIT_GPU_PAINT=1; else unset FLOWRAD_WEBKIT_GPU_PAINT; fi
+          variant() {
+            unset FLOWRAD_WEBKIT_GPU_PAINT FLOWRAD_DIAG_CSS
+            case "$1" in
+              G) export FLOWRAD_WEBKIT_GPU_PAINT=1 ;;
+              GN) export FLOWRAD_WEBKIT_GPU_PAINT=1 FLOWRAD_DIAG_CSS=noblur ;;
+              GF) export FLOWRAD_WEBKIT_GPU_PAINT=1 FLOWRAD_DIAG_CSS=flat ;;
+            esac
+          }
+          for i in 1 2 3; do
+            for v in C G GN GF; do
+              variant $v
+              echo "== $v#$i open"
+              node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu 2>&1 | grep -E "open timeline|gate failed" | sed -E 's/.*(first series hung [0-9]+).*(viewport asked [0-9]+ · first image [0-9]+)/  \1 · \2/'
               out=$(node desktop/scripts/bench.mjs interact "$APP" "$RUNNER_TEMP/ct848" --max-frame-p95-ms 33 --max-dropped 3 --max-interaction-ms 50 2>&1)
-              rc=$?
-              echo "$v#$i rc=$rc $(echo "$out" | grep -o 'frame-time gate failed.*' | head -1)"
-              echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const i=s.indexOf("{\n");if(i<0)return;try{const r=JSON.parse(s.slice(i, s.indexOf("\n}", i) + 2));console.log(`   frames p95 ${r.frames.p95} over33 ${r.frames.over33} · scroll max ${r.scroll.max} p95 ${r.scroll.p95} · native max ${r.native.max} · slowest ${JSON.stringify(r.slowest)}`)}catch(e){console.log("   (no json)")}})'
-            done
-          done
-      - name: open gate, A / B interleaved x2
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: |
-          set +e
-          for i in 1 2; do
-            for v in A B; do
-              if [ "$v" = B ]; then export FLOWRAD_WEBKIT_GPU_PAINT=1; else unset FLOWRAD_WEBKIT_GPU_PAINT; fi
-              echo "== $v#$i"
-              node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu 2>&1 | grep -E "^run [0-9]|open timeline|gate failed" | cut -c1-220
+              echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const i=s.indexOf("{\n");const f=(s.match(/frame-time gate failed.*/)||[""])[0];if(i<0){console.log("   interact: no json "+f);return}try{const r=JSON.parse(s.slice(i, s.indexOf("\n}", i) + 2));console.log(`   interact: frames p95 ${r.frames.p95} over33 ${r.frames.over33} · scroll max ${r.scroll.max} · native max ${r.native.max} · slowest ${r.slowest.kind}#${r.slowest.step} ${r.slowest.ms} ms (rust ${r.slowest.rustMs}, acquire ${r.slowest.acquireMs}) ${f}`)}catch(e){console.log("   interact: bad json "+f)}})'
             done
           done

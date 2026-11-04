@@ -1511,6 +1511,13 @@ pub fn run() {
                 } else {
                     builder
                 };
+                // TEMPORARY diag (removed before hand-off): CSS overrides for an A/B.
+                #[cfg(target_os = "macos")]
+                let builder = match crate::flowrad_env("DIAG_CSS").as_deref() {
+                    Ok("noblur") => builder.initialization_script("(()=>{const s=document.createElement('style');s.textContent='*{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}';document.documentElement.appendChild(s)})()"),
+                    Ok("flat") => builder.initialization_script("(()=>{const s=document.createElement('style');s.textContent='*{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;box-shadow:none!important}';document.documentElement.appendChild(s)})()"),
+                    _ => builder,
+                };
                 let built = builder.build();
                 // macOS: the splash's first-show hook goes, built or not.
                 #[cfg(target_os = "macos")]
