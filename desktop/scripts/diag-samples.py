@@ -26,13 +26,19 @@ def summarise(path):
     cur = None
     for l in lines[start + 1:]:
         if not l.strip():
-            break
+            if threads:
+                break
+            continue
         m = THREAD.match(l)
         if m:
             cur = [int(m.group(1)), m.group(2), []]
             threads.append(cur)
         elif cur is not None:
             cur[2].append(l)
+    if not threads:
+        print("  (no threads parsed) raw:")
+        for l in lines[start: start + 40]:
+            print(f"  ~ {l[:200]}")
     for count, name, body in threads:
         print(f"  thread {count:6d} {name[:140]}")
     for count, name, body in threads:
@@ -54,9 +60,9 @@ def summarise(path):
     try:
         top = next(i for i, l in enumerate(lines) if l.startswith("Sort by top of stack"))
         print("  --- top of stack:")
-        for l in lines[top + 1: top + 30]:
+        for l in lines[top + 1: top + 40]:
             if not l.strip():
-                break
+                continue
             print(f"  {re.sub(r'\s+', ' ', l)[:170]}")
     except StopIteration:
         pass

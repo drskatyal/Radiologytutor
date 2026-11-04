@@ -14,7 +14,20 @@ const rec = {
   timerLate: [] as [number, number, string][],
   visibility: [] as [number, string][],
   invokes: [] as [number, string, number][],
+  workerLate: [] as [number, number][],
 };
+let workerRef: Worker | null = null;
+/** Ask the worker for its gaps (they arrive asynchronously; call before the snapshot). */
+export function diagPoll(): Promise<void> {
+  const w = workerRef;
+  if (!diagOn || !w) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    w.addEventListener("message", done, { once: true });
+    w.postMessage(0);
+    window.setTimeout(done, 200);
+  });
+}
 
 export function diagMark(label: string): void {
   if (diagOn && rec.marks.length < 400) rec.marks.push([r1(performance.now()), label]);
@@ -37,6 +50,21 @@ if (diagOn) {
     if (now < 60_000) window.setTimeout(beat, 10);
   };
   window.setTimeout(beat, 10);
+  // The same heartbeat on a worker thread (same process, its own thread): a
+  // gap on both = the whole process stalled; on the page only = its main thread.
+  try {
+    const src = `let last=performance.now(),gaps=[];const beat=()=>{const now=performance.now();const late=now-last-10;if(late>40&&gaps.length<400)gaps.push([Math.round((last+10)*10)/10,Math.round(late*10)/10]);last=now;if(now<60000)setTimeout(beat,10)};setTimeout(beat,10);onmessage=()=>postMessage({origin:performance.timeOrigin,gaps});`;
+    const worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    worker.onmessage = (e) => {
+      // Worker clock -> page clock (each starts at its own time origin).
+      const { origin, gaps } = e.data as { origin: number; gaps: [number, number][] };
+      const shift = origin - performance.timeOrigin;
+      rec.workerLate = gaps.map(([t, late]) => [r1(t + shift), late]);
+    };
+    workerRef = worker;
+  } catch {
+    /* no worker */
+  }
   const vis = (what: string) => () => rec.visibility.push([r1(performance.now()), `${what}: ${document.visibilityState} focus=${document.hasFocus()}`]);
   vis("start")();
   document.addEventListener("visibilitychange", vis("visibilitychange"));

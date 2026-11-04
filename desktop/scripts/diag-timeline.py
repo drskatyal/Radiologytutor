@@ -50,6 +50,8 @@ def main():
                 rows.append((t + off, "page", label))
             for t, late, vis in page.get("timerLate", []):
                 rows.append((t + off, "PAGE TIMER LATE", f"{late} ms (until {round(t + off + late, 1)}) {vis}"))
+            for t, late in page.get("workerLate", []):
+                rows.append((t + off, "WORKER LATE", f"{late} ms (until {round(t + off + late, 1)})"))
             for t, what in page.get("visibility", []):
                 rows.append((t + off, "page vis", what))
             for t, cmd, ms in page.get("invokes", []):

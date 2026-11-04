@@ -82,7 +82,7 @@ import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
-import { diagMark, diagOn, diagSnapshot } from "./diag";
+import { diagMark, diagOn, diagPoll, diagSnapshot } from "./diag";
 import { onActivity } from "./activity";
 import { nativeEnabled, nativeKnown, settleNativeAtStart, warmNative } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
@@ -826,6 +826,7 @@ export default function App() {
           // The shell also prints FLOWRAD_BENCH_SCAN the moment the scan ends,
           // and a watchdog line if nothing is reported at all.
           const report = async (paintTimedOut = false) => {
+            await diagPoll();
             const startup = await invoke<number>("startup_elapsed_ms").catch(() => 0);
             const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             await benchReport({
