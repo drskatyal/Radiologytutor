@@ -263,9 +263,23 @@ pub fn flush() -> bool {
         if !window.isVisible() || window.isMiniaturized() {
             return false;
         }
-        // The window's frame (title bar) too, when it has never been drawn:
-        // the first show happens before the run loop has displayed anything.
-        window.displayIfNeeded();
+        // The title bar too, when it has never been drawn (the first show
+        // comes before the run loop has displayed anything): the content
+        // view's siblings in the window's frame view. Never the window or the
+        // content view itself: that would draw tao's view, whose drawRect:
+        // re-enters tao's event handler from inside the build and deadlocks.
+        if let Some(content) = window.contentView() {
+            // SAFETY: -[NSView superview] / -subviews on live views (main thread).
+            if let Some(frame) = unsafe { content.superview() } {
+                let siblings = frame.subviews();
+                for i in 0..siblings.count() {
+                    let sibling = siblings.objectAtIndex(i);
+                    if !std::ptr::eq::<NSView>(&*sibling, &*content) {
+                        sibling.displayIfNeeded();
+                    }
+                }
+            }
+        }
         // drawRect: into the view's layer, synchronously.
         view.display();
         // Commit the implicit transaction now rather than at the end of this
