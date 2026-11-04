@@ -95,6 +95,11 @@ export default function NativeStackViewport({
   const [shown, setShown] = useState<NativeShow | null>(null);
   const shownRef = useRef<NativeShow | null>(null);
   shownRef.current = shown;
+  // The series `shown` belongs to: set in the same update as a full send's
+  // answer, so it is current exactly when the readout is (drawnSeriesUid).
+  const [shownUid, setShownUid] = useState<string | null>(null);
+  const drawnUidRef = useRef<string | null>(null);
+  drawnUidRef.current = shown ? shownUid : null;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -227,6 +232,7 @@ export default function NativeStackViewport({
         // Superseded (another series or cell) while drawing: send that one.
         if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setShown(r);
+        setShownUid(want.uid);
         setLoading(false);
         noteActivity();
         // Native paint: the frame was presented when the call returned. Blank
@@ -254,6 +260,7 @@ export default function NativeStackViewport({
       wantRef.current = null;
       sentRef.current = null;
       setShown(null);
+      setShownUid(null);
       return;
     }
     wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
@@ -358,6 +365,7 @@ export default function NativeStackViewport({
       setCineFps: (fps) => setCine((c) => ({ ...c, fps: Math.max(1, Math.min(60, fps)) })),
       cine: () => cineRef.current,
       readout: () => readoutRef.current,
+      drawnSeriesUid: () => drawnUidRef.current,
       renderFrame: (i) => change({ index: i }),
     };
     return registerHandle(cellKey, handle);

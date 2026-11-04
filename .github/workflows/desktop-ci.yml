@@ -501,9 +501,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         run: node desktop/scripts/bench.mjs steps desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
-      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer; informational)
+      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer)
         if: ${{ !cancelled() }}
-        continue-on-error: true
         timeout-minutes: 5
         run: node desktop/scripts/bench.mjs hooks desktop/src-tauri/target/release/flowrad-viewer.exe "${{ runner.temp }}/ct848"
 
@@ -576,6 +575,12 @@ jobs:
       - name: Smoke — launches, the native renderer is ready on Metal, the first image paints
         if: ${{ !cancelled() }}
         run: python desktop/scripts/e2e-native.py "$APP" "$RUNNER_TEMP/native-shots" --study "$RUNNER_TEMP/ct40"
+      # The native splash (splash.rs / mac_splash.rs): on screen before the
+      # page's first paint, taken off by the page's splash_done with nothing
+      # left over the webview, and off with FLOWRAD_NATIVE_SPLASH=0.
+      - name: Smoke — native splash shown first, then dismissed by the page
+        if: ${{ !cancelled() }}
+        run: python desktop/scripts/e2e-splash.py "$APP"
       - name: Gate — empty app (whole tree, physical footprint)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs idle "$APP" --seconds 10 --max-private-mb "$BASELINE_PRIVATE_MAX_MB"
@@ -588,7 +593,7 @@ jobs:
         run: |
           swiftc -O desktop/scripts/wk-baseline.swift -o "$RUNNER_TEMP/wk-baseline"
           for i in 1 2 3 4 5; do echo "control run $i: $("$RUNNER_TEMP/wk-baseline")"; done
-      - name: Gate — cold start
+      - name: Gate — cold start (first visible = native splash or page paint)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms "$COLDSTART_MAX_MS" --max-app-ms "$COLDSTART_APP_MAX_MS"
       - name: Gate — open + first image (cold and warm), no long tasks
@@ -610,6 +615,12 @@ jobs:
       - name: Gate — feature on/off leak test (MPR, 3D, cine, tools, dialogs ×3)
         if: ${{ !cancelled() }}
         run: node desktop/scripts/bench.mjs leak "$APP" "$RUNNER_TEMP/ct848" --rounds 3 --max-leak-mb "$LEAK_MAX_MB" --max-round-growth-mb "$LEAK_ROUND_GROWTH_MAX_MB"
+      # Required functional check on Metal: waits for the committed first image
+      # before driving the same rotate / flip handles as the toolbar and keys.
+      - name: Test hook — rotation / flips drawn, thumbnails, bindings reset to defaults (native renderer on Metal)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: node desktop/scripts/bench.mjs hooks "$APP" "$RUNNER_TEMP/ct848"
       # The gate is unchanged; the RUNNER lines around it are informational.
       # Identical trees have built this volume in 108 ms and in 2,039 ms on
       # different runners (0.8.3: #272 vs #271), and the WKWebView control

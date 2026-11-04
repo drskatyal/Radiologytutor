@@ -16,8 +16,12 @@ mod image_store;
 #[cfg(target_os = "macos")]
 mod mac_mouse;
 #[cfg(target_os = "macos")]
+mod mac_splash;
+#[cfg(target_os = "macos")]
 mod mac_webkit;
 mod native;
+#[cfg(windows)]
+mod native_uma;
 mod native_view;
 mod pacs;
 mod pet;
@@ -557,6 +561,20 @@ fn mark(i: usize) {
     }
 }
 
+/// The start-up in finer steps than `MARKS` (ms since process start, first
+/// 64 events), reported with them as `trace`: where the cold start goes.
+static TRACE: parking_lot::Mutex<Vec<(&'static str, f64)>> = parking_lot::Mutex::new(Vec::new());
+
+pub(crate) fn trace(label: &'static str) {
+    if let Some(t) = STARTED.get() {
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let mut v = TRACE.lock();
+        if v.len() < 64 {
+            v.push((label, (ms * 10.0).round() / 10.0));
+        }
+    }
+}
+
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
@@ -565,11 +583,13 @@ fn startup_marks() -> serde_json::Value {
         "navStartMs": m[1],
         "navDoneMs": m[2],
         "webviewBuiltMs": m[3],
-        // The native splash on screen (DWM composed it): the first thing the
-        // reader sees, before WebView2 has loaded the page (splash.rs).
+        // The native splash on screen (Windows: DWM composed it; macOS:
+        // committed to the WindowServer): the first thing the reader sees,
+        // before the webview has loaded the page (splash.rs).
         "nativeFirstPaintMs": splash::painted_ms(),
         "nativeFirstPaintSource": splash::painted_ms().map(|_| "splash"),
         "gpuWarmMs": native::WARM_MS.get(),
+        "trace": TRACE.lock().clone(),
     })
 }
 
@@ -577,6 +597,7 @@ fn startup_marks() -> serde_json::Value {
 /// splash goes (splash.rs). No-op where there is none.
 #[tauri::command]
 fn splash_done() {
+    trace("page asked the splash off");
     splash::dismiss();
 }
 
@@ -662,7 +683,13 @@ async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, nati
 /// Build the GPU on the main window (idempotent) and put it under the page.
 async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> native::NativeStatus {
     let was_ready = native.has_gpu();
+    if !was_ready {
+        trace("native init: start");
+    }
     let status = native.init(window).await;
+    if !was_ready {
+        trace("native init: gpu + surface");
+    }
     if status.ready {
         let scale = window.scale_factor().unwrap_or(1.0);
         let origin = window.inner_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
@@ -677,10 +704,18 @@ async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> 
             start_gpu_release_watch(native.clone(), window.clone());
         }
         // Where the page draws nothing, the native surface shows through.
-        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        // (macOS: already transparent since the window was built, see `setup`.)
+        if !WEBVIEW_CLEAR_AT_BUILD.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            trace("native init: webview transparent");
+        }
     }
     native.status()
 }
+
+/// macOS: the main webview was made transparent right after it was built,
+/// before the page loaded (`setup`), so `init_native` does not switch it.
+static WEBVIEW_CLEAR_AT_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Lazy GPU: a native call that draws found the GPU released (study closed,
 /// then a new one opened): rebuild it first. One check when it is there.
@@ -845,6 +880,7 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
         #[cfg(target_os = "macos")]
         if swept.is_some() {
             mac_webkit::drop_memory_cache(&_window);
+            mac_webkit::collect_js_garbage(&_window);
         }
         release_memory_everywhere();
         if bench_on() {
@@ -852,6 +888,15 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
                 "FLOWRAD_BENCH_CLOSE",
                 &serde_json::json!({ "step": "late sweep", "swept": swept, "store": native.store().stats(), "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb() }),
             );
+        }
+        // Once more when work the close deferred (timers, idle callbacks,
+        // transitions) has let go too, unless a study is open again by then.
+        #[cfg(target_os = "macos")]
+        if swept.is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            if !native.has_viewports() {
+                mac_webkit::collect_js_garbage(&_window);
+            }
         }
     });
     if bench_on() {
@@ -1349,6 +1394,7 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    trace("run");
     // Freed memory goes back to the OS at once (see MI_OPTION_PURGE_DELAY),
     // and a purge decommits (MADV_FREE_REUSABLE on macOS, out of the
     // footprint at once) rather than resets (MADV_FREE: counted until the
@@ -1358,6 +1404,7 @@ pub fn run() {
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DECOMMITS, 1);
     }
     let context = context();
+    trace("context");
     let main_window = context.config().app.windows.iter().find(|w| w.label == "main").cloned();
     // Windows: the WebView2 browser process starts now, in parallel with the
     // rest of start-up, not after the window exists (webview2_early.rs). The
@@ -1375,8 +1422,14 @@ pub fn run() {
     // (native.rs `lazy_gpu`): the empty app holds no device.
     let launch_paths = launch_args();
     let gpu_at_launch = native::enabled() && (!native::lazy_gpu() || !launch_paths.is_empty());
-    if gpu_at_launch {
+    // macOS: not here but once the main window and its webview are built
+    // (`setup`): on a 3-core CI runner the Metal device build competed with
+    // AppKit start-up and the window build for the CPU (the first frame on
+    // screen waits for both); WebKit then needs >1 s more before the page can
+    // ask for a GPU, so the device is still ready long before a study opens.
+    if gpu_at_launch && !cfg!(target_os = "macos") {
         native::prewarm();
+        trace("gpu warm started");
     }
     attach_bench_console();
     let state = AppState::default();
@@ -1384,8 +1437,12 @@ pub fn run() {
     start_bench_watchdog();
     start_mem_report();
     let registry = state.registry.clone();
+    trace("tauri build");
 
     let app = tauri::Builder::default()
+        // macOS: the default menu is set once the main window is up (`setup`),
+        // not built inside `build()` ahead of the window.
+        .enable_macos_default_menu(false)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1414,6 +1471,7 @@ pub fn run() {
             match payload.event() {
                 tauri::webview::PageLoadEvent::Started => {
                     mark(1);
+                    trace("page load started");
                     if main {
                         // The main webview has its environment: the early
                         // one can go.
@@ -1422,6 +1480,7 @@ pub fn run() {
                 }
                 tauri::webview::PageLoadEvent::Finished => {
                     mark(2);
+                    trace("page load finished");
                     // The page reports its first paint (`splash_done`); if it
                     // never does, the native splash still goes.
                     if main {
@@ -1434,13 +1493,72 @@ pub fn run() {
         // ("create": false): the native splash is armed first, so it paints
         // the moment the window is on screen, while WebView2 starts.
         .setup(move |app| {
+            trace("setup");
             let _ = APP.set(app.handle().clone());
             if let Some(config) = &main_window {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
                 }
-                let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
+                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
+                // macOS, GPU built at launch: the page is transparent over the
+                // native surface from its first line (styles.css
+                // `native-transparent`), not restyled when native_init answers
+                // (that repainted the whole live page as a study opened). If the
+                // GPU then fails, the page takes the class off again (App.tsx).
+                #[cfg(target_os = "macos")]
+                let builder = if gpu_at_launch {
+                    builder.initialization_script("document.documentElement.classList.add('native-transparent')")
+                } else {
+                    builder
+                };
+                let built = builder.build();
+                // macOS: the splash's first-show hook goes, built or not.
+                #[cfg(target_os = "macos")]
+                splash::window_built();
+                let _window = built?;
                 mark(3);
+                trace("window + webview built");
+                #[cfg(target_os = "macos")]
+                {
+                    // The page paints its layers on the CPU, set before it has
+                    // painted anything: WebKit's Metal-backed painting held
+                    // the page's main thread on the GPU for 0.5-1 s as a
+                    // study opened (mac_webkit.rs `paint_on_cpu`).
+                    mac_webkit::paint_on_cpu(&_window);
+                    // The app menu (Quit, Edit's copy / paste, Window): nothing
+                    // can use it before the page is up, >1 s from here.
+                    if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {
+                        let _ = app.handle().set_menu(menu);
+                    }
+                    trace("app menu set");
+                    if gpu_at_launch {
+                        // The webview transparent now, ~1 s before the page
+                        // loads: where the page draws nothing the native surface
+                        // shows through. Switched on a live page instead
+                        // (`init_native`, as before), WebKit redid the whole
+                        // page's backing and held its rendering updates for
+                        // 0.3-0.4 s right as a study opened (CI: the first
+                        // viewport's ResizeObserver, and so the first image,
+                        // waited for it). The webview only: the window keeps
+                        // its canvas colour (#0B0D10) under the page until the
+                        // surface (cleared to the same colour) exists.
+                        if AsRef::<tauri::Webview>::as_ref(&_window).set_background_color(Some(tauri::window::Color(0, 0, 0, 0))).is_ok() {
+                            WEBVIEW_CLEAR_AT_BUILD.store(true, std::sync::atomic::Ordering::Release);
+                            trace("webview transparent");
+                        }
+                        native::prewarm();
+                        trace("gpu warm started");
+                    }
+                }
+                // macOS: the splash (on since the window was first shown, before
+                // the WKWebView existed) moves over the WKWebView now.
+                #[cfg(target_os = "macos")]
+                if let Ok(ns_window) = _window.ns_window() {
+                    let handle = app.handle().clone();
+                    splash::attach(ns_window, move |f| {
+                        let _ = handle.run_on_main_thread(f);
+                    });
+                }
                 // Here, not after `build()`: the window exists only now.
                 #[cfg(windows)]
                 trim_webview2(&_window);
@@ -1548,6 +1666,7 @@ pub fn run() {
         .build(context)
         .expect("error while building FlowRad Viewer");
     mark(0);
+    trace("app built");
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
     #[cfg(target_os = "macos")]
     mac_mouse::install(app.handle());

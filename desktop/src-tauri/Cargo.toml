@@ -1,6 +1,6 @@
 [package]
 name = "flowrad-viewer"
-version = "0.8.3"
+version = "0.8.4"
 description = "FlowRad Viewer — a free, offline DICOM viewer for Windows, macOS and Linux"
 authors = ["FlowRad"]
 license = "UNLICENSED"
@@ -71,7 +71,7 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32
 webview2-com = "0.39"
 # Cold start: the native splash (GDI popup, splash.rs) and the early WebView2
 # environment (webview2_early.rs). Same version webview2-com uses.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 # Tauri's webview data directory (app_local_data_dir), for the early
 # environment: the same crate and version Tauri resolves it with.
 dirs = "7"
@@ -81,14 +81,15 @@ dirs = "7"
 # Same versions tao / wry already use.
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
+# The native splash (mac_splash.rs): an NSView subclass drawn with AppKit.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSView", "NSWindow", "NSGraphics", "NSColor", "NSImage", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSStringDrawing"] }
 # proc_pid_rusage: the process's physical footprint (commit_mb on macOS).
 libc = "0.2"
 # MTLDevice currentAllocatedSize for the close report (Metal has no wgpu allocator report).
 objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLDevice"] }
 # WKWebsiteDataStore: empty WebKit's memory cache when a study closes (mac_webkit.rs).
 # Same versions wry already uses.
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSSet", "NSString", "NSDate"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSSet", "NSString", "NSDate", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSGeometry", "NSObject", "NSValue"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord"] }
 
 [dev-dependencies]

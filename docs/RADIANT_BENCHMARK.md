@@ -285,6 +285,49 @@ node desktop/scripts/bench.mjs hooks $exe D:\studies\ct    # rotation / flips, t
 
 See `desktop/README.md` (Benchmark) and the header of `bench.mjs` for flags.
 
+**0.8.4: running the bench outside the repo.** `bench.mjs` is one
+self-contained file: copy it on its own to the test machine, with Node 18 or
+later. It needs no Python and no `flush-file-cache.py` beside it, because the
+OS file-cache flush for cold runs is built in. A cold run is `desktop` run 1 or
+`mpr --cold`, and the flush needs elevation. If the flush fails, the bench
+prints a `WARNING` and reports the cold result with `"cacheFlushed": false`.
+That result read the study from RAM, so do not quote it as a cold number. On
+0.8.3, the MacBook ran the bench from outside the repo and its "cold" numbers
+were warm.
+
+Windows: open PowerShell with **Run as administrator**. The flush purges the
+standby list through `NtSetSystemInformation`, which needs
+`SeProfileSingleProcessPrivilege`. If that fails, it falls back to Sysinternals
+`RAMMap64.exe -Es` when that is on PATH.
+
+```powershell
+$exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"
+node C:\bench\bench.mjs desktop $exe D:\studies\ct --runs 5   # cold.cacheFlushed must be true
+node C:\bench\bench.mjs steps $exe D:\studies\ct
+node C:\bench\bench.mjs hooks $exe D:\studies\ct
+```
+
+macOS: use Terminal. The flush runs `sudo -n purge`, so first cache your sudo
+password with `sudo -v`, because the bench cannot answer a password prompt.
+Do not run `node` itself with `sudo`: the app would then run as root, with
+root's caches and settings.
+
+```sh
+APP=$(ls "/Applications/FlowRad Viewer.app/Contents/MacOS/"* | head -1)
+sudo -v && node ~/bench/bench.mjs desktop "$APP" ~/studies/ct --runs 5   # cold.cacheFlushed must be true
+node ~/bench/bench.mjs steps "$APP" ~/studies/ct
+node ~/bench/bench.mjs hooks "$APP" ~/studies/ct
+```
+
+`hooks` now waits for the active viewport to have an image before the
+orientation checks start. The study must have finished opening, the series the
+app hung must be drawn, its readout must be rendered, and on the native path
+Rust must hold the cell. On the Intel MacBook (0.8.3) the hook started as soon
+as the first paint was reported, before React had rendered the native
+renderer's answer. The viewport's readout was still empty, so all nine
+orientation checks failed at once with "no active viewport with an image". If
+the wait times out, the check now says which condition never held.
+
 **What to expect, from the architecture.** These are not measurements yet:
 
 - **Startup.** WebView2 is Chromium, and a warm WebView2 runtime starts in a
