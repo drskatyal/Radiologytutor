@@ -72,6 +72,11 @@ import {
   type LocalIngestResult,
 } from "@flowrad/viewer-core/localIngest";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
+import type { ViewerCommand, ViewerCommandResult, ViewerStateSnapshot } from "@flowrad/viewer-core";
+import type { ViewerEvent } from "@/lib/types";
+import type { PluginSource } from "@/lib/pluginConfig";
+import { PluginPanel } from "@/components/viewer/plugins/PluginPanel";
+import { usePluginHost } from "@/components/viewer/plugins/usePluginHost";
 import { hapticTick, isSwipeUp } from "@/lib/sheetGesture";
 import { EDGE_TOOLBAR_PX, NARROW_LAYOUT_MEDIA, READING_SERIES_ASIDE_PX, requestStageFullscreen } from "@/lib/viewerLayout";
 import {
@@ -179,7 +184,16 @@ type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<FileSystemDirectoryHandle>;
 };
 
-export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) {
+const NO_PLUGINS: readonly PluginSource[] = [];
+
+export function LocalStudyViewer({
+  tone = "page",
+  plugins = NO_PLUGINS,
+}: {
+  tone?: LocalViewerTone;
+  /** Viewer plugins (lib/pluginConfig.ts). Empty by default: no panel, no fetches. */
+  plugins?: readonly PluginSource[];
+}) {
   // Mouse & keyboard bindings: the local copy, and the signed-in copy fetched
   // now — before any study is opened (no request may follow a drop).
   useViewerBindings({ account: true });
@@ -706,6 +720,44 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
+  // ── Plugin host (off unless plugins are configured) ──
+  const [pluginSlice, setPluginSlice] = useState<number | null>(null);
+  const [pluginMode, setPluginMode] = useState<ViewerStateSnapshot["mode"]>("stack");
+  const pluginOverlayRef = useRef<HTMLDivElement>(null);
+  const popOutRef = useRef<((event: ViewerEvent) => void) | null>(null);
+  const pluginState = useMemo<ViewerStateSnapshot>(
+    () => ({
+      study: study ? { studyInstanceUID: study.studyInstanceUID, description: study.description, seriesCount: study.series.length } : null,
+      series: series
+        ? { seriesInstanceUID: series.seriesInstanceUID, description: series.description, modality: series.modality, index: activeSeries, imageCount: series.imageCount }
+        : null,
+      slice: series && pluginSlice != null ? { index: pluginSlice, count: series.imageCount } : null,
+      mode: pluginMode,
+    }),
+    [study, series, activeSeries, pluginSlice, pluginMode]
+  );
+  const pluginBinding = usePluginHost({
+    sources: plugins,
+    overlayRoot: () => pluginOverlayRef.current,
+    state: pluginState,
+    run: async (command: ViewerCommand): Promise<ViewerCommandResult> => {
+      const run = viewerControls.current?.runCommand;
+      if (!run) return { ok: false, reason: "No image is open yet." };
+      const result = await run(command);
+      if (result.ok && result.keyImage) {
+        result.keyImage.studyInstanceUID = study?.studyInstanceUID;
+        result.keyImage.seriesInstanceUID = series?.seriesInstanceUID;
+      }
+      return result;
+    },
+  });
+  const onViewerEventForAll = useCallback(
+    (event: ViewerEvent) => {
+      if (event.type === "slice") setPluginSlice(event.index);
+      popOutRef.current?.(event);
+    },
+    []
+  );
   const pinnedIsActive =
     !!pinned && (phase.state === "reading" || !!series?.instances.some((i) => i.fileName === pinned.fileName));
 
@@ -719,6 +771,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       void ingest(h.files);
     },
   });
+  popOutRef.current = popOut.onViewerEvent;
 
   const source = useMemo<ViewerSource | null>(() => {
     // The paint-first source stays the SAME object through the swap so the
@@ -956,13 +1009,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 {expanded ? <Minimize2 /> : <Maximize2 />}
               </IconButton>
             </div>
-            <div className={cn((expanded || reading) && "flex min-h-0 flex-1 flex-col")}>
+            <div className={cn("relative", (expanded || reading) && "flex min-h-0 flex-1 flex-col")}>
+              {/* Plugin overlay layer over the viewport (empty and inert without plugins). */}
+              {plugins.length > 0 && <div ref={pluginOverlayRef} className="pointer-events-none absolute inset-0 z-10" data-testid="plugin-overlay" />}
               <CornerstoneViewer
                 key={viewerKey}
                 source={source}
                 modality={modality}
                 controls={viewerControls}
-                onEvent={popOut.onViewerEvent}
+                onEvent={onViewerEventForAll}
+                onRenderModeChange={setPluginMode}
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp
@@ -976,6 +1032,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 }}
                 onReady={(controls) => {
                   setFirstImageUp(true);
+                  // The opening slice (the middle one) emits no slice event: seed plugin state.
+                  setPluginSlice(controls.getStartState().sliceIndex);
                   const slice = pendingSlice.current;
                   if (slice == null || slice < 0) return;
                   pendingSlice.current = null;
@@ -1024,6 +1082,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               </div>
             )}
           </div>
+          {plugins.length > 0 && <PluginPanel entries={pluginBinding.entries} loading={pluginBinding.loading} />}
           <Sheet
             open={drawerOpen}
             onClose={() => setDrawerOpen(false)}

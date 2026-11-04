@@ -17,8 +17,19 @@ import { planById, type PlanId } from "./plans";
 export const DESKTOP_FEATURES = ["pacs", "export-video", "export-dicom", "mpr", "volume-3d", "fusion", "multi-monitor", "voice"] as const;
 export type DesktopFeature = (typeof DESKTOP_FEATURES)[number];
 
+/**
+ * Core viewing that is FREE on every plan, now and later: never put these in
+ * PAID_FEATURES. 3D MPR (multiplanar + 3D volume) is planned as free core, on
+ * web and desktop; plugins may drive it but never gate it.
+ */
+export const FREE_CORE_FEATURES: readonly DesktopFeature[] = ["mpr", "volume-3d"];
+
 /** Which plans unlock each paid feature. EMPTY TODAY: everything is free. */
 export const PAID_FEATURES: Partial<Record<DesktopFeature, readonly PlanId[]>> = {};
+
+for (const f of FREE_CORE_FEATURES) {
+  if (PAID_FEATURES[f]) throw new Error(`"${f}" is free core viewing and cannot be a paid feature.`);
+}
 
 /** How long a desktop may keep using a fetched entitlement offline. */
 export const OFFLINE_GRACE_MS = 7 * 86_400_000;

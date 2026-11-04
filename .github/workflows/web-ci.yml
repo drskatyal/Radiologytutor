@@ -95,6 +95,12 @@ jobs:
           TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
           TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
         run: npx playwright test -c playwright.visual.config.ts voice.spec.ts voice-recorded.spec.ts popout.spec.ts --workers=1
+      - name: Plugin host with a test-fixture plugin (server restarted with PLUGIN_E2E=1)
+        env:
+          CI: "1"
+          PLUGIN_E2E: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+        run: npx playwright test -c playwright.visual.config.ts plugins.spec.ts --workers=1
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4

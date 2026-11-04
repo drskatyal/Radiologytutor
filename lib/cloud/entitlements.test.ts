@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { signSession } from "./session.ts";
 import {
   DESKTOP_FEATURES,
+  FREE_CORE_FEATURES,
   PAID_FEATURES,
   bearerToken,
   deviceLinkExpired,
@@ -46,4 +47,13 @@ test("device link codes: readable, normalised, expiring", () => {
   assert.equal(deviceLinkExpired(link, now + 11 * 60_000), true);
   assert.equal(bearerToken("Bearer abc.def"), "abc.def");
   assert.equal(bearerToken("Basic x"), null);
+});
+
+test("3D MPR is free core: never a paid feature", () => {
+  assert.deepEqual([...FREE_CORE_FEATURES].sort(), ["mpr", "volume-3d"]);
+  for (const f of FREE_CORE_FEATURES) assert.equal(PAID_FEATURES[f], undefined, f);
+  for (const plan of ["free", "pro", "super"]) {
+    const e = entitlementForPlan(plan);
+    assert.equal(e.features.mpr && e.features["volume-3d"], true, plan);
+  }
 });

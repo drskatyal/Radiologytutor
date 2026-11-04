@@ -26,6 +26,9 @@ Architecture and decisions: [`docs/VIEWER_SAAS.md`](docs/VIEWER_SAAS.md). Deskto
   Archive: `lib/cloud/archive.ts` (+ `lib/imagingBackend.ts`). Access: `lib/cloud/access.ts`.
   Route handlers pass the session user's id, never one from the request.
 - **Viewer core** lives in `packages/viewer-core` (no app/auth imports; `lib/viewerCoreBoundary.test.ts`).
+- **Plugins:** this repo holds only the extension point (`docs/PLUGINS.md`): contract, host, loader,
+  panel. Never add a plugin here; they live in a separate repo and are OFF by default (pinned by SHA-256).
+- **3D MPR is free core** (`FREE_CORE_FEATURES` in `lib/cloud/entitlements.ts`): never gate it.
 
 ## Workflow
 

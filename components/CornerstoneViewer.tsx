@@ -192,6 +192,7 @@ import {
   sameAnnotationStroke,
 } from "../lib/annotationCapture";
 import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/types";
+import type { ViewerCommand, ViewerCommandResult } from "@flowrad/viewer-core";
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
@@ -363,6 +364,8 @@ export interface CornerstoneControls {
    * null when the bitmap is blank and the cached pixels cannot be windowed.
    */
   captureViewportStill?: () => { mimeType: string; base64: string } | null;
+  /** Plugin host bridge (packages/viewer-core/src/plugins.ts): a validated command, run through the same paths as keys and voice. */
+  runCommand?: (command: ViewerCommand) => Promise<ViewerCommandResult>;
   /**
    * MediaStream of the Cornerstone canvas inside this viewport. Never the
    * page, the sidebar, or another panel. Null when the canvas cannot stream.
@@ -803,6 +806,7 @@ export default function CornerstoneViewer({
   openSlice = null,
   defaultTool = "WindowLevel",
   onViewModeChange,
+  onRenderModeChange,
   questionMarkHelp = false,
   seriesPanel = null,
   onCycleLayout,
@@ -890,6 +894,8 @@ export default function CornerstoneViewer({
   defaultTool?: string;
   /** Stack markers and lasers are in image fractions. Callers hide them in MPR. */
   onViewModeChange?: (mode: MprMode) => void;
+  /** What is really on screen for plugins: stack, MPR, or 3D (after any fallback). */
+  onRenderModeChange?: (mode: "stack" | "mpr" | "3d") => void;
   /**
    * `?` opens the viewer's shortcut sheet. Leave off inside the student
    * session, which owns `?` on `window`; the standalone viewer turns it on.
@@ -3272,6 +3278,7 @@ export default function CornerstoneViewer({
             ),
           captureViewportStream: () =>
             openViewportStream(mprSessionRef.current ? axialRef.current : elementRef.current),
+          runCommand: (command: ViewerCommand) => pluginCommandRef.current(command),
           subscribeView: (listener) => {
             viewListeners.add(listener);
             const frame = readProjector();
@@ -3832,6 +3839,48 @@ export default function CornerstoneViewer({
         return;
     }
   };
+  // Plugin commands (viewer-core plugins.ts). Already validated by the host;
+  // each one reuses the path a key, the toolbar or a voice command takes, so a
+  // plugin can never do anything the reader couldn't. 3D MPR is free core.
+  const pluginCommandRef = useRef<(c: ViewerCommand) => Promise<ViewerCommandResult>>(async () => ({ ok: false, reason: "The viewer is not ready." }));
+  pluginCommandRef.current = async (c: ViewerCommand): Promise<ViewerCommandResult> => {
+    if (!ready) return { ok: false, reason: "No image is open yet." };
+    switch (c.type) {
+      case "openPlane":
+        if (c.plane === "axial") {
+          setViewMode("stack");
+          return { ok: true, note: "Axial: the acquired stack." };
+        }
+        setViewMode("mpr");
+        if (c.plane === "mpr3d") {
+          setMprRender("3d");
+          return { ok: true, note: "3D MPR (falls back to MPR if this device has no WebGL2 volume pipeline)." };
+        }
+        setMprRender("mpr");
+        return { ok: true, note: "MPR shows axial, coronal and sagittal together." };
+      case "scroll":
+        runViewerAction({ type: "slice", delta: c.delta });
+        return { ok: true };
+      case "zoom":
+        runViewerAction({ type: "zoom", factor: c.factor });
+        return { ok: true };
+      case "windowPreset":
+        voiceActionRef.current({ type: "preset", name: c.preset });
+        return { ok: true };
+      case "nextSeries":
+        voiceActionRef.current({ type: "series", delta: c.delta });
+        return { ok: true };
+      case "takeKeyImage": {
+        const still = grabViewportStill(mprSessionRef.current ? axialRef.current : elementRef.current, viewportRef.current);
+        if (!still) return { ok: false, reason: "Could not capture this image." };
+        flash("Key image taken");
+        return {
+          ok: true,
+          keyImage: { ...still, sliceIndex: viewportRef.current?.getCurrentImageIdIndex() },
+        };
+      }
+    }
+  };
   const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   // What this viewer does with a session's callbacks. The session calls them
@@ -3960,6 +4009,9 @@ export default function CornerstoneViewer({
   useEffect(() => {
     onViewModeChange?.(mprShowing ? "mpr" : "stack");
   }, [mprShowing, onViewModeChange]);
+  useEffect(() => {
+    onRenderModeChange?.(!mprShowing ? "stack" : mprRender === "3d" ? "3d" : "mpr");
+  }, [mprShowing, mprRender, onRenderModeChange]);
 
   // React to the navigator selecting a different series (user-driven switch).
   // Runs after init has wired switchSeriesRef; no-ops on the already-loaded

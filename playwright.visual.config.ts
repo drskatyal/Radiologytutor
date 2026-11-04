@@ -1,4 +1,22 @@
 import { defineConfig } from "@playwright/test";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+// PLUGIN_E2E=1 turns the viewer plugin host on with a TEST FIXTURE plugin
+// (e2e/fixtures/plugins), served by a Playwright route in plugins.spec.ts.
+// Off by default so the other specs see the viewer exactly as shipped.
+const pluginEnv: Record<string, string> = process.env.PLUGIN_E2E
+  ? {
+      VIEWER_PLUGINS_ENABLED: "1",
+      VIEWER_PLUGINS: JSON.stringify([
+        {
+          id: "e2e-demo",
+          url: "/__e2e/plugins/e2e-demo-plugin.js",
+          sha256: createHash("sha256").update(readFileSync("e2e/fixtures/plugins/e2e-demo-plugin.js")).digest("hex"),
+        },
+      ]),
+    }
+  : {};
 
 // Visual-regression + perf gate for the web viewer (e2e/visual). Runs against a
 // production build (`npm run build` first) of the free /viewer, which needs no
@@ -29,6 +47,6 @@ export default defineConfig({
   timeout: 60_000,
     // The session module refuses to serve without a signing secret; this run
     // has no accounts, so a throwaway one is fine.
-    env: { SESSION_SECRET: process.env.SESSION_SECRET ?? "visual-regression-only-not-a-real-secret" },
+    env: { SESSION_SECRET: process.env.SESSION_SECRET ?? "visual-regression-only-not-a-real-secret", ...pluginEnv },
   },
 });

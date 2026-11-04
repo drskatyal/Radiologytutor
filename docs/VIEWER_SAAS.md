@@ -171,6 +171,12 @@ route answers 503 "Study storage is not configured".
    `GCP_RELEASE_SERVICE_ACCOUNT` and `GCS_DOWNLOADS_BUCKET` from the Terraform outputs.
 7. **Prices.** Replace the placeholder prices and choose a billing provider (out of scope here).
 
+## Plugins and the free core
+
+The viewer has a plugin extension point (hook and loader only, no plugins, off by default). See
+`docs/PLUGINS.md`. 3D MPR (multiplanar and 3D volume) is planned as **free core**, and
+`FREE_CORE_FEATURES` keeps it out of any paid plan.
+
 ## Next
 
 - Pixel OCR for burned-in text before upload (in the browser, behind the same confirm step).

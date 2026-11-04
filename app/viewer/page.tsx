@@ -6,8 +6,8 @@
 // it. No account and no paywall to view; signing in (free) is only offered for
 // what needs one: anonymising, storing and sharing a study.
 //
-// Static on purpose: no session, no data fetching, so the shell is served from
-// cache and the first drop pays only for the engine chunks (prewarmed while
+// No session and no data fetching, so the shell stays light and the first
+// drop pays only for the engine chunks (prewarmed while
 // the dropzone is showing). The bundle budget for this route is enforced by
 // scripts/viewer-bundle-budget.mjs; the latency budgets by
 // e2e/visual/free-viewer.perf.spec.ts.
@@ -17,6 +17,11 @@ import Link from "next/link";
 import { ShieldCheck } from "lucide-react";
 import { LocalStudyViewer } from "@/components/viewer/LocalStudyViewer";
 import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
+import { viewerPluginConfig } from "@/lib/pluginConfig";
+
+// Read the plugin switch at request time (Cloud Run env), not at build time.
+// Off by default: an empty list renders exactly the viewer as before.
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "FlowRad Viewer · Free DICOM viewer in your browser",
@@ -69,7 +74,7 @@ export default function FreeViewerPage() {
       </header>
       <main className="flex min-h-0 flex-1 flex-col" aria-label="DICOM viewer">
         <div className="flex min-h-0 flex-1 flex-col px-4 py-4 has-[[data-testid=local-stage]]:p-0">
-          <LocalStudyViewer tone="reading" />
+          <LocalStudyViewer tone="reading" plugins={viewerPluginConfig().sources} />
         </div>
       </main>
     </div>
