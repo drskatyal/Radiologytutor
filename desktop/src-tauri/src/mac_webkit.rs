@@ -6,6 +6,9 @@
 //! does. On a study close the memory cache is emptied through the public
 //! WKWebsiteDataStore API: only the memory cache, never local storage
 //! (settings, bindings, history live there).
+//!
+//! Also how the page paints: on the CPU, not through WebKit's Metal-backed
+//! layer painting (`paint_on_cpu`), so its main thread never waits on the GPU.
 
 use objc2_foundation::{NSDate, NSSet, NSString};
 use objc2_web_kit::{WKWebView, WKWebsiteDataTypeMemoryCache};
@@ -65,6 +68,70 @@ pub fn collect_js_garbage(window: &tauri::WebviewWindow) {
             if responds.as_bool() {
                 let _: () = msg_send![pool, _garbageCollectJavaScriptObjectsForTesting];
             }
+        }
+    });
+}
+
+/// Paint the page's layers on the CPU, not with WebKit's accelerated (Metal)
+/// drawing. Call right after the main webview is built, before the page loads.
+///
+/// The page is the UI chrome over the native renderer's CAMetalLayer: text,
+/// borders, icons, a few overlays. With accelerated drawing WebKit paints
+/// each layer through Core Animation's Metal-backed CG renderer, and the
+/// WebContent main thread waits for that GPU work inside its rendering
+/// update. CI (macOS, 3-CPU runners with a paravirtualised GPU), spindump of
+/// the WebContent process during a warm open: 0.5-1 s of its main thread in
+/// `RemoteLayerTreeDrawingArea::updateRendering` →
+/// `paintReachableBackingStoreContents` → `CA::OGL::MetalContext::flush` →
+/// `semaphore_wait`, right as the study's overlay and then the study view
+/// painted for the first time. No timer, IPC reply or ResizeObserver ran
+/// meanwhile (a worker thread in the same process kept time), so the first
+/// viewport asked for its series 1.3-1.9 s after the series was hung, and the
+/// first image waited for it. The images are drawn by our own Metal renderer,
+/// not by WebKit; the page's own 2D painting is small and cheap on the CPU,
+/// and no longer queues behind the GPU.
+///
+/// WKPreferences' private `_setAcceleratedDrawingEnabled:`, sent only when
+/// this WebKit answers to it (otherwise WebKit's default stays).
+/// `FLOWRAD_WEBKIT_GPU_PAINT=1` keeps WebKit's default, for A/B runs.
+pub fn paint_on_cpu(window: &tauri::WebviewWindow) {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{msg_send, sel};
+    if crate::flowrad_env("WEBKIT_GPU_PAINT").as_deref() == Ok("1") {
+        crate::trace("webkit: accelerated drawing kept (FLOWRAD_WEBKIT_GPU_PAINT)");
+        return;
+    }
+    let _ = window.with_webview(|platform| {
+        let view = platform.inner() as *mut AnyObject;
+        if view.is_null() {
+            return;
+        }
+        // SAFETY: `inner()` is the window's WKWebView, alive for this call, on
+        // the main thread (with_webview); `configuration` and `preferences`
+        // are public and return live objects (checked for nil); the private
+        // setter takes one BOOL and its getter returns one, each sent only
+        // when the object answers to it.
+        unsafe {
+            let config: *mut AnyObject = msg_send![view, configuration];
+            if config.is_null() {
+                return;
+            }
+            let prefs: *mut AnyObject = msg_send![config, preferences];
+            if prefs.is_null() {
+                return;
+            }
+            let can_set: Bool = msg_send![prefs, respondsToSelector: sel!(_setAcceleratedDrawingEnabled:)];
+            if !can_set.as_bool() {
+                crate::trace("webkit: no accelerated-drawing switch");
+                return;
+            }
+            let _: () = msg_send![prefs, _setAcceleratedDrawingEnabled: Bool::NO];
+            let can_get: Bool = msg_send![prefs, respondsToSelector: sel!(_acceleratedDrawingEnabled)];
+            let still_on = can_get.as_bool() && {
+                let on: Bool = msg_send![prefs, _acceleratedDrawingEnabled];
+                on.as_bool()
+            };
+            crate::trace(if still_on { "webkit: accelerated drawing still on" } else { "webkit: page painted on the CPU" });
         }
     });
 }
