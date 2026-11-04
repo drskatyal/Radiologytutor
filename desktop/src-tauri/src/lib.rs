@@ -1066,7 +1066,7 @@ async fn native_cell_view(
     native: tauri::State<'_, native::Shared>,
 ) -> Result<native::ShowResult, String> {
     let entered = diag_epoch_ms();
-    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = frame_scale(&window, native.inner());
     let scaled = diag_epoch_ms();
     let native = native.inner().clone();
     let r = tauri::async_runtime::spawn_blocking(move || {
@@ -1081,7 +1081,7 @@ async fn native_cell_view(
 #[tauri::command]
 async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
     let entered = diag_epoch_ms();
-    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = frame_scale(&window, native.inner());
     let scaled = diag_epoch_ms();
     let native = native.inner().clone();
     let r = tauri::async_runtime::spawn_blocking(move || {
@@ -1091,6 +1091,24 @@ async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64
     .await
     .map_err(|e| e.to_string())?;
     r.map(|(r, ran, done)| diag_ipc(r, entered, scaled, ran, done))
+}
+
+/// The scale factor a native frame of `window` is drawn at. macOS, main
+/// window: the value kept from the window's own events (`set_window_facts`,
+/// `Resized`, `ScaleFactorChanged`), not asked of the window: on macOS
+/// `scale_factor()` is answered by the main thread, which is busy while a
+/// study opens (CI: 3-11 ms of a scroll step waited for it). Elsewhere, and
+/// before the first value is known, the window is asked as before.
+fn frame_scale(window: &tauri::WebviewWindow, native: &native::Native) -> f64 {
+    #[cfg(target_os = "macos")]
+    if window.label() == "main" {
+        if let Some(scale) = native.window_scale() {
+            return scale;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = native;
+    window.scale_factor().unwrap_or(1.0)
 }
 
 /// DIAG (temporary): wall-clock ms (the page's performance.timeOrigin + now()).
@@ -1493,8 +1511,16 @@ pub fn run() {
                 // Native surface follows the window (no-op until it exists).
                 if let tauri::WindowEvent::Resized(size) = event {
                     if let Some(native) = window.app_handle().try_state::<native::Shared>() {
+                        let scale = window.scale_factor().unwrap_or(1.0);
+                        native.set_window_scale(scale);
                         native.resize(size.width, size.height);
-                        let _ = native.render(window.scale_factor().unwrap_or(1.0));
+                        let _ = native.render(scale);
+                    }
+                }
+                // Moved to a display with another pixel density.
+                if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                    if let Some(native) = window.app_handle().try_state::<native::Shared>() {
+                        native.set_window_scale(*scale_factor);
                     }
                 }
             }
@@ -1563,7 +1589,6 @@ pub fn run() {
                     // the page's main thread on the GPU for 0.5-1 s as a
                     // study opened (mac_webkit.rs `paint_on_cpu`).
                     mac_webkit::paint_on_cpu(&_window);
-                    mac_webkit::diag_pool(&_window);
                     // The app menu (Quit, Edit's copy / paste, Window): nothing
                     // can use it before the page is up, >1 s from here.
                     if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {
@@ -1706,11 +1731,6 @@ pub fn run() {
         .expect("error while building FlowRad Viewer");
     mark(0);
     trace("app built");
-    // macOS: WebKit's web content process starts (and initialises its
-    // JavaScript engine) now, in parallel with the window build, not when the
-    // webview's first navigation asks for it (mac_webkit.rs).
-    #[cfg(target_os = "macos")]
-    mac_webkit::prewarm_web_process();
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
     #[cfg(target_os = "macos")]
     mac_mouse::install(app.handle());

@@ -245,6 +245,9 @@ pub struct Native {
     init_lock: tauri::async_runtime::Mutex<()>,
     /// Last time the GPU was created or drew a frame (lazy mode's idle release).
     last_use: Mutex<Option<Instant>>,
+    /// The main window's scale factor, kept from its own events (macOS reads
+    /// it here for a frame, see lib.rs `frame_scale`).
+    window_scale: Mutex<Option<f64>>,
 }
 
 pub type Shared = Arc<Native>;
@@ -657,9 +660,22 @@ impl Native {
     }
 
     pub fn set_window_facts(&self, origin: (i32, i32), scale: f64) {
+        self.set_window_scale(scale);
         let mut s = self.status.lock();
         s.client_origin = Some(origin);
         s.scale = Some(scale);
+    }
+
+    /// The main window's scale factor changed (or was read on its thread).
+    pub fn set_window_scale(&self, scale: f64) {
+        if scale > 0.0 {
+            *self.window_scale.lock() = Some(scale);
+        }
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn window_scale(&self) -> Option<f64> {
+        *self.window_scale.lock()
     }
 
     // ───────────── layout ─────────────
