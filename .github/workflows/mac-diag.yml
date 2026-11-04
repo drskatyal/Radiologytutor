@@ -54,7 +54,29 @@ jobs:
       - name: diag open (first)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
-        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
+        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
+      - name: diag open, no transparency switch
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_DIAG_NO_CLEAR: "1"
+        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
+      - name: diag open, native off
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_NATIVE: "0"
+        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
+      - name: diag open, GPU lazy
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_GPU_WARM: lazy
+        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
+      - name: diag open (again)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
       - name: diag cold start (first)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
@@ -69,11 +91,3 @@ jobs:
         timeout-minutes: 6
         continue-on-error: true
         run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
-      - name: diag cold start
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: node .github/diag/diag-run.mjs "$APP" 4
-      - name: diag open (warm)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"

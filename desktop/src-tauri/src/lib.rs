@@ -758,8 +758,10 @@ async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> 
             start_gpu_release_watch(native.clone(), window.clone());
         }
         // Where the page draws nothing, the native surface shows through.
-        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-        trace("native init: webview transparent");
+        if crate::flowrad_env("DIAG_NO_CLEAR").as_deref() != Ok("1") {
+            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            trace("native init: webview transparent");
+        }
     }
     native.status()
 }
@@ -1459,10 +1461,15 @@ pub fn run() {
     // (native.rs `lazy_gpu`): the empty app holds no device.
     let launch_paths = launch_args();
     let gpu_at_launch = native::enabled() && (!native::lazy_gpu() || !launch_paths.is_empty());
-    if gpu_at_launch {
+    // macOS: not here but once the main window and its webview are built
+    // (`setup`): on a 3-core CI runner the Metal device build competed with
+    // AppKit start-up and the window build for the CPU (the first frame on
+    // screen waits for both); WebKit then needs >1 s more before the page can
+    // ask for a GPU, so the device is still ready long before a study opens.
+    if gpu_at_launch && !cfg!(target_os = "macos") {
         native::prewarm();
+        trace("gpu warm started");
     }
-    trace("gpu warm started");
     attach_bench_console();
     let state = AppState::default();
     *state.launch_paths.lock() = launch_paths;
@@ -1472,7 +1479,9 @@ pub fn run() {
     trace("tauri build");
 
     let app = tauri::Builder::default()
-        .enable_macos_default_menu(crate::flowrad_env("DIAG_NO_MENU").as_deref() != Ok("1"))
+        // macOS: the default menu is set once the main window is up (`setup`),
+        // not built inside `build()` ahead of the window.
+        .enable_macos_default_menu(false)
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("flowrad-trace-first")
                 .setup(|_, _| {
@@ -1553,6 +1562,19 @@ pub fn run() {
                 let _window = built?;
                 mark(3);
                 trace("window + webview built");
+                #[cfg(target_os = "macos")]
+                {
+                    // The app menu (Quit, Edit's copy / paste, Window): nothing
+                    // can use it before the page is up, >1 s from here.
+                    if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {
+                        let _ = app.handle().set_menu(menu);
+                    }
+                    trace("app menu set");
+                    if gpu_at_launch {
+                        native::prewarm();
+                        trace("gpu warm started");
+                    }
+                }
                 if crate::flowrad_env("DIAG_EARLY_CLEAR").as_deref() == Ok("1") {
                     let _ = _window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
                     trace("diag: webview transparent at build");
