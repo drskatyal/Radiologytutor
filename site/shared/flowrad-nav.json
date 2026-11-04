@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "brand": { "name": "FlowRad", "home": "https://flowrad.ai", "color": "#0F4D3A", "logo": "/brand/owlscan.svg" },
+  "products": [
+    { "id": "canvas",        "label": "Canvas",               "desc": "Your reporting workspace",            "url": "https://canvas.flowrad.ai" },
+    { "id": "copilot",       "label": "Copilot 2.0",          "desc": "Drafts and checks reports with you",  "url": "https://flowrad.ai/#copilot" },
+    { "id": "vision",        "label": "FlowRad Vision",       "desc": "Grabs and labels key images",         "url": "https://flowrad.ai/#vision", "badge": "Beta" },
+    { "id": "viewer",        "label": "DICOM Viewer",         "desc": "Free on web, Windows and Mac",        "url": "https://viewer.flowrad.ai" },
+    { "id": "radcalculator", "label": "RadCalculator",        "desc": "Radiology calculators",               "url": "https://radcalculator.com" },
+    { "id": "radcrate",      "label": "RadCrate",             "desc": "Radiology resources",                 "url": "https://radcrate.com" }
+  ],
+  "footer": {
+    "columns": [
+      { "title": "Products", "links": ["canvas","copilot","vision","viewer","radcalculator","radcrate"] },
+      { "title": "Learn",    "links": [ { "label": "Agentic AI in radiology", "url": "https://web.flowrad.ai" } ] },
+      { "title": "Account",  "links": [ { "label": "Sign in to Canvas", "url": "https://canvas.flowrad.ai" },
+                                         { "label": "Legacy app", "url": "https://app.flowrad.ai" } ] }
+    ],
+    "legal": "© FlowRad"
+  }
+}

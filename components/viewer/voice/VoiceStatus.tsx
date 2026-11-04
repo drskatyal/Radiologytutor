@@ -2,9 +2,9 @@
 
 // The voice-commands status card, shared by the web and desktop viewers.
 //
-// Loading shows what is happening and how far (microphone permission, model
-// bytes, starting the recognizer) — a real progress bar, never an endless
-// spinner. A failure says why in one actionable line, with Retry. Listening
+// Loading shows what is happening and how far (microphone permission, loading,
+// starting the recognizer) as a real progress bar, never an endless spinner.
+// It shows progress as a percentage only: no download size on the voice toggle. A failure says why in one actionable line, with Retry. Listening
 // shows nothing here (the mic button itself lights up).
 
 import { AlertTriangle, Mic, X } from "lucide-react";
@@ -20,18 +20,15 @@ export interface VoiceStatusProps {
   className?: string;
 }
 
-const mb = (bytes: number) => (bytes / 1e6).toFixed(1);
-
 export function voiceProgressText(p: VoiceProgress | null | undefined): { line: string; value: number | null; valueText?: string } {
   if (!p) return { line: "Starting voice commands…", value: null };
   if (p.stage === "permission") return { line: "Waiting for microphone permission…", value: null };
   if (p.stage === "starting") return { line: "Starting the recognizer…", value: 1 };
   if (p.total > 0) {
-    const valueText = `${mb(p.loaded)} of ${mb(p.total)} MB`;
-    return { line: `Loading voice model · ${valueText}`, value: p.loaded / p.total, valueText };
+    const pct = Math.min(100, Math.round((p.loaded / p.total) * 100));
+    return { line: "Loading voice commands…", value: p.loaded / p.total, valueText: `${pct}%` };
   }
-  if (p.loaded > 0) return { line: `Loading voice model · ${mb(p.loaded)} MB`, value: null, valueText: `${mb(p.loaded)} MB` };
-  return { line: "Loading voice model…", value: null };
+  return { line: "Loading voice commands…", value: null };
 }
 
 export function VoiceStatus({ state, progress, error, onRetry, onDismiss, className }: VoiceStatusProps) {

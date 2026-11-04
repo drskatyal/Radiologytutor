@@ -5,14 +5,15 @@
 // server-side. Streams responses through unchanged (incl. multipart
 // pixel data) so WADO-RS works end to end.
 //
-// ACCESS (CLAUDE.md §4a — everything is scoped by orgId):
-//   This route hands out patient pixels. It is READ-ONLY. A signed-in session
-//   may read studies its org owns. A case-share cookie (set by visiting
-//   `/s/[token]`) may read only the study UIDs that one case names — no
-//   account required, and no archive-wide search. Ingest deliberately does
-//   NOT live here — it belongs to /api/upload, which runs the de-id gate in
-//   `orthancIngestInstance`. Proxying STOW-RS would route around that gate,
-//   so no write verb is exported.
+// ACCESS (lib/cloud/access.ts):
+//   READ-ONLY. Two ways in, both per study:
+//     /api/dicomweb/studies/<uid>/...           the signed-in OWNER of <uid>
+//     /api/dicomweb/s/<token>/studies/<uid>/... a live SHARE whose target
+//                                               includes <uid> (no cookie, so
+//                                               embeds work in iframes)
+//   No archive-wide search. Ingest deliberately does NOT live here: it goes
+//   through POST /api/studies/<id>/instances, which runs the identity gate.
+//   Proxying STOW-RS would route around that gate, so no write verb is exported.
 //
 // Bytes (docs/VIEWER_BENCHMARK.md §6 has the measurements):
 //   1. Frames are requested from the archive in lossless JPEG-LS when the
@@ -48,8 +49,9 @@ import {
   type FrameSyntax,
 } from "@/lib/frameTransfer";
 import { imagingBackend } from "@/lib/imagingBackend";
-import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "@/lib/orthanc";
-import { authorizeStudyRead } from "@/lib/studyAccess";
+import { archiveAuthHeader, archiveConfigured, dicomWebRoot } from "@/lib/cloud/archive";
+import { authorizeStoredStudyRead } from "@/lib/cloud/access";
+import { SESSION_COOKIE, verifySession } from "@/lib/cloud/session";
 import { createTtlMemo } from "@/lib/ttlMemo";
 
 /**
@@ -132,31 +134,40 @@ async function hedged<T>(
 }
 
 async function archiveFetch(target: string, accept: string | undefined, method: string) {
-  const headers: Record<string, string> = { Authorization: await imagingAuthHeader() };
+  const headers: Record<string, string> = { Authorization: await archiveAuthHeader() };
   if (accept) headers["Accept"] = accept;
   return fetch(target, { method, headers, cache: "no-store" });
 }
 
 async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
-  if (!orthancConfigured()) {
+  if (!archiveConfigured()) {
     return new Response(
       "Imaging archive is not configured (set ORTHANC_URL, or DICOMWEB_BACKEND=healthcare).",
       { status: 503 }
     );
   }
 
-  const segments = ctx.params.path;
+  let segments = ctx.params.path;
+  let shareToken: string | null = null;
+  if (segments[0] === "s") {
+    shareToken = segments[1] ?? "";
+    segments = segments.slice(2);
+  }
   const studyUid = studyUidFromPath(segments);
 
   // A study-addressed request must name a study the caller may see.
   // An unaddressed request (bare QIDO `studies` search) would enumerate the
   // whole archive across tenants, so it is refused outright — callers list
-  // studies through /api/admin/studies, which is org-scoped.
+  // their studies through /api/studies.
   if (!studyUid) {
     return new Response("A StudyInstanceUID is required.", { status: 400 });
   }
 
-  const access = await authorizeStudyRead(req, studyUid);
+  const access = await authorizeStoredStudyRead({
+    shareToken,
+    userId: shareToken ? null : verifySession(req.cookies.get(SESSION_COOKIE)?.value)?.id ?? null,
+    studyUid,
+  });
   if (!access.ok) {
     return new Response(access.status === 401 ? "Unauthorized" : "Not found", {
       status: access.status,
@@ -331,7 +342,7 @@ async function seriesIndexResponse(req: NextRequest, path: string, target: strin
   return res;
 }
 
-// Read-only by design: no POST/PUT export. Ingest goes through /api/upload so
-// the de-id gate in `orthancIngestInstance` cannot be bypassed.
+// Read-only by design: no POST/PUT export. Ingest goes through
+// /api/studies/<id>/instances so the identity gate cannot be bypassed.
 export const GET = handle;
 export const HEAD = handle;

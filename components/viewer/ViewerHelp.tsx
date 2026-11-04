@@ -10,6 +10,7 @@ import { cn } from "@/components/ui/cn";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import type { BindingOverrides } from "@flowrad/viewer-core/bindings";
+import { voiceCommandSheet } from "@flowrad/viewer-core";
 import {
   WEB_COMMANDS,
   viewerPointerHints,
@@ -167,6 +168,22 @@ export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; o
             <ul className="grid gap-x-8 divide-white/5 sm:grid-cols-2">
               {pointer.map((row) => (
                 <Row key={row.keys.join() + row.does} row={row} />
+              ))}
+            </ul>
+          </section>
+          <section className="sm:col-span-2" data-testid="help-voice-commands">
+            <h3 className="mb-1 text-[11px] font-medium uppercase tracking-wide text-white/45">
+              Voice commands
+            </h3>
+            <p className="mb-2 text-xs text-white/55">
+              Turn on the microphone in the toolbar, then say the whole phrase. Single words are ignored.
+            </p>
+            <ul className="grid gap-x-8 divide-white/5 sm:grid-cols-2">
+              {voiceCommandSheet().map((cmd) => (
+                <li key={cmd.label} className="flex items-baseline justify-between gap-3 py-1">
+                  <span className="text-xs text-white/75">{cmd.label}</span>
+                  <span className="text-right text-[11px] text-white/60">{cmd.say}</span>
+                </li>
               ))}
             </ul>
           </section>

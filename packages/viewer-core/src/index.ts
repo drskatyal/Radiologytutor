@@ -42,3 +42,4 @@ export * from "./dicomTags";
 export * from "./voiceSession";
 export * from "./bindings";
 export * from "./voiceHandoff";
+export * from "./plugins";

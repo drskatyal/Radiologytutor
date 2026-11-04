@@ -1,0 +1,6 @@
+{
+  "$comment": "Desktop self-update config (docs/UPDATES.md). PUBLIC values only. pubkey = base64 of the minisign .pub file whose private half is the TAURI_SIGNING_PRIVATE_KEY GitHub secret (never committed, never pasted in chat). Never change pubkey casually: installed copies only accept updates signed by its private key. Applied to tauri.conf.json and the Rust build by desktop/scripts/configure-updater.mjs.",
+  "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE1RTJDRDcwNTkzNkUzOUUKUldTZTR6WlpjTTNpcFpJQkZUYWFBZG1CVlV6RWlXU09sV1NRZnVWQ3l4OGt2Y2NidjR4OFZrQmUK",
+  "channelBase": "https://viewer.flowrad.ai",
+  "fallbackManifestUrl": null
+}

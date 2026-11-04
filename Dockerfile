@@ -1,5 +1,5 @@
-# FlowRad Learn — production image (Next.js standalone).
-# Used by Fly.io (fly.toml) and Cloud Run (deploy/gcp). Same image.
+# FlowRad Viewer — production image (Next.js standalone).
+# Built for Cloud Run (deploy/gcp).
 # Requires `output: "standalone"` in next.config.mjs (already set).
 # Cloud Run sets PORT at runtime (8080); the server honors it.
 #

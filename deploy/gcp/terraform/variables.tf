@@ -1,70 +1,65 @@
 variable "project_id" {
-  description = "GCP project id. Live project: radlearn-app (display name RadLearn)."
+  description = "GCP project id for viewer.flowrad.ai."
   type        = string
-  default     = "radlearn-app"
 }
 
 variable "region" {
-  description = "Region for Cloud Run, the Healthcare dataset, Cloud NAT, and the frame bucket. They must match. europe-west2 is London; Atlas uses EUROPE_WEST_2."
+  description = "One region for Cloud Run, the DICOM store and buckets (keep them together)."
   type        = string
   default     = "europe-west2"
 }
 
-variable "dataset_id" {
-  type    = string
-  default = "radlearn"
-}
-
-variable "dicom_store_id" {
-  type    = string
-  default = "radlearn-dicom"
+variable "firestore_location" {
+  description = "Firestore location (a region such as europe-west2, or a multi-region)."
+  type        = string
+  default     = "europe-west2"
 }
 
 variable "service_name" {
   type    = string
-  default = "radlearn"
+  default = "flowrad-viewer"
 }
 
 variable "service_account_id" {
   type    = string
-  default = "radlearn-app"
+  default = "flowrad-viewer-app"
 }
 
 variable "artifact_repo" {
   type    = string
-  default = "radlearn"
+  default = "flowrad-viewer"
 }
 
-variable "network_name" {
+variable "dataset_id" {
   type    = string
-  default = "radlearn"
+  default = "flowrad-viewer"
 }
 
-variable "subnet_name" {
+variable "dicom_store_id" {
   type    = string
-  default = "radlearn-run"
+  default = "studies"
 }
 
-variable "subnet_cidr" {
-  type    = string
-  default = "10.8.0.0/24"
-}
-
-variable "vpc_egress" {
-  description = "Cloud Run Direct VPC egress. ALL_TRAFFIC uses Cloud NAT so Atlas can allow one IP. PRIVATE_RANGES_ONLY after Atlas Private Service Connect."
+variable "downloads_bucket" {
+  description = "Globally unique bucket for public desktop installers, e.g. flowrad-viewer-downloads."
   type        = string
-  default     = "ALL_TRAFFIC"
 }
 
 variable "frame_bucket" {
-  description = "Globally unique GCS bucket for the private frame cache. Empty skips the bucket."
+  description = "Optional private frame-cache bucket. Empty = none."
   type        = string
   default     = ""
 }
 
+variable "image" {
+  description = "First container image (deploy.sh rolls later ones)."
+  type        = string
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
 variable "min_instances" {
   type    = number
-  default = 1
+  default = 0
 }
 
 variable "max_instances" {
@@ -72,57 +67,37 @@ variable "max_instances" {
   default = 10
 }
 
-variable "deploy_app" {
-  description = "Create the Cloud Run service. Leave false until an image exists and secret versions have been added, then set app_image and apply again. deploy/gcp/deploy-app.sh is the usual path."
+variable "identity_api_key" {
+  description = "Identity Platform web API key (public; restrict it to the site's referrers in the console)."
+  type        = string
+  default     = ""
+}
+
+variable "identity_auth_domain" {
+  description = "Identity Platform auth domain, e.g. <project>.firebaseapp.com or a custom one."
+  type        = string
+  default     = ""
+}
+
+variable "public_origin" {
+  type    = string
+  default = "https://viewer.flowrad.ai"
+}
+
+variable "custom_domain" {
+  description = "Custom domain to map (viewer.flowrad.ai). Empty = use the run.app URL."
+  type        = string
+  default     = ""
+}
+
+variable "github_repository" {
+  description = "owner/repo allowed to upload installers (Workload Identity Federation)."
+  type        = string
+  default     = "drskatyal/flowrad-viewer"
+}
+
+variable "desktop_downloads_live" {
+  description = "Show Windows/macOS download links. Keep false until builds are code-signed and self-updating (docs/DESKTOP_RELEASE_READINESS.md)."
   type        = bool
   default     = false
-}
-
-variable "app_image" {
-  description = "Artifact Registry image, including tag. Required when deploy_app is true."
-  type        = string
-  default     = ""
-}
-
-variable "public_url" {
-  description = "https://…run.app origin for BETTER_AUTH_URL. Empty until the first deploy prints the URL."
-  type        = string
-  default     = ""
-}
-
-variable "mongodb_db" {
-  description = "Database name inside the Atlas cluster. Cloud Run does not use JSON-on-disk."
-  type        = string
-  default     = "radlearn"
-}
-
-variable "gemini_model" {
-  description = "GEMINI_MODEL on Cloud Run. Stable Gemini 3.8 Flash."
-  type        = string
-  default     = "gemini-3.8-flash"
-}
-
-variable "dicom_cdn_bucket" {
-  description = "Globally unique PRIVATE GCS bucket for converted DICOM (HTJ2K + previews). Empty skips converted delivery entirely. Example: radlearn-app-dicom-cdn."
-  type        = string
-  default     = ""
-}
-
-variable "dicom_cdn_domain" {
-  description = "Hostname for the Cloud CDN load balancer in front of dicom_cdn_bucket, e.g. dicom-cdn.radlearn.app. Empty: chunks are served by the app (/api/dicom-cdn/files)."
-  type        = string
-  default     = ""
-}
-
-variable "dicom_cdn_key_name" {
-  description = "Cloud CDN signed-URL key name. The app reads it as DICOM_CDN_KEY_NAME."
-  type        = string
-  default     = "radlearn-dicom-1"
-}
-
-variable "dicom_cdn_signing_key" {
-  description = "base64url 16-byte Cloud CDN signing key (same value as the DICOM_CDN_KEY secret). Required with dicom_cdn_domain."
-  type        = string
-  default     = ""
-  sensitive   = true
 }

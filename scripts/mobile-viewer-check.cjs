@@ -53,7 +53,7 @@ async function nonBlank(page) {
     const ctx = await browser.newContext({ viewport, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
     const page = await ctx.newPage();
     try {
-      await page.goto(`${base}/viewer/local`);
+      await page.goto(`${base}/viewer`);
       const consent = page.getByRole("button", { name: "Continue" });
       if (await consent.count()) await consent.first().click();
       const t0 = Date.now();

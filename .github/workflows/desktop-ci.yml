@@ -33,6 +33,8 @@ jobs:
       - run: npm ci --prefix desktop
       - name: Unit tests
         run: npm --prefix desktop test
+      - name: Updater config matches desktop/updater.json
+        run: node desktop/scripts/configure-updater.mjs --check
       - name: Type-check and build the renderer
         run: npm --prefix desktop run build
 

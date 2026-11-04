@@ -1,26 +1,29 @@
+# FlowRad Viewer on Google Cloud: viewer.flowrad.ai.
+#
+#   Cloud Run (Next.js standalone image)
+#     ├─ Cloud Healthcare API DICOM store   stored, anonymised studies (DICOMweb)
+#     ├─ Firestore (Native)                 accounts, studies, collections, shares
+#     ├─ Identity Platform                  sign-in (Google, email link)
+#     ├─ GCS: <downloads bucket>            desktop installers + downloads.json (public read)
+#     └─ GCS: <frame bucket> (optional)     DICOMweb frame cache (private)
+#
+# Nothing here is applied by CI. A project owner runs `terraform apply` (see
+# docs/VIEWER_SAAS.md). No secret values live in this repository.
+
 locals {
   apis = [
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "healthcare.googleapis.com",
+    "firestore.googleapis.com",
+    "identitytoolkit.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
     "iam.googleapis.com",
-    "compute.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
   ]
-  secret_ids = [
-    "GEMINI_API_KEY",
-    "BETTER_AUTH_SECRET",
-    "MONGODB_URI",
-    "GOOGLE_CLIENT_ID",
-    "GOOGLE_CLIENT_SECRET",
-    "ELEVENLABS_API_KEY",
-    "R2_ACCESS_KEY_ID",
-    "R2_SECRET_ACCESS_KEY",
-    "DICOM_CDN_KEY",
-  ]
-  app_sa = google_service_account.app.email
 }
 
 resource "google_project_service" "apis" {
@@ -33,114 +36,107 @@ resource "google_artifact_registry_repository" "app" {
   location      = var.region
   repository_id = var.artifact_repo
   format        = "DOCKER"
-  description   = "RadLearn images"
+  description   = "FlowRad Viewer images"
   depends_on    = [google_project_service.apis]
 }
 
+# ---------------------------------------------------------------------------
+# Runtime identity: least privilege on exactly the resources the app touches.
+# ---------------------------------------------------------------------------
+
 resource "google_service_account" "app" {
   account_id   = var.service_account_id
-  display_name = "RadLearn Cloud Run"
+  display_name = "FlowRad Viewer (Cloud Run)"
 }
 
-resource "google_healthcare_dataset" "radlearn" {
+resource "google_healthcare_dataset" "viewer" {
   name       = var.dataset_id
   location   = var.region
   depends_on = [google_project_service.apis]
 }
 
-resource "google_healthcare_dicom_store" "radlearn" {
+resource "google_healthcare_dicom_store" "studies" {
   name    = var.dicom_store_id
-  dataset = google_healthcare_dataset.radlearn.id
+  dataset = google_healthcare_dataset.viewer.id
 }
 
-# dicomWebRead + dicomWebWrite. Not dataset admin. Not allUsers.
 resource "google_healthcare_dicom_store_iam_member" "app_editor" {
-  dicom_store_id = google_healthcare_dicom_store.radlearn.id
+  dicom_store_id = google_healthcare_dicom_store.studies.id
   role           = "roles/healthcare.dicomEditor"
-  member         = "serviceAccount:${local.app_sa}"
+  member         = "serviceAccount:${google_service_account.app.email}"
 }
 
-resource "google_storage_bucket" "frames" {
-  count                       = var.frame_bucket == "" ? 0 : 1
-  name                        = var.frame_bucket
-  location                    = var.region
-  uniform_bucket_level_access = true
-  public_access_prevention    = "enforced"
-  force_destroy               = false
+resource "google_firestore_database" "default" {
+  name        = "(default)"
+  location_id = var.firestore_location
+  type        = "FIRESTORE_NATIVE"
+  depends_on  = [google_project_service.apis]
 }
 
-resource "google_storage_bucket_iam_member" "frames_app" {
-  count  = var.frame_bucket == "" ? 0 : 1
-  bucket = google_storage_bucket.frames[0].name
-  role   = "roles/storage.objectAdmin"
-  member = "serviceAccount:${local.app_sa}"
+resource "google_project_iam_member" "app_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.app.email}"
 }
 
-resource "google_secret_manager_secret" "app" {
-  for_each  = toset(local.secret_ids)
-  secret_id = each.value
+# Session signing key. Add a version after apply:
+#   openssl rand -base64 48 | gcloud secrets versions add SESSION_SECRET --data-file=-
+resource "google_secret_manager_secret" "session" {
+  secret_id = "SESSION_SECRET"
   replication {
     auto {}
   }
   depends_on = [google_project_service.apis]
 }
 
-resource "google_secret_manager_secret_iam_member" "app" {
-  for_each  = google_secret_manager_secret.app
-  secret_id = each.value.secret_id
+resource "google_secret_manager_secret_iam_member" "app_session" {
+  secret_id = google_secret_manager_secret.session.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${local.app_sa}"
+  member    = "serviceAccount:${google_service_account.app.email}"
 }
 
-# Direct VPC egress + Cloud NAT. Atlas allows the static address only.
-# Private Google Access keeps Healthcare and Gemini on *.googleapis.com.
-resource "google_compute_network" "app" {
-  name                    = var.network_name
-  auto_create_subnetworks = false
-  depends_on              = [google_project_service.apis]
-}
+# ---------------------------------------------------------------------------
+# Desktop downloads: public-read objects, uploaded by the release workflow.
+# ---------------------------------------------------------------------------
 
-resource "google_compute_subnetwork" "app" {
-  name                     = var.subnet_name
-  ip_cidr_range            = var.subnet_cidr
-  region                   = var.region
-  network                  = google_compute_network.app.id
-  private_ip_google_access = true
-}
-
-resource "google_compute_subnetwork_iam_member" "run_robot" {
-  project    = var.project_id
-  region     = var.region
-  subnetwork = google_compute_subnetwork.app.name
-  role       = "roles/compute.networkUser"
-  member     = "serviceAccount:service-${data.google_project.current.number}@serverless-robot-prod.iam.gserviceaccount.com"
-}
-
-data "google_project" "current" {
-  project_id = var.project_id
-}
-
-resource "google_compute_address" "egress" {
-  name   = "radlearn-egress"
-  region = var.region
-}
-
-resource "google_compute_router" "app" {
-  name    = "radlearn-router"
-  region  = var.region
-  network = google_compute_network.app.id
-}
-
-resource "google_compute_router_nat" "app" {
-  name                               = "radlearn-nat"
-  router                             = google_compute_router.app.name
-  region                             = var.region
-  nat_ip_allocate_option             = "MANUAL_ONLY"
-  nat_ips                            = [google_compute_address.egress.self_link]
-  source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
-
-  subnetwork {
-    name                    = google_compute_subnetwork.app.id
-    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
+resource "google_storage_bucket" "downloads" {
+  name                        = var.downloads_bucket
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "inherited"
+  versioning {
+    enabled = true
   }
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_storage_bucket_iam_member" "downloads_public" {
+  bucket = google_storage_bucket.downloads.name
+  role   = "roles/storage.objectViewer"
+  member = "allUsers"
+}
+
+# Optional private frame cache for /api/dicomweb (lib/frameCache.ts, S3-compatible
+# HMAC access). Empty name = no bucket; Healthcare stays the pixel source.
+resource "google_storage_bucket" "frames" {
+  count                       = var.frame_bucket == "" ? 0 : 1
+  name                        = var.frame_bucket
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "frames_app" {
+  count  = var.frame_bucket == "" ? 0 : 1
+  bucket = google_storage_bucket.frames[0].name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.app.email}"
 }
