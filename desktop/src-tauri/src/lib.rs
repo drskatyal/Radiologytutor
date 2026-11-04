@@ -1550,6 +1550,11 @@ pub fn run() {
                 trace("window + webview built");
                 #[cfg(target_os = "macos")]
                 {
+                    // The page paints its layers on the CPU, before it has
+                    // painted anything: WebKit's Metal-backed painting held
+                    // the page's main thread on the GPU for 0.5-1 s as a
+                    // study opened (mac_webkit.rs `paint_on_cpu`).
+                    mac_webkit::paint_on_cpu(&_window);
                     // The app menu (Quit, Edit's copy / paste, Window): nothing
                     // can use it before the page is up, >1 s from here.
                     if let Ok(menu) = tauri::menu::Menu::default(app.handle()) {

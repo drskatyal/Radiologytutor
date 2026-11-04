@@ -49,23 +49,61 @@ jobs:
           echo "RUNNER $(sysctl -n hw.ncpu) CPUs, $(uptime)"
           sudo -n true && echo "sudo ok"
           mkdir -p "$RUNNER_TEMP/samples"
-      - name: open gate, diag
+      - name: A open gate as CI (CPU painting)
         if: ${{ !cancelled() }}
-        timeout-minutes: 6
+        timeout-minutes: 8
+        continue-on-error: true
+        run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
+      - name: B open gate as CI, WebKit GPU painting (old)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
         continue-on-error: true
         env:
-          FLOWRAD_DIAG: "1"
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d1-open.jsonl
+          FLOWRAD_WEBKIT_GPU_PAINT: "1"
         run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
-      - name: open, diag, WebContent spindump from its launch
+      - name: A cold start gate as CI (CPU painting)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        continue-on-error: true
+        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms 900 --max-app-ms 150
+      - name: B cold start gate as CI, WebKit GPU painting (old)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          FLOWRAD_WEBKIT_GPU_PAINT: "1"
+        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms 900 --max-app-ms 150
+      - name: A frame times gate as CI (CPU painting)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        continue-on-error: true
+        run: node desktop/scripts/bench.mjs interact "$APP" "$RUNNER_TEMP/ct848" --max-frame-p95-ms 33 --max-dropped 3 --max-interaction-ms 50
+      - name: A open, diag (CPU painting)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         continue-on-error: true
         env:
           FLOWRAD_DIAG: "1"
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d2-open-sampled.jsonl
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d1-open-cpu.jsonl
+        run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
+      - name: B open, diag, GPU painting
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG: "1"
+          FLOWRAD_WEBKIT_GPU_PAINT: "1"
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d2-open-gpu.jsonl
+        run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
+      - name: A open, diag, WebContent spindump (CPU painting)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG: "1"
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d3-open-cpu-spindump.jsonl
         run: |
-          bash desktop/scripts/diag-sample-loop.sh "$RUNNER_TEMP/samples" 75 > "$RUNNER_TEMP/sample-loop.txt" 2>&1 &
+          bash desktop/scripts/diag-sample-loop.sh "$RUNNER_TEMP/samples" 60 > "$RUNNER_TEMP/sample-loop.txt" 2>&1 &
           looper=$!
           sleep 2
           node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 || true
