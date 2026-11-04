@@ -6,6 +6,9 @@
 //! does. On a study close the memory cache is emptied through the public
 //! WKWebsiteDataStore API: only the memory cache, never local storage
 //! (settings, bindings, history live there).
+//!
+//! Also how the page paints: on the CPU, not through WebKit's Metal-backed
+//! layer painting (`paint_on_cpu`), so its main thread never waits on the GPU.
 
 use objc2_foundation::{NSDate, NSSet, NSString};
 use objc2_web_kit::{WKWebView, WKWebsiteDataTypeMemoryCache};

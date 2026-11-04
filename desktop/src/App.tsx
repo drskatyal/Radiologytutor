@@ -5,7 +5,7 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -82,7 +82,6 @@ import { firstImagePixelStats } from "./viewer/pixelStats";
 import { paintHealth, sampleCanvas } from "./viewer/paintCheck";
 import { cacheFacts, gpuInfo, memoryStats } from "./viewer/memory";
 import { longTasks, markPhase } from "./perfWatch";
-import { diagMark, diagOn, diagPoll, diagSnapshot } from "./diag";
 import { onActivity } from "./activity";
 import { nativeEnabled, nativeKnown, settleNativeAtStart, warmNative } from "./native/nativeLayout";
 import { insidePicker, onSeriesDrop, onSeriesToMonitor, setMonitorSource, useSeriesDrag } from "./viewer/seriesDrag";
@@ -212,8 +211,6 @@ function whenNativeKnown(): Promise<boolean> {
 }
 
 export default function App() {
-  diagMark("App render");
-  useLayoutEffect(() => diagMark("App commit"));
   const { toast } = useToast();
   const [version, setVersion] = useState("");
   const [settings, setSettings] = useState<ViewerSettings>(DEFAULT_SETTINGS);
@@ -635,9 +632,7 @@ export default function App() {
       bench.current.firstPaint = undefined;
       // The study view's chunks load while Rust scans (they were fetched one
       // after another once the first series hung: the first image waited on them).
-      diagMark("open start");
       void preloadStudyView().then(() => {
-        diagMark("view chunks loaded");
         if (seq === openSeq.current) bench.current.marks.viewChunksMs = performance.now() - t0;
       });
       resetWorkspace();
@@ -646,7 +641,6 @@ export default function App() {
       setGrowing(true);
 
       await initProtocol();
-      diagMark("open: protocol ready");
       const acc = new Map<string, DesktopHeader>();
       let timer = 0;
       let firstShown = false;
@@ -672,12 +666,10 @@ export default function App() {
         }
         building = true;
         markPhase("study: group series");
-        diagMark("rebuild: start");
         const built = await buildStudiesSliced([...acc.values()], {
           isCancelled: () => seq !== openSeq.current || scanDone,
           onStats: groupStats,
         });
-        diagMark("rebuild: grouped");
         building = false;
         if (!built || seq !== openSeq.current || scanDone) return;
         // Every rebuild renders at low priority (time-sliced) instead of as
@@ -690,7 +682,6 @@ export default function App() {
         if (!firstShown && built.length) {
           firstShown = true;
           bench.current.marks.firstSeriesHungMs = performance.now() - t0;
-          diagMark("first series hung");
           // The study is on screen and its preview is loading: compile the
           // engine meanwhile (not at page load: on a cold disk that delayed the preview).
           // Native mode: the JS engine is only for series the native path
@@ -724,10 +715,7 @@ export default function App() {
           },
           onBatch: (batch) => {
             if (seq !== openSeq.current) return;
-            if (!bench.current.marks.firstHeaderMs) {
-              bench.current.marks.firstHeaderMs = performance.now() - t0;
-              diagMark("open: first batch received");
-            }
+            if (!bench.current.marks.firstHeaderMs) bench.current.marks.firstHeaderMs = performance.now() - t0;
             // The batch's own objects (fresh from IPC, ours): no copy per
             // header; the scan result hands these same objects back.
             for (const h of batch) {
@@ -834,7 +822,6 @@ export default function App() {
           // The shell also prints FLOWRAD_BENCH_SCAN the moment the scan ends,
           // and a watchdog line if nothing is reported at all.
           const report = async (paintTimedOut = false) => {
-            await diagPoll();
             const startup = await invoke<number>("startup_elapsed_ms").catch(() => 0);
             const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             await benchReport({
@@ -900,7 +887,6 @@ export default function App() {
               engineStartMs: engineTimings.startAt != null ? Math.round(engineTimings.startAt - bench.current.t0) : undefined,
               engineSteps: engineTimings.steps,
               longTasks: { count: longTasks.count, maxMs: longTasks.maxMs, totalMs: longTasks.totalMs, recent: longTasks.recent },
-              ...(diagOn ? { diag: diagSnapshot() } : {}),
               engineReadyMs: engineTimings.readyAt != null ? Math.round(engineTimings.readyAt - bench.current.t0) : undefined,
               processUptimeMs: startup,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
@@ -1194,9 +1180,7 @@ export default function App() {
       // A secondary window (another monitor) shows what its opener hands it:
       // no launch paths, no start-screen warm-up, no cold-start report.
       if (isSecondaryWindow) return;
-      diagMark("launch paths asked");
       const initial = await takeLaunchPaths();
-      diagMark("launch paths received");
       // A study on the command line opens at once. The engine starts the
       // moment the instant preview is on screen (onPreview), not here:
       // measured, starting it with the scan put the preview at 440 ms (was 200).
@@ -1264,7 +1248,6 @@ export default function App() {
               pageToPaintMs: now,
               windowReadyMs: bench.current.marks.windowReadyMs,
               ...(heap ? { jsHeapMb: Math.round(heap.usedJSHeapSize / 1048576) } : {}),
-              ...(diagOn ? { diag: diagSnapshot(), diagProcessAtNow: ms, diagNow: now } : {}),
             });
           })
         );

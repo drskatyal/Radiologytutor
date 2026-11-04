@@ -8,7 +8,6 @@
 
 import type { DesktopHeader, ScanProgress, ScanResult } from "./types";
 import { assembleStreamedHeaders } from "./streamedScan";
-import { diagInvoke, diagOn } from "./diag";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>, options?: { headers?: Record<string, string> }) => Promise<T>;
 
@@ -22,11 +21,6 @@ function tauriInvoke(): Promise<Invoke> {
 }
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (diagOn) {
-    const started = performance.now();
-    const fn = await tauriInvoke();
-    return fn<T>(cmd, args).finally(() => diagInvoke(cmd, started));
-  }
   const fn = await tauriInvoke();
   return fn<T>(cmd, args);
 }

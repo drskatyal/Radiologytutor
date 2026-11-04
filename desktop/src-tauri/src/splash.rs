@@ -672,7 +672,6 @@ mod mac {
             return;
         }
         on_main(move || {
-            crate::mac_diag::event(format!("main: splash remove ({by})"));
             let Some(stale) = crate::mac_splash::remove() else { return };
             SHOWN.store(false, Ordering::Release);
             if crate::bench_on() {

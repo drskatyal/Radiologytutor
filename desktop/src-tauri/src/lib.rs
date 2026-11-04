@@ -14,8 +14,6 @@ mod documents;
 mod header;
 mod image_store;
 #[cfg(target_os = "macos")]
-mod mac_diag;
-#[cfg(target_os = "macos")]
 mod mac_mouse;
 #[cfg(target_os = "macos")]
 mod mac_splash;
@@ -103,13 +101,7 @@ static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 pub(crate) fn release_memory_everywhere() {
     release_memory();
     if let Some(app) = APP.get() {
-        let _ = app.run_on_main_thread(|| {
-            #[cfg(target_os = "macos")]
-            mac_diag::event("main: mi_collect start");
-            unsafe { libmimalloc_sys::mi_collect(true) };
-            #[cfg(target_os = "macos")]
-            mac_diag::event("main: mi_collect end");
-        });
+        let _ = app.run_on_main_thread(|| unsafe { libmimalloc_sys::mi_collect(true) });
     }
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -189,8 +181,6 @@ async fn scan_sources(
     on_batch: tauri::ipc::Channel<Vec<header::Header>>,
 ) -> Result<ScanResult, String> {
     let entered_at = startup_elapsed_ms();
-    #[cfg(target_os = "macos")]
-    mac_diag::on_open();
     let cache = cache_dir(&app)?;
     let cancel = state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
@@ -543,10 +533,6 @@ fn set_memory_mode(window: tauri::WebviewWindow, low: bool, trim: Option<bool>, 
 /// `FLOWRAD_BENCH_EXIT=1`. Used by `desktop/scripts/bench.mjs`.
 #[tauri::command]
 fn bench_report(app: tauri::AppHandle, report: serde_json::Value) {
-    #[cfg(target_os = "macos")]
-    if mac_diag::enabled() {
-        bench_emit("FLOWRAD_DIAG", &mac_diag::report());
-    }
     bench_emit("FLOWRAD_BENCH", &report);
     if crate::flowrad_env("BENCH_EXIT").as_deref() == Ok("1") {
         app.exit(0);
@@ -580,8 +566,6 @@ fn mark(i: usize) {
 static TRACE: parking_lot::Mutex<Vec<(&'static str, f64)>> = parking_lot::Mutex::new(Vec::new());
 
 pub(crate) fn trace(label: &'static str) {
-    #[cfg(target_os = "macos")]
-    mac_diag::event(label);
     if let Some(t) = STARTED.get() {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         let mut v = TRACE.lock();
@@ -1470,10 +1454,6 @@ pub fn run() {
         // monitors go with it (their webviews and memory with them).
         .on_window_event(|window, event| {
             if window.label() == "main" {
-                #[cfg(target_os = "macos")]
-                if mac_diag::enabled() {
-                    mac_diag::event(format!("window event: {}", format!("{event:?}").chars().take(80).collect::<String>()));
-                }
                 if let tauri::WindowEvent::Destroyed = event {
                     window.app_handle().exit(0);
                 }
@@ -1482,8 +1462,6 @@ pub fn run() {
                     if let Some(native) = window.app_handle().try_state::<native::Shared>() {
                         native.resize(size.width, size.height);
                         let _ = native.render(window.scale_factor().unwrap_or(1.0));
-                        #[cfg(target_os = "macos")]
-                        mac_diag::event("resized: native render done");
                     }
                 }
             }
@@ -1503,10 +1481,6 @@ pub fn run() {
                 tauri::webview::PageLoadEvent::Finished => {
                     mark(2);
                     trace("page load finished");
-                    #[cfg(target_os = "macos")]
-                    if main {
-                        mac_diag::on_page_loaded();
-                    }
                     // The page reports its first paint (`splash_done`); if it
                     // never does, the native splash still goes.
                     if main {
@@ -1520,8 +1494,6 @@ pub fn run() {
         // the moment the window is on screen, while WebView2 starts.
         .setup(move |app| {
             trace("setup");
-            #[cfg(target_os = "macos")]
-            mac_diag::start();
             let _ = APP.set(app.handle().clone());
             if let Some(config) = &main_window {
                 if let Some(t0) = STARTED.get() {
@@ -1539,8 +1511,6 @@ pub fn run() {
                 } else {
                     builder
                 };
-                #[cfg(target_os = "macos")]
-                let builder = if mac_diag::enabled() { builder.initialization_script("window.__flowradDiag = 1") } else { builder };
                 let built = builder.build();
                 // macOS: the splash's first-show hook goes, built or not.
                 #[cfg(target_os = "macos")]
@@ -1550,7 +1520,7 @@ pub fn run() {
                 trace("window + webview built");
                 #[cfg(target_os = "macos")]
                 {
-                    // The page paints its layers on the CPU, before it has
+                    // The page paints its layers on the CPU, set before it has
                     // painted anything: WebKit's Metal-backed painting held
                     // the page's main thread on the GPU for 0.5-1 s as a
                     // study opened (mac_webkit.rs `paint_on_cpu`).
@@ -1584,7 +1554,6 @@ pub fn run() {
                 // the WKWebView existed) moves over the WKWebView now.
                 #[cfg(target_os = "macos")]
                 if let Ok(ns_window) = _window.ns_window() {
-                    mac_diag::set_window(ns_window);
                     let handle = app.handle().clone();
                     splash::attach(ns_window, move |f| {
                         let _ = handle.run_on_main_thread(f);

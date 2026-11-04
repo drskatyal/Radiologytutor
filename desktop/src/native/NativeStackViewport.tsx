@@ -25,7 +25,6 @@ import { cn } from "@/components/ui/cn";
 import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
 import { Spinner } from "@/components/ui/Spinner";
 import { invoke } from "../platform";
-import { diagMark } from "../diag";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
@@ -224,7 +223,6 @@ export default function NativeStackViewport({
     // instead of at 0 x 0 until the layout flush lands.
     const box = elementRef.current?.getBoundingClientRect();
     const rect = box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, w: box.width, h: box.height } : null;
-    diagMark("viewport: native_cell_series sent");
     void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0, rect }).then(
       (r) => {
         busyRef.current = false;
@@ -279,9 +277,7 @@ export default function NativeStackViewport({
     const sent = sentRef.current;
     const full = sent === null || sent.cell !== cellKey || sent.uid !== series.uid;
     if (full && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
-      diagMark("viewport: resize observer armed");
       const observer = new ResizeObserver(() => {
-        diagMark("viewport: resize observer fired");
         observer.disconnect();
         syncSeries();
       });

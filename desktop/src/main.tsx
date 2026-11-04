@@ -1,4 +1,3 @@
-import { diagMark } from "./diag";
 import { StrictMode, Suspense, lazy, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ToastProvider } from "./toast";
@@ -74,7 +73,6 @@ function appStylesheet(): Promise<void> {
   });
 }
 
-diagMark("main.tsx evaluated");
 void appStylesheet().then(() =>
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
