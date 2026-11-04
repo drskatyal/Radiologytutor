@@ -1553,6 +1553,10 @@ pub fn run() {
                 let _window = built?;
                 mark(3);
                 trace("window + webview built");
+                if crate::flowrad_env("DIAG_EARLY_CLEAR").as_deref() == Ok("1") {
+                    let _ = _window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    trace("diag: webview transparent at build");
+                }
                 // macOS: the splash (on since the window was first shown, before
                 // the WKWebView existed) moves over the WKWebView now.
                 #[cfg(target_os = "macos")]

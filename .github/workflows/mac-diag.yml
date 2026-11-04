@@ -51,34 +51,34 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 3
         run: python desktop/scripts/e2e-splash.py "$APP"
-      - name: diag cold start (first)
+      - name: diag open (first)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
-        run: node .github/diag/diag-run.mjs "$APP" 3
-      - name: diag cold start, GPU lazy
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_GPU_WARM: lazy
-        run: node .github/diag/diag-run.mjs "$APP" 3
-      - name: diag cold start, native off
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_NATIVE: "0"
-        run: node .github/diag/diag-run.mjs "$APP" 3
-      - name: diag cold start, no default menu
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_DIAG_NO_MENU: "1"
-        run: node .github/diag/diag-run.mjs "$APP" 3
-      - name: diag cold start, splash off
+        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
+      - name: diag open, splash off
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         env:
           FLOWRAD_NATIVE_SPLASH: "0"
-        run: node .github/diag/diag-run.mjs "$APP" 3
+        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
+      - name: diag open, webview transparent at build
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_DIAG_EARLY_CLEAR: "1"
+        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
+      - name: diag open, GPU lazy
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_GPU_WARM: lazy
+        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
+      - name: diag open, native off
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_NATIVE: "0"
+        run: node .github/diag/diag-run.mjs "$APP" 2 "$RUNNER_TEMP/ct848"
       - name: coldstart gate (as CI)
         if: ${{ !cancelled() }}
         timeout-minutes: 6

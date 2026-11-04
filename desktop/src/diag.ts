@@ -31,6 +31,16 @@ export function startDiag(): void {
         last = now;
         if (now > end) window.clearInterval(timer);
       }, 10);
+      // Rendering updates (rAF / ResizeObserver run in them): a late frame
+      // with on-time timers is WebKit holding rendering, not a busy page.
+      let lastFrame = performance.now();
+      const frame = (now: number) => {
+        if (now - lastFrame > 50) log({ frameGapAt: Math.round(lastFrame), ms: Math.round(now - lastFrame), visibility: document.visibilityState });
+        lastFrame = now;
+        if (now < end) requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+      document.addEventListener("visibilitychange", () => log({ visibility: document.visibilityState, at: Math.round(performance.now()) }));
       try {
         new PerformanceObserver((list) => {
           for (const e of list.getEntries() as PerformanceResourceTiming[]) {
