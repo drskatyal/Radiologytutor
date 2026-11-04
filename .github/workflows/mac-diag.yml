@@ -67,6 +67,12 @@ jobs:
         env:
           FLOWRAD_NATIVE: "0"
         run: node .github/diag/diag-run.mjs "$APP" 3
+      - name: diag cold start, no default menu
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          FLOWRAD_DIAG_NO_MENU: "1"
+        run: node .github/diag/diag-run.mjs "$APP" 3
       - name: diag cold start, splash off
         if: ${{ !cancelled() }}
         timeout-minutes: 6

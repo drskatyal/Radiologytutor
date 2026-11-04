@@ -1472,9 +1472,26 @@ pub fn run() {
     trace("tauri build");
 
     let app = tauri::Builder::default()
+        .enable_macos_default_menu(crate::flowrad_env("DIAG_NO_MENU").as_deref() != Ok("1"))
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("flowrad-trace-first")
+                .setup(|_, _| {
+                    trace("plugins: first");
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("flowrad-trace-last")
+                .setup(|_, _| {
+                    trace("plugins: last");
+                    Ok(())
+                })
+                .build(),
+        )
         .manage(state)
         .manage(viewer_windows::WindowHandoff::default())
         .manage(native::Shared::default())
