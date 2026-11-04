@@ -156,6 +156,17 @@ const SettingsDialog = named<typeof import("./components/Dialogs").SettingsDialo
 
 type ScanState = { label: string; progress: ScanProgress | null } | null;
 
+/**
+ * macOS: how long an open runs before its "Reading study" overlay shows. The
+ * page paints on the CPU there (src-tauri mac_webkit.rs `paint_on_cpu`), and a
+ * warm open hangs its first series 40-180 ms after it starts (CI), so an
+ * overlay shown at once was painted, then painted over by the study, for
+ * nothing, on the first image's path (and flashed on screen). A slower open
+ * (cold disk, a large study, a disc) still shows it, with its Cancel button.
+ * Elsewhere it shows at once, as before.
+ */
+const SCAN_OVERLAY_DELAY_MS = isMac() ? 250 : 0;
+
 const cellKey = (i: number) => `cell-${i}`;
 /** Tools in the right-click menu, in order. */
 const MENU_TOOLS = [
@@ -218,6 +229,20 @@ export default function App() {
   const [studies, setStudies] = useState<ViewerStudy[]>([]);
   const [source, setSource] = useState<OpenedSource | null>(null);
   const [scan, setScan] = useState<ScanState>(null);
+  // The "Reading study" overlay: at once, or on macOS once the open has run
+  // for SCAN_OVERLAY_DELAY_MS.
+  const scanning = scan != null;
+  const [scanOverlayDue, setScanOverlayDue] = useState(false);
+  useEffect(() => {
+    if (SCAN_OVERLAY_DELAY_MS === 0) return;
+    if (!scanning) {
+      setScanOverlayDue(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setScanOverlayDue(true), SCAN_OVERLAY_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [scanning]);
+  const showScanOverlay = scanning && (SCAN_OVERLAY_DELAY_MS === 0 || scanOverlayDue);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [growing, setGrowing] = useState(false);
   const [layout, setLayout] = useState({ rows: 1, cols: 1 });
@@ -2856,7 +2881,7 @@ export default function App() {
           />
         )}
 
-        {scan && (
+        {scan && showScanOverlay && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-canvas/80 backdrop-blur-sm" role="status" aria-live="polite">
             <div className="flex w-[360px] flex-col items-center gap-4 rounded-2xl border border-subtle bg-elevated p-6 shadow-lg">
               <Spinner label="Reading study" />

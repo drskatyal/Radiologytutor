@@ -47,7 +47,7 @@ jobs:
       - run: npx tauri build --no-bundle
         working-directory: desktop
       - run: python scripts/make-test-ct.py "$RUNNER_TEMP/ct848" --slices 848
-      - name: open gate and frame-time gate, variants interleaved x3
+      - name: open gate and frame-time gate, final code (C) vs GPU painting (G), interleaved x4
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
@@ -61,8 +61,8 @@ jobs:
               GF) export FLOWRAD_WEBKIT_GPU_PAINT=1 FLOWRAD_DIAG_CSS=flat ;;
             esac
           }
-          for i in 1 2 3; do
-            for v in C G GN GF; do
+          for i in 1 2 3 4; do
+            for v in C G; do
               variant $v
               echo "== $v#$i open"
               node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu 2>&1 | grep -E "open timeline|gate failed" | sed -E 's/.*(first series hung [0-9]+).*(viewport asked [0-9]+ · first image [0-9]+)/  \1 · \2/'
