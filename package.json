@@ -1,5 +1,5 @@
 {
-  "name": "flowrad-learn",
+  "name": "flowrad-viewer",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --tsconfig tsconfig.test.json --test lib/*.test.ts lib/harness/*.test.ts lib/dicomImport/*.test.ts lib/dicomCdn/*.test.ts",
+    "test": "tsx --tsconfig tsconfig.test.json --test lib/*.test.ts lib/dicomImport/*.test.ts lib/dicomCdn/*.test.ts lib/cloud/*.test.ts",
     "test:access": "node scripts/access-harness.mjs",
     "eval:tutor": "tsx scripts/eval-tutor.ts",
     "eval:record-guide": "tsx scripts/eval-recorded-tour.ts",
@@ -41,6 +41,7 @@
     "clsx": "^2.1.1",
     "dicom-parser": "^1.8.21",
     "dicomweb-client": "^0.10.4",
+    "firebase": "^11.10.0",
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.21.0",
     "mongodb": "^6.21.0",

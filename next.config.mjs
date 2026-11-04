@@ -12,8 +12,32 @@ const nextConfig = {
   // Offline voice commands: the ~40 MB model and the recognizer worker change
   // only with scripts/voice-model.sha256 / vosk-browser. Cache them, so a
   // second "mic on" (or a hover warm-up) reads them from disk, not the network.
+  async redirects() {
+    return [{ source: "/viewer/local", destination: "/viewer", permanent: true }];
+  },
   async headers() {
     return [
+      // Framing: only /embed/<token> may be put in another site's iframe.
+      // Everything else (sign-in, library, share management) refuses framing,
+      // so it cannot be clickjacked.
+      {
+        source: "/:path((?!embed/).*)",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        ],
+      },
+      {
+        source: "/embed/:path*",
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors *" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          // Share tokens are in the URL: never leak them to the embedding page's links.
+          { key: "Referrer-Policy", value: "no-referrer" },
+        ],
+      },
       {
         source: "/voice/:path*",
         headers: [{ key: "Cache-Control", value: "public, max-age=604800, stale-while-revalidate=86400" }],
@@ -33,9 +57,6 @@ const nextConfig = {
       "@aws-sdk/s3-request-presigner",
       "mongodb",
       "dicom-parser",
-      "better-auth",
-      "@better-auth/mongo-adapter",
-      "@better-auth/memory-adapter",
       // Server-side HTJ2K / JPEG encoders for lib/dicomCdn (emscripten glue
       // finds its .wasm via __dirname, so it must not be bundled).
       "@cornerstonejs/codec-openjph",

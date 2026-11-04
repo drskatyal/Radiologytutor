@@ -1197,11 +1197,11 @@ function SignupPrompt({ onDismiss, dark = false }: { onDismiss: () => void; dark
         Keep this study?
       </p>
       <p className={cn("mt-1 text-xs", dark ? "text-white/70" : "text-secondary")}>
-        A free account lets you save, share, teach with it, ask the AI tutor and compare priors.
-        Viewing stays free without one.
+        A free account lets you anonymise it in your browser, store it, write it up and share a
+        view-only link. Viewing stays free without one.
       </p>
       <Link
-        href="/sign-up?next=/viewer"
+        href="/sign-in?next=/library"
         // No prefetch: after a drop this page makes no request it does not need.
         prefetch={false}
         className="mt-2 inline-block rounded text-xs font-semibold text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"

@@ -3,13 +3,29 @@
 @tailwind utilities;
 
 /* ──────────────────────────────────────────────────────────────────────────
-   RadLearn — design tokens.
+   FlowRad Viewer — design tokens.
 
-   Daylight teaching product: warm paper, white surfaces, cobalt signal.
-   Imaging viewports stay pure black. Backgrounds are flat. No gold.
+   Warm paper, white surfaces, FlowRad green (#0F4D3A) as the one accent.
+   Imaging viewports stay pure black. Fonts are self-hosted (public/fonts):
+   Inter for UI, Cormorant Garamond for display titles. No font CDNs.
    ────────────────────────────────────────────────────────────────────────── */
+@font-face {
+  font-family: "Inter";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/fonts/inter-var.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Cormorant Garamond";
+  font-weight: 500;
+  font-display: swap;
+  src: url(/fonts/cormorant-500.woff2) format("woff2");
+}
+
 :root {
   color-scheme: light;
+  --font-sans: "Inter";
+  --font-display: "Cormorant Garamond";
 
   /* Paper, white, warm hover. Not a black void. */
   --canvas: 247 245 241; /* #F7F5F1 */
@@ -24,17 +40,17 @@
   --border-subtle: 226 221 212; /* #E2DDD4 */
   --border-strong: 186 180 170; /* #BAB4AA */
 
-  /* Signal cobalt. High contrast on paper and on the black viewport. */
-  --accent: 28 58 214; /* #1C3AD6 */
+  /* FlowRad green. High contrast on paper (11:1 on white). */
+  --accent: 15 77 58; /* #0F4D3A */
   --accent-foreground: 255 255 255;
-  --accent-muted: 226 231 252; /* #E2E7FC */
-  --accent-bright: 47 84 255;
+  --accent-muted: 232 241 237; /* #E8F1ED */
+  --accent-bright: 46 139 106; /* #2E8B6A, visible on the black viewport */
 
   /* Semantic, darkened so they hold on paper. */
   --success: 20 122 72;
   --warning: 140 84 12;
   --danger: 176 42 36;
-  --info: 28 58 214;
+  --info: 30 90 160;
 
   --radius: 0.5rem;
 
@@ -242,4 +258,10 @@
   #certificate-document * {
     color: inherit !important;
   }
+}
+
+/* On the black imaging surface the brand green is too dark to read as a
+   selection or focus colour; use the bright green there. */
+.bg-imaging {
+  --accent: 46 139 106;
 }
