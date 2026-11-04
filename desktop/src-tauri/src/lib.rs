@@ -1065,16 +1065,49 @@ async fn native_cell_view(
     patch: native_view::ViewPatch,
     native: tauri::State<'_, native::Shared>,
 ) -> Result<native::ShowResult, String> {
+    let entered = diag_epoch_ms();
     let scale = window.scale_factor().unwrap_or(1.0);
+    let scaled = diag_epoch_ms();
     let native = native.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || native.update_view(&id, patch, scale)).await.map_err(|e| e.to_string())?
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let ran = diag_epoch_ms();
+        native.update_view(&id, patch, scale).map(|r| (r, ran, diag_epoch_ms()))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    r.map(|(r, ran, done)| diag_ipc(r, entered, scaled, ran, done))
 }
 
 #[tauri::command]
 async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
+    let entered = diag_epoch_ms();
     let scale = window.scale_factor().unwrap_or(1.0);
+    let scaled = diag_epoch_ms();
     let native = native.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || native.scroll(&id, delta, scale)).await.map_err(|e| e.to_string())?
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let ran = diag_epoch_ms();
+        native.scroll(&id, delta, scale).map(|r| (r, ran, diag_epoch_ms()))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    r.map(|(r, ran, done)| diag_ipc(r, entered, scaled, ran, done))
+}
+
+/// DIAG (temporary): wall-clock ms (the page's performance.timeOrigin + now()).
+fn diag_epoch_ms() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+}
+
+/// DIAG (temporary): the command's own marks, on the wall clock.
+fn diag_ipc(mut r: native::ShowResult, entered: f64, scaled: f64, ran: f64, done: f64) -> native::ShowResult {
+    let ipc = serde_json::json!({ "entered": entered, "scaleMs": scaled - entered, "queuedMs": ran - scaled, "showMs": done - ran, "returned": diag_epoch_ms() });
+    match r.diag.as_mut().and_then(|d| d.as_object_mut()) {
+        Some(o) => {
+            o.insert("ipc".into(), ipc);
+        }
+        None => r.diag = Some(serde_json::json!({ "ipc": ipc })),
+    }
+    r
 }
 
 /// P2.4: a plane / slab of the built Rust volume in a native cell.
@@ -1499,7 +1532,12 @@ pub fn run() {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
                 }
-                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
+                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
+                    // DIAG (temporary): when the page's own files are served.
+                    .on_web_resource_request(|req, _res| {
+                        let p = req.uri().path();
+                        trace(if p == "/" || p.ends_with(".html") { "DIAG html served" } else if p.ends_with(".css") { "DIAG css served" } else if p.ends_with(".js") { "DIAG js served" } else { "DIAG asset served" });
+                    });
                 // macOS, GPU built at launch: the page is transparent over the
                 // native surface from its first line (styles.css
                 // `native-transparent`), not restyled when native_init answers

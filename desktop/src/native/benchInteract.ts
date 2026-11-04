@@ -25,6 +25,8 @@ interface Shown {
   decodeMs: number;
   totalMs: number;
   view: { zoom: number; wl: [number, number] };
+  /** DIAG (temporary). */
+  diag?: unknown;
 }
 
 export async function profileNativeInteraction(cellId: string) {
@@ -40,19 +42,24 @@ export async function profileNativeInteraction(cellId: string) {
   const rustFrame: number[] = [];
   // The slowest step and where its time went (decode / cache vs. drawing and
   // presenting the frame), so a freeze names its cause.
-  let slowest: { kind: string; step: number; ms: number; rustMs: number; decodeMs: number; frameMs: number; acquireMs: number | null } | null = null;
+  let slowest: { kind: string; step: number; ms: number; rustMs: number; decodeMs: number; frameMs: number; acquireMs: number | null; diag?: unknown } | null = null;
+  // DIAG (temporary): the first steps of each kind, on the wall clock.
+  const firstSteps: unknown[] = [];
+  const wall = () => performance.timeOrigin + performance.now();
   const run = async (kind: string, steps: number, act: (i: number) => Promise<Shown>) => {
     const out: number[] = [];
     for (let i = 0; i < steps; i += 1) {
       await nextFrame();
       const t0 = performance.now();
+      const w0 = wall();
       const r = await act(i);
       const ms = performance.now() - t0;
+      if (i < 4) firstSteps.push({ kind, step: i, ms: Math.round(ms * 10) / 10, sent: w0, resolved: wall(), rustMs: r.totalMs, diag: r.diag });
       out.push(ms);
       rustFrame.push(r.totalMs);
       if (!slowest || ms > slowest.ms) {
         const r1 = (x: number) => Math.round(x * 10) / 10;
-        slowest = { kind, step: i, ms: r1(ms), rustMs: r1(r.totalMs), decodeMs: r1(r.decodeMs), frameMs: r1(r.frameMs), acquireMs: r.acquireMs != null ? r1(r.acquireMs) : null };
+        slowest = { kind, step: i, ms: r1(ms), rustMs: r1(r.totalMs), decodeMs: r1(r.decodeMs), frameMs: r1(r.frameMs), acquireMs: r.acquireMs != null ? r1(r.acquireMs) : null, diag: r.diag };
       }
     }
     return out;
@@ -72,6 +79,7 @@ export async function profileNativeInteraction(cellId: string) {
     // Inside Rust (decode / cache + upload + draw + present), per step.
     native: stats(rustFrame),
     slowest,
+    firstSteps,
     frames: {
       ...frames,
       over33: intervals.slice(1).filter((x) => x > 33.4).length,

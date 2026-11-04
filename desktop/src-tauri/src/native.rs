@@ -364,6 +364,9 @@ pub struct ShowResult {
     pub default_window: Option<(f64, f64)>,
     /// Largest value in the image (the page derives "is anything visible").
     pub data_max: i16,
+    /// DIAG (temporary): where the call's time went.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diag: Option<serde_json::Value>,
 }
 
 /// A region in image pixel coordinates (col, row).
@@ -471,7 +474,7 @@ impl Native {
         s.warm_ms = *LAST_WARM_MS.lock();
         s.cells = self.cells.lock().len();
         #[cfg(target_os = "macos")]
-        if let Some(gpu) = self.gpu.lock().as_ref() {
+        if let Some(gpu) = self.lock_gpu("status").as_ref() {
             s.gpu_allocated_mb = metal_allocated_mb(&gpu.device);
         }
         s
@@ -514,14 +517,14 @@ impl Native {
     }
 
     pub fn has_gpu(&self) -> bool {
-        self.gpu.lock().is_some()
+        self.lock_gpu("has_gpu").is_some()
     }
 
     /// The GPU should be (re)built before drawing: not there, and the last
     /// attempt did not fail (a failed init is not retried on every call; the
     /// page has fallen back to the JS renderer then).
     pub fn needs_gpu(&self) -> bool {
-        enabled() && self.gpu.lock().is_none() && self.status.lock().error.is_none()
+        enabled() && self.lock_gpu("needs_gpu").is_none() && self.status.lock().error.is_none()
     }
 
     /// Lazy mode: drop the device, swap chain and pipelines when no viewport
@@ -543,7 +546,7 @@ impl Native {
     }
 
     pub fn resize(&self, width: u32, height: u32) {
-        if let Some(gpu) = self.gpu.lock().as_mut() {
+        if let Some(gpu) = self.lock_gpu("resize").as_mut() {
             if width > 0 && height > 0 && (gpu.config.width != width || gpu.config.height != height) {
                 gpu.config.width = width;
                 gpu.config.height = height;
@@ -591,7 +594,7 @@ impl Native {
     }
 
     fn upload_rgba(&self, id: &str, w: usize, h: usize, rgb: &[u8]) -> Result<(), String> {
-        let guard = self.gpu.lock();
+        let guard = self.lock_gpu("upload_rgba");
         let gpu = guard.as_ref().ok_or("native renderer not initialised")?;
         let mut cells = self.cells.lock();
         let c = cells.get_mut(id).ok_or("no such viewport")?;
@@ -803,7 +806,7 @@ impl Native {
         // wgpu destroys dropped textures / buffers only once the GPU is done
         // with them, on a later poll: wait for that now rather than at the
         // next frame (none may come on the home screen).
-        if let Some(gpu) = self.gpu.lock().as_mut() {
+        if let Some(gpu) = self.lock_gpu("close_all").as_mut() {
             #[cfg(target_os = "macos")]
             {
                 report.gpu_allocated_unflushed_mb = metal_allocated_mb(&gpu.device);
@@ -841,7 +844,7 @@ impl Native {
         let store = self.store.get()?;
         let n = store.stats().slices;
         store.clear();
-        if let Some(gpu) = self.gpu.lock().as_mut() {
+        if let Some(gpu) = self.lock_gpu("sweep_if_idle").as_mut() {
             flush_and_wait(gpu);
             // A frame drawn after the close (an in-flight call) unparked it.
             #[cfg(target_os = "macos")]
@@ -884,6 +887,7 @@ impl Native {
 
     fn show(&self, id: &str, patch: Option<ViewPatch>, reset_wl: bool, scale: f64) -> Result<ShowResult, String> {
         let started = Instant::now();
+        diag_begin(started);
         // 0. A volume plane: resample it (multi-core, from the shared volume).
         let plane_src = {
             let mut cells = self.cells.lock();
@@ -931,6 +935,7 @@ impl Native {
                 transform: Transform::new(&c.view, w, h, c.rect.w, c.rect.h),
                 default_window,
                 data_max,
+                diag: None,
             });
         }
         // 1. Apply the view and find the slice + what to prefetch (no GPU lock held).
@@ -963,6 +968,7 @@ impl Native {
                 (Some(c.series[index].clone()), ahead, c.series.len())
             }
         };
+        diag_phase("view applied");
         // 2. Decode (or take from the cache) outside every lock.
         let store = self.store();
         let mut cached = true;
@@ -979,6 +985,7 @@ impl Native {
             }),
             None => None,
         };
+        diag_phase(if cached { "cache hit" } else { "decoded" });
         // 3. Upload and draw.
         let default_window = slice.as_ref().map(|s| s.window.unwrap_or_else(|| data_window(s)));
         if reset_wl {
@@ -989,11 +996,15 @@ impl Native {
         if let (Some(p), Some(s)) = (&path, &slice) {
             self.upload(id, p, s)?;
         }
+        diag_phase("uploaded");
         let frame_ms = self.render(scale)?;
+        diag_phase("rendered");
         if !ahead.is_empty() {
             store.prefetch(ahead);
         }
+        diag_phase("prefetch queued");
         let cells = self.cells.lock();
+        diag_phase("cells locked (tail)");
         let c = cells.get(id).ok_or("viewport closed")?;
         let (cols, rows) = slice.as_ref().map(|s| (s.cols, s.rows)).unwrap_or((TEST_SIZE as usize, TEST_SIZE as usize));
         Ok(ShowResult {
@@ -1011,20 +1022,23 @@ impl Native {
             transform: Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h),
             default_window,
             data_max: slice.as_ref().map(|s| s.data.iter().copied().max().unwrap_or(0)).unwrap_or(0),
+            diag: diag_end(),
         })
     }
 
     /// Make sure the cell's slice buffer holds `slice` (reused across a series).
     fn upload(&self, id: &str, path: &std::path::Path, slice: &Slice) -> Result<(), String> {
-        let guard = self.gpu.lock();
+        let guard = self.lock_gpu("upload");
         let gpu = guard.as_ref().ok_or("native renderer not initialised")?;
         let mut cells = self.cells.lock();
+        diag_phase("upload: cells locked");
         let c = cells.get_mut(id).ok_or("no such viewport")?;
         let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_image));
         if matches!(&cg.image, Some((p, CellImage::Slice(_))) if p == path) {
             return Ok(());
         }
         let bytes = slice_bytes(&slice.data);
+        diag_phase("upload: bytes");
         // A new buffer per slice in write-back memory where the adapter
         // shares it (no GPU copy); the one it replaces is freed once the
         // frames that read it are done.
@@ -1044,9 +1058,12 @@ impl Native {
         };
         let fresh = reuse.is_none();
         let buffer = reuse.unwrap_or_else(|| slice_buffer(&gpu.device, slice.cols, slice.rows));
+        diag_phase(if fresh { "upload: NEW buffer" } else { "upload: buffer reused" });
         gpu.queue.write_buffer(&buffer, 0, &bytes);
+        diag_phase("upload: write_buffer");
         if fresh {
             cg.bind_group = bind_group(gpu, &cg.uniforms, &buffer);
+            diag_phase("upload: bind group");
         }
         cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
         cg.dims = (slice.cols, slice.rows);
@@ -1056,12 +1073,14 @@ impl Native {
     /// Draw every cell. `scale`: physical px per CSS px.
     pub fn render(&self, scale: f64) -> Result<f64, String> {
         let started = Instant::now();
-        let mut guard = self.gpu.lock();
+        let mut guard = self.lock_gpu("render");
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
+        RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         *self.last_use.lock() = Some(Instant::now());
         if gpu.parked {
             gpu.surface.configure(&gpu.device, &gpu.config);
             gpu.parked = false;
+            diag_phase("render: UNPARKED (configure)");
         }
         let acquiring = Instant::now();
         let frame = match gpu.surface.get_current_texture() {
@@ -1077,6 +1096,7 @@ impl Native {
             }
         };
         LAST_ACQUIRE_US.store(acquiring.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        diag_phase("render: drawable");
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (sw, sh) = (gpu.config.width, gpu.config.height);
         let s = scale as f32;
@@ -1135,8 +1155,11 @@ impl Native {
             }
         }
         drop(cells);
+        diag_phase("render: encoded");
         gpu.queue.submit(Some(encoder.finish()));
+        diag_phase("render: submitted");
         gpu.queue.present(frame);
+        diag_phase("render: presented");
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut st = self.status.lock();
         st.last_frame_ms = Some(ms);
@@ -1495,6 +1518,57 @@ async fn create_gpu(window: &tauri::WebviewWindow) -> Result<(Gpu, String, Strin
         // No usable D3D12 adapter: every primary backend before giving up.
         Err(e) if cfg!(target_os = "windows") => create_gpu_on(window, Some(wgpu::Backends::PRIMARY)).await.map_err(|e2| format!("{e}; {e2}")),
         Err(e) => Err(e),
+    }
+}
+
+
+// ───────────── DIAG (temporary): where a show's time goes ─────────────
+
+thread_local! {
+    static DIAG: std::cell::RefCell<Option<(Instant, Vec<(String, f64)>, u64)>> = const { std::cell::RefCell::new(None) };
+}
+static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GPU_HOLDER: Mutex<(&'static str, Option<Instant>)> = Mutex::new(("none", None));
+
+fn diag_begin(t: Instant) {
+    let r = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
+    DIAG.with(|d| *d.borrow_mut() = Some((t, Vec::new(), r)));
+}
+
+pub(crate) fn diag_phase_s(label: String) {
+    DIAG.with(|d| {
+        if let Some((t, v, _)) = d.borrow_mut().as_mut() {
+            if v.len() < 40 {
+                v.push((label, (t.elapsed().as_secs_f64() * 10000.0).round() / 10.0));
+            }
+        }
+    });
+}
+
+pub(crate) fn diag_phase(label: &str) {
+    diag_phase_s(label.to_string());
+}
+
+fn diag_end() -> Option<serde_json::Value> {
+    let r1 = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
+    DIAG.with(|d| d.borrow_mut().take()).map(|(_, v, r0)| {
+        serde_json::json!({ "phases": v, "rendersDuring": r1.saturating_sub(r0) })
+    })
+}
+
+impl Native {
+    /// The GPU lock, noting who held it when this call had to wait.
+    fn lock_gpu(&self, who: &'static str) -> parking_lot::MutexGuard<'_, Option<Gpu>> {
+        if let Some(g) = self.gpu.try_lock() {
+            *GPU_HOLDER.lock() = (who, Some(Instant::now()));
+            return g;
+        }
+        let (holder, since) = *GPU_HOLDER.lock();
+        let held = since.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(-1.0);
+        let g = self.gpu.lock();
+        diag_phase_s(format!("{who}: waited for the GPU lock (held by {holder} for {held:.1} ms when asked)"));
+        *GPU_HOLDER.lock() = (who, Some(Instant::now()));
+        g
     }
 }
 
