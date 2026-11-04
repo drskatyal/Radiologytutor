@@ -20,6 +20,8 @@ mod mac_splash;
 #[cfg(target_os = "macos")]
 mod mac_webkit;
 mod native;
+#[cfg(windows)]
+mod native_uma;
 mod native_view;
 mod pacs;
 mod pet;

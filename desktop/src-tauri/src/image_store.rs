@@ -3,7 +3,7 @@
 //! Decoded slices live HERE, once per process, shared by every window: no
 //! copy in a JS heap, no second copy as a WebGL texture in WebView2's GPU
 //! process. A slice is stored as modality values (rescale applied: HU for CT)
-//! in i16, ready to upload as an R16Sint texture with window/level done in the
+//! in i16, ready to upload as the cell's 16-bit storage buffer with window/level done in the
 //! shader.
 //!
 //! The cache has a hard byte budget (FLOWRAD_NATIVE_CACHE_MB, default 64) and
