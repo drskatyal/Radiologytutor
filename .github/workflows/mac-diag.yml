@@ -55,30 +55,10 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
-      - name: diag open, splash off
+      - name: diag cold start (first)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
-        env:
-          FLOWRAD_NATIVE_SPLASH: "0"
-        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
-      - name: diag open, webview transparent at build
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_DIAG_EARLY_CLEAR: "1"
-        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
-      - name: diag open, GPU lazy
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_GPU_WARM: lazy
-        run: node .github/diag/diag-run.mjs "$APP" 3 "$RUNNER_TEMP/ct848"
-      - name: diag open, native off
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_NATIVE: "0"
-        run: node .github/diag/diag-run.mjs "$APP" 2 "$RUNNER_TEMP/ct848"
+        run: node .github/diag/diag-run.mjs "$APP" 3
       - name: coldstart gate (as CI)
         if: ${{ !cancelled() }}
         timeout-minutes: 6

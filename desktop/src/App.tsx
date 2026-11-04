@@ -5,7 +5,8 @@
 // open flow is progressive: headers stream in from the Rust scanner, the first
 // series hangs as soon as one image is known, and the stack grows in place.
 
-import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { diagMark } from "./diag";
 import { Disc3, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
@@ -210,7 +211,14 @@ function whenNativeKnown(): Promise<boolean> {
   return isTauri ? nativeKnown() : Promise.resolve(false);
 }
 
+let diagFirstRender = true;
 export default function App() {
+  if (diagFirstRender) {
+    diagFirstRender = false;
+    diagMark("App: first render");
+  }
+  useLayoutEffect(() => diagMark("App: committed"), []);
+  useEffect(() => diagMark("App: effects"), []);
   const { toast } = useToast();
   const [version, setVersion] = useState("");
   const [settings, setSettings] = useState<ViewerSettings>(DEFAULT_SETTINGS);
@@ -1176,6 +1184,7 @@ export default function App() {
       // no launch paths, no start-screen warm-up, no cold-start report.
       if (isSecondaryWindow) return;
       const initial = await takeLaunchPaths();
+      diagMark("launch paths taken");
       // A study on the command line opens at once. The engine starts the
       // moment the instant preview is on screen (onPreview), not here:
       // measured, starting it with the scan put the preview at 440 ms (was 200).

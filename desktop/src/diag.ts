@@ -5,6 +5,15 @@
 // a busy page there. Times are ms from the page's navigation start.
 import { invoke, isTauri } from "./platform";
 
+/** Boot phases (ms from navigation start), sent once diagnosis is known to be on. */
+const marks: [string, number][] = [];
+let sendMark: ((name: string, at: number) => void) | null = null;
+export function diagMark(name: string): void {
+  const at = Math.round(performance.now());
+  if (sendMark) sendMark(name, at);
+  else if (marks.length < 64) marks.push([name, at]);
+}
+
 export function startDiag(): void {
   if (!isTauri) return;
   void invoke<boolean>("diag_enabled")
@@ -14,6 +23,8 @@ export function startDiag(): void {
       const before = performance.now();
       const processMs = await invoke<number>("startup_elapsed_ms").catch(() => 0);
       log({ navAtProcessMs: Math.round(processMs - (before + performance.now()) / 2) });
+      sendMark = (name, at) => log({ mark: name, at });
+      for (const [name, at] of marks.splice(0)) sendMark(name, at);
       const seen = new Set<string>();
       let last = performance.now();
       const end = last + 20_000;

@@ -6,7 +6,7 @@ import { initProtocol, invoke, isTauri } from "./platform";
 import "./styles.css";
 import { watchLongTasks } from "./perfWatch";
 import { installContextMenuGuard } from "./contextMenuGuard";
-import { startDiag } from "./diag";
+import { diagMark, startDiag } from "./diag";
 
 // Benchmark: when did our JS start, relative to process start?
 if (isTauri) {
@@ -30,6 +30,7 @@ if (isTauri) {
 // Resolved in parallel with the first render: nothing on the start screen
 // needs it, and opening a study awaits it (`protocolReady`).
 void initProtocol();
+diagMark("main.tsx: imports evaluated");
 watchLongTasks();
 startDiag();
 // No browser menu (Back / Refresh / Print) anywhere but text fields.
@@ -75,12 +76,13 @@ function appStylesheet(): Promise<void> {
   });
 }
 
-void appStylesheet().then(() =>
+void appStylesheet().then(() => {
+  diagMark("app css ready; React render");
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <ToastProvider>
         <Root />
       </ToastProvider>
     </StrictMode>
-  )
-);
+  );
+});
