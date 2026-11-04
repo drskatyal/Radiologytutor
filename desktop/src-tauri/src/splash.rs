@@ -582,15 +582,39 @@ mod mac {
         });
     }
 
+    /// Main thread, right before the main window is built: start the clock,
+    /// and put the splash on the window the moment tao orders it on screen,
+    /// before wry creates the WKWebView (mac_splash.rs `hook_first_show`).
     pub fn arm(t0: Instant) {
         if super::disabled() {
             DONE.store(true, Ordering::Release);
             return;
         }
         let _ = T0.set(t0);
+        crate::mac_splash::hook_first_show(shown);
     }
 
-    /// Main thread, right after the main window and its webview are built.
+    /// Main thread, inside the window build: the window is on screen and
+    /// still holds tao's content view (no WKWebView yet).
+    fn shown(ns_window: *mut c_void) {
+        if DONE.load(Ordering::Acquire) || !crate::mac_splash::attach(ns_window) {
+            return;
+        }
+        SHOWN.store(true, Ordering::Release);
+        crate::trace("splash on (window shown)");
+        // Retries (window not visible yet) are left to `attach`, after the build.
+        if time_paint() {
+            crate::trace("splash committed");
+        }
+    }
+
+    /// Main thread, right after the window build returned (built or not).
+    pub fn window_built() {
+        crate::mac_splash::unhook_first_show();
+    }
+
+    /// Main thread, right after the main window and its webview are built:
+    /// the splash goes (or moves) over the WKWebView.
     pub fn attach(ns_window: *mut c_void, run_on_main: OnMain) {
         if DONE.load(Ordering::Acquire) || T0.get().is_none() || MainThreadMarker::new().is_none() {
             return;
@@ -600,8 +624,14 @@ mod mac {
             return;
         }
         SHOWN.store(true, Ordering::Release);
-        after(LAST_RESORT_MS, || go("timeout"));
-        if !time_paint() {
+        static TIMER: AtomicBool = AtomicBool::new(false);
+        if !TIMER.swap(true, Ordering::AcqRel) {
+            after(LAST_RESORT_MS, || go("timeout"));
+        }
+        if PAINTED_MS.get().is_some() {
+            // Already on screen (from the first show): commit its new place.
+            crate::mac_splash::flush();
+        } else if !time_paint() {
             retry_paint(0);
         }
     }
@@ -683,6 +713,12 @@ pub fn arm(t0: std::time::Instant, title: &str) {
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (t0, title, disabled());
+}
+
+/// macOS: the main window's build returned (the first-show hook goes).
+#[cfg(target_os = "macos")]
+pub fn window_built() {
+    mac::window_built();
 }
 
 /// macOS: put the splash over the main window (`ns_window`). Main thread,

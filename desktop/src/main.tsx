@@ -6,6 +6,7 @@ import { initProtocol, invoke, isTauri } from "./platform";
 import "./styles.css";
 import { watchLongTasks } from "./perfWatch";
 import { installContextMenuGuard } from "./contextMenuGuard";
+import { startDiag } from "./diag";
 
 // Benchmark: when did our JS start, relative to process start?
 if (isTauri) {
@@ -30,6 +31,7 @@ if (isTauri) {
 // needs it, and opening a study awaits it (`protocolReady`).
 void initProtocol();
 watchLongTasks();
+startDiag();
 // No browser menu (Back / Refresh / Print) anywhere but text fields.
 installContextMenuGuard();
 // Phase 2 spike (FLOWRAD_NATIVE=1 + FLOWRAD_BENCH_VIEW=native-spike): the

@@ -1225,6 +1225,7 @@ pub fn prewarm() {
         return; // already building (or built and not yet taken)
     }
     let job = std::thread::Builder::new().name("flowrad-gpu-warm".into()).spawn(|| {
+        crate::trace("gpu warm: thread running");
         let started = Instant::now();
         let instance = shared_instance();
         let warm = futures_util::FutureExt::now_or_never(Box::pin(async {
@@ -1240,6 +1241,7 @@ pub fn prewarm() {
             None => Err("adapter request did not complete synchronously".into()),
         };
         let ms = started.elapsed().as_secs_f64() * 1000.0;
+        crate::trace("gpu warm: done");
         // The first build is the startup report's; the latest is the status's.
         let _ = WARM_MS.set(ms);
         *LAST_WARM_MS.lock() = Some(ms);

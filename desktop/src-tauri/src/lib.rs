@@ -559,6 +559,69 @@ fn mark(i: usize) {
     }
 }
 
+/// The start-up in finer steps than `MARKS` (ms since process start, first
+/// 64 events), reported with them as `trace`: where the cold start goes.
+static TRACE: parking_lot::Mutex<Vec<(&'static str, f64)>> = parking_lot::Mutex::new(Vec::new());
+
+pub(crate) fn trace(label: &'static str) {
+    if let Some(t) = STARTED.get() {
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let mut v = TRACE.lock();
+        if v.len() < 64 {
+            v.push((label, (ms * 10.0).round() / 10.0));
+        }
+    }
+}
+
+/// `FLOWRAD_DIAG=1` (diagnosis only): the app's main thread is timed from
+/// another thread (a no-op posted every 5 ms; a reply later than 40 ms is a
+/// stall), and the page reports its own stalls and resource loads, as
+/// `FLOWRAD_DIAG` lines, for the first 20 s.
+fn diag_on() -> bool {
+    crate::flowrad_env("DIAG").as_deref() == Ok("1")
+}
+
+fn start_main_thread_probe(app: tauri::AppHandle) {
+    if !diag_on() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("flowrad-diag-main".into()).spawn(move || {
+        let Some(t0) = STARTED.get().copied() else { return };
+        let ms = |i: std::time::Instant| (i.duration_since(t0).as_secs_f64() * 10000.0).round() / 10.0;
+        while t0.elapsed() < std::time::Duration::from_secs(20) {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let sent = std::time::Instant::now();
+            if app.run_on_main_thread(move || {
+                let _ = tx.send(());
+            })
+            .is_err()
+            {
+                return;
+            }
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+            let waited = sent.elapsed().as_secs_f64() * 1000.0;
+            if waited > 40.0 {
+                bench_emit("FLOWRAD_DIAG", &serde_json::json!({ "mainStallAt": ms(sent), "ms": waited.round() }));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+}
+
+#[tauri::command]
+fn diag_enabled() -> bool {
+    diag_on()
+}
+
+/// The page's diagnosis lines (`FLOWRAD_DIAG=1` only), stamped with the process clock.
+#[tauri::command]
+async fn diag_log(entry: serde_json::Value) {
+    if diag_on() {
+        let at = STARTED.get().map(|t| (t.elapsed().as_secs_f64() * 10000.0).round() / 10.0);
+        bench_emit("FLOWRAD_DIAG", &serde_json::json!({ "page": entry, "loggedAt": at }));
+    }
+}
+
 #[tauri::command]
 fn startup_marks() -> serde_json::Value {
     let m = *MARKS.lock();
@@ -573,6 +636,7 @@ fn startup_marks() -> serde_json::Value {
         "nativeFirstPaintMs": splash::painted_ms(),
         "nativeFirstPaintSource": splash::painted_ms().map(|_| "splash"),
         "gpuWarmMs": native::WARM_MS.get(),
+        "trace": TRACE.lock().clone(),
     })
 }
 
@@ -580,6 +644,7 @@ fn startup_marks() -> serde_json::Value {
 /// splash goes (splash.rs). No-op where there is none.
 #[tauri::command]
 fn splash_done() {
+    trace("page asked the splash off");
     splash::dismiss();
 }
 
@@ -1352,6 +1417,7 @@ fn launch_args() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     STARTED.get_or_init(std::time::Instant::now);
+    trace("run");
     // Freed memory goes back to the OS at once (see MI_OPTION_PURGE_DELAY),
     // and a purge decommits (MADV_FREE_REUSABLE on macOS, out of the
     // footprint at once) rather than resets (MADV_FREE: counted until the
@@ -1361,6 +1427,7 @@ pub fn run() {
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DECOMMITS, 1);
     }
     let context = context();
+    trace("context");
     let main_window = context.config().app.windows.iter().find(|w| w.label == "main").cloned();
     // Windows: the WebView2 browser process starts now, in parallel with the
     // rest of start-up, not after the window exists (webview2_early.rs). The
@@ -1381,12 +1448,14 @@ pub fn run() {
     if gpu_at_launch {
         native::prewarm();
     }
+    trace("gpu warm started");
     attach_bench_console();
     let state = AppState::default();
     *state.launch_paths.lock() = launch_paths;
     start_bench_watchdog();
     start_mem_report();
     let registry = state.registry.clone();
+    trace("tauri build");
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1417,6 +1486,7 @@ pub fn run() {
             match payload.event() {
                 tauri::webview::PageLoadEvent::Started => {
                     mark(1);
+                    trace("page load started");
                     if main {
                         // The main webview has its environment: the early
                         // one can go.
@@ -1425,6 +1495,7 @@ pub fn run() {
                 }
                 tauri::webview::PageLoadEvent::Finished => {
                     mark(2);
+                    trace("page load finished");
                     // The page reports its first paint (`splash_done`); if it
                     // never does, the native splash still goes.
                     if main {
@@ -1437,15 +1508,22 @@ pub fn run() {
         // ("create": false): the native splash is armed first, so it paints
         // the moment the window is on screen, while WebView2 starts.
         .setup(move |app| {
+            trace("setup");
             let _ = APP.set(app.handle().clone());
+            start_main_thread_probe(app.handle().clone());
             if let Some(config) = &main_window {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
                 }
-                let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
+                let built = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build();
+                // macOS: the splash's first-show hook goes, built or not.
+                #[cfg(target_os = "macos")]
+                splash::window_built();
+                let _window = built?;
                 mark(3);
-                // macOS: the splash goes over the window's content now, above
-                // the WKWebView (its frame is on screen ~1 s before the page's).
+                trace("window + webview built");
+                // macOS: the splash (on since the window was first shown, before
+                // the WKWebView existed) moves over the WKWebView now.
                 #[cfg(target_os = "macos")]
                 if let Ok(ns_window) = _window.ns_window() {
                     let handle = app.handle().clone();
@@ -1508,6 +1586,8 @@ pub fn run() {
             startup_elapsed_ms,
             startup_marks,
             splash_done,
+            diag_enabled,
+            diag_log,
             store::history_list,
             store::history_record,
             store::history_remove,
@@ -1560,6 +1640,7 @@ pub fn run() {
         .build(context)
         .expect("error while building FlowRad Viewer");
     mark(0);
+    trace("app built");
     // macOS: side buttons and tilt wheels for bindings (inactive until asked).
     #[cfg(target_os = "macos")]
     mac_mouse::install(app.handle());
