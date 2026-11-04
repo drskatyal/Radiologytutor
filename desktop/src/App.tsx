@@ -156,6 +156,17 @@ const SettingsDialog = named<typeof import("./components/Dialogs").SettingsDialo
 
 type ScanState = { label: string; progress: ScanProgress | null } | null;
 
+/**
+ * macOS: how long an open runs before its "Reading study" overlay shows. The
+ * page paints on the CPU there (src-tauri mac_webkit.rs `paint_on_cpu`), and a
+ * warm open hangs its first series 40-180 ms after it starts (CI), so an
+ * overlay shown at once was painted, then painted over by the study, for
+ * nothing, on the first image's path (and flashed on screen). A slower open
+ * (cold disk, a large study, a disc) still shows it, with its Cancel button.
+ * Elsewhere it shows at once, as before.
+ */
+const SCAN_OVERLAY_DELAY_MS = isMac() ? 250 : 0;
+
 const cellKey = (i: number) => `cell-${i}`;
 /** Tools in the right-click menu, in order. */
 const MENU_TOOLS = [
@@ -218,6 +229,20 @@ export default function App() {
   const [studies, setStudies] = useState<ViewerStudy[]>([]);
   const [source, setSource] = useState<OpenedSource | null>(null);
   const [scan, setScan] = useState<ScanState>(null);
+  // The "Reading study" overlay: at once, or on macOS once the open has run
+  // for SCAN_OVERLAY_DELAY_MS.
+  const scanning = scan != null;
+  const [scanOverlayDue, setScanOverlayDue] = useState(false);
+  useEffect(() => {
+    if (SCAN_OVERLAY_DELAY_MS === 0) return;
+    if (!scanning) {
+      setScanOverlayDue(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setScanOverlayDue(true), SCAN_OVERLAY_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [scanning]);
+  const showScanOverlay = scanning && (SCAN_OVERLAY_DELAY_MS === 0 || scanOverlayDue);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [growing, setGrowing] = useState(false);
   const [layout, setLayout] = useState({ rows: 1, cols: 1 });
@@ -274,7 +299,9 @@ export default function App() {
     void nativeKnown().then((on) => {
       nativeRef.current = on;
       setNativeMode(on);
-      if (on) document.documentElement.classList.add("native-transparent");
+      // On, or off again: macOS sets the class from the page's first line
+      // when the GPU is built at launch (lib.rs), before this is known.
+      document.documentElement.classList.toggle("native-transparent", on);
     });
   }, []);
   const [leftTool, setLeftTool] = useState("StackScroll");
@@ -874,7 +901,10 @@ export default function App() {
                 (nativeRef.current && document.querySelector("[data-native-viewport]") ? { renderPath: "native", nonBlank: true, expectVisible: true, maxLum: 255, checkedBy: "screen grab (e2e-native.py), not a canvas readback" } : null),
               stackViewport: paintHealth.last ?? null,
               ...(paintHealth.fallbackWhy ? { fallbackWhy: paintHealth.fallbackWhy } : {}),
-              gpu: gpuInfo(),
+              // WebGL facts matter only on the engine path. Native draws without
+              // WebGL, and probing it there started WebKit's GPU process on
+              // macOS (+6 MB for the rest of the session, in the close gate).
+              gpu: nativeRef.current ? null : gpuInfo(),
               trimmedMb: Math.round(memoryStats.trimmedBytes / 1048576),
               ...cacheFacts(enginePeek()?.core, built[0]?.series[0]?.imageIds[0]),
               engineInitMs: engineTimings.initMs,
@@ -2390,8 +2420,14 @@ export default function App() {
 
   // Bench / e2e test hook (window.__flowradTest): bench or test mode only,
   // gated like benchReport (FLOWRAD_BENCH=1, or ?bench in the browser build).
-  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell });
-  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell };
+  const testHookState = useRef({ studies, hiddenSeries, settings, seriesPanel, activeCell, cells, reformats });
+  testHookState.current = { studies, hiddenSeries, settings, seriesPanel, activeCell, cells, reformats };
+  // Committed (an effect, not the render): a transition render (the hanging
+  // plan at the end of a streaming scan) may still be in progress or thrown away.
+  const openSettledRef = useRef(false);
+  useEffect(() => {
+    openSettledRef.current = scan === null && !growing && studies.length > 0;
+  }, [scan, growing, studies]);
   useEffect(() => {
     let off: (() => void) | undefined;
     let cancelled = false;
@@ -2403,6 +2439,13 @@ export default function App() {
       off = installTestHook({
         activeHandle: () => getHandle(cellKey(st().activeCell)),
         activeCellKey: () => cellKey(st().activeCell),
+        // A reformat cell is a plane of the volume, with no stack handle to drive.
+        activeSeriesUid: () => {
+          const { cells: hung, activeCell: i, reformats: planes } = st();
+          const uid = hung[i] ?? null;
+          return uid && planes[i]?.uid !== uid ? uid : null;
+        },
+        openSettled: () => openSettledRef.current,
         studies: () => st().studies,
         hiddenSeries: () => st().hiddenSeries,
         seriesPanel: () => ({ collapsed: st().seriesPanel.collapsed, compact: !!st().settings.compactSeries }),
@@ -2838,7 +2881,7 @@ export default function App() {
           />
         )}
 
-        {scan && (
+        {scan && showScanOverlay && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-canvas/80 backdrop-blur-sm" role="status" aria-live="polite">
             <div className="flex w-[360px] flex-col items-center gap-4 rounded-2xl border border-subtle bg-elevated p-6 shadow-lg">
               <Spinner label="Reading study" />

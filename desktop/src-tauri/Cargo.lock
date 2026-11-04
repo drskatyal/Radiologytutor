@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "flowrad-viewer"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.23.1",
  "block2",

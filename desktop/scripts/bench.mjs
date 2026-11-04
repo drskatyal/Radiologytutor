@@ -36,6 +36,31 @@
 //     rotation and flips applied AND drawn, thumbnails rendered and one per series,
 //     bindings set → resolve → saved → reset all → every command on its preset
 //     (the reader's own bindings are put back afterwards). Exit 1 on any failure.
+//     Each orientation check first waits for the active viewport to have an
+//     image (open settled, the series drawn and its readout rendered, Rust
+//     holding the native cell): "no active viewport with an image after N ms: …"
+//     says which of those never happened.
+//
+// Outside the repo (the MacBook, a reader's PC): this file is self-contained.
+// Copy bench.mjs alone (it needs Node 18+, nothing else: the OS file-cache
+// flush for cold runs is built in, no Python, no flush-file-cache.py) and run
+// it against the installed app. A cold run (`desktop` run 1, `mpr --cold`)
+// drops the OS file cache first, which needs elevation; without it the bench
+// prints a WARNING and reports the cold result with "cacheFlushed": false
+// (it read the study from RAM: not a cold number).
+//   Windows, PowerShell "Run as administrator" (the standby-list purge needs
+//   SeProfileSingleProcessPrivilege; RAMMap64.exe on PATH is the fallback):
+//     $exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"
+//     node C:\bench\bench.mjs desktop $exe D:\studies\ct --runs 5
+//     node C:\bench\bench.mjs hooks $exe D:\studies\ct
+//   macOS, Terminal (`purge` needs sudo: `sudo -v` caches the password first,
+//   because the bench cannot answer a prompt; do NOT run node itself with sudo,
+//   or the app runs as root with root's caches and settings):
+//     APP=$(ls "/Applications/FlowRad Viewer.app/Contents/MacOS/"* | head -1)   # the executable inside the .app
+//     sudo -v && node ~/bench/bench.mjs desktop "$APP" ~/studies/ct --runs 5
+//     node ~/bench/bench.mjs hooks "$APP" ~/studies/ct
+//   Linux: as root, or with passwordless sudo for /proc/sys/vm/drop_caches.
+//
 //   `leak` is the feature on/off test with the study kept open (MPR, 3D, cine,
 //   tools, dialogs); `close` is one open/close round with gates; `openclose` is N.
 //
@@ -57,7 +82,7 @@
 // `xvfb-run -a`. Numbers are medians.
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readdirSync, statSync, rmSync, existsSync } from "node:fs";
+import { readdirSync, statSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -150,6 +175,113 @@ function appCacheDir() {
   return path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"), id);
 }
 
+// ───────────── OS file cache flush (cold runs) ─────────────
+// Embedded, so bench.mjs is ONE self-contained file that can be copied
+// anywhere. (The MacBook ran it from outside the repo, where the old
+// flush-file-cache.py beside it was missing, and its "cold" run silently read
+// the study from RAM.) Without a flush, a cold run after the first reads the
+// study from RAM: the HP's cold numbers were not reproducible in CI (0.6.1).
+//
+//   Windows  flush the modified list, then purge the standby list
+//            (NtSetSystemInformation(SystemMemoryListInformation = 80,
+//            MemoryFlushModifiedList = 3, then MemoryPurgeStandbyList = 4)
+//            after enabling SeProfileSingleProcessPrivilege), through Windows
+//            PowerShell with an inline C# P/Invoke. Needs an elevated shell
+//            (GitHub's Windows runners are). Fallback: Sysinternals RAMMap on
+//            PATH (`RAMMap64 -Es`, "Empty Standby List"), also elevated.
+//   macOS    sync, then `purge` as root, or `sudo -n purge`: run `sudo -v`
+//            first so sudo does not need to ask (a password prompt cannot be
+//            answered from here).
+//   Linux    sync, then 3 > /proc/sys/vm/drop_caches as root, else through
+//            `sudo -n`.
+//
+// Never fatal: returns { flushed, how }. When it could not flush, the caller
+// prints a warning and marks the cold result `"cacheFlushed": false`.
+const WINDOWS_PURGE_PS = String.raw`$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowradCacheFlush {
+  [StructLayout(LayoutKind.Sequential)] public struct LUID { public uint Low; public int High; }
+  [StructLayout(LayoutKind.Sequential)] public struct TokenPrivileges { public uint Count; public LUID Luid; public uint Attributes; }
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LookupPrivilegeValue(string system, string name, out LUID luid);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivileges state, uint length, IntPtr previous, IntPtr returnLength);
+  [DllImport("ntdll.dll")] static extern int NtSetSystemInformation(int infoClass, ref int info, int length);
+  public static string Run() {
+    IntPtr token;
+    // TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY
+    if (!OpenProcessToken(GetCurrentProcess(), 0x28, out token)) throw new Exception("OpenProcessToken failed (" + Marshal.GetLastWin32Error() + ")");
+    LUID luid;
+    if (!LookupPrivilegeValue(null, "SeProfileSingleProcessPrivilege", out luid)) throw new Exception("LookupPrivilegeValue failed (" + Marshal.GetLastWin32Error() + ")");
+    TokenPrivileges tp = new TokenPrivileges();
+    tp.Count = 1;
+    tp.Luid = luid;
+    tp.Attributes = 2; // SE_PRIVILEGE_ENABLED
+    // Succeeds even when the privilege is not held: ERROR_NOT_ALL_ASSIGNED (1300) says so.
+    AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+    if (Marshal.GetLastWin32Error() != 0) throw new Exception("SeProfileSingleProcessPrivilege not held (run the shell as administrator)");
+    foreach (int command in new int[] { 3, 4 }) {
+      int value = command;
+      int status = NtSetSystemInformation(80, ref value, 4);
+      if (status != 0) throw new Exception(String.Format("NtSetSystemInformation({0}) NTSTATUS 0x{1:X8}", command, status));
+    }
+    return "windows standby list purged";
+  }
+}
+'@
+[FlowradCacheFlush]::Run()`;
+
+function flushFileCache() {
+  const run = (cmd, args) => spawnSync(cmd, args, { encoding: "utf8", timeout: 60_000 });
+  const said = (r) => `${r.error?.message ?? ""} ${r.stderr ?? ""} ${r.stdout ?? ""}`.replace(/\s+/g, " ").trim() || `exit ${r.status}`;
+  const failures = [];
+  if (process.platform === "win32") {
+    const encoded = Buffer.from(WINDOWS_PURGE_PS, "utf16le").toString("base64");
+    const ps = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]);
+    if (ps.status === 0 && /standby list purged/.test(ps.stdout ?? "")) return { flushed: true, how: "windows standby list purged (NtSetSystemInformation)" };
+    failures.push(`standby-list purge: ${said(ps)}`);
+    for (const exe of ["RAMMap64.exe", "RAMMap.exe"]) {
+      const rm = run(exe, ["-accepteula", "-Es"]);
+      if (rm.error?.code === "ENOENT") continue;
+      if (rm.status === 0) return { flushed: true, how: `windows standby list emptied (${exe} -Es)` };
+      failures.push(`${exe} -Es: ${said(rm)}`);
+      break;
+    }
+  } else if (process.platform === "darwin") {
+    run("sync", []);
+    const root = process.getuid?.() === 0;
+    const purge = root ? run("purge", []) : run("sudo", ["-n", "purge"]);
+    if (purge.status === 0) return { flushed: true, how: `macos purge${root ? "" : " (sudo)"}` };
+    failures.push(`${root ? "purge" : "sudo -n purge"}: ${said(purge)}${root ? "" : " (run `sudo -v` first, so sudo does not need to ask for a password)"}`);
+  } else {
+    run("sync", []);
+    try {
+      writeFileSync("/proc/sys/vm/drop_caches", "3\n");
+      return { flushed: true, how: "linux page cache dropped" };
+    } catch (e) {
+      failures.push(`/proc/sys/vm/drop_caches: ${e.code ?? e.message}`);
+    }
+    const sudo = run("sudo", ["-n", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"]);
+    if (sudo.status === 0) return { flushed: true, how: "linux page cache dropped (sudo)" };
+    failures.push(`sudo -n: ${said(sudo)}`);
+  }
+  return { flushed: false, how: `file cache NOT flushed: ${failures.join("; ")}` };
+}
+
+/** Flush before a cold run; say so loudly when it could not be done. */
+function flushForColdRun(label) {
+  const r = flushFileCache();
+  if (r.flushed) {
+    console.error(`${label}: ${r.how}`);
+  } else {
+    console.error(`WARNING ${label}: ${r.how}`);
+    console.error(`WARNING ${label}: the OS file cache still holds the study, so this "cold" result is NOT cold; it is reported with "cacheFlushed": false (see the bench header for running it elevated).`);
+  }
+  return r;
+}
+
 async function benchDesktop(binary, study) {
   const runs = flag("runs", 5);
   const reports = [];
@@ -163,6 +295,8 @@ async function benchDesktop(binary, study) {
   const warpRetry = process.env.FLOWRAD_BENCH_WARP_RETRY === "1";
   const taskBudgetForRetry = flag("max-long-task-ms", Infinity);
   const discarded = [];
+  /** The OS file cache flush before the cold run (run 1). */
+  let coldFlush = null;
   const violation = (r) => {
     if (rest.includes("--require-gpu") && r.viewport?.renderPath && !["gpu", "native"].includes(r.viewport.renderPath)) return `render path ${r.viewport.renderPath}`;
     if ((r.longTasks?.maxMs ?? 0) > taskBudgetForRetry) return `long task ${r0(r.longTasks.maxMs)} ms (${(r.longTasks.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")})`;
@@ -174,8 +308,7 @@ async function benchDesktop(binary, study) {
       if (i === 0) {
         rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
         // A cold run reads from disk: drop the OS file cache too (elevated CI runners).
-        const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
-        console.error(`run 1: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+        coldFlush = flushForColdRun("run 1");
       }
       report = await runApp(binary, [study]);
       const why = warpRetry ? violation(report) : null;
@@ -221,6 +354,9 @@ async function benchDesktop(binary, study) {
     files: reports[0].files,
     images: reports[0].images,
     cold: {
+      // false: the OS file cache could not be dropped, so run 1 read the study from RAM.
+      cacheFlushed: !!coldFlush?.flushed,
+      cacheFlush: coldFlush?.how ?? null,
       rustScanMs: r0(reports[0].rust?.totalMs),
       firstImageMs: r0(reports[0].firstImageMs),
       enginePaintMs: r0(reports[0].enginePaintMs),
@@ -734,10 +870,10 @@ async function benchMpr(binary, study) {
   const maxPeakPrivateMb = flag("max-peak-private-mb", Infinity);
   // --cold: the first open after a cache clear (HP: 988 MB idle cold vs
   // ~330-410 MB warm). No scan cache, and the OS file cache dropped.
+  let coldFlush = null;
   if (rest.includes("--cold")) {
     rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
-    const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
-    console.error(`cold: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+    coldFlush = flushForColdRun("cold");
   }
   const started = performance.now();
   const child = spawn(binary, [study], {
@@ -782,6 +918,8 @@ async function benchMpr(binary, study) {
     mode: "mpr",
     view: process.env.FLOWRAD_BENCH_VIEW ?? "mpr",
     cold: rest.includes("--cold"),
+    // --cold only. false: the OS file cache could not be dropped (a warm read).
+    ...(coldFlush ? { cacheFlushed: coldFlush.flushed, cacheFlush: coldFlush.how } : {}),
     study,
     images: report.images,
     engineStarted: report.engineInitMs != null || report.engineStartMs != null,

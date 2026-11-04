@@ -14,11 +14,11 @@ if (isTauri) {
   });
 }
 
-// Windows: Rust painted this same splash natively the moment the window
-// appeared, before WebView2 was up (src-tauri/src/splash.rs). The page's own
-// copy (index.html `.boot`) has painted by the second frame from here; a
-// little later it has reached the screen too, and the native one can go.
-// Elsewhere (no native splash) the call does nothing.
+// Windows / macOS: Rust painted this same splash natively the moment the
+// window appeared, before the webview was up (src-tauri/src/splash.rs). The
+// page's own copy (index.html `.boot`) has painted by the second frame from
+// here; a little later it has reached the screen too, and the native one can
+// go. Elsewhere (no native splash) the call does nothing.
 if (isTauri) {
   requestAnimationFrame(() =>
     requestAnimationFrame(() => window.setTimeout(() => void invoke("splash_done").catch(() => undefined), 32))

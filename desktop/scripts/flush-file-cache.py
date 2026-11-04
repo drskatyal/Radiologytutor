@@ -13,6 +13,10 @@ macOS: purge (needs sudo).
 
 Without this, "cold" runs after the first read the study from RAM: the HP's cold
 numbers were not reproducible in CI (0.6.1 report).
+
+Used by e2e-volume.py. bench.mjs does NOT use this file: it has the same flush
+built in (flushFileCache), so it can be copied and run on its own outside the
+repo. Keep the two in step.
 """
 from __future__ import annotations
 
