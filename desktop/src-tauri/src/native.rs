@@ -120,15 +120,61 @@ const TEST_SIZE: u32 = 512;
 /// The spike view's single cell.
 pub const SPIKE: &str = "spike";
 
-/// One cell's GPU side: its uniforms and the texture on screen.
+/// One cell's GPU side: its uniforms and the image on screen.
 struct CellGpu {
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// (path, texture) of the slice uploaded, None = the test image.
-    texture: Option<(PathBuf, wgpu::Texture)>,
+    /// (path, GPU copy) of the image uploaded, None = the test image.
+    image: Option<(PathBuf, CellImage)>,
     dims: (usize, usize),
-    /// The texture is an RGBA8 colour frame (3D), drawn with the colour pipeline.
-    rgba: bool,
+}
+
+/// A cell's image on the GPU.
+enum CellImage {
+    /// A grey slice: its 16-bit values in a read-only storage buffer, two
+    /// per word, read by the cell shader. A buffer, not a texture, so that on
+    /// a cache-coherent UMA adapter (WARP, integrated GPUs) the slice can be
+    /// written straight into memory the GPU reads, with no staging copy
+    /// (native_uma.rs); elsewhere wgpu uploads it (`slice_buffer`).
+    Slice(wgpu::Buffer),
+    /// An RGBA8 colour frame (3D), drawn with the colour pipeline.
+    Rgba(wgpu::Texture),
+}
+
+impl CellGpu {
+    fn rgba(&self) -> bool {
+        matches!(self.image, Some((_, CellImage::Rgba(_))))
+    }
+}
+
+/// Bytes of the storage buffer holding a `cols` × `rows` slice: two per
+/// value, rounded up to whole 32-bit words (what the shader reads, and
+/// wgpu's copy alignment).
+fn slice_buffer_size(cols: usize, rows: usize) -> u64 {
+    ((cols * rows * 2) as u64).div_ceil(4).max(1) * 4
+}
+
+/// A slice's values as the bytes of its storage buffer (little-endian i16,
+/// zero-padded to `slice_buffer_size`).
+fn slice_bytes(data: &[i16]) -> std::borrow::Cow<'_, [u8]> {
+    // SAFETY: i16 is plain old data; the bytes borrow `data`.
+    let raw = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) };
+    if raw.len() % 4 == 0 && !raw.is_empty() && cfg!(target_endian = "little") {
+        std::borrow::Cow::Borrowed(raw)
+    } else {
+        let mut v: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
+        v.resize(v.len().div_ceil(4).max(1) * 4, 0);
+        std::borrow::Cow::Owned(v)
+    }
+}
+
+fn slice_buffer(device: &wgpu::Device, cols: usize, rows: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("slice"),
+        size: slice_buffer_size(cols, rows),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// P2.4: a plane (or slab) of the Rust volume (volume.rs) as a cell's source.
@@ -162,10 +208,16 @@ struct Gpu {
     /// P2.5: colour frames (3D): RGBA8 texture, no window / level.
     pipeline_rgba: wgpu::RenderPipeline,
     layout_rgba: wgpu::BindGroupLayout,
-    test_view: wgpu::TextureView,
+    /// The test image (spike / a cell before its first slice), as a slice buffer.
+    test_image: wgpu::Buffer,
     /// macOS: the surface is configured 1×1 since a study closed
     /// (`park_surface`); the next frame restores `config` first.
     parked: bool,
+    /// Slices are written straight into write-back system memory the shader
+    /// reads (Windows, cache-coherent UMA: WARP, integrated GPUs), not
+    /// staged and copied: see native_uma.rs.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    direct_slices: bool,
 }
 
 #[derive(Default)]
@@ -230,7 +282,8 @@ pub fn test_image(size: u32) -> Vec<i16> {
 const SHADER: &str = r#"
 struct U { rect: vec4<f32>, wl: vec4<f32>, xf: vec4<f32>, rot: vec4<f32>, dims: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
-@group(0) @binding(1) var img: texture_2d<i32>;
+// The slice: 16-bit signed values, two per word, row-major (dims.x per row).
+@group(0) @binding(1) var<storage, read> img: array<u32>;
 
 struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
@@ -250,7 +303,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   let f = vec2(u.rot.x * d.x + u.rot.y * d.y, -u.rot.y * d.x + u.rot.x * d.y);
   let q = vec2(f.x * u.rot.z, f.y * u.rot.w) / u.xf.x + u.dims.xy * 0.5;
   if (q.x < 0.0 || q.y < 0.0 || q.x >= u.dims.x || q.y >= u.dims.y) { return vec4(0.0, 0.0, 0.0, 1.0); }
-  let s = f32(textureLoad(img, vec2<i32>(q), 0).r);
+  let p = vec2<u32>(q);
+  let i = p.y * u32(u.dims.x) + p.x;
+  let w = img[i >> 1u];
+  // Low half for even i, high half for odd; sign-extend from 16 bits.
+  let s = f32(bitcast<i32>(select(w << 16u, w, (i & 1u) == 1u)) >> 16u);
   let lo = u.wl.x - u.wl.y * 0.5;
   var g = clamp((s - lo) / max(u.wl.y, 1.0), 0.0, 1.0);
   if (u.xf.w > 0.5) { g = 1.0 - g; }
@@ -538,9 +595,13 @@ impl Native {
         let gpu = guard.as_ref().ok_or("native renderer not initialised")?;
         let mut cells = self.cells.lock();
         let c = cells.get_mut(id).ok_or("no such viewport")?;
-        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
+        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_image));
         let size = wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 };
-        let reuse = cg.texture.take().filter(|(_, t)| cg.rgba && t.width() == size.width && t.height() == size.height).map(|(_, t)| t);
+        let was_rgba = cg.rgba();
+        let reuse = match cg.image.take() {
+            Some((_, CellImage::Rgba(t))) if t.width() == size.width && t.height() == size.height => Some(t),
+            _ => None,
+        };
         let fresh = reuse.is_none();
         let texture = reuse.unwrap_or_else(|| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -561,7 +622,7 @@ impl Native {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 4), rows_per_image: Some(size.height) },
             size,
         );
-        if fresh || !cg.rgba {
+        if fresh || !was_rgba {
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             cg.bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("3d"),
@@ -572,8 +633,7 @@ impl Native {
                 ],
             });
         }
-        cg.rgba = true;
-        cg.texture = Some((PathBuf::from("3d"), texture));
+        cg.image = Some((PathBuf::from("3d"), CellImage::Rgba(texture)));
         cg.dims = (w, h);
         Ok(())
     }
@@ -726,9 +786,9 @@ impl Native {
             report.cells = cells.len();
             report.cell_textures_mb = cells
                 .values()
-                .filter_map(|c| c.gpu.as_ref()?.texture.as_ref().map(|(_, t)| {
-                    let px = t.width() as f64 * t.height() as f64;
-                    px * if c.gpu.as_ref().is_some_and(|g| g.rgba) { 4.0 } else { 2.0 } / 1_048_576.0
+                .filter_map(|c| c.gpu.as_ref()?.image.as_ref().map(|(_, im)| match im {
+                    CellImage::Slice(b) => b.size() as f64 / 1_048_576.0,
+                    CellImage::Rgba(t) => t.width() as f64 * t.height() as f64 * 4.0 / 1_048_576.0,
                 }))
                 .sum();
             cells.clear();
@@ -954,45 +1014,41 @@ impl Native {
         })
     }
 
-    /// Make sure the cell's texture holds `slice` (reused across a series).
+    /// Make sure the cell's slice buffer holds `slice` (reused across a series).
     fn upload(&self, id: &str, path: &std::path::Path, slice: &Slice) -> Result<(), String> {
         let guard = self.gpu.lock();
         let gpu = guard.as_ref().ok_or("native renderer not initialised")?;
         let mut cells = self.cells.lock();
         let c = cells.get_mut(id).ok_or("no such viewport")?;
-        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
-        if !cg.rgba && cg.texture.as_ref().is_some_and(|(p, _)| p == path) {
+        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_image));
+        if matches!(&cg.image, Some((p, CellImage::Slice(_))) if p == path) {
             return Ok(());
         }
-        let size = wgpu::Extent3d { width: slice.cols as u32, height: slice.rows as u32, depth_or_array_layers: 1 };
-        let was_rgba = std::mem::replace(&mut cg.rgba, false);
-        let reuse = cg.texture.take().filter(|(_, t)| !was_rgba && t.width() == size.width && t.height() == size.height).map(|(_, t)| t);
-        let fresh = reuse.is_none();
-        let texture = reuse.unwrap_or_else(|| {
-            gpu.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("slice"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R16Sint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            })
-        });
-        // SAFETY: i16 is plain old data; the slice is borrowed for the call.
-        let bytes = unsafe { std::slice::from_raw_parts(slice.data.as_ptr() as *const u8, slice.data.len() * 2) };
-        gpu.queue.write_texture(
-            texture.as_image_copy(),
-            bytes,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 2), rows_per_image: Some(size.height) },
-            size,
-        );
-        if fresh {
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            cg.bind_group = bind_group(gpu, &cg.uniforms, &view);
+        let bytes = slice_bytes(&slice.data);
+        // A new buffer per slice in write-back memory where the adapter
+        // shares it (no GPU copy); the one it replaces is freed once the
+        // frames that read it are done.
+        #[cfg(windows)]
+        if gpu.direct_slices {
+            if let Some(buffer) = crate::native_uma::storage_buffer(&gpu.device, &bytes) {
+                cg.bind_group = bind_group(gpu, &cg.uniforms, &buffer);
+                cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
+                cg.dims = (slice.cols, slice.rows);
+                return Ok(());
+            }
         }
-        cg.texture = Some((path.to_path_buf(), texture));
+        let size = slice_buffer_size(slice.cols, slice.rows);
+        let reuse = match cg.image.take() {
+            Some((_, CellImage::Slice(b))) if b.size() == size => Some(b),
+            _ => None,
+        };
+        let fresh = reuse.is_none();
+        let buffer = reuse.unwrap_or_else(|| slice_buffer(&gpu.device, slice.cols, slice.rows));
+        gpu.queue.write_buffer(&buffer, 0, &bytes);
+        if fresh {
+            cg.bind_group = bind_group(gpu, &cg.uniforms, &buffer);
+        }
+        cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
         cg.dims = (slice.cols, slice.rows);
         Ok(())
     }
@@ -1027,8 +1083,8 @@ impl Native {
         let mut cells = self.cells.lock();
         // Uniforms first (each cell has its own buffer), then one pass.
         for c in cells.values_mut() {
-            let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_view));
-            let (cols, rows) = if cg.texture.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
+            let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_image));
+            let (cols, rows) = if cg.image.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
             let t = Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h);
             let data: [f32; 20] = [
                 c.rect.x * s, c.rect.y * s, c.rect.w * s, c.rect.h * s,
@@ -1067,13 +1123,13 @@ impl Native {
             for (id, c) in order {
                 let Some(cg) = &c.gpu else { continue };
                 // An app cell without a slice stays the page's (no test image there).
-                if cg.texture.is_none() && id != SPIKE {
+                if cg.image.is_none() && id != SPIKE {
                     continue;
                 }
                 // Clip to the cell and to the surface.
                 let Some((x0, y0, cw, ch)) = device_clip(c.rect.x, c.rect.y, c.rect.w, c.rect.h, s, sw, sh) else { continue };
                 pass.set_scissor_rect(x0, y0, cw, ch);
-                pass.set_pipeline(if cg.rgba { &gpu.pipeline_rgba } else { &gpu.pipeline });
+                pass.set_pipeline(if cg.rgba() { &gpu.pipeline_rgba } else { &gpu.pipeline });
                 pass.set_bind_group(0, &cg.bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
@@ -1162,18 +1218,31 @@ fn park_surface(gpu: &mut Gpu) {
     flush_and_wait(gpu);
 }
 
-fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
+/// Whether slices go straight into shared write-back memory (native_uma.rs).
+fn direct_slices(device: &wgpu::Device) -> bool {
+    #[cfg(windows)]
+    {
+        crate::native_uma::coherent_uma(device)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = device;
+        false
+    }
+}
+
+fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, slice: &wgpu::Buffer) -> wgpu::BindGroup {
     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("cell"),
         layout: &gpu.layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+            wgpu::BindGroupEntry { binding: 1, resource: slice.as_entire_binding() },
         ],
     })
 }
 
-fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::TextureView) -> CellGpu {
+fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::Buffer) -> CellGpu {
     let uniforms = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("cell uniforms"),
         size: 80,
@@ -1181,7 +1250,7 @@ fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::TextureView) -> CellGpu {
         mapped_at_creation: false,
     });
     let bind_group = bind_group(gpu, &uniforms, initial);
-    CellGpu { uniforms, bind_group, texture: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize), rgba: false }
+    CellGpu { uniforms, bind_group, image: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize) }
 }
 
 /// P2.1 bench / spike: the DICOM files under `roots`, grouped by series, the
@@ -1246,7 +1315,8 @@ struct Pipes {
     layout: wgpu::BindGroupLayout,
     pipeline_rgba: wgpu::RenderPipeline,
     layout_rgba: wgpu::BindGroupLayout,
-    test_view: wgpu::TextureView,
+    /// The test image (spike / a cell before its first slice), as a slice buffer.
+    test_image: wgpu::Buffer,
 }
 
 /// What DX12 / Vulkan swap chains offer first (non-sRGB); a surface that
@@ -1556,33 +1626,17 @@ fn finish(
         Some(p) if p.format == format => p,
         _ => build_pipes(&device, &queue, format),
     };
-    let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_view, .. } = pipes;
+    let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_image, .. } = pipes;
     Ok((
-        Gpu { surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_view, parked: false },
+        Gpu { direct_slices: direct_slices(&device), surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_image, parked: false },
         info.name,
         format!("{:?}", info.backend),
     ))
 }
 
 fn build_pipes(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Pipes {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("test image"),
-        size: wgpu::Extent3d { width: TEST_SIZE, height: TEST_SIZE, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R16Sint,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let pixels = test_image(TEST_SIZE);
-    let bytes: Vec<u8> = pixels.iter().flat_map(|v| v.to_le_bytes()).collect();
-    queue.write_texture(
-        texture.as_image_copy(),
-        &bytes,
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(TEST_SIZE * 2), rows_per_image: Some(TEST_SIZE) },
-        wgpu::Extent3d { width: TEST_SIZE, height: TEST_SIZE, depth_or_array_layers: 1 },
-    );
+    let test_buffer = slice_buffer(device, TEST_SIZE as usize, TEST_SIZE as usize);
+    queue.write_buffer(&test_buffer, 0, &slice_bytes(&test_image(TEST_SIZE)));
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("cell"),
         entries: &[
@@ -1595,16 +1649,11 @@ fn build_pipes(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::Texture
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Sint,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                 count: None,
             },
         ],
     });
-    let test_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("cell"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("cell"),
@@ -1670,7 +1719,7 @@ fn build_pipes(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::Texture
         multiview_mask: None,
         cache: None,
     });
-    Pipes { format, pipeline, layout, pipeline_rgba, layout_rgba, test_view }
+    Pipes { format, pipeline, layout, pipeline_rgba, layout_rgba, test_image: test_buffer }
 }
 
 /// A cell's CSS-px rect → the device-px scissor (x, y, w, h), clipped to the
@@ -1710,6 +1759,25 @@ mod tests {
             wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: r } => assert_eq!(r, (4 << 20)..(64 << 20)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The slice buffer as the cell shader reads it: value i is the low
+    /// (even i) or high (odd i) half of word i / 2, sign-extended; an odd
+    /// count is zero-padded to whole words.
+    #[test]
+    fn slice_buffer_packs_two_signed_values_per_word() {
+        let data: Vec<i16> = vec![-1, 2, i16::MIN, i16::MAX, -1024, 5, 0];
+        let bytes = super::slice_bytes(&data);
+        assert_eq!(bytes.len() as u64, super::slice_buffer_size(data.len(), 1));
+        assert_eq!(bytes.len(), 16);
+        for (i, &v) in data.iter().enumerate() {
+            let w = u32::from_le_bytes(bytes[(i >> 1) * 4..(i >> 1) * 4 + 4].try_into().unwrap());
+            let s = if i & 1 == 1 { (w as i32) >> 16 } else { ((w << 16) as i32) >> 16 };
+            assert_eq!(s, v as i32, "value {i}");
+        }
+        // Even counts are uploaded as they are, no copy.
+        assert!(matches!(super::slice_bytes(&[1i16, -2]), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(super::slice_buffer_size(512, 512), 512 * 512 * 2);
     }
 
     /// No vblank wait: Mailbox where offered (D3D12, Vulkan), Immediate on
