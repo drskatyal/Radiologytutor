@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 // Visual-regression + perf gate for the web viewer (e2e/visual). Runs against a
-// production build (`npm run build` first) of /viewer/local, which needs no
+// production build (`npm run build` first) of the free /viewer, which needs no
 // backend: the study is local files (scripts/make-test-ct.py → TEST_CT_DIR).
 const PORT = Number(process.env.VISUAL_PORT ?? 3100);
 
@@ -23,12 +23,12 @@ export default defineConfig({
   },
   webServer: {
     command: `npx next start -p ${PORT}`,
-    url: `http://127.0.0.1:${PORT}/viewer/local`,
+    url: `http://127.0.0.1:${PORT}/viewer`,
     reuseExistingServer: !process.env.CI,
     // Fail fast with a clear message rather than hang a CI job on one step.
   timeout: 60_000,
-    // The auth module refuses to serve without a signing secret; this run has
-    // no accounts, so a throwaway one is fine.
-    env: { BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "visual-regression-only-not-a-real-secret" },
+    // The session module refuses to serve without a signing secret; this run
+    // has no accounts, so a throwaway one is fine.
+    env: { SESSION_SECRET: process.env.SESSION_SECRET ?? "visual-regression-only-not-a-real-secret" },
   },
 });
