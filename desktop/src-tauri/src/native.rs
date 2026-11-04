@@ -765,15 +765,18 @@ impl Native {
         report
     }
 
+    /// A viewport shows a series or a volume plane (a study is open).
+    pub fn has_viewports(&self) -> bool {
+        self.cells.lock().values().any(|c| !c.series.is_empty() || c.plane.is_some())
+    }
+
     /// No viewport left (study closed): drop whatever slices landed in the
     /// cache since, plus any cell an in-flight call re-created. Returns the
     /// slices dropped, or None when viewports exist (a study is open again).
     pub fn sweep_if_idle(&self) -> Option<usize> {
-        let cells = self.cells.lock();
-        if cells.values().any(|c| !c.series.is_empty() || c.plane.is_some()) {
+        if self.has_viewports() {
             return None;
         }
-        drop(cells);
         self.cells.lock().clear();
         let store = self.store.get()?;
         let n = store.stats().slices;
