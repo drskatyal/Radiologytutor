@@ -47,35 +47,47 @@ jobs:
         working-directory: desktop
       - name: Synthetic CT
         run: python scripts/make-test-ct.py "$RUNNER_TEMP/ct848" --slices 848
-      - name: Diag A — stock (no park, WebGL probe)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          FLOWRAD_DIAG_NOPARK: "1"
-          FLOWRAD_DIAG_GPUINFO: "1"
-        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" stock 40
-      - name: Diag B — fix (park, no WebGL probe)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" fix 40
-      - name: Diag C — fix + forced JS GC after close
+      - name: D1 fix + JS GC, 4 rounds
         if: ${{ !cancelled() }}
         continue-on-error: true
         env:
           FLOWRAD_DIAG_JSGC: "1"
-        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" fix-jsgc 40
-      - name: Gate (fix) — memory back on close, run 1
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"
-      - name: Gate (stock) — memory back on close
+          DIAG_ROUNDS: "4"
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" fix-jsgc 35
+      - name: D2 fix, 4 rounds
         if: ${{ !cancelled() }}
         continue-on-error: true
         env:
-          FLOWRAD_DIAG_NOPARK: "1"
-          FLOWRAD_DIAG_GPUINFO: "1"
+          DIAG_ROUNDS: "4"
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" fix 35
+      - name: D3 fix + no layer contents, 1 round
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG_NOCONTENTS: "1"
+          DIAG_ROUNDS: "1"
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" nocontents 35
+      - name: D4 fix + lazy GPU (surface released), 1 round
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_GPU_WARM: "lazy"
+          DIAG_ROUNDS: "1"
+        run: node desktop/scripts/diag-close.mjs "$APP" "$RUNNER_TEMP/ct848" lazy 35
+      - name: Gate fix + JS GC
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG_JSGC: "1"
         run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"
-      - name: Gate (fix) — memory back on close, run 2
+      - name: Gate fix + JS GC + no contents
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG_JSGC: "1"
+          FLOWRAD_DIAG_NOCONTENTS: "1"
+        run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"
+      - name: Gate fix
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: node desktop/scripts/bench.mjs close "$APP" "$RUNNER_TEMP/ct848" --settle 20 --after-close 30 --max-baseline-private-mb "$BASELINE_PRIVATE_MAX_MB" --max-open-private-mb "$CT_OPEN_PRIVATE_MAX_MB" --max-close-delta-mb "$CLOSE_DELTA_MAX_MB"

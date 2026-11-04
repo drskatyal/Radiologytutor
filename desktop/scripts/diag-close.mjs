@@ -8,6 +8,7 @@ import path from "node:path";
 
 const [binary, study, label = "run", holdArg = "40"] = process.argv.slice(2);
 const hold = Number(holdArg);
+const ROUNDS = Number(process.env.DIAG_ROUNDS ?? 2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const benchEnv = (vars) => Object.fromEntries(Object.entries(vars).flatMap(([k, v]) => [[`FLOWRAD_${k}`, v], [`RADLEARN_${k}`, v]]));
 
@@ -85,7 +86,7 @@ for (const k of ["app", "renderer"]) console.log(`[${label}] baseline ${k} categ
 // 2. Two open / close rounds.
 const child = spawn(binary, [study], {
   stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: "openclose", BENCH_CLOSE_AFTER_MS: String(hold * 1000), LEAK_ROUNDS: "2" }) },
+  env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: "openclose", BENCH_CLOSE_AFTER_MS: String(hold * 1000), LEAK_ROUNDS: String(ROUNDS) }) },
 });
 const reports = [];
 let partial = "";
@@ -114,14 +115,14 @@ const show = (tag, s) => {
   console.log(`[${label}] ${tag}: ${s.total} MB (Δ ${s.total - base.total}) (${line(s)})`);
   for (const k of ["app", "renderer", "gpu"]) if (s.cats[k]) console.log(`[${label}]   ${k} vs baseline: ${delta(base.cats[k] ?? {}, s.cats[k])}`);
 };
-for (const round of [1, 2]) {
+for (let round = 1; round <= ROUNDS; round += 1) {
   await until(() => reports.some((r) => !r.closed && r.openClose?.round === round), 180_000, `open report ${round}`);
   const t0 = Date.now();
   await sleep(Math.max(0, hold * 1000 - 3000));
   show(`round ${round} open`, sample(child.pid));
   await until(() => reports.some((r) => r.closed && r.openClose?.round === round), hold * 1000 + 30_000, `close report ${round}`);
   const tc = Date.now();
-  const marks = round === 1 ? [3, 15, 30] : [3, 15, 30, 45, 60];
+  const marks = round < ROUNDS ? [5, Math.max(6, hold - 5)] : [5, 30, 60];
   for (const s of marks) {
     await sleep(Math.max(0, tc + s * 1000 - Date.now()));
     show(`round ${round} closed +${s}s`, sample(child.pid));

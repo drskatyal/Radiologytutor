@@ -1166,6 +1166,17 @@ fn park_surface(gpu: &mut Gpu) {
     gpu.queue.submit(Some(encoder.finish()));
     gpu.queue.present(frame);
     flush_and_wait(gpu);
+    if crate::flowrad_env("DIAG_NOCONTENTS").is_ok() {
+        // SAFETY: diagnostic; the layer outlives the guard.
+        unsafe {
+            if let Some(hal) = gpu.surface.as_hal::<wgpu::hal::api::Metal>() {
+                let layer = hal.render_layer().lock();
+                let layer: &objc2::runtime::AnyObject = &layer;
+                let _: () = objc2::msg_send![layer, setContents: std::ptr::null::<objc2::runtime::AnyObject>()];
+            }
+        }
+    }
+    println!("FLOWRAD_DIAG parked metal {:?} MB", metal_allocated_mb(&gpu.device));
 }
 
 fn bind_group(gpu: &Gpu, uniforms: &wgpu::Buffer, view: &wgpu::TextureView) -> wgpu::BindGroup {
