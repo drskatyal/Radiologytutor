@@ -49,48 +49,60 @@ jobs:
           echo "RUNNER $(sysctl -n hw.ncpu) CPUs, $(uptime)"
           sudo -n true && echo "sudo ok"
           mkdir -p "$RUNNER_TEMP/samples"
-      - name: open gate (as CI, no diag)
+      - name: cold start, diag
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         continue-on-error: true
-        run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
+        env:
+          FLOWRAD_DIAG: "1"
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d1-cold.jsonl
+        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms 900 --max-app-ms 150
+      - name: cold start, diag, native splash off
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG: "1"
+          FLOWRAD_NATIVE_SPLASH: "0"
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d2-cold-nosplash.jsonl
+        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms 900 --max-app-ms 150
+      - name: cold start, diag, native renderer off
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        continue-on-error: true
+        env:
+          FLOWRAD_DIAG: "1"
+          FLOWRAD_NATIVE: "0"
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d3-cold-nonative.jsonl
+        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms 900 --max-app-ms 150
       - name: open gate, diag
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         continue-on-error: true
         env:
           FLOWRAD_DIAG: "1"
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/diag-open.jsonl
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d4-open.jsonl
         run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3 --max-first-image-ms 1100 --max-first-visible-ms 400 --max-long-task-ms 150 --require-gpu
-      - name: cold start gate, diag
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        continue-on-error: true
-        env:
-          FLOWRAD_DIAG: "1"
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/diag-cold.jsonl
-        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 5 --max-ms 900 --max-app-ms 150
-      - name: open, diag + samples
+      - name: cold start, diag, WebContent sampled from page load
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         continue-on-error: true
         env:
           FLOWRAD_DIAG: "1"
           FLOWRAD_DIAG_SAMPLE: "1"
+          FLOWRAD_DIAG_SAMPLE_AT: load
           FLOWRAD_DIAG_DIR: ${{ runner.temp }}/samples
-          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/diag-sample.jsonl
-        run: node desktop/scripts/bench.mjs desktop "$APP" "$RUNNER_TEMP/ct848" --runs 3
+          FLOWRAD_BENCH_OUT: ${{ runner.temp }}/d5-cold-sample.jsonl
+        run: node desktop/scripts/bench.mjs coldstart "$APP" --runs 2
       - name: timelines
         if: ${{ !cancelled() }}
-        run: python3 desktop/scripts/diag-timeline.py "$RUNNER_TEMP/diag-open.jsonl" "$RUNNER_TEMP/diag-cold.jsonl" "$RUNNER_TEMP/diag-sample.jsonl"
-      - name: samples (main threads)
+        run: python3 desktop/scripts/diag-timeline.py "$RUNNER_TEMP"/d*.jsonl
+      - name: samples
         if: ${{ !cancelled() }}
         run: |
           ls -la "$RUNNER_TEMP/samples"
-          for f in "$RUNNER_TEMP"/samples/*.txt; do
-            echo "===== $f"
-            awk '/Thread_[0-9]+.*(main-thread|DispatchQueue_1)/{f=1} f&&/^    [0-9]+ Thread_/&&c++>0{exit} f' "$f" | sed -E 's/ *\[0x[0-9a-f]+\]//; s/  +/ /g' | awk '{ n=$2+0; if (n >= 15) print substr($0,1,240) }' | head -160
-          done
+          python3 desktop/scripts/diag-samples.py "$RUNNER_TEMP"/samples/sample-*.txt
+          for f in "$RUNNER_TEMP"/samples/top-*.txt; do echo "===== $f"; cat "$f"; done
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

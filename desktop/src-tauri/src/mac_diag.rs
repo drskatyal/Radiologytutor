@@ -144,7 +144,7 @@ fn out_dir() -> std::path::PathBuf {
 fn spawn_sample(pid: u32, name: &str, seconds: u32) {
     let file = out_dir().join(format!("sample-{}-{name}-{pid}.txt", std::process::id()));
     let cmd = format!(
-        "sample {pid} {seconds} 2 -mayDie -file '{f}' >/dev/null 2>&1 || sudo -n sample {pid} {seconds} 2 -mayDie -file '{f}' >/dev/null 2>&1",
+        "sample {pid} {seconds} 1 -mayDie -file '{f}' >/dev/null 2>&1 || sudo -n sample {pid} {seconds} 1 -mayDie -file '{f}' >/dev/null 2>&1",
         f = file.display()
     );
     let at = r1(now_ms());
@@ -156,10 +156,35 @@ fn sample_self(name: &str, seconds: u32) {
     spawn_sample(std::process::id(), name, seconds);
 }
 
+/// The page finished loading: sample its WebContent process for 3 s (the
+/// page's timers stall ~0.5-1 s after this on loaded runners) and take a
+/// `top` of the busiest processes 0.6 s in.
+pub fn on_page_loaded() {
+    event("page loaded (diag)");
+    if !sampling() || crate::flowrad_env("DIAG_SAMPLE_AT").as_deref() != Ok("load") {
+        return;
+    }
+    static ONCE: AtomicBool = AtomicBool::new(false);
+    if ONCE.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let out = std::process::Command::new("pgrep").args(["-n", "-f", "com.apple.WebKit.WebContent"]).output();
+    if let Ok(out) = out {
+        if let Ok(pid) = String::from_utf8_lossy(&out.stdout).trim().parse::<u32>() {
+            spawn_sample(pid, "load-WebContent", 3);
+        }
+    }
+    sample_self("load-app", 3);
+    let file = out_dir().join(format!("top-{}.txt", std::process::id()));
+    let cmd = format!("sleep 0.4; top -l 3 -s 1 -o cpu -n 12 -stats pid,command,cpu,threads,state > '{}' 2>&1", file.display());
+    let _ = std::process::Command::new("sh").arg("-c").arg(cmd).spawn();
+    SAMPLES.lock().push(format!("{} ms: top -> {}", r1(now_ms()), file.display()));
+}
+
 /// The open started: sample this process and the newest WebKit processes.
 pub fn on_open() {
     event("open: scan_sources entered");
-    if !sampling() {
+    if !sampling() || crate::flowrad_env("DIAG_SAMPLE_AT").as_deref() == Ok("load") {
         return;
     }
     static ONCE: AtomicBool = AtomicBool::new(false);

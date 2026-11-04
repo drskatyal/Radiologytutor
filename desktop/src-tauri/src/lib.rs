@@ -1503,6 +1503,10 @@ pub fn run() {
                 tauri::webview::PageLoadEvent::Finished => {
                     mark(2);
                     trace("page load finished");
+                    #[cfg(target_os = "macos")]
+                    if main {
+                        mac_diag::on_page_loaded();
+                    }
                     // The page reports its first paint (`splash_done`); if it
                     // never does, the native splash still goes.
                     if main {
