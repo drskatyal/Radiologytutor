@@ -40,6 +40,20 @@ export interface ReportGrade {
   rubric: ReportRubricItem[];
 }
 
+/**
+ * Rubric for an assessment report question: the case's findings, limited to
+ * `findingIds` when the author named some (unknown ids are ignored; if none
+ * survive, the whole case is the rubric).
+ */
+export function buildQuestionRubric(
+  findings: Finding[],
+  findingIds?: string[]
+): ReportRubricItem[] {
+  const wanted = new Set((findingIds ?? []).map((id) => id.trim()).filter(Boolean));
+  const picked = wanted.size ? findings.filter((f) => wanted.has(f.id)) : [];
+  return buildReportRubric(picked.length ? picked : findings);
+}
+
 export function buildReportRubric(findings: Finding[]): ReportRubricItem[] {
   return findings
     .slice()

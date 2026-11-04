@@ -1,6 +1,6 @@
 // GET /api/assessments/question-view?courseId=…&questionId=…
 //
-// The imaging payload for a click-the-finding question: the real study the
+// The imaging payload for a click-the-finding or report question: the real study the
 // finding was authored on, plus just enough viewport state to land the learner
 // where the teacher was standing.
 //
@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
     // point this at an arbitrary case/finding pair of its choosing.
     const assessment = await getAssessmentForCourse(orgId, courseId);
     const question = assessment?.questions.find((q) => q.id === questionId);
-    if (!question || question.kind !== "click_finding") {
+    if (!question || question.kind === "mcq") {
       return NextResponse.json({ error: "Question not found." }, { status: 404 });
     }
 
@@ -52,7 +52,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Case not found." }, { status: 404 });
     }
 
-    const finding = caseData.findings.find((f) => f.id === question.findingId);
+    // A report question opens the study at its default view: landing on a
+    // finding's slice would hand the learner the answer.
+    const finding =
+      question.kind === "click_finding"
+        ? caseData.findings.find((f) => f.id === question.findingId)
+        : undefined;
 
     const series = await resolveCaseSeries(question.caseId, orgId, WADO_RS_ROOT);
     if (!series || series.length === 0) {
@@ -74,22 +79,24 @@ export async function GET(req: NextRequest) {
       source: caseSeriesToSource(series[index] ?? series[0]),
       series,
       modality: caseData.modality,
-      // Viewport only — never the marker.
-      view: {
-        seriesInstanceUID: finding?.seriesInstanceUID,
-        sliceIndex:
-          finding?.sliceIndex != null && Number.isFinite(finding.sliceIndex)
-            ? finding.sliceIndex
-            : undefined,
-        windowWidth:
-          finding?.windowWidth != null && Number.isFinite(finding.windowWidth)
-            ? finding.windowWidth
-            : undefined,
-        windowCenter:
-          finding?.windowCenter != null && Number.isFinite(finding.windowCenter)
-            ? finding.windowCenter
-            : undefined,
-      },
+      // Viewport only — never the marker. Report questions get no view.
+      view: finding
+        ? {
+            seriesInstanceUID: finding?.seriesInstanceUID,
+            sliceIndex:
+              finding?.sliceIndex != null && Number.isFinite(finding.sliceIndex)
+                ? finding.sliceIndex
+                : undefined,
+            windowWidth:
+              finding?.windowWidth != null && Number.isFinite(finding.windowWidth)
+                ? finding.windowWidth
+                : undefined,
+            windowCenter:
+              finding?.windowCenter != null && Number.isFinite(finding.windowCenter)
+                ? finding.windowCenter
+                : undefined,
+          }
+        : undefined,
     });
   } catch (err) {
     const denied = jsonAuthError(err);

@@ -3,10 +3,19 @@
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle } from "lucide-react";
-import { Badge, Button, useToast } from "@/components/ui";
+import { Badge, Button, Field, Textarea, useToast } from "@/components/ui";
+import { AssessmentReview } from "./AssessmentReview";
 import { LocateStage } from "./LocateStage";
 import type { Attempt } from "@/lib/types";
-import type { LearnerAnswer } from "@/lib/assessmentGrade";
+import {
+  MAX_REPORT_CHARS,
+  responseCredit,
+  type AttemptReview,
+  type LearnerAnswer,
+} from "@/lib/assessmentGrade";
+
+/** A report shorter than this isn't worth a model call. */
+const MIN_REPORT_CHARS = 20;
 
 type PublicQ = {
   id: string;
@@ -15,6 +24,7 @@ type PublicQ = {
   options?: string[];
   caseId?: string;
   findingId?: string;
+  passMark?: number;
 };
 
 type PublicAssessment = {
@@ -29,11 +39,14 @@ export function CourseAssessment({
   courseId,
   assessment,
   initialBestAttempt,
+  initialBestReview,
   isEnrolled,
 }: {
   courseId: string;
   assessment: PublicAssessment;
   initialBestAttempt?: Attempt | null;
+  /** Review of the best attempt, so a returning learner can revisit it. */
+  initialBestReview?: AttemptReview | null;
   isEnrolled: boolean;
 }) {
   const router = useRouter();
@@ -43,10 +56,13 @@ export function CourseAssessment({
   const [bestAttempt, setBestAttempt] = useState(initialBestAttempt ?? null);
   const [submitting, setSubmitting] = useState(false);
   const [lastResult, setLastResult] = useState<Attempt | null>(null);
+  const [lastReview, setLastReview] = useState<AttemptReview | null>(null);
+  const [showBestReview, setShowBestReview] = useState(false);
 
   const questions = assessment.questions;
   const current = questions[step];
   const isLast = step >= questions.length - 1;
+  const hasReport = questions.some((q) => q.kind === "report");
 
   function setMcq(questionId: string, selectedIndex: number) {
     setAnswers((prev) => ({
@@ -82,11 +98,13 @@ export function CourseAssessment({
       }
       const data = (await res.json().catch(() => ({}))) as {
         attempt?: Attempt;
+        review?: AttemptReview | null;
         error?: string;
       };
       if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
       const attempt = data.attempt!;
       setLastResult(attempt);
+      setLastReview(data.review ?? null);
       if (!bestAttempt || attempt.score >= bestAttempt.score) {
         setBestAttempt(attempt);
       }
@@ -115,11 +133,14 @@ export function CourseAssessment({
         ? answered?.selectedIndex !== undefined
         : current.kind === "click_finding"
           ? answered?.x_pct !== undefined
-          : false;
+          : (answered?.text?.trim().length ?? 0) >= MIN_REPORT_CHARS;
     if (!hasAnswer) {
       toast({
         title: "Answer required",
-        description: "Select an option or click the image before continuing.",
+        description:
+          current.kind === "report"
+            ? `Write your report (at least ${MIN_REPORT_CHARS} characters) before continuing.`
+            : "Select an option or click the image before continuing.",
         variant: "warning",
       });
       return;
@@ -129,6 +150,14 @@ export function CourseAssessment({
   }
 
   const clickAnswer = current?.kind === "click_finding" ? answers[current.id] : undefined;
+  const reportText = current?.kind === "report" ? answers[current.id]?.text ?? "" : "";
+
+  function setReport(questionId: string, text: string) {
+    setAnswers((prev) => ({
+      ...prev,
+      [questionId]: { questionId, text: text.slice(0, MAX_REPORT_CHARS) },
+    }));
+  }
 
   return (
     <div className="rounded-xl border border-subtle bg-surface p-5 sm:p-6">
@@ -179,35 +208,21 @@ export function CourseAssessment({
               <p className="mt-1 text-sm text-secondary tabular-nums">
                 Score {lastResult.score}% · {lastResult.responses.filter((r) => r.correct).length} of{" "}
                 {lastResult.responses.length} correct
+                {lastResult.responses.some((r) => !r.correct && responseCredit(r) > 0)
+                  ? " · partial credit on reports"
+                  : ""}
               </p>
             </div>
           </div>
-          <ul className="space-y-2">
-            {questions.map((q, i) => {
-              const r = lastResult.responses.find((x) => x.questionId === q.id);
-              return (
-                <li
-                  key={q.id}
-                  className="flex items-start gap-2 text-sm text-secondary"
-                >
-                  {r?.correct ? (
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
-                  ) : (
-                    <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" aria-hidden="true" />
-                  )}
-                  <span>
-                    <span className="text-muted tabular-nums">Q{i + 1}. </span>
-                    {q.prompt}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          {lastReview ? (
+            <AssessmentReview courseId={courseId} questions={questions} review={lastReview} />
+          ) : null}
           {!lastResult.passed && (
             <Button
               variant="secondary"
               onClick={() => {
                 setLastResult(null);
+                setLastReview(null);
                 setStep(0);
                 setAnswers({});
               }}
@@ -218,6 +233,32 @@ export function CourseAssessment({
         </div>
       ) : (
         <div className="mt-5 space-y-4">
+          {bestAttempt && initialBestReview && initialBestReview.attemptId === bestAttempt.id && (
+            <div className="space-y-3 rounded-lg border border-subtle bg-elevated/50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-secondary">
+                  {bestAttempt.passed
+                    ? "You've passed. Review your answers any time, or take it again for practice."
+                    : "Review your best attempt before trying again."}
+                </p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowBestReview((v) => !v)}
+                  aria-expanded={showBestReview}
+                >
+                  {showBestReview ? "Hide review" : "Review best attempt"}
+                </Button>
+              </div>
+              {showBestReview && (
+                <AssessmentReview
+                  courseId={courseId}
+                  questions={questions}
+                  review={initialBestReview}
+                />
+              )}
+            </div>
+          )}
           <p className="text-xs font-medium uppercase tracking-wide text-muted tabular-nums">
             Question {step + 1} of {questions.length}
           </p>
@@ -267,6 +308,35 @@ export function CourseAssessment({
                   onLocate={(x, y) => setLocate(current.id, x, y)}
                 />
               )}
+
+              {current.kind === "report" && (
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+                  <LocateStage courseId={courseId} questionId={current.id} mode="browse" />
+                  <Field
+                    label="Your report"
+                    hint={
+                      <span className="tabular-nums">
+                        Findings, then an impression. Graded against the case&apos;s authored
+                        findings
+                        {current.passMark !== undefined ? ` (pass ≥ ${current.passMark}/100)` : ""}.{" "}
+                        {reportText.length}/{MAX_REPORT_CHARS}
+                      </span>
+                    }
+                  >
+                    {(wiring) => (
+                      <Textarea
+                        {...wiring}
+                        rows={12}
+                        value={reportText}
+                        maxLength={MAX_REPORT_CHARS}
+                        onChange={(e) => setReport(current.id, e.target.value)}
+                        placeholder={"Findings: …\n\nImpression: …"}
+                        disabled={submitting}
+                      />
+                    )}
+                  </Field>
+                </div>
+              )}
             </>
           )}
 
@@ -278,9 +348,16 @@ export function CourseAssessment({
             >
               Back
             </Button>
-            <Button onClick={nextOrSubmit} loading={submitting}>
-              {isLast ? "Submit assessment" : "Next"}
-            </Button>
+            <div className="flex items-center gap-3">
+              {submitting && hasReport && (
+                <span className="text-xs text-muted" role="status">
+                  Grading your report against the rubric…
+                </span>
+              )}
+              <Button onClick={nextOrSubmit} loading={submitting}>
+                {isLast ? "Submit assessment" : "Next"}
+              </Button>
+            </div>
           </div>
         </div>
       )}

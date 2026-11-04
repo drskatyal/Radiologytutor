@@ -11,9 +11,11 @@ import {
   listReviewsForCourse,
   getCertificateForUserCourse,
   getPublicAssessmentForCourse,
+  getAssessment,
   getBestAttemptForUserAssessment,
 } from "@/lib/cases";
 import { activeOrgId, getSession } from "@/lib/auth";
+import { reviewAttempt } from "@/lib/assessmentGrade";
 import { Badge, Breadcrumbs, Button, EmptyState, PageContainer, SectionHeading, VerifiedBadge } from "@/components/ui";
 import { PageHeader } from "@/components/AppShell";
 import { difficultyBadgeVariant, difficultyLabel } from "@/lib/taxonomy";
@@ -61,6 +63,18 @@ export default async function CoursePage({ params }: { params: { id: string } })
   const completedCaseIds = progress?.completedCaseIds ?? [];
   const percentComplete = progress?.percentComplete ?? 0;
   const assessmentPassed = Boolean(bestAttempt?.passed);
+  // Review is built from the server-side assessment (answer keys gated on pass).
+  const fullAssessment = bestAttempt && assessment ? await getAssessment(assessment.id) : null;
+  const bestReview =
+    bestAttempt && fullAssessment ? reviewAttempt(fullAssessment.questions, bestAttempt) : null;
+  const assessmentKinds = new Set(assessment?.questions.map((q) => q.kind) ?? []);
+  const assessmentBlurb = [
+    assessmentKinds.has("mcq") ? "MCQ" : null,
+    assessmentKinds.has("click_finding") ? "click-the-finding" : null,
+    assessmentKinds.has("report") ? "a graded report" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const canClaimCertificate =
     isEnrolled && percentComplete >= 100 && (!assessment || assessmentPassed);
 
@@ -185,13 +199,14 @@ export default async function CoursePage({ params }: { params: { id: string } })
             <SectionHeading
               id="assessment-heading"
               title="Post-test"
-              description="MCQ plus click-the-finding — required before your certificate when enrolled."
+              description={`${assessmentBlurb || "Questions"} on the case viewer — required before your certificate when enrolled.`}
             />
             <div className="mt-4">
               <CourseAssessment
                 courseId={course.id}
                 assessment={assessment}
                 initialBestAttempt={bestAttempt}
+                initialBestReview={bestReview}
                 isEnrolled={isEnrolled}
               />
             </div>
