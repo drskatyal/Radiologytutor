@@ -848,6 +848,7 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
         #[cfg(target_os = "macos")]
         if swept.is_some() {
             mac_webkit::drop_memory_cache(&_window);
+            mac_webkit::collect_js_garbage(&_window);
         }
         release_memory_everywhere();
         if bench_on() {
@@ -855,6 +856,15 @@ fn native_close(_window: tauri::WebviewWindow, native: tauri::State<'_, native::
                 "FLOWRAD_BENCH_CLOSE",
                 &serde_json::json!({ "step": "late sweep", "swept": swept, "store": native.store().stats(), "commitMb": commit_mb(), "heapCommittedMb": heap_committed_mb() }),
             );
+        }
+        // Once more when work the close deferred (timers, idle callbacks,
+        // transitions) has let go too, unless a study is open again by then.
+        #[cfg(target_os = "macos")]
+        if swept.is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            if !native.has_viewports() {
+                mac_webkit::collect_js_garbage(&_window);
+            }
         }
     });
     if bench_on() {
