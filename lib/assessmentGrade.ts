@@ -38,6 +38,22 @@ export function reportPassMark(question: ReportQuestion): number {
   return Math.min(100, Math.max(0, Math.round(mark)));
 }
 
+/**
+ * The report score that counts toward the post-test. The model grades
+ * findings, impression and language out of 100. The offline fallback can only
+ * score findings (out of 50), so it is scaled to 100 — otherwise a grader
+ * outage would make every report pass mark unreachable.
+ */
+export function reportOverallForAttempt(
+  gradedBy: "model" | "local",
+  grade: { overall: number; bands: Array<{ name: string; score: number; max: number }> }
+): number {
+  if (gradedBy === "model") return clampScore(grade.overall);
+  const findings = grade.bands.find((b) => b.name === "Findings") ?? grade.bands[0];
+  if (!findings || findings.max <= 0) return 0;
+  return clampScore((findings.score / findings.max) * 100);
+}
+
 /** Trim and cap a learner's report before it is graded or stored. */
 export function cleanReportText(text: unknown): string {
   if (typeof text !== "string") return "";

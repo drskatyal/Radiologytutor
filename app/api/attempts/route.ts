@@ -5,7 +5,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { getAssessment, submitAttempt } from "@/lib/cases";
-import { reportPassMark, reviewAttempt, type LearnerAnswer } from "@/lib/assessmentGrade";
+import {
+  reportOverallForAttempt,
+  reportPassMark,
+  reviewAttempt,
+  type LearnerAnswer,
+} from "@/lib/assessmentGrade";
 import { buildQuestionRubric } from "@/lib/reportGrade";
 import { gradeReportText } from "@/lib/reportGradeServer";
 
@@ -41,7 +46,7 @@ export async function POST(req: NextRequest) {
         const rubric = buildQuestionRubric(caseData.findings, question.findingIds);
         const outcome = await gradeReportText(text, rubric);
         return {
-          overall: outcome.grade.overall,
+          overall: reportOverallForAttempt(outcome.gradedBy, outcome.grade),
           passMark: reportPassMark(question),
           gradedBy: outcome.gradedBy,
           bands: outcome.grade.bands,

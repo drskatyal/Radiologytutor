@@ -68,13 +68,15 @@ export default async function CoursePage({ params }: { params: { id: string } })
   const bestReview =
     bestAttempt && fullAssessment ? reviewAttempt(fullAssessment.questions, bestAttempt) : null;
   const assessmentKinds = new Set(assessment?.questions.map((q) => q.kind) ?? []);
-  const assessmentBlurb = [
-    assessmentKinds.has("mcq") ? "MCQ" : null,
+  const assessmentParts = [
+    assessmentKinds.has("mcq") ? "multiple choice" : null,
     assessmentKinds.has("click_finding") ? "click-the-finding" : null,
-    assessmentKinds.has("report") ? "a graded report" : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
+    assessmentKinds.has("report") ? "a written report" : null,
+  ].filter((part): part is string => Boolean(part));
+  const assessmentBlurb =
+    assessmentParts.length > 1
+      ? `${assessmentParts.slice(0, -1).join(", ")} and ${assessmentParts[assessmentParts.length - 1]}`
+      : assessmentParts[0] ?? "";
   const canClaimCertificate =
     isEnrolled && percentComplete >= 100 && (!assessment || assessmentPassed);
 
@@ -199,7 +201,7 @@ export default async function CoursePage({ params }: { params: { id: string } })
             <SectionHeading
               id="assessment-heading"
               title="Post-test"
-              description={`${assessmentBlurb || "Questions"} on the case viewer — required before your certificate when enrolled.`}
+              description={`${assessmentBlurb ? `Questions on the case viewer: ${assessmentBlurb}.` : "Questions on the case viewer."} Required before your certificate when enrolled.`}
             />
             <div className="mt-4">
               <CourseAssessment

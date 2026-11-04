@@ -210,7 +210,7 @@ function ReportReview({ text, grade }: { text: string; grade?: AttemptReportGrad
         <span className="text-xs text-muted">
           {grade.gradedBy === "model"
             ? "AI-graded against the rubric below."
-            : "Graded by rubric phrase coverage (AI grader unavailable) — findings only."}
+            : "AI grader unavailable — scored on rubric findings coverage only, scaled to 100."}
         </span>
       </div>
 

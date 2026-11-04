@@ -1581,6 +1581,8 @@ export async function updateCourse(
 export async function deleteCourse(orgId: string, courseId: string): Promise<boolean> {
   const current = await getCourse(orgId, courseId);
   if (!current) return false;
+  // A post-test has no meaning without its course; attempts stay as history.
+  await deleteAssessmentForCourse(orgId, courseId);
   return coursesStore.remove(courseId);
 }
 
@@ -2265,6 +2267,41 @@ export async function getPublicAssessmentForCourse(
     cmeEligible: assessment.cmeEligible,
     questions: toPublicQuestions(assessment.questions),
   };
+}
+
+/**
+ * Create or replace a course's post-test (one per course). Keeps the existing
+ * id and createdAt so stored attempts still point at it. The questions must
+ * already be validated (lib/assessmentDraft.ts) — this layer only persists.
+ */
+export async function saveAssessmentForCourse(
+  orgId: string,
+  courseId: string,
+  input: Pick<Assessment, "title" | "description" | "passingScore" | "questions">
+): Promise<Assessment> {
+  const existing = await getAssessmentForCourse(orgId, courseId);
+  const now = nowIso();
+  const assessment: Assessment = {
+    id: existing?.id ?? genId("assess"),
+    orgId,
+    courseId,
+    title: input.title,
+    description: input.description,
+    passingScore: input.passingScore,
+    questions: input.questions,
+    cmeEligible: false,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await assessmentsStore.put(assessment);
+  return assessment;
+}
+
+/** Remove a course's post-test. Attempts are kept as history. */
+export async function deleteAssessmentForCourse(orgId: string, courseId: string): Promise<boolean> {
+  const existing = await getAssessmentForCourse(orgId, courseId);
+  if (!existing) return false;
+  return assessmentsStore.remove(existing.id);
 }
 
 export async function listAttemptsForUser(userId: string): Promise<Attempt[]> {

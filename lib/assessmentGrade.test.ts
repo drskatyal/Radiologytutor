@@ -6,6 +6,7 @@ import {
   gradeClickFinding,
   gradeMcq,
   MAX_REPORT_CHARS,
+  reportOverallForAttempt,
   reportPassMark,
   reviewAttempt,
   scoreResponses,
@@ -248,4 +249,15 @@ test("buildQuestionRubric limits to named findings and falls back to the case", 
     buildQuestionRubric(findings).map((r) => r.findingId),
     ["f1", "f2"]
   );
+});
+
+test("a fallback (findings-only) report grade is scaled to 100", () => {
+  const bands = [
+    { name: "Findings", score: 40, max: 50 },
+    { name: "Impression", score: 0, max: 30 },
+    { name: "Language", score: 0, max: 20 },
+  ];
+  assert.equal(reportOverallForAttempt("local", { overall: 40, bands }), 80);
+  assert.equal(reportOverallForAttempt("model", { overall: 63, bands }), 63);
+  assert.equal(reportOverallForAttempt("local", { overall: 0, bands: [] }), 0);
 });
