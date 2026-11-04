@@ -211,13 +211,15 @@ function whenNativeKnown(): Promise<boolean> {
   return isTauri ? nativeKnown() : Promise.resolve(false);
 }
 
-let diagFirstRender = true;
+let diagRenders = 0;
+let diagRenderAt = 0;
 export default function App() {
-  if (diagFirstRender) {
-    diagFirstRender = false;
-    diagMark("App: first render");
-  }
-  useLayoutEffect(() => diagMark("App: committed"), []);
+  diagRenders += 1;
+  diagRenderAt = performance.now();
+  if (diagRenders <= 40) diagMark(`App: render ${diagRenders}`);
+  useLayoutEffect(() => {
+    if (diagRenders <= 40) diagMark(`App: render ${diagRenders} committed (${Math.round(performance.now() - diagRenderAt)} ms)`);
+  });
   useEffect(() => diagMark("App: effects"), []);
   const { toast } = useToast();
   const [version, setVersion] = useState("");
