@@ -31,6 +31,16 @@ if (isTauri) {
 // needs it, and opening a study awaits it (`protocolReady`).
 void initProtocol();
 diagMark("main.tsx: imports evaluated");
+// TEMPORARY diagnosis: how long the page's first web-storage access blocks.
+{
+  const t = performance.now();
+  try {
+    localStorage.getItem("flowrad.diag.probe");
+  } catch {
+    /* no storage */
+  }
+  diagMark(`first localStorage access took ${Math.round(performance.now() - t)} ms`);
+}
 watchLongTasks();
 startDiag();
 // No browser menu (Back / Refresh / Print) anywhere but text fields.

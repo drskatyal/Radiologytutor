@@ -55,28 +55,6 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
-      - name: diag open, no transparency switch
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_DIAG_NO_CLEAR: "1"
-        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
-      - name: diag open, native off
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_NATIVE: "0"
-        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
-      - name: diag open, GPU lazy
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        env:
-          FLOWRAD_GPU_WARM: lazy
-        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
-      - name: diag open (again)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: node .github/diag/diag-run.mjs "$APP" 4 "$RUNNER_TEMP/ct848"
       - name: diag cold start (first)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
