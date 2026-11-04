@@ -53,18 +53,24 @@ jobs:
         run: python desktop/scripts/e2e-splash.py "$APP"
       - name: WebContent main thread during the boot block (sample)
         if: ${{ !cancelled() }}
-        timeout-minutes: 5
+        timeout-minutes: 6
         run: |
           for arg in "" "$RUNNER_TEMP/ct848" ""; do
             FLOWRAD_BENCH=1 "$APP" $arg > /dev/null 2>&1 &
             pid=$!
-            sleep 1.7
-            wc=$(pgrep -n -f com.apple.WebKit.WebContent || true)
-            echo "===== app $pid (${arg:-no study}), WebContent $wc"
-            [ -n "$wc" ] && sample "$wc" 1.3 1 -mayDie -file "$RUNNER_TEMP/wc.txt" > /dev/null 2>&1 || true
+            sleep 1.5
+            n=0
+            for wc in $(pgrep -f com.apple.WebKit.WebContent); do
+              n=$((n+1)); sample "$wc" 2 1 -mayDie -file "$RUNNER_TEMP/wc$n.txt" > /dev/null 2>&1 &
+            done
+            wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || sleep 2.5
+            sleep 0.5
             kill -9 "$pid" || true
             sleep 1
-            awk '/Thread_[0-9]+.*(main-thread|DispatchQueue_1)/{f=1} f&&/^    [0-9]+ Thread_/&&n++>0{exit} f' "$RUNNER_TEMP/wc.txt" | awk '{ if (length($0) > 230) print substr($0,1,230); else print }' | head -260
+            for k in $(seq 1 $n); do
+              echo "===== app $pid (${arg:-no study}), WebContent sample $k"
+              awk '/Thread_[0-9]+.*(main-thread|DispatchQueue_1)/{f=1} f&&/^    [0-9]+ Thread_/&&c++>0{exit} f' "$RUNNER_TEMP/wc$k.txt" | sed -E 's/ *\[0x[0-9a-f]+\]//; s/  +/ /g' | awk '{ n=$2+0; if (n >= 20) print substr($0,1,220) }' | head -150
+            done
           done
       - name: diag open (first)
         if: ${{ !cancelled() }}
