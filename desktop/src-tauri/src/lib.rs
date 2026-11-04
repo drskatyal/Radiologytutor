@@ -566,9 +566,15 @@ static TRACE: parking_lot::Mutex<Vec<(&'static str, f64)>> = parking_lot::Mutex:
 pub(crate) fn trace(label: &'static str) {
     if let Some(t) = STARTED.get() {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
-        let mut v = TRACE.lock();
-        if v.len() < 64 {
-            v.push((label, (ms * 10.0).round() / 10.0));
+        let ms = (ms * 10.0).round() / 10.0;
+        {
+            let mut v = TRACE.lock();
+            if v.len() < 64 {
+                v.push((label, ms));
+            }
+        }
+        if diag_on() {
+            bench_emit("FLOWRAD_DIAG", &serde_json::json!({ "trace": label, "at": ms }));
         }
     }
 }
@@ -578,7 +584,8 @@ pub(crate) fn trace(label: &'static str) {
 /// stall), and the page reports its own stalls and resource loads, as
 /// `FLOWRAD_DIAG` lines, for the first 20 s.
 fn diag_on() -> bool {
-    crate::flowrad_env("DIAG").as_deref() == Ok("1")
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::flowrad_env("DIAG").as_deref() == Ok("1"))
 }
 
 fn start_main_thread_probe(app: tauri::AppHandle) {
@@ -730,7 +737,13 @@ async fn native_init(window: tauri::WebviewWindow, native: tauri::State<'_, nati
 /// Build the GPU on the main window (idempotent) and put it under the page.
 async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> native::NativeStatus {
     let was_ready = native.has_gpu();
+    if !was_ready {
+        trace("native init: start");
+    }
     let status = native.init(window).await;
+    if !was_ready {
+        trace("native init: gpu + surface");
+    }
     if status.ready {
         let scale = window.scale_factor().unwrap_or(1.0);
         let origin = window.inner_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
@@ -746,6 +759,7 @@ async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> 
         }
         // Where the page draws nothing, the native surface shows through.
         let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        trace("native init: webview transparent");
     }
     native.status()
 }
