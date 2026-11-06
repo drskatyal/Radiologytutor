@@ -48,7 +48,7 @@ test("right-click menu: sections, shortcuts, presets, DICOM tags; browser menu k
   await menu.getByRole("menuitem", { name: /^Window \/ level/ }).hover();
   const lung = page.getByRole("menuitemradio", { name: /^Lung/ });
   await expect(lung).toBeVisible();
-  await expect(lung.locator("kbd")).toHaveText(/Shift\+\d/);
+  await expect(lung.locator("kbd")).toHaveText(/^\d$/);
   await lung.click();
   await expect.poll(async () => /W 1500\s+L [-−]600/.test(await page.locator("body").innerText()), { timeout: 5000 }).toBe(true);
 

@@ -1,8 +1,8 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
-  TOOL_DIGITS,
   VIEWER_SHORTCUT_GROUPS,
+  shortcutForPreset,
   shortcutForTool,
   VIEWER_HOTKEY_HINTS,
   isTextTarget,
@@ -13,12 +13,20 @@ import {
 // (components/student/StudentSession.tsx + lib/seriesRailPreference.ts).
 const SESSION_KEYS = ["c", "n", "p", "r", "t", "f", "[", "?", " "];
 
-test("digits pick the left-button tool", () => {
-  assert.deepEqual(resolveViewerHotkey({ key: "1" }), { type: "tool", tool: "StackScroll" });
-  assert.deepEqual(resolveViewerHotkey({ key: "2" }), { type: "tool", tool: "WindowLevel" });
-  assert.deepEqual(resolveViewerHotkey({ key: "3" }), { type: "tool", tool: "Zoom" });
-  assert.deepEqual(resolveViewerHotkey({ key: "4" }), { type: "tool", tool: "Pan" });
-  assert.deepEqual(resolveViewerHotkey({ key: "5" }), { type: "tool", tool: "Length" });
+test("number keys 1–9 are window presets and 0 the series default, as on the desktop", () => {
+  for (let n = 1; n <= 9; n += 1) {
+    assert.deepEqual(resolveViewerHotkey({ key: String(n) }), { type: "preset", ordinal: n }, String(n));
+  }
+  assert.deepEqual(resolveViewerHotkey({ key: "0" }), { type: "preset", ordinal: 0 });
+  // Through the bindings engine too (a physical digit on any layout).
+  assert.deepEqual(resolveViewerHotkey({ key: "&", code: "Digit7" }), { type: "preset", ordinal: 7 });
+});
+
+test("each preset row shows its key", () => {
+  assert.equal(shortcutForPreset(1, {}), "1");
+  assert.equal(shortcutForPreset(9, {}), "9");
+  assert.equal(shortcutForPreset(0, {}), "0");
+  assert.equal(shortcutForPreset(10, {}), null);
 });
 
 test("no viewer hotkey collides with a key the student session owns", () => {
@@ -64,7 +72,7 @@ test("zoom, reset, invert and cine", () => {
   const zoomOut = resolveViewerHotkey({ key: "-" });
   assert.ok(zoomOut && zoomOut.type === "zoom" && zoomOut.factor < 1);
   assert.deepEqual(resolveViewerHotkey({ key: "=" })?.type, "zoom", "unshifted + on US layouts");
-  assert.deepEqual(resolveViewerHotkey({ key: "0" }), { type: "reset" });
+  assert.deepEqual(resolveViewerHotkey({ key: "Backspace" }), { type: "reset" });
   assert.deepEqual(resolveViewerHotkey({ key: "i" }), { type: "invert" });
   assert.deepEqual(resolveViewerHotkey({ key: "I" }), { type: "invert" });
   assert.deepEqual(resolveViewerHotkey({ key: "k" }), { type: "cine" });
@@ -80,10 +88,10 @@ test("Shift and a digit is a window preset, by number or by shifted glyph", () =
   assert.deepEqual(resolveViewerHotkey({ key: "(" }), { type: "preset", ordinal: 9 });
 });
 
-test("a preset shortcut never doubles as a tool shortcut", () => {
-  for (const digit of Object.keys(TOOL_DIGITS)) {
-    const shifted = resolveViewerHotkey({ key: digit, shiftKey: true });
-    assert.equal(shifted?.type, "preset", `Shift+${digit}`);
+test("no digit, bare or shifted, is a tool shortcut", () => {
+  for (const digit of "0123456789") {
+    assert.equal(resolveViewerHotkey({ key: digit })?.type, "preset", digit);
+    assert.equal(resolveViewerHotkey({ key: digit, shiftKey: true })?.type, "preset", `Shift+${digit}`);
   }
 });
 
@@ -154,7 +162,7 @@ test("Shift+0 is the series default window", () => {
 });
 
 test("tooltips and the help sheet read the same bindings", () => {
-  assert.equal(shortcutForTool("WindowLevel"), "2 · W");
+  assert.equal(shortcutForTool("WindowLevel"), "W");
   assert.equal(shortcutForTool("Angle"), "A");
   assert.equal(shortcutForTool("Probe"), null);
   for (const group of VIEWER_SHORTCUT_GROUPS) {

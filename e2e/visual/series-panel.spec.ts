@@ -105,7 +105,7 @@ test("rotate / flip: toolbar dropdown, keys, menu; edge letters follow", async (
   await expect.poll(() => edges(page)).toEqual({ top: "P", bottom: "A", left: "R", right: "L" });
   // Reset view clears the orientation too.
   await page.locator("canvas").first().click({ position: { x: 40, y: 40 } });
-  await page.keyboard.press("0");
+  await page.keyboard.press("Backspace");
   await expect.poll(() => edges(page)).toEqual(start);
 });
 
