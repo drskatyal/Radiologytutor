@@ -55,7 +55,7 @@ import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { imageMenu } from "@flowrad/viewer-core";
-import { shortcutForTool } from "../lib/viewerHotkeys";
+import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
 import { VoiceStatus } from "./viewer/voice/VoiceStatus";
@@ -195,7 +195,7 @@ import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/type
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
-  presetsForModality,
+  viewerWindowPresets,
   type WindowPreset,
 } from "../lib/windowPresets";
 import { Spinner } from "@/components/ui";
@@ -208,7 +208,7 @@ import {
   toolLabel,
 } from "./viewer/ViewerToolbar";
 import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
-import { ViewerHelp } from "./viewer/ViewerHelp";
+import { ViewerHelp, type ViewerHelpTab } from "./viewer/ViewerHelp";
 import { SURFACE_PRESETS, type CutAxis } from "@flowrad/viewer-core";
 import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
 import {
@@ -1049,6 +1049,8 @@ export default function CornerstoneViewer({
     });
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
+  /** Which list the help sheet shows: keys, or the voice commands. */
+  const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
   // Mouse & keyboard bindings (local copy; the page shell syncs the account).
   const { overrides: viewerBindings } = useViewerBindings();
   // On-screen confirmation for key presses. Cleared after a beat.
@@ -1106,7 +1108,8 @@ export default function CornerstoneViewer({
   const coronalRef = useRef<HTMLDivElement>(null);
   const sagittalRef = useRef<HTMLDivElement>(null);
 
-  const presets = presetsForModality(modality);
+  // Number-key order, shared with the desktop viewer (key n = entry n).
+  const presets = viewerWindowPresets(modality);
 
   // `source` is often a fresh object with the same study/series (Teach rebuilds
   // the compare descriptor every render). Object identity must not tear the
@@ -3581,6 +3584,8 @@ export default function CornerstoneViewer({
         if (onCycleLayout) onCycleLayout();
         return;
       case "help":
+        // While voice is listening, `?` opens what can be said.
+        if (!helpOpen) setHelpTab(voiceStateRef.current === "listening" ? "voice" : "keys");
         setHelpOpen((open) => !open);
         return;
       case "orient":
@@ -3669,14 +3674,14 @@ export default function CornerstoneViewer({
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
     if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
-      if (arg === "auto") return "Shift+0";
+      if (arg === "auto") return shortcutForPreset(0) ?? undefined;
       const i = presets.findIndex((p) => p.id === arg);
-      return i >= 0 && i < 9 ? `Shift+${i + 1}` : undefined;
+      return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
     }
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
-    return ({ invert: "I", reset: "0", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
+    return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
     imageMenu({
@@ -3850,9 +3855,12 @@ export default function CornerstoneViewer({
       flash(`“${heard}”`);
       voiceActionRef.current(action);
     },
-    onUnrecognized: (heard) => flash(`“${heard}” ?`),
+    onUnrecognized: (heard) => flash(`“${heard}” is not a command · ${questionMarkHelp ? "? lists them" : "the voice list shows them"}`),
     onProgress: setVoiceProgress,
     onState: (state, detail) => {
+      if (state === "listening" && voiceStateRef.current !== "listening") {
+        flash(questionMarkHelp ? "Voice on · press ? for what to say" : "Voice on · the voice list shows what to say");
+      }
       voiceStateRef.current = state;
       setVoice({ state });
       if (state === "error") setVoiceError(detail ?? null);
@@ -4031,7 +4039,18 @@ export default function CornerstoneViewer({
       onCineToggle={() => setCinePlaying((playing) => !playing)}
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
-      onHelp={() => setHelpOpen((open) => !open)}
+      onHelp={() => {
+        if (!helpOpen || helpTab !== "keys") {
+          setHelpTab("keys");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
+      onVoiceHelp={() => {
+        if (!helpOpen || helpTab !== "voice") {
+          setHelpTab("voice");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
       voice={
         canVoice
           ? {
@@ -4141,7 +4160,7 @@ export default function CornerstoneViewer({
           inverted,
           presetLabel:
             activePreset && activePreset !== FULL_DYNAMIC_ID
-              ? WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? null
+              ? (presets.find((p) => p.id === activePreset) ?? WINDOW_PRESETS.find((p) => p.id === activePreset))?.label ?? null
               : null,
           cineFps: cinePlaying ? cineFps : null,
         }
@@ -4366,7 +4385,14 @@ export default function CornerstoneViewer({
           </p>
         )}
         <ViewerHud text={hud} />
-        <ViewerHelp open={helpOpen} onClose={closeHelp} overrides={viewerBindings} />
+        <ViewerHelp
+          open={helpOpen}
+          onClose={closeHelp}
+          overrides={viewerBindings}
+          tab={helpTab}
+          onTabChange={setHelpTab}
+          voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
+        />
         <VoiceStatus
           className="absolute right-3 top-3 z-30"
           state={voice.state}
