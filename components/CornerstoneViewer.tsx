@@ -806,6 +806,7 @@ export default function CornerstoneViewer({
   questionMarkHelp = false,
   seriesPanel = null,
   onCycleLayout,
+  onSetLayout,
   toolbarHost,
   active = true,
   onActivate,
@@ -901,6 +902,8 @@ export default function CornerstoneViewer({
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
   onCycleLayout?: () => void;
+  /** A named layout ("layout two" / "layout four" by voice): rows × columns. */
+  onSetLayout?: (rows: number, cols: number) => void;
   /**
    * Hanging layouts: the shared toolbar slot under the grid. When set, this
    * pane portals its toolbar there while it is the active pane and renders
@@ -3828,6 +3831,10 @@ export default function CornerstoneViewer({
       case "volume3d":
         return runViewerAction({ type: "mpr" });
       case "layout":
+        if (onSetLayout) {
+          onSetLayout(a.rows, a.cols);
+          return flash(a.rows * a.cols === 1 ? "One up" : a.rows === 1 ? "Side by side" : "2 × 2");
+        }
         return runViewerAction({ type: "layout" });
       case "preset": {
         const want = a.name === "abdomen" ? /abdom|soft/i : new RegExp(a.name, "i");
