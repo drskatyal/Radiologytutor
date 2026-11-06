@@ -19,6 +19,12 @@ import Link from "next/link";
 import { ShieldCheck } from "lucide-react";
 import { LocalStudyViewer } from "@/components/viewer/LocalStudyViewer";
 import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
+// Imported, not referenced by /brand/ path: Next copies the files byte for
+// byte to a hashed /_next/static/media/ URL. The dark lockup can first load
+// after a drop (the shell turns black when a study opens), and after a drop
+// this page may only make static asset GETs (free-viewer.perf.spec privacy).
+import lockupLight from "@/public/brand/flowrad-lockup.svg";
+import lockupDark from "@/public/brand/flowrad-lockup-dark.svg";
 
 export const metadata: Metadata = {
   title: "FlowRad Viewer · Free DICOM viewer in your browser",
@@ -54,7 +60,7 @@ export default function FreeViewerPage() {
           {/* The approved Owl Scan lockups, byte for byte (brand/brand.md): the
               green wordmark on light, the white one on dark and while reading. */}
           <Image
-            src="/brand/flowrad-lockup.svg"
+            src={lockupLight}
             alt="FlowRad"
             width={120}
             height={32}
@@ -65,7 +71,7 @@ export default function FreeViewerPage() {
             className="vl-logo-light h-8 w-auto"
           />
           <Image
-            src="/brand/flowrad-lockup-dark.svg"
+            src={lockupDark}
             alt="FlowRad"
             width={113}
             height={32}
