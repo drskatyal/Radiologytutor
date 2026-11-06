@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveShortcut, resolveInput, shortcutSheet, BINDINGS, DESKTOP_COMMANDS, keySpecOf, keysForAction, conflictFor, toolKeyLabel, type KeyLike } from "./shortcuts";
-import { assignInput, exportBindings, migrateShortcutOverrides, parseBindings, setLiveBindings } from "@flowrad/viewer-core/bindings";
+import { assignInput, clearInput, exportBindings, migrateShortcutOverrides, parseBindings, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { edgeLabels, directionLabel } from "./viewer/orientation";
 import { dragModeFor, mouseBindings, mouseHintFor, mouseSheetLine, resolveWheel } from "./viewer/mouseBindings";
 import { readFileSync } from "node:fs";
@@ -398,6 +398,14 @@ test("bindings: right drag rebound to zoom applies to native drags, the engine t
   assert.equal(dragModeFor(2, "StackScroll", { ctrl: true }, o), "WindowLevel", "W/L took zoom's old gesture");
   assert.equal(mouseHintFor("Zoom", o, false), "Right drag");
   assert.match(mouseSheetLine(o, false), /Right drag = zoom/);
+  assert.match(mouseSheetLine(o, false), /(^|· )Ctrl\+Right drag = window\/level/, "the sheet says where W/L went");
+  // Settings › Mouse & Keyboard's mouse table moves right drag to zoom (clear, then add): W/L loses it.
+  const added = assignInput(DESKTOP_COMMANDS, clearInput(DESKTOP_COMMANDS, {}, "drag.windowLevel", "Mouse2Drag"), "drag.zoom", "Mouse2Drag", { mode: "add" });
+  const line = mouseSheetLine(added, false);
+  assert.match(line, /(^|· )Right drag or Ctrl\+Right drag = zoom( ·|$)/, line);
+  assert.equal(line.match(/drag[^·]* = zoom( ·|$)/g)?.length, 1, `zoom listed once: ${line}`);
+  assert.match(line, /(^|· )window\/level: not bound( ·|$)/, line);
+  assert.doesNotMatch(line, /drag = window\/level/, line);
   // Live: what every viewport and the engine read.
   setLiveBindings(o);
   try {

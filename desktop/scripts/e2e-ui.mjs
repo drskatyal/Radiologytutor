@@ -500,6 +500,13 @@ if (want("bindings")) {
   await sheet.waitFor({ timeout: 3000 }).catch(() => undefined);
   const sheetText = (await sheet.innerText().catch(() => "")) + (await sheet.getAttribute("aria-describedby").then((id) => (id ? page.locator(`#${id}`).innerText() : "")).catch(() => ""));
   check("bindings (after reload): the F1 sheet shows F13, Mouse button 6 and Right drag = zoom", /F13/.test(sheetText) && /Mouse button 6/.test(sheetText) && /Right drag = zoom/.test(sheetText), sheetText.slice(0, 200));
+  // Each mouse action once, with all its inputs; W/L lost right drag, so the sheet says so.
+  const mouseLine = sheetText.match(/Mouse: [^\n]*/)?.[0] ?? "";
+  check(
+    "bindings (after reload): the F1 mouse line lists zoom once with both drags and says window/level is not bound",
+    /(^|· )Right drag or Ctrl\+Right drag = zoom( ·|$)/.test(mouseLine) && (mouseLine.match(/drag[^·]* = zoom( ·|$)/g) ?? []).length === 1 && /(^|· )window\/level: not bound( ·|$)/.test(mouseLine),
+    mouseLine
+  );
   await shot("bindings-sheet");
   await closeDialogs();
 
