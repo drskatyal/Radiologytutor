@@ -507,6 +507,9 @@ if (want("bindings")) {
     /(^|· )Right drag or Ctrl\+Right drag = zoom( ·|$)/.test(mouseLine) && (mouseLine.match(/drag[^·]* = zoom( ·|$)/g) ?? []).length === 1 && /(^|· )window\/level: not bound( ·|$)/.test(mouseLine),
     mouseLine
   );
+  // The sheet fades / springs in (Modal: overlay 160 ms, panel ~320 ms). It is
+  // opaque (bg-elevated); a shot taken mid-animation shows the image through it.
+  await settle(500);
   await shot("bindings-sheet");
   await closeDialogs();
 
