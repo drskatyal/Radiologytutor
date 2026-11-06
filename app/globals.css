@@ -243,3 +243,62 @@
     color: inherit !important;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   FlowRad Viewer shell (/viewer). Brand forest green (brand/brand.md) on the
+   system's light or dark surface while choosing a study; reading-room black
+   once a study is on screen (`:has(local-stage)`), whatever the system theme.
+   ────────────────────────────────────────────────────────────────────────── */
+.viewer-shell {
+  --vl-bg: 247 245 241; /* paper, as the rest of FlowRad */
+  --vl-surface: 255 255 255;
+  --vl-fg: 18 18 18;
+  --vl-muted: 84 92 88;
+  --vl-border: 214 218 212;
+  --vl-brand: 15 77 58; /* #0F4D3A forest green */
+  --vl-brand-soft: 226 239 233;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  .viewer-shell {
+    --vl-bg: 9 13 12;
+    --vl-surface: 17 24 22;
+    --vl-fg: 240 244 242;
+    --vl-muted: 160 174 168;
+    --vl-border: 40 54 49;
+    --vl-brand: 92 196 156; /* forest green, lifted for contrast on dark */
+    --vl-brand-soft: 20 46 38;
+    color-scheme: dark;
+  }
+}
+
+.viewer-shell:has([data-testid="local-stage"]) {
+  --vl-bg: 0 0 0;
+  --vl-surface: 12 12 12;
+  --vl-fg: 255 255 255;
+  --vl-muted: 179 179 179;
+  --vl-border: 38 38 38;
+  --vl-brand: 92 196 156;
+  --vl-brand-soft: 20 46 38;
+  color-scheme: dark;
+}
+
+/* The lockup with the wordmark that reads on the current surface. */
+.viewer-shell .vl-logo-dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  .viewer-shell .vl-logo-light {
+    display: none;
+  }
+  .viewer-shell .vl-logo-dark {
+    display: block;
+  }
+}
+.viewer-shell:has([data-testid="local-stage"]) .vl-logo-light {
+  display: none;
+}
+.viewer-shell:has([data-testid="local-stage"]) .vl-logo-dark {
+  display: block;
+}

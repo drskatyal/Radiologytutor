@@ -18,6 +18,18 @@ const config: Config = {
         elevated: "rgb(var(--elevated) / <alpha-value>)",
         overlay: "rgb(var(--overlay) / <alpha-value>)",
         imaging: "#000000",
+        // The free viewer's own shell (/viewer): follows the system light/dark
+        // setting while no study is open, and turns reading-room black once
+        // one is. Values in app/globals.css (.viewer-shell).
+        vl: {
+          bg: "rgb(var(--vl-bg) / <alpha-value>)",
+          surface: "rgb(var(--vl-surface) / <alpha-value>)",
+          fg: "rgb(var(--vl-fg) / <alpha-value>)",
+          muted: "rgb(var(--vl-muted) / <alpha-value>)",
+          border: "rgb(var(--vl-border) / <alpha-value>)",
+          brand: "rgb(var(--vl-brand) / <alpha-value>)",
+          "brand-soft": "rgb(var(--vl-brand-soft) / <alpha-value>)",
+        },
         // Tutor ink on the image. Authored marks are marker yellow; a mark at
         // a learner's tap is rose. Cards are solid near-black so they read on
         // any window. Keep in sync with INK in lib/inkStroke.ts.
