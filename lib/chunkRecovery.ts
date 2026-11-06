@@ -4,7 +4,11 @@
 //
 // The policy, in order:
 //   1. Retry the import: twice, with backoff. webpack forgets a failed chunk,
-//      so the same import() asks the server again.
+//      so the same import() asks again. But chunks are served `immutable`, so
+//      "again" is answered by the browser's HTTP cache: a bad copy stored once
+//      (a response cut off mid-deploy) would fail every retry AND every reload,
+//      forever, for that one browser. So before each retry the failing file is
+//      fetched with `cache: "reload"`, which replaces the cached copy.
 //   2. Still failing: reload the page once, so the tab gets the live build.
 //      A sessionStorage stamp stops a reload loop: if this tab already
 //      reloaded for this reason in the last few minutes, do not reload again;
@@ -30,6 +34,53 @@ export function isChunkLoadError(error: unknown): boolean {
   );
 }
 
+/** The file a webpack chunk error names: `error.request`, or "(missing: URL)" in the message. */
+export function failedChunkUrl(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const { request, message } = error as { request?: unknown; message?: unknown };
+  const candidates = [typeof request === "string" ? request : ""];
+  if (typeof message === "string") {
+    const m = message.match(/\((?:missing|error|timeout)?:?\s*([^\s()]+)\)/);
+    if (m) candidates.push(m[1]);
+  }
+  for (const raw of candidates) {
+    if (!raw) continue;
+    try {
+      const base = typeof window !== "undefined" ? window.location.href : "http://localhost/";
+      const url = new URL(raw, base);
+      // Only our own static files: never refetch anything off-origin.
+      if (typeof window !== "undefined" && url.origin !== window.location.origin) continue;
+      if (!url.pathname.includes("/_next/static/")) continue;
+      return url.href;
+    } catch {
+      /* not a URL */
+    }
+  }
+  return null;
+}
+
+/**
+ * Re-download the chunk an error names, bypassing (and so replacing) the
+ * browser's cached copy. Returns the HTTP status, or null when there is no
+ * URL to refresh or the network failed. A 404 means the file is gone from
+ * the server: a new build replaced it, and only a page reload can help.
+ */
+export async function refreshFailedChunk(
+  error: unknown,
+  fetcher: typeof fetch | undefined = typeof fetch === "function" ? fetch : undefined
+): Promise<number | null> {
+  const url = failedChunkUrl(error);
+  if (!url || !fetcher) return null;
+  try {
+    const res = await fetcher(url, { cache: "reload", credentials: "same-origin" });
+    // Read the body so the fresh copy is fully stored before the retry.
+    await res.arrayBuffer().catch(() => undefined);
+    return res.status;
+  } catch {
+    return null;
+  }
+}
+
 export interface RetryOptions {
   /** Retries after the first attempt. */
   retries?: number;
@@ -37,6 +88,8 @@ export interface RetryOptions {
   baseDelayMs?: number;
   /** Test seam. */
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam: refetch the failing chunk past the HTTP cache (refreshFailedChunk). */
+  refresh?: (error: unknown) => Promise<number | null>;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -50,11 +103,16 @@ export async function importWithRetry<T>(load: () => Promise<T>, options: RetryO
   const retries = options.retries ?? 2;
   const base = options.baseDelayMs ?? 400;
   const sleep = options.sleep ?? defaultSleep;
+  const refresh = options.refresh ?? ((error: unknown) => refreshFailedChunk(error));
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await load();
     } catch (error) {
       if (!isChunkLoadError(error) || attempt >= retries) throw error;
+      // Replace a bad cached copy before asking again. Gone from the server
+      // (404): a newer build is live; retrying cannot help, the caller reloads.
+      const status = await refresh(error);
+      if (status === 404 || status === 410) throw error;
       await sleep(base * 2 ** attempt + Math.round(Math.random() * base * 0.25));
     }
   }
