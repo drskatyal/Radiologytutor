@@ -49,6 +49,8 @@ import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, type HangingLayoutId } from "@flowrad/viewer-core";
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
+import { linkedIndex, planeSign, seriesGeometry } from "@/lib/paneScrollLink";
+import type { ViewerEvent } from "@/lib/types";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
@@ -772,6 +774,76 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   useEffect(() => setActivePane(0), [result]);
   const cycleLayout = useCallback(() => setLayoutId((current) => nextLayout(current, flat.length)), [flat.length]);
   const setLayoutForGrid = useCallback((rows: number, cols: number) => setLayoutId(layoutForGrid(rows, cols)), []);
+  // ── Linked scrolling between panes (lib/paneScrollLink.ts) ──
+  // On by default, like the reading room: scroll one pane and every pane on a
+  // parallel plane goes to the same place in the patient. Panes of another
+  // study (a prior) are linked at what they show when linking starts.
+  const [linkScroll, setLinkScroll] = useState(true);
+  const paneTargets = useMemo(() => {
+    if (!multi || !result) return [];
+    return [
+      { study: activeStudy, series: result.studies[activeStudy]?.series[activeSeries] ?? null },
+      ...extraPanes.slice(0, panesNow - 1).map((t) => ({ study: t.study, series: result.studies[t.study]?.series[t.series] ?? null })),
+    ];
+  }, [multi, result, activeStudy, activeSeries, extraPanes, panesNow]);
+  const paneGeoms = useMemo(() => paneTargets.map((t) => seriesGeometry(t.series)), [paneTargets]);
+  const linkLive = useRef({ on: false, geoms: paneGeoms, studies: [] as number[] });
+  linkLive.current = { on: multi && linkScroll, geoms: paneGeoms, studies: paneTargets.map((t) => t.study) };
+  const controlsFor = useCallback(
+    (pane: number) => (pane === 0 ? viewerControls.current : paneControls.current[pane - 1]?.current ?? null),
+    []
+  );
+  /** Each pane's position (mm along its normal) when linking started: the cross-study offsets. */
+  const anchors = useRef<number[]>([]);
+  const captureAnchors = useCallback(() => {
+    anchors.current = linkLive.current.geoms.map((g, pane) => {
+      const c = controlsFor(pane);
+      const index = c?.ready ? c.getStartState?.()?.sliceIndex : undefined;
+      return g && index != null ? g.positions[index] ?? Number.NaN : Number.NaN;
+    });
+  }, [controlsFor]);
+  // Re-anchor when linking is switched on or a pane gets another series.
+  useEffect(() => {
+    if (!multi || !linkScroll) return;
+    const timer = window.setTimeout(captureAnchors, 400);
+    return () => window.clearTimeout(timer);
+  }, [multi, linkScroll, paneTargets, captureAnchors]);
+  /** A slice we moved a pane to: its own echo of that move must not drive the others back. */
+  const echoes = useRef(new Map<number, number>());
+  const onPaneEvent = useCallback(
+    (pane: number, event: ViewerEvent) => {
+      if (event.type !== "slice") return;
+      const live = linkLive.current;
+      if (!live.on) return;
+      if (echoes.current.get(pane) === event.index) {
+        echoes.current.delete(pane);
+        return;
+      }
+      const src = live.geoms[pane];
+      if (!src) return;
+      live.geoms.forEach((dst, other) => {
+        if (other === pane || !dst) return;
+        const c = controlsFor(other);
+        if (!c?.ready) return;
+        let offset = 0;
+        if (live.studies[other] !== live.studies[pane]) {
+          const sign = planeSign(src, dst);
+          const a = anchors.current;
+          if (!sign || !Number.isFinite(a[other]) || !Number.isFinite(a[pane])) return;
+          offset = a[other] - sign * a[pane];
+        }
+        const index = linkedIndex(src, event.index, dst, offset);
+        if (index == null || c.getStartState?.()?.sliceIndex === index) return;
+        echoes.current.set(other, index);
+        window.setTimeout(() => {
+          if (echoes.current.get(other) === index) echoes.current.delete(other);
+        }, 500);
+        c.applyEvent({ t: 0, type: "slice", index });
+      });
+    },
+    [controlsFor]
+  );
+
   // A pane that changes size keeps its camera: refit every pane once the grid settles.
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -900,7 +972,14 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const sidePanel = (
     <div className="flex h-full flex-col gap-3">
       {result && offeredLayouts.length > 1 && (
-        <LayoutPicker value={layoutId} options={offeredLayouts} onChange={setLayoutId} dark={reading} />
+        <LayoutPicker
+          value={layoutId}
+          options={offeredLayouts}
+          onChange={setLayoutId}
+          dark={reading}
+          linked={multi ? linkScroll : null}
+          onToggleLinked={() => setLinkScroll((on) => !on)}
+        />
       )}
       {result && study ? (
         <SeriesList
@@ -1109,7 +1188,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     source={source}
                     modality={modality}
                     controls={viewerControls}
-                    onEvent={popOut.onViewerEvent}
+                    onEvent={(event) => {
+                      popOut.onViewerEvent(event);
+                      onPaneEvent(0, event);
+                    }}
                     chrome={expanded || reading || multi ? "edge" : "dock"}
                     toolbarHost={multi ? barHost : undefined}
                     active={!multi || activePane === 0}
@@ -1149,6 +1231,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           source={ids.length ? { kind: "imageIds", key: `pane${pane}:${paneSeries.seriesInstanceUID}`, imageIds: ids } : undefined}
                           modality={paneSeries.modality}
                           controls={paneControls.current[i]}
+                          onEvent={(event) => onPaneEvent(pane, event)}
                           chrome="edge"
                           toolbarHost={barHost}
                           active={activePane === pane}
@@ -1550,15 +1633,44 @@ function LayoutPicker({
   options,
   onChange,
   dark,
+  linked,
+  onToggleLinked,
 }: {
   value: HangingLayoutId;
   options: { id: HangingLayoutId; label: string }[];
   onChange: (id: HangingLayoutId) => void;
   dark: boolean;
+  /** In a grid: whether the panes scroll together (null: no grid, no toggle). */
+  linked: boolean | null;
+  onToggleLinked: () => void;
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span className={cn("text-[11px] font-medium uppercase tracking-wide", dark ? "text-white/50" : "text-muted")}>Layout</span>
+      {linked !== null && (
+        <Tooltip label={linked ? "Panes scroll together (by position)" : "Panes scroll on their own"} side="bottom">
+          <button
+            type="button"
+            aria-pressed={linked}
+            aria-label="Link scroll"
+            onClick={onToggleLinked}
+            className={cn(
+              "ml-auto inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+              linked
+                ? dark
+                  ? "bg-white/15 text-white"
+                  : "bg-elevated text-primary shadow-sm"
+                : dark
+                  ? "text-white/55 hover:text-white"
+                  : "text-muted hover:text-primary"
+            )}
+          >
+            {linked ? <Link2 className="h-3.5 w-3.5" aria-hidden /> : <Unlink className="h-3.5 w-3.5" aria-hidden />}
+            {linked ? "Linked" : "Unlinked"}
+          </button>
+        </Tooltip>
+      )}
       <div
         role="radiogroup"
         aria-label="Hanging layout"
