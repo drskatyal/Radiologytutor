@@ -86,6 +86,7 @@ import {
   recallStudyHandles,
   regainStudyHandles,
   rememberStudyHandles,
+  studyHandlesReadable,
 } from "@/lib/studyHandleStore";
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
@@ -621,16 +622,51 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     return () => window.removeEventListener(VIEWER_CHUNK_ERROR_EVENT, onChunkError);
   }, []);
 
-  // After a recovery reload: offer the study back (Chromium keeps a handle;
-  // elsewhere the reader opens it again) and remember where they were.
+  /** Read readable handles and open them where the reader was. False: nothing to open. */
+  const openFromHandles = useCallback(
+    async (handles: FileSystemHandle[], place: Record<string, number> | undefined): Promise<boolean> => {
+      const files: File[] = [];
+      for (const handle of handles) {
+        try {
+          if (handle.kind === "directory") files.push(...(await filesFromDirectoryHandle(handle as FileSystemDirectoryHandle)));
+          else files.push(await (handle as FileSystemFileHandle).getFile());
+        } catch {
+          /* moved or deleted since */
+        }
+      }
+      if (files.length === 0) return false;
+      openingHandles.current = handles;
+      restorePlace.current = place ?? null;
+      void ingest(files);
+      return true;
+    },
+    [ingest]
+  );
+  const openFromHandlesRef = useRef(openFromHandles);
+  openFromHandlesRef.current = openFromHandles;
+
+  // After a recovery reload: the reader already chose this study, so that is
+  // consent to load it. Where the browser still grants read access (Chromium
+  // keeps the handle), reopen it straight away, back where they were: no
+  // "viewer was updated" screen, no click, no prompt. Only where access has
+  // lapsed (the browser itself requires a prompt, inside a click) or there is
+  // no handle (other browsers) does the landing offer Reopen / open again.
   useEffect(() => {
     const saved = takeSavedPlace();
     if (!saved?.viewer) return;
     let alive = true;
-    void recallStudyHandles().then((handles) => {
-      if (alive) setRestore({ handles, place: saved.viewer });
-    });
     restorePlace.current = saved.viewer;
+    void (async () => {
+      const handles = await recallStudyHandles();
+      if (!alive) return;
+      if (await studyHandlesReadable(handles)) {
+        if (!alive) return;
+        if (await openFromHandlesRef.current(handles, saved.viewer)) return;
+        if (alive) setRestore({ handles: [], place: saved.viewer });
+        return;
+      }
+      if (alive) setRestore({ handles, place: saved.viewer });
+    })();
     return () => {
       alive = false;
     };
@@ -638,30 +674,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   const reopenStudy = useCallback(async () => {
     if (!restore) return;
+    // Inside the reader's click: the browser's own permission prompt, only if it requires one.
     const handles = await regainStudyHandles(restore.handles);
-    if (handles.length === 0) {
+    if (handles.length === 0 || !(await openFromHandles(handles, restore.place))) {
       setRestore({ handles: [], place: restore.place });
-      return;
     }
-    const files: File[] = [];
-    for (const handle of handles) {
-      if (handle.kind === "directory") files.push(...(await filesFromDirectoryHandle(handle as FileSystemDirectoryHandle)));
-      else {
-        try {
-          files.push(await (handle as FileSystemFileHandle).getFile());
-        } catch {
-          /* moved or deleted since */
-        }
-      }
-    }
-    if (files.length === 0) {
-      setRestore({ handles: [], place: restore.place });
-      return;
-    }
-    openingHandles.current = handles;
-    restorePlace.current = restore.place ?? null;
-    void ingest(files);
-  }, [restore, ingest]);
+  }, [restore, openFromHandles]);
 
   const onDrop = useCallback(
     async (event: React.DragEvent<HTMLElement>) => {
