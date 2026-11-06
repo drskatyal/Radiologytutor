@@ -54,6 +54,8 @@ import {
 import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import { RemoteReferenceLines, type RemotePlane } from "./viewer/RemoteReferenceLines";
+import type { XVec3 } from "@flowrad/viewer-core";
 import { imageMenu } from "@flowrad/viewer-core";
 import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
@@ -332,6 +334,12 @@ export interface CornerstoneControls {
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
   /** Current slice / VOI / camera / SOP — primes recordings and finding landings. */
+  /**
+   * The visible image plane: its frame of reference and the world (mm)
+   * corners of the canvas, for reference lines in other panes. Null while
+   * the stack is not drawn (MPR showing, nothing loaded).
+   */
+  viewPlane?: () => { frame: string; corners: [XVec3, XVec3, XVec3, XVec3] } | null;
   getStartState: () => {
     sliceIndex: number;
     ww?: number;
@@ -807,6 +815,7 @@ export default function CornerstoneViewer({
   seriesPanel = null,
   onCycleLayout,
   onSetLayout,
+  referencePlanes,
   toolbarHost,
   active = true,
   onActivate,
@@ -904,6 +913,8 @@ export default function CornerstoneViewer({
   onCycleLayout?: () => void;
   /** A named layout ("layout two" / "layout four" by voice): rows × columns. */
   onSetLayout?: (rows: number, cols: number) => void;
+  /** Other panes' image planes: drawn as reference lines where they cut this image (same frame only). */
+  referencePlanes?: readonly RemotePlane[];
   /**
    * Hanging layouts: the shared toolbar slot under the grid. When set, this
    * pane portals its toolbar there while it is the active pane and renders
@@ -3289,6 +3300,20 @@ export default function CornerstoneViewer({
           restoreLayout: () => scheduleLayoutRestore(true),
           applyEvent,
           getStartState,
+          viewPlane: () => {
+            const vp = viewportRef.current as
+              | (typeof viewportRef.current & { canvas?: HTMLCanvasElement; getFrameOfReferenceUID?: () => string | undefined })
+              | null;
+            const frame = vp?.getFrameOfReferenceUID?.();
+            const canvas = vp?.canvas;
+            if (!vp || mprHeld || !frame || !canvas?.clientWidth) return null;
+            const w = canvas.clientWidth;
+            const h = canvas.clientHeight;
+            const toWorld = vp.canvasToWorld?.bind(vp);
+            if (!toWorld) return null;
+            const at = (x: number, y: number) => toWorld([x, y]) as XVec3;
+            return { frame, corners: [at(0, 0), at(w, 0), at(w, h), at(0, h)] };
+          },
           getMeasurements,
           // Getters so callers always read the LIVE series list + active series
           // (both change as the rail loads / the viewer switches series).
@@ -4294,6 +4319,9 @@ export default function CornerstoneViewer({
             onCommand={runWebMenuCommand}
             menuShortcut={(id) => (id === "ann:delete" ? "Del" : undefined)}
           />
+        )}
+        {!mprLive && referencePlanes && referencePlanes.length > 0 && (
+          <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
         )}
         {tagsImageId && (
           <DicomTagsDialog open onClose={() => setTagsImageId(null)} imageId={tagsImageId} description={modality ? `${modality} · current image` : undefined} />

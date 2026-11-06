@@ -51,6 +51,8 @@ import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, ty
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
 import { linkedIndex, planeSign, sameCamera, sameModality, sameWindow, seriesGeometry } from "@/lib/paneScrollLink";
 import type { ViewerEvent } from "@/lib/types";
+import type { RemotePlane } from "@/components/viewer/RemoteReferenceLines";
+import { monitorColor } from "@flowrad/viewer-core";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
@@ -784,6 +786,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   // between parallel planes.
   const [linkVoi, setLinkVoi] = useState(false);
   const [linkZoom, setLinkZoom] = useState(false);
+  // Reference lines: where every other pane's image cuts this one (same frame
+  // of reference, non-parallel planes), coloured like that pane. On by default.
+  const [refLines, setRefLines] = useState(true);
+  const [panePlanes, setPanePlanes] = useState<(RemotePlane | null)[]>([]);
   const paneTargets = useMemo(() => {
     if (!multi || !result) return [];
     return [
@@ -820,11 +826,29 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     const timer = window.setTimeout(captureAnchors, 400);
     return () => window.clearTimeout(timer);
   }, [multi, linkScroll, paneTargets, captureAnchors]);
+  // Each pane's visible plane, refreshed once a frame while panes move.
+  const planeFrame = useRef(0);
+  const refreshPlanes = useCallback(() => {
+    if (planeFrame.current) return;
+    planeFrame.current = requestAnimationFrame(() => {
+      planeFrame.current = 0;
+      const count = linkLive.current.geoms.length;
+      const next: (RemotePlane | null)[] = Array.from({ length: count }, (_, pane) => {
+        const plane = controlsFor(pane)?.viewPlane?.();
+        return plane ? { from: `pane-${pane}`, frame: plane.frame, corners: plane.corners, monitorIndex: pane } : null;
+      });
+      setPanePlanes((prev) =>
+        prev.length === next.length && prev.every((p, i) => JSON.stringify(p) === JSON.stringify(next[i])) ? prev : next
+      );
+    });
+  }, [controlsFor]);
+  useEffect(() => () => cancelAnimationFrame(planeFrame.current), []);
   /** A slice we moved a pane to: its own echo of that move must not drive the others back. */
   const echoes = useRef(new Map<number, number>());
   const onPaneEvent = useCallback(
     (pane: number, event: ViewerEvent) => {
       const live = linkLive.current;
+      if (event.type === "slice" || event.type === "camera") refreshPlanes();
       if (event.type === "voi" && live.voi) {
         live.geoms.forEach((_, other) => {
           if (other === pane || !sameModality(live.modalities[pane], live.modalities[other])) return;
@@ -873,8 +897,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         c.applyEvent({ t: 0, type: "slice", index });
       });
     },
-    [controlsFor]
+    [controlsFor, refreshPlanes]
   );
+
+  // New layout or series: planes again once the panes have drawn.
+  useEffect(() => {
+    if (!multi || !refLines) return;
+    const timer = window.setTimeout(refreshPlanes, 500);
+    return () => window.clearTimeout(timer);
+  }, [multi, refLines, paneTargets, refreshPlanes]);
+  /** The planes pane `pane` draws: every other pane's. */
+  const linesFor = (pane: number): RemotePlane[] | undefined =>
+    multi && refLines ? (panePlanes.filter((p, i) => i !== pane && p) as RemotePlane[]) : undefined;
 
   // A pane that changes size keeps its camera: refit every pane once the grid settles.
   useEffect(() => {
@@ -1009,8 +1043,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           options={offeredLayouts}
           onChange={setLayoutId}
           dark={reading}
-          links={multi ? { scroll: linkScroll, voi: linkVoi, zoom: linkZoom } : null}
-          onToggleLink={(what) => (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : setLinkZoom)((on) => !on)}
+          links={multi ? { scroll: linkScroll, voi: linkVoi, zoom: linkZoom, lines: refLines } : null}
+          onToggleLink={(what) =>
+            (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : what === "zoom" ? setLinkZoom : setRefLines)((on) => !on)
+          }
         />
       )}
       {result && study ? (
@@ -1226,6 +1262,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     }}
                     chrome={expanded || reading || multi ? "edge" : "dock"}
                     toolbarHost={multi ? barHost : undefined}
+                    referencePlanes={linesFor(0)}
                     active={!multi || activePane === 0}
                     onActivate={() => setActivePane(0)}
                     defaultTool="StackScroll"
@@ -1266,6 +1303,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           onEvent={(event) => onPaneEvent(pane, event)}
                           chrome="edge"
                           toolbarHost={barHost}
+                          referencePlanes={linesFor(pane)}
                           active={activePane === pane}
                           onActivate={() => setActivePane(pane)}
                           instanceId={`local-pane-${pane}`}
@@ -1630,6 +1668,12 @@ function ViewerPane({
           active ? "bg-accent text-accent-foreground" : "bg-black/60 text-white/70"
         )}
       >
+        {/* The pane's colour: its reference line in the other panes is drawn in it. */}
+        <span
+          aria-hidden="true"
+          className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full"
+          style={{ backgroundColor: monitorColor(index) }}
+        />
         {index + 1}
       </span>
     </div>
@@ -1753,11 +1797,12 @@ function LayoutPicker({
   );
 }
 
-type PaneLink = "scroll" | "voi" | "zoom";
+type PaneLink = "scroll" | "voi" | "zoom" | "lines";
 const PANE_LINKS: { id: PaneLink; label: string; aria: string; hint: string }[] = [
   { id: "scroll", label: "Scroll", aria: "Link scroll", hint: "Panes scroll together, by position in the patient" },
   { id: "voi", label: "W/L", aria: "Link window / level", hint: "Window / level follows across panes of the same modality" },
   { id: "zoom", label: "Zoom", aria: "Link zoom and pan", hint: "Zoom and pan follow across panes on the same plane" },
+  { id: "lines", label: "Lines", aria: "Reference lines", hint: "Where each other pane's image cuts this one (same study, crossing planes)" },
 ];
 
 /** Study picker + series buttons, shared by the desktop panel and the phone drawer. */
