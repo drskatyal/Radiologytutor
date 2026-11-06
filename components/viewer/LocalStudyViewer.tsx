@@ -40,6 +40,7 @@ import {
   X,
 } from "lucide-react";
 import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
+import { useMultipleScreens } from "@/components/viewer/useMultipleScreens";
 import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import { isSeriesPanelShortcut } from "@flowrad/viewer-core";
@@ -726,6 +727,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
   const pinnedIsActive =
     !!pinned && (phase.state === "reading" || !!series?.instances.some((i) => i.fileName === pinned.fileName));
+  // Multi-monitor UI only with two or more monitors (lib/screens.ts).
+  const multipleScreens = useMultipleScreens();
 
   const popOut = usePopOutWindows({
     files: openedFiles,
@@ -948,9 +951,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               expanded && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
           >
-            {/* Wide screens: open this series in another browser window (drag it to another monitor). */}
-            {!expanded && phase.state === "open" && (
+            {/* Two or more monitors: open this series in another browser window (drag it there).
+                Already-open pop-outs keep their "linked" toggle even if a monitor is unplugged. */}
+            {!expanded && phase.state === "open" && (multipleScreens || popOut.hasOtherWindows) && (
               <div className="mb-2 hidden items-center gap-2 lg:flex">
+                {multipleScreens && (
                 <Button
                   size="sm"
                   variant="secondary"
@@ -959,6 +964,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 >
                   Pop out to new window
                 </Button>
+                )}
                 {popOut.hasOtherWindows && (
                   <Button
                     size="sm"
