@@ -68,6 +68,10 @@ export const VOICE_COMMANDS: readonly { phrases: readonly string[]; action: Voic
   { label: "Layout one", phrases: ["layout one", "one up"], action: { type: "layout", rows: 1, cols: 1 } },
   { label: "Layout two", phrases: ["layout two", "two up", "side by side"], action: { type: "layout", rows: 1, cols: 2 } },
   { label: "Layout four", phrases: ["layout four", "four up"], action: { type: "layout", rows: 2, cols: 2 } },
+  // "layout three", not "three up": too close to "three d".
+  { label: "Layout three", phrases: ["layout three"], action: { type: "layout", rows: 1, cols: 3 } },
+  { label: "Layout six", phrases: ["layout six"], action: { type: "layout", rows: 2, cols: 3 } },
+  { label: "Layout nine", phrases: ["layout nine"], action: { type: "layout", rows: 3, cols: 3 } },
   { label: "Lung window", phrases: ["lung window"], action: { type: "preset", name: "lung" } },
   { label: "Bone window", phrases: ["bone window"], action: { type: "preset", name: "bone" } },
   { label: "Brain window", phrases: ["brain window"], action: { type: "preset", name: "brain" } },

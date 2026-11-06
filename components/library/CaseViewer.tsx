@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Columns2, GraduationCap, Grid2x2, Link2, Rows2, Square } from "lucide-react";
+import { Columns2, Columns3, GraduationCap, Grid2x2, Grid3x3, Link2, Rows2, Square } from "lucide-react";
 import { Badge, Button, Skeleton, Tooltip, useToast } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
@@ -34,6 +34,10 @@ const LAYOUT_ICONS: Record<HangingLayoutId, typeof Square> = {
   "1x2": Columns2,
   "2x1": Rows2,
   "2x2": Grid2x2,
+  // The free viewer's larger grids; the case viewer doesn't offer them.
+  "1x3": Columns3,
+  "2x3": Grid3x3,
+  "3x3": Grid3x3,
 };
 
 /** Grid template per layout. Static strings so Tailwind keeps them. */
@@ -42,6 +46,9 @@ const GRID_CLASS: Record<HangingLayoutId, string> = {
   "1x2": "grid-cols-2 grid-rows-1 max-sm:grid-cols-1 max-sm:grid-rows-2",
   "2x1": "grid-cols-1 grid-rows-2",
   "2x2": "grid-cols-2 grid-rows-2",
+  "1x3": "grid-cols-3 grid-rows-1",
+  "2x3": "grid-cols-3 grid-rows-2",
+  "3x3": "grid-cols-3 grid-rows-3",
 };
 
 /**

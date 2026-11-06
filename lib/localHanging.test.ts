@@ -46,5 +46,9 @@ test("voice layouts map to hanging layouts", () => {
   assert.equal(layoutForGrid(1, 2), "1x2");
   assert.equal(layoutForGrid(2, 1), "2x1");
   assert.equal(layoutForGrid(2, 2), "2x2");
-  assert.equal(layoutForGrid(3, 3), "2x2", "larger grids fall back to the largest web layout");
+  assert.equal(layoutForGrid(1, 3), "1x3");
+  assert.equal(layoutForGrid(2, 3), "2x3");
+  assert.equal(layoutForGrid(3, 3), "3x3");
+  assert.equal(layoutForGrid(4, 4), "3x3", "larger grids fall back to the largest web layout");
+  assert.equal(layoutForGrid(3, 2), "2x2", "no 3 × 2: the nearest smaller grid");
 });

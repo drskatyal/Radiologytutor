@@ -110,11 +110,15 @@ export function monitorLabel(monitors: readonly MonitorInfo[], m: MonitorInfo): 
 }
 
 /**
- * One colour per monitor, in the OS order: the picker tile and the badge on
+ * One colour per monitor (and per pane of the web viewer's grid), in the OS order: the picker tile and the badge on
  * that monitor's window share it, so "orange 2" means the same screen
  * everywhere. Distinct in hue and readable with white numerals.
  */
-export const MONITOR_COLORS: readonly string[] = ["#16A34A", "#EA580C", "#2563EB", "#C026D3", "#0891B2", "#CA8A04"];
+export const MONITOR_COLORS: readonly string[] = [
+  "#16A34A", "#EA580C", "#2563EB", "#C026D3", "#0891B2", "#CA8A04",
+  // Panes 7–9 of a 3×3 (the web viewer's pane colours come from here too).
+  "#DC2626", "#7C3AED", "#DB2777",
+];
 
 export function monitorColor(index: number): string {
   return MONITOR_COLORS[((index % MONITOR_COLORS.length) + MONITOR_COLORS.length) % MONITOR_COLORS.length];
