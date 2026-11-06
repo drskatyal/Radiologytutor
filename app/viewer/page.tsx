@@ -45,10 +45,10 @@ export default function FreeViewerPage() {
           <Image
             src="/brand/flowrad-lockup.svg"
             alt="FlowRad"
-            width={113}
+            width={120}
             height={32}
             // Lazy, not priority: the variant hidden by the theme is never
-            // fetched, so first load pays for one 7 KB lockup only.
+            // fetched, so first load pays for one ~8 KB lockup only.
             loading="lazy"
             unoptimized
             className="vl-logo-light h-8 w-auto"
