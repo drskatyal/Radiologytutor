@@ -232,6 +232,10 @@ export const TeacherSketchLayer = forwardRef<
       return;
     }
     if (sketch.tool === "text") {
+      // Keep focus for the text box: the browser's mousedown default and the
+      // viewer's own pointer-down (refocus the image) would blur it shut.
+      e.preventDefault();
+      e.stopPropagation();
       if (textAt) commitText();
       setTextAt({ x: p.x, y: p.y, x_pct: img.x_pct, y_pct: img.y_pct });
       setTextValue("");
@@ -418,7 +422,7 @@ export const TeacherSketchLayer = forwardRef<
             }}
             onBlur={commitText}
             placeholder="Type, then Enter"
-            className="h-8 w-56 border-ink/60 bg-black/85 text-sm text-white placeholder:text-white/50"
+            className="h-8 w-56 border-ink/60 bg-black/85 text-sm text-white placeholder:text-white/50 focus:border-ink focus:bg-black/90"
           />
         </form>
       )}
@@ -619,7 +623,7 @@ function MarkerLabelPopover({
             onCancel();
           }
         }}
-        className="h-8 border-white/20 bg-white/[0.06] text-sm text-white"
+        className="h-8 border-white/20 bg-white/[0.06] text-sm text-white placeholder:text-white/50 focus:border-ink focus:bg-white/[0.1]"
       />
       <div className="mt-2 flex justify-end gap-1.5">
         <Button type="button" variant="ghost" size="sm" className="text-white/80 hover:text-white" onClick={onCancel}>

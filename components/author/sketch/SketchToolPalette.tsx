@@ -114,6 +114,7 @@ export function SketchToolPalette({
           side="right"
           align="end"
           label="Export marks as DICOM"
+          contentClassName="w-80"
           container={container}
           trigger={
             <IconButton variant="imaging" size="sm" aria-label="Export marks" loading={exporting} disabled={!hasInk || exporting} className="border-transparent bg-transparent">
