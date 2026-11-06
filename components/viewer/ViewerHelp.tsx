@@ -1,14 +1,17 @@
 "use client";
 
-// The viewer's shortcut sheet. Opened from the toolbar's keyboard button, H,
-// or `?` where the viewer owns it. Drawn inside the imaging pane (not a body
+// The viewer's help sheet: keyboard & mouse shortcuts and the voice commands.
+// Opened from the toolbar's keyboard button, the voice list button, or `?`
+// where the viewer owns it. Drawn inside the imaging pane (not a body
 // portal) so it survives fullscreen and covers only the image it describes.
 
 import { Suspense, lazy, useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, Mouse, X } from "lucide-react";
+import { ArrowLeft, Keyboard, Mic, MicOff, Mouse, X } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
+import { Tabs } from "@/components/ui/Tabs";
+import { VOICE_GROUP_ORDER, stopPhrase, voiceCommandRows } from "@flowrad/viewer-core";
 import type { BindingOverrides } from "@flowrad/viewer-core/bindings";
 import {
   WEB_COMMANDS,
@@ -45,7 +48,89 @@ function Row({ row }: { row: ShortcutRow }) {
   );
 }
 
-export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; onClose: () => void; overrides?: BindingOverrides }) {
+export type ViewerHelpTab = "keys" | "voice";
+
+export interface ViewerHelpVoice {
+  /** Voice is listening now. */
+  listening: boolean;
+  /** Switch voice on or off (the toolbar mic). */
+  onToggle: () => void;
+}
+
+/**
+ * Every voice command, grouped, read from the recognizer's own table so the
+ * list cannot drift from what is recognised. `voice` absent: this browser has
+ * no microphone API, so the list says voice is unavailable here.
+ */
+function VoiceCommandList({ voice }: { voice?: ViewerHelpVoice }) {
+  const rows = voiceCommandRows();
+  return (
+    <div data-testid="voice-commands">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-md text-xs leading-relaxed text-white/60">
+          {voice
+            ? `Switch voice on with the mic button, then say a whole phrase. It keeps listening until you switch it off or say “${stopPhrase()}”. Speech never leaves this computer.`
+            : "Voice commands need a microphone, which this browser does not offer here."}
+        </p>
+        {voice && (
+          <Button
+            size="sm"
+            variant="imaging"
+            leadingIcon={voice.listening ? <Mic /> : <MicOff />}
+            onClick={voice.onToggle}
+            aria-pressed={voice.listening}
+          >
+            {voice.listening ? "Voice on" : "Turn voice on"}
+          </Button>
+        )}
+      </div>
+      <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+        {VOICE_GROUP_ORDER.map((group) => {
+          const inGroup = rows.filter((r) => r.group === group);
+          if (inGroup.length === 0) return null;
+          return (
+            <section key={group}>
+              <h3 className="mb-1 text-[11px] font-medium uppercase tracking-wide text-white/45">{group}</h3>
+              <ul className="divide-y divide-white/5">
+                {inGroup.map((row) => (
+                  <li key={row.label} className="flex items-baseline justify-between gap-3 py-1">
+                    <span className="shrink-0 text-xs text-white/75">{row.label}</span>
+                    <span className="text-right text-[11px] leading-4 text-white/85">
+                      {row.phrases.map((phrase, i) => (
+                        <span key={phrase}>
+                          {i > 0 && <span className="text-white/35"> · </span>}
+                          <q className="whitespace-nowrap">{phrase}</q>
+                        </span>
+                      ))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function ViewerHelp({
+  open,
+  onClose,
+  overrides = {},
+  tab = "keys",
+  onTabChange,
+  voice,
+}: {
+  open: boolean;
+  onClose: () => void;
+  overrides?: BindingOverrides;
+  /** Which list is showing (controlled by the viewer so `?` and the voice button can pick). */
+  tab?: ViewerHelpTab;
+  onTabChange?: (tab: ViewerHelpTab) => void;
+  /** Voice commands, where the browser can listen. */
+  voice?: ViewerHelpVoice;
+}) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const [customise, setCustomise] = useState(false);
@@ -104,10 +189,10 @@ export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; o
               </button>
             )}
             <h2 id={titleId} className="text-sm font-semibold tracking-tight text-white">
-              {customise ? "Mouse & keyboard" : "Viewer shortcuts"}
+              {customise ? "Mouse & keyboard" : tab === "voice" ? "Voice commands" : "Viewer shortcuts"}
             </h2>
           </div>
-          {!customise && (
+          {!customise && tab === "keys" && (
             <Button size="sm" variant="imaging" leadingIcon={<Mouse />} onClick={() => setCustomise(true)} className="ml-auto">
               Customise
             </Button>
@@ -115,7 +200,7 @@ export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; o
           <button
             ref={closeRef}
             type="button"
-            aria-label="Close shortcuts"
+            aria-label={tab === "voice" ? "Close voice commands" : "Close shortcuts"}
             onClick={onClose}
             className={cn(
               "inline-flex h-8 w-8 items-center justify-center rounded-md text-white/70",
@@ -142,6 +227,21 @@ export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; o
               storedWhere={viewerBindingsSyncedToAccount() ? "in this browser and your account" : "in this browser"}
             />
           </Suspense>
+        ) : (
+        <>
+        <Tabs
+          tone="imaging"
+          variant="segmented"
+          className="mb-4"
+          value={tab}
+          onValueChange={(value) => onTabChange?.(value as ViewerHelpTab)}
+          items={[
+            { value: "keys", label: "Keyboard & mouse", icon: <Keyboard className="h-3.5 w-3.5" aria-hidden /> },
+            { value: "voice", label: "Voice commands", icon: <Mic className="h-3.5 w-3.5" aria-hidden /> },
+          ]}
+        />
+        {tab === "voice" ? (
+          <VoiceCommandList voice={voice} />
         ) : (
         <>
         <p className="mb-4 text-xs text-white/55">
@@ -171,6 +271,8 @@ export function ViewerHelp({ open, onClose, overrides = {} }: { open: boolean; o
             </ul>
           </section>
         </div>
+        </>
+        )}
         </>
         )}
       </div>

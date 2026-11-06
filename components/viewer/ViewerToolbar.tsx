@@ -25,6 +25,7 @@ import {
   Crosshair,
   Eraser,
   Keyboard,
+  MessageSquareText,
   Mic,
   MicOff,
   Layers,
@@ -236,6 +237,8 @@ export interface ViewerToolbarProps {
   onCineFps: (fps: number) => void;
   onOverlay: () => void;
   onHelp: () => void;
+  /** Open the help sheet on the voice commands list. */
+  onVoiceHelp?: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
 }
@@ -644,6 +647,17 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             className={props.voice.state === "listening" ? "bg-accent text-accent-foreground hover:bg-accent" : undefined}
           >
             <Icon as={props.voice.state === "listening" ? Mic : MicOff} />
+          </ToolbarButton>
+        )}
+        {props.voice && props.onVoiceHelp && (
+          <ToolbarButton
+            label="Voice commands list"
+            shortcut={props.voice.state === "listening" ? ["?"] : undefined}
+            pressed={null}
+            container={host}
+            onClick={props.onVoiceHelp}
+          >
+            <Icon as={MessageSquareText} />
           </ToolbarButton>
         )}
         <ToolbarButton
