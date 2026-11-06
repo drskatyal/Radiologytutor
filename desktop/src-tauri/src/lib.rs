@@ -691,6 +691,9 @@ async fn init_native(window: &tauri::WebviewWindow, native: &native::Shared) -> 
         trace("native init: gpu + surface");
     }
     if status.ready {
+        // macOS: frames are presented by a thread of their own (native.rs `draw`).
+        #[cfg(target_os = "macos")]
+        native.start_presenter();
         let scale = window.scale_factor().unwrap_or(1.0);
         let origin = window.inner_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
         native.set_window_facts(origin, scale);
