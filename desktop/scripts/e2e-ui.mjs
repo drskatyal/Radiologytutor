@@ -249,6 +249,18 @@ if (want("border")) {
   await settle();
   const [c0, c1] = [await outline(0), await outline(1)];
   check("border: clicking another viewport moves the border", !c0.active && c1.active && c1.width === "3px", `${JSON.stringify(c0)} ${JSON.stringify(c1)}`);
+  // Every series card's slice-count chip has the same visible backing (not black on a black axial).
+  const chips = await page.locator('nav[aria-label="Series"] [data-slice-count]').evaluateAll((els) =>
+    els.map((e) => {
+      const s = getComputedStyle(e);
+      return `${s.backgroundColor} | ${s.boxShadow}`;
+    })
+  );
+  check(
+    "thumbnails: every slice-count chip has the same lifted backing and hairline edge",
+    chips.length >= 2 && new Set(chips).size === 1 && !/rgba?\(0, 0, 0/.test(chips[0].split(" | ")[0]) && !/^none$/.test(chips[0].split(" | ")[1]),
+    `${chips.length} chips: ${[...new Set(chips)].join(" ; ")}`
+  );
   await shot("border");
 }
 
