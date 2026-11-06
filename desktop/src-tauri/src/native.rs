@@ -127,6 +127,16 @@ struct CellGpu {
     /// (path, GPU copy) of the image uploaded, None = the test image.
     image: Option<(PathBuf, CellImage)>,
     dims: (usize, usize),
+    /// Changes whenever the cell's GPU image is (re)written (`next_gen`), so
+    /// a frame's signature (`frame_signature`) sees new pixels under an
+    /// unchanged path (3D frames).
+    generation: u64,
+}
+
+/// A fresh value for `CellGpu::generation`.
+fn next_gen() -> u64 {
+    static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A cell's image on the GPU.
@@ -199,7 +209,9 @@ struct CellState {
 }
 
 struct Gpu {
-    surface: wgpu::Surface<'static>,
+    /// Shared with the macOS presenter, which waits for a drawable without
+    /// the GPU lock (`present_latest`).
+    surface: Arc<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -218,6 +230,28 @@ struct Gpu {
     /// staged and copied: see native_uma.rs.
     #[cfg_attr(not(windows), allow(dead_code))]
     direct_slices: bool,
+    /// macOS: the signature of the frame last drawn (`frame_signature`),
+    /// what the surface shows or is about to; None when it must be drawn.
+    #[cfg(target_os = "macos")]
+    drawn: Option<u64>,
+    /// macOS: frames are drawn here, then copied onto a drawable by the
+    /// presenter (`draw`). Window-sized; dropped when a study closes.
+    #[cfg(target_os = "macos")]
+    offscreen: Option<wgpu::Texture>,
+    /// macOS: the surface is configured to `config` by the presenter before
+    /// its next drawable (set by a resize, or a frame after a park).
+    #[cfg(target_os = "macos")]
+    needs_configure: bool,
+}
+
+/// macOS: frame generations drawn and presented (`draw`, `present_latest`).
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct Presented {
+    drawn: u64,
+    shown: u64,
+    /// The last present's wait for a drawable, ms.
+    acquire_ms: f64,
 }
 
 #[derive(Default)]
@@ -232,6 +266,20 @@ pub struct Native {
     init_lock: tauri::async_runtime::Mutex<()>,
     /// Last time the GPU was created or drew a frame (lazy mode's idle release).
     last_use: Mutex<Option<Instant>>,
+    /// The main window's scale factor, kept from its own events (macOS reads
+    /// it here for a frame, see lib.rs `frame_scale`).
+    window_scale: Mutex<Option<f64>>,
+    /// macOS: the presenter's state and its wake-up (`draw`).
+    #[cfg(target_os = "macos")]
+    present: Mutex<Presented>,
+    #[cfg(target_os = "macos")]
+    present_cv: parking_lot::Condvar,
+    /// macOS: held by whoever acquires, configures or parks the surface;
+    /// always taken before the GPU lock.
+    #[cfg(target_os = "macos")]
+    surface_lock: Mutex<()>,
+    #[cfg(target_os = "macos")]
+    presenter: std::sync::OnceLock<()>,
 }
 
 pub type Shared = Arc<Native>;
@@ -548,6 +596,14 @@ impl Native {
                 gpu.config.width = width;
                 gpu.config.height = height;
                 // Parked (no study): the next frame configures the new size.
+                // macOS: the presenter does, before its next drawable (it may
+                // be waiting for one now); the next frame is drawn in full.
+                #[cfg(target_os = "macos")]
+                if !gpu.parked {
+                    gpu.needs_configure = true;
+                    gpu.drawn = None;
+                }
+                #[cfg(not(target_os = "macos"))]
                 if !gpu.parked {
                     gpu.surface.configure(&gpu.device, &gpu.config);
                 }
@@ -586,7 +642,7 @@ impl Native {
             c.view = View::default();
         }
         self.upload_rgba(id, f.w, f.h, &f.rgb)?;
-        let frame_ms = self.render(scale)?;
+        let frame_ms = self.draw(scale, true)?;
         Ok(Render3dResult { w: f.w, h: f.h, render_ms, frame_ms, max_lum })
     }
 
@@ -635,13 +691,28 @@ impl Native {
         }
         cg.image = Some((PathBuf::from("3d"), CellImage::Rgba(texture)));
         cg.dims = (w, h);
+        cg.generation = next_gen();
         Ok(())
     }
 
     pub fn set_window_facts(&self, origin: (i32, i32), scale: f64) {
+        self.set_window_scale(scale);
         let mut s = self.status.lock();
         s.client_origin = Some(origin);
         s.scale = Some(scale);
+    }
+
+    /// The main window's scale factor changed (or was read on its thread).
+    pub fn set_window_scale(&self, scale: f64) {
+        if scale > 0.0 {
+            *self.window_scale.lock() = Some(scale);
+        }
+    }
+
+    /// The main window's last known scale factor (None until it is known).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn window_scale(&self) -> Option<f64> {
+        *self.window_scale.lock()
     }
 
     // ───────────── layout ─────────────
@@ -697,7 +768,7 @@ impl Native {
             c.plane = None;
             c.view = View { index: index.min(c.series.len().saturating_sub(1)), ..View::default() };
         }
-        self.show(id, None, true, scale)
+        self.show(id, None, true, scale, true)
     }
 
     /// A streaming series grew: append `paths` to cell `id`'s list, keeping
@@ -750,12 +821,12 @@ impl Native {
             }
             fresh && wl.is_none()
         };
-        self.show(id, None, reset, scale)
+        self.show(id, None, reset, scale, true)
     }
 
     /// Apply a view change (any of slice, window, zoom, pan, rotation, flip, invert).
     pub fn update_view(&self, id: &str, patch: ViewPatch, scale: f64) -> Result<ShowResult, String> {
-        self.show(id, Some(patch), false, scale)
+        self.show(id, Some(patch), false, scale, false)
     }
 
     /// Scroll by `delta` slices (clamped).
@@ -769,7 +840,7 @@ impl Native {
             }
             (c.view.index as i64 + delta).clamp(0, n as i64 - 1) as usize
         };
-        self.show(id, Some(ViewPatch { index: Some(at), ..Default::default() }), false, scale)
+        self.show(id, Some(ViewPatch { index: Some(at), ..Default::default() }), false, scale, false)
     }
 
     /// Free a cell's texture and series (viewport closed or switched to JS).
@@ -803,6 +874,8 @@ impl Native {
         // wgpu destroys dropped textures / buffers only once the GPU is done
         // with them, on a later poll: wait for that now rather than at the
         // next frame (none may come on the home screen).
+        #[cfg(target_os = "macos")]
+        let _surface = self.surface_lock.lock();
         if let Some(gpu) = self.gpu.lock().as_mut() {
             #[cfg(target_os = "macos")]
             {
@@ -841,6 +914,8 @@ impl Native {
         let store = self.store.get()?;
         let n = store.stats().slices;
         store.clear();
+        #[cfg(target_os = "macos")]
+        let _surface = self.surface_lock.lock();
         if let Some(gpu) = self.gpu.lock().as_mut() {
             flush_and_wait(gpu);
             // A frame drawn after the close (an in-flight call) unparked it.
@@ -882,7 +957,9 @@ impl Native {
         Some(roi_stats(&slice, shape))
     }
 
-    fn show(&self, id: &str, patch: Option<ViewPatch>, reset_wl: bool, scale: f64) -> Result<ShowResult, String> {
+    /// `wait`: return once the frame is presented (`draw`): a new series
+    /// or plane; a scroll or view change returns once it is drawn.
+    fn show(&self, id: &str, patch: Option<ViewPatch>, reset_wl: bool, scale: f64, wait: bool) -> Result<ShowResult, String> {
         let started = Instant::now();
         // 0. A volume plane: resample it (multi-core, from the shared volume).
         let plane_src = {
@@ -912,7 +989,7 @@ impl Native {
             }
             let key = PathBuf::from(format!("plane:{}:{:?}:{index}:{:?}:{}:{}", p.key, p.plane, p.slab, p.mm, p.max_dim));
             self.upload(id, &key, &slice)?;
-            let frame_ms = self.render(scale)?;
+            let frame_ms = self.draw(scale, wait)?;
             let data_max = slice.data.iter().copied().max().unwrap_or(0);
             let cells = self.cells.lock();
             let c = cells.get(id).ok_or("viewport closed")?;
@@ -989,7 +1066,7 @@ impl Native {
         if let (Some(p), Some(s)) = (&path, &slice) {
             self.upload(id, p, s)?;
         }
-        let frame_ms = self.render(scale)?;
+        let frame_ms = self.draw(scale, wait)?;
         if !ahead.is_empty() {
             store.prefetch(ahead);
         }
@@ -1034,6 +1111,7 @@ impl Native {
                 cg.bind_group = bind_group(gpu, &cg.uniforms, &buffer);
                 cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
                 cg.dims = (slice.cols, slice.rows);
+                cg.generation = next_gen();
                 return Ok(());
             }
         }
@@ -1050,11 +1128,49 @@ impl Native {
         }
         cg.image = Some((path.to_path_buf(), CellImage::Slice(buffer)));
         cg.dims = (slice.cols, slice.rows);
+        cg.generation = next_gen();
         Ok(())
     }
 
-    /// Draw every cell. `scale`: physical px per CSS px.
+    /// Draw every cell. `scale`: physical px per CSS px. macOS: the frame
+    /// is drawn now and presented by the presenter thread (`draw`).
     pub fn render(&self, scale: f64) -> Result<f64, String> {
+        self.draw(scale, false)
+    }
+
+    /// Draw every cell and present the frame. Windows / Linux: both here, as
+    /// always (Mailbox / flip model: a present never waits for the display).
+    ///
+    /// macOS: drawn here into an offscreen frame and presented by the
+    /// presenter thread (`present_latest`), which waits for one of the
+    /// layer's drawables in its place. Metal offers no Mailbox, and CAMetalLayer
+    /// hands a drawable back only once the window server has composited a
+    /// newer frame. Right after a study opened, while the study view's first
+    /// paints were being composited, that took 40-190 ms on the CI runner,
+    /// and the scroll, zoom or W/L step that came then waited for it (CI:
+    /// "scroll step 2: Rust 136 ms, of which waiting for a drawable 134.3",
+    /// with all three drawables already created, in 0.2-18 ms, and only the
+    /// first image and two steps presented). Now no step waits for the
+    /// compositor: the presenter puts the newest frame on screen as soon as a
+    /// drawable is free, and frames drawn meanwhile are superseded, as with
+    /// Mailbox. `wait`: present this frame on this thread and return once it
+    /// is presented (a viewport's first image or new series, a volume plane,
+    /// a 3D frame), as before.
+    fn draw(&self, scale: f64, wait: bool) -> Result<f64, String> {
+        #[cfg(target_os = "macos")]
+        {
+            self.draw_offscreen(scale, wait)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = wait;
+            self.render_direct(scale)
+        }
+    }
+
+    /// Windows / Linux: acquire the swap chain's next image, draw, present.
+    #[cfg(not(target_os = "macos"))]
+    fn render_direct(&self, scale: f64) -> Result<f64, String> {
         let started = Instant::now();
         let mut guard = self.gpu.lock();
         let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
@@ -1079,61 +1195,8 @@ impl Native {
         LAST_ACQUIRE_US.store(acquiring.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (sw, sh) = (gpu.config.width, gpu.config.height);
-        let s = scale as f32;
         let mut cells = self.cells.lock();
-        // Uniforms first (each cell has its own buffer), then one pass.
-        for c in cells.values_mut() {
-            let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_image));
-            let (cols, rows) = if cg.image.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
-            let t = Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h);
-            let data: [f32; 20] = [
-                c.rect.x * s, c.rect.y * s, c.rect.w * s, c.rect.h * s,
-                c.view.wl.0, c.view.wl.1, sw as f32, sh as f32,
-                t.scale * s, t.center.0 * s, t.center.1 * s, if c.view.invert { 1.0 } else { 0.0 },
-                t.cos, t.sin, t.flip_x, t.flip_y,
-                cols as f32, rows as f32, 0.0, 0.0,
-            ];
-            // SAFETY: [f32; 20] is 80 plain bytes.
-            let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) };
-            gpu.queue.write_buffer(&cg.uniforms, 0, bytes);
-        }
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("cells"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        // The app canvas colour behind everything the page does not cover.
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 11.0 / 255.0, g: 13.0 / 255.0, b: 16.0 / 255.0, a: 1.0 }), // --canvas #0B0D10
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&gpu.pipeline);
-            // Stable order: a cell's lens ("<id>:lens") draws after (over) the cell.
-            let mut order: Vec<(&String, &CellState)> = cells.iter().collect();
-            order.sort_by(|a, b| a.0.cmp(b.0));
-            for (id, c) in order {
-                let Some(cg) = &c.gpu else { continue };
-                // An app cell without a slice stays the page's (no test image there).
-                if cg.image.is_none() && id != SPIKE {
-                    continue;
-                }
-                // Clip to the cell and to the surface.
-                let Some((x0, y0, cw, ch)) = device_clip(c.rect.x, c.rect.y, c.rect.w, c.rect.h, s, sw, sh) else { continue };
-                pass.set_scissor_rect(x0, y0, cw, ch);
-                pass.set_pipeline(if cg.rgba() { &gpu.pipeline_rgba } else { &gpu.pipeline });
-                pass.set_bind_group(0, &cg.bind_group, &[]);
-                pass.draw(0..6, 0..1);
-            }
-        }
+        let encoder = encode_cells(gpu, &mut cells, &target, sw, sh, scale as f32);
         drop(cells);
         gpu.queue.submit(Some(encoder.finish()));
         gpu.queue.present(frame);
@@ -1142,6 +1205,158 @@ impl Native {
         st.last_frame_ms = Some(ms);
         st.frames += 1;
         Ok(ms)
+    }
+
+    /// macOS: draw the frame into the offscreen texture (no drawable needed)
+    /// and hand it to the presenter. A frame identical to the one last drawn
+    /// (the first image's layout pass and view refresh) is not drawn or
+    /// presented again (`frame_signature`), nor is a frame without an image
+    /// over a surface that shows none.
+    #[cfg(target_os = "macos")]
+    fn draw_offscreen(&self, scale: f64, wait: bool) -> Result<f64, String> {
+        let started = Instant::now();
+        let generation = {
+            let mut guard = self.gpu.lock();
+            let gpu = guard.as_mut().ok_or("native renderer not initialised")?;
+            *self.last_use.lock() = Some(Instant::now());
+            if gpu.parked {
+                // Configured by the presenter, before its next drawable.
+                gpu.parked = false;
+                gpu.needs_configure = true;
+                // The layer still shows the parked 1×1 canvas-colour frame.
+                gpu.drawn = initially_shown();
+            }
+            let (sw, sh) = (gpu.config.width, gpu.config.height);
+            let s = scale as f32;
+            let mut cells = self.cells.lock();
+            let signature = frame_signature(&cells, sw, sh, s);
+            if gpu.drawn != Some(signature) {
+                if gpu.offscreen.as_ref().map_or(true, |t| t.width() != sw || t.height() != sh) {
+                    gpu.offscreen = Some(gpu.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("frame"),
+                        size: wgpu::Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: gpu.config.format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    }));
+                }
+                let target = gpu.offscreen.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default())).ok_or("no frame texture")?;
+                let encoder = encode_cells(gpu, &mut cells, &target, sw, sh, s);
+                drop(cells);
+                gpu.queue.submit(Some(encoder.finish()));
+                gpu.drawn = Some(signature);
+                self.present.lock().drawn += 1;
+                self.status.lock().frames += 1;
+            }
+            self.present.lock().drawn
+        };
+        LAST_ACQUIRE_US.store(0, std::sync::atomic::Ordering::Relaxed);
+        if wait {
+            // Presented here, not by waking the presenter: no thread hop on
+            // a first image's path (the presenter may be presenting an
+            // earlier frame; the surface lock orders the two).
+            let shown = self.present_latest();
+            let mut p = self.present.lock();
+            p.shown = p.shown.max(shown.unwrap_or(generation));
+            LAST_ACQUIRE_US.store((p.acquire_ms * 1000.0) as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.present_cv.notify_all();
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        self.status.lock().last_frame_ms = Some(ms);
+        Ok(ms)
+    }
+
+    /// macOS: start the presenter thread (once; the GPU exists).
+    #[cfg(target_os = "macos")]
+    pub fn start_presenter(self: &Arc<Self>) {
+        if self.presenter.set(()).is_err() {
+            return;
+        }
+        let native = self.clone();
+        if std::thread::Builder::new().name("flowrad-present".into()).spawn(move || native.present_loop()).is_err() {
+            eprintln!("flowrad: the presenter thread did not start");
+        }
+    }
+
+    /// macOS: present the newest drawn frame whenever one is waiting.
+    #[cfg(target_os = "macos")]
+    fn present_loop(&self) {
+        loop {
+            let wanted = {
+                let mut p = self.present.lock();
+                while p.drawn <= p.shown {
+                    self.present_cv.wait(&mut p);
+                }
+                p.drawn
+            };
+            let shown = self.present_latest();
+            let mut p = self.present.lock();
+            // Not presented (occluded, parked, no GPU): done all the same; the
+            // next frame drawn asks again.
+            p.shown = p.shown.max(shown.unwrap_or(wanted));
+            drop(p);
+            self.present_cv.notify_all();
+        }
+    }
+
+    /// macOS: wait for a drawable (without the GPU lock, so frames go on
+    /// being drawn meanwhile), then copy the newest frame onto it and present
+    /// it. Returns the frame's generation, or None when nothing was presented.
+    #[cfg(target_os = "macos")]
+    fn present_latest(&self) -> Option<u64> {
+        let _surface = self.surface_lock.lock();
+        // Presented meanwhile (by the presenter, or by a frame that waited).
+        {
+            let p = self.present.lock();
+            if p.shown >= p.drawn {
+                return None;
+            }
+        }
+        let surface = {
+            let mut guard = self.gpu.lock();
+            let gpu = guard.as_mut()?;
+            if gpu.parked || gpu.offscreen.is_none() {
+                return None;
+            }
+            if gpu.needs_configure {
+                gpu.surface.configure(&gpu.device, &gpu.config);
+                gpu.needs_configure = false;
+            }
+            gpu.surface.clone()
+        };
+        let acquiring = Instant::now();
+        let frame = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return None,
+            _ => {
+                // Outdated / lost (display change): reconfigure for the next one.
+                if let Some(gpu) = self.gpu.lock().as_mut() {
+                    gpu.needs_configure = true;
+                }
+                return None;
+            }
+        };
+        let acquire_ms = acquiring.elapsed().as_secs_f64() * 1000.0;
+        let guard = self.gpu.lock();
+        let gpu = guard.as_ref()?;
+        let src = gpu.offscreen.as_ref()?;
+        let size = frame.texture.size();
+        // Resized or parked while this thread waited: dropped unpresented;
+        // the frame drawn after the change presents at the new size.
+        if gpu.parked || gpu.needs_configure || src.size() != size {
+            return None;
+        }
+        // Frames are drawn only under the GPU lock: this is the newest.
+        let generation = self.present.lock().drawn;
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("present") });
+        encoder.copy_texture_to_texture(src.as_image_copy(), frame.texture.as_image_copy(), size);
+        gpu.queue.submit(Some(encoder.finish()));
+        gpu.queue.present(frame);
+        self.present.lock().acquire_ms = acquire_ms;
+        Some(generation)
     }
 
     // ───────────── P2.1 spike API (the spike cell) ─────────────
@@ -1154,6 +1369,129 @@ impl Native {
     pub fn scroll_spike(&self, delta: i64, scale: f64) -> Result<ShowResult, String> {
         self.scroll(SPIKE, delta, scale)
     }
+}
+
+/// The signature of a frame that draws no image: the canvas colour only,
+/// whatever the surface size. A surface that has presented nothing looks the
+/// same (the window's canvas colour shows through the empty layer).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const EMPTY_FRAME: u64 = 0;
+
+/// What a frame of `cells` on a `sw` × `sh` surface draws: every drawn
+/// cell's rectangle, window / level and transform, and which image (and
+/// which upload of it) it samples. Equal signatures draw equal pixels. A cell
+/// without an image is not drawn (`encode_cells`), so it does not count: the
+/// layout frame before a study's first image draws the canvas colour only.
+///
+/// macOS draws (and presents) a frame only when its signature differs from
+/// the last one drawn: a study's first image is followed by its layout pass
+/// and the view refresh that pass triggers, the same pixels each time, and
+/// each present holds one of CAMetalLayer's three drawables until the window
+/// server has composited a newer frame.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn frame_signature(cells: &HashMap<String, CellState>, sw: u32, sh: u32, s: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut drawn = false;
+    let mut order: Vec<(&String, &CellState)> = cells.iter().collect();
+    order.sort_by(|a, b| a.0.cmp(b.0));
+    for (id, c) in order {
+        let Some(cg) = &c.gpu else { continue };
+        // As `render`: an app cell without a slice is not drawn (the spike
+        // cell draws its test image).
+        if cg.image.is_none() && id != SPIKE {
+            continue;
+        }
+        if !drawn {
+            (sw, sh, s.to_bits()).hash(&mut h);
+            drawn = true;
+        }
+        id.hash(&mut h);
+        for x in [c.rect.x, c.rect.y, c.rect.w, c.rect.h, c.view.wl.0, c.view.wl.1] {
+            x.to_bits().hash(&mut h);
+        }
+        (cg.generation, cg.dims, cg.image.is_some(), cg.rgba(), c.view.invert).hash(&mut h);
+        let (cols, rows) = if cg.image.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
+        let t = Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h);
+        for x in [t.scale, t.center.0, t.center.1, t.cos, t.sin, t.flip_x, t.flip_y] {
+            x.to_bits().hash(&mut h);
+        }
+    }
+    // Never EMPTY_FRAME for a frame that draws something.
+    if drawn {
+        h.finish() | 1
+    } else {
+        EMPTY_FRAME
+    }
+}
+
+/// What a new surface shows, as a frame signature. macOS: nothing (an empty
+/// layer over the window's canvas colour), the same as a frame without an
+/// image, so that frame is not presented and a study's first image finds
+/// every drawable free. Elsewhere unused.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn initially_shown() -> Option<u64> {
+    cfg!(target_os = "macos").then_some(EMPTY_FRAME)
+}
+
+/// Record one frame of `cells` into `target` (`sw` × `sh` device px; `s`:
+/// device px per CSS px): each cell's uniforms, then one pass that clears to
+/// the canvas colour and draws every cell with an image, scissored to it.
+fn encode_cells(gpu: &Gpu, cells: &mut HashMap<String, CellState>, target: &wgpu::TextureView, sw: u32, sh: u32, s: f32) -> wgpu::CommandEncoder {
+    // Uniforms first (each cell has its own buffer), then one pass.
+    for c in cells.values_mut() {
+        let cg = c.gpu.get_or_insert_with(|| new_cell_gpu(gpu, &gpu.test_image));
+        let (cols, rows) = if cg.image.is_some() { cg.dims } else { (TEST_SIZE as usize, TEST_SIZE as usize) };
+        let t = Transform::new(&c.view, cols, rows, c.rect.w, c.rect.h);
+        let data: [f32; 20] = [
+            c.rect.x * s, c.rect.y * s, c.rect.w * s, c.rect.h * s,
+            c.view.wl.0, c.view.wl.1, sw as f32, sh as f32,
+            t.scale * s, t.center.0 * s, t.center.1 * s, if c.view.invert { 1.0 } else { 0.0 },
+            t.cos, t.sin, t.flip_x, t.flip_y,
+            cols as f32, rows as f32, 0.0, 0.0,
+        ];
+        // SAFETY: [f32; 20] is 80 plain bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data)) };
+        gpu.queue.write_buffer(&cg.uniforms, 0, bytes);
+    }
+    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("cells"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    // The app canvas colour behind everything the page does not cover.
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 11.0 / 255.0, g: 13.0 / 255.0, b: 16.0 / 255.0, a: 1.0 }), // --canvas #0B0D10
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&gpu.pipeline);
+        // Stable order: a cell's lens ("<id>:lens") draws after (over) the cell.
+        let mut order: Vec<(&String, &CellState)> = cells.iter().collect();
+        order.sort_by(|a, b| a.0.cmp(b.0));
+        for (id, c) in order {
+            let Some(cg) = &c.gpu else { continue };
+            // An app cell without a slice stays the page's (no test image there).
+            if cg.image.is_none() && id != SPIKE {
+                continue;
+            }
+            // Clip to the cell and to the surface.
+            let Some((x0, y0, cw, ch)) = device_clip(c.rect.x, c.rect.y, c.rect.w, c.rect.h, s, sw, sh) else { continue };
+            pass.set_scissor_rect(x0, y0, cw, ch);
+            pass.set_pipeline(if cg.rgba() { &gpu.pipeline_rgba } else { &gpu.pipeline });
+            pass.set_bind_group(0, &cg.bind_group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+    }
+    encoder
 }
 
 /// Give back what dropped GPU resources still hold. wgpu frees a dropped
@@ -1181,6 +1519,8 @@ fn flush_and_wait(gpu: &Gpu) {
 /// the size restored at once). Parked, the layer is 1×1 and shows one 1×1
 /// frame of the canvas colour (what a frame without cells draws); the next
 /// frame restores the window size (`render`), as at start.
+/// The offscreen frame goes too. Called with the surface lock held (the
+/// presenter is not waiting for a drawable).
 #[cfg(target_os = "macos")]
 fn park_surface(gpu: &mut Gpu) {
     let mut tiny = gpu.config.clone();
@@ -1188,6 +1528,9 @@ fn park_surface(gpu: &mut Gpu) {
     tiny.height = 1;
     gpu.surface.configure(&gpu.device, &tiny);
     gpu.parked = true;
+    gpu.needs_configure = false;
+    gpu.drawn = None;
+    gpu.offscreen = None;
     let frame = match gpu.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
         // Occluded / no drawable: the pool is gone already; the frame on
@@ -1250,7 +1593,7 @@ fn new_cell_gpu(gpu: &Gpu, initial: &wgpu::Buffer) -> CellGpu {
         mapped_at_creation: false,
     });
     let bind_group = bind_group(gpu, &uniforms, initial);
-    CellGpu { uniforms, bind_group, image: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize) }
+    CellGpu { uniforms, bind_group, image: None, dims: (TEST_SIZE as usize, TEST_SIZE as usize), generation: next_gen() }
 }
 
 /// P2.1 bench / spike: the DICOM files under `roots`, grouped by series, the
@@ -1609,7 +1952,8 @@ fn finish(
     let caps = surface.get_capabilities(adapter);
     let format = *caps.formats.iter().find(|f| !f.is_srgb()).or(caps.formats.first()).ok_or("surface offers no formats")?;
     let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // macOS: frames are copied onto the drawables (`draw`).
+        usage: if cfg!(target_os = "macos") { wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST } else { wgpu::TextureUsages::RENDER_ATTACHMENT },
         format,
         width: size.width.max(1),
         height: size.height.max(1),
@@ -1628,7 +1972,25 @@ fn finish(
     };
     let Pipes { pipeline, layout, pipeline_rgba, layout_rgba, test_image, .. } = pipes;
     Ok((
-        Gpu { direct_slices: direct_slices(&device), surface, device, queue, config, pipeline, layout, pipeline_rgba, layout_rgba, test_image, parked: false },
+        Gpu {
+            direct_slices: direct_slices(&device),
+            surface: Arc::new(surface),
+            device,
+            queue,
+            config,
+            pipeline,
+            layout,
+            pipeline_rgba,
+            layout_rgba,
+            test_image,
+            parked: false,
+            #[cfg(target_os = "macos")]
+            drawn: initially_shown(),
+            #[cfg(target_os = "macos")]
+            offscreen: None,
+            #[cfg(target_os = "macos")]
+            needs_configure: false,
+        },
         info.name,
         format!("{:?}", info.backend),
     ))
@@ -1796,6 +2158,22 @@ mod tests {
         // macOS: three drawables (latency 2), so a frame never waits for the
         // window server to hand one back; Windows unchanged.
         assert_eq!(super::frame_latency(), if cfg!(target_os = "macos") { 2 } else { 1 });
+    }
+
+    /// A frame that draws no image (no cells, or cells not given a slice
+    /// yet) is the empty frame whatever the surface size: what a new macOS
+    /// surface shows, so it is not presented over one.
+    #[test]
+    fn a_frame_without_an_image_is_the_empty_frame() {
+        use super::{frame_signature, CellState, EMPTY_FRAME};
+        use crate::native_view::View;
+        let mut cells = std::collections::HashMap::new();
+        assert_eq!(frame_signature(&cells, 1440, 900, 1.0), EMPTY_FRAME);
+        let rect = super::Cell { x: 0.0, y: 40.0, w: 800.0, h: 600.0 };
+        cells.insert("0".to_string(), CellState { rect, series: vec![], plane: None, view: View::default(), gpu: None });
+        assert_eq!(frame_signature(&cells, 1440, 900, 1.0), EMPTY_FRAME);
+        assert_eq!(frame_signature(&cells, 1, 1, 2.0), EMPTY_FRAME);
+        assert_eq!(super::initially_shown(), if cfg!(target_os = "macos") { Some(EMPTY_FRAME) } else { None });
     }
 
     #[test]
