@@ -42,37 +42,49 @@ export const metadata: Metadata = {
 
 export default function FreeViewerPage() {
   return (
-    <div className="flex h-dvh min-h-0 flex-col bg-imaging text-white">
+    <div className="viewer-shell flex h-dvh min-h-0 flex-col bg-vl-bg text-vl-fg">
       {/* The engine chunks warm while the user is choosing a folder. */}
       <ViewerPrewarm />
-      <header className="flex shrink-0 items-center gap-2 border-b border-white/10 px-4 py-2 sm:gap-3">
+      <header className="flex shrink-0 items-center gap-2 border-b border-vl-border px-4 py-2 sm:gap-3">
         <Link
           href="/viewer"
           aria-label="FlowRad Viewer"
-          className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vl-brand"
         >
-          {/* The approved Owl Scan lockup, byte for byte (brand/brand.md). */}
+          {/* The approved Owl Scan lockups, byte for byte (brand/brand.md): the
+              green wordmark on light, the white one on dark and while reading. */}
+          <Image
+            src="/brand/flowrad-lockup.svg"
+            alt="FlowRad"
+            width={120}
+            height={32}
+            // Lazy, not priority: the variant hidden by the theme is never
+            // fetched, so first load pays for one ~8 KB lockup only.
+            loading="lazy"
+            unoptimized
+            className="vl-logo-light h-8 w-auto"
+          />
           <Image
             src="/brand/flowrad-lockup-dark.svg"
             alt="FlowRad"
             width={113}
             height={32}
-            priority
+            loading="lazy"
             unoptimized
-            className="h-8 w-auto"
+            className="vl-logo-dark h-8 w-auto"
           />
-          <span className="text-sm font-semibold tracking-tight text-white/80">Viewer</span>
+          <span className="text-sm font-semibold tracking-tight text-vl-muted">Viewer</span>
         </Link>
-        <span className="ml-1 hidden rounded-full border border-white/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white/60 sm:inline">
+        <span className="ml-1 hidden rounded-full border border-vl-brand/30 bg-vl-brand-soft px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-vl-brand sm:inline">
           Free
         </span>
-        <p className="ml-auto flex min-w-0 items-center gap-1.5 pl-3 text-right text-[11px] leading-tight text-white/70 sm:text-xs">
-          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-success" aria-hidden />
+        <p className="ml-auto hidden min-w-0 items-center gap-1.5 pl-3 text-right text-xs leading-tight text-vl-muted sm:flex">
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-vl-brand" aria-hidden />
           <span>Your images never leave your computer.</span>
         </p>
       </header>
       <main className="flex min-h-0 flex-1 flex-col" aria-label="DICOM viewer">
-        <div className="flex min-h-0 flex-1 flex-col px-4 py-4 has-[[data-testid=local-stage]]:p-0">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-6 sm:py-10 has-[[data-testid=local-stage]]:overflow-visible has-[[data-testid=local-stage]]:p-0">
           <LocalStudyViewer tone="reading" />
         </div>
       </main>

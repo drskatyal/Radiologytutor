@@ -48,6 +48,7 @@ import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
+import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
 import {
@@ -134,6 +135,8 @@ type Phase =
   | { state: "error"; message: string };
 
 const SIGNUP_PROMPT_KEY = "flowrad.viewer.signupPrompt.dismissed";
+/** De-identified 10-frame MR bundled with the app (public/dicom). */
+const SAMPLE_STUDY_URL = "/dicom/teach_anon_mr.dcm";
 /** Performance marks the perf gate reads (timings only, never identifiers). */
 export const FILES_RECEIVED_MARK = "flowrad:viewer:files-received";
 export const FIRST_IMAGE_REGISTERED_MARK = "flowrad:viewer:first-image-registered";
@@ -728,21 +731,68 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, [pinned, pinnedIsActive, result, series]);
 
   const viewerKey = source?.kind === "imageIds" ? source.key : "none";
+  const landingStatus: LandingStatus =
+    phase.state === "reading"
+      ? { kind: "reading", progress: <ReadingProgress progress={phase.progress} centered landing /> }
+      : phase.state === "empty"
+        ? {
+            kind: "empty",
+            description:
+              phase.warnings[0] ??
+              `Inspected ${formatCount(phase.inspected)} ${phase.inspected === 1 ? "file" : "files"} and none were DICOM images. A study CD usually has them under a DICOM/ folder.`,
+          }
+        : phase.state === "error"
+          ? { kind: "error", description: phase.message }
+          : restore && phase.state === "idle"
+            ? {
+                kind: "restored",
+                description:
+                  restore.handles.length > 0
+                    ? "A new version arrived while your study was open. Reopen it to continue where you were. Your files stayed on this computer."
+                    : "A new version arrived while your study was open. Open it again to continue where you were. Your files stayed on this computer.",
+              }
+            : { kind: "idle" };
   const modality = series?.modality ?? pinned?.modality;
   const showStage = !!source && (phase.state === "open" || phase.state === "reading");
 
+  // On the free viewer's landing the actions wear the brand green (tokens in
+  // .viewer-shell); elsewhere they are the app's own buttons.
+  const brandPrimary = reading
+    ? "bg-vl-brand text-vl-bg hover:bg-vl-brand/90 focus-visible:ring-vl-brand focus-visible:ring-offset-vl-bg"
+    : undefined;
+  const brandSecondary = reading
+    ? "border-vl-border bg-vl-bg text-vl-fg hover:bg-vl-brand-soft focus-visible:ring-vl-brand focus-visible:ring-offset-vl-bg"
+    : undefined;
   const folderButton = nativeFolderPicker ? (
     <Button
-            onClick={() => void pickFolderNative()}
+      onClick={() => void pickFolderNative()}
       leadingIcon={<FolderOpen aria-hidden />}
+      className={brandPrimary}
     >
       Choose a folder
     </Button>
   ) : (
-    <FilePickerButton inputId={folderInputId} leadingIcon={<FolderOpen aria-hidden />}>
+    <FilePickerButton inputId={folderInputId} leadingIcon={<FolderOpen aria-hidden />} className={brandPrimary}>
       Choose a folder
     </FilePickerButton>
   );
+
+  // The bundled, de-identified sample (lib/anonymizeTeachingDicom.ts), fetched
+  // only when asked for: the landing itself makes no request for it.
+  const [sampleState, setSampleState] = useState<"idle" | "loading" | "error">("idle");
+  const openSample = useCallback(async () => {
+    setSampleState("loading");
+    try {
+      const response = await fetch(SAMPLE_STUDY_URL);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      openingHandles.current = [];
+      setSampleState("idle");
+      void ingest([new File([blob], "FlowRad-sample-MR.dcm", { type: "application/dicom" })]);
+    } catch {
+      setSampleState("error");
+    }
+  }, [ingest]);
 
   const privacyLine = (
     <p
@@ -1062,6 +1112,38 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             </div>
           </Sheet>
         </div>
+      ) : reading ? (
+        <ViewerLanding
+          status={landingStatus}
+          dragging={dragging}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          onCancel={closeStudy}
+          onSample={() => void openSample()}
+          sampleState={sampleState}
+          actions={
+            <>
+              {restore && phase.state === "idle" && restore.handles.length > 0 && (
+                <Button onClick={() => void reopenStudy()} className={brandPrimary}>
+                  Reopen study
+                </Button>
+              )}
+              {folderButton}
+              <FilePickerButton
+                inputId={fileInputId}
+                variant="secondary"
+                leadingIcon={<FileArchive aria-hidden />}
+                className={brandSecondary}
+              >
+                Choose files
+              </FilePickerButton>
+            </>
+          }
+        />
       ) : (
         <div
           data-testid="local-dropzone"
@@ -1117,7 +1199,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     : "A new version arrived while your study was open. Open it again to continue where you were. Your files stayed on this computer."
                   : phase.state === "empty"
                   ? phase.warnings[0] ??
-                    `Inspected ${formatCount(phase.inspected)} files and none were DICOM images. A study CD usually has them under a DICOM/ folder.`
+                    `Inspected ${formatCount(phase.inspected)} ${phase.inspected === 1 ? "file" : "files"} and none were DICOM images. A study CD usually has them under a DICOM/ folder.`
                   : phase.state === "error"
                     ? phase.message
                     : "A folder, a ZIP, a CD or loose DICOM files. They are read in this browser — nothing is uploaded, and no account is needed."
@@ -1155,28 +1237,31 @@ function ReadingProgress({
   progress,
   dark = false,
   centered = false,
+  landing = false,
 }: {
   progress: LocalOpenProgress;
   dark?: boolean;
   centered?: boolean;
+  /** On the free viewer's landing: its light/dark tokens (.viewer-shell). */
+  landing?: boolean;
 }) {
   const pct = progress.total > 0 ? Math.min(100, Math.round((progress.read / progress.total) * 100)) : 0;
   return (
     <div className={cn("flex w-full max-w-xs flex-col gap-2", centered && "items-center text-center")} aria-live="polite">
-      <p className={cn("text-sm tabular-nums", dark ? "text-white" : "text-primary")}>
+      <p className={cn("text-sm tabular-nums", landing ? "text-vl-fg" : dark ? "text-white" : "text-primary")}>
         Reading {formatCount(progress.read)} of {formatCount(progress.total)} files
       </p>
       <div
-        className={cn("h-1 w-full overflow-hidden rounded-full", dark ? "bg-white/10" : "bg-elevated")}
+        className={cn("h-1 w-full overflow-hidden rounded-full", landing ? "bg-vl-border" : dark ? "bg-white/10" : "bg-elevated")}
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={pct}
         aria-label="Reading study"
       >
-        <div className="h-full rounded-full bg-accent transition-[width] duration-150" style={{ width: `${pct}%` }} />
+        <div className={cn("h-full rounded-full transition-[width] duration-150", landing ? "bg-vl-brand" : "bg-accent")} style={{ width: `${pct}%` }} />
       </div>
-      <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
+      <p className={cn("text-xs tabular-nums", landing ? "text-vl-muted" : dark ? "text-white/60" : "text-secondary")}>
         {formatCount(progress.accepted)} DICOM images found
       </p>
     </div>
