@@ -2,15 +2,10 @@
 # or the shared code it imports (lib/, components/ui/).
 name: desktop-ci
 
+# Runs only when started by hand (Actions → this workflow → Run workflow):
+# Actions minutes cost money, so nothing runs on push, PR or tag. Tests and
+# the build run locally before merge and are listed in the PR description.
 on:
-  pull_request:
-    paths:
-      - "desktop/**"
-      - "lib/**"
-      - "components/ui/**"
-      - "packages/**"
-      - "scripts/make-test-ct.py"
-      - ".github/workflows/desktop-*.yml"
   workflow_dispatch:
 
 concurrency:
