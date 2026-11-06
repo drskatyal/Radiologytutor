@@ -120,6 +120,15 @@ const CODES = {
   millisecond: code("ms", "UCUM", "millisecond"),
 } as const;
 
+/** SOP Common: declare the private "99" coding scheme the labels use (PS3.3 C.12.1.1.2). */
+const CODING_SCHEMES: Dataset[] = [
+  {
+    CodingSchemeDesignator: SCHEME,
+    CodingSchemeName: "FlowRad Learn teacher sketch codes",
+    CodingSchemeResponsibleOrganization: "FlowRad Learn",
+  },
+];
+
 const KIND_CODE: Record<TeacherSketchItem["kind"], Dataset> = {
   pen: code("SKETCH-PEN", SCHEME, "Freehand sketch"),
   arrow: code("SKETCH-ARROW", SCHEME, "Arrow"),
@@ -404,6 +413,10 @@ export function buildSketchSrDataset(
     SeriesInstanceUID: seriesInstanceUID,
     SeriesNumber: 9901,
     SeriesDescription: "FlowRad teacher sketch",
+    // SR Document Series / General: Type 2, present and empty when unknown.
+    ReferencedPerformedProcedureStepSequence: [],
+    PerformedProcedureCodeSequence: [],
+    CodingSchemeIdentificationSequence: CODING_SCHEMES,
     Manufacturer: "FlowRad Learn",
     InstanceNumber: 1,
     ContentDate: dicomDate(now),
@@ -582,6 +595,9 @@ export function buildSketchGspsDataset(
     SeriesInstanceUID: opts.seriesInstanceUID ?? newUid(),
     SeriesNumber: 9902,
     SeriesDescription: "FlowRad teacher sketch (GSPS)",
+    // General Series Type 2C: empty, the referenced images carry their own.
+    Laterality: "",
+    CodingSchemeIdentificationSequence: CODING_SCHEMES,
     Manufacturer: "FlowRad Learn",
     InstanceNumber: 1,
     ContentLabel: GSPS_LAYER,
