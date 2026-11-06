@@ -300,6 +300,27 @@ if (want("dnd")) {
   const after0 = await seriesText(0);
   const active0 = await cell(0).evaluate((el) => el.hasAttribute("data-active-viewport"));
   check("dnd: drop shows the series in that viewport and selects it", after0 !== before0 && active0, `${before0} → ${after0} (cell 1: ${before1})`);
+
+  // Where a series opens: an axial on image 1, a coronal acquisition on its middle image.
+  const dropOn = async (images, target) => {
+    for (let i = 0; i < n; i += 1) {
+      if (!((await cards.nth(i).innerText()).match(/\d+/g) ?? []).includes(String(images))) continue;
+      const from = await cards.nth(i).boundingBox();
+      const to = await box(target);
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
+      await page.mouse.up();
+      await settle(1200);
+      return true;
+    }
+    return false;
+  };
+  const axialIn = (await dropOn(300, 0)) ? await imageNo(0) : null;
+  const coronalIn = (await dropOn(47, 1)) ? await imageNo(1) : null;
+  check("dnd: an axial series opens on image 1", axialIn?.at === 1 && axialIn?.of === 300, JSON.stringify(axialIn));
+  check("dnd: a coronal series opens on its middle image (floor(n/2) + 1)", coronalIn?.of === 47 && coronalIn?.at === Math.floor(47 / 2) + 1, JSON.stringify(coronalIn));
+  await shot("coronal-opens-mid");
 }
 
 // ── keyboard navigation ─────────────────────────────────────────────────

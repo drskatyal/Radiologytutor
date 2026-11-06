@@ -6,7 +6,7 @@ import { assignInput, clearInput, exportBindings, migrateShortcutOverrides, pars
 import { edgeLabels, directionLabel } from "./viewer/orientation";
 import { dragModeFor, mouseBindings, mouseHintFor, mouseSheetLine, resolveWheel } from "./viewer/mouseBindings";
 import { readFileSync } from "node:fs";
-import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex } from "./study";
+import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex, seriesStartIndex } from "./study";
 import { hangSeries } from "./layout";
 import { historyEntryFor, sourceKey } from "./history";
 import { windowPresetsFor, voiRangeOf, wwwcOf } from "./viewer/presets";
@@ -115,6 +115,19 @@ test("axial stacks open head-first; non-axial order is untouched", () => {
   assert.deepEqual(headFirst(sagittal), sagittal);
   const studies = buildStudies([ct(0, 2), ct(-10, 1), ct(10, 3)]);
   assert.deepEqual(studies[0].series[0].imageIds, ["wadouri:dicom://localhost/f/3", "wadouri:dicom://localhost/f/2", "wadouri:dicom://localhost/f/1"]);
+});
+
+test("a series opens mid-stack when coronal / sagittal, on image 1 when axial or a loop", () => {
+  const coronal = Array.from({ length: 47 }, (_, i) => ct(0, i + 1, { seriesInstanceUID: "cor", imagePositionPatient: [0, i, 0], imageOrientationPatient: [1, 0, 0, 0, 0, -1] }));
+  const sagittal = Array.from({ length: 20 }, (_, i) => ct(0, 100 + i, { seriesInstanceUID: "sag", imagePositionPatient: [i, 0, 0], imageOrientationPatient: [0, 1, 0, 0, 0, -1] }));
+  const axial = Array.from({ length: 30 }, (_, i) => ct(i, 200 + i, { seriesInstanceUID: "ax" }));
+  const us = ct(0, 300, { modality: "US", numberOfFrames: 12, frameTime: 33.3, seriesInstanceUID: "us", imageOrientationPatient: [1, 0, 0, 0, 0, -1] });
+  const [study] = buildStudies([...coronal, ...sagittal, ...axial, us]);
+  const start = (uid: string) => seriesStartIndex(study.series.find((s) => s.headers[0].seriesInstanceUID === uid)!);
+  assert.equal(start("cor"), 23);
+  assert.equal(start("sag"), 10);
+  assert.equal(start("ax"), 0);
+  assert.equal(start("us"), 0, "a multiframe loop keeps frame 1");
 });
 
 test("volumetric detection: even spacing yes; gaps, mixed size, or 2 slices no", () => {
