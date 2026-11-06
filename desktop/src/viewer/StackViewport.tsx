@@ -12,7 +12,7 @@ import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/Spinner";
 import { clampCineFps, createScrollDirectionState, directionalPrefetchIndexes, trackScrollDirection } from "@flowrad/viewer-core";
 import type { DesktopHeader, ViewerSeries, ViewerStudy } from "../types";
-import { formatDicomDate, formatDicomTime, formatPersonName } from "../study";
+import { formatDicomDate, formatDicomTime, formatPersonName, seriesStartIndex } from "../study";
 import { addViewportToGroup, getEngine, jumpTo3dPoint, removeViewportFromGroups, STACK_GROUP, type Engine } from "./engine";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "./handles";
 import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
@@ -316,7 +316,8 @@ function StackViewportImpl({
     const sameSeries = previous?.uid === series.uid;
     if (sameSeries && previous.ids.length === series.imageIds.length) return;
     const ids = series.imageIds;
-    let index = 0;
+    // First time here: the middle of a coronal / sagittal, image 1 otherwise.
+    let index = sameSeries ? 0 : Math.min(ids.length - 1, seriesStartIndex(series));
     if (sameSeries) {
       // Growing: keep the image the reader is on.
       const current = previous.ids[vp.getCurrentImageIdIndex?.() ?? 0];

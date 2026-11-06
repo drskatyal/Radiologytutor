@@ -267,6 +267,91 @@ export function handlesOnCanvas(ctx: EditingContext, a: AnnotationLike): [number
   return points.map((p) => vp.worldToCanvas(p) as [number, number]);
 }
 
+/** Where the label's text box sits on the canvas, if the reader dragged it somewhere (else Cornerstone places it). */
+export function movedLabelOnCanvas(ctx: EditingContext, a: AnnotationLike): [number, number] | null {
+  const box = (a.data?.handles as { textBox?: { hasMoved?: boolean; worldPosition?: number[] } } | undefined)?.textBox;
+  const vp = viewportOf(ctx);
+  if (!vp || !box?.hasMoved || !box.worldPosition) return null;
+  return vp.worldToCanvas(box.worldPosition) as [number, number];
+}
+
+type Pt = readonly [number, number];
+interface Box {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Does the segment a–b cross (or lie in) the box? Liang–Barsky clipping. */
+function segmentHitsBox(a: Pt, b: Pt, r: Box): boolean {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  let t0 = 0;
+  let t1 = 1;
+  const edges: [number, number][] = [
+    [-dx, a[0] - r.left],
+    [dx, r.left + r.width - a[0]],
+    [-dy, a[1] - r.top],
+    [dy, r.top + r.height - a[1]],
+  ];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return false;
+      continue;
+    }
+    const t = q / p;
+    if (p < 0) t0 = Math.max(t0, t);
+    else t1 = Math.min(t1, t);
+    if (t0 > t1) return false;
+  }
+  return true;
+}
+
+/**
+ * Top-left of the inline label field (`size`: the field plus its hint) for an
+ * arrow drawn through `points` (canvas pixels, arrowhead first), inside
+ * `bounds`. It goes where the label will be drawn, clear of the arrow so the
+ * line never runs through the text: a moved label's own spot first, then
+ * Cornerstone's default (right of the rightmost point, centred on the arrow),
+ * left of it, above, below. The first spot that fits on screen without
+ * touching the arrow wins; if none does, the first one, kept on screen.
+ */
+export function labelEditorPosition(
+  points: readonly Pt[],
+  size: { width: number; height: number },
+  bounds: { width: number; height: number },
+  movedLabel?: Pt | null,
+  gap = 12,
+): { left: number; top: number } {
+  const margin = 4;
+  const clamp = (left: number, top: number) => ({
+    left: Math.round(Math.max(margin, Math.min(left, bounds.width - size.width - margin))),
+    top: Math.round(Math.max(margin, Math.min(top, bounds.height - size.height - margin))),
+  });
+  if (!points.length) return clamp(movedLabel?.[0] ?? margin, movedLabel?.[1] ?? margin);
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+  const candidates = [
+    ...(movedLabel ? [[movedLabel[0], movedLabel[1] - size.height / 2]] : []),
+    [maxX + gap, midY - size.height / 2],
+    [minX - gap - size.width, midY - size.height / 2],
+    [midX - size.width / 2, minY - gap - size.height],
+    [midX - size.width / 2, maxY + gap],
+  ].map(([l, t]) => clamp(l, t));
+  // Clear of the arrow by a few pixels (the arrowhead and the handles are wider than the line).
+  const pad = 6;
+  const clear = (c: { left: number; top: number }) => {
+    const r = { left: c.left - pad, top: c.top - pad, width: size.width + 2 * pad, height: size.height + 2 * pad };
+    for (let i = 1; i < points.length; i += 1) if (segmentHitsBox(points[i - 1], points[i], r)) return false;
+    return points.length > 1 || !segmentHitsBox(points[0], points[0], r);
+  };
+  return candidates.find(clear) ?? candidates[0];
+}
+
 /**
  * A freehand ROI that closed with no stats. Cornerstone's contour render
  * clears `invalidated` on every frame, including the frames drawn while the
