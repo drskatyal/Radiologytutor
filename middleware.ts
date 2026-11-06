@@ -25,9 +25,11 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { shareCookieOptions, tokenFromSharePath, SHARE_COOKIE } from "@/lib/caseShare";
+import { viewerHostRedirect } from "@/lib/viewerHostRedirect";
 
 export const config = {
   matcher: [
+    "/",
     // `:path*` is the matcher token Next statically compiles. A custom
     // name such as `:token` is ignored, and the cookie never gets set.
     "/s/:path*",
@@ -128,6 +130,14 @@ function budgetFor(pathname: string): Budget {
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  // Root requests must never enter the API budget/rate-limit logic.
+  if (pathname === "/") {
+    const redirect = viewerHostRedirect(req.headers.get("host"), req.nextUrl);
+    return redirect
+      ? NextResponse.redirect(redirect.url, 302)
+      : NextResponse.next();
+  }
 
   // Visiting a share link plants the capability cookie before the viewer
   // asks /api/dicomweb for pixels. The token is checked in the data layer;
