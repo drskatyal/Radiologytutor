@@ -1206,7 +1206,17 @@ if (want("contextmenu")) {
   const seriesMenu = page.getByRole("menu", { name: "Series" });
   const thumbOk = await seriesMenu.waitFor({ timeout: 3000 }).then(() => true, () => false);
   const thumbItems = thumbOk ? (await seriesMenu.getByRole("menuitemradio").allInnerTexts()).map((t) => t.split("\n")[0]) : [];
-  check("contextmenu: a thumbnail has open / new pane / quick reformat / info / hide", ["Open in active pane", "Open in a new layout pane", "Series info…", "Hide series"].every((w) => thumbItems.includes(w)), thumbItems.join(" | "));
+  check("contextmenu: a thumbnail has open / new pane / info / hide", ["Open in active pane", "Open in a new layout pane", "Series info…", "Hide series"].every((w) => thumbItems.includes(w)), thumbItems.join(" | "));
+  // Quick coronal / sagittal are offered only in the app (Tauri: the native
+  // volume) and only for a volumetric series (App.tsx thumbMenuFor). This
+  // harness is a browser, so the real condition here is: not offered.
+  const inApp = await page.evaluate(() => "__TAURI_INTERNALS__" in window);
+  const reformatItems = thumbItems.filter((t) => /^Quick (coronal|sagittal)$/.test(t));
+  check(
+    `contextmenu: quick reformat on a thumbnail follows the app condition (${inApp ? "in the app: offered" : "browser harness: not offered"})`,
+    thumbOk && (inApp ? reformatItems.length === 2 : reformatItems.length === 0),
+    thumbItems.join(" | ")
+  );
   await shot("context-menu-thumbnail");
   if (thumbOk) await seriesMenu.getByRole("menuitemradio", { name: "Series info…" }).click();
   const infoOk = await page.getByTestId("dicom-tags").waitFor({ timeout: 5000 }).then(() => true, () => false);
