@@ -617,6 +617,29 @@ if (want("annotate")) {
   check("annotate: double-click opens an inline label field on the image", opened && dialogs === 0);
   if (opened) {
     await input.fill("Lesion");
+    // The field and its hint sit clear of the arrow as drawn (its SVG line), inside the viewport.
+    const ed = await page.getByTestId("annotation-label-editor").boundingBox();
+    const vb = await box(0);
+    const arrow = await cell(0).evaluate((el) => {
+      const l = el.querySelector(".svg-layer line");
+      if (!l) return null;
+      const r = l.ownerSVGElement.getBoundingClientRect();
+      const at = (x, y) => [r.left + Number(l.getAttribute(x)), r.top + Number(l.getAttribute(y))];
+      return [at("x1", "y1"), at("x2", "y2")];
+    });
+    const crosses = (r, p, q) => {
+      for (let i = 0; i <= 50; i += 1) {
+        const x = p[0] + ((q[0] - p[0]) * i) / 50;
+        const y = p[1] + ((q[1] - p[1]) * i) / 50;
+        if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) return true;
+      }
+      return false;
+    };
+    check(
+      "annotate: the label field is clear of the arrow and inside the viewport",
+      !!ed && !!arrow && !crosses(ed, ...arrow) && ed.x >= vb.x && ed.y >= vb.y && ed.x + ed.width <= vb.x + vb.width && ed.y + ed.height <= vb.y + vb.height,
+      JSON.stringify({ editor: ed, arrow })
+    );
     await shot("label-edit");
     await input.press("Enter");
     await settle(300);

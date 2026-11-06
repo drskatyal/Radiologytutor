@@ -9,8 +9,8 @@
 //                            Delete all on this image · Delete all in series ·
 //                            Undo / Redo
 //   eraser tool              click an annotation to delete it
-//   double-click an arrow    inline label field next to the arrowhead
-//                            (Enter saves, Esc cancels, empty is fine)
+//   double-click an arrow    inline label field where the label goes, clear
+//                            of the arrow (Enter saves, Esc cancels, empty is fine)
 //
 // Right-drag stays window/level: the menu opens only for a right click that
 // did not move.
@@ -27,6 +27,23 @@ type Ann = ae.AnnotationLike;
 
 /** Touch: hold this long without moving to open the menu. */
 const LONG_PRESS_MS = 550;
+
+/** The inline label field plus its hint (w-52 input, h-7, hint chip below), in CSS px. */
+const LABEL_EDITOR_SIZE = { width: 208, height: 50 };
+
+/** Top-left of the inline label field: by the label's spot, never on the arrow (annotationEditing.labelEditorPosition). */
+function labelEditorAt(ctx: Ctx | null, edit: ae.LabelEditRequest): { left: number; top: number } {
+  const points = ctx ? ae.handlesOnCanvas(ctx, edit.annotation) : [];
+  const bounds = ctx
+    ? { width: ctx.element.clientWidth, height: ctx.element.clientHeight }
+    : { width: Infinity, height: Infinity };
+  return ae.labelEditorPosition(
+    points.length ? points : [[edit.at.x, edit.at.y]],
+    LABEL_EDITOR_SIZE,
+    bounds,
+    ctx ? ae.movedLabelOnCanvas(ctx, edit.annotation) : null,
+  );
+}
 
 const isTyping = (t: EventTarget | null) => {
   const el = t as HTMLElement | null;
@@ -355,15 +372,13 @@ export function AnnotationEditLayer({
 
       {edit && (
         <form
-          className="absolute z-30"
+          className="absolute z-30 flex flex-col items-start"
           // Typing and clicking in the field must not reach the image tools.
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
-          // Dynamic geometry: next to the arrowhead, kept on screen.
-          style={{
-            left: Math.max(4, edit.at.x + 10),
-            top: Math.max(4, edit.at.y - 14),
-          }}
+          data-testid="annotation-label-editor"
+          // Dynamic geometry: where the label goes, clear of the arrow, on screen.
+          style={labelEditorAt(ctx, edit)}
           onSubmit={(e) => {
             e.preventDefault();
             edit.done(edit.value.trim());
@@ -405,7 +420,7 @@ export function AnnotationEditLayer({
               "placeholder:text-white/40 focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
             )}
           />
-          <span className="mt-1 block text-[10px] text-white/55">
+          <span className="mt-1 inline-block whitespace-nowrap rounded bg-black/70 px-1.5 py-px text-[10px] text-white/70">
             Enter to save · Esc to cancel
           </span>
         </form>
