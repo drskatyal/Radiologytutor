@@ -25,6 +25,7 @@ import { cn } from "@/components/ui/cn";
 import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
 import { Spinner } from "@/components/ui/Spinner";
 import { invoke } from "../platform";
+import { seriesStartIndex } from "../study";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
@@ -175,7 +176,8 @@ export default function NativeStackViewport({
   // is still drawing waits and goes as one append after it (an append can
   // never reach Rust before the cell exists, and the first image is never
   // dropped by a later batch).
-  type Sent = { cell: string; uid: string; ids: number[] };
+  /** `start`: the image a full send opens on (seriesStartIndex: mid-stack for a coronal / sagittal). */
+  type Sent = { cell: string; uid: string; ids: number[]; start: number };
   const sentRef = useRef<Sent | null>(null); // what Rust holds
   const wantRef = useRef<Sent | null>(null); // what the cell should hold
   const busyRef = useRef(false);
@@ -223,7 +225,7 @@ export default function NativeStackViewport({
     // instead of at 0 x 0 until the layout flush lands.
     const box = elementRef.current?.getBoundingClientRect();
     const rect = box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, w: box.width, h: box.height } : null;
-    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0, rect }).then(
+    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: want.start, rect }).then(
       (r) => {
         busyRef.current = false;
         sentRef.current = want;
@@ -263,7 +265,7 @@ export default function NativeStackViewport({
       setShownUid(null);
       return;
     }
-    wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
+    wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId), start: seriesStartIndex(series) };
     // A full send (a cell's first series, or another series: the hanging
     // plan swapping in the primary when the scan ends) goes with the cell's
     // rect, and measuring it here, in a commit that mounts or refills the

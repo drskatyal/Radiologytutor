@@ -2,11 +2,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveShortcut, resolveInput, shortcutSheet, BINDINGS, DESKTOP_COMMANDS, keySpecOf, keysForAction, conflictFor, toolKeyLabel, type KeyLike } from "./shortcuts";
-import { assignInput, exportBindings, migrateShortcutOverrides, parseBindings, setLiveBindings } from "@flowrad/viewer-core/bindings";
+import { assignInput, clearInput, exportBindings, migrateShortcutOverrides, parseBindings, setLiveBindings } from "@flowrad/viewer-core/bindings";
 import { edgeLabels, directionLabel } from "./viewer/orientation";
 import { dragModeFor, mouseBindings, mouseHintFor, mouseSheetLine, resolveWheel } from "./viewer/mouseBindings";
 import { readFileSync } from "node:fs";
-import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex } from "./study";
+import { buildStudies, headFirst, isVolumetric, formatPersonName, formatDicomDate, frameRateOf, primarySeriesIndex, seriesStartIndex } from "./study";
 import { hangSeries } from "./layout";
 import { historyEntryFor, sourceKey } from "./history";
 import { windowPresetsFor, voiRangeOf, wwwcOf } from "./viewer/presets";
@@ -115,6 +115,19 @@ test("axial stacks open head-first; non-axial order is untouched", () => {
   assert.deepEqual(headFirst(sagittal), sagittal);
   const studies = buildStudies([ct(0, 2), ct(-10, 1), ct(10, 3)]);
   assert.deepEqual(studies[0].series[0].imageIds, ["wadouri:dicom://localhost/f/3", "wadouri:dicom://localhost/f/2", "wadouri:dicom://localhost/f/1"]);
+});
+
+test("a series opens mid-stack when coronal / sagittal, on image 1 when axial or a loop", () => {
+  const coronal = Array.from({ length: 47 }, (_, i) => ct(0, i + 1, { seriesInstanceUID: "cor", imagePositionPatient: [0, i, 0], imageOrientationPatient: [1, 0, 0, 0, 0, -1] }));
+  const sagittal = Array.from({ length: 20 }, (_, i) => ct(0, 100 + i, { seriesInstanceUID: "sag", imagePositionPatient: [i, 0, 0], imageOrientationPatient: [0, 1, 0, 0, 0, -1] }));
+  const axial = Array.from({ length: 30 }, (_, i) => ct(i, 200 + i, { seriesInstanceUID: "ax" }));
+  const us = ct(0, 300, { modality: "US", numberOfFrames: 12, frameTime: 33.3, seriesInstanceUID: "us", imageOrientationPatient: [1, 0, 0, 0, 0, -1] });
+  const [study] = buildStudies([...coronal, ...sagittal, ...axial, us]);
+  const start = (uid: string) => seriesStartIndex(study.series.find((s) => s.headers[0].seriesInstanceUID === uid)!);
+  assert.equal(start("cor"), 23);
+  assert.equal(start("sag"), 10);
+  assert.equal(start("ax"), 0);
+  assert.equal(start("us"), 0, "a multiframe loop keeps frame 1");
 });
 
 test("volumetric detection: even spacing yes; gaps, mixed size, or 2 slices no", () => {
@@ -398,6 +411,14 @@ test("bindings: right drag rebound to zoom applies to native drags, the engine t
   assert.equal(dragModeFor(2, "StackScroll", { ctrl: true }, o), "WindowLevel", "W/L took zoom's old gesture");
   assert.equal(mouseHintFor("Zoom", o, false), "Right drag");
   assert.match(mouseSheetLine(o, false), /Right drag = zoom/);
+  assert.match(mouseSheetLine(o, false), /(^|· )Ctrl\+Right drag = window\/level/, "the sheet says where W/L went");
+  // Settings › Mouse & Keyboard's mouse table moves right drag to zoom (clear, then add): W/L loses it.
+  const added = assignInput(DESKTOP_COMMANDS, clearInput(DESKTOP_COMMANDS, {}, "drag.windowLevel", "Mouse2Drag"), "drag.zoom", "Mouse2Drag", { mode: "add" });
+  const line = mouseSheetLine(added, false);
+  assert.match(line, /(^|· )Right drag or Ctrl\+Right drag = zoom( ·|$)/, line);
+  assert.equal(line.match(/drag[^·]* = zoom( ·|$)/g)?.length, 1, `zoom listed once: ${line}`);
+  assert.match(line, /(^|· )window\/level: not bound( ·|$)/, line);
+  assert.doesNotMatch(line, /drag = window\/level/, line);
   // Live: what every viewport and the engine read.
   setLiveBindings(o);
   try {

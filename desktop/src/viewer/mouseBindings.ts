@@ -103,21 +103,35 @@ export function mouseHintFor(tool: string, overrides: BindingOverrides = getLive
 const WHEEL_WORDS: Record<WheelAction, string> = { scroll: "scroll", zoom: "zoom", slab: "zoom (slab thickness in a reformat)" };
 const DRAG_WORDS: Record<string, string> = { WindowLevel: "window/level", Pan: "pan", Zoom: "zoom", StackScroll: "browse slices" };
 
-/** The F1 sheet's mouse line, from the effective bindings. */
+/** Drag actions the sheet always names, bound or not, so a rebind never hides where one went. */
+const ALWAYS_LISTED = new Set(["WindowLevel", "Pan", "Zoom"]);
+
+/** Inputs for one action: the plain one first, then by label ("Right drag or Ctrl+Right drag"). */
+const joinInputs = (labels: string[]) =>
+  [...new Set(labels)].sort((a, b) => +a.includes("+") - +b.includes("+")).join(" or ");
+
+/**
+ * The F1 sheet's mouse line, from the effective bindings: each action once,
+ * with every input bound to it ("Right drag or Ctrl+Right drag = zoom"), and
+ * window/level, pan and zoom always named ("window/level: not bound") so a
+ * rebind never silently drops one.
+ */
 export function mouseSheetLine(overrides: BindingOverrides = getLiveBindings(), mac = isMac()): string {
   const eff = effectiveInputs(DESKTOP_COMMANDS, overrides);
   const parts: string[] = ["Mouse: left = selected tool"];
   for (const [id, specs] of eff) {
     const tool = DRAG_COMMANDS[id];
-    for (const s of specs) {
-      const kind = inputKind(s);
-      if (kind === "drag" && tool) parts.push(`${inputLabel(s, mac)} = ${DRAG_WORDS[tool]}`);
-    }
+    if (!tool) continue;
+    const labels = specs.filter((s) => inputKind(s) === "drag").map((s) => inputLabel(s, mac));
+    if (labels.length) parts.push(`${joinInputs(labels)} = ${DRAG_WORDS[tool]}`);
+    else if (ALWAYS_LISTED.has(tool)) parts.push(`${DRAG_WORDS[tool]}: not bound`);
   }
+  const wheels = new Map<WheelAction, string[]>();
   for (const w of wheelBindings(overrides)) {
     const mods = keyLabel(`${w.mods.ctrl ? "Mod+" : ""}${w.mods.alt ? "Alt+" : ""}${w.mods.shift ? "Shift+" : ""}`, mac);
-    parts.push(`${mods}wheel = ${WHEEL_WORDS[w.command]}`);
+    wheels.set(w.command, [...(wheels.get(w.command) ?? []), `${mods}wheel`]);
   }
+  for (const [action, labels] of wheels) parts.push(`${joinInputs(labels)} = ${WHEEL_WORDS[action]}`);
   parts.push("right click = image menu", "Shift+click = 3D cursor.");
   return parts.join(" · ");
 }

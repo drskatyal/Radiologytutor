@@ -7,6 +7,7 @@ import {
   describeAnnotation,
   inSeries,
   isEditable,
+  labelEditorPosition,
   onImage,
   type AnnotationLike,
 } from "../packages/viewer-core/src/annotationEditing.ts";
@@ -57,4 +58,33 @@ test("copy value: measurement text with units", () => {
   assert.equal(describeAnnotation(ann("Angle", "i", { cachedStats: { x: { angle: 34.56 } } })), "Angle 34.6°");
   assert.equal(describeAnnotation(ann("ArrowAnnotate", "i", { label: "Lesion" })), "Lesion");
   assert.equal(describeAnnotation(ann("ArrowAnnotate", "i")), "Arrow Annotate");
+});
+
+test("inline label field: where the label goes, clear of the arrow, on screen", () => {
+  const size = { width: 208, height: 46 };
+  const bounds = { width: 1190, height: 825 };
+  const inside = (p: { left: number; top: number }) =>
+    p.left >= 0 && p.top >= 0 && p.left + size.width <= bounds.width && p.top + size.height <= bounds.height;
+  // The e2e arrow: head up-left, tail at the centre. The field used to sit on the
+  // arrowhead with the line running through its hint; now it is right of the
+  // arrow's rightmost point, centred on it (Cornerstone's label spot).
+  const head: [number, number] = [118, 82];
+  const tail: [number, number] = [597, 412];
+  const p = labelEditorPosition([head, tail], size, bounds);
+  assert.ok(inside(p), JSON.stringify(p));
+  assert.ok(p.left > tail[0], `right of the arrow: ${JSON.stringify(p)}`);
+  assert.ok(Math.abs(p.top + size.height / 2 - (head[1] + tail[1]) / 2) <= 1, "centred on the arrow");
+  // Near the right edge: the left side instead, still clear of the line.
+  const q = labelEditorPosition([[900, 300], [1150, 500]], size, bounds);
+  assert.ok(inside(q));
+  assert.ok(q.left + size.width < 900, JSON.stringify(q));
+  // A long arrow across the whole width: above or below it, never on it.
+  const r = labelEditorPosition([[10, 400], [1180, 410]], size, bounds);
+  assert.ok(inside(r));
+  assert.ok(r.top + size.height < 400 || r.top > 410, JSON.stringify(r));
+  // A label the reader moved: its own spot.
+  assert.deepEqual(labelEditorPosition([head, tail], size, bounds, [700, 100]), { left: 700, top: 77 });
+  // Off-screen anchors are pulled back on screen.
+  assert.ok(inside(labelEditorPosition([[-50, -50]], size, bounds)));
+  assert.ok(inside(labelEditorPosition([[1180, 820], [1185, 822]], size, bounds)));
 });
