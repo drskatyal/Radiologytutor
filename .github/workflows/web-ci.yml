@@ -73,6 +73,7 @@ jobs:
           python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-40" --slices 40 --size 256
           python3 scripts/make-test-multiseries.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-multi"
+          python3 scripts/make-test-ortho.py "$RUNNER_TEMP/test-ortho"
           # pydicom's own public samples: a rescaled CT with no window and an
           # MR from another study (the 0.8.1 HP report's two dropped files).
           mkdir -p "$RUNNER_TEMP/test-pydicom"
@@ -87,6 +88,7 @@ jobs:
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
           TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
           TEST_PYDICOM_DIR: ${{ runner.temp }}/test-pydicom
+          TEST_ORTHO_DIR: ${{ runner.temp }}/test-ortho
         # One worker: the perf gates measure frame times and must not share
         # the runner's cores with another test (nor the voice recognizer's WASM).
         run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"
