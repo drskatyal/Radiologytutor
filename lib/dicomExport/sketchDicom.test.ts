@@ -147,6 +147,12 @@ test("SR is shaped the way OHIF's dicom-sr reader walks it", () => {
   const library = root.find((c) => name(c) === "111028")!;
   const images = ((library.ContentSequence as Array<Record<string, unknown>>)[0]!.ContentSequence as unknown[]).length;
   assert.equal(images, 2, "two distinct referenced images (slice 6, slice 7)");
+  // Type 2 attributes dciodvfy requires on a Comprehensive 3D SR, and the
+  // private "99FLOWRAD" scheme declared in Coding Scheme Identification.
+  assert.deepEqual(dataset.ReferencedPerformedProcedureStepSequence, []);
+  assert.deepEqual(dataset.PerformedProcedureCodeSequence, []);
+  const schemes = dataset.CodingSchemeIdentificationSequence as Array<{ CodingSchemeDesignator: string }>;
+  assert.equal(schemes[0]!.CodingSchemeDesignator, "99FLOWRAD");
   const evidence = dataset.CurrentRequestedProcedureEvidenceSequence as Array<{ StudyInstanceUID: string }>;
   assert.equal(evidence[0]!.StudyInstanceUID, CTX.studyInstanceUID);
 });
@@ -172,6 +178,8 @@ test("GSPS round-trip: graphics on the FLOWRAD_SKETCH layer per referenced image
   assert.equal(ds.SOPClassUID, SOP_CLASS.gsps);
   assert.equal(ds.Modality, "PR");
   assert.equal(ds.PresentationLUTShape, "IDENTITY");
+  // General Series Laterality is Type 2C: present (empty) so the IOD validates.
+  assert.ok("Laterality" in ds);
   const annotations = ds.GraphicAnnotationSequence as Array<Record<string, unknown>>;
   assert.equal(annotations.length, 2);
   const slice6 = annotations.find(
