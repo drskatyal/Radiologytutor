@@ -50,6 +50,8 @@ interface EngineImage {
   windowWidth?: unknown;
   invert?: boolean;
   color?: boolean;
+  /** Set when the loader already applied slope / intercept to getPixelData() (its default). */
+  preScale?: { scaled?: boolean };
 }
 
 type Idle = (cb: () => void) => void;
@@ -135,8 +137,12 @@ export function createLocalThumbnailer(): LocalThumbnailer {
       columns: image.columns,
       rows: image.rows,
       components,
-      slope: image.slope,
-      intercept: image.intercept,
+      // The loader pre-scales by default: getPixelData() is then already in
+      // modality units (HU), and applying slope / intercept again shifted a CT
+      // by another −1024 — invisible under a min–max window, black under the
+      // CT soft-tissue default.
+      slope: image.preScale?.scaled ? 1 : image.slope,
+      intercept: image.preScale?.scaled ? 0 : image.intercept,
     });
     if (!sample) return null;
     const win = defaultThumbWindow(sample, fileWindow ?? null, modality ?? null);
