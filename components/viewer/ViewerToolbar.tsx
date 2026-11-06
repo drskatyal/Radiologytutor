@@ -651,7 +651,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         )}
         {props.voice && props.onVoiceHelp && (
           <ToolbarButton
-            label="Voice commands list"
+            label="Show voice commands"
             shortcut={props.voice.state === "listening" ? ["?"] : undefined}
             pressed={null}
             container={host}

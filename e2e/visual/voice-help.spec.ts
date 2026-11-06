@@ -21,7 +21,7 @@ test("the voice list button opens every voice command, grouped", async ({ page }
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await open(page);
-  await page.getByRole("button", { name: "Voice commands list" }).click();
+  await page.getByRole("button", { name: "Show voice commands" }).click();
   const dialog = page.getByRole("dialog", { name: "Voice commands" });
   await expect(dialog).toBeVisible();
   const list = dialog.getByTestId("voice-commands");
