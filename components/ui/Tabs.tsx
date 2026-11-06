@@ -21,6 +21,8 @@ export interface TabsProps {
   className?: string;
   /** Segmented (pill group) or underlined tab style. */
   variant?: "segmented" | "underline";
+  /** "imaging": on the viewer's always-dark surfaces, whatever the app theme. */
+  tone?: "default" | "imaging";
 }
 
 /**
@@ -34,8 +36,12 @@ export function Tabs({
   onValueChange,
   className,
   variant = "segmented",
+  tone = "default",
 }: TabsProps) {
   const isUnderline = variant === "underline";
+  const imaging = tone === "imaging";
+  const on = imaging ? "text-white" : "text-primary";
+  const off = imaging ? "text-white/60 hover:text-white" : "text-secondary hover:text-primary";
   // Scope the sliding-indicator animation to this instance so multiple Tabs on
   // one page never share (and fight over) a layout animation.
   const layoutGroup = useId();
@@ -49,8 +55,10 @@ export function Tabs({
       <TabsPrimitive.List
         className={cn(
           isUnderline
-            ? "flex items-center gap-1 border-b border-subtle"
-            : "inline-flex items-center gap-1 rounded-lg border border-subtle bg-surface p-1 shadow-sm surface-hairline",
+            ? cn("flex items-center gap-1 border-b", imaging ? "border-white/10" : "border-subtle")
+            : imaging
+              ? "inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 p-1"
+              : "inline-flex items-center gap-1 rounded-lg border border-subtle bg-surface p-1 shadow-sm surface-hairline",
           className
         )}
       >
@@ -63,16 +71,18 @@ export function Tabs({
               disabled={item.disabled}
               className={cn(
                 "relative flex items-center gap-2 text-sm font-medium transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+                imaging
+                  ? "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                  : "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
                 "disabled:pointer-events-none disabled:opacity-40",
                 isUnderline
                   ? cn(
                       "-mb-px rounded-t-md px-3 py-2.5",
-                      active ? "text-primary" : "text-secondary hover:text-primary"
+                      active ? on : off
                     )
                   : cn(
                       "rounded-md px-3 py-1.5",
-                      active ? "text-primary" : "text-secondary hover:text-primary"
+                      active ? on : off
                     )
               )}
             >
@@ -84,7 +94,9 @@ export function Tabs({
                     "absolute inset-0 -z-10",
                     isUnderline
                       ? "rounded-none"
-                      : "rounded-md bg-elevated shadow-sm"
+                      : imaging
+                        ? "rounded-md bg-white/15"
+                        : "rounded-md bg-elevated shadow-sm"
                   )}
                   transition={{ type: "spring", duration: 0.3, bounce: 0.18 }}
                 />

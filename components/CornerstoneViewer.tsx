@@ -208,7 +208,7 @@ import {
   toolLabel,
 } from "./viewer/ViewerToolbar";
 import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
-import { ViewerHelp } from "./viewer/ViewerHelp";
+import { ViewerHelp, type ViewerHelpTab } from "./viewer/ViewerHelp";
 import { SURFACE_PRESETS, type CutAxis } from "@flowrad/viewer-core";
 import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
 import {
@@ -1049,6 +1049,8 @@ export default function CornerstoneViewer({
     });
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
+  /** Which list the help sheet shows: keys, or the voice commands. */
+  const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
   // Mouse & keyboard bindings (local copy; the page shell syncs the account).
   const { overrides: viewerBindings } = useViewerBindings();
   // On-screen confirmation for key presses. Cleared after a beat.
@@ -3581,6 +3583,8 @@ export default function CornerstoneViewer({
         if (onCycleLayout) onCycleLayout();
         return;
       case "help":
+        // While voice is listening, `?` opens what can be said.
+        if (!helpOpen) setHelpTab(voiceStateRef.current === "listening" ? "voice" : "keys");
         setHelpOpen((open) => !open);
         return;
       case "orient":
@@ -3850,9 +3854,12 @@ export default function CornerstoneViewer({
       flash(`“${heard}”`);
       voiceActionRef.current(action);
     },
-    onUnrecognized: (heard) => flash(`“${heard}” ?`),
+    onUnrecognized: (heard) => flash(`“${heard}” is not a command · ${questionMarkHelp ? "? lists them" : "the voice list shows them"}`),
     onProgress: setVoiceProgress,
     onState: (state, detail) => {
+      if (state === "listening" && voiceStateRef.current !== "listening") {
+        flash(questionMarkHelp ? "Voice on · press ? for what to say" : "Voice on · the voice list shows what to say");
+      }
       voiceStateRef.current = state;
       setVoice({ state });
       if (state === "error") setVoiceError(detail ?? null);
@@ -4031,7 +4038,18 @@ export default function CornerstoneViewer({
       onCineToggle={() => setCinePlaying((playing) => !playing)}
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
-      onHelp={() => setHelpOpen((open) => !open)}
+      onHelp={() => {
+        if (!helpOpen || helpTab !== "keys") {
+          setHelpTab("keys");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
+      onVoiceHelp={() => {
+        if (!helpOpen || helpTab !== "voice") {
+          setHelpTab("voice");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
       voice={
         canVoice
           ? {
@@ -4366,7 +4384,14 @@ export default function CornerstoneViewer({
           </p>
         )}
         <ViewerHud text={hud} />
-        <ViewerHelp open={helpOpen} onClose={closeHelp} overrides={viewerBindings} />
+        <ViewerHelp
+          open={helpOpen}
+          onClose={closeHelp}
+          overrides={viewerBindings}
+          tab={helpTab}
+          onTabChange={setHelpTab}
+          voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
+        />
         <VoiceStatus
           className="absolute right-3 top-3 z-30"
           state={voice.state}

@@ -86,3 +86,17 @@ test("case and surrounding whitespace are allowed; unknown is null", () => {
 test("help sheet lists every command", () => {
   assert.equal(voiceCommandSheet().length, VOICE_COMMANDS.length);
 });
+
+test("the grouped list (web and desktop help) shows every command exactly once", async () => {
+  const { voiceCommandRows, VOICE_GROUP_ORDER } = await import("../packages/viewer-core/src/voiceCommands.ts");
+  const rows = voiceCommandRows();
+  assert.equal(rows.length, VOICE_COMMANDS.length);
+  assert.deepEqual(new Set(rows.map((r) => r.label)).size, VOICE_COMMANDS.length);
+  for (const row of rows) {
+    assert.ok(VOICE_GROUP_ORDER.includes(row.group), row.label);
+    assert.ok(row.phrases.every((p) => p.split(" ").length >= MIN_PHRASE_WORDS), row.label);
+  }
+  // Grouped in the published order.
+  const order = rows.map((r) => VOICE_GROUP_ORDER.indexOf(r.group));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+});
