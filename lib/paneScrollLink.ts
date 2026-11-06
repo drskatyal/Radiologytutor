@@ -65,3 +65,27 @@ export function offsetAt(src: PaneGeometry, srcIndex: number, dst: PaneGeometry,
   const b = dst.positions[dstIndex];
   return a == null || b == null ? 0 : b - sign * a;
 }
+
+// ── Linked window / level and zoom (the desktop's Shift+F5 / Alt+F5) ────────
+
+/** Window / level is linked only between panes of the same modality (a CT window on an MR is noise). */
+export function sameModality(a: string | null | undefined, b: string | null | undefined): boolean {
+  const x = (a ?? "").trim().toUpperCase();
+  const y = (b ?? "").trim().toUpperCase();
+  return x !== "" && x === y;
+}
+
+/** Same window within rounding: no need to apply (and no echo to forward). */
+export function sameWindow(a: { ww?: number; wc?: number } | null | undefined, ww: number, wc: number): boolean {
+  return !!a && a.ww != null && a.wc != null && Math.abs(a.ww - ww) < 0.5 && Math.abs(a.wc - wc) < 0.5;
+}
+
+/** Same zoom and pan within rounding. */
+export function sameCamera(
+  a: { zoom?: number; pan?: [number, number] } | null | undefined,
+  zoom: number,
+  pan: [number, number]
+): boolean {
+  if (!a || a.zoom == null || !a.pan) return false;
+  return Math.abs(a.zoom - zoom) < 0.005 * Math.max(1, zoom) && Math.abs(a.pan[0] - pan[0]) < 0.5 && Math.abs(a.pan[1] - pan[1]) < 0.5;
+}

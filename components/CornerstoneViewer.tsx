@@ -1893,6 +1893,12 @@ export default function CornerstoneViewer({
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
         const THROTTLE = 50;
+        // Throttling keeps the LAST value too: a change that lands inside the
+        // window is sent once it closes (a quick zoom or the end of a drag
+        // must reach linked panes, pop-outs and recordings). Only for the
+        // reader's own changes, never a suppressed programmatic write.
+        let voiTrail = 0;
+        let camTrail = 0;
 
         const readProjector = (): SketchFrame | null => {
           if (mprSessionRef.current) return null;
@@ -2006,7 +2012,19 @@ export default function CornerstoneViewer({
           // writes are suppressed and must not pin a mid-tween value.
           if (v && !suppressed() && !pinLocked) pinnedVoi = { ww: v.ww, wc: v.wc };
           const now = performance.now();
-          if (now - lastVoiEmit < THROTTLE) return;
+          if (now - lastVoiEmit < THROTTLE) {
+            if (!voiTrail && !suppressed()) {
+              voiTrail = window.setTimeout(() => {
+                voiTrail = 0;
+                const live = viewportRef.current;
+                const last = !disposed && live ? voiToWwWc(live.getProperties().voiRange) : null;
+                if (!last) return;
+                lastVoiEmit = performance.now();
+                emit({ type: "voi", ww: last.ww, wc: last.wc });
+              }, THROTTLE - (now - lastVoiEmit));
+            }
+            return;
+          }
           lastVoiEmit = now;
           if (v) emit({ type: "voi", ww: v.ww, wc: v.wc });
         };
@@ -2017,7 +2035,18 @@ export default function CornerstoneViewer({
           rememberPresentation();
           scheduleReadout();
           const now = performance.now();
-          if (now - lastCamEmit < THROTTLE) return;
+          if (now - lastCamEmit < THROTTLE) {
+            if (!camTrail && !suppressed()) {
+              camTrail = window.setTimeout(() => {
+                camTrail = 0;
+                const live = viewportRef.current;
+                if (disposed || !live) return;
+                lastCamEmit = performance.now();
+                emit({ type: "camera", zoom: live.getZoom(), pan: live.getPan() });
+              }, THROTTLE - (now - lastCamEmit));
+            }
+            return;
+          }
           lastCamEmit = now;
           emit({ type: "camera", zoom: vp.getZoom(), pan: vp.getPan() });
         };
@@ -2954,11 +2983,17 @@ export default function CornerstoneViewer({
             vp?.render();
             setActivePreset(FULL_DYNAMIC_ID);
             publishReadout();
+            // A preset is the reader's own window choice: report it (linked
+            // panes, pop-out windows, a recording) even though the write
+            // itself is programmatic and suppressed.
+            const own = vp ? voiToWwWc(vp.getProperties().voiRange) : null;
+            if (own) onEventRef.current?.({ type: "voi", ww: own.ww, wc: own.wc });
             return;
           }
           // Presets are often far apart — let adaptive logic snap bone↔lung.
           setWindow(p.ww, p.wc);
           setActivePreset(p.id);
+          onEventRef.current?.({ type: "voi", ww: p.ww, wc: p.wc });
         };
         applyPresetRef.current = applyPreset;
 
