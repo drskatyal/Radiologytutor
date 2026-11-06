@@ -1,20 +1,14 @@
+import { headers } from "next/headers";
+import { learnMetadataForHost } from "@/lib/hostSeo";
 import { demoAuthEnabled, getSession } from "@/lib/auth";
 import { Landing } from "@/components/marketing/Landing";
 import { LANDING_FAQ } from "@/components/marketing/faq";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = {
-  title: "RadLearn",
-  description:
-    "Teach radiology on the DICOM study. Record a case once. Registrars replay it with an AI tutor that drives scroll, window, and zoom.",
-  openGraph: {
-    title: "RadLearn",
-    description:
-      "Teach radiology on the DICOM study. Record a case once. Registrars replay it with an AI tutor that drives scroll, window, and zoom.",
-    type: "website",
-  },
-};
+export function generateMetadata() {
+  return learnMetadataForHost(headers().get("host"));
+}
 
 function canTeach(session: Awaited<ReturnType<typeof getSession>>): boolean {
   if (!session) return false;
