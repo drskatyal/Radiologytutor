@@ -23,6 +23,20 @@ export interface Entitlement {
   message?: string | null;
 }
 
+/**
+ * Core viewing that is FREE on every tier, now and later: 3D MPR (multiplanar)
+ * and the 3D volume, on Windows and macOS. A remote config or licence can never
+ * gate or switch these off. Same list (and names, which are stable API) as
+ * FREE_CORE_FEATURES in src-tauri/src/updates.rs and in flowrad-viewer's
+ * lib/cloud/entitlements.ts.
+ */
+export const FREE_CORE_FEATURES = ["mpr", "volume-3d"] as const;
+export type FreeCoreFeature = (typeof FREE_CORE_FEATURES)[number];
+
+export function isFreeCore(flag: string): flag is FreeCoreFeature {
+  return (FREE_CORE_FEATURES as readonly string[]).includes(flag);
+}
+
 export const DEFAULT_ENTITLEMENT: Entitlement = Object.freeze({ tier: "free", features: {}, source: "default" }) as Entitlement;
 
 let current: Entitlement = DEFAULT_ENTITLEMENT;
@@ -40,7 +54,7 @@ export function normalise(value: unknown): Entitlement {
   const tier: Tier = v.tier === "paid" ? "paid" : "free";
   const features: Record<string, boolean> = {};
   if (v.features && typeof v.features === "object") {
-    for (const [k, on] of Object.entries(v.features)) if (typeof on === "boolean") features[k] = on;
+    for (const [k, on] of Object.entries(v.features)) if (typeof on === "boolean") features[k] = on || isFreeCore(k);
   }
   const source = v.source === "remote" || v.source === "cache" ? v.source : "default";
   return { tier, features, source, expiresAt: v.expiresAt ?? null, licensee: v.licensee ?? null, message: v.message ?? null };
@@ -54,9 +68,11 @@ export function getEntitlement(): Entitlement {
 /**
  * Is `flag` on? A flag the config doesn't mention keeps `fallback`, which is
  * true for everything that ships today, so an unreachable or empty config
- * never switches a feature off.
+ * never switches a feature off. Free core features (FREE_CORE_FEATURES) are
+ * always on.
  */
 export function isEnabled(flag: string, fallback = true): boolean {
+  if (isFreeCore(flag)) return true;
   return current.features[flag] ?? fallback;
 }
 

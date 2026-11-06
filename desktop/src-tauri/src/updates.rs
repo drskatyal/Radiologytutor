@@ -390,6 +390,13 @@ pub struct Entitlement {
     pub message: Option<String>,
 }
 
+/// Core viewing that is FREE on every tier, now and later: 3D MPR (multiplanar)
+/// and the 3D volume. A remote config can never put these behind a paid
+/// licence or switch them off; they are always reported on. Same list as
+/// `FREE_CORE_FEATURES` in desktop/src/licence and flowrad-viewer's
+/// lib/cloud/entitlements.ts. Names are stable API: never rename.
+pub const FREE_CORE_FEATURES: &[&str] = &["mpr", "volume-3d"];
+
 /// Combine config + licence. No config and no licence = free, everything on.
 pub fn resolve_entitlement(config: Option<&RemoteConfig>, licence: Option<&Licence>, now_rfc3339: &str, source: &str) -> Entitlement {
     let paid = licence.is_some_and(|l| {
@@ -403,6 +410,12 @@ pub fn resolve_entitlement(config: Option<&RemoteConfig>, licence: Option<&Licen
         for f in &c.paid_features {
             let on = features.get(f).copied().unwrap_or(true);
             features.insert(f.clone(), on && paid);
+        }
+    }
+    // Free core wins over any flag or paid list.
+    for f in FREE_CORE_FEATURES {
+        if features.contains_key(*f) {
+            features.insert((*f).to_string(), true);
         }
     }
     Entitlement {
@@ -557,6 +570,25 @@ mod tests {
         let e = resolve_entitlement(Some(&cfg), None, "2026-11-02T00:00:00Z", "cache");
         assert_eq!(e.features.get("voice"), Some(&true));
         assert_eq!(e.features.get("newMprUi"), Some(&false));
+    }
+
+    #[test]
+    fn mpr_and_volume_3d_are_free_core_on_every_tier() {
+        assert_eq!(FREE_CORE_FEATURES, &["mpr", "volume-3d"]);
+        let flags = FREE_CORE_FEATURES.iter().map(|f| (f.to_string(), false)).collect();
+        let paid_features = FREE_CORE_FEATURES.iter().map(|f| f.to_string()).collect();
+        let cfg = RemoteConfig { flags, paid_features, ..Default::default() };
+        let now = "2026-11-02T00:00:00Z";
+        let paid = Licence { tier: "paid".into(), expires_at: None, licensee: None };
+        for licence in [None, Some(&paid)] {
+            let e = resolve_entitlement(Some(&cfg), licence, now, "remote");
+            for f in FREE_CORE_FEATURES {
+                assert_eq!(e.features.get(*f), Some(&true), "{f} must stay on ({})", e.tier);
+            }
+        }
+        // No config: not listed, so the app's default (on) applies.
+        let e = resolve_entitlement(None, None, now, "default");
+        assert!(FREE_CORE_FEATURES.iter().all(|f| !e.features.contains_key(*f)));
     }
 
     #[test]

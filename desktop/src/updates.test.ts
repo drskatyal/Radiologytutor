@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { BUSY_RETRY_MS, CHECK_INTERVAL_MS, FIRST_CHECK_DELAY_MS, describeCheckError, nextCheckInMs } from "./updateSchedule";
-import { DEFAULT_ENTITLEMENT, __setEntitlementForTest, getEntitlement, isEnabled, isPaid, normalise } from "./licence";
+import { DEFAULT_ENTITLEMENT, FREE_CORE_FEATURES, __setEntitlementForTest, getEntitlement, isEnabled, isPaid, normalise } from "./licence";
 
 test("updates: nothing before first paint, first check 10 s after it, then every 4 h", () => {
   const base = { enabled: true, busy: false };
@@ -41,6 +41,26 @@ test("licence: flags and tier come only from a well-formed entitlement", () => {
   assert.equal(isEnabled("junk"), true, "non-boolean flags are ignored");
   assert.deepEqual(normalise({ tier: "platinum", source: "evil" }), { ...DEFAULT_ENTITLEMENT, expiresAt: null, licensee: null, message: null });
   __setEntitlementForTest(null);
+});
+
+test("licence: 3D MPR and the 3D volume are free core, never gated or switched off", () => {
+  assert.deepEqual([...FREE_CORE_FEATURES].sort(), ["mpr", "volume-3d"]);
+  const off = Object.fromEntries(FREE_CORE_FEATURES.map((f) => [f, false]));
+  for (const tier of ["free", "paid"]) {
+    __setEntitlementForTest({ tier, features: { ...off, cloudSync: false }, source: "remote" });
+    for (const f of FREE_CORE_FEATURES) {
+      assert.equal(isEnabled(f), true, `${f} on (${tier})`);
+      assert.equal(isEnabled(f, false), true, `${f} ignores a false fallback (${tier})`);
+      assert.equal(getEntitlement().features[f], true, `${f} reported on (${tier})`);
+    }
+    assert.equal(isEnabled("cloudSync"), false, "other features can still be gated");
+  }
+  __setEntitlementForTest(null);
+  // The Rust resolver carries the same list.
+  const rust = readFileSync(new URL("../src-tauri/src/updates.rs", import.meta.url), "utf8");
+  const m = /FREE_CORE_FEATURES: &\[&str\] = &\[([^\]]*)\]/.exec(rust);
+  assert.ok(m, "updates.rs defines FREE_CORE_FEATURES");
+  assert.deepEqual(m[1].split(",").map((s) => s.trim().replace(/"/g, "")).sort(), [...FREE_CORE_FEATURES].sort());
 });
 
 test("updates: the app sends nothing identifying (fixed URLs, no arguments)", () => {

@@ -7,11 +7,17 @@
 // Interaction: wheel scrolls the pane's plane (Shift ×5), drag sets
 // window/level, click moves the crosshair (the other two planes follow),
 // arrow keys scroll the active pane, double-click resets.
+//
+// Layout: three boxes, a tall one on the left and two stacked on the right
+// (mprSlots.ts). Each box has a plane dropdown; the X in the header closes
+// MPR and returns to the normal viewer.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { dragModeFor, resolveWheel } from "./mouseBindings";
-import { ArrowLeft, RotateCcw } from "lucide-react";
+import { ArrowLeft, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
+import { Select } from "@/components/ui/Input";
 import { Slider } from "@/components/ui/Slider";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
@@ -22,13 +28,14 @@ import { installToolCursors } from "./toolCursor";
 import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
 import type { MenuCommand, MenuEntry } from "@flowrad/viewer-core";
 import { applySlabChange, mprPaneMenu, slabChangeOf, SLAB_MAX_MM, type Slab, type SlabChange, type SlabMode } from "./slabCommands";
+import { assignMprSlot, loadMprSlots, MPR_PLANE_LABELS, MPR_PLANES, MPR_SLOT_CLASSES, saveMprSlots, type MprSlots, type Plane } from "./mprSlots";
 
 // Phase 2: in native mode the plane is drawn by Rust, not loaded as a PNG.
 const NativePlaneSurface = lazy(() => import("../native/NativePlaneSurface"));
 
 installToolCursors();
 
-export type Plane = "axial" | "coronal" | "sagittal";
+export type { Plane } from "./mprSlots";
 
 export type { Slab, SlabMode } from "./slabCommands";
 export { SLAB_MAX_MM } from "./slabCommands";
@@ -79,12 +86,6 @@ interface Props {
   /** Bench: every pane has drawn its first plane (brightest pixel per pane). */
   onPainted?: (t: { ms: number; maxLum: Record<string, number> }) => void;
 }
-
-const PLANES: { plane: Plane; label: string }[] = [
-  { plane: "axial", label: "Axial" },
-  { plane: "sagittal", label: "Sagittal" },
-  { plane: "coronal", label: "Coronal" },
-];
 
 /** Slice count along a plane's own axis. */
 export function depthOf(info: VolumeInfo, plane: Plane): number {
@@ -193,6 +194,8 @@ export function Pane({
   crosshair: showCrosshair = true,
   menu,
   onMenuCommand,
+  planePicker,
+  className,
 }: {
   info: VolumeInfo;
   plane: Plane;
@@ -215,6 +218,10 @@ export function Pane({
   /** The pane's right-click menu (shared contextMenu.ts), built when it opens. */
   menu?: () => readonly MenuEntry[];
   onMenuCommand?: (command: MenuCommand) => void;
+  /** Replaces the plane label (MPR: a dropdown to pick the box's plane). */
+  planePicker?: ReactNode;
+  /** Grid placement (MPR boxes). */
+  className?: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
@@ -314,7 +321,8 @@ export function Pane({
         "relative min-h-0 min-w-0 touch-none select-none overflow-hidden outline-none",
         // Native: transparent, the plane is drawn under the page.
         native ? "bg-transparent" : "bg-black",
-        active ? "ring-1 ring-inset ring-accent" : "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
+        active ? "ring-1 ring-inset ring-accent" : "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",
+        className
       )}
     >
       {native && scale > 0 && (
@@ -363,7 +371,7 @@ export function Pane({
           This plane could not be rendered.
         </div>
       )}
-      <div className="pointer-events-none absolute left-2 top-2 text-xs font-medium text-white/80">{label}</div>
+      {planePicker ?? <div className="pointer-events-none absolute left-2 top-2 text-xs font-medium text-white/80">{label}</div>}
       <div className="pointer-events-none absolute bottom-2 left-2 text-[11px] tabular-nums text-white/60">
         {at[plane] + 1} / {depthOf(info, plane)}
       </div>
@@ -388,12 +396,52 @@ export function Pane({
   );
 }
 
+/** The plane dropdown in an MPR box. Its events never reach the pane (no scroll, window or crosshair). */
+function PlanePicker({ box, plane, onPick }: { box: number; plane: Plane; onPick: (plane: Plane) => void }) {
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  const where = box === 0 ? "left box" : box === 1 ? "top right box" : "bottom right box";
+  return (
+    <div
+      className="absolute left-2 top-2 z-[1]"
+      onPointerDown={stop}
+      onPointerUp={stop}
+      onWheel={stop}
+      onKeyDown={stop}
+      onDoubleClick={stop}
+      onContextMenu={stop}
+      onFocus={stop}
+    >
+      <Select
+        aria-label={`Plane in ${where}`}
+        title="Choose the plane for this box"
+        value={plane}
+        onChange={(e) => onPick(e.target.value as Plane)}
+        className="h-7 w-[7.25rem] rounded-md border-white/15 bg-black/70 py-0 pl-2 pr-8 text-xs font-medium text-white hover:border-white/30 focus:bg-black/80"
+      >
+        {MPR_PLANES.map((p) => (
+          <option key={p} value={p}>
+            {MPR_PLANE_LABELS[p]}
+          </option>
+        ))}
+      </Select>
+    </div>
+  );
+}
+
 export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted, initialSlab, slabCommand }: Props) {
   const [info, setInfo] = useState<VolumeInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [at, setAt] = useState<Record<Plane, number>>({ axial: 0, coronal: 0, sagittal: 0 });
   const [voi, setVoi] = useState<{ center: number; width: number }>({ center: 40, width: 400 });
   const [active, setActive] = useState<Plane>("axial");
+  const [slots, setSlots] = useState<MprSlots>(loadMprSlots);
+  const pickPlane = (box: number, plane: Plane) => {
+    const next = assignMprSlot(slots, box, plane);
+    if (next === slots) return;
+    setSlots(next);
+    saveMprSlots(next);
+    setActive(plane);
+  };
   const [slab, setSlab] = useState<Slab>(initialSlab ?? { mode: "off", mm: 0 });
   const changeSlab = (deltaMm: number) => setSlab((s) => applySlabChange(s, { deltaMm }));
   const pickSlabMode = (mode: SlabMode) => setSlab((s) => applySlabChange(s, { mode }));
@@ -533,6 +581,10 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
             Reset
           </Button>
         )}
+        <span aria-hidden className="h-5 w-px bg-subtle" />
+        <IconButton aria-label="Close MPR" title="Close MPR and return to the viewer" size="sm" variant="secondary" onClick={onExit}>
+          <X />
+        </IconButton>
       </header>
       {error ? (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-white/70">
@@ -546,33 +598,46 @@ export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, on
           <Spinner label={`Building the volume (${fileIds.length.toLocaleString()} images)`} />
         </div>
       ) : (
-        <div data-native-transparent className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-px bg-black">
-          {PLANES.map(({ plane, label }) => (
-            <Pane
-              key={plane}
-              info={info}
-              plane={plane}
-              label={label}
-              at={at}
-              center={voi.center}
-              width={voi.width}
-              active={active === plane}
-              onActivate={() => setActive(plane)}
-              onScroll={(d) => scroll(plane, d)}
-              onWindow={(dc, dw) => setVoi((v) => ({ center: v.center + dc, width: Math.max(1, v.width + dw) }))}
-              onPoint={(fx, fy) => point(plane, fx, fy)}
-              onReset={() => reset(info)}
-              onPainted={(lum) => notePaint(plane, lum)}
-              slab={slab}
-              onSlab={changeSlab}
-              menu={() => mprPaneMenu(slab)}
-              onMenuCommand={runPaneCommand}
-            />
-          ))}
-          <div className="flex items-center justify-center p-4 text-center text-xs text-white/50">
-            Scroll to move through a plane · Ctrl+scroll for slab thickness · drag to window · click to move the crosshair
+        <>
+          <div
+            data-native-transparent
+            data-mpr-slots={slots.join(",")}
+            className="grid min-h-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(0,1fr)] grid-rows-2 gap-px bg-black"
+          >
+            {MPR_PLANES.map((plane) => {
+              const box = slots.indexOf(plane);
+              return (
+                <Pane
+                  // Keyed by box too: a moved plane remounts, so its native
+                  // surface re-registers at its new position.
+                  key={`${plane}@${box}`}
+                  className={MPR_SLOT_CLASSES[box]}
+                  planePicker={<PlanePicker box={box} plane={plane} onPick={(p) => pickPlane(box, p)} />}
+                  info={info}
+                  plane={plane}
+                  label={MPR_PLANE_LABELS[plane]}
+                  at={at}
+                  center={voi.center}
+                  width={voi.width}
+                  active={active === plane}
+                  onActivate={() => setActive(plane)}
+                  onScroll={(d) => scroll(plane, d)}
+                  onWindow={(dc, dw) => setVoi((v) => ({ center: v.center + dc, width: Math.max(1, v.width + dw) }))}
+                  onPoint={(fx, fy) => point(plane, fx, fy)}
+                  onReset={() => reset(info)}
+                  onPainted={(lum) => notePaint(plane, lum)}
+                  slab={slab}
+                  onSlab={changeSlab}
+                  menu={() => mprPaneMenu(slab)}
+                  onMenuCommand={runPaneCommand}
+                />
+              );
+            })}
           </div>
-        </div>
+          <p className="shrink-0 truncate border-t border-subtle bg-surface px-3 py-1 text-center text-[11px] text-muted">
+            Scroll to move through a plane · Ctrl+scroll for slab thickness · drag to window · click to move the crosshair
+          </p>
+        </>
       )}
     </section>
   );
