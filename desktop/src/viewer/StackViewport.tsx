@@ -47,7 +47,8 @@ export interface StackViewportProps {
   onActivate: () => void;
   onDropSeries: (seriesUid: string) => void;
   onDoubleClick: () => void;
-  onFirstPaint?: (ms: number, health: PaintHealth) => void;
+  /** `native`: the native viewport's first show (its Rust timings), for the bench. */
+  onFirstPaint?: (ms: number, health: PaintHealth, native?: { cached: boolean; decodeMs: number; frameMs: number; totalMs: number; acquireMs?: number }) => void;
   /** Teaching / screen sharing: no name, ID or birth date in the overlay. */
   hidePatient?: boolean;
   /**
@@ -115,6 +116,8 @@ function StackViewportImpl({
   const [loading, setLoading] = useState(false);
   /** Series whose first Cornerstone frame is on screen; until then the preview shows. */
   const [paintedUid, setPaintedUid] = useState<string | null>(null);
+  const paintedUidRef = useRef(paintedUid);
+  paintedUidRef.current = paintedUid;
   // The series whose first paint has been verified. Kept apart from
   // `sameSeries`: a streaming scan can grow the stack before the first
   // setStack resolves, and that first check is then superseded, so growth
@@ -204,6 +207,8 @@ function StackViewportImpl({
         wc: voi?.wc,
         zoom,
         rotation: vp.getViewPresentation?.()?.rotation,
+        flipH: camera?.flipHorizontal,
+        flipV: camera?.flipVertical,
         edges,
         header,
         rows: header?.rows,
@@ -469,6 +474,13 @@ function StackViewportImpl({
         else vp.setCamera({ flipVertical: !cam.flipVertical });
         render();
       },
+      resetOrientation() {
+        const vp = viewport();
+        if (!vp) return;
+        vp.setViewPresentation?.({ rotation: 0 });
+        vp.setCamera({ flipHorizontal: false, flipVertical: false });
+        render();
+      },
       reset() {
         const vp = viewport();
         if (!vp) return;
@@ -539,6 +551,8 @@ function StackViewportImpl({
         });
       },
       readout: () => readoutRef.current,
+      // The first frame of the series was verified on screen and the readout has caught up with it.
+      drawnSeriesUid: () => (paintedUidRef.current === seriesRef.current?.uid && readoutRef.current ? paintedUidRef.current : null),
     };
     return registerHandle(cellKey, handle);
   }, [engineReady, cellKey, viewportId, series?.uid, viewport]);
@@ -722,10 +736,10 @@ function StackViewportImpl({
           </div>
           {readout?.edges && (
             <>
-              <span className="absolute left-1/2 top-2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.top}</span>
-              <span className="absolute bottom-2 left-1/2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.bottom}</span>
-              <span className="absolute left-2 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.left}</span>
-              <span className="absolute right-6 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.right}</span>
+              <span data-edge="top" className="absolute left-1/2 top-2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.top}</span>
+              <span data-edge="bottom" className="absolute bottom-2 left-1/2 -translate-x-1/2 font-semibold text-warning/90">{readout.edges.bottom}</span>
+              <span data-edge="left" className="absolute left-2 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.left}</span>
+              <span data-edge="right" className="absolute right-6 top-1/2 -translate-y-1/2 font-semibold text-warning/90">{readout.edges.right}</span>
             </>
           )}
         </div>

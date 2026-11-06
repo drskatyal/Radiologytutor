@@ -1,7 +1,7 @@
 // Small dialogs: keyboard sheet, custom window, disc picker, settings.
 
-import { useEffect, useState } from "react";
-import { Disc3, Usb } from "lucide-react";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { Disc3, Mouse, Usb } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Kbd } from "@/components/ui/Kbd";
@@ -17,36 +17,70 @@ import {
   takeWheelSlices,
   type ScrollPreferences,
 } from "@flowrad/viewer-core";
-import { conflictFor, keyLabel, keySpecOf, remappableBindings, shortcutSheet, type ShortcutOverrides } from "../shortcuts";
+import { DESKTOP_COMMANDS, conflictFor, shortcutSheet, type ShortcutOverrides } from "../shortcuts";
+import { VoiceCommandList, VoiceTrigger } from "./VoiceCommands";
+import { VOICE_COMMANDS } from "@flowrad/viewer-core";
 import type { ViewerSettings } from "../settings";
-import { cacheUsage, clearCache, listMedia, type MediaVolume } from "../platform";
+import { mouseSheetLine } from "../viewer/mouseBindings";
+import { isMac } from "@flowrad/viewer-core/bindings";
+import { cacheUsage, clearCache, listMedia, pickSavePath, writeExport, type MediaVolume } from "../platform";
 
-export function ShortcutsDialog({ open, onClose, overrides }: { open: boolean; onClose: () => void; overrides?: ShortcutOverrides }) {
-  const rows = shortcutSheet(undefined, overrides);
+// Settings › Mouse & Keyboard: its own chunk, loaded when the reader opens it.
+const BindingsPanel = lazy(() => import("@/components/bindings/BindingsPanel"));
+
+export function ShortcutsDialog({
+  open,
+  onClose,
+  overrides,
+  hidden,
+  voice,
+}: {
+  open: boolean;
+  onClose: () => void;
+  overrides?: ShortcutOverrides;
+  /** Commands not offered now (multi-monitor ones on a single display). */
+  hidden?: ReadonlySet<string>;
+  /** Voice commands are available here: list them, with the key that toggles voice. */
+  voice?: { keys?: string };
+}) {
+  const rows = shortcutSheet(undefined, overrides, hidden);
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
-    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description="Mouse: left = selected tool · wheel = scroll · Ctrl+wheel = zoom (slab thickness in a reformat) · right drag = window/level · middle drag = pan · Shift+click = 3D cursor. Change keys in Settings." size="xl">
-      <div className="grid max-h-[60vh] grid-cols-1 gap-x-8 gap-y-5 overflow-y-auto pr-1 md:grid-cols-2">
-        {groups.map((group) => (
-          <section key={group}>
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{group}</h3>
-            <dl className="flex flex-col gap-1.5">
-              {rows
-                .filter((r) => r.group === group)
-                .map((r) => (
-                  <div key={r.keys + r.does} className="flex items-baseline justify-between gap-4 text-sm" data-shortcut-row={r.does}>
-                    <dt className="text-secondary">
-                      {r.does}
-                      {r.custom && <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-accent">custom</span>}
-                    </dt>
-                    <dd className="shrink-0">
-                      <Kbd>{r.keys}</Kbd>
-                    </dd>
-                  </div>
-                ))}
-            </dl>
+    <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description={`${mouseSheetLine(overrides)} Change them in Settings › Mouse & Keyboard.`} size="xl">
+      <div className="flex max-h-[60vh] flex-col gap-6 overflow-y-auto pr-1">
+        <div className="grid grid-cols-1 gap-x-8 gap-y-5 md:grid-cols-2">
+          {groups.map((group) => (
+            <section key={group}>
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{group}</h3>
+              <dl className="flex flex-col gap-1.5">
+                {rows
+                  .filter((r) => r.group === group)
+                  .map((r) => (
+                    <div key={r.keys + r.does} className="flex items-baseline justify-between gap-4 text-sm" data-shortcut-row={r.does}>
+                      <dt className="text-secondary">
+                        {r.does}
+                        {r.custom && <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-accent">custom</span>}
+                      </dt>
+                      <dd className="shrink-0">
+                        <Kbd>{r.keys}</Kbd>
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+        {voice && (
+          <section aria-labelledby="voice-commands-heading" className="border-t border-subtle pt-5" data-testid="voice-help">
+            <h3 id="voice-commands-heading" className="mb-1 text-sm font-semibold text-primary">
+              Voice commands
+            </h3>
+            <div className="mb-4">
+              <VoiceTrigger keys={voice.keys} />
+            </div>
+            <VoiceCommandList />
           </section>
-        ))}
+        )}
       </div>
     </Modal>
   );
@@ -275,6 +309,8 @@ export function SettingsDialog({
   onChange,
   version,
   extra,
+  hiddenCommands,
+  voice,
 }: {
   open: boolean;
   onClose: () => void;
@@ -283,13 +319,26 @@ export function SettingsDialog({
   version: string;
   /** Account / update sections contributed by later stages. */
   extra?: React.ReactNode;
+  /** Commands not offered now (multi-monitor ones on a single display). */
+  hiddenCommands?: ReadonlySet<string>;
+  /** Voice commands are available here: how to switch them on, and the list. */
+  voice?: { keys?: string };
 }) {
   const [usage, setUsage] = useState<number | null>(null);
+  const [voiceListOpen, setVoiceListOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [bindingsOpen, setBindingsOpen] = useState(false);
   useEffect(() => {
     if (open) cacheUsage().then(setUsage, () => setUsage(null));
   }, [open]);
+  // macOS: while the panel is open, the shell forwards every side button and
+  // tilt so "press the button you want to bind" sees what WKWebView can't.
+  useEffect(() => {
+    if (!isMac()) return;
+    void import("../macMouse").then((m) => m.setNativeMouseCapturing(bindingsOpen));
+  }, [bindingsOpen]);
   return (
+    <>
     <Modal open={open} onClose={onClose} title="Settings" size="lg">
       <div className="flex max-h-[65vh] flex-col divide-y divide-subtle overflow-y-auto pr-1">
         <section className="pb-3">
@@ -382,7 +431,37 @@ export function SettingsDialog({
             </Button>
           </div>
         </section>
-        <ShortcutSettings overrides={settings.shortcuts} onChange={(shortcuts) => onChange({ shortcuts })} />
+        <section className="py-3">
+          <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Mouse &amp; keyboard</h3>
+          <div className="flex items-center justify-between gap-4 py-2">
+            <span>
+              <span className="block text-sm font-medium text-primary">Buttons, wheel and keys</span>
+              <span className="block text-xs text-muted">
+                Rebind any mouse button (gaming and programmable mice included), the wheel and every key.
+                {Object.keys(settings.bindings ?? {}).length ? ` ${Object.keys(settings.bindings ?? {}).length} changed from the RadiAnt preset.` : " RadiAnt preset."}
+              </span>
+            </span>
+            <Button size="sm" variant="secondary" leadingIcon={<Mouse />} onClick={() => setBindingsOpen(true)}>
+              Mouse &amp; Keyboard…
+            </Button>
+          </div>
+        </section>
+        {voice && (
+          <section className="py-3" data-testid="settings-voice">
+            <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Voice commands</h3>
+            <div className="flex items-start justify-between gap-4 py-2">
+              <VoiceTrigger keys={voice.keys} />
+              <Button size="sm" variant="secondary" aria-expanded={voiceListOpen} aria-controls="settings-voice-list" onClick={() => setVoiceListOpen((v) => !v)}>
+                {voiceListOpen ? "Hide commands" : `Show all ${VOICE_COMMANDS.length}`}
+              </Button>
+            </div>
+            {voiceListOpen && (
+              <div id="settings-voice-list" className="pt-2">
+                <VoiceCommandList />
+              </div>
+            )}
+          </section>
+        )}
         {extra}
         <section className="pt-3 text-xs text-muted">
           <p>
@@ -393,94 +472,31 @@ export function SettingsDialog({
         </section>
       </div>
     </Modal>
+    <Modal open={bindingsOpen} onClose={() => setBindingsOpen(false)} title="Mouse & Keyboard" description="Press the button or key you want to bind. Works with any mouse." size="xl">
+      {bindingsOpen && (
+        <Suspense fallback={<div className="flex justify-center py-10"><Spinner label="Loading bindings" /></div>}>
+          <div className="max-h-[65vh] overflow-y-auto pr-1">
+            <BindingsPanel
+              table={DESKTOP_COMMANDS}
+              overrides={settings.bindings ?? {}}
+              onChange={(bindings) => onChange({ bindings })}
+              surface="desktop"
+              storedWhere="on this computer (settings.json)"
+              hidden={hiddenCommands}
+              reserved={(spec) => {
+                const hit = conflictFor(spec, "", settings.bindings ?? {});
+                return hit && !hit.id ? { id: `range:${hit.keys}`, label: hit.does, group: hit.group, kind: "action", defaults: [] } : null;
+              }}
+              saveExport={async (text, name) => {
+                const path = await pickSavePath(name, ["json"], "FlowRad bindings");
+                if (path) await writeExport(path, new TextEncoder().encode(text));
+              }}
+            />
+          </div>
+        </Suspense>
+      )}
+    </Modal>
+    </>
   );
 }
 
-/**
- * Re-map shortcuts: "Change" listens for the next key combination (Esc
- * cancels), a clash with another shortcut is shown and refused, and each row
- * can go back to its default.
- */
-function ShortcutSettings({ overrides, onChange }: { overrides: ShortcutOverrides; onChange: (next: Record<string, string>) => void }) {
-  const [recording, setRecording] = useState<string | null>(null);
-  const [problem, setProblem] = useState<{ id: string; text: string } | null>(null);
-  useEffect(() => {
-    if (!recording) return;
-    const onKey = (e: KeyboardEvent) => {
-      // Capture before the viewer's own handler and the modal's Esc.
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") return setRecording(null);
-      const spec = keySpecOf(e);
-      if (!spec) return;
-      const clash = conflictFor(spec, recording, overrides);
-      if (clash) {
-        setProblem({ id: recording, text: `${keyLabel(spec)} is already “${clash.does}”.` });
-        return setRecording(null);
-      }
-      setProblem(null);
-      onChange({ ...overrides, [recording]: spec });
-      setRecording(null);
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording, overrides, onChange]);
-  const rows = remappableBindings();
-  const changed = Object.keys(overrides).length;
-  return (
-    <section className="py-3" aria-labelledby="shortcut-settings">
-      <div className="mb-1 flex items-center justify-between">
-        <h3 id="shortcut-settings" className="text-[11px] font-semibold uppercase tracking-wide text-muted">Keyboard shortcuts</h3>
-        {changed > 0 && (
-          <Button size="sm" variant="ghost" onClick={() => onChange({})}>
-            Reset all
-          </Button>
-        )}
-      </div>
-      <ul className="flex flex-col">
-        {rows.map((b) => {
-          const id = b.id!;
-          const custom = overrides[id];
-          const listening = recording === id;
-          return (
-            <li key={id} className="flex items-center justify-between gap-3 py-1" data-shortcut-id={id}>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-secondary">{b.does}</span>
-                {problem?.id === id && (
-                  <span role="alert" className="block text-xs text-warning">
-                    {problem.text}
-                  </span>
-                )}
-              </span>
-              <Kbd>{listening ? "Press keys…" : keyLabel(custom ?? b.keys)}</Kbd>
-              <Button
-                size="sm"
-                variant={listening ? "primary" : "secondary"}
-                aria-label={`Change the shortcut for ${b.does}`}
-                onClick={() => {
-                  setProblem(null);
-                  setRecording(listening ? null : id);
-                }}
-              >
-                {listening ? "Cancel" : "Change"}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={!custom}
-                aria-label={`Restore the default shortcut for ${b.does}`}
-                onClick={() => {
-                  const next = { ...overrides };
-                  delete next[id];
-                  onChange(next);
-                }}
-              >
-                Default
-              </Button>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}

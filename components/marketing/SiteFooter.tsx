@@ -1,3 +1,4 @@
+import { ProductLinks } from "./ProductLinks";
 import Link from "next/link";
 import { Wordmark } from "@/components/brand/BrandMark";
 
@@ -27,6 +28,9 @@ export function SiteFooter({ teaching }: { teaching?: React.ReactNode }) {
             Terms
           </Link>
         </nav>
+      </div>
+      <div className="mx-auto max-w-7xl px-4 pb-8 text-secondary sm:px-8">
+        <ProductLinks />
       </div>
     </footer>
   );

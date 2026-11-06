@@ -8,6 +8,7 @@ import {
   rawToDecodedRatio,
 } from "../packages/viewer-core/src/localMemoryBudget";
 import type { LocalInstanceHeader } from "../packages/viewer-core/src/localStudy";
+import { THUMB_BUDGET_BYTES } from "../packages/viewer-core/src/seriesThumbnail";
 
 // The decoded-image cap for local studies must leave room for the raw Part 10
 // file Cornerstone's loader keeps beside every cached image.
@@ -30,7 +31,8 @@ test("decoded size per frame follows rows × columns × samples × bytes", () =>
   assert.equal(decodedBytesPerFrame({ ...ct(1), bitsAllocated: undefined }), 512 * 512 * 2);
 });
 
-const usable = (budget: number) => budget * (1 - IN_FLIGHT_HEADROOM);
+// Series thumbnails' cap is taken out of the device budget first.
+const usable = (budget: number) => (budget - THUMB_BUDGET_BYTES) * (1 - IN_FLIGHT_HEADROOM);
 
 test("uncompressed CT: raw ≈ decoded, so the decoded cap is half the usable budget", () => {
   const headers = Array.from({ length: 520 }, (_, i) => ct(i));
@@ -65,6 +67,8 @@ test("multiframe files count every frame; missing geometry assumes the worst cas
 test("the cap never drops below a screenful, nor above the device budget", () => {
   const huge = { ...ct(0), sizeBytes: 50 * 512 * 512 * 2 }; // absurd ratio → clamped to 4
   assert.equal(localDecodedCacheBudget([huge], 1024 * MB), Math.floor(usable(1024 * MB) / 5));
+  // Thumbnails are counted: the cap shrinks by their budget's share.
+  assert.ok(localDecodedCacheBudget([ct(0)], 1024 * MB) < Math.floor((1024 * MB * (1 - IN_FLIGHT_HEADROOM)) / 2));
   assert.equal(localDecodedCacheBudget([ct(0)], 64 * MB), MIN_LOCAL_DECODED_CACHE_BYTES);
   assert.equal(localDecodedCacheBudget([ct(0)], 16 * MB), 16 * MB);
 });

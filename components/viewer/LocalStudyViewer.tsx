@@ -19,6 +19,7 @@
 // nothing from a header is logged, and there is no analytics on this surface.
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
+import { useViewerBindings } from "./useViewerBindings";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -26,6 +27,7 @@ import {
   ChevronUp,
   ExternalLink,
   FileArchive,
+  FileText,
   FolderOpen,
   HardDrive,
   Layers,
@@ -38,14 +40,27 @@ import {
   X,
 } from "lucide-react";
 import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
-import { Button, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
+import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
+import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
+import { isSeriesPanelShortcut } from "@flowrad/viewer-core";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
+import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
+import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
-import { primarySeriesIndexByProtocol } from "@flowrad/viewer-core";
+import {
+  isKeyImageSeries,
+  primarySeriesIndexByProtocol,
+  reportsForStudy,
+  stopParkedVoice,
+  thumbnailImageId,
+  type DicomDocument,
+} from "@flowrad/viewer-core";
+import { createLocalThumbnailer, type LocalThumbnailer } from "@flowrad/viewer-core/localThumbnails";
+import { LocalSeriesThumb } from "@/components/viewer/LocalSeriesThumb";
 import {
   ingestLocalFiles,
   prewarmLocalIngest,
@@ -75,6 +90,8 @@ import {
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
 const VIEWER_CHUNK_ERROR_EVENT = "flowrad:viewer-chunk-error";
+/** How long "Updating viewer, reloading…" shows before the recovery reload. */
+const RECOVERY_NOTICE_MS = 1500;
 
 /** Stands in for the viewer when its code could not be fetched: calm, not an error. */
 function ViewerCodeUnavailable() {
@@ -118,6 +135,8 @@ type Phase =
   | { state: "error"; message: string };
 
 const SIGNUP_PROMPT_KEY = "flowrad.viewer.signupPrompt.dismissed";
+/** De-identified 10-frame MR bundled with the app (public/dicom). */
+const SAMPLE_STUDY_URL = "/dicom/teach_anon_mr.dcm";
 /** Performance marks the perf gate reads (timings only, never identifiers). */
 export const FILES_RECEIVED_MARK = "flowrad:viewer:files-received";
 export const FIRST_IMAGE_REGISTERED_MARK = "flowrad:viewer:first-image-registered";
@@ -138,8 +157,10 @@ function mark(name: string): void {
 
 function seriesContaining(result: LocalIngestResult, fileName: string): { study: number; series: number } | null {
   for (let s = 0; s < result.studies.length; s += 1) {
-    const index = result.studies[s].series.findIndex((series) =>
-      series.instances.some((instance) => instance.fileName === fileName)
+    // Key-image series only borrow instances: the slice belongs to its real series.
+    const index = result.studies[s].series.findIndex(
+      (series) =>
+        !isKeyImageSeries(series) && series.instances.some((instance) => instance.fileName === fileName)
     );
     if (index >= 0) return { study: s, series: index };
   }
@@ -161,10 +182,27 @@ type DirectoryPickerWindow = Window & {
 };
 
 export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) {
+  // Mouse & keyboard bindings: the local copy, and the signed-in copy fetched
+  // now — before any study is opened (no request may follow a drop).
+  useViewerBindings({ account: true });
   const reading = tone === "reading";
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
+  // Series panel (reading room): collapsible to a rail, remembered per device.
+  const seriesPanel = useSeriesPanel();
+  const [modKey, setModKey] = useState("Ctrl");
+  useEffect(() => {
+    if (/Mac|iPhone|iPad/.test(navigator.platform)) setModKey("⌘");
+  }, []);
+  /** The first image of the open study is on screen (thumbnails may start). */
+  const [firstImageUp, setFirstImageUp] = useState(false);
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
+  // Voice commands stay on across series (each series mounts its own viewer,
+  // which hands the live microphone session to the next: voiceHandoff.ts).
+  const [voiceOn, setVoiceOn] = useState(false);
+  // Leaving the viewer: a session parked mid-handoff must not keep the mic.
+  // After a tick, so the unmounting viewer has parked it first.
+  useEffect(() => () => void setTimeout(stopParkedVoice, 0), []);
   const [dragging, setDragging] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   /** Every registered `dicomfile:` id of the open study — freed on close. */
@@ -174,6 +212,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   /** Phones: the series list is a bottom drawer, and the stage can go fullscreen. */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  /** The structured report being read (dialog), if any. */
+  const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const swipeRef = useRef<{ x: number; y: number; t: number } | null>(null);
@@ -287,6 +327,22 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       .catch(() => undefined);
   }, []);
 
+  // Ctrl+B / Cmd+B: show / hide the series panel (reading room, wide screens).
+  const togglePanel = seriesPanel.toggle;
+  useEffect(() => {
+    if (!reading) return;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const onKey = (e: KeyboardEvent) => {
+      if (!isSeriesPanelShortcut(e, mac)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      togglePanel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reading, togglePanel]);
+
   // Leaving the page frees the study (SPA navigation away included).
   useEffect(
     () => () => {
@@ -336,11 +392,20 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     hapticTick();
   }, []);
 
+  const pickStudySeries = useCallback(
+    (studyIndex: number, seriesIndex: number) => {
+      setActiveStudy(studyIndex);
+      pickSeries(seriesIndex);
+    },
+    [pickSeries]
+  );
+
   const closeStudy = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     setDrawerOpen(false);
     setExpanded(false);
+    setOpenReport(null);
     setPhase({ state: "idle" });
     setRestore(null);
     void clearStudyHandles();
@@ -373,6 +438,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       abortRef.current = controller;
       setActiveStudy(0);
       setActiveSeries(0);
+      setFirstImageUp(false);
       setPhase({ state: "reading", progress: { read: 0, accepted: 0, total: files.length }, pinned: null });
 
       // The full stack for the first image's series, resolved when parsing ends.
@@ -478,7 +544,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         void rememberStudyHandles(openingHandles.current);
         // Decoded + raw must fit the device budget, not decoded alone (see
         // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
-        const headers = result.studies.flatMap((study) => study.series.flatMap((series) => series.instances));
+        // Key-image series borrow their instances: count each file once.
+        const headers = result.studies.flatMap((study) =>
+          study.series.flatMap((series) => (isKeyImageSeries(series) ? [] : series.instances))
+        );
         void import("@/components/CornerstoneViewer")
           .then((module) => module.ensureViewerEngine())
           .then(() => (controller.signal.aborted ? 0 : applyLocalCacheBudget(headers)))
@@ -532,10 +601,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     const slice = viewerControls.current?.getStartState?.().sliceIndex;
     const place: Record<string, number> = { study: activeStudy, series: activeSeries };
     if (typeof slice === "number" && slice >= 0) place.slice = slice;
-    // A beat so "Updating viewer, reloading…" is actually seen.
+    // Long enough that "Updating viewer, reloading…" is actually read (and
+    // seen by anything that samples the screen about once a second): 400 ms
+    // was a flash, and the e2e caught it only when the chunk failure landed
+    // inside its first fast polls.
     window.setTimeout(() => {
       if (!reloadForChunkError(phase.state === "open" || phase.state === "reading" ? place : undefined)) setRecovery("failed");
-    }, 400);
+    }, RECOVERY_NOTICE_MS);
   }, [activeStudy, activeSeries, phase.state]);
   const recoverRef = useRef(recoverFromChunkError);
   recoverRef.current = recoverFromChunkError;
@@ -619,6 +691,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, []);
 
   const result = phase.state === "open" ? phase.result : null;
+
+  // Series thumbnails: one thumbnailer per opened study, freed with it. It
+  // waits for the first image (`firstImageUp`) so it never competes with it.
+  const thumbs = useMemo(() => (result ? createLocalThumbnailer() : null), [result]);
+  useEffect(() => () => thumbs?.dispose(), [thumbs]);
+  useEffect(() => {
+    if (thumbs && firstImageUp) thumbs.start();
+  }, [thumbs, firstImageUp]);
+  const imageIdsFor = useCallback(
+    (item: LocalSeries) => (result ? seriesImageIds(item, result.imageIdsByFile) : []),
+    [result]
+  );
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
@@ -647,21 +731,68 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, [pinned, pinnedIsActive, result, series]);
 
   const viewerKey = source?.kind === "imageIds" ? source.key : "none";
+  const landingStatus: LandingStatus =
+    phase.state === "reading"
+      ? { kind: "reading", progress: <ReadingProgress progress={phase.progress} centered landing /> }
+      : phase.state === "empty"
+        ? {
+            kind: "empty",
+            description:
+              phase.warnings[0] ??
+              `Inspected ${formatCount(phase.inspected)} ${phase.inspected === 1 ? "file" : "files"} and none were DICOM images. A study CD usually has them under a DICOM/ folder.`,
+          }
+        : phase.state === "error"
+          ? { kind: "error", description: phase.message }
+          : restore && phase.state === "idle"
+            ? {
+                kind: "restored",
+                description:
+                  restore.handles.length > 0
+                    ? "A new version arrived while your study was open. Reopen it to continue where you were. Your files stayed on this computer."
+                    : "A new version arrived while your study was open. Open it again to continue where you were. Your files stayed on this computer.",
+              }
+            : { kind: "idle" };
   const modality = series?.modality ?? pinned?.modality;
   const showStage = !!source && (phase.state === "open" || phase.state === "reading");
 
+  // On the free viewer's landing the actions wear the brand green (tokens in
+  // .viewer-shell); elsewhere they are the app's own buttons.
+  const brandPrimary = reading
+    ? "bg-vl-brand text-vl-bg hover:bg-vl-brand/90 focus-visible:ring-vl-brand focus-visible:ring-offset-vl-bg"
+    : undefined;
+  const brandSecondary = reading
+    ? "border-vl-border bg-vl-bg text-vl-fg hover:bg-vl-brand-soft focus-visible:ring-vl-brand focus-visible:ring-offset-vl-bg"
+    : undefined;
   const folderButton = nativeFolderPicker ? (
     <Button
-            onClick={() => void pickFolderNative()}
+      onClick={() => void pickFolderNative()}
       leadingIcon={<FolderOpen aria-hidden />}
+      className={brandPrimary}
     >
       Choose a folder
     </Button>
   ) : (
-    <FilePickerButton inputId={folderInputId} leadingIcon={<FolderOpen aria-hidden />}>
+    <FilePickerButton inputId={folderInputId} leadingIcon={<FolderOpen aria-hidden />} className={brandPrimary}>
       Choose a folder
     </FilePickerButton>
   );
+
+  // The bundled, de-identified sample (lib/anonymizeTeachingDicom.ts), fetched
+  // only when asked for: the landing itself makes no request for it.
+  const [sampleState, setSampleState] = useState<"idle" | "loading" | "error">("idle");
+  const openSample = useCallback(async () => {
+    setSampleState("loading");
+    try {
+      const response = await fetch(SAMPLE_STUDY_URL);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      openingHandles.current = [];
+      setSampleState("idle");
+      void ingest([new File([blob], "FlowRad-sample-MR.dcm", { type: "application/dicom" })]);
+    } catch {
+      setSampleState("error");
+    }
+  }, [ingest]);
 
   const privacyLine = (
     <p
@@ -680,15 +811,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       {result && study ? (
         <SeriesList
           result={result}
-          study={study}
           activeStudy={activeStudy}
           activeSeries={activeSeries}
-          onStudy={(next) => {
-            setActiveStudy(next);
-            setActiveSeries(primarySeriesIndexByProtocol(result.studies[next]));
-          }}
-          onSeries={pickSeries}
+          onPick={pickStudySeries}
+          onOpenReport={setOpenReport}
           dark={reading}
+          thumbs={thumbs}
+          imageIdsFor={imageIdsFor}
         />
       ) : phase.state === "reading" ? (
         <ReadingProgress progress={phase.progress} dark={reading} />
@@ -776,12 +905,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           onDrop={reading ? onDrop : undefined}
         >
           {reading ? (
-            <aside
-              aria-label="Series"
-              className="hidden w-72 shrink-0 flex-col overflow-y-auto border-r border-white/10 bg-imaging p-3 lg:flex"
+            <CollapsiblePanel
+              label="Series"
+              collapsed={seriesPanel.collapsed}
+              onToggle={seriesPanel.toggle}
+              shortcut={[modKey, "B"]}
+              widthClassName="w-72"
+              className="hidden lg:flex"
             >
-              {sidePanel}
-            </aside>
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">{sidePanel}</div>
+            </CollapsiblePanel>
           ) : (
             <Panel className="hidden w-full shrink-0 lg:block lg:w-64" title="Series">
               {sidePanel}
@@ -877,8 +1010,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 chrome={expanded || reading ? "edge" : "dock"}
                 defaultTool="StackScroll"
                 questionMarkHelp
+                seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                 onChunkLoadError={recoverFromChunkError}
+                voiceOn={voiceOn}
+                onVoiceChange={setVoiceOn}
+                onSeriesStep={(delta) => {
+                  const count = study?.series.length ?? 0;
+                  if (count > 1) pickSeries((activeSeries + delta + count) % count);
+                }}
                 onReady={(controls) => {
+                  setFirstImageUp(true);
                   const slice = pendingSlice.current;
                   if (slice == null || slice < 0) return;
                   pendingSlice.current = null;
@@ -940,15 +1081,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             {result && study ? (
               <SeriesList
                 result={result}
-                study={study}
                 activeStudy={activeStudy}
                 activeSeries={activeSeries}
-                onStudy={(next) => {
-                  setActiveStudy(next);
-                  setActiveSeries(primarySeriesIndexByProtocol(result.studies[next]));
+                onPick={pickStudySeries}
+                onOpenReport={(doc) => {
+                  setDrawerOpen(false);
+                  setOpenReport(doc);
                 }}
-                onSeries={pickSeries}
                 hideHeading
+                thumbs={thumbs}
+                imageIdsFor={imageIdsFor}
               />
             ) : phase.state === "reading" ? (
               <ReadingProgress progress={phase.progress} />
@@ -970,6 +1112,38 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             </div>
           </Sheet>
         </div>
+      ) : reading ? (
+        <ViewerLanding
+          status={landingStatus}
+          dragging={dragging}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          onCancel={closeStudy}
+          onSample={() => void openSample()}
+          sampleState={sampleState}
+          actions={
+            <>
+              {restore && phase.state === "idle" && restore.handles.length > 0 && (
+                <Button onClick={() => void reopenStudy()} className={brandPrimary}>
+                  Reopen study
+                </Button>
+              )}
+              {folderButton}
+              <FilePickerButton
+                inputId={fileInputId}
+                variant="secondary"
+                leadingIcon={<FileArchive aria-hidden />}
+                className={brandSecondary}
+              >
+                Choose files
+              </FilePickerButton>
+            </>
+          }
+        />
       ) : (
         <div
           data-testid="local-dropzone"
@@ -1025,7 +1199,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     : "A new version arrived while your study was open. Open it again to continue where you were. Your files stayed on this computer."
                   : phase.state === "empty"
                   ? phase.warnings[0] ??
-                    `Inspected ${formatCount(phase.inspected)} files and none were DICOM images. A study CD usually has them under a DICOM/ folder.`
+                    `Inspected ${formatCount(phase.inspected)} ${phase.inspected === 1 ? "file" : "files"} and none were DICOM images. A study CD usually has them under a DICOM/ folder.`
                   : phase.state === "error"
                     ? phase.message
                     : "A folder, a ZIP, a CD or loose DICOM files. They are read in this browser — nothing is uploaded, and no account is needed."
@@ -1054,6 +1228,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           )}
         </div>
       )}
+      <StructuredReportDialog report={openReport} onClose={() => setOpenReport(null)} />
     </div>
   );
 }
@@ -1062,28 +1237,31 @@ function ReadingProgress({
   progress,
   dark = false,
   centered = false,
+  landing = false,
 }: {
   progress: LocalOpenProgress;
   dark?: boolean;
   centered?: boolean;
+  /** On the free viewer's landing: its light/dark tokens (.viewer-shell). */
+  landing?: boolean;
 }) {
   const pct = progress.total > 0 ? Math.min(100, Math.round((progress.read / progress.total) * 100)) : 0;
   return (
     <div className={cn("flex w-full max-w-xs flex-col gap-2", centered && "items-center text-center")} aria-live="polite">
-      <p className={cn("text-sm tabular-nums", dark ? "text-white" : "text-primary")}>
+      <p className={cn("text-sm tabular-nums", landing ? "text-vl-fg" : dark ? "text-white" : "text-primary")}>
         Reading {formatCount(progress.read)} of {formatCount(progress.total)} files
       </p>
       <div
-        className={cn("h-1 w-full overflow-hidden rounded-full", dark ? "bg-white/10" : "bg-elevated")}
+        className={cn("h-1 w-full overflow-hidden rounded-full", landing ? "bg-vl-border" : dark ? "bg-white/10" : "bg-elevated")}
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={pct}
         aria-label="Reading study"
       >
-        <div className="h-full rounded-full bg-accent transition-[width] duration-150" style={{ width: `${pct}%` }} />
+        <div className={cn("h-full rounded-full transition-[width] duration-150", landing ? "bg-vl-brand" : "bg-accent")} style={{ width: `${pct}%` }} />
       </div>
-      <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
+      <p className={cn("text-xs tabular-nums", landing ? "text-vl-muted" : dark ? "text-white/60" : "text-secondary")}>
         {formatCount(progress.accepted)} DICOM images found
       </p>
     </div>
@@ -1130,88 +1308,176 @@ function SignupPrompt({ onDismiss, dark = false }: { onDismiss: () => void; dark
 /** Study picker + series buttons, shared by the desktop panel and the phone drawer. */
 function SeriesList({
   result,
-  study,
   activeStudy,
   activeSeries,
-  onStudy,
-  onSeries,
+  onPick,
+  onOpenReport,
   hideHeading = false,
   dark = false,
+  thumbs,
+  imageIdsFor,
 }: {
   result: LocalIngestResult;
-  study: LocalStudy;
   activeStudy: number;
   activeSeries: number;
-  onStudy: (index: number) => void;
-  onSeries: (index: number) => void;
+  /** A series of any study was chosen (switches study when needed). */
+  onPick: (studyIndex: number, seriesIndex: number) => void;
+  /** A structured report (listed under its study) was chosen. */
+  onOpenReport: (report: DicomDocument) => void;
   hideHeading?: boolean;
   dark?: boolean;
+  thumbs: LocalThumbnailer | null;
+  imageIdsFor: (series: LocalSeries) => string[];
 }) {
+  // Every study the drop produced is listed, each under its own heading: two
+  // files of two different studies (a CT and an MR) must both be visible, not
+  // one hidden behind a study picker.
+  const studies = result.studies;
+  const many = studies.length > 1;
+  const seriesTotal = studies.reduce((n, s) => n + s.series.length, 0);
+  const imageTotal = studies.reduce((n, s) => n + s.imageCount, 0);
+  const only = studies[0];
   return (
     <div className="flex flex-col gap-3">
       {!hideHeading && (
         <div className="flex flex-col gap-1">
           <h2 className={cn("text-sm font-medium", dark ? "text-white" : "text-primary")}>
-            {study.description?.trim() || "Local study"}
+            {many ? `${formatCount(studies.length)} studies` : only?.description?.trim() || "Local study"}
           </h2>
           <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
-            {formatCount(study.series.length)} series · {formatCount(study.imageCount)} images
-            {study.studyDate ? ` · ${study.studyDate}` : ""}
+            {formatCount(seriesTotal)} series · {formatCount(imageTotal)} images
+            {!many && only?.studyDate ? ` · ${only.studyDate}` : ""}
           </p>
         </div>
       )}
-      {result.studies.length > 1 && (
-        <label className={cn("flex flex-col gap-1 text-xs", dark ? "text-white/60" : "text-secondary")}>
-          Study
-          <select
-            value={activeStudy}
-            onChange={(event) => onStudy(Number(event.target.value))}
-            className={cn(
-              "rounded-lg border px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-              dark ? "border-white/15 bg-imaging text-white" : "border-subtle bg-surface text-primary"
-            )}
-          >
-            {result.studies.map((item, index) => (
-              <option key={item.studyInstanceUID} value={index}>
-                {item.description?.trim() || `Study ${index + 1}`} · {formatCount(item.imageCount)} images
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <ul className="flex flex-col gap-1">
-        {study.series.map((item, index) => (
-          <li key={item.seriesInstanceUID}>
-            <button
-              type="button"
-              onClick={() => onSeries(index)}
-              aria-pressed={index === activeSeries}
+      {studies.map((study, studyIndex) => (
+        <section key={study.studyInstanceUID} aria-label={studyLabel(study, studyIndex)} className="flex flex-col gap-2">
+          {many && (
+            <h3
               className={cn(
-                // 44px rows: a thumb-sized target in the phone drawer.
-                "min-h-11 w-full rounded-lg px-2 py-2 text-left text-xs transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                dark
-                  ? index === activeSeries
-                    ? "bg-white/[0.12] text-white"
-                    : "text-white/70 hover:bg-white/[0.06] hover:text-white"
-                  : index === activeSeries
-                    ? "bg-accent-muted/40 text-primary"
-                    : "text-secondary hover:bg-elevated/60 hover:text-primary"
+                "flex items-baseline gap-1.5 border-t pt-2 text-xs font-medium",
+                dark ? "border-white/10 text-white/80" : "border-subtle text-primary"
               )}
             >
-              <span className="block font-medium tabular-nums">
-                {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
-                {item.modality || "DICOM"}
+              <span className="truncate">{studyLabel(study, studyIndex)}</span>
+              <span className={cn("ml-auto shrink-0 font-normal tabular-nums", dark ? "text-white/50" : "text-muted")}>
+                {[...new Set(study.series.map((s) => s.modality).filter(Boolean))].join(", ")}
+                {study.studyDate ? ` · ${study.studyDate}` : ""}
               </span>
-              <span className={cn("block truncate", dark ? "text-white/60" : "text-secondary")}>
-                {describeLocalSeries(item)}
-              </span>
+            </h3>
+          )}
+          <ul className="grid grid-cols-2 gap-2" aria-label="Series">
+            {study.series.map((item, index) => {
+              const ids = imageIdsFor(item);
+              const selected = studyIndex === activeStudy && index === activeSeries;
+              return (
+                <li key={item.seriesInstanceUID}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(studyIndex, index)}
+                    aria-pressed={selected}
+                    title={describeLocalSeries(item)}
+                    className={cn(
+                      "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left text-[11px] transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                      dark
+                        ? selected
+                          ? "border-accent bg-white/[0.10] text-white"
+                          : "border-transparent text-white/70 hover:border-white/15 hover:bg-white/[0.05] hover:text-white"
+                        : selected
+                          ? "border-accent bg-accent-muted/40 text-primary"
+                          : "border-transparent text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
+                    )}
+                  >
+                    <LocalSeriesThumb
+                      thumbs={thumbs}
+                      seriesKey={item.seriesInstanceUID}
+                      imageId={thumbnailImageId(ids)}
+                      dark={dark}
+                    />
+                    <span className="flex items-baseline gap-1 px-0.5 font-medium tabular-nums">
+                      <span className="truncate">
+                        {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
+                        {item.modality || "DICOM"}
+                      </span>
+                      <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
+                        {formatCount(item.imageCount)} im
+                      </span>
+                    </span>
+                    <span
+                      className={cn(
+                        "line-clamp-2 min-h-[2lh] px-0.5 leading-tight",
+                        dark ? "text-white/60 group-hover:text-white/80" : "text-secondary group-hover:text-primary"
+                      )}
+                    >
+                      {item.description?.trim() || "No description"}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <StudyReports
+            reports={reportsForStudy(study.studyInstanceUID, result.documents)}
+            onOpen={onOpenReport}
+            dark={dark}
+          />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/** A study's Structured Reports (key-image notes are series instead). */
+function StudyReports({
+  reports,
+  onOpen,
+  dark,
+}: {
+  reports: DicomDocument[];
+  onOpen: (report: DicomDocument) => void;
+  dark: boolean;
+}) {
+  if (reports.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <h4
+        className={cn(
+          "px-1 text-[11px] font-semibold uppercase tracking-wide",
+          dark ? "text-white/50" : "text-muted"
+        )}
+      >
+        Reports
+      </h4>
+      <ul aria-label="Reports" className="flex flex-col gap-1">
+        {reports.map((doc) => (
+          <li key={doc.sopInstanceUid ?? doc.fileName}>
+            <button
+              type="button"
+              onClick={() => onOpen(doc)}
+              className={cn(
+                "flex min-h-11 w-full items-center gap-2 rounded-lg border border-transparent px-2 py-2 text-left text-xs transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                dark
+                  ? "text-white/70 hover:border-white/15 hover:bg-white/[0.05] hover:text-white"
+                  : "text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
+              )}
+            >
+              <FileText className={cn("h-4 w-4 shrink-0", dark ? "text-white/50" : "text-muted")} aria-hidden />
+              <span className="min-w-0 flex-1 truncate font-medium">{doc.title}</span>
+              <span className={cn("shrink-0 tabular-nums", dark ? "text-white/50" : "text-muted")}>SR</span>
             </button>
           </li>
         ))}
       </ul>
     </div>
   );
+}
+
+/** "Study 2 · e+1" — numbered, so two studies with the same description stay distinct. */
+function studyLabel(study: LocalStudy, index: number): string {
+  const description = study.description?.trim();
+  return description ? `Study ${index + 1} · ${description}` : `Study ${index + 1}`;
 }
 
 function withRelativePath(file: File, path: string): File {

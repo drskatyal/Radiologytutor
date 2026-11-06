@@ -12,8 +12,15 @@
 // measurement / ROI / probe / arrow / eraser tool on an SVG layer
 // (NativeAnnotationLayer), and Magnify as a second native viewport at 3×.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getScrollPreferences, slicesForNotch } from "@flowrad/viewer-core";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  applyOrientation,
+  getScrollPreferences,
+  normalizeRotation,
+  orientationMarkers,
+  orientMarkers,
+  slicesForNotch,
+} from "@flowrad/viewer-core";
 import { cn } from "@/components/ui/cn";
 import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
 import { Spinner } from "@/components/ui/Spinner";
@@ -21,7 +28,9 @@ import { invoke } from "../platform";
 import { registerHandle, type ViewportHandle, type ViewportReadout } from "../viewer/handles";
 import { ViewportFrame, type StackViewportProps } from "../viewer/StackViewport";
 import { noteActivity } from "../activity";
+import { cursorForTool } from "../viewer/toolCursor";
 import { onNativeLayoutApplied, registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
+import { dragModeFor, resolveWheel } from "../viewer/mouseBindings";
 import { toCell, toImage, transformFor, type NativeTransform, type NativeView } from "./transform";
 import NativeAnnotationLayer, { isAnnotationTool } from "./NativeAnnotationLayer";
 
@@ -79,13 +88,18 @@ export default function NativeStackViewport({
   tool = "StackScroll",
 }: Props) {
   // Right-click menu (#111, shared contextMenu.ts): a right press that did not
-  // drag (a right drag zooms) opens it at the pointer.
+  // drag (a right drag windows, MOUSE_DEFAULTS) opens it at the pointer.
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const rightMoved = useRef(false);
   const elementRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState<NativeShow | null>(null);
   const shownRef = useRef<NativeShow | null>(null);
   shownRef.current = shown;
+  // The series `shown` belongs to: set in the same update as a full send's
+  // answer, so it is current exactly when the readout is (drawnSeriesUid).
+  const [shownUid, setShownUid] = useState<string | null>(null);
+  const drawnUidRef = useRef<string | null>(null);
+  drawnUidRef.current = shown ? shownUid : null;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -93,8 +107,9 @@ export default function NativeStackViewport({
   const cineRef = useRef(cine);
   cineRef.current = cine;
 
-  // Register the cell's rectangle with the native layout.
-  useEffect(() => {
+  // Register the cell's rectangle with the native layout. Layout effect: the
+  // layout flush is scheduled for this frame, not after the browser has painted.
+  useLayoutEffect(() => {
     const el = elementRef.current;
     if (!el) return;
     return registerNativeCell(cellKey, el);
@@ -148,38 +163,128 @@ export default function NativeStackViewport({
   }, [change]);
 
   // ── the series ──
+  // What this cell last sent to Rust (cell, series and its file ids, in
+  // order). A streaming series grows in batches: when the new list starts
+  // with what was sent, only the new files are appended
+  // (`native_cell_series_append`), so the shown slice keeps its view and no
+  // slice is decoded, re-uploaded or re-prefetched. A full re-send (reset
+  // to slice 0, re-read, 24 prefetches) per batch is what had the store
+  // serve 5x as many requests as slices during an open.
+  //
+  // One call in flight per cell: growth that arrives while the first send
+  // is still drawing waits and goes as one append after it (an append can
+  // never reach Rust before the cell exists, and the first image is never
+  // dropped by a later batch).
+  type Sent = { cell: string; uid: string; ids: number[] };
+  const sentRef = useRef<Sent | null>(null); // what Rust holds
+  const wantRef = useRef<Sent | null>(null); // what the cell should hold
+  const busyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const onFirstPaintRef = useRef(onFirstPaint);
+  onFirstPaintRef.current = onFirstPaint;
   useEffect(() => {
-    if (!series || series.headers.length === 0) {
-      setShown(null);
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+  const syncSeries = useCallback(() => {
+    if (busyRef.current) return;
+    const want = wantRef.current;
+    const sent = sentRef.current;
+    if (!want) return;
+    const same = sent !== null && sent.cell === want.cell && sent.uid === want.uid;
+    if (same && sent.ids.length === want.ids.length && sent.ids.every((id, i) => want.ids[i] === id)) return;
+    const grows = same && want.ids.length > sent.ids.length && sent.ids.every((id, i) => want.ids[i] === id);
+    busyRef.current = true;
+    if (grows) {
+      const from = sent.ids.length;
+      void invoke<number | null>("native_cell_series_append", { id: want.cell, from, fileIds: want.ids.slice(from) }).then(
+        (count) => {
+          busyRef.current = false;
+          // `null`: Rust no longer holds what was sent (cell recreated): send it all.
+          sentRef.current = count == null ? null : want;
+          if (!aliveRef.current) return;
+          if (count != null) setShown((s) => (s ? { ...s, count } : s));
+          syncSeries();
+        },
+        () => {
+          busyRef.current = false;
+          sentRef.current = null;
+          if (aliveRef.current) syncSeries();
+        }
+      );
       return;
     }
-    let cancelled = false;
     const started = performance.now();
     setLoading(true);
     setError(null);
-    void invoke<NativeShow>("native_cell_series", {
-      id: cellKey,
-      fileIds: series.headers.map((h) => h.fileId),
-      index: 0,
-    })
-      .then((r) => {
-        if (cancelled) return;
+    // The cell's rect goes with the series: the first frame draws in place
+    // instead of at 0 x 0 until the layout flush lands.
+    const box = elementRef.current?.getBoundingClientRect();
+    const rect = box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, w: box.width, h: box.height } : null;
+    void invoke<NativeShow>("native_cell_series", { id: want.cell, fileIds: want.ids, index: 0, rect }).then(
+      (r) => {
+        busyRef.current = false;
+        sentRef.current = want;
+        if (!aliveRef.current) return;
+        const now = wantRef.current;
+        // Superseded (another series or cell) while drawing: send that one.
+        if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setShown(r);
+        setShownUid(want.uid);
         setLoading(false);
         noteActivity();
         // Native paint: the frame was presented when the call returned. Blank
         // detection on this path is the e2e's screen grab, not a canvas readback.
-        onFirstPaint?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" });
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
+        onFirstPaintRef.current?.(performance.now() - started, { maxLum: 255, nonBlank: true, expectVisible: true, renderPath: "gpu" }, r);
+        syncSeries();
+      },
+      (e: unknown) => {
+        busyRef.current = false;
+        sentRef.current = null;
+        if (!aliveRef.current) return;
+        const now = wantRef.current;
+        if (!now || now.cell !== want.cell || now.uid !== want.uid) return syncSeries();
         setLoading(false);
         setError(String(e));
+      }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Layout effect: the series goes to Rust in the commit that mounts the
+  // viewport, not after the browser's next paint (a passive effect), which
+  // put a frame between the first series being hung and the decode + draw.
+  useLayoutEffect(() => {
+    if (!series || series.headers.length === 0) {
+      wantRef.current = null;
+      sentRef.current = null;
+      setShown(null);
+      setShownUid(null);
+      return;
+    }
+    wantRef.current = { cell: cellKey, uid: series.uid, ids: series.headers.map((h) => h.fileId) };
+    // A full send (a cell's first series, or another series: the hanging
+    // plan swapping in the primary when the scan ends) goes with the cell's
+    // rect, and measuring it here, in a commit that mounts or refills the
+    // study view, forced the layout of the whole new view inside React's
+    // task (the CI "ye index.js:14955 via MessagePort.onmessage" one; on the
+    // warm 10,310-image MRI with all 242 series cards just committed). A
+    // one-shot ResizeObserver hands the rect over in the same frame, right
+    // after the browser's own layout, at no extra cost. Growth of the series
+    // the cell already holds is an append (no rect) and goes at once.
+    const el = elementRef.current;
+    const sent = sentRef.current;
+    const full = sent === null || sent.cell !== cellKey || sent.uid !== series.uid;
+    if (full && !busyRef.current && el && typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        syncSeries();
       });
-    return () => {
-      cancelled = true;
-    };
-    // A growing series re-sends its full list (the same cell keeps its slice).
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+    syncSeries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cellKey, series?.uid, series?.headers.length]);
 
@@ -214,6 +319,8 @@ export default function NativeStackViewport({
       wc: shown.window[0],
       zoom: shown.view.zoom,
       rotation: shown.view.rotation,
+      flipH: shown.view.flipH,
+      flipV: shown.view.flipV,
     };
   }, [shown, series]);
   const readoutRef = useRef(readout);
@@ -238,8 +345,16 @@ export default function NativeStackViewport({
         const p = shownRef.current?.view.pan ?? [0, 0];
         void change({ pan: [p[0] + dx, p[1] + dy] });
       },
-      rotate: (deg) => void change({ rotation: (((shownRef.current?.view.rotation ?? 0) + deg) % 360 + 360) % 360 }),
-      flip: (axis) => void change(axis === "h" ? { flipH: !shownRef.current?.view.flipH } : { flipV: !shownRef.current?.view.flipV }),
+      rotate: (deg) => void change({ rotation: normalizeRotation((shownRef.current?.view.rotation ?? 0) + deg) }),
+      // Screen flips: at 90° / 270° the image-space flip alone would mirror the
+      // other axis (viewer-core viewOrientation.ts applyOrientation).
+      flip: (axis) => {
+        const v = shownRef.current?.view;
+        if (!v) return;
+        const next = applyOrientation({ rotation: v.rotation, flipH: v.flipH, flipV: v.flipV }, axis === "h" ? "flip:h" : "flip:v");
+        void change(next);
+      },
+      resetOrientation: () => void change({ rotation: 0, flipH: false, flipV: false }),
       reset: () => {
         const d = shownRef.current?.defaultWindow;
         void change({ resetCamera: true, ...(d ? { wl: [d[0], d[1]] as [number, number] } : {}) });
@@ -250,21 +365,31 @@ export default function NativeStackViewport({
       setCineFps: (fps) => setCine((c) => ({ ...c, fps: Math.max(1, Math.min(60, fps)) })),
       cine: () => cineRef.current,
       readout: () => readoutRef.current,
+      drawnSeriesUid: () => drawnUidRef.current,
       renderFrame: (i) => change({ index: i }),
     };
     return registerHandle(cellKey, handle);
   }, [cellKey, viewportId, series?.uid, change, step, goTo, count]);
 
-  // ── input: wheel scrolls; left = the app's tool; right = zoom; middle = pan ──
+  // ── input (Settings › Mouse & Keyboard): wheel scrolls; left = the app's tool; right = W/L; middle = pan ──
   const notchRun = useRef({ at: 0, n: 0 });
   const onWheel = (e: React.WheelEvent) => {
     if (!shown) return;
+    // Tilt notches are commands (bindings, App), not slices.
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    // Ctrl+wheel zooms a plain image (the bindings; slab is a reformat's).
+    const wheel = resolveWheel({ ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey })?.command;
+    if (!wheel) return;
+    if (wheel !== "scroll") {
+      void change({ zoom: shown.view.zoom * Math.exp(-Math.sign(e.deltaY) * 0.1) });
+      return;
+    }
     const now = performance.now();
     const run = now - notchRun.current.at < 140 ? notchRun.current.n + 1 : 1;
     notchRun.current = { at: now, n: run };
     void step(Math.sign(e.deltaY) * slicesForNotch(getScrollPreferences(), run));
   };
-  const drag = useRef<{ x: number; y: number; button: number; start: NativeShow; acc: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; button: number; ctrl: boolean; start: NativeShow; acc: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     onActivate();
     if (!shown) return;
@@ -276,8 +401,11 @@ export default function NativeStackViewport({
     // Annotation tools are handled by the annotation layer (it stops the event).
     if (e.button === 0 && !NAV_TOOLS.has(tool)) return;
     if (e.button === 2) rightMoved.current = false;
+    // Other buttons drag only when bound to a drag tool; a click of an extra
+    // button is a command (App's bindings listener).
+    if (e.button !== 0 && !dragModeFor(e.button, "", { ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey })) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, y: e.clientY, button: e.button, start: shown, acc: 0 };
+    drag.current = { x: e.clientX, y: e.clientY, button: e.button, ctrl: e.ctrlKey || e.metaKey, start: shown, acc: 0 };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (lens) moveLens(e);
@@ -286,7 +414,10 @@ export default function NativeStackViewport({
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (d.button === 2 && Math.abs(dx) + Math.abs(dy) > 3) rightMoved.current = true;
-    const mode = d.button === 2 ? "Zoom" : d.button === 1 ? "Pan" : tool;
+    // Right drag = window / level, middle = pan, as on the JS path (engine.ts
+    // MouseBindings.Secondary / Auxiliary), the toolbar tooltip and the F1
+    // sheet. (0.8.1 zoomed on right drag: HP report.) Zoom is Ctrl+wheel / Z.
+    const mode = dragModeFor(d.button, tool, { ctrl: d.ctrl, alt: e.altKey, shift: e.shiftKey });
     const v = d.start.view;
     if (mode === "WindowLevel") {
       const k = Math.max(1, v.wl[1] / 256);
@@ -363,6 +494,8 @@ export default function NativeStackViewport({
   }, [notice]);
 
   const header = series?.headers[shown?.index ?? 0];
+  const baseEdges = orientationMarkers(header?.imageOrientationPatient);
+  const edges = baseEdges && shown ? orientMarkers(baseEdges, shown.view) : null;
   return (
     <div
       ref={elementRef}
@@ -373,7 +506,8 @@ export default function NativeStackViewport({
       data-viewport-id={viewportId}
       role="img"
       aria-label={series ? `${series.description || "Series"}, image ${(shown?.index ?? 0) + 1} of ${count}` : "Empty viewport"}
-      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", tool === "Pan" ? "cursor-grab" : "cursor-crosshair")}
+      // The tool's own cursor (viewer/toolCursor.ts); the body-level rule wins when installed.
+      className={cn("relative min-h-0 min-w-0 touch-none select-none overflow-hidden", `tool-cursor-${cursorForTool(tool)}`)}
       onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -409,6 +543,15 @@ export default function NativeStackViewport({
           <div className="pointer-events-none absolute bottom-2 right-2 text-[11px] tabular-nums text-white/70 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
             Zoom {shown.view.zoom.toFixed(2)}× · native
           </div>
+          {edges && (
+            // Edge letters follow rotate / flip (viewer-core orientMarkers).
+            <div data-orientation-markers className="pointer-events-none absolute inset-0 text-xs font-semibold text-white/80 [text-shadow:0_1px_2px_rgb(0_0_0/0.9)]">
+              <span data-edge="top" className="absolute left-1/2 top-1.5 -translate-x-1/2">{edges.top}</span>
+              <span data-edge="bottom" className="absolute bottom-1.5 left-1/2 -translate-x-1/2">{edges.bottom}</span>
+              <span data-edge="left" className="absolute left-1.5 top-1/2 -translate-y-1/2">{edges.left}</span>
+              <span data-edge="right" className="absolute right-1.5 top-1/2 -translate-y-1/2">{edges.right}</span>
+            </div>
+          )}
         </>
       )}
       {shown && series && (

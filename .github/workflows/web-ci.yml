@@ -30,7 +30,9 @@ concurrency:
 jobs:
   test-build-visual:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The suite itself takes ~7 min; the margin is for a slow runner, not a hang
+    # (every network step below has its own cap).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,10 +45,29 @@ jobs:
       - run: npm ci
       - name: Unit tests
         run: npm test
+      # The model is pinned by SHA-256, so the packaged tar.gz is cached under
+      # that digest: a cache hit makes no request to the model host at all.
+      - name: Voice model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            public/voice/model.tar.gz
+            desktop/public/voice/model.tar.gz
+          key: voice-model-${{ hashFiles('scripts/voice-model.sha256') }}
       - name: Voice model (served from public/voice) and spoken test commands
+        # A stalled mirror or model download once held this step until the job
+        # limit cancelled the run before the build; cap it and fail fast instead.
+        timeout-minutes: 8
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
-          python3 scripts/fetch-voice-model.py
+          # apt: per-request timeout + retries (a stalled mirror connection is
+          # dropped and retried) instead of killing the whole command, and try
+          # the install before an index update: the runner image's lists are
+          # usually current, and `apt-get update` is the step that stalls.
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          sudo apt-get install -y -qq $APT_OPTS espeak-ng ffmpeg \
+            || { sudo apt-get update -qq $APT_OPTS && sudo apt-get install -y -qq $APT_OPTS espeak-ng ffmpeg; }
+          command -v espeak-ng >/dev/null || { echo "::error::espeak-ng is not installed (apt failed above)"; exit 1; }
+          timeout 150 python3 scripts/fetch-voice-model.py || { echo "::warning::voice model download failed, retrying once"; sleep 10; timeout 150 python3 scripts/fetch-voice-model.py; }
           python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
       - name: Production build
         # next/font downloads Google Fonts at build time; a bad response from
@@ -63,6 +84,12 @@ jobs:
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-520" --slices 520
           python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-40" --slices 40 --size 256
+          python3 scripts/make-test-multiseries.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-multi"
+          # pydicom's own public samples: a rescaled CT with no window and an
+          # MR from another study (the 0.8.1 HP report's two dropped files).
+          mkdir -p "$RUNNER_TEMP/test-pydicom"
+          python3 -c "import shutil, sys; from pydicom.data import get_testdata_file as f; [shutil.copy(f(n), sys.argv[1]) for n in ('CT_small.dcm', 'MR_small.dcm')]" "$RUNNER_TEMP/test-pydicom"
       - name: Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Visual regression + perf + privacy gates (/viewer/local, /viewer)
@@ -71,6 +98,8 @@ jobs:
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
           TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
+          TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+          TEST_PYDICOM_DIR: ${{ runner.temp }}/test-pydicom
         # One worker: the perf gates measure frame times and must not share
         # the runner's cores with another test (nor the voice recognizer's WASM).
         run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"
@@ -84,7 +113,8 @@ jobs:
           CI: "1"
           TEST_CT_DIR: ${{ runner.temp }}/test-ct
           TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
-        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts popout.spec.ts --workers=1
+          TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts voice-recorded.spec.ts popout.spec.ts --workers=1
       - name: Upload screenshots and samples
         if: always()
         uses: actions/upload-artifact@v4

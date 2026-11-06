@@ -2,7 +2,8 @@
 # drops a synthetic CT (no patient data) and checks the first image is drawn
 # and every JS chunk production serves is complete. Runs after a push to the
 # integration branch (Railway auto-deploys it: waits for /api/version to
-# report the pushed commit), on demand, and from the chunk-recovery branch.
+# report the pushed commit, or a later one containing it), on demand, and from
+# the chunk-recovery branch.
 name: prod-smoke
 
 on:
@@ -10,9 +11,12 @@ on:
     branches:
       - claude/epic-noether-3nvcbf
       - claude/viewer-chunk-recovery
+    # Pushes that change nothing Railway serves (desktop app, docs, desktop CI)
+    # get no smoke run: production keeps the previous build.
     paths-ignore:
       - "desktop/**"
       - "docs/**"
+      - ".github/workflows/desktop-*.yml"
   workflow_dispatch:
     inputs:
       expect_commit:
@@ -60,10 +64,18 @@ jobs:
           node scripts/prod-smoke.mjs "$PROD_URL" "$RUNNER_TEMP/test-ct" $EXPECT
           # Compressed: the codec loads in the decode workers.
           PROD_SMOKE_TAG=mr node scripts/prod-smoke.mjs "$PROD_URL" "$RUNNER_TEMP/test-mr"
+      # 0.8.1 P0: the live mic spun forever (no model in the image, and no
+      # failure ever surfaced). The deployed model + worker, ready, a command.
+      - name: Voice commands on the live viewer (fake microphone, synthetic phrases)
+        if: matrix.browser == 'chromium'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
+          python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "lung window" "zoom in"
+          node scripts/prod-smoke-voice.mjs "$PROD_URL" "$RUNNER_TEMP/test-ct" "$RUNNER_TEMP/voice.wav"
       - name: Screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: prod-smoke-${{ matrix.browser }}
-          path: prod-smoke-*.png
+          path: prod-smoke*.png
           retention-days: 14

@@ -3,7 +3,7 @@
 //! Decoded slices live HERE, once per process, shared by every window: no
 //! copy in a JS heap, no second copy as a WebGL texture in WebView2's GPU
 //! process. A slice is stored as modality values (rescale applied: HU for CT)
-//! in i16, ready to upload as an R16Sint texture with window/level done in the
+//! in i16, ready to upload as the cell's 16-bit storage buffer with window/level done in the
 //! shader.
 //!
 //! The cache has a hard byte budget (FLOWRAD_NATIVE_CACHE_MB, default 64) and
@@ -16,7 +16,7 @@
 //! through dicom-pixeldata. Colour is not handled here yet: those series stay
 //! on the JS path (P2.1 falls back per series, never a blank viewport).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use dicom_dictionary_std::tags;
 use dicom_object::OpenFileOptions;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 
 use crate::volume::{decode_into, int, num, SliceHeader};
@@ -70,6 +70,16 @@ pub struct ImageStore {
     inner: Mutex<Inner>,
     /// Bumped by every prefetch request; queued work from an older one is dropped.
     generation: AtomicU64,
+    /// Bumped by `clear` (study closed). A decode that started before the
+    /// clear is not cached after it, and warm jobs queued before it do
+    /// nothing: work in flight at close must not refill the cache (CI close
+    /// gate: 26 slices were back in the cache after close).
+    epoch: AtomicU64,
+    /// Slices being decoded right now: a second `get` of one waits for that
+    /// decode instead of starting its own (the speculative first-slice
+    /// decode at open and the viewport's own request race by design).
+    inflight: Mutex<HashSet<PathBuf>>,
+    decoded: Condvar,
 }
 
 #[derive(Default)]
@@ -87,7 +97,14 @@ pub fn budget_from_env() -> usize {
 
 impl ImageStore {
     pub fn new(budget: usize) -> Self {
-        Self { budget, inner: Mutex::new(Inner::default()), generation: AtomicU64::new(0) }
+        Self {
+            budget,
+            inner: Mutex::new(Inner::default()),
+            generation: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
+            inflight: Mutex::new(HashSet::new()),
+            decoded: Condvar::new(),
+        }
     }
 
     /// Cached slice, or None (no decode).
@@ -107,18 +124,71 @@ impl ImageStore {
 
     /// The slice, decoding it on a miss (on the caller's thread).
     pub fn get(&self, path: &Path) -> Result<Arc<Slice>, String> {
+        self.get_in(path, self.epoch.load(Ordering::SeqCst))
+    }
+
+    /// `get` on behalf of work that began in study `epoch` (warm, prefetch).
+    /// The decode is cached only if no close has happened since then: the
+    /// epoch is taken when the work was QUEUED, not when it runs, and checked
+    /// again under the cache lock that `clear` holds while it bumps it.
+    fn get_in(&self, path: &Path, epoch: u64) -> Result<Arc<Slice>, String> {
         if let Some(s) = self.peek(path) {
             return Ok(s);
         }
+        {
+            let mut busy = self.inflight.lock();
+            if busy.contains(path) {
+                while busy.contains(path) {
+                    self.decoded.wait(&mut busy);
+                }
+                drop(busy);
+                if let Some(s) = self.peek(path) {
+                    return Ok(s);
+                }
+                // That decode failed (or was evicted already): try ourselves.
+                busy = self.inflight.lock();
+            }
+            // A decode that finished between our first peek and taking this
+            // lock has already cached its slice (insert happens before its
+            // in-flight mark is removed), so look again before decoding.
+            if let Some(s) = self.peek(path) {
+                return Ok(s);
+            }
+            busy.insert(path.to_path_buf());
+        }
         let started = Instant::now();
-        let slice = Arc::new(decode_slice(path)?);
+        let decoded = decode_slice(path).map(Arc::new);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        self.insert(path, slice.clone(), ms);
-        Ok(slice)
+        if let Ok(slice) = &decoded {
+            // Closed meanwhile: the caller gets its slice, the cache keeps nothing.
+            self.insert(path, slice.clone(), ms, epoch);
+        }
+        self.inflight.lock().remove(path);
+        self.decoded.notify_all();
+        decoded
     }
 
-    fn insert(&self, path: &Path, slice: Arc<Slice>, decode_ms: f64) {
+    /// Decode `paths` now on the rayon pool, without superseding the
+    /// scroll prefetch (study open: the slice the first viewport will ask for).
+    pub fn warm(self: &Arc<Self>, paths: Vec<PathBuf>) {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        for path in paths {
+            let store = self.clone();
+            rayon::spawn(move || {
+                if store.epoch.load(Ordering::SeqCst) == epoch {
+                    let _ = store.get_in(&path, epoch);
+                }
+            });
+        }
+    }
+
+    fn insert(&self, path: &Path, slice: Arc<Slice>, decode_ms: f64, epoch: u64) {
         let mut g = self.inner.lock();
+        // `clear` bumps the epoch while holding this lock, so this check and
+        // the insert below are atomic with respect to a close.
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            return;
+        }
         g.stats.misses += 1;
         g.stats.decode_ms_total += decode_ms;
         g.stats.decode_ms_max = g.stats.decode_ms_max.max(decode_ms);
@@ -153,6 +223,7 @@ impl ImageStore {
     /// A later call supersedes this one: its unstarted work is dropped.
     pub fn prefetch(self: &Arc<Self>, paths: Vec<PathBuf>) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let epoch = self.epoch.load(Ordering::SeqCst);
         // Never prefetch more than the budget can hold (assume the first slice's size).
         let store = self.clone();
         rayon::spawn(move || {
@@ -163,7 +234,7 @@ impl ImageStore {
                 }
                 if let Some(s) = store.peek(&path) {
                     planned += s.bytes();
-                } else if let Ok(s) = store.get(&path) {
+                } else if let Ok(s) = store.get_in(&path, epoch) {
                     planned += s.bytes();
                 }
                 if planned >= store.budget / 2 {
@@ -173,6 +244,31 @@ impl ImageStore {
         });
     }
 
+    /// The viewer went idle: keep only the most recently used slices, up to
+    /// `bytes` (always the latest one), and stop queued prefetch from
+    /// refilling. The budget is unchanged: the next scroll refills the cache.
+    /// Returns the slices dropped.
+    pub fn trim_to(&self, bytes: usize) -> usize {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let mut g = self.inner.lock();
+        let mut by_age: Vec<(u64, PathBuf, usize)> = g.entries.iter().map(|(p, e)| (e.last_use, p.clone(), e.slice.bytes())).collect();
+        by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        let mut kept = 0usize;
+        let mut dropped = 0usize;
+        for (i, (_, path, size)) in by_age.into_iter().enumerate() {
+            if i == 0 || kept + size <= bytes {
+                kept += size;
+            } else if let Some(e) = g.entries.remove(&path) {
+                g.used -= e.slice.bytes();
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            g.entries.shrink_to_fit();
+        }
+        dropped
+    }
+
     /// Free everything (study closed): back to baseline.
     pub fn clear(&self) {
         let mut g = self.inner.lock();
@@ -180,6 +276,7 @@ impl ImageStore {
         g.entries.shrink_to_fit();
         g.used = 0;
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn stats(&self) -> StoreStats {
@@ -285,6 +382,41 @@ mod tests {
         assert_eq!(s.window, Some((40.0, 400.0)));
     }
 
+    /// Study closed: slices decoded on rayon workers (warm, prefetch) and on
+    /// the caller are all released; no Arc to a slice survives the clear, and
+    /// a concurrent warm + get of one slice decodes it once.
+    #[test]
+    fn clear_after_warm_releases_every_slice() {
+        let d = tmp("clear");
+        let paths: Vec<PathBuf> = (0..6).map(|i| write_ct(&d, &format!("{i}.dcm"), 64, 64, 100 + i)).collect();
+        let store = Arc::new(ImageStore::new(64 * 1_048_576));
+        store.warm(paths.clone());
+        let first = store.get(&paths[0]).unwrap();
+        // Let the warm jobs finish, then load the rest on this thread.
+        for p in &paths {
+            store.get(p).unwrap();
+        }
+        let before = store.stats();
+        assert_eq!(before.slices, 6);
+        assert!(before.used_mb > 0.0);
+        assert!(before.misses <= 6, "one decode per slice, got {}", before.misses);
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        store.clear();
+        let after = store.stats();
+        eprintln!("store after close: {:.3} MB in {} slices (before {:.3} MB in {})", after.used_mb, after.slices, before.used_mb, before.slices);
+        assert_eq!((after.slices, after.used_mb), (0, 0.0));
+        assert!(weak.upgrade().is_none(), "a closed study's slice is still referenced");
+        // Work queued before the close (warm jobs) or decoding across it
+        // never refills the cache.
+        store.warm(paths.clone());
+        let stale = store.epoch.load(Ordering::SeqCst);
+        store.clear();
+        assert_eq!(store.epoch.load(Ordering::SeqCst), stale + 1);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(store.stats().slices, 0, "work from before the close refilled the cache");
+    }
+
     #[test]
     fn evicts_least_recently_used_within_budget() {
         let d = tmp("lru");
@@ -306,6 +438,30 @@ mod tests {
         store.clear();
         assert_eq!(store.stats().slices, 0);
         assert_eq!(store.stats().used_mb, 0.0);
+    }
+
+    #[test]
+    fn idle_trim_keeps_the_most_recent_slices() {
+        let d = tmp("trim");
+        let a = write_ct(&d, "a.dcm", 32, 32, 1); // 2 KB each
+        let b = write_ct(&d, "b.dcm", 32, 32, 2);
+        let c = write_ct(&d, "c.dcm", 32, 32, 3);
+        let store = ImageStore::new(1 << 20);
+        store.get(&a).unwrap();
+        store.get(&b).unwrap();
+        store.get(&c).unwrap();
+        store.get(&a).unwrap(); // most recent: a, then c, then b
+        assert_eq!(store.trim_to(2 * 32 * 32 * 2), 1);
+        assert!(store.peek(&a).is_some() && store.peek(&c).is_some());
+        assert!(store.peek(&b).is_none());
+        // Below one slice: the latest stays (the one on screen).
+        assert_eq!(store.trim_to(0), 1);
+        assert_eq!(store.stats().slices, 1);
+        assert!(store.peek(&c).is_some(), "peek above made c the most recent");
+        assert_eq!(store.stats().used_mb * 1_048_576.0, (32 * 32 * 2) as f64);
+        // The budget is unchanged: the cache refills.
+        store.get(&b).unwrap();
+        assert_eq!(store.stats().slices, 2);
     }
 
     /// FLOWRAD_FIXTURES=<make-fixtures.py output> cargo test fixture_matrix -- --ignored --nocapture

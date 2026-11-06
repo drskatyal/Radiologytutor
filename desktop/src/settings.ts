@@ -22,10 +22,21 @@ export interface ViewerSettings {
   scrollAcceleration: boolean;
   /** MPR and 3D rendered by the native (Rust) core: the volume never enters the webview. */
   nativeMpr: boolean;
-  /** Re-mapped keyboard shortcuts: binding id → key spec ("Mod+Shift+K"). */
-  shortcuts: Record<string, string>;
+  /**
+   * Customised mouse and keyboard bindings (Settings › Mouse & Keyboard):
+   * command id → its inputs, as deltas over the RadiAnt preset
+   * (docs/BINDINGS_DESIGN.md). Exported / imported as the shared JSON file.
+   */
+  bindings?: Record<string, string[]>;
+  /** ≤ 0.8.1 key re-mappings (id → spec): migrated into `bindings` on first launch, then cleared. */
+  shortcuts?: Record<string, string>;
   /** Viewer windows on other monitors at last exit, reopened on the next study. */
   windowArrangements?: WindowArrangement[];
+  /**
+   * Voice commands have started on this computer before. The model is bundled
+   * (nothing to download); later starts show no loading card, just the mic.
+   */
+  voiceReady?: boolean;
 }
 
 export const DEFAULT_SETTINGS: ViewerSettings = {
@@ -40,5 +51,5 @@ export const DEFAULT_SETTINGS: ViewerSettings = {
   scrollSlicesPerNotch: 1,
   scrollDragPx: 0,
   scrollAcceleration: false,
-  shortcuts: {},
+  bindings: {},
 };

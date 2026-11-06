@@ -100,6 +100,34 @@ test("slice position needs both an orientation and a position", () => {
   assert.equal(slicePosition(header({ imageOrientationPatient: [1, 0, 0, 0, 1, 0] })), null);
 });
 
+test("slicePosition is sliceNormal · position, bit for bit, without the temporaries", () => {
+  const reference = (h: LocalInstanceHeader): number | null => {
+    const normal = sliceNormal(h.imageOrientationPatient);
+    const p = h.imagePositionPatient;
+    if (!normal || !p || p.length < 3 || ![p[0], p[1], p[2]].every((v) => typeof v === "number" && Number.isFinite(v))) return null;
+    return normal[0] * p[0] + normal[1] * p[1] + normal[2] * p[2];
+  };
+  let seed = 7;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) * 2 - 1;
+  const cases: Partial<LocalInstanceHeader>[] = [
+    { imageOrientationPatient: [1, 0, 0, 0, 1, 0], imagePositionPatient: [-120.5, 33.25, -0] },
+    { imageOrientationPatient: [0, 1, 0, 0, 0, -1], imagePositionPatient: [12, 0, 4] },
+    { imageOrientationPatient: [1, 0, 0, 1, 0, 0], imagePositionPatient: [1, 2, 3] },
+    { imageOrientationPatient: [1, 0, 0, 0, 1], imagePositionPatient: [1, 2, 3] },
+    { imageOrientationPatient: [1, 0, 0, 0, 1, 0], imagePositionPatient: [1, 2] },
+    { imageOrientationPatient: [1, 0, Number.NaN, 0, 1, 0], imagePositionPatient: [1, 2, 3] },
+    { imageOrientationPatient: [1, 0, 0, 0, 1, 0], imagePositionPatient: [1, Number.POSITIVE_INFINITY, 3] },
+    { imageOrientationPatient: [1, 0, 0, 0, 1, 0], imagePositionPatient: [1, "2" as unknown as number, 3] },
+  ];
+  for (let i = 0; i < 500; i += 1) {
+    cases.push({
+      imageOrientationPatient: [rand(), rand(), rand(), rand(), rand(), rand()],
+      imagePositionPatient: [rand() * 300, rand() * 300, rand() * 300],
+    });
+  }
+  for (const c of cases) assert.equal(Object.is(slicePosition(header(c)), reference(header(c))), true, JSON.stringify(c));
+});
+
 test("a positioned axial series sorts along the normal, not by file name", () => {
   const axial = [1, 0, 0, 0, 1, 0];
   const instances = [

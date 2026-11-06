@@ -22,6 +22,9 @@
 //   3. File name, natural-sorted, as the last resort — `IM10` must not sort
 //      before `IM9`.
 
+import { runToCompletion, type SlicedWork } from "./timeSlice";
+import { keyImageSeriesDescription, type DicomDocument } from "./srDocument";
+
 /** DICOM Part 10 files carry "DICM" at byte offset 128. */
 export const DICM_PREAMBLE_OFFSET = 128;
 
@@ -32,6 +35,8 @@ export interface LocalInstanceHeader {
   studyInstanceUID?: string;
   seriesInstanceUID?: string;
   sopInstanceUID?: string;
+  /** Tells images from documents (Structured Reports, key-image notes). */
+  sopClassUID?: string;
   instanceNumber?: number;
   imagePositionPatient?: readonly number[];
   imageOrientationPatient?: readonly number[];
@@ -155,10 +160,28 @@ export function sliceNormal(
 
 /** Signed distance of an instance along the slice normal, or null. */
 export function slicePosition(instance: LocalInstanceHeader): number | null {
-  const normal = sliceNormal(instance.imageOrientationPatient);
-  const position = finiteTriple(instance.imagePositionPatient);
-  if (!normal || !position) return null;
-  return normal[0] * position[0] + normal[1] * position[1] + normal[2] * position[2];
+  // `sliceNormal` · `finiteTriple(position)`, the same arithmetic in the same
+  // order, without their temporary arrays: every series is re-sorted on every
+  // progressive rebuild, and on a 10,310-image MRI those ~10 small arrays per
+  // header were garbage the open's GC pauses had to collect.
+  const o = instance.imageOrientationPatient;
+  const p = instance.imagePositionPatient;
+  if (!o || o.length < 6 || !p || p.length < 3) return null;
+  const r0 = o[0], r1 = o[1], r2 = o[2], c0 = o[3], c1 = o[4], c2 = o[5];
+  const p0 = p[0], p1 = p[1], p2 = p[2];
+  if (!isFiniteNumber(r0) || !isFiniteNumber(r1) || !isFiniteNumber(r2)) return null;
+  if (!isFiniteNumber(c0) || !isFiniteNumber(c1) || !isFiniteNumber(c2)) return null;
+  if (!isFiniteNumber(p0) || !isFiniteNumber(p1) || !isFiniteNumber(p2)) return null;
+  const n0 = r1 * c2 - r2 * c1;
+  const n1 = r2 * c0 - r0 * c2;
+  const n2 = r0 * c1 - r1 * c0;
+  const length = Math.hypot(n0, n1, n2);
+  if (!Number.isFinite(length) || length < 1e-6) return null;
+  return (n0 / length + 0) * p0 + (n1 / length + 0) * p1 + (n2 / length + 0) * p2;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 /**
@@ -209,12 +232,32 @@ export function instanceImageCount(instance: LocalInstanceHeader): number {
 export function groupLocalStudies(
   headers: readonly LocalInstanceHeader[]
 ): LocalStudy[] {
+  return runToCompletion(groupLocalStudiesSteps(headers));
+}
+
+/** Headers bucketed between yields in `groupLocalStudiesSteps`' first pass. */
+const GROUP_HEADERS_PER_STEP = 1024;
+
+/**
+ * `groupLocalStudies` as slice-able work: the same grouping, yielding every
+ * {@link GROUP_HEADERS_PER_STEP} headers and after each series is ordered, so
+ * `runSliced` can keep a 10,310-image open off the long-task list. The result
+ * is identical to `groupLocalStudies` (which is this, run to completion).
+ */
+export function* groupLocalStudiesSteps(
+  headers: readonly LocalInstanceHeader[]
+): SlicedWork<LocalStudy[]> {
   const studies = new Map<string, LocalStudy>();
   // Series by study + UID: a linear find per header was ~1.2M compares for a
   // 10,310-image MRI (242 series) and showed up as a 60 ms freeze per rebuild.
   const seriesIndex = new Map<string, LocalStudy["series"][number]>();
 
+  let sinceYield = 0;
   for (const header of headers) {
+    if (++sinceYield > GROUP_HEADERS_PER_STEP) {
+      sinceYield = 1;
+      yield;
+    }
     const studyUid = header.studyInstanceUID?.trim() || "local.unknown.study";
     const seriesUid =
       header.seriesInstanceUID?.trim() ||
@@ -262,6 +305,7 @@ export function groupLocalStudies(
         (total, instance) => total + instanceImageCount(instance),
         0
       );
+      yield;
     }
     study.series.sort(
       (a, b) =>
@@ -302,4 +346,53 @@ export function describeLocalSeries(series: LocalSeries): string {
   const description = series.description?.trim();
   if (description) parts.push(description);
   return parts.join(" · ");
+}
+
+/** Series id prefix of a key-image note's derived series (see `withKeyImageSeries`). */
+export const KEY_IMAGE_SERIES_PREFIX = "ko:";
+
+/**
+ * A series derived from a key-image note. Its instances are borrowed from the
+ * study's real series, so anything that counts or locates instances (memory
+ * budget, "which series holds this file") must skip it.
+ */
+export function isKeyImageSeries(series: Pick<LocalSeries, "seriesInstanceUID">): boolean {
+  return series.seriesInstanceUID.startsWith(KEY_IMAGE_SERIES_PREFIX);
+}
+
+/**
+ * Each key-image note becomes a series of exactly the images it selects, in
+ * the note's order, first in its study (so it scrolls, hangs and exports like
+ * any series). Notes whose images are not in the study are skipped.
+ */
+export function withKeyImageSeries(
+  studies: LocalStudy[],
+  documents: readonly DicomDocument[]
+): LocalStudy[] {
+  const notes = documents.filter((d) => d.kind === "ko" && d.references.length > 0);
+  if (notes.length === 0) return studies;
+  return studies.map((study) => {
+    const mine = notes.filter((d) => !d.studyInstanceUid || d.studyInstanceUid === study.studyInstanceUID);
+    if (mine.length === 0) return study;
+    const bySop = new Map<string, LocalInstanceHeader>();
+    for (const series of study.series)
+      for (const instance of series.instances)
+        if (instance.sopInstanceUID && !bySop.has(instance.sopInstanceUID)) bySop.set(instance.sopInstanceUID, instance);
+    const extra: LocalSeries[] = [];
+    for (const note of mine) {
+      const instances = note.references
+        .map((uid) => bySop.get(uid))
+        .filter((i): i is LocalInstanceHeader => !!i);
+      if (instances.length === 0) continue;
+      extra.push({
+        seriesInstanceUID: `${KEY_IMAGE_SERIES_PREFIX}${note.sopInstanceUid ?? note.fileName}`,
+        studyInstanceUID: study.studyInstanceUID,
+        modality: "KO",
+        description: keyImageSeriesDescription(note),
+        instances,
+        imageCount: instances.reduce((n, i) => n + instanceImageCount(i), 0),
+      });
+    }
+    return extra.length > 0 ? { ...study, series: [...extra, ...study.series] } : study;
+  });
 }

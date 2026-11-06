@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::header::{mtime_secs, read_header, Header};
 use crate::sources::{
-    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, walk_folder, SourceKind,
+    dicomdir_files, extract_zip, find_dicomdir, is_dicomdir_name, is_zip, stamp_of, walk_folder_stamped, SourceKind,
+    Stamp,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +39,15 @@ pub struct ScanTimings {
     pub list_ms: f64,
     pub parse_ms: f64,
     pub total_ms: f64,
+    /// Process clock (ms since start), set by the app's scan command: the
+    /// command entered, its first batch emitted, the scan returned. Places
+    /// the scan on the same timeline as the page's open (bench).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entered_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_batch_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_at_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +65,56 @@ pub struct ScanResult {
     pub used_dicomdir: bool,
     pub warnings: Vec<String>,
     pub timings: ScanTimings,
+    /// Patient identifiers for headers that came from the scan cache (which
+    /// holds none): what `headers` got after the batches carrying them were
+    /// sent. A page that kept the streamed batches applies these instead of
+    /// receiving every header a second time (see `streamed`).
+    pub patient_patches: Vec<PatientPatch>,
+    /// Set when `headers` was left out because every one of them already
+    /// reached the page in a batch: how many there were. The page waits for
+    /// that many, then applies `patient_patches`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streamed: Option<usize>,
+}
+
+/// The patient fields `Header::copy_patient_fields_from` copies, named as in
+/// `Header` (camelCase), so the page can assign them over a streamed header.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PatientFields {
+    pub patient_name: Option<String>,
+    pub patient_id: Option<String>,
+    pub patient_birth_date: Option<String>,
+    pub patient_sex: Option<String>,
+    pub patient_age: Option<String>,
+    pub patient_weight: Option<f64>,
+    pub referring_physician_name: Option<String>,
+    pub institution_name: Option<String>,
+    pub accession_number: Option<String>,
+}
+
+impl PatientFields {
+    pub fn of(h: &Header) -> Self {
+        PatientFields {
+            patient_name: h.patient_name.clone(),
+            patient_id: h.patient_id.clone(),
+            patient_birth_date: h.patient_birth_date.clone(),
+            patient_sex: h.patient_sex.clone(),
+            patient_age: h.patient_age.clone(),
+            patient_weight: h.patient_weight,
+            referring_physician_name: h.referring_physician_name.clone(),
+            institution_name: h.institution_name.clone(),
+            accession_number: h.accession_number.clone(),
+        }
+    }
+}
+
+/// One study's patient fields and the (registry) file ids they apply to.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatientPatch {
+    pub file_ids: Vec<u32>,
+    pub fields: PatientFields,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -109,21 +169,22 @@ fn save_cache(path: &Path, headers: &[Header]) {
 /// Header reads are I/O-latency bound (open, antivirus callback, first 64 KB),
 /// not CPU bound, so the scan runs on its own pool with twice the cores:
 /// while half the threads wait on the disk the other half parse.
-fn scan_pool() -> &'static rayon::ThreadPool {
-    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        // Opening files is the cold cost (Windows: an antivirus callback per
-        // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
-        // it overlaps well: keep many opens in flight, not just one per core.
-        rayon::ThreadPoolBuilder::new()
-            .num_threads((cores * 4).clamp(16, 64))
-            .thread_name(|i| format!("scan-{i}"))
-            .build()
-            .expect("scan thread pool")
-    })
+///
+/// Built per scan and dropped with it: its 16-64 threads (stacks, per-thread
+/// allocator heaps) exit when the scan ends instead of idling for the rest of
+/// the session with the scan's leftovers (the 0.8.2 close gate).
+fn scan_pool() -> rayon::ThreadPool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Opening files is the cold cost (Windows: an antivirus callback per
+    // CreateFile; HP, cold 10,310-file MRI: 12.5 s of file reading), and
+    // it overlaps well: keep many opens in flight, not just one per core.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads((cores * 4).clamp(16, 64))
+        .thread_name(|i| format!("scan-{i}"))
+        .build()
+        .expect("scan thread pool")
 }
 
 /// `dir` when it holds exactly one folder and nothing else (dotfiles aside).
@@ -152,15 +213,31 @@ fn label_for(path: &Path) -> String {
 }
 
 /// Expand the selection into candidate files. Returns the files, the kind of
-/// source, whether a DICOMDIR drove the listing, and any warnings.
+/// source, whether a DICOMDIR drove the listing, the size / mtime the folder
+/// walk already knows (saves a stat per file), and any warnings.
 fn list_candidates(
     paths: &[PathBuf],
     cache_dir: &Path,
     warnings: &mut Vec<String>,
-) -> (Vec<PathBuf>, SourceKind, bool) {
+) -> (Vec<PathBuf>, SourceKind, bool, HashMap<PathBuf, Stamp>) {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut kind = SourceKind::Files;
     let mut used_dicomdir = false;
+    let stamps: std::cell::RefCell<HashMap<PathBuf, Stamp>> = Default::default();
+    let walk_folder = |dir: &Path| -> Vec<PathBuf> {
+        let listed = walk_folder_stamped(dir);
+        let mut st = stamps.borrow_mut();
+        st.reserve(listed.len());
+        listed
+            .into_iter()
+            .map(|(p, stamp)| {
+                if let Some(stamp) = stamp {
+                    st.insert(p.clone(), stamp);
+                }
+                p
+            })
+            .collect()
+    };
 
     let expand_dir = |dir: &Path, out: &mut Vec<PathBuf>, warnings: &mut Vec<String>| -> bool {
         if let Some(index) = find_dicomdir(dir) {
@@ -239,7 +316,7 @@ fn list_candidates(
     }
     let mut seen = HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
-    (out, kind, used_dicomdir)
+    (out, kind, used_dicomdir, stamps.into_inner())
 }
 
 pub fn scan(
@@ -258,16 +335,20 @@ pub fn scan(
         accepted: 0,
         total: 0,
     });
-    let (files, kind, used_dicomdir) = list_candidates(paths, cache_dir, &mut warnings);
-    let list_ms = started.elapsed().as_secs_f64() * 1000.0;
-
     let cache_key = paths
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("|");
     let cache_file = cache_path(cache_dir, &cache_key);
-    let cached = load_cache(&cache_file);
+    // The cache is keyed by the selection, not the listing: parse it while
+    // the folder is walked (a warm open waits on both before its first header).
+    let ((files, kind, used_dicomdir, stamps), cached) = std::thread::scope(|s| {
+        let loader = s.spawn(|| load_cache(&cache_file));
+        let listing = list_candidates(paths, cache_dir, &mut warnings);
+        (listing, loader.join().unwrap_or_default())
+    });
+    let list_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let total = files.len();
     let read = AtomicUsize::new(0);
@@ -299,7 +380,8 @@ pub fn scan(
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_micros);
-    let mut headers: Vec<(Header, bool)> = scan_pool().install(|| {
+    let pool = scan_pool();
+    let mut headers: Vec<(Header, bool)> = pool.install(|| {
         files
             .par_iter()
             .filter_map(|path| {
@@ -310,9 +392,11 @@ pub fn scan(
                     std::thread::sleep(d);
                 }
                 let key = path.to_string_lossy();
-                let meta = fs::metadata(path).ok();
-                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let mtime = meta.as_ref().map(mtime_secs).unwrap_or(0);
+                let (size, mtime) = stamps
+                    .get(path)
+                    .copied()
+                    .or_else(|| fs::metadata(path).ok().map(|m| stamp_of(&m)))
+                    .unwrap_or((0, 0));
                 let result = match cached.get(key.as_ref()) {
                     Some(hit) if hit.size_bytes == size && hit.mtime == mtime => {
                         hits.fetch_add(1, Ordering::Relaxed);
@@ -385,14 +469,26 @@ pub fn scan(
             fresh_by_study.insert(uid, fresh);
         }
     }
+    // By study, in first-seen order (deterministic: `headers` is in file order).
+    let mut patches: Vec<(String, PatientPatch)> = Vec::new();
     for (h, from_cache) in headers.iter_mut() {
         if *from_cache {
-            if let Some(src) = h
+            if let Some((uid, src)) = h
                 .study_instance_uid
-                .as_ref()
-                .and_then(|u| fresh_by_study.get(u))
+                .clone()
+                .and_then(|u| fresh_by_study.get(&u).map(|src| (u, src)))
             {
                 h.copy_patient_fields_from(src);
+                match patches.iter_mut().find(|(u, _)| *u == uid) {
+                    Some((_, patch)) => patch.file_ids.push(h.file_id),
+                    None => patches.push((
+                        uid,
+                        PatientPatch {
+                            file_ids: vec![h.file_id],
+                            fields: PatientFields::of(src),
+                        },
+                    )),
+                }
             }
         }
     }
@@ -417,7 +513,10 @@ pub fn scan(
             list_ms,
             parse_ms,
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
+            ..Default::default()
         },
+        patient_patches: patches.into_iter().map(|(_, p)| p).collect(),
+        streamed: None,
     })
 }
 
@@ -478,6 +577,24 @@ mod tests {
             second.headers.iter().all(|h| h.patient_name.is_some()),
             "names re-read, not cached"
         );
+        // The streamed (cache) copies had none: every one gets a patch, and
+        // the patch is what the header ended up with.
+        assert!(
+            first.patient_patches.is_empty(),
+            "nothing came from the cache"
+        );
+        assert_eq!(
+            second
+                .patient_patches
+                .iter()
+                .map(|p| p.file_ids.len())
+                .sum::<usize>(),
+            84
+        );
+        assert!(second
+            .patient_patches
+            .iter()
+            .all(|p| p.fields.patient_name.is_some()));
 
         // The on-disk cache holds no patient identifiers.
         let cached: String = walkdir::WalkDir::new(cache.path().join("scan"))

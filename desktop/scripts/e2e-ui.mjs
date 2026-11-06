@@ -5,8 +5,12 @@
 //   border     the active viewport has a 3 px accent outline; clicking another moves it
 //   dnd        dragging a series card onto a viewport shows it there (ghost + drop hint)
 //   keys       ↑/↓ slice, ←/→ series, PgUp/PgDn 10 %, Home/End, Shift+digit layouts, ? sheet
-//   remap      Settings → change a shortcut → the new key works, the old one doesn't
+//   bindings   Settings › Mouse & Keyboard: right drag → zoom, W → Shift+K, F13 and mouse button 5 → commands; all survive a reload and show in F1
 //   cursors    each tool has its own cursor on the image; the UI keeps the arrow
+//   orient     R / Shift+R / H, toolbar rotate dropdown; edge letters follow
+//   panel      Ctrl+B collapses the series panel to a rail; handle reopens; remembered
+//   hooks      (--only hooks) the bench/test hook window.__flowradTest: absent without ?bench;
+//              rotation / flips drawn, thumbnails one per series and rendered, bindings reset
 //   annotate   arrow with no prompt; inline label; select + Delete; undo / redo;
 //              right-click menu (delete, delete all on image / series); eraser
 //
@@ -50,13 +54,37 @@ async function listFiles(dir) {
   return out;
 }
 
+// --prod-csp: serve the page with the CSP the installed app ships with
+// (tauri.conf.json; Tauri sends it with HTML only). Without it this e2e
+// passed while the installed app's recognizer was blocked by that CSP.
+//
+// Tauri also MODIFIES that CSP for its assets: it adds a nonce to script-src
+// and style-src (and the nonce to the page's inline <script> / <style>),
+// unless the directive is listed in dangerousDisableAssetCspModification. A
+// nonce makes the browser ignore 'unsafe-inline', which is how 0.8.1 logged
+// "Applying inline style ... violates the following Content Security Policy"
+// on every render while this e2e (serving the CSP as written) stayed green.
+// The same modification is reproduced here.
+const tauriSecurity = JSON.parse(await readFile(path.join(dist, "..", "src-tauri", "tauri.conf.json"), "utf8")).app.security;
+const CSP_NONCE = "e2e0nonce";
+const unmodified = new Set(
+  tauriSecurity.dangerousDisableAssetCspModification === true ? ["script-src", "style-src"] : (tauriSecurity.dangerousDisableAssetCspModification || [])
+);
+const prodCsp = args.includes("--prod-csp")
+  ? Object.entries(tauriSecurity.csp)
+      .map(([k, v]) => `${k} ${v}${(k === "script-src" || k === "style-src") && !unmodified.has(k) ? ` 'nonce-${CSP_NONCE}'` : ""}`)
+      .join("; ")
+  : null;
 const types = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html", ".svg": "image/svg+xml" };
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const file = path.join(dist, url.pathname === "/" ? "index.html" : url.pathname);
   try {
-    const body = await readFile(file);
-    res.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream" });
+    let body = await readFile(file);
+    const type = types[path.extname(file)] ?? "application/octet-stream";
+    // As Tauri does: its nonce on the page's own inline <script> / <style>.
+    if (prodCsp && type === "text/html") body = Buffer.from(body.toString("utf8").replace(/<(script|style)(?=[\s>])/g, `<$1 nonce="${CSP_NONCE}"`));
+    res.writeHead(200, { "Content-Type": type, ...(prodCsp && type === "text/html" ? { "Content-Security-Policy": prodCsp } : {}) });
     res.end(body);
   } catch {
     res.writeHead(404).end();
@@ -93,10 +121,22 @@ if (only?.includes("multiwindow")) {
 }
 // Voice must load nothing until the mic is switched on.
 const voiceRequests = [];
-context.on("request", (r) => /\/assets\/vosk-|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
+context.on("request", (r) => /\/assets\/vosk-|recognizer-worker|\/voice\/model/.test(r.url()) && voiceRequests.push(r.url()));
 const page = await context.newPage();
 const consoleErrors = [];
-page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
+const cspErrors = [];
+page.on("console", (m) => {
+  if (m.type() !== "error") return;
+  consoleErrors.push(m.text());
+  if (/Content Security Policy/i.test(m.text())) cspErrors.push(m.text());
+});
+// Violations that never reach the console (style attributes set from script
+// report only through the event): record those too.
+await context.addInitScript(() => {
+  document.addEventListener("securitypolicyviolation", (e) => {
+    console.error(`Content Security Policy violation: ${e.violatedDirective} blocked ${e.blockedURI || "inline"} (${e.sourceFile || "?"}:${e.lineNumber || 0})`);
+  });
+});
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 page.on("response", (r) => r.status() >= 400 && !/favicon/.test(r.url()) && consoleErrors.push(`${r.status()} ${r.url()}`));
 // The arrow tool must never open a browser prompt.
@@ -144,6 +184,50 @@ const focusImage = async () => {
   await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
 };
 const box = async (i = 0) => (await cell(i).boundingBox());
+
+// ── rotate / flip + series panel (0.8.1) ─────────────────────────────────
+const edgesOf = (i = 0) =>
+  cell(i).evaluate((el) => {
+    const out = {};
+    for (const e of el.querySelectorAll("[data-edge]")) out[e.dataset.edge] = e.textContent;
+    return out;
+  });
+if (want("orient")) {
+  await focusImage();
+  const start = await edgesOf();
+  check("orient: edge letters on an axial", start.top === "A" && start.left === "R", JSON.stringify(start));
+  await page.keyboard.press("r");
+  await settle(300);
+  const cw = await edgesOf();
+  check("orient: R rotates 90° clockwise (L to the bottom)", cw.bottom === start.right && cw.top === start.left, JSON.stringify(cw));
+  await page.keyboard.press("Shift+R");
+  await page.keyboard.press("h");
+  await settle(300);
+  const h = await edgesOf();
+  check("orient: H mirrors the screen left ↔ right", h.left === start.right && h.right === start.left && h.top === start.top, JSON.stringify(h));
+  await page.getByRole("button", { name: "Rotate and flip" }).click();
+  await settle(200);
+  await shot("rotate-menu");
+  await page.getByRole("menuitem", { name: /Reset orientation/ }).click();
+  await settle(300);
+  check("orient: toolbar → Reset orientation", JSON.stringify(await edgesOf()) === JSON.stringify(start), JSON.stringify(await edgesOf()));
+}
+if (want("panel")) {
+  await focusImage();
+  const panel = page.getByRole("complementary", { name: "Series" });
+  const w0 = (await box(0)).width;
+  await page.keyboard.press("Control+b");
+  await settle(400);
+  const collapsed = (await panel.getAttribute("data-collapsed")) === "true";
+  const w1 = (await box(0)).width;
+  check("panel: Ctrl+B collapses to a rail and the viewport takes the space", collapsed && w1 > w0 + 150, `${w0} → ${w1}`);
+  check("panel: Im n / N still shown (no reload)", !!(await imageNo()));
+  await shot("panel-collapsed");
+  await page.getByRole("button", { name: "Show series panel" }).click();
+  await settle(400);
+  check("panel: the rail handle opens it again", (await panel.getAttribute("data-collapsed")) !== "true");
+  check("panel: remembered on this device", (await page.evaluate(() => localStorage.getItem("flowrad.seriesPanel.collapsed"))) === "0");
+}
 
 // ── active border ───────────────────────────────────────────────────────
 if (want("border")) {
@@ -251,48 +335,189 @@ if (want("keys")) {
   const sheetOk = await sheet.isVisible();
   const rows = sheetOk ? await sheet.locator("[data-shortcut-row]").count() : 0;
   check("keys: ? opens the cheat sheet", sheetOk && rows > 30, `${rows} rows`);
+  // One monitor (no pretend desk here): nothing about other monitors.
+  const monitorRows = sheetOk ? await sheet.locator("[data-shortcut-row*='monitor']").count() : -1;
+  check("keys: single monitor — the sheet lists no multi-monitor shortcuts", monitorRows === 0, `${monitorRows} rows`);
+  // Voice commands, generated from the recognizer's table: full phrases, how to switch on.
+  const voiceHelp = sheet.getByTestId("voice-help");
+  const voiceRows = await voiceHelp.locator("[data-voice-command]").count().catch(() => 0);
+  const boneRow = await voiceHelp.locator('[data-voice-command="Bone window"]').innerText().catch(() => "");
+  const trigger = await voiceHelp.getByTestId("voice-trigger").innerText().catch(() => "");
+  check("keys: the sheet lists the voice commands", voiceRows >= 30, `${voiceRows} commands`);
+  check("keys: voice commands are full phrases (“bone window”)", /“bone window”/.test(boneRow) && !/“bone”/.test(boneRow), boneRow);
+  check("keys: the sheet says how to switch voice on (mic / key, a toggle)", /mic button/.test(trigger) && /Shift\+V/.test(trigger) && /toggle, not push-to-talk/.test(trigger), trigger);
   await shot("cheat-sheet");
   await page.keyboard.press("Escape");
   await settle();
+  // Settings lists the same commands.
+  await page.getByRole("button", { name: /settings/i }).first().click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  await settingsDialog.waitFor({ timeout: 3000 }).catch(() => undefined);
+  await settingsDialog.getByRole("button", { name: /^Show all \d+/ }).click().catch(() => undefined);
+  const settingsVoice = await settingsDialog.locator("[data-voice-command]").count().catch(() => 0);
+  check("keys: Settings lists the voice commands", settingsVoice === voiceRows && settingsVoice > 0, `${settingsVoice} vs ${voiceRows}`);
+  await page.keyboard.press("Escape");
+  await settingsDialog.waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
+  await settle();
 }
 
-// ── re-map a shortcut in Settings ───────────────────────────────────────
-if (want("remap")) {
+// ── Settings › Mouse & Keyboard: rebind, any mouse, survives a reload ────
+// Right drag → zoom; W → Shift+K; F13 (what mouse software sends) → flip
+// horizontal; mouse button 5 (a gaming mouse's 6th button) → rotate. Then
+// RELOAD and check each one still applies and shows in the F1 sheet.
+const openStudy = async () => {
+  await page.waitForSelector("text=Open a study");
+  await page.locator('input[type="file"]').first().setInputFiles(await listFiles(study));
+  await page.waitForSelector('[data-has-series="1"]', { timeout: 60_000 });
+  await page.waitForFunction(() => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
+  await settle(800);
+};
+const pressButton = (locator, button) =>
+  locator.evaluate((el, b) => {
+    const r = el.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, composed: true, button: b, buttons: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 7, pointerType: "mouse" };
+    el.dispatchEvent(new PointerEvent("pointerdown", at));
+    el.dispatchEvent(new PointerEvent("pointerup", at));
+    el.dispatchEvent(new MouseEvent("mouseup", at));
+    el.dispatchEvent(new MouseEvent("auxclick", at));
+  }, button);
+/** F13: what mouse software sends for a programmed button (Playwright's keyboard stops at F12). */
+const pressF13 = (pg) =>
+  pg.evaluate(() => {
+    const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
+    for (const type of ["keydown", "keyup"]) target.dispatchEvent(new KeyboardEvent(type, { key: "F13", code: "F13", bubbles: true, cancelable: true, composed: true }));
+  });
+const cellText = async () => cell(0).innerText();
+const zoomOf = async () => (await cellText()).match(/Zoom (\d+)%/)?.[1] ?? null;
+const wlOf = async () => (await cellText()).match(/W (-?\d+) · L (-?\d+)/)?.slice(1).join("/") ?? null;
+const rightDrag = async () => {
+  const b = await box(0);
+  const x = b.x + b.width / 2;
+  const y = b.y + b.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down({ button: "right" });
+  for (let i = 1; i <= 8; i += 1) await page.mouse.move(x + i * 4, y - i * 12);
+  await page.mouse.up({ button: "right" });
+  await settle(400);
+  await page.keyboard.press("Escape").catch(() => undefined);
+};
+const openBindings = async () => {
   await page.getByRole("button", { name: /settings/i }).first().click();
   const dialog = page.getByRole("dialog", { name: "Settings" });
   await dialog.waitFor();
-  const row = dialog.locator('[data-shortcut-id="tool.w"]');
-  await row.scrollIntoViewIfNeeded();
-  await row.getByRole("button", { name: /Change the shortcut/ }).click();
-  await page.keyboard.press("Shift+K");
+  await dialog.getByRole("button", { name: /Mouse & Keyboard/ }).click();
+  const panel = page.locator("[data-bindings-panel=desktop]");
+  await panel.waitFor({ timeout: 15_000 });
+  return panel;
+};
+const closeDialogs = async () => {
+  for (let i = 0; i < 6 && (await page.getByRole("dialog").count()); i += 1) {
+    await page.keyboard.press("Escape");
+    await settle(450);
+  }
+};
+if (want("bindings")) {
+  await page.keyboard.press("Shift+Digit1");
+  await settle(400);
+  await focusImage();
+  // Default: right drag windows.
+  const wl0 = await wlOf();
+  const z0 = await zoomOf();
+  await rightDrag();
+  check("bindings: right drag = window / level by default", (await wlOf()) !== wl0 && (await zoomOf()) === z0, `${wl0} → ${await wlOf()}, zoom ${z0} → ${await zoomOf()}`);
+  await page.keyboard.press("Backspace"); // reset view
+  await settle(300);
+
+  const panel = await openBindings();
+  // Lazy: the panel is its own chunk.
+  check("bindings: Settings › Mouse & Keyboard opens (lazy chunk)", await panel.isVisible());
+  await panel.getByRole("combobox", { name: "Command for Right drag" }).selectOption({ label: "Zoom" });
   await settle();
-  const shown = await row.locator("kbd").innerText();
-  check("remap: the new key is recorded", /Shift\+K|⇧K/.test(shown), shown);
-  // A clash is refused.
-  await row.getByRole("button", { name: /Change the shortcut/ }).click();
+  check("bindings: right drag rebound to Zoom", /Right drag → Zoom/.test(await panel.getByRole("status").innerText().catch(() => "")));
+
+  await panel.getByRole("tab", { name: /Keyboard/ }).click();
+  const row = (id) => panel.locator(`[data-binding-row="${id}"]`);
+  // W → Shift+K.
+  await row("tool.w").getByRole("button", { name: /Change the binding/ }).click();
+  await page.keyboard.press("Shift+K");
+  await row("tool.w").getByRole("button", { name: "Save" }).click();
+  await settle();
+  check("bindings: a key is recorded (W → Shift+K)", /Shift\+K|⇧K/.test(await row("tool.w").innerText()), await row("tool.w").innerText());
+  // A clash asks first.
+  await row("tool.w").getByRole("button", { name: /Change the binding/ }).click();
   await page.keyboard.press("z");
   await settle();
-  const clash = await row.getByRole("alert").innerText().catch(() => "");
-  check("remap: a key already in use is refused with a reason", /already/.test(clash), clash);
-  await shot("remap");
-  await page.keyboard.press("Escape");
-  await settle(400);
+  const clash = await row("tool.w").getByRole("alert").innerText().catch(() => "");
+  check("bindings: a key in use asks swap or cancel", /already Zoom — swap or cancel\?/.test(clash), clash);
+  await row("tool.w").getByRole("button", { name: "Cancel" }).click();
+  // F13 → flip horizontal.
+  await row("flip.h").getByRole("button", { name: /Change the binding/ }).click();
+  await pressF13(page);
+  await settle();
+  check("bindings: F13 (mouse software) is captured", /F13/.test(await row("flip.h").innerText()));
+  await row("flip.h").getByRole("button", { name: "Save" }).click();
+  // Mouse button 5 → rotate (added next to R).
+  await row("rotate").getByRole("button", { name: /Add another input/ }).click();
+  await pressButton(page.locator("[data-binding-capture]").first(), 5);
+  await settle();
+  check("bindings: mouse button 5 is captured as “Mouse button 6”", /Mouse button 6/.test(await row("rotate").innerText()), await row("rotate").innerText());
+  await row("rotate").getByRole("button", { name: "Save" }).click();
+  await settle();
+  await shot("bindings-panel");
+  await closeDialogs();
+
+  // ── reload: everything persists (settings.json; localStorage in this harness) ──
+  await page.reload();
+  await openStudy();
   await focusImage();
   await page.keyboard.press("b");
   await page.keyboard.press("Shift+K");
   await settle();
-  const tool = await page.evaluate(() => document.body.dataset.toolCursor);
-  check("remap: the new key selects Window / level", tool === "wl", tool);
+  check("bindings (after reload): Shift+K selects Window / level", (await page.evaluate(() => document.body.dataset.toolCursor)) === "wl");
   await page.keyboard.press("b");
   await page.keyboard.press("w");
   await settle();
-  check("remap: the old key no longer does", (await page.evaluate(() => document.body.dataset.toolCursor)) === "scroll");
-  // Back to the default.
-  await page.getByRole("button", { name: /settings/i }).first().click();
-  await dialog.waitFor();
-  await dialog.locator('[data-shortcut-id="tool.w"]').getByRole("button", { name: /Restore the default/ }).click();
-  await page.keyboard.press("Escape");
-  await settle(400);
+  check("bindings (after reload): W no longer does", (await page.evaluate(() => document.body.dataset.toolCursor)) === "scroll");
+  const e0 = await edgesOf();
+  await pressF13(page);
+  await settle(300);
+  const e1 = await edgesOf();
+  check("bindings (after reload): F13 flips horizontally", e1.left === e0.right && e1.right === e0.left, `${JSON.stringify(e0)} → ${JSON.stringify(e1)}`);
+  await pressF13(page);
+  await settle(300);
+  await pressButton(cell(0).locator("[data-viewport-id], .cs-viewport").first(), 5);
+  await settle(300);
+  const e2 = await edgesOf();
+  check("bindings (after reload): mouse button 5 rotates 90° clockwise", e2.bottom === e0.right && e2.top === e0.left, `${JSON.stringify(e0)} → ${JSON.stringify(e2)}`);
+  await page.keyboard.press("Shift+R");
+  await settle(300);
+  const wl1 = await wlOf();
+  const z1 = await zoomOf();
+  await rightDrag();
+  check("bindings (after reload): right drag zooms, window unchanged", (await zoomOf()) !== z1 && (await wlOf()) === wl1, `zoom ${z1} → ${await zoomOf()}, ${wl1} → ${await wlOf()}`);
+  await page.keyboard.press("F1");
+  const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await sheet.waitFor({ timeout: 3000 }).catch(() => undefined);
+  const sheetText = (await sheet.innerText().catch(() => "")) + (await sheet.getAttribute("aria-describedby").then((id) => (id ? page.locator(`#${id}`).innerText() : "")).catch(() => ""));
+  check("bindings (after reload): the F1 sheet shows F13, Mouse button 6 and Right drag = zoom", /F13/.test(sheetText) && /Mouse button 6/.test(sheetText) && /Right drag = zoom/.test(sheetText), sheetText.slice(0, 200));
+  await shot("bindings-sheet");
+  await closeDialogs();
+
+  // Back to the preset so later groups start clean.
+  const p2 = await openBindings();
+  await p2.getByRole("button", { name: "Reset all" }).click();
+  await settle();
+  await closeDialogs();
+  await focusImage();
+  await page.keyboard.press("Backspace");
+  await settle(300);
+  const left = await page.getByRole("dialog").count();
+  if (left) console.error("open dialogs:", await page.getByRole("dialog").evaluateAll((els) => els.map((e) => e.getAttribute("aria-labelledby") && document.getElementById(e.getAttribute("aria-labelledby"))?.textContent)));
+  await page.keyboard.press("z");
+  await settle();
+  check("bindings: Reset all restores the preset (Z = zoom again)", left === 0 && (await page.evaluate(() => document.body.dataset.toolCursor)) === "zoom", `${left} dialog(s) open, cursor ${await page.evaluate(() => document.body.dataset.toolCursor)}`);
+  await page.keyboard.press("b");
+  await settle();
 }
 
 // ── cursors ─────────────────────────────────────────────────────────────
@@ -724,6 +949,52 @@ if (want("multiwindow") && only?.includes("multiwindow")) {
     check("multiwindow: the main window's slice shows as a reference line in the other window, and moves", hasLine && y1 != null && y2 != null && y1 !== y2, `${y1} → ${y2}`);
     await popup.screenshot({ path: shots ? path.join(shots, "multiwindow-second.png") : undefined }).catch(() => undefined);
 
+    // Monitors follow the desk live (monitorWatch.ts): with two, the sheet and
+    // the image menu offer "next monitor"; unplug one and they go, while the
+    // window already open keeps working; plug it back and they return.
+    await page.bringToFront();
+    const monitorRows = async () => {
+      await focusImage();
+      await page.keyboard.press("Shift+Slash");
+      const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+      await sheet.waitFor({ timeout: 3000 }).catch(() => undefined);
+      const n = await sheet.locator("[data-shortcut-row*='next monitor']").count();
+      await page.keyboard.press("Escape");
+      await sheet.waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
+      return n;
+    };
+    const sendToMonitorItem = async () => {
+      const b = await box(0);
+      await page.mouse.click(b.x + b.width * 0.2, b.y + b.height * 0.2, { button: "right" });
+      const menu = page.getByRole("menu", { name: "Image" });
+      await menu.waitFor({ timeout: 3000 }).catch(() => undefined);
+      const n = await menu.getByRole("menuitem", { name: /^Send to monitor/ }).count();
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "detached", timeout: 2000 }).catch(() => undefined);
+      return n;
+    };
+    const setDesk = async (count) => {
+      await page.evaluate((n) => {
+        window.__flowradTestMonitors = window.__flowradTestMonitors.slice(0, 1).concat(
+          n > 1 ? [{ name: "DISPLAY2", x: 1920, y: -180, width: 2560, height: 1440, scale: 1.5 }] : []
+        );
+        window.dispatchEvent(new Event("focus"));
+      }, count);
+      await settle(800);
+    };
+    check("multiwindow: two monitors — the sheet lists the next-monitor shortcuts", (await monitorRows()) === 2);
+    check("multiwindow: two monitors — the image menu offers Send to monitor", (await sendToMonitorItem()) === 1);
+    await setDesk(1);
+    check("multiwindow: monitor unplugged — next-monitor shortcuts leave the sheet", (await monitorRows()) === 0);
+    check("multiwindow: monitor unplugged — no Send to monitor in the image menu", (await sendToMonitorItem()) === 0);
+    check("multiwindow: monitor unplugged — no monitor badge", (await page.getByTestId("monitor-badge").count()) === 0);
+    check(
+      "multiwindow: monitor unplugged — the window already open stays open and showing its series",
+      !popup.isClosed() && /Im \d+ \/ \d+/.test(await popup.locator("body").innerText().catch(() => ""))
+    );
+    await setDesk(2);
+    check("multiwindow: monitor plugged back in — the shortcuts return", (await monitorRows()) === 2);
+
     // Closing the other window is clean (its lines go, nothing breaks here).
     await popup.close();
     await settle(500);
@@ -806,7 +1077,7 @@ if (want("contextmenu")) {
   check("contextmenu: the first open of the session stays under 250 ms", firstOpenMs != null && firstOpenMs < 250, `${firstOpenMs?.toFixed?.(1)} ms`);
   const top = (await imageMenu.locator(":scope > div > [role]").allInnerTexts()).map((t) => t.split("\n")[0]);
   // Slab is drawn by the Rust core: the real app shows it, this browser build cannot.
-  const want = ["Tools", "Window / level", "Zoom, rotate, flip", "Reset view", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
+  const want = ["Tools", "Window / level", "Zoom", "Rotate / flip", "Reset view", "Hide series panel", "Reformat", "Layout", "Link", "Reference lines", "Cine", "Image text (overlay)", "Annotations", "Export", "DICOM tags…"];
   check("contextmenu: every section of the spec is there", want.every((w) => top.includes(w)), top.join(" | "));
   const kbds = await imageMenu.locator("kbd").count();
   check("contextmenu: keyboard shortcuts are shown beside items", kbds >= 3, `${kbds} shortcuts`);
@@ -1017,6 +1288,39 @@ if (want("cine") && only?.includes("cine")) {
 
 
 
+// ── test hook (window.__flowradTest, bench/test mode only): --only hooks.
+// Rotation / flips applied and drawn, thumbnails rendered and one per series,
+// bindings set → reset all → preset, driven through the hook the bench uses.
+if (want("hooks") && only?.includes("hooks")) {
+  check("hooks: not installed outside bench/test mode", (await page.evaluate(() => typeof window.__flowradTest)) === "undefined");
+  await page.goto(`http://127.0.0.1:${port}/?bench`);
+  await page.waitForSelector("text=Open a study");
+  await page.locator('input[type="file"]').first().setInputFiles(await listFiles(study));
+  await page.waitForSelector('[data-has-series="1"]', { timeout: 60_000 });
+  await page.waitForFunction(() => /Im \d+ \/ \d+/.test(document.body.innerText), null, { timeout: 60_000 });
+  await settle(800);
+  check("hooks: installed in bench/test mode", (await page.evaluate(() => window.__flowradTest?.version ?? null)) === 1);
+  const edgesBefore = await edgesOf();
+  const result = await page.evaluate(() => window.__flowradTest.selfTest());
+  for (const c of result.checks) check(`hooks: ${c.name}`, c.ok, c.detail);
+  check("hooks: thumbnails counted against the open study", result.thumbnails?.expected >= 2, JSON.stringify(result.thumbnails));
+  // The hook's rotate is the app's: the edge letters follow it, and its reset puts them back.
+  const turned = await page.evaluate(() => window.__flowradTest.rotate(90));
+  await settle(200);
+  const edgesTurned = await edgesOf();
+  check("hooks: rotate(90) is drawn (edge letters turn)", turned.ok && edgesTurned.top === edgesBefore.left, `${JSON.stringify(turned.after)} ${JSON.stringify(edgesTurned)}`);
+  await page.evaluate(() => window.__flowradTest.resetOrientation());
+  await settle(200);
+  check("hooks: resetOrientation() restores the edge letters", JSON.stringify(await edgesOf()) === JSON.stringify(edgesBefore), JSON.stringify(await edgesOf()));
+  // Reset to defaults also holds for real keys: ↓ (the preset for slice.next) steps again.
+  await focusImage();
+  const at = await imageNo();
+  await page.keyboard.press("ArrowDown");
+  await settle(300);
+  check("hooks: after reset, ↓ (preset) moves to the next image", (await imageNo())?.at === (at?.at ?? 0) + 1, `${at?.at} → ${(await imageNo())?.at}`);
+  await shot("hooks");
+}
+
 // ── voice commands ──────────────────────────────────────────────────────
 if (want("voice")) {
   const hasModel = existsSync(path.join(dist, "voice", "model.tar.gz"));
@@ -1026,16 +1330,21 @@ if (want("voice")) {
     else console.error(`SKIP  voice: ${why}`);
   } else {
     check("voice: nothing loaded before the mic is switched on", voiceRequests.length === 0, voiceRequests.join(" "));
-    const workersBefore = page.workers().length;
+    // The recognizer's own worker, by URL: other workers (series thumbnails)
+    // come and go, so a count of all page workers says nothing.
+    const recognizers = () => page.workers().filter((w) => /recognizer-worker/.test(w.url())).length;
     await focusImage();
     await page.keyboard.press("Shift+Digit1");
     await settle(400);
     const mic = page.getByRole("button", { name: /^Voice commands/ });
     await mic.click();
-    await page.waitForFunction(() => !!document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 60_000 }).catch(() => undefined);
+    // Locator waits, not waitForFunction: Playwright compiles a waitForFunction
+    // predicate with `new Function` in the page, which the production CSP
+    // (--prod-csp, no 'unsafe-eval') blocks — the wait then returned at once.
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
     const listening = await page.getByRole("button", { name: /^Voice commands on/ }).count();
     check("voice: the mic toggle starts listening (model loaded on demand)", listening === 1);
-    check("voice: the recognizer runs in its own worker", page.workers().length > workersBefore, `${workersBefore} → ${page.workers().length}`);
+    check("voice: the recognizer runs in its own worker", recognizers() === 1, page.workers().map((w) => w.url().split("/").pop()).join(", "));
     // The WAV says: "layout two", "lung window", "zoom in" (looped by Chromium).
     const heard = new Set();
     // The recording loops; give it two full passes to hear every phrase.
@@ -1054,12 +1363,41 @@ if (want("voice")) {
     check("voice: what was heard is shown", [...heard].some((h) => /layout|lung|zoom/.test(h) && !h.includes("✓")), [...heard].join(" | "));
     await shot("voice-listening");
     await page.keyboard.press("Control+Shift+V");
-    await page.waitForFunction(() => !document.querySelector('[aria-label^="Voice commands on"]'), null, { timeout: 10_000 }).catch(() => undefined);
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
     await settle(800);
-    check("voice: switching off frees the recognizer (worker gone)", page.workers().length <= workersBefore, `${page.workers().length} workers`);
+    check("voice: switching off frees the recognizer (worker gone)", recognizers() === 0, page.workers().map((w) => w.url().split("/").pop()).join(", "));
+
+    // Second time: the model was prepared once, so switching on just turns it
+    // on — no loading card with the model size, at any point of the load.
+    await page.evaluate(() => {
+      window.__voiceCardSeen = [];
+      window.__voiceCardObs?.disconnect();
+      const look = () => {
+        const card = document.querySelector('[data-testid="voice-status"]');
+        if (card) window.__voiceCardSeen.push(card.textContent ?? "");
+      };
+      window.__voiceCardObs = new MutationObserver(look);
+      window.__voiceCardObs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+    await focusImage();
+    await page.keyboard.press("Control+Shift+V");
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ timeout: 60_000 }).catch(() => undefined);
+    const again = await page.getByRole("button", { name: /^Voice commands on/ }).count();
+    const seen = await page.evaluate(() => {
+      window.__voiceCardObs?.disconnect();
+      return window.__voiceCardSeen;
+    });
+    check("voice: switching on a second time starts listening", again === 1);
+    check("voice: switching on a second time shows no loading / size notice", seen.length === 0, seen.slice(0, 2).join(" | "));
+    check("voice: …and never mentions the model size", !seen.some((t) => /MB/.test(t)), seen.slice(0, 2).join(" | "));
+    await page.keyboard.press("Control+Shift+V");
+    await page.getByRole("button", { name: /^Voice commands on/ }).waitFor({ state: "detached", timeout: 10_000 }).catch(() => undefined);
+    await settle(800);
+    check("voice: switching off again frees the recognizer", recognizers() === 0, page.workers().map((w) => w.url().split("/").pop()).join(", "));
   }
 }
 
+if (prodCsp) check("no CSP violations under the production CSP (as Tauri modifies it)", cspErrors.length === 0, `${cspErrors.length}: ${cspErrors.slice(0, 2).join(" | ")}`);
 const unexpected = consoleErrors.filter((e) => !/favicon|DevTools|GPU stall|WebGL|Failed to load resource/i.test(e));
 check("no uncaught errors in the page", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 

@@ -7,7 +7,7 @@
 
 import { useEffect, useRef } from "react";
 import { invoke } from "../platform";
-import { registerNativeCell } from "./nativeLayout";
+import { registerNativeCell, scheduleNativeLayout } from "./nativeLayout";
 
 interface Props {
   id: string;
@@ -32,6 +32,11 @@ export default function NativePlaneSurface({ id, volumeKey, plane, index, slab, 
     if (!el.current) return;
     return registerNativeCell(id, el.current);
   }, [id]);
+  // The image rect moves inside the pane (re-centred when the pane's aspect
+  // changes) often without changing size, which a ResizeObserver misses.
+  useEffect(() => {
+    scheduleNativeLayout();
+  }, [rect.x, rect.y, rect.w, rect.h]);
   // Latest wins: one call in flight, the newest arguments next.
   const pending = useRef<Record<string, unknown> | null>(null);
   const busy = useRef(false);

@@ -9,16 +9,44 @@ const cells = new Map<string, HTMLElement>();
 let scheduled = 0;
 const applied = new Set<() => void>();
 
+let lastSent = "";
+
 function flush() {
   scheduled = 0;
   const rects = [...cells.entries()].map(([id, el]) => {
     const r = el.getBoundingClientRect();
     return { id, x: r.left, y: r.top, w: r.width, h: r.height };
   });
+  // The position check below runs often: send only what changed.
+  const sig = JSON.stringify(rects);
+  if (sig === lastSent) return;
+  lastSent = sig;
   void invoke("native_layout", { cells: rects }).then(
     () => applied.forEach((fn) => fn()),
-    () => undefined
+    () => {
+      lastSent = "";
+    }
   );
+}
+
+/**
+ * A ResizeObserver sees size changes only. A cell that MOVES without
+ * resizing (an MPR plane re-centred in its pane, the series panel or toolbar
+ * sliding in, a grid reflow) kept its old position in Rust, so the coronal /
+ * sagittal planes drew off their panes over the axial pane's border (HP
+ * 0.8.1). While native cells exist, positions are re-checked a few times a
+ * second and after any CSS transition; an unchanged layout costs one
+ * getBoundingClientRect per cell and no IPC.
+ */
+const POSITION_CHECK_MS = 200;
+let positionTimer = 0;
+function watchPositions(on: boolean) {
+  if (typeof window === "undefined") return;
+  if (on && !positionTimer) positionTimer = window.setInterval(scheduleNativeLayout, POSITION_CHECK_MS);
+  if (!on && positionTimer) {
+    window.clearInterval(positionTimer);
+    positionTimer = 0;
+  }
 }
 
 /**
@@ -41,10 +69,15 @@ export function registerNativeCell(id: string, el: HTMLElement): () => void {
   cells.set(id, el);
   const observer = new ResizeObserver(scheduleNativeLayout);
   observer.observe(el);
+  // The container too: a plane surface is positioned inside its pane, and the
+  // pane resizing moves it without resizing it.
+  if (el.parentElement) observer.observe(el.parentElement);
+  watchPositions(true);
   scheduleNativeLayout();
   return () => {
     observer.disconnect();
     if (cells.get(id) === el) cells.delete(id);
+    if (cells.size === 0) watchPositions(false);
     void invoke("native_cell_close", { id }).catch(() => undefined);
     scheduleNativeLayout();
   };
@@ -52,15 +85,60 @@ export function registerNativeCell(id: string, el: HTMLElement): () => void {
 
 if (typeof window !== "undefined") {
   window.addEventListener("resize", scheduleNativeLayout);
+  // Panels that slide (series panel collapse) move cells without resizing them.
+  window.addEventListener("transitionend", scheduleNativeLayout, true);
 }
 
-/** Native mode is on (FLOWRAD_NATIVE=1, Tauri only); cached after the first ask. */
+/**
+ * Native mode is on (FLOWRAD_NATIVE=1, Tauri only); cached after the first ask.
+ * Asking builds the GPU (`native_init`). On Windows that happens when a study
+ * is about to open, not at start-up (Rust `lazy_gpu`), so call this from an
+ * open, never from a mount; `nativeKnown` waits for the answer without asking.
+ */
 let nativeOn: Promise<boolean> | null = null;
+let settleKnown: (on: boolean) => void = () => undefined;
+const known = new Promise<boolean>((resolve) => (settleKnown = resolve));
 export function nativeEnabled(): Promise<boolean> {
   nativeOn ??= invoke<{ enabled: boolean; ready: boolean }>("native_init")
     .then((s) => !!s.enabled && !!s.ready)
-    .catch(() => false);
+    .catch(() => false)
+    .then((on) => {
+      settleKnown(on);
+      return on;
+    });
   return nativeOn;
+}
+
+/** Resolves with `nativeEnabled()`'s answer once something has asked; never asks itself. */
+export function nativeKnown(): Promise<boolean> {
+  return known;
+}
+
+/**
+ * A study is about to open (Open dialog, drag over the window, an open
+ * starting): build the GPU now so it is ready by the first image. Rust
+ * releases it once a closed study leaves it idle; this rebuilds it then
+ * (idempotent and cheap while it is up). Resolves with native mode on/off.
+ */
+export function warmNative(): Promise<boolean> {
+  if (!nativeOn) return nativeEnabled();
+  return nativeOn.then((on) => {
+    if (on) void invoke("native_init").catch(() => undefined);
+    return on;
+  });
+}
+
+/**
+ * Start-up: settle the mode at once where nothing is deferred (native off,
+ * macOS / Linux, viewer windows); leave it for the first open where the GPU
+ * is lazy (Windows main window), so the empty app holds no GPU device.
+ */
+export function settleNativeAtStart(): void {
+  void invoke<{ enabled: boolean; lazy?: boolean }>("native_status")
+    .then((s) => {
+      if (!s.enabled || !s.lazy) void nativeEnabled();
+    })
+    .catch(() => void nativeEnabled());
 }
 
 /** React: true once native mode is confirmed (false on the web and until then). */

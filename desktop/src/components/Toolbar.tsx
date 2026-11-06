@@ -1,10 +1,9 @@
 // The viewer toolbar. Every button maps to a keyboard shortcut (shown in its
 // tooltip) and acts on the active viewport.
 
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   ChevronDown,
-  Loader2,
   Mic,
   MicOff,
   Eraser,
@@ -52,14 +51,28 @@ import {
   ZoomIn,
   Spline,
   Pipette,
+  FlipHorizontal2,
+  FlipVertical2,
+  RefreshCw,
 } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
+import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/components/ui/cn";
-import type { WindowPreset } from "@flowrad/viewer-core";
+import { ORIENTATION_COMMANDS, type OrientationCommand, type WindowPreset } from "@flowrad/viewer-core";
 import { MenuContent, MenuItem, MenuLabel, MenuRoot, MenuSeparator, MenuTrigger } from "./Menu";
-import { LAYOUT_SHORTCUTS, keyLabel } from "../shortcuts";
+import { LAYOUT_SHORTCUTS, keyLabel, keysForAction, toolKeyLabel, type ShortcutOverrides } from "../shortcuts";
+import { mouseHintFor, wheelBindings } from "../viewer/mouseBindings";
+import { keyLabel as modLabel } from "@flowrad/viewer-core/bindings";
+
+/** "Ctrl+wheel" for the wheel gesture bound to an action, from the live bindings. */
+function wheelHint(action: "zoom" | "slab" | "scroll"): string | undefined {
+  const w = wheelBindings().find((b) => b.command === action || (action === "zoom" && b.command === "slab"));
+  return w ? `${modLabel(`${w.mods.ctrl ? "Mod+" : ""}${w.mods.alt ? "Alt+" : ""}${w.mods.shift ? "Shift+" : ""}`)}wheel` : undefined;
+}
 
 export interface ToolbarProps {
+  /** The reader's key re-mappings (Settings): tooltips show the keys that work. */
+  shortcuts?: ShortcutOverrides;
   leftTool: string;
   onTool: (tool: string) => void;
   presets: WindowPreset[];
@@ -67,7 +80,8 @@ export interface ToolbarProps {
   onCustomWindow: () => void;
   onInvert: () => void;
   onReset: () => void;
-  onRotate: (deg: number) => void;
+  /** Rotate / flip / reset orientation (viewer-core ORIENTATION_COMMANDS). */
+  onOrientation: (command: OrientationCommand) => void;
   layout: { rows: number; cols: number };
   onLayout: (rows: number, cols: number) => void;
   syncScroll: boolean;
@@ -88,7 +102,7 @@ export interface ToolbarProps {
   onOpen: (what: "files" | "folder" | "disc" | "zip" | "dicomdir" | "pacs") => void;
   onHome: () => void;
   /** Offline voice commands: the mic toggle (absent where unavailable). */
-  voice?: { state: "off" | "loading" | "listening" | "error"; heard?: string | null; onToggle: () => void };
+  voice?: { state: "off" | "loading" | "listening" | "error"; heard?: string | null; onToggle: () => void; onWarm?: () => void };
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
@@ -158,6 +172,7 @@ function Tool({
   onClick,
   children,
   disabled,
+  onWarm,
 }: {
   label: string;
   shortcut?: string;
@@ -165,6 +180,8 @@ function Tool({
   onClick: () => void;
   children: ReactNode;
   disabled?: boolean;
+  /** Pointer over / focus: start loading what a click will need. */
+  onWarm?: () => void;
 }) {
   return (
     <IconButton
@@ -174,6 +191,8 @@ function Tool({
       size="sm"
       disabled={disabled}
       onClick={onClick}
+      onPointerEnter={onWarm}
+      onFocus={onWarm}
       className={cn("h-8 w-8 rounded-md", active && "bg-accent text-accent-foreground hover:bg-accent hover:text-accent-foreground")}
     >
       {children}
@@ -185,23 +204,25 @@ function Divider() {
   return <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-subtle" />;
 }
 
-const MEASURE: { tool: string; label: string; key: string; icon: ReactNode }[] = [
-  { tool: "Length", label: "Measure length", key: "M / L", icon: <Ruler /> },
-  { tool: "Angle", label: "Angle", key: "A", icon: <Triangle /> },
-  { tool: "CobbAngle", label: "Cobb angle", key: "C", icon: <Spline /> },
-  { tool: "EllipticalROI", label: "Ellipse ROI", key: "E", icon: <Circle /> },
-  { tool: "RectangleROI", label: "Rectangle ROI", key: "R", icon: <Square /> },
-  { tool: "PlanarFreehandROI", label: "Freehand ROI", key: "N", icon: <PenLine /> },
-  { tool: "Probe", label: "Pixel probe", key: "X", icon: <Pipette /> },
-  { tool: "ArrowAnnotate", label: "Arrow", key: "Y", icon: <ArrowUpRight /> },
+// Keys come from the bindings table (toolKeyLabel), never typed here.
+const MEASURE: { tool: string; label: string; icon: ReactNode }[] = [
+  { tool: "Length", label: "Measure length", icon: <Ruler /> },
+  { tool: "Angle", label: "Angle", icon: <Triangle /> },
+  { tool: "CobbAngle", label: "Cobb angle", icon: <Spline /> },
+  { tool: "EllipticalROI", label: "Ellipse ROI", icon: <Circle /> },
+  { tool: "RectangleROI", label: "Rectangle ROI", icon: <Square /> },
+  { tool: "PlanarFreehandROI", label: "Freehand ROI", icon: <PenLine /> },
+  { tool: "Probe", label: "Pixel probe", icon: <Pipette /> },
+  { tool: "ArrowAnnotate", label: "Arrow", icon: <ArrowUpRight /> },
 ];
 
 export function Toolbar(props: ToolbarProps) {
   const { leftTool, onTool } = props;
+  const keyOf = (tool: string) => toolKeyLabel(tool, props.shortcuts);
   const extraMeasure = [
-    { tool: "CircleROI", label: "Circle ROI", key: "O", icon: <Circle /> },
-    { tool: "Bidirectional", label: "Bidirectional", key: "D", icon: <Crosshair /> },
-    { tool: "Magnify", label: "Magnifying glass", key: "G", icon: <Search /> },
+    { tool: "CircleROI", label: "Circle ROI", icon: <Circle /> },
+    { tool: "Bidirectional", label: "Bidirectional", icon: <Crosshair /> },
+    { tool: "Magnify", label: "Magnifying glass", icon: <Search /> },
   ];
   const extraActive = extraMeasure.find((m) => m.tool === leftTool);
 
@@ -218,38 +239,38 @@ export function Toolbar(props: ToolbarProps) {
         </MenuTrigger>
         <MenuContent>
           <MenuLabel>Open</MenuLabel>
-          <MenuItem icon={<FolderTree />} shortcut={keyLabel("Mod+Shift+O")} onSelect={() => props.onOpen("folder")}>Folder…</MenuItem>
-          <MenuItem icon={<Files />} shortcut={keyLabel("Mod+O")} onSelect={() => props.onOpen("files")}>Files…</MenuItem>
-          <MenuItem icon={<FileArchive />} shortcut={keyLabel("Mod+Shift+Z")} onSelect={() => props.onOpen("zip")}>Zip archive…</MenuItem>
+          <MenuItem icon={<FolderTree />} shortcut={keysForAction({ type: "open", what: "folder" })} onSelect={() => props.onOpen("folder")}>Folder…</MenuItem>
+          <MenuItem icon={<Files />} shortcut={keysForAction({ type: "open", what: "files" })} onSelect={() => props.onOpen("files")}>Files…</MenuItem>
+          <MenuItem icon={<FileArchive />} shortcut={keysForAction({ type: "open", what: "zip" })} onSelect={() => props.onOpen("zip")}>Zip archive…</MenuItem>
           <MenuItem icon={<FolderTree />} onSelect={() => props.onOpen("dicomdir")}>DICOMDIR…</MenuItem>
-          <MenuItem icon={<Disc3 />} shortcut={keyLabel("Mod+Alt+O")} onSelect={() => props.onOpen("disc")}>CD / DVD / USB…</MenuItem>
+          <MenuItem icon={<Disc3 />} shortcut={keysForAction({ type: "open", what: "disc" })} onSelect={() => props.onOpen("disc")}>CD / DVD / USB…</MenuItem>
           <MenuSeparator />
-          <MenuItem icon={<Network />} shortcut={keyLabel("Mod+Shift+P")} onSelect={() => props.onOpen("pacs")}>PACS…</MenuItem>
+          <MenuItem icon={<Network />} shortcut={keysForAction({ type: "open", what: "pacs" })} onSelect={() => props.onOpen("pacs")}>PACS…</MenuItem>
         </MenuContent>
       </MenuRoot>
       <Divider />
 
 {!props.volumeView && (
         <>
-      <Tool label="Browse slices" shortcut="B" active={leftTool === "StackScroll"} onClick={() => onTool("StackScroll")}>
+      <Tool label="Browse slices" shortcut={keyOf("StackScroll")} active={leftTool === "StackScroll"} onClick={() => onTool("StackScroll")}>
         <MousePointer2 />
       </Tool>
-      <Tool label="Window / level" shortcut="W · right drag" active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
+      <Tool label="Window / level" shortcut={`${keyOf("WindowLevel")} · ${mouseHintFor("WindowLevel")}`} active={leftTool === "WindowLevel"} onClick={() => onTool("WindowLevel")}>
         <SunMedium />
       </Tool>
-      <Tool label="Pan" shortcut="P · middle drag" active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
+      <Tool label="Pan" shortcut={`${keyOf("Pan")} · ${mouseHintFor("Pan")}`} active={leftTool === "Pan"} onClick={() => onTool("Pan")}>
         <Hand />
       </Tool>
-      <Tool label="Zoom" shortcut={`Z · ${keyLabel("Mod+")}wheel`} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
+      <Tool label="Zoom" shortcut={[keyOf("Zoom"), mouseHintFor("Zoom"), wheelHint("zoom")].filter(Boolean).join(" · ")} active={leftTool === "Zoom"} onClick={() => onTool("Zoom")}>
         <ZoomIn />
       </Tool>
       <Divider />
       {MEASURE.map((m) => (
-        <Tool key={m.tool} label={m.label} shortcut={m.key} active={leftTool === m.tool} onClick={() => onTool(m.tool)}>
+        <Tool key={m.tool} label={m.label} shortcut={keyOf(m.tool)} active={leftTool === m.tool} onClick={() => onTool(m.tool)}>
           {m.icon}
         </Tool>
       ))}
-      <Tool label="Eraser (click an annotation to delete it)" shortcut="Shift+E" active={leftTool === "Eraser"} onClick={() => onTool("Eraser")}>
+      <Tool label="Eraser (click an annotation to delete it)" shortcut={keyOf("Eraser")} active={leftTool === "Eraser"} onClick={() => onTool("Eraser")}>
         <Eraser />
       </Tool>
       <MenuRoot>
@@ -266,14 +287,14 @@ export function Toolbar(props: ToolbarProps) {
         </MenuTrigger>
         <MenuContent>
           {extraMeasure.map((m) => (
-            <MenuItem key={m.tool} icon={m.icon} shortcut={m.key} checked={leftTool === m.tool} onSelect={() => onTool(m.tool)}>
+            <MenuItem key={m.tool} icon={m.icon} shortcut={keyOf(m.tool)} checked={leftTool === m.tool} onSelect={() => onTool(m.tool)}>
               {m.label}
             </MenuItem>
           ))}
           <MenuSeparator />
-          <MenuItem icon={<Undo2 />} shortcut={keyLabel("Mod+Z")} onSelect={props.onUndo}>Undo</MenuItem>
-          <MenuItem icon={<Redo2 />} shortcut={keyLabel("Mod+Y")} onSelect={props.onRedo}>Redo</MenuItem>
-          <MenuItem icon={<Trash2 />} shortcut={keyLabel("Mod+Shift+Backspace")} onSelect={props.onClear}>Clear measurements</MenuItem>
+          <MenuItem icon={<Undo2 />} shortcut={keysForAction({ type: "undoAnnotation" })} onSelect={props.onUndo}>Undo</MenuItem>
+          <MenuItem icon={<Redo2 />} shortcut={keysForAction({ type: "redoAnnotation" })} onSelect={props.onRedo}>Redo</MenuItem>
+          <MenuItem icon={<Trash2 />} shortcut={keysForAction({ type: "clearAnnotations" })} onSelect={props.onClear}>Clear measurements</MenuItem>
         </MenuContent>
       </MenuRoot>
       <Divider />
@@ -301,16 +322,38 @@ export function Toolbar(props: ToolbarProps) {
             </MenuItem>
           ))}
           <MenuSeparator />
-          <MenuItem shortcut={keyLabel("Mod+F11")} onSelect={props.onCustomWindow}>Custom W / L…</MenuItem>
-          <MenuItem shortcut="I" onSelect={props.onInvert}>Invert</MenuItem>
+          <MenuItem shortcut={keysForAction({ type: "customWindow" })} onSelect={props.onCustomWindow}>Custom W / L…</MenuItem>
+          <MenuItem shortcut={keysForAction({ type: "invert" }, props.shortcuts)} onSelect={props.onInvert}>Invert</MenuItem>
         </MenuContent>
       </MenuRoot>
-      <Tool label="Rotate left" shortcut={keyLabel("Shift+Q")} onClick={() => props.onRotate(-90)}>
-        <RotateCcw />
-      </Tool>
-      <Tool label="Rotate right" shortcut="Q" onClick={() => props.onRotate(90)}>
-        <RotateCw />
-      </Tool>
+      <MenuRoot>
+        <MenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Rotate and flip"
+            title={`Rotate / flip  ·  ${[{ type: "rotate", degrees: 90 } as const, { type: "rotate", degrees: -90 } as const, { type: "flip", axis: "h" } as const, { type: "flip", axis: "v" } as const].map((a) => keysForAction(a)).filter(Boolean).join(", ")}`}
+            className="flex h-8 items-center gap-0.5 rounded-md pl-1.5 pr-1 text-secondary hover:bg-overlay hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <RotateCw className="h-4 w-4" aria-hidden />
+            <ChevronDown className="h-3 w-3 opacity-70" aria-hidden />
+          </button>
+        </MenuTrigger>
+        <MenuContent>
+          <MenuLabel>Rotate / flip</MenuLabel>
+          {ORIENTATION_COMMANDS.map((entry) => (
+            <Fragment key={entry.command}>
+              {(entry.command === "flip:h" || entry.command === "orient:reset") && <MenuSeparator />}
+              <MenuItem
+                icon={ORIENT_ICONS[entry.command]}
+                shortcut={entry.shortcut ? keyLabel(entry.shortcut) : undefined}
+                onSelect={() => props.onOrientation(entry.command)}
+              >
+                {entry.label}
+              </MenuItem>
+            </Fragment>
+          ))}
+        </MenuContent>
+      </MenuRoot>
       <Tool label="Reset view" shortcut="Backspace" onClick={props.onReset}>
         <Layers3 />
       </Tool>
@@ -367,20 +410,20 @@ export function Toolbar(props: ToolbarProps) {
             <MenuItem checked={props.syncScroll} shortcut="F5" onSelect={props.onToggleSync}>
               Scrolling (by position)
             </MenuItem>
-            <MenuItem checked={!!props.syncVoi} shortcut={keyLabel("Shift+F5")} onSelect={props.onToggleSyncVoi}>
+            <MenuItem checked={!!props.syncVoi} shortcut={keysForAction({ type: "toggleSyncVoi" })} onSelect={props.onToggleSyncVoi}>
               Window / level
             </MenuItem>
-            <MenuItem checked={!!props.syncZoom} shortcut={keyLabel("Alt+F5")} onSelect={props.onToggleSyncZoom!}>
+            <MenuItem checked={!!props.syncZoom} shortcut={keysForAction({ type: "toggleSyncZoom" })} onSelect={props.onToggleSyncZoom!}>
               Zoom and pan
             </MenuItem>
             <MenuSeparator />
-            <MenuItem shortcut={keyLabel("Mod+Shift+L")} onSelect={props.onLinkAtCurrent!}>
+            <MenuItem shortcut={keysForAction({ type: "linkAtCurrent" })} onSelect={props.onLinkAtCurrent!}>
               Link at current position
             </MenuItem>
           </MenuContent>
         </MenuRoot>
       )}
-      <Tool label="Reference lines" shortcut={keyLabel("Mod+F12")} active={props.referenceLines} onClick={props.onToggleReferenceLines}>
+      <Tool label="Reference lines" shortcut={keysForAction({ type: "toggleReferenceLines" })} active={props.referenceLines} onClick={props.onToggleReferenceLines}>
         <Columns2 />
       </Tool>
       <Divider />
@@ -419,7 +462,7 @@ export function Toolbar(props: ToolbarProps) {
           <Divider />
           <Tool
             label={props.advanced.view === "mpr" ? "Back to images" : "MPR"}
-            shortcut={keyLabel("Mod+M")}
+            shortcut={keysForAction({ type: "mpr" })}
             active={props.advanced.view === "mpr"}
             disabled={!props.advanced.mprAvailable}
             onClick={props.advanced.onMpr}
@@ -441,9 +484,9 @@ export function Toolbar(props: ToolbarProps) {
               </MenuTrigger>
               <MenuContent>
                 <MenuLabel>Reformat selected viewport</MenuLabel>
-                <MenuItem shortcut={keyLabel("Alt+C")} onSelect={() => props.advanced!.onReformat!("coronal")}>Coronal</MenuItem>
-                <MenuItem shortcut={keyLabel("Alt+S")} onSelect={() => props.advanced!.onReformat!("sagittal")}>Sagittal</MenuItem>
-                <MenuItem shortcut={keyLabel("Alt+A")} onSelect={() => props.advanced!.onReformat!("axial")}>Axial (slab)</MenuItem>
+                <MenuItem shortcut={keysForAction({ type: "reformat", plane: "coronal" })} onSelect={() => props.advanced!.onReformat!("coronal")}>Coronal</MenuItem>
+                <MenuItem shortcut={keysForAction({ type: "reformat", plane: "sagittal" })} onSelect={() => props.advanced!.onReformat!("sagittal")}>Sagittal</MenuItem>
+                <MenuItem shortcut={keysForAction({ type: "reformat", plane: "axial" })} onSelect={() => props.advanced!.onReformat!("axial")}>Axial (slab)</MenuItem>
                 <MenuSeparator />
                 <MenuItem shortcut="Esc" onSelect={() => props.advanced!.onReformat!(null)}>Back to slices</MenuItem>
               </MenuContent>
@@ -451,7 +494,7 @@ export function Toolbar(props: ToolbarProps) {
           )}
           <Tool
             label={props.advanced.view === "3d" ? "Back to images" : "3D volume rendering"}
-            shortcut={keyLabel("Mod+Shift+M")}
+            shortcut={keysForAction({ type: "volume3d" })}
             active={props.advanced.view === "3d"}
             disabled={!props.advanced.mprAvailable}
             onClick={props.advanced.onVolume}
@@ -460,7 +503,7 @@ export function Toolbar(props: ToolbarProps) {
           </Tool>
           <Tool
             label={props.advanced.view === "fusion" ? "Back to images" : "PET / CT fusion"}
-            shortcut={keyLabel("Mod+Shift+F")}
+            shortcut={keysForAction({ type: "fusion" })}
             active={props.advanced.view === "fusion"}
             disabled={!props.advanced.fusionAvailable}
             onClick={props.advanced.onFusion}
@@ -477,7 +520,7 @@ export function Toolbar(props: ToolbarProps) {
           </Tool>
         )}
         {props.onExport && (
-          <Tool label="Export" shortcut={keyLabel("Mod+E")} onClick={props.onExport}>
+          <Tool label="Export" shortcut={keysForAction({ type: "export" })} onClick={props.onExport}>
             <Download />
           </Tool>
         )}
@@ -485,11 +528,13 @@ export function Toolbar(props: ToolbarProps) {
           <span className="relative flex items-center">
             <Tool
               label={props.voice.state === "listening" ? "Voice commands on — click to stop" : props.voice.state === "loading" ? "Starting voice commands…" : "Voice commands"}
-              shortcut={keyLabel("Mod+Shift+V")}
+              shortcut={keysForAction({ type: "voice" })}
               active={props.voice.state === "listening"}
               onClick={props.voice.onToggle}
+              onWarm={props.voice.onWarm}
             >
-              {props.voice.state === "loading" ? <Loader2 className="animate-spin" /> : props.voice.state === "listening" ? <Mic /> : <MicOff />}
+              {/* Starting: a quiet spinner on the mic itself (no card once the model was prepared before). */}
+              {props.voice.state === "listening" ? <Mic /> : props.voice.state === "loading" ? <Spinner size="sm" /> : <MicOff />}
             </Tool>
             {props.voice.state === "listening" && (
               <span aria-hidden className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-accent-foreground" />
@@ -501,13 +546,13 @@ export function Toolbar(props: ToolbarProps) {
             )}
           </span>
         )}
-        <Tool label={props.overlay ? "Hide overlay" : "Show overlay"} shortcut={keyLabel("Mod+Shift+F12")} active={!props.overlay} onClick={props.onToggleOverlay}>
+        <Tool label={props.overlay ? "Hide overlay" : "Show overlay"} shortcut={keysForAction({ type: "toggleOverlay" })} active={!props.overlay} onClick={props.onToggleOverlay}>
           {props.overlay ? <Eye /> : <EyeOff />}
         </Tool>
-        <Tool label="Full screen" shortcut="F" onClick={props.onFullscreen}>
+        <Tool label="Full screen" shortcut={keysForAction({ type: "fullscreen" }, props.shortcuts)} onClick={props.onFullscreen}>
           <Maximize />
         </Tool>
-        <Tool label="Keyboard shortcuts" shortcut="F1" onClick={props.onHelp}>
+        <Tool label="Keyboard shortcuts" shortcut={keysForAction({ type: "help" })} onClick={props.onHelp}>
           <HelpCircle />
         </Tool>
         <Tool label="Settings" onClick={props.onSettings}>
@@ -517,3 +562,12 @@ export function Toolbar(props: ToolbarProps) {
     </div>
   );
 }
+
+const ORIENT_ICONS: Record<OrientationCommand, ReactNode> = {
+  "rotate:90": <RotateCw />,
+  "rotate:-90": <RotateCcw />,
+  "rotate:180": <RefreshCw />,
+  "flip:h": <FlipHorizontal2 />,
+  "flip:v": <FlipVertical2 />,
+  "orient:reset": <Undo2 />,
+};

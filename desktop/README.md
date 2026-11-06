@@ -134,10 +134,44 @@ Bench environment:
 | `FLOWRAD_BENCH_TIMEOUT_MS` | watchdog: print what is known and exit 3; default 120000 |
 | `FLOWRAD_BENCH_VIEW=mpr\|3d\|fusion` | report when that volume is built |
 | `FLOWRAD_LEAK_ROUNDS=5` | feature on/off leak test: open and close MPR, 3D, cine, tools and dialogs that many times, then report memory per round (implies `FLOWRAD_BENCH=1` and the leak view) |
+| `FLOWRAD_BENCH_VIEW=openclose\|steps\|hooks` | open/close rounds (with `FLOWRAD_LEAK_ROUNDS` and `FLOWRAD_BENCH_CLOSE_AFTER_MS`), the scripted interaction pass, the test hook self-test; driven by `bench.mjs openclose\|steps\|hooks` |
 | `FLOWRAD_BENCH_OUT` | also append every report line to this file; default `flowrad-bench.jsonl` in the temp folder (`%TEMP%` on Windows) |
 | `FLOWRAD_BENCH_PIXELS=1` | include decoded-pixel stats (used by `codec-check.py`) |
 | `FLOWRAD_PROBE_AFTER_MS=8000` | on a normal launch, report every viewport's on-screen pixels after that long (`FLOWRAD_PROBE {json}`) |
-| `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` | Windows: override WebView2 flags to A/B memory experiments, e.g. `--in-process-gpu` |
+| `FLOWRAD_WEBVIEW2_EXTRA_ARGS` | Windows: WebView2 flags appended to the app's own (every window), to A/B memory experiments, e.g. `--in-process-gpu`; `!--flag` takes one of the app's own out, e.g. `!--enable-features=NetworkServiceInProcess2` |
+| `FLOWRAD_GPU_WARM=eager\|lazy` | when the native renderer's GPU device is built. Default on Windows `lazy`: when a study is about to open (command line, Open dialog, drag over the window, pointer on a recent study), released 15 s after the last study closed. `eager`: at launch, held all session (0.8.2; macOS / Linux default) |
+| `FLOWRAD_MEM_REPORT_MS=<ms>` | print `FLOWRAD_BENCH_MEM {json}` once, that long after start: the app process's private bytes by owner (Rust heap, Windows heaps, stacks, written DLL pages, other VirtualAlloc'd memory and its biggest allocations); the bench's empty-app baseline uses it |
+
+### Real-hardware runs (open/close rounds, interaction pass, test hook)
+
+From the repo root in PowerShell, with the release build or the installed app:
+
+```powershell
+$exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"   # or desktop\src-tauri\target\release\flowrad-viewer.exe
+# Open the CT, close it (Home), re-open it: 5 rounds. Whole-tree PRIVATE MB per round
+# (study open, after the close), growth per round and first → last close, last close − empty app.
+node desktop/scripts/bench.mjs openclose $exe D:\studies\ct --rounds 5 --hold 20 --after-close 30
+# Scripted interaction: scroll 120 slices, 60 W/L steps, 24 × 90° rotations, one per frame.
+# p50 / p95 / max per kind and overall, the slowest step, long tasks (> 50 ms) during the pass.
+node desktop/scripts/bench.mjs steps $exe D:\studies\ct
+# Test hook self-test: rotation / flips applied and drawn, thumbnails rendered (one per
+# series), bindings set → reset all → preset. Your own bindings are put back afterwards.
+node desktop/scripts/bench.mjs hooks $exe D:\studies\ct
+```
+
+`leak` (`FLOWRAD_LEAK_ROUNDS`) keeps the study open and opens / closes the
+features; `openclose` closes and re-opens the study itself. All three new
+modes are informational unless a `--max-*` flag is given (see the header of
+`bench.mjs`). In CI they run in `perf-windows` as informational steps.
+
+**Test hook.** In bench or test mode only (`FLOWRAD_BENCH=1`, or `?bench` in
+the browser build) the app exposes `window.__flowradTest` (`desktop/src/testHook.ts`):
+`rotate(deg)`, `flip("h"|"v")`, `resetOrientation()`, `orientation()`,
+`thumbnails()`, `bindings.set(id, spec)` / `bindings.reset()`, and the checks
+`checkOrientation()`, `checkThumbnails()`, `checkBindings()`, `selfTest()`.
+Every action is the app's own (the viewport handle, the Settings bindings
+path); the hook waits for the drawn result and compares. The UI e2e drives it
+with `node desktop/scripts/e2e-ui.mjs <study> --only hooks`.
 
 ## Build installers
 

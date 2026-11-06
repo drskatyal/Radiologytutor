@@ -1,10 +1,12 @@
 {
   "name": "flowrad-viewer",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.8.4",
   "type": "module",
   "description": "FlowRad Viewer \u2014 free offline DICOM viewer (Tauri 2). Reuses the web app's lib/ and components/ui.",
   "scripts": {
+    "predev": "node ../scripts/build-voice-worker.mjs",
+    "prebuild": "node ../scripts/build-voice-worker.mjs",
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",

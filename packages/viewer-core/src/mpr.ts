@@ -65,6 +65,13 @@ export interface MprSessionHandle {
   setInvert: (value: boolean) => void;
   resetView: () => void;
   resize: () => void;
+  /**
+   * After the panes change size (layout flip, splitter drag, maximise, window
+   * resize): resize the canvases and fit every plane's image to its pane again,
+   * keeping the slice each plane is on. Without it a plane keeps the zoom it
+   * had in its old box, so a narrower box crops half the anatomy.
+   */
+  fit: () => void;
   setLeftTool: (name: string) => void;
   restoreCrosshairs: () => void;
   /** Thin MPR, MIP slab, or a 3D volume render (needs `elements.volume3d`). */

@@ -547,6 +547,26 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
         /* engine torn down */
       }
     },
+    fit: () => {
+      if (disposed) return;
+      try {
+        engine.resize(true, true);
+      } catch {
+        return; /* engine torn down */
+      }
+      for (const vp of viewports()) {
+        try {
+          // resetToCenter: false keeps the focal point on its slice (the
+          // crosshair centre), only zoom and pan are refitted to the pane.
+          vp.resetCamera({ resetPan: true, resetZoom: true, resetToCenter: false, suppressEvents: true });
+        } catch {
+          /* viewport not ready yet */
+        }
+      }
+      engine.renderViewports?.(viewportIds);
+      const groupNow = tools.ToolGroupManager.getToolGroup(ids.toolGroupId);
+      (groupNow?.getToolInstance?.("Crosshairs") as { computeToolCenter?: () => void } | undefined)?.computeToolCenter?.();
+    },
     setLeftTool,
     restoreCrosshairs: () => {
       const groupNow = tools.ToolGroupManager.getToolGroup(ids.toolGroupId);

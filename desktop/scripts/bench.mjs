@@ -1,21 +1,79 @@
 #!/usr/bin/env node
 // FlowRad Viewer benchmark harness.
 //
-//   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N]
+//   node desktop/scripts/bench.mjs desktop <binary> <study-path> [--runs 5] [--max-first-image-ms N] [--max-group-slice-ms N]
 //   node desktop/scripts/bench.mjs coldstart <binary> [--runs 5] [--max-ms N] [--max-app-ms N]
 //   node desktop/scripts/bench.mjs interact <binary> <study-path> [--max-frame-p95-ms 16.7] [--max-dropped 0]
 //   node desktop/scripts/bench.mjs idle <binary> [--seconds 8]
 //   node desktop/scripts/bench.mjs native <binary> <study-path> [--runs 3]   # Phase 2 native renderer
 //   node desktop/scripts/bench.mjs browser <study-folder> [--runs 3]   # the web "before" path
 //   node desktop/scripts/bench.mjs mpr <binary> <study-path> [--settle 6] [--max-mb 1200] [--max-ms N] [--max-settled-mb N]
-//   (FLOWRAD_BENCH_VIEW=grid: the study open in 2D instead, i.e. idle memory with a study open)
+//   (FLOWRAD_BENCH_VIEW=grid: the study open in 2D instead, i.e. idle memory with a study open;
+//    --max-settled-private-mb / --max-peak-private-mb gate private bytes)
+//   node desktop/scripts/bench.mjs close <binary> <study-path> [--settle 20] [--after-close 30]
+//        [--max-baseline-private-mb N] [--max-open-private-mb N] [--max-close-delta-mb 30]
+//   node desktop/scripts/bench.mjs openclose <binary> <study-path> [--rounds 5] [--hold 20] [--after-close 30]
+//        [--baseline-seconds 10] [--max-round-growth-mb N] [--max-close-delta-mb N]
+//   node desktop/scripts/bench.mjs steps <binary> <study-path> [--max-step-p95-ms N] [--max-step-ms N] [--max-long-tasks N]
+//   node desktop/scripts/bench.mjs hooks <binary> <study-path>
+//
+// Real-hardware runs (the HP; PowerShell from the repo root, the release exe or
+// the installed one, e.g. $exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"):
+//   node desktop/scripts/bench.mjs openclose $exe D:\studies\ct --rounds 5 --hold 20 --after-close 30
+//     Open/close rounds: the empty app's baseline, then the CT opened, closed (Home)
+//     and re-opened by the app's own open path, N rounds. Per round: whole-tree
+//     PRIVATE MB with the study open and after the close, and growth over the
+//     previous close; then growth first → last close (and per round) and the last
+//     close − the empty app. Informational unless --max-round-growth-mb /
+//     --max-close-delta-mb are given.
+//   node desktop/scripts/bench.mjs steps $exe D:\studies\ct
+//     Scripted interaction pass: scroll 120 slices, 60 window/level steps, 24 × 90°
+//     rotations, one step per frame, each timed to its drawn frame. p50 / p95 / max
+//     per kind and overall, the slowest step, and the long-task count (> 50 ms)
+//     during the pass. Informational unless a --max-* flag is given.
+//   node desktop/scripts/bench.mjs hooks $exe D:\studies\ct
+//     The test hook's self-test (window.__flowradTest; bench/test mode only):
+//     rotation and flips applied AND drawn, thumbnails rendered and one per series,
+//     bindings set → resolve → saved → reset all → every command on its preset
+//     (the reader's own bindings are put back afterwards). Exit 1 on any failure.
+//     Each orientation check first waits for the active viewport to have an
+//     image (open settled, the series drawn and its readout rendered, Rust
+//     holding the native cell): "no active viewport with an image after N ms: …"
+//     says which of those never happened.
+//
+// Outside the repo (the MacBook, a reader's PC): this file is self-contained.
+// Copy bench.mjs alone (it needs Node 18+, nothing else: the OS file-cache
+// flush for cold runs is built in, no Python, no flush-file-cache.py) and run
+// it against the installed app. A cold run (`desktop` run 1, `mpr --cold`)
+// drops the OS file cache first, which needs elevation; without it the bench
+// prints a WARNING and reports the cold result with "cacheFlushed": false
+// (it read the study from RAM: not a cold number).
+//   Windows, PowerShell "Run as administrator" (the standby-list purge needs
+//   SeProfileSingleProcessPrivilege; RAMMap64.exe on PATH is the fallback):
+//     $exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"
+//     node C:\bench\bench.mjs desktop $exe D:\studies\ct --runs 5
+//     node C:\bench\bench.mjs hooks $exe D:\studies\ct
+//   macOS, Terminal (`purge` needs sudo: `sudo -v` caches the password first,
+//   because the bench cannot answer a prompt; do NOT run node itself with sudo,
+//   or the app runs as root with root's caches and settings):
+//     APP=$(ls "/Applications/FlowRad Viewer.app/Contents/MacOS/"* | head -1)   # the executable inside the .app
+//     sudo -v && node ~/bench/bench.mjs desktop "$APP" ~/studies/ct --runs 5
+//     node ~/bench/bench.mjs hooks "$APP" ~/studies/ct
+//   Linux: as root, or with passwordless sudo for /proc/sys/vm/drop_caches.
+//
+//   `leak` is the feature on/off test with the study kept open (MPR, 3D, cine,
+//   tools, dialogs); `close` is one open/close round with gates; `openclose` is N.
 //
 // `desktop` launches the real app with FLOWRAD_BENCH=1 FLOWRAD_BENCH_EXIT=1
 // and the study on the command line; the renderer reports one JSON line
 // (scan, first image painted, scan done) and the app exits. The first run is
 // cold (empty scan cache); the rest are warm (cache hits). `coldstart` times
-// process start → first painted start screen, measured in-process AND from the
-// outside (spawn → report). `idle` sums RSS over the app's process tree (the
+// process start → first visible frame, measured in-process AND from the
+// outside (spawn → report). First visible = whichever reaches the screen
+// first: the native splash (Windows: GDI, the same splash as the page's,
+// timed once DWM has composed it; src-tauri/src/splash.rs) or the page's
+// first contentful paint. --max-ms gates first visible; --max-app-ms gates
+// the page's own share as before. `idle` sums RSS over the app's process tree (the
 // WebView runs in child processes) after it settles. `browser` serves the
 // built renderer and drives Chromium through the browser fallback, which is
 // `lib/localDicomFiles.ts` — the same loader /viewer/local uses on the web.
@@ -24,7 +82,7 @@
 // `xvfb-run -a`. Numbers are medians.
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readdirSync, statSync, rmSync, existsSync } from "node:fs";
+import { readdirSync, statSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -117,6 +175,113 @@ function appCacheDir() {
   return path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"), id);
 }
 
+// ───────────── OS file cache flush (cold runs) ─────────────
+// Embedded, so bench.mjs is ONE self-contained file that can be copied
+// anywhere. (The MacBook ran it from outside the repo, where the old
+// flush-file-cache.py beside it was missing, and its "cold" run silently read
+// the study from RAM.) Without a flush, a cold run after the first reads the
+// study from RAM: the HP's cold numbers were not reproducible in CI (0.6.1).
+//
+//   Windows  flush the modified list, then purge the standby list
+//            (NtSetSystemInformation(SystemMemoryListInformation = 80,
+//            MemoryFlushModifiedList = 3, then MemoryPurgeStandbyList = 4)
+//            after enabling SeProfileSingleProcessPrivilege), through Windows
+//            PowerShell with an inline C# P/Invoke. Needs an elevated shell
+//            (GitHub's Windows runners are). Fallback: Sysinternals RAMMap on
+//            PATH (`RAMMap64 -Es`, "Empty Standby List"), also elevated.
+//   macOS    sync, then `purge` as root, or `sudo -n purge`: run `sudo -v`
+//            first so sudo does not need to ask (a password prompt cannot be
+//            answered from here).
+//   Linux    sync, then 3 > /proc/sys/vm/drop_caches as root, else through
+//            `sudo -n`.
+//
+// Never fatal: returns { flushed, how }. When it could not flush, the caller
+// prints a warning and marks the cold result `"cacheFlushed": false`.
+const WINDOWS_PURGE_PS = String.raw`$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowradCacheFlush {
+  [StructLayout(LayoutKind.Sequential)] public struct LUID { public uint Low; public int High; }
+  [StructLayout(LayoutKind.Sequential)] public struct TokenPrivileges { public uint Count; public LUID Luid; public uint Attributes; }
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LookupPrivilegeValue(string system, string name, out LUID luid);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivileges state, uint length, IntPtr previous, IntPtr returnLength);
+  [DllImport("ntdll.dll")] static extern int NtSetSystemInformation(int infoClass, ref int info, int length);
+  public static string Run() {
+    IntPtr token;
+    // TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY
+    if (!OpenProcessToken(GetCurrentProcess(), 0x28, out token)) throw new Exception("OpenProcessToken failed (" + Marshal.GetLastWin32Error() + ")");
+    LUID luid;
+    if (!LookupPrivilegeValue(null, "SeProfileSingleProcessPrivilege", out luid)) throw new Exception("LookupPrivilegeValue failed (" + Marshal.GetLastWin32Error() + ")");
+    TokenPrivileges tp = new TokenPrivileges();
+    tp.Count = 1;
+    tp.Luid = luid;
+    tp.Attributes = 2; // SE_PRIVILEGE_ENABLED
+    // Succeeds even when the privilege is not held: ERROR_NOT_ALL_ASSIGNED (1300) says so.
+    AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+    if (Marshal.GetLastWin32Error() != 0) throw new Exception("SeProfileSingleProcessPrivilege not held (run the shell as administrator)");
+    foreach (int command in new int[] { 3, 4 }) {
+      int value = command;
+      int status = NtSetSystemInformation(80, ref value, 4);
+      if (status != 0) throw new Exception(String.Format("NtSetSystemInformation({0}) NTSTATUS 0x{1:X8}", command, status));
+    }
+    return "windows standby list purged";
+  }
+}
+'@
+[FlowradCacheFlush]::Run()`;
+
+function flushFileCache() {
+  const run = (cmd, args) => spawnSync(cmd, args, { encoding: "utf8", timeout: 60_000 });
+  const said = (r) => `${r.error?.message ?? ""} ${r.stderr ?? ""} ${r.stdout ?? ""}`.replace(/\s+/g, " ").trim() || `exit ${r.status}`;
+  const failures = [];
+  if (process.platform === "win32") {
+    const encoded = Buffer.from(WINDOWS_PURGE_PS, "utf16le").toString("base64");
+    const ps = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]);
+    if (ps.status === 0 && /standby list purged/.test(ps.stdout ?? "")) return { flushed: true, how: "windows standby list purged (NtSetSystemInformation)" };
+    failures.push(`standby-list purge: ${said(ps)}`);
+    for (const exe of ["RAMMap64.exe", "RAMMap.exe"]) {
+      const rm = run(exe, ["-accepteula", "-Es"]);
+      if (rm.error?.code === "ENOENT") continue;
+      if (rm.status === 0) return { flushed: true, how: `windows standby list emptied (${exe} -Es)` };
+      failures.push(`${exe} -Es: ${said(rm)}`);
+      break;
+    }
+  } else if (process.platform === "darwin") {
+    run("sync", []);
+    const root = process.getuid?.() === 0;
+    const purge = root ? run("purge", []) : run("sudo", ["-n", "purge"]);
+    if (purge.status === 0) return { flushed: true, how: `macos purge${root ? "" : " (sudo)"}` };
+    failures.push(`${root ? "purge" : "sudo -n purge"}: ${said(purge)}${root ? "" : " (run `sudo -v` first, so sudo does not need to ask for a password)"}`);
+  } else {
+    run("sync", []);
+    try {
+      writeFileSync("/proc/sys/vm/drop_caches", "3\n");
+      return { flushed: true, how: "linux page cache dropped" };
+    } catch (e) {
+      failures.push(`/proc/sys/vm/drop_caches: ${e.code ?? e.message}`);
+    }
+    const sudo = run("sudo", ["-n", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"]);
+    if (sudo.status === 0) return { flushed: true, how: "linux page cache dropped (sudo)" };
+    failures.push(`sudo -n: ${said(sudo)}`);
+  }
+  return { flushed: false, how: `file cache NOT flushed: ${failures.join("; ")}` };
+}
+
+/** Flush before a cold run; say so loudly when it could not be done. */
+function flushForColdRun(label) {
+  const r = flushFileCache();
+  if (r.flushed) {
+    console.error(`${label}: ${r.how}`);
+  } else {
+    console.error(`WARNING ${label}: ${r.how}`);
+    console.error(`WARNING ${label}: the OS file cache still holds the study, so this "cold" result is NOT cold; it is reported with "cacheFlushed": false (see the bench header for running it elevated).`);
+  }
+  return r;
+}
+
 async function benchDesktop(binary, study) {
   const runs = flag("runs", 5);
   const reports = [];
@@ -130,6 +295,8 @@ async function benchDesktop(binary, study) {
   const warpRetry = process.env.FLOWRAD_BENCH_WARP_RETRY === "1";
   const taskBudgetForRetry = flag("max-long-task-ms", Infinity);
   const discarded = [];
+  /** The OS file cache flush before the cold run (run 1). */
+  let coldFlush = null;
   const violation = (r) => {
     if (rest.includes("--require-gpu") && r.viewport?.renderPath && !["gpu", "native"].includes(r.viewport.renderPath)) return `render path ${r.viewport.renderPath}`;
     if ((r.longTasks?.maxMs ?? 0) > taskBudgetForRetry) return `long task ${r0(r.longTasks.maxMs)} ms (${(r.longTasks.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")})`;
@@ -141,8 +308,7 @@ async function benchDesktop(binary, study) {
       if (i === 0) {
         rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
         // A cold run reads from disk: drop the OS file cache too (elevated CI runners).
-        const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
-        console.error(`run 1: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+        coldFlush = flushForColdRun("run 1");
       }
       report = await runApp(binary, [study]);
       const why = warpRetry ? violation(report) : null;
@@ -159,8 +325,22 @@ async function benchDesktop(binary, study) {
     if (!Number.isFinite(report.firstImageMs)) report.firstImageMs = null;
     reports.push(report);
     console.error(
-      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
+      `run ${i + 1}${i === 0 ? " (cold cache)" : ""}: scan ${r0(report.rust?.totalMs)} ms (rust) · first series ${r0(report.firstSeriesHungMs)} ms · preview ${r0(report.paint?.firstPreviewMs)} ms · first image ${r0(report.firstImageMs)} ms (${report.firstImageSource}; engine paint ${r0(report.enginePaintMs)} ms) · all ready ${r0(report.scanDoneMs)} ms · cache hits ${report.cacheHits} · render ${report.viewport?.renderPath ?? "?"}${report.native?.initMs != null ? ` (native init ${r0(report.native.initMs)} ms${report.native.surfaceWaitMs != null ? `, main-thread wait ${r0(report.native.surfaceWaitMs)}` : ""})` : ""} · engine ${r0(report.engineInitMs)} ms (start ${r0(report.engineStartMs)}, ready ${r0(report.engineReadyMs)}) · grouping ${report.groupSlices ?? "?"} slices, max ${r0(report.groupMaxSliceMs)} ms · long tasks max ${r0(report.longTasks?.maxMs)} ms ${(report.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")}`
     );
+    // The open on one clock (ms after the open; the scan command's marks come
+    // from the process clock): where a late first series spent its time.
+    const at = report.openAtProcessMs;
+    const rs = report.rust ?? {};
+    if (at != null && rs.enteredAtMs != null) {
+      const rel = (x) => (x == null ? "?" : r0(x - at));
+      console.error(
+        `  open timeline: open at ${r0(at)} ms after process start · scan called ${r0(report.scanCalledMs)} · Rust entered ${rel(rs.enteredAtMs)} · first batch sent ${rel(rs.firstBatchAtMs)} · scan returned ${rel(rs.doneAtMs)} · first batch received ${r0(report.firstHeaderMs)} · first series hung ${r0(report.firstSeriesHungMs)}` +
+          ` · view chunks ${r0(report.viewChunksMs)} · viewport asked ${r0(report.firstViewportSentMs)} · first image ${r0(report.firstImageMs)}`
+      );
+      // The native viewport's first show: the round trip and Rust's split of it.
+      const nf = report.nativeFirst;
+      if (nf) console.error(`  first native show: round trip ${nf.roundTripMs} ms · in Rust ${nf.rustMs} (decode ${nf.decodeMs}${nf.cached ? ", from the store" : ""}, frame ${nf.frameMs}, acquire ${nf.acquireMs ?? "?"})`);
+    }
   }
   if (discarded.length) console.error(`${discarded.length} run(s) discarded and repeated on the WARP runner: ${JSON.stringify(discarded)}`);
   const warm = reports.slice(1);
@@ -174,11 +354,15 @@ async function benchDesktop(binary, study) {
     files: reports[0].files,
     images: reports[0].images,
     cold: {
+      // false: the OS file cache could not be dropped, so run 1 read the study from RAM.
+      cacheFlushed: !!coldFlush?.flushed,
+      cacheFlush: coldFlush?.how ?? null,
       rustScanMs: r0(reports[0].rust?.totalMs),
       firstImageMs: r0(reports[0].firstImageMs),
       enginePaintMs: r0(reports[0].enginePaintMs),
       firstVisibleMs: r0(visible(reports[0])),
       allReadyMs: r0(reports[0].scanDoneMs),
+      maxGroupSliceMs: r0(reports[0].groupMaxSliceMs),
     },
     warm: {
       rustScanMs: r0(median(warm.map((r) => r.rust?.totalMs))),
@@ -188,6 +372,7 @@ async function benchDesktop(binary, study) {
       firstPreviewMs: r0(median(warm.map((r) => r.paint?.firstPreviewMs))),
       firstVisibleMs: r0(median(warm.map(visible))),
       maxLongTaskMs: r0(Math.max(...warm.map((r) => r.longTasks?.maxMs ?? 0))),
+      maxGroupSliceMs: r0(Math.max(...warm.map((r) => r.groupMaxSliceMs ?? 0))),
       allReadyMs: r0(median(warm.map((r) => r.scanDoneMs))),
       engineInitMs: r0(median(warm.map((r) => r.engineInitMs))),
     },
@@ -207,6 +392,18 @@ async function benchDesktop(binary, study) {
   if (!(slowestTask <= taskBudget)) {
     console.error(`long-task gate failed: ${r0(slowestTask)} ms > ${taskBudget} ms (${reports.flatMap((r) => r.longTasks?.recent ?? []).map((t) => `${t.name}:${t.ms}`).join(", ")})`);
     process.exitCode = 1;
+  }
+  // Series grouping is time-sliced (desktop/src/study.ts buildStudiesSliced):
+  // the app measures its slowest slice itself (every rebuild of the open, cold
+  // and warm), which no other long task can be booked against.
+  const groupBudget = flag("max-group-slice-ms", Infinity);
+  if (Number.isFinite(groupBudget)) {
+    const slices = reports.map((r) => r.groupMaxSliceMs);
+    const slowestSlice = Math.max(...slices.map((x) => x ?? Infinity));
+    if (!(slowestSlice <= groupBudget)) {
+      console.error(`grouping gate failed: slowest series-grouping slice ${slices.map((x) => (x == null ? "not reported" : `${r0(x)} ms`)).join(", ")} > ${groupBudget} ms`);
+      process.exitCode = 1;
+    }
   }
   // The GPU path must paint: a CPU fallback means it drew blank.
   if (rest.includes("--require-gpu")) {
@@ -228,13 +425,20 @@ async function benchDesktop(binary, study) {
 async function benchColdStart(binary) {
   const runs = flag("runs", 5);
   const inProc = [];
+  const visible = [];
+  const native = [];
   const external = [];
-  const stages = { windowBuiltMs: [], navStartMs: [], jsStartMs: [], navDoneMs: [] };
+  const stages = { windowBuiltMs: [], webviewBuiltMs: [], navStartMs: [], jsStartMs: [], navDoneMs: [] };
   const appShare = [];
   const webviewShare = [];
   for (let i = 0; i < runs; i += 1) {
     const report = await runApp(binary, []);
     inProc.push(report.firstPaintMs);
+    // What the reader sees first. The native splash counts only when the app
+    // reports it composed on screen (nativeFirstPaintMs, splash.rs).
+    const nativeMs = typeof report.nativeFirstPaintMs === "number" ? report.nativeFirstPaintMs : Infinity;
+    if (Number.isFinite(nativeMs)) native.push(nativeMs);
+    visible.push(Math.min(nativeMs, report.firstPaintMs));
     if (typeof report.navStartMs === "number" && typeof report.windowBuiltMs === "number") {
       appShare.push(report.windowBuiltMs + (report.firstPaintMs - report.navStartMs));
       webviewShare.push(report.navStartMs - report.windowBuiltMs);
@@ -242,12 +446,18 @@ async function benchColdStart(binary) {
     external.push(report.externalMs);
     for (const k of Object.keys(stages)) if (typeof report[k] === "number") stages[k].push(report[k]);
     console.error(
-      `run ${i + 1}: first paint ${r0(report.firstPaintMs)} ms · window built ${r0(report.windowBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms${report.nativeFirstPaintMs != null ? ` · native first paint ${r0(report.nativeFirstPaintMs)} ms` : ""}`
+      `run ${i + 1}: first visible ${r0(visible[visible.length - 1])} ms · page first paint ${r0(report.firstPaintMs)} ms · app built ${r0(report.windowBuiltMs)} · webview built ${r0(report.webviewBuiltMs)} · page load start ${r0(report.navStartMs)} · JS start ${r0(report.jsStartMs)} · spawn→report ${r0(report.externalMs)} ms${report.nativeFirstPaintMs != null ? ` · native first paint (${report.nativeFirstPaintSource ?? "native"}) ${r0(report.nativeFirstPaintMs)} ms` : " · no native first paint"}`
     );
+    // The page's share, from its navigation start: what arrived when, and
+    // what the first paint waited for.
+    const pt = report.pageTiming;
+    if (pt) console.error(`  page: html ${pt.html} · css ${pt.css} · entry js ${pt.js} · parsed ${pt.interactive} · DOMContentLoaded ${pt.dcl} · load ${pt.load} · first paint ${pt.fcp} ms`);
   }
-  // Where the time goes before first paint: Rust + window creation
-  // (windowBuiltMs), WebView2 start until it begins loading the page
-  // (navStartMs), page JS start, first paint.
+  // Where the time goes before the page's first paint: Rust + Tauri's build
+  // (windowBuiltMs: the app is built; the window itself is created when the
+  // event loop starts), main window + webview built (webviewBuiltMs), WebView2
+  // start until it begins loading the page (navStartMs), page JS start, first
+  // paint.
   const breakdown = Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, v.length ? r0(median(v)) : null]));
   // Split the total into the two parts with different owners:
   //   webview2Ms  window built → WebView2 starts loading our page (the runtime's
@@ -257,14 +467,30 @@ async function benchColdStart(binary) {
   const webview2Ms = r0(median(webviewShare));
   console.log(
     JSON.stringify(
-      { mode: "coldstart", firstRunMs: r0(inProc[0]), medianMs: r0(median(inProc)), medianExternalMs: r0(median(external)), appMs, webview2Ms, median: breakdown },
+      {
+        mode: "coldstart",
+        // First visible: native splash or page paint, whichever came first (gated).
+        firstVisibleMs: r0(median(visible)),
+        firstRunVisibleMs: r0(visible[0]),
+        nativeFirstPaintMs: native.length ? r0(median(native)) : null,
+        nativeRuns: native.length,
+        // The page's own first paint (as before 0.8.3).
+        firstRunMs: r0(inProc[0]),
+        medianMs: r0(median(inProc)),
+        medianExternalMs: r0(median(external)),
+        appMs,
+        webview2Ms,
+        median: breakdown,
+      },
       null,
       2
     )
   );
   const budget = flag("max-ms", Infinity);
-  if (!(median(inProc) <= budget)) {
-    console.error(`cold-start gate failed: median first paint ${r0(median(inProc))} ms > ${budget} ms`);
+  if (!(median(visible) <= budget)) {
+    console.error(
+      `cold-start gate failed: median first visible ${r0(median(visible))} ms > ${budget} ms (native first paint ${native.length ? `${r0(median(native))} ms in ${native.length}/${runs} runs` : "none"}, page first paint ${r0(median(inProc))} ms)`
+    );
     process.exitCode = 1;
   }
   const appBudget = flag("max-app-ms", Infinity);
@@ -293,7 +519,8 @@ async function benchInteract(binary, study) {
   // Freeze during interaction: the slowest single step of scroll, zoom, W/L.
   const maxStep = flag("max-interaction-ms", Infinity);
   const slowest = Math.max(i.frames.max ?? 0, ...["scroll", "zoom", "windowLevel"].map((k) => i[k].max ?? 0));
-  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms`);
+  const where = i.slowest ? ` (${i.slowest.kind} step ${i.slowest.step}: Rust ${i.slowest.rustMs} ms = decode ${i.slowest.decodeMs} + frame ${i.slowest.frameMs}${i.slowest.acquireMs != null ? `, of which waiting for a drawable ${i.slowest.acquireMs}` : ""})` : "";
+  if (slowest > maxStep) over.push(`slowest interaction step ${slowest} ms > ${maxStep} ms${where}`);
   if (over.length) {
     console.error(`frame-time gate failed: ${over.join("; ")}`);
     process.exitCode = 1;
@@ -373,7 +600,7 @@ function treeMemory(pid) {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine | ConvertTo-Json -Compress",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine,@{n='Created';e={if ($_.CreationDate) { [long]($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds } else { 0 }}} | ConvertTo-Json -Compress",
       ],
       { maxBuffer: 64 * 1024 * 1024 }
     ).toString();
@@ -392,10 +619,16 @@ function treeMemory(pid) {
       seen.add(r.ProcessId);
       const type = /--type=([\w-]+)/.exec(r.CommandLine ?? "")?.[1] ?? (procs.length ? "browser" : "app");
       procs.push({ name: r.Name, type, wsMb: Math.round(r.WorkingSetSize / 1048576), privateMb: Math.round(Number(r.PrivatePageCount) / 1048576) });
-      stack.push(...(kids.get(r.ProcessId) ?? []));
+      // A real child is never older than its parent. Windows reuses PIDs, so
+      // processes whose (long-dead) parent had this PID would otherwise be
+      // counted as the app's: perf-windows once summed 135 system processes
+      // (lsass, svchost, Defender…) into "the app's tree", 3.7 GB.
+      const born = Number(r.Created) || 0;
+      stack.push(...(kids.get(r.ProcessId) ?? []).filter((c) => !born || !Number(c.Created) || Number(c.Created) >= born - 1000));
     }
     return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
   }
+  if (process.platform === "darwin") return treeMemoryMac(pid);
   const ps = execFileSync("ps", ["-e", "-o", "pid=,ppid=,comm="]).toString();
   const rows = ps.trim().split("\n").map((l) => l.trim().split(/\s+/));
   const kids = new Map();
@@ -420,6 +653,107 @@ function treeMemory(pid) {
     stack.push(...(kids.get(p) ?? []));
   }
   return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
+}
+
+/** "[[dd-]hh:]mm:ss" (ps etime) → seconds. */
+function etimeSeconds(t) {
+  const [d, rest] = t.includes("-") ? t.split("-") : ["0", t];
+  return rest.split(":").map(Number).reduce((a, n) => a * 60 + n, 0) + Number(d) * 86400;
+}
+
+/** top's MEM column ("123M", "1.2G", "512K", "40M+") → MB. */
+function topMb(v) {
+  const m = /^([\d.]+)([KMGB]?)/.exec(v ?? "");
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  return m[2] === "G" ? n * 1024 : m[2] === "K" ? n / 1024 : m[2] === "B" ? n / 1048576 : n;
+}
+
+/**
+ * macOS: WKWebView's WebContent / GPU / Networking processes are XPC
+ * services started by launchd (parent pid 1), not children of the app, so a
+ * parent walk misses them. The tree is the app, its descendants, and every
+ * com.apple.WebKit.* process started after it (CI runners run nothing else on
+ * WebKit). "private" is the physical footprint (top's MEM, what Activity
+ * Monitor shows); "ws" is RSS.
+ */
+function treeMemoryMac(pid) {
+  const rows = [];
+  for (const line of execFileSync("ps", ["-axo", "pid=,ppid=,etime=,rss=,comm="]).toString().split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), age: etimeSeconds(m[3]), rssKb: Number(m[4]), comm: m[5] });
+  }
+  const app = rows.find((r) => r.pid === pid);
+  if (!app) return { wsMb: 0, privateMb: 0, processes: [] };
+  const kids = new Map();
+  for (const r of rows) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r]);
+  const tree = [];
+  const stack = [app];
+  const seen = new Set();
+  while (stack.length) {
+    const r = stack.pop();
+    if (seen.has(r.pid)) continue;
+    seen.add(r.pid);
+    tree.push(r);
+    stack.push(...(kids.get(r.pid) ?? []));
+  }
+  for (const r of rows) if (!seen.has(r.pid) && /com\.apple\.WebKit\./.test(r.comm) && r.age <= app.age + 2) tree.push(r);
+  const footprint = new Map();
+  try {
+    const args = ["-l", "1", "-s", "0", "-stats", "pid,mem"];
+    for (const r of tree) args.push("-pid", String(r.pid));
+    for (const line of execFileSync("top", args, { encoding: "utf8" }).split("\n")) {
+      const m = /^\s*(\d+)\s+(\S+)\s*$/.exec(line);
+      if (m) footprint.set(Number(m[1]), topMb(m[2]));
+    }
+  } catch {
+    /* top unavailable: fall back to RSS */
+  }
+  const kind = (r) =>
+    r.pid === pid ? "app" : /WebContent/.test(r.comm) ? "renderer" : /GPU/.test(r.comm) ? "gpu-process" : /Networking/.test(r.comm) ? "utility" : "child";
+  const procs = tree.map((r) => {
+    const wsMb = Math.round(r.rssKb / 1024);
+    return { pid: r.pid, name: path.basename(r.comm), type: kind(r), wsMb, privateMb: Math.round(footprint.get(r.pid) ?? wsMb) };
+  });
+  return { wsMb: procs.reduce((n, p) => n + p.wsMb, 0), privateMb: procs.reduce((n, p) => n + p.privateMb, 0), processes: procs };
+}
+
+/**
+ * macOS: a process's footprint by category (`footprint`: dirty MB per memory
+ * kind: MALLOC_*, IOSurface, IOAccelerator, WebKit / JavaScriptCore, …), so a
+ * close delta names what stayed. Null where `footprint` cannot read the
+ * process.
+ */
+function footprintCategories(pid) {
+  if (process.platform !== "darwin" || !pid) return null;
+  const mb = (v) => {
+    const m = /^([\d.]+)\s*([KMG]?)B$/.exec(v.trim());
+    return m ? Number(m[1]) * ({ "": 1 / 1048576, K: 1 / 1024, M: 1, G: 1024 }[m[2]]) : NaN;
+  };
+  for (const cmd of [["sudo", ["-n", "/usr/bin/footprint", String(pid)]], ["/usr/bin/footprint", [String(pid)]]]) {
+    try {
+      const out = execFileSync(cmd[0], cmd[1], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 20_000 });
+      const cats = {};
+      for (const line of out.split("\n")) {
+        // "  20 MB   0 B   0 B   150   MALLOC_SMALL": dirty, clean, reclaimable, regions, category.
+        const m = /^\s*([\d.]+ ?[KMG]?B)\s+([\d.]+ ?[KMG]?B)\s+([\d.]+ ?[KMG]?B)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+        if (m && m[5] !== "TOTAL") cats[m[5]] = Math.round(mb(m[1]) * 10) / 10;
+      }
+      if (Object.keys(cats).length) return cats;
+    } catch {
+      /* not permitted / not installed: try the next way */
+    }
+  }
+  return null;
+}
+
+/** The categories that moved most between two footprints (MB, signed). */
+function footprintDelta(a, b, top = 8) {
+  if (!a || !b) return "unavailable";
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const d = [...keys].map((k) => [k, Math.round(((b[k] ?? 0) - (a[k] ?? 0)) * 10) / 10]).filter(([, v]) => Math.abs(v) >= 0.5);
+  d.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]));
+  return d.length ? d.slice(0, top).map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${v}`).join(", ") : "no category moved by 0.5 MB";
 }
 
 async function benchIdle(binary) {
@@ -448,6 +782,12 @@ async function benchIdle(binary) {
     `IDLE (${view}${process.env.FLOWRAD_NATIVE === "1" ? ", native" : ""}): whole tree ${mem.wsMb} MB working set (private ${mem.privateMb}) · app ${app?.wsMb ?? "?"} MB · webview ${webviewWs} MB · ${mem.processes.length} processes: ${mem.processes.map((p) => `${p.type ?? p.name} ${p.wsMb}`).join(", ")}`
   );
   console.log(JSON.stringify({ mode: "idle", view, afterSeconds: seconds, appWsMb: app?.wsMb ?? null, webviewWsMb: webviewWs, tree: mem }, null, 2));
+  console.error(`IDLE private by process: ${mem.processes.map((p) => `${p.type ?? p.name} ${p.privateMb}`).join(", ")}`);
+  const maxPrivate = flag("max-private-mb", Infinity);
+  if (mem.privateMb > maxPrivate) {
+    console.error(`idle gate failed: whole tree ${mem.privateMb} MB private > ${maxPrivate} MB`);
+    process.exitCode = 1;
+  }
 }
 
 function listFiles(dir) {
@@ -526,12 +866,14 @@ async function benchMpr(binary, study) {
   const maxMb = flag("max-mb", Infinity);
   const maxMs = flag("max-ms", Infinity);
   const maxSettledMb = flag("max-settled-mb", Infinity);
+  const maxSettledPrivateMb = flag("max-settled-private-mb", Infinity);
+  const maxPeakPrivateMb = flag("max-peak-private-mb", Infinity);
   // --cold: the first open after a cache clear (HP: 988 MB idle cold vs
   // ~330-410 MB warm). No scan cache, and the OS file cache dropped.
+  let coldFlush = null;
   if (rest.includes("--cold")) {
     rmSync(path.join(appCacheDir(), "scan"), { recursive: true, force: true });
-    const flush = spawnSync(process.platform === "win32" ? "python" : "python3", [path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1"), "flush-file-cache.py")], { encoding: "utf8" });
-    console.error(`cold: ${(flush.stdout || flush.stderr || "file cache flush unavailable").trim()}`);
+    coldFlush = flushForColdRun("cold");
   }
   const started = performance.now();
   const child = spawn(binary, [study], {
@@ -576,6 +918,8 @@ async function benchMpr(binary, study) {
     mode: "mpr",
     view: process.env.FLOWRAD_BENCH_VIEW ?? "mpr",
     cold: rest.includes("--cold"),
+    // --cold only. false: the OS file cache could not be dropped (a warm read).
+    ...(coldFlush ? { cacheFlushed: coldFlush.flushed, cacheFlush: coldFlush.how } : {}),
     study,
     images: report.images,
     engineStarted: report.engineInitMs != null || report.engineStartMs != null,
@@ -606,6 +950,9 @@ async function benchMpr(binary, study) {
   if (summary.peakWsMb > maxMb) over.push(`peak working set ${summary.peakWsMb} MB > ${maxMb} MB`);
   if (summary.volumeLoadedMs > maxMs) over.push(`build ${summary.volumeLoadedMs} ms > ${maxMs} ms`);
   if (summary.settledWsMb > maxSettledMb) over.push(`settled working set ${summary.settledWsMb} MB > ${maxSettledMb} MB`);
+  // Private bytes (the HP 0.8.2 gates: commit the app holds, not what is paged in).
+  if (summary.settledPrivateMb > maxSettledPrivateMb) over.push(`settled private ${summary.settledPrivateMb} MB > ${maxSettledPrivateMb} MB`);
+  if (summary.peakPrivateMb > maxPeakPrivateMb) over.push(`peak private ${summary.peakPrivateMb} MB > ${maxPeakPrivateMb} MB`);
   // Native mode draws without the JS engine; starting it costs ~350 ms of
   // main thread on open plus its WebGL context and decode worker.
   if (rest.includes("--require-no-engine") && summary.engineStarted) over.push("the JS engine started in native mode");
@@ -656,7 +1003,323 @@ async function benchNative(binary, study) {
   }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The empty app's whole tree after `seconds` (as a reader starts it), then killed. */
+async function emptyAppBaseline(binary, seconds, cats = () => ({})) {
+  // The app's own account of its private bytes by owner, 1 s before the sample.
+  const empty = spawn(binary, [], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FLOWRAD_MEM_REPORT_MS: String(Math.max(0, seconds * 1000 - 1000)) } });
+  let appMemory = null;
+  let partial = "";
+  empty.stdout.on("data", (d) => {
+    const lines = (partial + d).split("\n");
+    partial = lines.pop() ?? "";
+    for (const l of lines) if (l.startsWith("FLOWRAD_BENCH_MEM ")) appMemory = JSON.parse(l.slice("FLOWRAD_BENCH_MEM ".length));
+  });
+  empty.stderr.on("data", () => undefined);
+  await sleep(seconds * 1000);
+  const baseline = empty.exitCode == null ? treeMemory(empty.pid) : null;
+  const baselineCats = cats(baseline);
+  empty.kill("SIGKILL");
+  await sleep(2000);
+  if (!baseline?.processes.length) throw new Error("the empty app is not running for its baseline");
+  return { baseline, baselineCats, appMemory };
+}
+
+/**
+ * A long-lived bench app (no BENCH_EXIT): every FLOWRAD_BENCH line it prints
+ * is collected; `until` waits for a condition on them (or fails with the
+ * app's output tail when it exits or times out).
+ */
+function spawnBenchApp(binary, args, env) {
+  const child = spawn(binary, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let partial = "";
+  const reports = [];
+  child.stdout.on("data", (d) => {
+    out = (out + d).slice(-8000);
+    const lines = (partial + d).split("\n");
+    partial = lines.pop() ?? "";
+    for (const l of lines) if (REPORT.test(l)) reports.push(JSON.parse(l.replace(REPORT, "")));
+  });
+  child.stderr.on("data", (d) => (out = (out + d).slice(-8000)));
+  const until = async (ok, ms, what) => {
+    const deadline = performance.now() + ms;
+    while (!ok()) {
+      if (child.exitCode != null || performance.now() > deadline) {
+        child.kill("SIGKILL");
+        throw new Error(`no ${what} (exit ${child.exitCode}); output:\n${out.slice(-2000)}`);
+      }
+      await sleep(100);
+    }
+  };
+  return { child, reports, until };
+}
+
+// Open/close rounds: the HP's "memory after close, per round" (0.7.2: +87-228
+// MB, growing 200-340 MB per round). 0.8.2's `close` mode measures one round
+// only, so per-round growth was not measurable. Private bytes, whole tree:
+//   1. baseline   the empty app after --baseline-seconds (default 10);
+//   2. round r    the study open (r > 1: re-opened by the app's own open path
+//                 after the previous close), sampled --hold s (default 20)
+//                 after its report; closed (Home), sampled --hold s later, just
+//                 before the next open; --rounds N (default 5);
+//   3. final      after the last close, sampled --after-close s (default 30) later.
+// Gates (optional): --max-round-growth-mb (last closed − first closed),
+// --max-close-delta-mb (last closed − baseline).
+async function benchOpenClose(binary, study) {
+  const rounds = flag("rounds", 5);
+  const hold = flag("hold", 20);
+  const afterClose = flag("after-close", 30);
+  const { baseline } = await emptyAppBaseline(binary, flag("baseline-seconds", 10));
+  const started = performance.now();
+  const app = spawnBenchApp(binary, [study], benchEnv({ BENCH: "1", BENCH_VIEW: "openclose", BENCH_CLOSE_AFTER_MS: String(hold * 1000), LEAK_ROUNDS: String(rounds) }));
+  const per = [];
+  try {
+    for (let r = 1; r <= rounds; r += 1) {
+      const opened = (x) => !x.closed && x.openClose?.round === r;
+      const closed = (x) => x.closed && x.openClose?.round === r;
+      await app.until(() => app.reports.some(opened), r === 1 ? 180_000 : hold * 1000 + 120_000, `open report for round ${r}`);
+      const openReport = app.reports.find(opened);
+      // Just before the app closes it: the study open and settled.
+      await sleep(Math.max(0, hold * 1000 - 1500));
+      const open = treeMemory(app.child.pid);
+      await app.until(() => app.reports.some(closed), hold * 1000 + 30_000, `close report for round ${r}`);
+      // Just before the app re-opens it (after the last round: --after-close s).
+      await sleep(r < rounds ? Math.max(0, hold * 1000 - 1500) : afterClose * 1000);
+      const shut = treeMemory(app.child.pid);
+      const prev = per[per.length - 1];
+      const row = {
+        round: r,
+        firstImageMs: r0(openReport.firstImageMs),
+        openPrivateMb: open.privateMb,
+        closedPrivateMb: shut.privateMb,
+        growthMb: shut.privateMb - (prev ? prev.closedPrivateMb : baseline.privateMb),
+        openWsMb: open.wsMb,
+        closedWsMb: shut.wsMb,
+        closedByProcess: shut.processes.map((p) => ({ type: p.type ?? p.name, privateMb: p.privateMb })),
+      };
+      per.push(row);
+      console.error(
+        `round ${r}/${rounds}: open ${row.openPrivateMb} MB private · closed ${row.closedPrivateMb} MB (${row.growthMb >= 0 ? "+" : ""}${row.growthMb} MB vs ${prev ? "the previous close" : "the empty app"}) · ws ${row.openWsMb} / ${row.closedWsMb} MB · first image ${row.firstImageMs} ms · ${row.closedByProcess.map((p) => `${p.type} ${p.privateMb}`).join(", ")}`
+      );
+    }
+  } finally {
+    app.child.kill("SIGKILL");
+  }
+  const first = per[0];
+  const last = per[per.length - 1];
+  const summary = {
+    mode: "openclose",
+    study,
+    rounds,
+    holdSeconds: hold,
+    afterCloseSeconds: afterClose,
+    totalSeconds: r0((performance.now() - started) / 1000),
+    baselinePrivateMb: baseline.privateMb,
+    baselineWsMb: baseline.wsMb,
+    perRound: per,
+    // Last close − first close: a steady leak, apart from the first open's warm-up.
+    roundGrowthMb: last.closedPrivateMb - first.closedPrivateMb,
+    perRoundGrowthMb: per.length > 1 ? Math.round(((last.closedPrivateMb - first.closedPrivateMb) / (per.length - 1)) * 10) / 10 : 0,
+    finalClosedPrivateMb: last.closedPrivateMb,
+    closeDeltaPrivateMb: last.closedPrivateMb - baseline.privateMb,
+    maxOpenPrivateMb: Math.max(...per.map((p) => p.openPrivateMb)),
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  console.error(
+    `OPEN/CLOSE: empty app ${baseline.privateMb} MB private · closed ${per.map((p) => p.closedPrivateMb).join(" → ")} MB · first → last close ${summary.roundGrowthMb >= 0 ? "+" : ""}${summary.roundGrowthMb} MB (${summary.perRoundGrowthMb} MB/round) · last close − empty app ${summary.closeDeltaPrivateMb} MB`
+  );
+  const over = [];
+  const maxGrowth = flag("max-round-growth-mb", Infinity);
+  const maxDelta = flag("max-close-delta-mb", Infinity);
+  if (summary.roundGrowthMb > maxGrowth) over.push(`closed private grew ${summary.roundGrowthMb} MB over ${rounds} rounds > ${maxGrowth} MB`);
+  if (summary.closeDeltaPrivateMb > maxDelta) over.push(`after the last close ${summary.finalClosedPrivateMb} MB private = empty app + ${summary.closeDeltaPrivateMb} MB > + ${maxDelta} MB`);
+  if (over.length) {
+    console.error(`open/close gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
+// Scripted interaction pass (desktop/src/benchSteps.ts): with the study open,
+// scroll 120 slices, 60 window/level steps and 24 × 90° rotations, one step
+// per frame, each timed to its drawn frame. p50 / p95 / max per kind and
+// overall, the slowest step, long tasks (> 50 ms) during the pass. Gates
+// (optional): --max-step-p95-ms (each kind's p95), --max-step-ms (slowest
+// step), --max-long-tasks (count during the pass).
+async function benchSteps(binary, study) {
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "steps" }));
+  const st = report.steps;
+  if (!st || st.error) throw new Error(`no steps report: ${JSON.stringify(st ?? report).slice(0, 400)}`);
+  console.log(JSON.stringify({ mode: "steps", study, ...st }, null, 2));
+  const line = (k) => `${k} p50 ${st[k].p50} / p95 ${st[k].p95} / max ${st[k].max} ms (n ${st[k].n})`;
+  console.error(
+    `STEPS (${st.renderPath}): ${["scroll", "windowLevel", "rotate", "all"].map(line).join(" · ")} · slowest ${st.slowest?.kind} step ${st.slowest?.step} ${st.slowest?.ms} ms · long tasks ${st.longTasks.count} (max ${st.longTasks.maxMs} ms${st.longTasks.recent.length ? `: ${st.longTasks.recent.map((t) => `${t.name}:${t.ms}`).join(", ")}` : ""}) · frames > 33 ms ${st.frames.over33}`
+  );
+  const over = [];
+  const maxP95 = flag("max-step-p95-ms", Infinity);
+  const maxStep = flag("max-step-ms", Infinity);
+  const maxTasks = flag("max-long-tasks", Infinity);
+  for (const k of ["scroll", "windowLevel", "rotate"]) if (st[k].p95 > maxP95) over.push(`${k} p95 ${st[k].p95} ms > ${maxP95} ms`);
+  if (st.all.max > maxStep) over.push(`slowest step ${st.all.max} ms > ${maxStep} ms`);
+  if (st.longTasks.count > maxTasks) over.push(`${st.longTasks.count} long tasks > ${maxTasks}`);
+  if (over.length) {
+    console.error(`steps gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
+// Test hook self-test (desktop/src/testHook.ts, window.__flowradTest): with
+// the study open, rotate / flip / reset (state applied AND drawn), thumbnails
+// (one per series, all rendered), bindings (custom set → resolves and saved →
+// reset all → every command back on its preset; the reader's own bindings
+// are put back). Exit 1 on any failed check.
+async function benchHooks(binary, study) {
+  const report = await runApp(binary, [study], benchEnv({ BENCH_VIEW: "hooks", BENCH_TIMEOUT_MS: String(180_000) }));
+  const h = report.hooks;
+  if (!h) throw new Error(`no hooks report: ${JSON.stringify(report).slice(0, 400)}`);
+  for (const c of h.checks ?? []) console.error(`${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? `  — ${c.detail}` : ""}`);
+  console.log(JSON.stringify({ mode: "hooks", study, ok: h.ok, error: h.error, orientation: h.orientation, thumbnails: h.thumbnails, failed: (h.checks ?? []).filter((c) => !c.ok) }, null, 2));
+  if (!h.ok) {
+    console.error(`hooks failed: ${h.error ?? `${(h.checks ?? []).filter((c) => !c.ok).length} check(s)`}`);
+    process.exitCode = 1;
+  }
+}
+
+// Close lifecycle, in PRIVATE bytes over the whole process tree (the HP's
+// numbers for 0.8.1: empty app 362 MB; a CT open 473-497 MB settled; the
+// study closed, 454 MB 30 s later — 90 MB never came back):
+//   1. baseline   the empty app after --baseline-seconds (default 10);
+//   2. open       the study open in 2D (BENCH_VIEW=close), --settle s (default 20) after its report;
+//   3. closed     the app closes it (Home), sampled --after-close s (default 30) later.
+// Gates: --max-baseline-private-mb, --max-open-private-mb, --max-close-delta-mb
+// (closed − baseline). Working set is reported alongside.
+async function benchClose(binary, study) {
+  const baselineSeconds = flag("baseline-seconds", 10);
+  const settle = flag("settle", 20);
+  const afterClose = flag("after-close", 30);
+  const brief = (m) => m && { privateMb: m.privateMb, wsMb: m.wsMb, processes: m.processes.length, byProcess: m.processes.map((p) => ({ type: p.type ?? p.name, privateMb: p.privateMb, wsMb: p.wsMb })) };
+
+  // 1. Baseline: the empty app, as a reader starts it.
+  // macOS: what each process holds, by kind, to name what a close leaves.
+  const cats = (m) => Object.fromEntries((m?.processes ?? []).filter((p) => p.type === "app" || p.type === "renderer").map((p) => [p.type, footprintCategories(p.pid)]));
+  const { baseline, baselineCats, appMemory: emptyApp } = await emptyAppBaseline(binary, baselineSeconds, cats);
+
+  // 2 + 3. The study opened, held, closed.
+  const started = performance.now();
+  const child = spawn(binary, [study], {
+    env: { ...process.env, ...benchEnv({ BENCH: "1", BENCH_VIEW: "close", BENCH_CLOSE_AFTER_MS: String(settle * 1000) }) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  const reports = [];
+  const shellClose = [];
+  let partial = "";
+  child.stdout.on("data", (d) => {
+    out = (out + d).slice(-8000);
+    const lines = (partial + d).split("\n");
+    partial = lines.pop() ?? "";
+    for (const l of lines) {
+      if (REPORT.test(l)) reports.push(JSON.parse(l.replace(REPORT, "")));
+      // The shell's own account of the close: what each cache held, and the
+      // process's commit before / after clearing / after the allocator release.
+      else if (l.startsWith("FLOWRAD_BENCH_CLOSE ")) shellClose.push(JSON.parse(l.slice("FLOWRAD_BENCH_CLOSE ".length)));
+    }
+  });
+  child.stderr.on("data", (d) => (out = (out + d).slice(-8000)));
+  const until = async (ok, ms, what) => {
+    const deadline = performance.now() + ms;
+    while (!ok()) {
+      if (child.exitCode != null || performance.now() > deadline) {
+        child.kill("SIGKILL");
+        throw new Error(`close: no ${what} (exit ${child.exitCode}); output:\n${out.slice(-2000)}`);
+      }
+      await sleep(100);
+    }
+  };
+  await until(() => reports.some((r) => !r.closed), 180_000, "report with the study open");
+  const openedAt = performance.now();
+  // Sample just before the app closes it: the study open and settled.
+  await sleep(Math.max(0, settle * 1000 - 1500));
+  const open = treeMemory(child.pid);
+  const openCats = cats(open);
+  await until(() => reports.some((r) => r.closed), settle * 1000 + 30_000, "close report");
+  await sleep(afterClose * 1000);
+  const closed = treeMemory(child.pid);
+  const closedCats = cats(closed);
+  child.kill("SIGKILL");
+
+  const report = reports.find((r) => !r.closed);
+  const summary = {
+    mode: "close",
+    study,
+    images: report.images,
+    native: process.env.FLOWRAD_NATIVE ?? null,
+    openReportMs: r0(openedAt - started),
+    baselinePrivateMb: baseline.privateMb,
+    openPrivateMb: open.privateMb,
+    closedPrivateMb: closed.privateMb,
+    closeDeltaPrivateMb: closed.privateMb - baseline.privateMb,
+    baselineWsMb: baseline.wsMb,
+    openWsMb: open.wsMb,
+    closedWsMb: closed.wsMb,
+    afterCloseSeconds: afterClose,
+    shellClose,
+    emptyApp,
+    baseline: brief(baseline),
+    open: brief(open),
+    closed: brief(closed),
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  const line = (m) => m.processes.map((p) => `${p.type ?? p.name} ${p.privateMb}`).join(", ");
+  console.error(
+    `CLOSE: private baseline ${baseline.privateMb} MB (${line(baseline)}) · open ${open.privateMb} MB (${line(open)}) · closed +${afterClose} s ${closed.privateMb} MB (${line(closed)}) · delta ${summary.closeDeltaPrivateMb} MB · ws ${baseline.wsMb} / ${open.wsMb} / ${closed.wsMb} MB`
+  );
+  for (const c of shellClose) console.error(`CLOSE (app process): ${JSON.stringify(c)}`);
+  // The app process's private bytes by owner (FLOWRAD_BENCH_MEM / the close
+  // reports' `app`): empty app, study open and idle, then after the GPU release.
+  const owners = (m) =>
+    m &&
+    `private ${m.privateMb} = rust heap ${m.heapMb ?? "?"} + windows heaps ${m.winHeapsMb} (${m.winHeaps}) + stacks ${m.stacksMb} (${m.threads} threads) + other ${m.otherPrivateMb}` +
+    ` [biggest: ${(m.top ?? []).slice(0, 4).map((a) => `${a.committedMb}/${a.reservedMb}`).join(", ")}] · written DLL pages ${m.imageWrittenMb} [${(m.modules ?? []).slice(0, 4).map(([n, v]) => `${n} ${v}`).join(", ")}]`;
+  const byOwner = [
+    ["empty app", emptyApp?.app, emptyApp?.heap],
+    ["study open", shellClose.find((c) => c.openApp)?.openApp, shellClose.find((c) => c.openApp)?.openHeap],
+    ...shellClose.filter((c) => c.app).map((c) => [c.afterS != null ? `${c.afterS} s after the GPU release` : c.step, c.app, c.heap]),
+  ].filter(([, m]) => m);
+  for (const [when, m, heap] of byOwner) console.error(`CLOSE (app by owner, MB) ${when}: ${owners(m)}${heap ? ` · mimalloc ${JSON.stringify(heap)}` : ""}`);
+  if (process.platform === "darwin") {
+    // By kind of memory (footprint, dirty MB): closed vs. the empty app, and
+    // closed vs. open (what the close did not give back).
+    for (const kind of ["app", "renderer"]) {
+      console.error(`CLOSE (${kind}, by kind): closed − baseline: ${footprintDelta(baselineCats[kind], closedCats[kind])} · closed − open: ${footprintDelta(openCats[kind], closedCats[kind])}`);
+    }
+  }
+  // macOS: Metal's own count (in the app's footprint on Apple silicon): after
+  // init (empty app), with the study open, after the close.
+  const metal = report?.native?.gpuAllocatedMb;
+  if (metal != null || report?.native?.gpuAllocatedInitMb != null) {
+    const after = shellClose.find((c) => c.held)?.held?.gpuAllocatedMb;
+    console.error(`CLOSE (Metal): init ${report.native.gpuAllocatedInitMb} MB · open ${metal} MB · after close ${after} MB`);
+  }
+  const over = [];
+  const maxBaseline = flag("max-baseline-private-mb", Infinity);
+  const maxOpen = flag("max-open-private-mb", Infinity);
+  const maxDelta = flag("max-close-delta-mb", Infinity);
+  if (summary.baselinePrivateMb > maxBaseline) over.push(`empty app ${summary.baselinePrivateMb} MB private > ${maxBaseline} MB`);
+  if (summary.openPrivateMb > maxOpen) over.push(`study open ${summary.openPrivateMb} MB private > ${maxOpen} MB`);
+  if (summary.closeDeltaPrivateMb > maxDelta) over.push(`after close ${summary.closedPrivateMb} MB private = baseline + ${summary.closeDeltaPrivateMb} MB > + ${maxDelta} MB`);
+  if (over.length) {
+    console.error(`close gate failed: ${over.join("; ")}`);
+    process.exitCode = 1;
+  }
+}
+
 const modes = {
+  close: () => benchClose(positional[0], positional[1]),
+  openclose: () => benchOpenClose(positional[0], positional[1]),
+  steps: () => benchSteps(positional[0], positional[1]),
+  hooks: () => benchHooks(positional[0], positional[1]),
   native: () => benchNative(positional[0], positional[1]),
   interact: () => benchInteract(positional[0], positional[1]),
   leak: () => benchLeak(positional[0], positional[1]),
@@ -668,7 +1331,7 @@ const modes = {
   browser: () => benchBrowser(positional[0]),
 };
 if (!modes[mode]) {
-  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|interact|leak|multiwindow|native …  (see header)");
+  console.error("usage: bench.mjs desktop|coldstart|idle|browser|mpr|close|openclose|steps|hooks|interact|leak|multiwindow|native …  (see header)");
   process.exit(2);
 }
 await modes[mode]();

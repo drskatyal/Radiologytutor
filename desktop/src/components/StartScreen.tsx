@@ -11,7 +11,7 @@ import { listMedia, type MediaVolume } from "../platform";
 import { prewarmEngine } from "../viewer/engine";
 import { searchHistory, type HistoryEntry } from "../history";
 import { formatDicomDate, formatPersonName } from "../study";
-import { keyLabel } from "../shortcuts";
+import { keysForAction } from "../shortcuts";
 
 interface Props {
   history: HistoryEntry[];
@@ -25,6 +25,11 @@ interface Props {
   dragging: boolean;
   onSettings: () => void;
   onHelp: () => void;
+  /**
+   * The pointer is on a study it may open next: warm what the open will need
+   * (the GPU in native mode, the JS engine otherwise). Default: the engine.
+   */
+  onIntent?: () => void;
 }
 
 function relativeTime(iso: string): string {
@@ -48,7 +53,7 @@ const KIND_ICON = {
   disc: Disc3,
 } as const;
 
-export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp, hidePatient = false }: Props) {
+export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHistory, version, dragging, onSettings, onHelp, hidePatient = false, onIntent = prewarmEngine }: Props) {
   const [media, setMedia] = useState<MediaVolume[] | null>(null);
   const [filter, setFilter] = useState("");
   const needle = filter.trim().toLowerCase();
@@ -100,11 +105,11 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
 
         <section aria-label="Open" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           {[
-            { what: "folder" as const, label: "Folder", hint: keyLabel("Mod+Shift+O"), icon: FolderOpen, primary: true },
-            { what: "files" as const, label: "Files", hint: keyLabel("Mod+O"), icon: Files },
-            { what: "zip" as const, label: "Zip archive", hint: keyLabel("Mod+Shift+Z"), icon: FileArchive },
+            { what: "folder" as const, label: "Folder", hint: keysForAction({ type: "open", what: "folder" }), icon: FolderOpen, primary: true },
+            { what: "files" as const, label: "Files", hint: keysForAction({ type: "open", what: "files" }), icon: Files },
+            { what: "zip" as const, label: "Zip archive", hint: keysForAction({ type: "open", what: "zip" }), icon: FileArchive },
             { what: "dicomdir" as const, label: "DICOMDIR", hint: "", icon: FolderTree },
-            { what: "pacs" as const, label: "PACS", hint: keyLabel("Mod+Shift+P"), icon: Network },
+            { what: "pacs" as const, label: "PACS", hint: keysForAction({ type: "open", what: "pacs" }), icon: Network },
           ].map((item) => (
             <button
               key={item.what}
@@ -131,7 +136,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Discs &amp; USB</h2>
             <Button size="sm" variant="ghost" onClick={() => onOpen("disc")} leadingIcon={<Disc3 className="h-4 w-4" />}>
-              Choose a drive… <Kbd className="ml-1">{keyLabel("Mod+Alt+O")}</Kbd>
+              Choose a drive… <Kbd className="ml-1">{keysForAction({ type: "open", what: "disc" })}</Kbd>
             </Button>
           </div>
           {media === null ? (
@@ -145,7 +150,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               {media.map((v) => {
                 const Icon = v.kind === "optical" ? Disc3 : Usb;
                 return (
-                  <li key={v.path} onPointerEnter={prewarmEngine}>
+                  <li key={v.path} onPointerEnter={onIntent}>
                     <button
                       type="button"
                       onClick={() => onOpenPaths([v.path], "disc")}
@@ -204,7 +209,7 @@ export function StartScreen({ history, onOpen, onOpenPaths, onForget, onClearHis
               {shown.map((entry) => {
                 const Icon = KIND_ICON[entry.kind] ?? FolderTree;
                 return (
-                  <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated" onPointerEnter={prewarmEngine}>
+                  <li key={entry.key} className="group flex items-center gap-3 px-4 py-2.5 hover:bg-elevated" onPointerEnter={onIntent}>
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"

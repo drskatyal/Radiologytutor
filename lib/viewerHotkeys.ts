@@ -19,6 +19,22 @@
 // imperative handle.
 
 import { sliceStepForKey } from "./sliceScrollbar";
+import type { OrientationCommand } from "@flowrad/viewer-core";
+import {
+  effectiveInputs,
+  getLiveBindings,
+  inputIndex,
+  inputKind,
+  inputLabel,
+  isCustomised,
+  isMac,
+  keySpecOf,
+  normalizeSpec,
+  withMouseCommands,
+  type BindingCommand,
+  type BindingOverrides,
+  type BindingTable,
+} from "@flowrad/viewer-core/bindings";
 
 export type ViewerHotkeyAction =
   | { type: "tool"; tool: string }
@@ -33,6 +49,9 @@ export type ViewerHotkeyAction =
   | { type: "overlay" }
   | { type: "mpr" }
   | { type: "layout" }
+  | { type: "orient"; command: OrientationCommand }
+  /** Previous / next series (Mouse 4 / 5 by default; any key the reader binds). */
+  | { type: "series"; delta: 1 | -1 }
   | { type: "help" };
 
 export interface HotkeyEventLike {
@@ -51,6 +70,11 @@ export interface HotkeyOptions {
    * viewer (library, share link, local files) turns it on.
    */
   questionMarkHelp?: boolean;
+  /**
+   * R / Shift+R rotate. Off by default because R is the student session's
+   * exam-mode "reveal"; the standalone viewer turns it on (with `?`).
+   */
+  rotateKey?: boolean;
 }
 
 /** Digit → left-button tool. The order a reading room reaches for them. */
@@ -64,7 +88,8 @@ export const TOOL_DIGITS: Record<string, string> = {
 
 /**
  * Letter → left-button tool, the mnemonic a PACS user already has. None of
- * these is a student-session key (C N P R T F [ Space ?).
+ * these is a student-session key (C N P R T F [ Space ?). R (rotate) is bound
+ * only where no session owns it (`rotateKey`).
  */
 export const TOOL_LETTERS: Record<string, string> = {
   s: "StackScroll",
@@ -77,13 +102,97 @@ export const TOOL_LETTERS: Record<string, string> = {
   b: "RectangleROI",
 };
 
-/** "1 · S" — the tooltip and help sheet read this, so they cannot drift. */
-export function shortcutForTool(tool: string): string | null {
-  const keys: string[] = [];
-  for (const [digit, name] of Object.entries(TOOL_DIGITS)) if (name === tool) keys.push(digit);
-  for (const [letter, name] of Object.entries(TOOL_LETTERS)) {
-    if (name === tool) keys.push(letter.toUpperCase());
-  }
+/**
+ * The web viewer's commands for the bindings engine (docs/BINDINGS_DESIGN.md):
+ * each with its default keys (this surface's preset — the student session
+ * owns C N P R T F [ Space ?, so the web keys differ from the desktop's) and
+ * the action it runs. The shared mouse rows (right drag W/L, middle drag pan,
+ * Ctrl+right drag zoom, wheel scroll, Mouse 4 / 5 series) are appended.
+ */
+interface WebCommand extends BindingCommand {
+  action: ViewerHotkeyAction;
+}
+
+const cmd = (id: string, label: string, group: string, defaults: string[], action: ViewerHotkeyAction): WebCommand => ({
+  id,
+  label,
+  group,
+  kind: "action",
+  defaults,
+  action,
+});
+
+const WEB_ACTIONS: WebCommand[] = [
+  cmd("tool.scroll", "Scroll", "Tools", ["1", "S"], { type: "tool", tool: "StackScroll" }),
+  cmd("tool.wl", "Window / level", "Tools", ["2", "W"], { type: "tool", tool: "WindowLevel" }),
+  cmd("tool.zoom", "Zoom", "Tools", ["3", "Z"], { type: "tool", tool: "Zoom" }),
+  cmd("tool.pan", "Pan", "Tools", ["4", "M"], { type: "tool", tool: "Pan" }),
+  cmd("tool.length", "Length", "Tools", ["5", "L"], { type: "tool", tool: "Length" }),
+  cmd("tool.angle", "Angle", "Tools", ["A"], { type: "tool", tool: "Angle" }),
+  cmd("tool.ellipse", "Ellipse ROI", "Tools", ["E"], { type: "tool", tool: "EllipticalROI" }),
+  cmd("tool.rect", "Rectangle ROI", "Tools", ["B"], { type: "tool", tool: "RectangleROI" }),
+  cmd("slice.prev", "Previous image", "Stack", ["ArrowUp", "ArrowLeft"], { type: "slice", delta: -1 }),
+  cmd("slice.next", "Next image", "Stack", ["ArrowDown", "ArrowRight"], { type: "slice", delta: 1 }),
+  cmd("slice.first", "First image", "Stack", ["Home"], { type: "sliceAbsolute", where: "first" }),
+  cmd("slice.last", "Last image", "Stack", ["End"], { type: "sliceAbsolute", where: "last" }),
+  cmd("series.prev", "Previous series", "Stack", [], { type: "series", delta: -1 }),
+  cmd("series.next", "Next series", "Stack", [], { type: "series", delta: 1 }),
+  cmd("cine", "Play / pause cine", "Stack", ["K"], { type: "cine" }),
+  cmd("cine.slower", "Cine slower", "Stack", [","], { type: "cineFps", delta: -1 }),
+  cmd("cine.faster", "Cine faster", "Stack", ["."], { type: "cineFps", delta: 1 }),
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => cmd(`preset.${n}`, `Window preset ${n}`, "Display", [`Shift+${n}`], { type: "preset", ordinal: n })),
+  cmd("preset.default", "Series default window", "Display", ["Shift+0"], { type: "preset", ordinal: 0 }),
+  cmd("invert", "Invert", "Display", ["I"], { type: "invert" }),
+  cmd("zoom.in", "Zoom in", "Display", ["=", "Shift+="], { type: "zoom", factor: 1.25 }),
+  cmd("zoom.out", "Zoom out", "Display", ["-"], { type: "zoom", factor: 1 / 1.25 }),
+  cmd("reset", "Reset view", "Display", ["0"], { type: "reset" }),
+  cmd("overlay", "Overlay: full → basic → off", "Display", ["O"], { type: "overlay" }),
+  cmd("rotate.cw", "Rotate 90° clockwise", "Rotate / flip", ["R"], { type: "orient", command: "rotate:90" }),
+  cmd("rotate.ccw", "Rotate 90° anticlockwise", "Rotate / flip", ["Shift+R"], { type: "orient", command: "rotate:-90" }),
+  cmd("flip.h", "Flip horizontal", "Rotate / flip", ["H"], { type: "orient", command: "flip:h" }),
+  cmd("flip.v", "Flip vertical", "Rotate / flip", ["V"], { type: "orient", command: "flip:v" }),
+  cmd("mpr", "Stack ↔ MPR", "Layout", ["X"], { type: "mpr" }),
+  cmd("layout", "Cycle hanging layout (where offered)", "Layout", ["G"], { type: "layout" }),
+  cmd("help", "This sheet", "Layout", ["Shift+?"], { type: "help" }),
+];
+
+/** The web viewer's command table: its keyboard preset + the shared mouse rows. */
+export const WEB_COMMANDS: BindingTable = withMouseCommands(WEB_ACTIONS);
+
+const ACTION_BY_ID = new Map(WEB_ACTIONS.map((c) => [c.id, c.action]));
+const sameAction = (a: ViewerHotkeyAction, b: ViewerHotkeyAction) => JSON.stringify(a) === JSON.stringify(b);
+
+/** The action a command runs (keys, mouse buttons and tilt all resolve here). */
+export function viewerActionForCommand(id: string): ViewerHotkeyAction | undefined {
+  return ACTION_BY_ID.get(id);
+}
+
+/** The command a default resolution belongs to (so a re-mapped command stops answering to it). */
+function commandOfAction(action: ViewerHotkeyAction): string | undefined {
+  if (action.type === "slice") return action.delta < 0 ? "slice.prev" : "slice.next";
+  return WEB_ACTIONS.find((c) => sameAction(c.action, action))?.id;
+}
+
+let cachedIndex: { overrides: BindingOverrides; index: Map<string, string> } | null = null;
+function indexFor(overrides: BindingOverrides): Map<string, string> {
+  if (cachedIndex?.overrides !== overrides) cachedIndex = { overrides, index: inputIndex(WEB_COMMANDS, overrides) };
+  return cachedIndex.index;
+}
+
+/** A mouse click / extra button / tilt (any spec) → the action bound to it. */
+export function resolveViewerInput(spec: string, overrides: BindingOverrides = getLiveBindings()): ViewerHotkeyAction | null {
+  const id = indexFor(overrides).get(normalizeSpec(spec));
+  return (id && ACTION_BY_ID.get(id)) || null;
+}
+
+const keysOf = (specs: readonly string[]) => specs.filter((s) => inputKind(s) === "key");
+
+/** "1 · S" — the tooltip and help sheet read the bindings, so they cannot drift. */
+export function shortcutForTool(tool: string, overrides: BindingOverrides = getLiveBindings(), mac = isMac()): string | null {
+  const eff = effectiveInputs(WEB_COMMANDS, overrides);
+  const keys = WEB_ACTIONS.filter((c) => c.action.type === "tool" && c.action.tool === tool).flatMap((c) =>
+    keysOf(eff.get(c.id) ?? []).map((s) => inputLabel(s, mac))
+  );
   return keys.length ? keys.join(" · ") : null;
 }
 
@@ -97,62 +206,60 @@ export interface ShortcutGroup {
   rows: ShortcutRow[];
 }
 
-/** The viewer's help sheet. Grouped the way the toolbar is. */
-export const VIEWER_SHORTCUT_GROUPS: ShortcutGroup[] = [
-  {
-    title: "Tools (left button · one finger)",
-    rows: [
-      { keys: ["1", "S"], does: "Scroll" },
-      { keys: ["2", "W"], does: "Window / level" },
-      { keys: ["3", "Z"], does: "Zoom" },
-      { keys: ["4", "M"], does: "Pan" },
-      { keys: ["5", "L"], does: "Length" },
-      { keys: ["A"], does: "Angle" },
-      { keys: ["E"], does: "Ellipse ROI" },
-      { keys: ["B"], does: "Rectangle ROI" },
-    ],
-  },
-  {
-    title: "Stack",
-    rows: [
-      { keys: ["↑", "↓"], does: "Previous / next image" },
-      { keys: ["PgUp", "PgDn"], does: "Jump 5% (or Shift + arrow)" },
-      { keys: ["Home", "End"], does: "First / last image" },
-      { keys: ["K"], does: "Play / pause cine" },
-      { keys: [",", "."], does: "Cine slower / faster" },
-    ],
-  },
-  {
-    title: "Display",
-    rows: [
-      { keys: ["Shift", "1…9"], does: "Window preset" },
-      { keys: ["Shift", "0"], does: "Series default window" },
-      { keys: ["I"], does: "Invert" },
-      { keys: ["+", "−"], does: "Zoom in / out" },
-      { keys: ["0"], does: "Reset view" },
-      { keys: ["O"], does: "Overlay: full → basic → off" },
-    ],
-  },
-  {
-    title: "Layout",
-    rows: [
-      { keys: ["X"], does: "Stack ↔ MPR" },
-      { keys: ["G"], does: "Cycle hanging layout (where offered)" },
-      { keys: ["H"], does: "This sheet" },
-    ],
-  },
-];
+const GROUP_TITLES: Record<string, string> = {
+  Tools: "Tools (left button · one finger)",
+  Stack: "Stack",
+  Display: "Display",
+  "Rotate / flip": "Rotate / flip",
+  Layout: "Layout",
+};
 
-/** Mouse and touch map, shown under the keys. Bindings live in CornerstoneViewer. */
-export const VIEWER_POINTER_HINTS: ShortcutRow[] = [
-  { keys: ["Left drag"], does: "Selected tool" },
-  { keys: ["Wheel"], does: "Scroll images" },
-  { keys: ["Right drag"], does: "Zoom" },
-  { keys: ["Middle drag"], does: "Pan" },
-  { keys: ["Pinch"], does: "Zoom and pan (touch)" },
-  { keys: ["One finger"], does: "Selected tool (touch)" },
-  { keys: ["Double-click"], does: "Fit image to the pane" },
-];
+/** The help sheet, from the effective bindings (keys, extra mouse buttons and tilt). */
+export function viewerShortcutGroups(overrides: BindingOverrides = getLiveBindings(), mac = isMac()): ShortcutGroup[] {
+  const eff = effectiveInputs(WEB_COMMANDS, overrides);
+  const groups: ShortcutGroup[] = [];
+  for (const c of WEB_ACTIONS) {
+    const inputs = eff.get(c.id) ?? [];
+    if (!inputs.length) continue;
+    // The nine presets read as one row by default.
+    if (c.id.startsWith("preset.") && c.id !== "preset.default" && !isCustomised(overrides, c.id)) {
+      if (c.id !== "preset.1") continue;
+      push(groups, c.group, { keys: ["Shift", "1…9"], does: "Window preset" });
+      continue;
+    }
+    push(groups, c.group, { keys: inputs.map((s) => inputLabel(s, mac)), does: c.label });
+  }
+  push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });
+  return groups;
+}
+
+function push(groups: ShortcutGroup[], group: string, row: ShortcutRow) {
+  const title = GROUP_TITLES[group] ?? group;
+  let g = groups.find((x) => x.title === title);
+  if (!g) groups.push((g = { title, rows: [] }));
+  g.rows.push(row);
+}
+
+/** Default sheet (static importers: the student cheatsheet). */
+export const VIEWER_SHORTCUT_GROUPS: ShortcutGroup[] = viewerShortcutGroups({}, false);
+
+/** Mouse and touch map, shown under the keys, from the effective bindings. */
+export function viewerPointerHints(overrides: BindingOverrides = getLiveBindings(), mac = isMac()): ShortcutRow[] {
+  const eff = effectiveInputs(WEB_COMMANDS, overrides);
+  const rows: ShortcutRow[] = [{ keys: ["Left drag"], does: "Selected tool" }];
+  for (const c of WEB_COMMANDS) {
+    if (c.kind === "action") continue;
+    for (const s of eff.get(c.id) ?? []) rows.push({ keys: [inputLabel(s, mac)], does: c.kind === "wheel" ? (c.id === "wheel.slab" ? "Zoom" : c.label) : c.label });
+  }
+  rows.push(
+    { keys: ["Pinch"], does: "Zoom and pan (touch)" },
+    { keys: ["One finger"], does: "Selected tool (touch)" },
+    { keys: ["Double-click"], does: "Fit image to the pane" }
+  );
+  return rows;
+}
+
+export const VIEWER_POINTER_HINTS: ShortcutRow[] = viewerPointerHints({}, false);
 
 /** Printable hint for the toolbar/cheatsheet, in the same order. */
 export const VIEWER_HOTKEY_HINTS: { keys: string; does: string }[] = VIEWER_SHORTCUT_GROUPS.flatMap(
@@ -175,10 +282,37 @@ export function isTextTarget(target: EventTarget | null): boolean {
  * the series), so passing 0 still resolves the single-slice keys.
  */
 export function resolveViewerHotkey(
-  event: HotkeyEventLike,
+  event: HotkeyEventLike & { code?: string },
   sliceCount: number = 0,
-  options: HotkeyOptions = {}
+  options: HotkeyOptions = {},
+  overrides: BindingOverrides = getLiveBindings()
 ): ViewerHotkeyAction | null {
+  // The reader's own bindings first (Settings › Mouse & Keyboard): any key,
+  // F13–F24 and Ctrl+Alt combos from mouse software included.
+  if (Object.keys(overrides).length) {
+    const spec = keySpecOf({ key: event.key, code: event.code, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey });
+    const owner = spec ? indexFor(overrides).get(normalizeSpec(spec)) : undefined;
+    if (owner && isCustomised(overrides, owner)) return scaleSlice(ACTION_BY_ID.get(owner) ?? null, sliceCount, event.shiftKey);
+    const fallback = defaultViewerHotkey(event, sliceCount, options);
+    if (!fallback) return null;
+    const id = commandOfAction(fallback);
+    // A re-mapped command no longer answers to its default keys.
+    if (id && isCustomised(overrides, id)) return null;
+    if (owner && owner !== id && isCustomised(overrides, owner)) return null;
+    return fallback;
+  }
+  return defaultViewerHotkey(event, sliceCount, options);
+}
+
+/** A bound slice step keeps the Shift = coarse jump of the arrows. */
+function scaleSlice(action: ViewerHotkeyAction | null, sliceCount: number, shift?: boolean): ViewerHotkeyAction | null {
+  if (!action || action.type !== "slice" || !shift) return action;
+  const coarse = Math.max(2, Math.round(Math.max(1, sliceCount) / 20));
+  return { type: "slice", delta: action.delta * coarse };
+}
+
+/** The web preset's key resolution (lenient: shifted glyphs, Caps Lock). */
+function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options: HotkeyOptions): ViewerHotkeyAction | null {
   // Browser and OS combinations stay theirs.
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
 
@@ -235,8 +369,12 @@ export function resolveViewerHotkey(
       return { type: "mpr" };
     case "g":
       return { type: "layout" };
+    case "r":
+      return options.rotateKey ? { type: "orient", command: event.shiftKey ? "rotate:-90" : "rotate:90" } : null;
     case "h":
-      return { type: "help" };
+      return { type: "orient", command: "flip:h" };
+    case "v":
+      return { type: "orient", command: "flip:v" };
     default:
       return null;
   }
