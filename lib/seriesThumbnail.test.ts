@@ -91,3 +91,36 @@ test("a rescaled CT with no file window is windowed over its MODALITY range (not
   const wrong = renderThumbRgba(s, { ww: 2000, wc: 1100 });
   assert.ok(wrong.rgba[(out.width - 1) * 4] < 140, "documents the bug this guards against");
 });
+
+test("a CT with no file window opens at soft tissue (40 / 400), whatever its range", () => {
+  const s = { width: 2, height: 1, channels: 1 as const, values: new Float32Array([-3024, 3000]) };
+  assert.deepEqual(defaultThumbWindow(s, null, "CT"), { ww: 400, wc: 40 });
+  assert.deepEqual(defaultThumbWindow(s, null, " ct "), { ww: 400, wc: 40 }, "modality is matched as DICOM CS (trim, case)");
+  // The file's own window still wins, first value of a multi-valued one.
+  assert.deepEqual(defaultThumbWindow(s, { windowCenter: "-600\\40", windowWidth: [1500, 400] }, "CT"), { ww: 1500, wc: -600 });
+});
+
+test("without a window, MR / CR / DX use the 1st–99th percentile, so outliers cannot blacken the thumbnail", () => {
+  // 10 000 pixels of anatomy 100…300 plus 1 % padding at −2000 and 0.5 % bright artefact at 30 000.
+  const n = 10_000;
+  const values = new Float32Array(n).map((_, i) => 100 + (i % 201));
+  for (let i = 0; i < 100; i += 1) values[i] = -2000;
+  for (let i = 100; i < 150; i += 1) values[i] = 30_000;
+  const s = { width: 100, height: 100, channels: 1 as const, values };
+  const win = defaultThumbWindow(s, null, "MR");
+  assert.ok(win.wc > 100 && win.wc < 300, `centre inside the anatomy, got ${win.wc}`);
+  assert.ok(win.ww < 2500, `width spans the anatomy, not the outliers, got ${win.ww}`);
+  // Mid-grey anatomy renders mid-grey, not near-black as with the min–max range.
+  const mid = { width: 1, height: 1, channels: 1 as const, values: new Float32Array([200]) };
+  const g = renderThumbRgba(mid, win).rgba[0]!;
+  assert.ok(g > 60, `anatomy is visible (grey ${g})`);
+  const minMax = { ww: 32_000, wc: 14_000 };
+  assert.ok(renderThumbRgba(mid, minMax).rgba[0]! < 20, "the old min–max window put it near black");
+});
+
+test("a flat or empty sample gets a valid window", () => {
+  const flat = { width: 2, height: 1, channels: 1 as const, values: new Float32Array([5, 5]) };
+  assert.deepEqual(defaultThumbWindow(flat, null, "MR"), { ww: 1, wc: 5 });
+  const empty = { width: 0, height: 0, channels: 1 as const, values: new Float32Array(0) };
+  assert.deepEqual(defaultThumbWindow(empty, null, null), { ww: 1, wc: 0 });
+});
