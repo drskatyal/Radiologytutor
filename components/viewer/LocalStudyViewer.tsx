@@ -49,7 +49,7 @@ import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, type HangingLayoutId } from "@flowrad/viewer-core";
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
-import { linkedIndex, planeSign, seriesGeometry } from "@/lib/paneScrollLink";
+import { linkedIndex, planeSign, sameCamera, sameModality, sameWindow, seriesGeometry } from "@/lib/paneScrollLink";
 import type { ViewerEvent } from "@/lib/types";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
@@ -779,6 +779,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   // parallel plane goes to the same place in the patient. Panes of another
   // study (a prior) are linked at what they show when linking starts.
   const [linkScroll, setLinkScroll] = useState(true);
+  // Window / level and zoom + pan follow too when switched on (off by default,
+  // as on the desktop). W/L only between panes of the same modality; zoom only
+  // between parallel planes.
+  const [linkVoi, setLinkVoi] = useState(false);
+  const [linkZoom, setLinkZoom] = useState(false);
   const paneTargets = useMemo(() => {
     if (!multi || !result) return [];
     return [
@@ -787,8 +792,15 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     ];
   }, [multi, result, activeStudy, activeSeries, extraPanes, panesNow]);
   const paneGeoms = useMemo(() => paneTargets.map((t) => seriesGeometry(t.series)), [paneTargets]);
-  const linkLive = useRef({ on: false, geoms: paneGeoms, studies: [] as number[] });
-  linkLive.current = { on: multi && linkScroll, geoms: paneGeoms, studies: paneTargets.map((t) => t.study) };
+  const linkLive = useRef({ on: false, voi: false, zoom: false, geoms: paneGeoms, studies: [] as number[], modalities: [] as (string | undefined)[] });
+  linkLive.current = {
+    on: multi && linkScroll,
+    voi: multi && linkVoi,
+    zoom: multi && linkZoom,
+    geoms: paneGeoms,
+    studies: paneTargets.map((t) => t.study),
+    modalities: paneTargets.map((t) => t.series?.modality),
+  };
   const controlsFor = useCallback(
     (pane: number) => (pane === 0 ? viewerControls.current : paneControls.current[pane - 1]?.current ?? null),
     []
@@ -812,8 +824,28 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const echoes = useRef(new Map<number, number>());
   const onPaneEvent = useCallback(
     (pane: number, event: ViewerEvent) => {
-      if (event.type !== "slice") return;
       const live = linkLive.current;
+      if (event.type === "voi" && live.voi) {
+        live.geoms.forEach((_, other) => {
+          if (other === pane || !sameModality(live.modalities[pane], live.modalities[other])) return;
+          const c = controlsFor(other);
+          // Already there: nothing to apply, and no echo to send back.
+          if (!c?.ready || sameWindow(c.getStartState?.(), event.ww, event.wc)) return;
+          c.applyEvent({ t: 0, type: "voi", ww: event.ww, wc: event.wc });
+        });
+        return;
+      }
+      if (event.type === "camera" && live.zoom) {
+        const src = live.geoms[pane];
+        live.geoms.forEach((dst, other) => {
+          if (other === pane || (src && dst && !planeSign(src, dst))) return;
+          const c = controlsFor(other);
+          if (!c?.ready || sameCamera(c.getStartState?.(), event.zoom, event.pan)) return;
+          c.applyEvent({ t: 0, type: "camera", zoom: event.zoom, pan: event.pan });
+        });
+        return;
+      }
+      if (event.type !== "slice") return;
       if (!live.on) return;
       if (echoes.current.get(pane) === event.index) {
         echoes.current.delete(pane);
@@ -977,8 +1009,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           options={offeredLayouts}
           onChange={setLayoutId}
           dark={reading}
-          linked={multi ? linkScroll : null}
-          onToggleLinked={() => setLinkScroll((on) => !on)}
+          links={multi ? { scroll: linkScroll, voi: linkVoi, zoom: linkZoom } : null}
+          onToggleLink={(what) => (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : setLinkZoom)((on) => !on)}
         />
       )}
       {result && study ? (
@@ -1633,44 +1665,21 @@ function LayoutPicker({
   options,
   onChange,
   dark,
-  linked,
-  onToggleLinked,
+  links,
+  onToggleLink,
 }: {
   value: HangingLayoutId;
   options: { id: HangingLayoutId; label: string }[];
   onChange: (id: HangingLayoutId) => void;
   dark: boolean;
-  /** In a grid: whether the panes scroll together (null: no grid, no toggle). */
-  linked: boolean | null;
-  onToggleLinked: () => void;
+  /** In a grid: what the panes share (null: no grid, no toggles). */
+  links: Record<PaneLink, boolean> | null;
+  onToggleLink: (what: PaneLink) => void;
 }) {
   return (
+    <div className="flex flex-col gap-2">
     <div className="flex items-center justify-between gap-2">
       <span className={cn("text-[11px] font-medium uppercase tracking-wide", dark ? "text-white/50" : "text-muted")}>Layout</span>
-      {linked !== null && (
-        <Tooltip label={linked ? "Panes scroll together (by position)" : "Panes scroll on their own"} side="bottom">
-          <button
-            type="button"
-            aria-pressed={linked}
-            aria-label="Link scroll"
-            onClick={onToggleLinked}
-            className={cn(
-              "ml-auto inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-              linked
-                ? dark
-                  ? "bg-white/15 text-white"
-                  : "bg-elevated text-primary shadow-sm"
-                : dark
-                  ? "text-white/55 hover:text-white"
-                  : "text-muted hover:text-primary"
-            )}
-          >
-            {linked ? <Link2 className="h-3.5 w-3.5" aria-hidden /> : <Unlink className="h-3.5 w-3.5" aria-hidden />}
-            {linked ? "Linked" : "Unlinked"}
-          </button>
-        </Tooltip>
-      )}
       <div
         role="radiogroup"
         aria-label="Hanging layout"
@@ -1706,8 +1715,50 @@ function LayoutPicker({
         })}
       </div>
     </div>
+    {links && (
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn("text-[11px] font-medium uppercase tracking-wide", dark ? "text-white/50" : "text-muted")}>Link</span>
+        <div role="group" aria-label="Link panes" className="flex items-center gap-1">
+          {PANE_LINKS.map(({ id, label, aria, hint }) => {
+            const on = links[id];
+            return (
+              <Tooltip key={id} label={hint} side="bottom">
+                <button
+                  type="button"
+                  aria-pressed={on}
+                  aria-label={aria}
+                  onClick={() => onToggleLink(id)}
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1 rounded-md border px-1.5 text-[11px] font-medium transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                    on
+                      ? dark
+                        ? "border-white/20 bg-white/15 text-white"
+                        : "border-strong bg-elevated text-primary shadow-sm"
+                      : dark
+                        ? "border-transparent text-white/50 hover:text-white"
+                        : "border-transparent text-muted hover:text-primary"
+                  )}
+                >
+                  {on ? <Link2 className="h-3 w-3" aria-hidden /> : <Unlink className="h-3 w-3" aria-hidden />}
+                  {label}
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </div>
+    )}
+    </div>
   );
 }
+
+type PaneLink = "scroll" | "voi" | "zoom";
+const PANE_LINKS: { id: PaneLink; label: string; aria: string; hint: string }[] = [
+  { id: "scroll", label: "Scroll", aria: "Link scroll", hint: "Panes scroll together, by position in the patient" },
+  { id: "voi", label: "W/L", aria: "Link window / level", hint: "Window / level follows across panes of the same modality" },
+  { id: "zoom", label: "Zoom", aria: "Link zoom and pan", hint: "Zoom and pan follow across panes on the same plane" },
+];
 
 /** Study picker + series buttons, shared by the desktop panel and the phone drawer. */
 function SeriesList({

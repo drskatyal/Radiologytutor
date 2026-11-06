@@ -61,3 +61,21 @@ test("a prior is linked at what it shows now, and the offset is kept while scrol
   assert.equal(linkedIndex(current, 2, prior, offset), 4, "one step on, one step on");
   assert.equal(linkedIndex(current, 0, prior, offset), 2);
 });
+
+test("window / level links only within a modality", async () => {
+  const { sameModality } = await import("./paneScrollLink");
+  assert.equal(sameModality("CT", "ct "), true);
+  assert.equal(sameModality("CT", "MR"), false);
+  assert.equal(sameModality("", ""), false, "unknown modality never links");
+  assert.equal(sameModality(undefined, "CT"), false);
+});
+
+test("a value the pane already shows is not applied again (no echo loop)", async () => {
+  const { sameWindow, sameCamera } = await import("./paneScrollLink");
+  assert.equal(sameWindow({ ww: 400, wc: 40 }, 400.2, 39.8), true);
+  assert.equal(sameWindow({ ww: 400, wc: 40 }, 1500, -600), false);
+  assert.equal(sameWindow({}, 400, 40), false);
+  assert.equal(sameCamera({ zoom: 2, pan: [10, -4] }, 2.001, [10.2, -4.1]), true);
+  assert.equal(sameCamera({ zoom: 2, pan: [10, -4] }, 2.5, [10, -4]), false);
+  assert.equal(sameCamera({ zoom: 1 }, 1, [0, 0]), false);
+});
