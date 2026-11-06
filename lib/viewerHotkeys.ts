@@ -77,15 +77,6 @@ export interface HotkeyOptions {
   rotateKey?: boolean;
 }
 
-/** Digit → left-button tool. The order a reading room reaches for them. */
-export const TOOL_DIGITS: Record<string, string> = {
-  "1": "StackScroll",
-  "2": "WindowLevel",
-  "3": "Zoom",
-  "4": "Pan",
-  "5": "Length",
-};
-
 /**
  * Letter → left-button tool, the mnemonic a PACS user already has. None of
  * these is a student-session key (C N P R T F [ Space ?). R (rotate) is bound
@@ -123,11 +114,11 @@ const cmd = (id: string, label: string, group: string, defaults: string[], actio
 });
 
 const WEB_ACTIONS: WebCommand[] = [
-  cmd("tool.scroll", "Scroll", "Tools", ["1", "S"], { type: "tool", tool: "StackScroll" }),
-  cmd("tool.wl", "Window / level", "Tools", ["2", "W"], { type: "tool", tool: "WindowLevel" }),
-  cmd("tool.zoom", "Zoom", "Tools", ["3", "Z"], { type: "tool", tool: "Zoom" }),
-  cmd("tool.pan", "Pan", "Tools", ["4", "M"], { type: "tool", tool: "Pan" }),
-  cmd("tool.length", "Length", "Tools", ["5", "L"], { type: "tool", tool: "Length" }),
+  cmd("tool.scroll", "Scroll", "Tools", ["S"], { type: "tool", tool: "StackScroll" }),
+  cmd("tool.wl", "Window / level", "Tools", ["W"], { type: "tool", tool: "WindowLevel" }),
+  cmd("tool.zoom", "Zoom", "Tools", ["Z"], { type: "tool", tool: "Zoom" }),
+  cmd("tool.pan", "Pan", "Tools", ["M"], { type: "tool", tool: "Pan" }),
+  cmd("tool.length", "Length", "Tools", ["L"], { type: "tool", tool: "Length" }),
   cmd("tool.angle", "Angle", "Tools", ["A"], { type: "tool", tool: "Angle" }),
   cmd("tool.ellipse", "Ellipse ROI", "Tools", ["E"], { type: "tool", tool: "EllipticalROI" }),
   cmd("tool.rect", "Rectangle ROI", "Tools", ["B"], { type: "tool", tool: "RectangleROI" }),
@@ -140,12 +131,14 @@ const WEB_ACTIONS: WebCommand[] = [
   cmd("cine", "Play / pause cine", "Stack", ["K"], { type: "cine" }),
   cmd("cine.slower", "Cine slower", "Stack", [","], { type: "cineFps", delta: -1 }),
   cmd("cine.faster", "Cine faster", "Stack", ["."], { type: "cineFps", delta: 1 }),
-  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => cmd(`preset.${n}`, `Window preset ${n}`, "Display", [`Shift+${n}`], { type: "preset", ordinal: n })),
-  cmd("preset.default", "Series default window", "Display", ["Shift+0"], { type: "preset", ordinal: 0 }),
+  // Number keys are window presets, as on the desktop viewer (key n = the
+  // preset menu's entry n; Shift+n still works for older muscle memory).
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => cmd(`preset.${n}`, `Window preset ${n}`, "Display", [`${n}`, `Shift+${n}`], { type: "preset", ordinal: n })),
+  cmd("preset.default", "Series default window", "Display", ["0", "Shift+0"], { type: "preset", ordinal: 0 }),
   cmd("invert", "Invert", "Display", ["I"], { type: "invert" }),
   cmd("zoom.in", "Zoom in", "Display", ["=", "Shift+="], { type: "zoom", factor: 1.25 }),
   cmd("zoom.out", "Zoom out", "Display", ["-"], { type: "zoom", factor: 1 / 1.25 }),
-  cmd("reset", "Reset view", "Display", ["0"], { type: "reset" }),
+  cmd("reset", "Reset view", "Display", ["Backspace"], { type: "reset" }),
   cmd("overlay", "Overlay: full → basic → off", "Display", ["O"], { type: "overlay" }),
   cmd("rotate.cw", "Rotate 90° clockwise", "Rotate / flip", ["R"], { type: "orient", command: "rotate:90" }),
   cmd("rotate.ccw", "Rotate 90° anticlockwise", "Rotate / flip", ["Shift+R"], { type: "orient", command: "rotate:-90" }),
@@ -194,6 +187,17 @@ export function shortcutForTool(tool: string, overrides: BindingOverrides = getL
     keysOf(eff.get(c.id) ?? []).map((s) => inputLabel(s, mac))
   );
   return keys.length ? keys.join(" · ") : null;
+}
+
+/**
+ * The first key bound to window preset `ordinal` (0 = series default): "1",
+ * "0", or a reader's own key. Shown on each row of the preset menu.
+ */
+export function shortcutForPreset(ordinal: number, overrides: BindingOverrides = getLiveBindings(), mac = isMac()): string | null {
+  if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal > 9) return null;
+  const id = ordinal === 0 ? "preset.default" : `preset.${ordinal}`;
+  const key = keysOf(effectiveInputs(WEB_COMMANDS, overrides).get(id) ?? [])[0];
+  return key ? inputLabel(key, mac) : null;
 }
 
 export interface ShortcutRow {
@@ -322,18 +326,15 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
   if (event.key === "Home") return { type: "sliceAbsolute", where: "first" };
   if (event.key === "End") return { type: "sliceAbsolute", where: "last" };
 
-  // Shift + digit is a window preset; a bare digit is a tool. Shift+0 is the
-  // series' own window ("full dynamic"), ordinal 0.
-  if (/^[0-9]$/.test(event.key) && event.shiftKey) {
+  // A digit (with or without Shift) is a window preset, as on the desktop
+  // viewer; 0 is the series' own window ("full dynamic"), ordinal 0.
+  if (/^[0-9]$/.test(event.key)) {
     return { type: "preset", ordinal: Number(event.key) };
   }
   // Shift+digit arrives as the shifted glyph on many layouts (! " # …).
   const shifted = "!@#$%^&*(".indexOf(event.key);
   if (shifted >= 0) return { type: "preset", ordinal: shifted + 1 };
   if (event.key === ")") return { type: "preset", ordinal: 0 };
-
-  const tool = TOOL_DIGITS[event.key];
-  if (tool) return { type: "tool", tool };
 
   if (event.key === "?") return options.questionMarkHelp ? { type: "help" } : null;
 
@@ -348,7 +349,7 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
     case "-":
     case "_":
       return { type: "zoom", factor: 1 / 1.25 };
-    case "0":
+    case "Backspace":
       return { type: "reset" };
     case ",":
     case "<":
