@@ -9,6 +9,7 @@ import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
 import { Slider } from "@/components/ui/Slider";
+import { ScrollFade } from "@/components/ui/ScrollFade";
 import {
   ACCELERATION_WINDOW_MS,
   createWheelScrollState,
@@ -47,7 +48,7 @@ export function ShortcutsDialog({
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
     <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description={`${mouseSheetLine(overrides)} Change them in Settings › Mouse & Keyboard.`} size="xl">
-      <div className="flex max-h-[60vh] flex-col gap-6 overflow-y-auto pr-1">
+      <ScrollFade scrollClassName="flex max-h-[60vh] flex-col gap-6 pr-1" data-testid="shortcuts-scroll">
         <div className="grid grid-cols-1 gap-x-8 gap-y-5 md:grid-cols-2">
           {groups.map((group) => (
             <section key={group}>
@@ -81,7 +82,7 @@ export function ShortcutsDialog({
             <VoiceCommandList />
           </section>
         )}
-      </div>
+      </ScrollFade>
     </Modal>
   );
 }
@@ -340,7 +341,7 @@ export function SettingsDialog({
   return (
     <>
     <Modal open={open} onClose={onClose} title="Settings" size="lg">
-      <div className="flex max-h-[65vh] flex-col divide-y divide-subtle overflow-y-auto pr-1">
+      <ScrollFade scrollClassName="flex max-h-[65vh] flex-col divide-y divide-subtle pr-1">
         <section className="pb-3">
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Display</h3>
           <Toggle label="Show DICOM overlay" description="Patient, study and image details in the viewport corners." checked={settings.showOverlay} onChange={(v) => onChange({ showOverlay: v })} />
@@ -470,12 +471,12 @@ export function SettingsDialog({
           </p>
           <p className="mt-1 font-medium text-warning">Not for diagnostic use.</p>
         </section>
-      </div>
+      </ScrollFade>
     </Modal>
     <Modal open={bindingsOpen} onClose={() => setBindingsOpen(false)} title="Mouse & Keyboard" description="Press the button or key you want to bind. Works with any mouse." size="xl">
       {bindingsOpen && (
         <Suspense fallback={<div className="flex justify-center py-10"><Spinner label="Loading bindings" /></div>}>
-          <div className="max-h-[65vh] overflow-y-auto pr-1">
+          <ScrollFade scrollClassName="max-h-[65vh] pr-1" data-testid="bindings-scroll">
             <BindingsPanel
               table={DESKTOP_COMMANDS}
               overrides={settings.bindings ?? {}}
@@ -492,7 +493,7 @@ export function SettingsDialog({
                 if (path) await writeExport(path, new TextEncoder().encode(text));
               }}
             />
-          </div>
+          </ScrollFade>
         </Suspense>
       )}
     </Modal>

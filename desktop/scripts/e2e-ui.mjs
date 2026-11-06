@@ -347,6 +347,21 @@ if (want("keys")) {
   check("keys: voice commands are full phrases (“bone window”)", /“bone window”/.test(boneRow) && !/“bone”/.test(boneRow), boneRow);
   check("keys: the sheet says how to switch voice on (mic / key, a toggle)", /mic button/.test(trigger) && /Shift\+V/.test(trigger) && /toggle, not push-to-talk/.test(trigger), trigger);
   await shot("cheat-sheet");
+  // The list is cut mid-row at the bottom: a fade says there is more, and goes at the end.
+  const sheetScroll = sheet.getByTestId("shortcuts-scroll");
+  const fadeAt = () => sheetScroll.evaluate((el) => ({ above: el.dataset.moreAbove === "true", below: el.dataset.moreBelow === "true" }));
+  const fade0 = await fadeAt().catch(() => null);
+  await sheetScroll.evaluate((el) => {
+    const s = el.firstElementChild;
+    s.scrollTop = s.scrollHeight;
+  }).catch(() => undefined);
+  await settle(200);
+  const fade1 = await fadeAt().catch(() => null);
+  check(
+    "keys: the sheet's list fades at the bottom while there is more, at the top once scrolled",
+    !!fade0 && !!fade1 && fade0.below && !fade0.above && fade1.above && !fade1.below,
+    `${JSON.stringify(fade0)} → ${JSON.stringify(fade1)}`
+  );
   await page.keyboard.press("Escape");
   await settle();
   // Settings lists the same commands.

@@ -47,4 +47,6 @@ export { Tooltip } from "./Tooltip";
 export { Menu, MenuItem, MenuSeparator, MenuLabel } from "./Menu";
 export { CollapsiblePanel } from "./CollapsiblePanel";
 export { ProgressBar } from "./ProgressBar";
+export { ScrollFade } from "./ScrollFade";
+export type { ScrollFadeProps } from "./ScrollFade";
 export type { ProgressBarProps } from "./ProgressBar";
