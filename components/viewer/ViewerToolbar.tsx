@@ -50,7 +50,7 @@ import { cn } from "@/components/ui/cn";
 import { CINE_FPS_OPTIONS } from "@/lib/cinePlayer";
 import type { OverlayDensity } from "@/lib/dicomOverlay";
 import { shortcutForTool } from "@/lib/viewerHotkeys";
-import type { MprMode, MprRender } from "@/lib/mpr";
+import type { MprMode, MprPlane, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
 import { ORIENTATION_COMMANDS, type OrientationCommand } from "@flowrad/viewer-core";
@@ -214,6 +214,12 @@ export interface ViewerToolbarProps {
   /** Thin MPR, MIP slab or 3D, once in MPR. */
   mprRender: MprRender;
   onMprRender: (mode: MprRender) => void;
+  /**
+   * The plane this viewport shows: the series as acquired (stack), one plane
+   * reformatted from the volume and enlarged, or all three. Absent: no switch.
+   */
+  plane?: "acquired" | "all" | MprPlane;
+  onPlane?: (plane: "acquired" | "all" | MprPlane) => void;
   cineOffered: boolean;
   cinePlaying: boolean;
   cineFps: number;
@@ -233,6 +239,14 @@ export interface ViewerToolbarProps {
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
 }
+
+const PLANE_LABEL: Record<"acquired" | "all" | MprPlane, string> = {
+  acquired: "Acquired",
+  all: "All planes",
+  axial: "Axial",
+  coronal: "Coronal",
+  sagittal: "Sagittal",
+};
 
 export function ViewerToolbar(props: ViewerToolbarProps) {
   const {
@@ -333,6 +347,54 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             );
           })}
         </div>
+
+        {props.plane && props.onPlane && mprRender !== "3d" ? (
+          <Menu
+            label="Plane"
+            container={host}
+            trigger={
+              <button
+                type="button"
+                disabled={!ready}
+                aria-label={`Plane, ${PLANE_LABEL[props.plane]}`}
+                data-testid="plane-switch"
+                className={cn(
+                  "ml-1 inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md pl-2 pr-1.5 text-xs font-medium [@media(pointer:coarse)]:h-11",
+                  pressable,
+                  props.plane === "acquired" || props.plane === "all" ? idle : "bg-white/10 text-white"
+                )}
+              >
+                <span className="max-w-[6rem] truncate">{PLANE_LABEL[props.plane]}</span>
+                <ChevronDown className="h-3.5 w-3.5 opacity-70" strokeWidth={2} aria-hidden="true" />
+              </button>
+            }
+          >
+            <MenuLabel>Show this series as</MenuLabel>
+            <MenuItem
+              label="Acquired"
+              hint="Original images"
+              active={props.plane === "acquired"}
+              onSelect={() => props.onPlane?.("acquired")}
+            />
+            <MenuSeparator />
+            {(["axial", "coronal", "sagittal"] as const).map((plane) => (
+              <MenuItem
+                key={plane}
+                label={PLANE_LABEL[plane]}
+                hint="Reformatted"
+                active={props.plane === plane}
+                onSelect={() => props.onPlane?.(plane)}
+              />
+            ))}
+            <MenuSeparator />
+            <MenuItem
+              label="All three planes"
+              hint="MPR"
+              active={props.plane === "all"}
+              onSelect={() => props.onPlane?.("all")}
+            />
+          </Menu>
+        ) : null}
 
         <Divider />
 
