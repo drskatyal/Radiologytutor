@@ -30,7 +30,9 @@ concurrency:
 jobs:
   test-build-visual:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The suite itself takes ~7 min; the margin is for a slow runner, not a hang
+    # (every network step below has its own cap).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,10 +45,22 @@ jobs:
       - run: npm ci
       - name: Unit tests
         run: npm test
+      # The model is pinned by SHA-256, so the packaged tar.gz is cached under
+      # that digest: a cache hit makes no request to the model host at all.
+      - name: Voice model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            public/voice/model.tar.gz
+            desktop/public/voice/model.tar.gz
+          key: voice-model-${{ hashFiles('scripts/voice-model.sha256') }}
       - name: Voice model (served from public/voice) and spoken test commands
+        # A stalled mirror or model download once held this step until the job
+        # limit cancelled the run before the build; cap it and fail fast instead.
+        timeout-minutes: 8
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y espeak-ng ffmpeg
-          python3 scripts/fetch-voice-model.py
+          timeout 240 sudo apt-get update -qq && timeout 240 sudo apt-get install -y espeak-ng ffmpeg
+          timeout 150 python3 scripts/fetch-voice-model.py || { echo "::warning::voice model download failed, retrying once"; sleep 10; timeout 150 python3 scripts/fetch-voice-model.py; }
           python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
       - name: Production build
         # next/font downloads Google Fonts at build time; a bad response from
