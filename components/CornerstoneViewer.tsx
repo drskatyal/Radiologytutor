@@ -1072,6 +1072,12 @@ export default function CornerstoneViewer({
   const [viewMode, setViewMode] = useState<MprMode>("stack");
   // Thin MPR, MIP slab or 3D once the volume is up (lib/mprSession.ts).
   const [mprRender, setMprRender] = useState<MprRender>("mpr");
+  // The plane enlarged to fill the MPR layout (double-click / the plane
+  // switch), or null for the three-pane grid. Back to the grid on Stack.
+  const [mprFocus, setMprFocus] = useState<MprPlane | null>(null);
+  useEffect(() => {
+    if (viewMode === "stack") setMprFocus(null);
+  }, [viewMode]);
   // 3D look and cut plane (shared viewer-core helpers, same as FlowRad Viewer desktop).
   const [surface3d, setSurface3d] = useState<number | null>(null);
   const [cut3d, setCut3d] = useState<{ axis: CutAxis; fraction: number } | null>(null);
@@ -3991,6 +3997,18 @@ export default function CornerstoneViewer({
         setMprRender(mode);
         if (viewMode !== "mpr") setViewMode("mpr");
       }}
+      plane={viewMode === "stack" ? "acquired" : mprFocus ?? "all"}
+      onPlane={(plane) => {
+        if (plane === "acquired") {
+          setViewMode("stack");
+          return;
+        }
+        // One plane reformatted from the series' volume, enlarged in this
+        // viewport; "all" is the three-pane MPR.
+        setMprRender((mode) => (mode === "3d" ? "mpr" : mode));
+        setMprFocus(plane === "all" ? null : plane);
+        if (viewMode !== "mpr") setViewMode("mpr");
+      }}
       cineOffered={cineOffered}
       cinePlaying={cinePlaying}
       cineFps={cineFps}
@@ -4281,6 +4299,10 @@ export default function CornerstoneViewer({
             onPlanePointer={(plane) => {
               activePlaneRef.current = plane;
             }}
+            maximized={mprFocus}
+            onMaximize={setMprFocus}
+            onLayoutChange={() => mprSessionRef.current?.fit()}
+            canDoubleClick={!ANNOTATION_TOOL_NAMES.has(activeTool)}
             axialReadout={
               readout && mprLive
                 ? `Im ${readout.slice} / ${readout.count}${
