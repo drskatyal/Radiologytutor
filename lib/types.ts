@@ -808,15 +808,25 @@ export interface ClickFindingQuestion {
 }
 
 /**
- * AI-graded structured report — typed for forward-compat; not used in the
- * first course-page quiz ship (see lib/reportGrade.ts for the grading path).
+ * AI-graded structured report on a real case. The learner reviews the study
+ * in the viewer and dictates a report; it is graded against the rubric built
+ * from the case's authored findings (lib/reportGrade.ts). The score is never
+ * shown without that rubric.
  */
 export interface ReportQuestion {
   id: string;
   kind: "report";
   prompt: string;
   caseId: string;
-  rubric: string[];
+  /**
+   * Findings the report must cover, by id. Omitted → every finding on the case,
+   * in authored order.
+   */
+  findingIds?: string[];
+  /** Report score (0–100) at or above which the question counts as correct. Default 60. */
+  passMark?: number;
+  /** Legacy free-text rubric lines; the finding-built rubric is what grades. */
+  rubric?: string[];
   modelAnswer?: string;
 }
 
@@ -826,7 +836,7 @@ export type Question = McqQuestion | ClickFindingQuestion | ReportQuestion;
 export type PublicQuestion =
   | Omit<McqQuestion, "correctIndex" | "rationale">
   | Omit<ClickFindingQuestion, "targetMarker" | "toleranceRadiusPct">
-  | Omit<ReportQuestion, "rubric" | "modelAnswer">;
+  | Omit<ReportQuestion, "rubric" | "modelAnswer" | "findingIds">;
 
 export interface Assessment {
   id: string;
@@ -850,9 +860,34 @@ export interface AttemptResponse {
   /** Click-finding coords in [0,1]. */
   x_pct?: number;
   y_pct?: number;
-  /** Free-text report (future). */
+  /** Free-text report. */
   text?: string;
   correct: boolean;
+  /**
+   * Share of the question earned, 0–1. MCQ / click are 0 or 1; a report earns
+   * its rubric score / 100. Missing on attempts stored before partial credit
+   * (read as correct ? 1 : 0).
+   */
+  credit?: number;
+  /** Report questions: the full graded rubric, persisted so review is stable. */
+  reportGrade?: AttemptReportGrade;
+}
+
+/** Report grade as stored on an attempt (mirrors lib/reportGrade ReportGrade). */
+export interface AttemptReportGrade {
+  overall: number;
+  passMark: number;
+  /** "model" when Gemini graded; "local" when the phrase-coverage fallback did. */
+  gradedBy: "model" | "local";
+  bands: Array<{ name: string; score: number; max: number; comment: string }>;
+  modelImpression: string;
+  items: Array<{
+    findingId: string;
+    label: string;
+    verdict: "hit" | "partial" | "missed" | "wrong";
+    gap: string;
+  }>;
+  rubric: Array<{ findingId: string; label: string; gold: string; mustMention: string[] }>;
 }
 
 export interface Attempt {

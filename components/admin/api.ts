@@ -20,6 +20,9 @@ import {
   type UploadResult,
 } from "./types";
 
+import type { Assessment } from "@/lib/types";
+import type { AssessmentDraft } from "@/lib/assessmentDraft";
+
 async function json<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -124,6 +127,45 @@ export async function updateCourse(
 
 export async function deleteCourse(id: string): Promise<void> {
   const res = await fetch(`/api/admin/courses/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  await json<{ ok: true }>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Course post-test (assessment) authoring
+// ---------------------------------------------------------------------------
+
+export interface PostTestCase {
+  caseId: string;
+  title: string;
+  findings: Array<{ id: string; label: string; hasMarker: boolean }>;
+}
+
+export async function fetchCourseAssessment(courseId: string): Promise<{
+  assessment: Assessment | null;
+  cases: PostTestCase[];
+}> {
+  const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/assessment`, {
+    cache: "no-store",
+  });
+  return json(res);
+}
+
+export async function saveCourseAssessment(
+  courseId: string,
+  draft: AssessmentDraft
+): Promise<Assessment> {
+  const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/assessment`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  return (await json<{ assessment: Assessment }>(res)).assessment;
+}
+
+export async function deleteCourseAssessment(courseId: string): Promise<void> {
+  const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/assessment`, {
     method: "DELETE",
   });
   await json<{ ok: true }>(res);
