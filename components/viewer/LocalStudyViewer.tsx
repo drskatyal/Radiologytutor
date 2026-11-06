@@ -1310,6 +1310,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     onActivate={() => setActivePane(0)}
                     defaultTool="StackScroll"
                     questionMarkHelp
+                    readingTools
                     seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                     onChunkLoadError={recoverFromChunkError}
                     voiceOn={voiceOn}
@@ -1362,6 +1363,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           instanceId={`local-pane-${pane}`}
                           defaultTool="StackScroll"
                           questionMarkHelp
+                          readingTools
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                           onChunkLoadError={recoverFromChunkError}
                           onCycleLayout={cycleLayout}

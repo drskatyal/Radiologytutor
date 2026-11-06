@@ -22,9 +22,12 @@ import {
   CaptionsOff,
   ChevronDown,
   Circle,
+  CircleDot,
   Crosshair,
+  DraftingCompass,
   Eraser,
   Keyboard,
+  Lasso,
   MessageSquareText,
   Mic,
   MicOff,
@@ -33,12 +36,14 @@ import {
   Maximize2,
   Minimize2,
   Move,
+  MoveDiagonal2,
   MoveUpRight,
   Pause,
   Play,
   RotateCcw,
   RotateCw,
   Ruler,
+  ScanSearch,
   SlidersHorizontal,
   Square,
   SunMoon,
@@ -83,10 +88,34 @@ export const MEASURE_TOOLS: ViewerTool[] = [
   { name: "Eraser", label: "Eraser (click to delete)" },
 ];
 
+/**
+ * The free viewer's full measure set, as on the desktop: adds Cobb angle,
+ * bidirectional (long / short axis), circle and freehand ROIs and the
+ * magnifying glass. Teaching surfaces keep `MEASURE_TOOLS`: their recordings
+ * and replays are built around those tools.
+ */
+export const READING_MEASURE_TOOLS: ViewerTool[] = [
+  { name: "Length", label: "Length", annotation: true },
+  { name: "Angle", label: "Angle", annotation: true },
+  { name: "CobbAngle", label: "Cobb angle", annotation: true },
+  { name: "Bidirectional", label: "Bidirectional", annotation: true },
+  { name: "EllipticalROI", label: "Ellipse ROI", annotation: true },
+  { name: "RectangleROI", label: "Rectangle ROI", annotation: true },
+  { name: "CircleROI", label: "Circle ROI", annotation: true },
+  { name: "PlanarFreehandROI", label: "Freehand ROI", annotation: true },
+  { name: "Probe", label: "Probe (HU)", annotation: true },
+  { name: "ArrowAnnotate", label: "Arrow", annotation: true },
+  // Reads no measurement: a loupe while the button is held.
+  { name: "Magnify", label: "Magnifying glass" },
+  { name: "Eraser", label: "Eraser (click to delete)" },
+];
+
 export const PRIMARY_TOOLS: ViewerTool[] = [...NAV_TOOLS, ...MEASURE_TOOLS];
+/** Every tool any surface offers (labels, the annotation-tool set). */
+export const ALL_TOOLS: ViewerTool[] = [...NAV_TOOLS, ...READING_MEASURE_TOOLS];
 
 export function toolLabel(name: string): string {
-  return PRIMARY_TOOLS.find((t) => t.name === name)?.label ?? name;
+  return ALL_TOOLS.find((t) => t.name === name)?.label ?? name;
 }
 
 /** MPR only: the left button drags the shared centre of all three planes. */
@@ -104,6 +133,11 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   RectangleROI: Square,
   Probe: Crosshair,
   ArrowAnnotate: MoveUpRight,
+  CobbAngle: DraftingCompass,
+  Bidirectional: MoveDiagonal2,
+  CircleROI: CircleDot,
+  PlanarFreehandROI: Lasso,
+  Magnify: ScanSearch,
   Eraser,
 };
 
@@ -241,6 +275,8 @@ export interface ViewerToolbarProps {
   onVoiceHelp?: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
+  /** The measure menu (default: the teaching set, `MEASURE_TOOLS`). */
+  measureTools?: ViewerTool[];
 }
 
 const PLANE_LABEL: Record<"acquired" | "all" | MprPlane, string> = {
@@ -268,6 +304,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
     cineFps,
     overlay,
     previewLocked = false,
+    measureTools = MEASURE_TOOLS,
   } = props;
   const host = usePortalHost();
   const [measureOpen, setMeasureOpen] = useState(false);
@@ -275,8 +312,8 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
   const claimStage = stage?.claim;
   useEffect(() => claimStage?.(), [claimStage]);
 
-  const activeMeasure = MEASURE_TOOLS.find((t) => t.name === activeTool) ?? MEASURE_TOOLS[0]!;
-  const measureActive = MEASURE_TOOLS.some((t) => t.name === activeTool);
+  const activeMeasure = measureTools.find((t) => t.name === activeTool) ?? measureTools[0]!;
+  const measureActive = measureTools.some((t) => t.name === activeTool);
   const measureBlocked = (tool: ViewerTool) =>
     !measurementsEnabled || (!!tool.annotation && !annotationsEnabled);
   const blockedReason = !measurementsEnabled
@@ -451,7 +488,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             }
           >
             <MenuLabel>Measure</MenuLabel>
-            {MEASURE_TOOLS.map((tool) => (
+            {measureTools.map((tool) => (
               <MenuItem
                 key={tool.name}
                 label={tool.label}

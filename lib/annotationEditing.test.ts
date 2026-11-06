@@ -7,6 +7,7 @@ import {
   describeAnnotation,
   inSeries,
   isEditable,
+  needsFreehandStats,
   onImage,
   type AnnotationLike,
 } from "../packages/viewer-core/src/annotationEditing.ts";
@@ -57,4 +58,16 @@ test("copy value: measurement text with units", () => {
   assert.equal(describeAnnotation(ann("Angle", "i", { cachedStats: { x: { angle: 34.56 } } })), "Angle 34.6°");
   assert.equal(describeAnnotation(ann("ArrowAnnotate", "i", { label: "Lesion" })), "Lesion");
   assert.equal(describeAnnotation(ann("ArrowAnnotate", "i")), "Arrow Annotate");
+});
+
+test("a closed freehand ROI with no stats is flagged for a stats pass; others are left alone", () => {
+  const freehand = (closed: boolean, cachedStats?: Record<string, Record<string, unknown>>) => ({
+    metadata: { toolName: "PlanarFreehandROI", referencedImageId: "i1" },
+    data: { contour: { closed }, cachedStats },
+  });
+  assert.equal(needsFreehandStats(freehand(true, {})), true);
+  assert.equal(needsFreehandStats(freehand(true)), true);
+  assert.equal(needsFreehandStats(freehand(true, { "imageId:i1": { area: 12 } })), false);
+  assert.equal(needsFreehandStats(freehand(false, {})), false, "an open contour has no area");
+  assert.equal(needsFreehandStats({ metadata: { toolName: "CircleROI" }, data: { cachedStats: {} } }), false);
 });

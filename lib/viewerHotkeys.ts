@@ -75,7 +75,23 @@ export interface HotkeyOptions {
    * exam-mode "reveal"; the standalone viewer turns it on (with `?`).
    */
   rotateKey?: boolean;
+  /**
+   * D = Bidirectional. Only where the viewer offers the free viewer's extra
+   * measure tools (READING_MEASURE_TOOLS).
+   */
+  readingTools?: boolean;
 }
+
+/** What the host viewer can do beyond the shared keys (shapes the help sheet). */
+export interface ShortcutSheetOptions {
+  /** The grid can maximise a pane (the free viewer's layouts). */
+  paneMaximize?: boolean;
+  /** The free viewer's extra measure tools (D = Bidirectional). */
+  readingTools?: boolean;
+}
+
+/** Commands that exist only where `readingTools` is on. */
+const READING_TOOL_COMMANDS = new Set(["tool.bidirectional", "tool.cobb", "tool.circle", "tool.freehand", "tool.magnify"]);
 
 /**
  * Letter → left-button tool, the mnemonic a PACS user already has. None of
@@ -122,6 +138,15 @@ const WEB_ACTIONS: WebCommand[] = [
   cmd("tool.angle", "Angle", "Tools", ["A"], { type: "tool", tool: "Angle" }),
   cmd("tool.ellipse", "Ellipse ROI", "Tools", ["E"], { type: "tool", tool: "EllipticalROI" }),
   cmd("tool.rect", "Rectangle ROI", "Tools", ["B"], { type: "tool", tool: "RectangleROI" }),
+  // The free viewer's extra measure tools (READING_MEASURE_TOOLS). Only
+  // Bidirectional has a default key (D, as on the desktop): the desktop's C
+  // and N belong to the student session here. The rest can be bound in
+  // Settings › Mouse & Keyboard.
+  cmd("tool.bidirectional", "Bidirectional", "Tools", ["D"], { type: "tool", tool: "Bidirectional" }),
+  cmd("tool.cobb", "Cobb angle", "Tools", [], { type: "tool", tool: "CobbAngle" }),
+  cmd("tool.circle", "Circle ROI", "Tools", [], { type: "tool", tool: "CircleROI" }),
+  cmd("tool.freehand", "Freehand ROI", "Tools", [], { type: "tool", tool: "PlanarFreehandROI" }),
+  cmd("tool.magnify", "Magnifying glass", "Tools", [], { type: "tool", tool: "Magnify" }),
   cmd("slice.prev", "Previous image", "Stack", ["ArrowUp", "ArrowLeft"], { type: "slice", delta: -1 }),
   cmd("slice.next", "Next image", "Stack", ["ArrowDown", "ArrowRight"], { type: "slice", delta: 1 }),
   cmd("slice.first", "First image", "Stack", ["Home"], { type: "sliceAbsolute", where: "first" }),
@@ -222,14 +247,14 @@ const GROUP_TITLES: Record<string, string> = {
 export function viewerShortcutGroups(
   overrides: BindingOverrides = getLiveBindings(),
   mac = isMac(),
-  /** The host's grid can maximise a pane (the free viewer's layouts). */
-  paneMaximize = false
+  { paneMaximize = false, readingTools = false }: ShortcutSheetOptions = {}
 ): ShortcutGroup[] {
   const eff = effectiveInputs(WEB_COMMANDS, overrides);
   const groups: ShortcutGroup[] = [];
   for (const c of WEB_ACTIONS) {
     const inputs = eff.get(c.id) ?? [];
     if (!inputs.length) continue;
+    if (!readingTools && READING_TOOL_COMMANDS.has(c.id)) continue;
     // The nine presets read as one row by default.
     if (c.id.startsWith("preset.") && c.id !== "preset.default" && !isCustomised(overrides, c.id)) {
       if (c.id !== "preset.1") continue;
@@ -378,6 +403,8 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
       return { type: "layout" };
     case "r":
       return options.rotateKey ? { type: "orient", command: event.shiftKey ? "rotate:-90" : "rotate:90" } : null;
+    case "d":
+      return options.readingTools ? { type: "tool", tool: "Bidirectional" } : null;
     case "h":
       return { type: "orient", command: "flip:h" };
     case "v":

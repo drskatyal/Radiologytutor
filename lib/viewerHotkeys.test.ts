@@ -194,9 +194,22 @@ test("rotate / flip: R, Shift+R, H, V (as on the desktop)", () => {
 
 test("the help lists Enter (maximise a pane) only where the grid can do it", () => {
   const rows = (paneMaximize: boolean) =>
-    viewerShortcutGroups({}, false, paneMaximize).flatMap((g) => g.rows.map((r) => r.keys.join("+")));
+    viewerShortcutGroups({}, false, { paneMaximize }).flatMap((g) => g.rows.map((r) => r.keys.join("+")));
   assert.ok(rows(true).includes("Enter"));
   assert.ok(!rows(false).includes("Enter"), "the case viewer's grid has no maximise");
   // Enter is not a viewport key: the grid owns it.
   assert.equal(resolveViewerHotkey({ key: "Enter" }, 0, {}, {}), null);
+});
+
+test("D is Bidirectional only where the free viewer's extra measure tools are on", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "d" }, 0, { readingTools: true }, {}), { type: "tool", tool: "Bidirectional" });
+  assert.deepEqual(resolveViewerHotkey({ key: "D" }, 0, { readingTools: true }, {}), { type: "tool", tool: "Bidirectional" });
+  assert.equal(resolveViewerHotkey({ key: "d" }, 0, {}, {}), null, "teaching surfaces: D stays free");
+  const does = (readingTools: boolean) =>
+    viewerShortcutGroups({}, false, { readingTools }).flatMap((g) => g.rows.map((r) => r.does));
+  assert.ok(does(true).includes("Bidirectional"));
+  assert.ok(!does(false).includes("Bidirectional"));
+  // Cobb, circle, freehand and the magnifier have no default key (C and N
+  // belong to the student session), so the sheet doesn't list them.
+  assert.ok(!does(true).some((d) => /Cobb|Circle ROI|Freehand|Magnif/.test(d)));
 });
