@@ -25,21 +25,17 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   ChevronUp,
-  Columns2,
   ExternalLink,
   FileArchive,
   FileText,
   FolderOpen,
-  Grid2x2,
   HardDrive,
   Layers,
   Link2,
   Maximize2,
   Minimize2,
-  Rows2,
   ShieldCheck,
   Sparkles,
-  Square,
   Unlink,
   X,
 } from "lucide-react";
@@ -47,7 +43,7 @@ import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { useMultipleScreens } from "@/components/viewer/useMultipleScreens";
 import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner, Tooltip } from "@/components/ui";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
-import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, type HangingLayoutId } from "@flowrad/viewer-core";
+import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, READING_LAYOUTS, type HangingLayoutId } from "@flowrad/viewer-core";
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
 import { linkedIndex, planeSign, sameCamera, sameModality, sameWindow, seriesGeometry } from "@/lib/paneScrollLink";
 import type { ViewerEvent } from "@/lib/types";
@@ -208,18 +204,23 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [firstImageUp, setFirstImageUp] = useState(false);
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
-  // Hanging layout (1 up, side by side, stacked, 2×2). Pane 0 is the main
-  // viewer (activeStudy / activeSeries, the paint-first pipeline); panes 1–3
+  // Hanging layout (the desktop's seven: 1 up to 3×3). Pane 0 is the main
+  // viewer (activeStudy / activeSeries, the paint-first pipeline); panes 1–8
   // each show their own series, from any study of the drop. One toolbar
   // under the grid follows the focused pane.
   const [layoutId, setLayoutId] = useState<HangingLayoutId>("1x1");
+  /** The pane filling the grid (double-click or Enter; Esc restores), or null. */
+  const [maximized, setMaximized] = useState<number | null>(null);
   const [extraPanes, setExtraPanes] = useState<PaneSeries[]>([]);
   const [activePane, setActivePane] = useState(0);
   const activePaneRef = useRef(0);
   activePaneRef.current = activePane;
   const multiRef = useRef(false);
   const [barHost, setBarHost] = useState<HTMLDivElement | null>(null);
-  const paneControls = useRef<MutableRefObject<CornerstoneControls | null>[]>([{ current: null }, { current: null }, { current: null }]);
+  // One controls ref per extra pane of the largest grid (3×3).
+  const paneControls = useRef<MutableRefObject<CornerstoneControls | null>[]>(
+    Array.from({ length: 8 }, () => ({ current: null }))
+  );
   // Voice commands stay on across series (each series mounts its own viewer,
   // which hands the live microphone session to the next: voiceHandoff.ts).
   const [voiceOn, setVoiceOn] = useState(false);
@@ -760,7 +761,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const panesNow = paneCount(layout);
   const multi = !!result && panesNow > 1;
   multiRef.current = multi;
-  const offeredLayouts = layoutsForSeriesCount(flat.length);
+  const offeredLayouts = layoutsForSeriesCount(flat.length, READING_LAYOUTS);
   // Re-hang when the layout or the study changes; keeps what is already hung.
   const mainPaneRef = useRef<PaneSeries>({ study: 0, series: 0 });
   mainPaneRef.current = { study: activeStudy, series: activeSeries };
@@ -774,7 +775,37 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, [layout, panesNow, flat]);
   // A new study starts in its first pane.
   useEffect(() => setActivePane(0), [result]);
-  const cycleLayout = useCallback(() => setLayoutId((current) => nextLayout(current, flat.length)), [flat.length]);
+  // Another layout or study shows the whole grid again.
+  useEffect(() => setMaximized(null), [layoutId, result]);
+  const shown = multi && maximized != null && maximized < panesNow ? maximized : null;
+  const toggleMaximize = useCallback((pane: number) => {
+    setActivePane(pane);
+    setMaximized((m) => (m == null ? pane : null));
+  }, []);
+  // Enter maximises the outlined pane / restores the grid; Esc restores. As on
+  // the desktop. Not while typing, or on a focused button (Enter presses it).
+  useEffect(() => {
+    if (!multi) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat) return;
+      if (e.key !== "Enter" && e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || t.closest("input, textarea, select, button, a, [role=dialog], [role=menu]"))) return;
+      if (e.key === "Escape") {
+        if (maximized == null) return;
+        setMaximized(null);
+        return;
+      }
+      e.preventDefault();
+      toggleMaximize(activePaneRef.current);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [multi, maximized, toggleMaximize]);
+  const cycleLayout = useCallback(
+    () => setLayoutId((current) => nextLayout(current, flat.length, READING_LAYOUTS)),
+    [flat.length]
+  );
   const setLayoutForGrid = useCallback((rows: number, cols: number) => setLayoutId(layoutForGrid(rows, cols)), []);
   // ── Linked scrolling between panes (lib/paneScrollLink.ts) ──
   // On by default, like the reading room: scroll one pane and every pane on a
@@ -905,10 +936,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     if (!multi || !refLines) return;
     const timer = window.setTimeout(refreshPlanes, 500);
     return () => window.clearTimeout(timer);
-  }, [multi, refLines, paneTargets, refreshPlanes]);
-  /** The planes pane `pane` draws: every other pane's. */
+  }, [multi, refLines, paneTargets, refreshPlanes, shown]);
+  /** The planes pane `pane` draws: every other pane's (none while one pane fills the grid). */
   const linesFor = (pane: number): RemotePlane[] | undefined =>
-    multi && refLines ? (panePlanes.filter((p, i) => i !== pane && p) as RemotePlane[]) : undefined;
+    multi && refLines && shown == null ? (panePlanes.filter((p, i) => i !== pane && p) as RemotePlane[]) : undefined;
 
   // A pane that changes size keeps its camera: refit every pane once the grid settles.
   useEffect(() => {
@@ -917,7 +948,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       for (const ref of paneControls.current) if (ref.current?.ready) ref.current.fit?.();
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [layoutId]);
+  }, [layoutId, shown]);
 
   // Series thumbnails: one thumbnailer per opened study, freed with it. It
   // waits for the first image (`firstImageUp`) so it never competes with it.
@@ -1249,8 +1280,20 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               {/* One tree in every layout, so the main viewer never remounts when
                   the grid appears: in 1 up the grid and pane wrappers are
                   `display: contents`. */}
-              <div className={cn(multi ? cn("grid min-h-0 flex-1 gap-px bg-[#1F1F1F]", GRID_CLASS[layoutId]) : "contents")}>
-                <ViewerPane index={0} multi={multi} active={activePane === 0} onDropSeries={hangInPane}>
+              <div
+                data-testid={multi ? "viewer-grid" : undefined}
+                data-maximized={shown ?? undefined}
+                className={cn(multi ? cn("grid min-h-0 flex-1 gap-px bg-[#1F1F1F]", shown != null ? GRID_CLASS["1x1"] : GRID_CLASS[layoutId]) : "contents")}
+              >
+                <ViewerPane
+                  index={0}
+                  multi={multi}
+                  active={activePane === 0}
+                  onDropSeries={hangInPane}
+                  hidden={shown != null && shown !== 0}
+                  maximized={shown === 0}
+                  onToggleMaximize={toggleMaximize}
+                >
                   <CornerstoneViewer
                     key={viewerKey}
                     source={source}
@@ -1273,6 +1316,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     onVoiceChange={setVoiceOn}
                     onCycleLayout={result ? cycleLayout : undefined}
                     onSetLayout={result ? setLayoutForGrid : undefined}
+                    onToggleMaximize={multi ? () => toggleMaximize(0) : undefined}
                     onSeriesStep={(delta) => {
                       const count = study?.series.length ?? 0;
                       if (count > 1) pickSeries((activeSeries + delta + count) % count);
@@ -1294,7 +1338,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     if (!paneSeries) return null;
                     const ids = seriesImageIds(paneSeries, result.imageIdsByFile);
                     return (
-                      <ViewerPane key={pane} index={pane} multi active={activePane === pane} onDropSeries={hangInPane}>
+                      <ViewerPane
+                        key={pane}
+                        index={pane}
+                        multi
+                        active={activePane === pane}
+                        onDropSeries={hangInPane}
+                        hidden={shown != null && shown !== pane}
+                        maximized={shown === pane}
+                        onToggleMaximize={toggleMaximize}
+                      >
                         <CornerstoneViewer
                           key={paneSeries.seriesInstanceUID}
                           source={ids.length ? { kind: "imageIds", key: `pane${pane}:${paneSeries.seriesInstanceUID}`, imageIds: ids } : undefined}
@@ -1313,6 +1366,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           onChunkLoadError={recoverFromChunkError}
                           onCycleLayout={cycleLayout}
                           onSetLayout={setLayoutForGrid}
+                          onToggleMaximize={() => toggleMaximize(pane)}
                           onSeriesStep={(delta) => {
                             const count = flat.length;
                             if (count < 2) return;
@@ -1616,12 +1670,20 @@ function ViewerPane({
   multi,
   active,
   onDropSeries,
+  hidden = false,
+  maximized = false,
+  onToggleMaximize,
   children,
 }: {
   index: number;
   multi: boolean;
   active: boolean;
   onDropSeries: (pane: number, target: PaneSeries) => void;
+  /** Another pane fills the grid: stay mounted (no reload), just not shown. */
+  hidden?: boolean;
+  /** This pane fills the grid. */
+  maximized?: boolean;
+  onToggleMaximize?: (pane: number) => void;
   children: React.ReactNode;
 }) {
   const [over, setOver] = useState(false);
@@ -1631,7 +1693,9 @@ function ViewerPane({
       data-testid="viewer-pane"
       data-pane={index}
       data-active={active || undefined}
-      className="relative min-h-0 min-w-0 bg-imaging"
+      data-maximized={maximized || undefined}
+      aria-hidden={hidden || undefined}
+      className={cn("group/pane relative min-h-0 min-w-0 bg-imaging", hidden && "hidden")}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes(SERIES_DRAG_TYPE)) return;
         event.preventDefault();
@@ -1660,22 +1724,42 @@ function ViewerPane({
               : ""
         )}
       />
-      <span
-        aria-hidden="true"
-        className={cn(
-          // Beside the bottom orientation letter, not on it.
-          "pointer-events-none absolute bottom-1.5 left-1/2 z-20 ml-4 rounded px-1.5 text-[10px] font-semibold tabular-nums",
-          active ? "bg-accent text-accent-foreground" : "bg-black/60 text-white/70"
-        )}
-      >
-        {/* The pane's colour: its reference line in the other panes is drawn in it. */}
+      {/* Beside the bottom orientation letter, not on it: the pane number, then maximise. */}
+      <div className="pointer-events-none absolute bottom-1.5 left-1/2 z-30 ml-4 flex items-center gap-1">
         <span
           aria-hidden="true"
-          className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full"
-          style={{ backgroundColor: monitorColor(index) }}
-        />
-        {index + 1}
-      </span>
+          className={cn(
+            "rounded px-1.5 text-[10px] font-semibold tabular-nums",
+            active ? "bg-accent text-accent-foreground" : "bg-black/60 text-white/70"
+          )}
+        >
+          {/* The pane's colour: its reference line in the other panes is drawn in it. */}
+          <span
+            aria-hidden="true"
+            className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full"
+            style={{ backgroundColor: monitorColor(index) }}
+          />
+          {index + 1}
+        </span>
+        {onToggleMaximize && (
+          <Tooltip label={maximized ? "Restore the grid" : "Maximise this pane (or double-click it)"} shortcut={maximized ? ["Esc"] : ["Enter"]} side="top">
+            <IconButton
+              aria-label={maximized ? `Restore the grid (pane ${index + 1})` : `Maximise pane ${index + 1}`}
+              aria-pressed={maximized}
+              size="sm"
+              onClick={() => onToggleMaximize(index)}
+              className={cn(
+                // Shown on hover, on the outlined pane and while maximised.
+                "pointer-events-auto h-5 w-5 rounded bg-black/60 text-white/80 hover:bg-black/80 hover:text-white [&_svg]:h-3 [&_svg]:w-3",
+                "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/pane:opacity-100",
+                (active || maximized) && "opacity-100"
+              )}
+            >
+              {maximized ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
+            </IconButton>
+          </Tooltip>
+        )}
+      </div>
     </div>
   );
 }
@@ -1688,12 +1772,27 @@ function parseSeriesDrag(data: string): PaneSeries | null {
   return m ? { study: Number(m[1]), series: Number(m[2]) } : null;
 }
 
-const LAYOUT_ICONS: Record<HangingLayoutId, typeof Square> = {
-  "1x1": Square,
-  "1x2": Columns2,
-  "2x1": Rows2,
-  "2x2": Grid2x2,
-};
+/** A layout's icon: its grid of cells, drawn to match every size from 1 up to 3×3. */
+function GridGlyph({ id }: { id: HangingLayoutId }) {
+  const { rows, cols } = layoutById(id);
+  const gap = 1.5;
+  const w = (14 - gap * (cols - 1)) / cols;
+  const h = (14 - gap * (rows - 1)) / rows;
+  return (
+    <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.25} aria-hidden="true">
+      {Array.from({ length: rows * cols }, (_, i) => (
+        <rect
+          key={i}
+          x={1 + (i % cols) * (w + gap)}
+          y={1 + Math.floor(i / cols) * (h + gap)}
+          width={w}
+          height={h}
+          rx={0.75}
+        />
+      ))}
+    </svg>
+  );
+}
 
 /** Grid template per layout. Static strings so Tailwind keeps them. */
 const GRID_CLASS: Record<HangingLayoutId, string> = {
@@ -1701,9 +1800,12 @@ const GRID_CLASS: Record<HangingLayoutId, string> = {
   "1x2": "grid-cols-2 grid-rows-1 max-sm:grid-cols-1 max-sm:grid-rows-2",
   "2x1": "grid-cols-1 grid-rows-2",
   "2x2": "grid-cols-2 grid-rows-2",
+  "1x3": "grid-cols-3 grid-rows-1 max-sm:grid-cols-1 max-sm:grid-rows-3",
+  "2x3": "grid-cols-3 grid-rows-2",
+  "3x3": "grid-cols-3 grid-rows-3",
 };
 
-/** 1 up, side by side, stacked, 2×2: the layouts this drop offers (G cycles them). */
+/** 1 up to 3×3: the layouts this drop offers (G cycles them). */
 function LayoutPicker({
   value,
   options,
@@ -1730,7 +1832,6 @@ function LayoutPicker({
         className={cn("inline-flex items-center rounded-lg border p-0.5", dark ? "border-white/10 bg-black/40" : "border-subtle bg-canvas")}
       >
         {options.map((option) => {
-          const Icon = LAYOUT_ICONS[option.id];
           const on = option.id === value;
           return (
             <Tooltip key={option.id} label={option.label} shortcut={["G"]} side="bottom">
@@ -1752,7 +1853,7 @@ function LayoutPicker({
                       : "text-muted hover:text-primary"
                 )}
               >
-                <Icon className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+                <GridGlyph id={option.id} />
               </button>
             </Tooltip>
           );

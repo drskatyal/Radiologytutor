@@ -219,7 +219,12 @@ const GROUP_TITLES: Record<string, string> = {
 };
 
 /** The help sheet, from the effective bindings (keys, extra mouse buttons and tilt). */
-export function viewerShortcutGroups(overrides: BindingOverrides = getLiveBindings(), mac = isMac()): ShortcutGroup[] {
+export function viewerShortcutGroups(
+  overrides: BindingOverrides = getLiveBindings(),
+  mac = isMac(),
+  /** The host's grid can maximise a pane (the free viewer's layouts). */
+  paneMaximize = false
+): ShortcutGroup[] {
   const eff = effectiveInputs(WEB_COMMANDS, overrides);
   const groups: ShortcutGroup[] = [];
   for (const c of WEB_ACTIONS) {
@@ -234,6 +239,7 @@ export function viewerShortcutGroups(overrides: BindingOverrides = getLiveBindin
     push(groups, c.group, { keys: inputs.map((s) => inputLabel(s, mac)), does: c.label });
   }
   push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });
+  if (paneMaximize) push(groups, "Layout", { keys: ["Enter"], does: "Maximise / restore the outlined pane (or double-click it; Esc restores)" });
   return groups;
 }
 

@@ -4,7 +4,7 @@
 // lists them. The grid itself and the "keep what is hung, fill new panes with
 // series nobody shows yet" rule come from the viewer core (hangingLayout.ts).
 
-import { hangSeries, layoutById, type HangingLayout, type HangingLayoutId } from "@flowrad/viewer-core";
+import { hangSeries, layoutById, layoutForShape, type HangingLayout, type HangingLayoutId } from "@flowrad/viewer-core";
 
 export interface PaneSeries {
   study: number;
@@ -33,8 +33,13 @@ export function hangLocal(layout: HangingLayout, flat: readonly PaneSeries[], pr
   return hangSeries(layout, flat.length, [main, ...prev.slice(1).map((i) => (i >= 0 ? i : -1))], main).map((i) => flat[i]!);
 }
 
-/** A voice "layout one / two / four" (rows × columns) as a hanging layout. */
+/** A voice "layout one / two / three / four / six / nine" (rows × columns) as a hanging layout. */
 export function layoutForGrid(rows: number, cols: number): HangingLayoutId {
+  const exact = layoutForShape(rows, cols);
+  if (exact) return exact.id;
+  if (rows >= 3 && cols >= 3) return "3x3";
+  if (rows >= 2 && cols >= 3) return "2x3";
+  if (cols >= 3) return "1x3";
   if (rows >= 2 && cols >= 2) return "2x2";
   if (cols >= 2) return "1x2";
   if (rows >= 2) return "2x1";

@@ -57,6 +57,7 @@ import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { RemoteReferenceLines, type RemotePlane } from "./viewer/RemoteReferenceLines";
 import type { XVec3 } from "@flowrad/viewer-core";
 import { imageMenu } from "@flowrad/viewer-core";
+import { layoutForShape } from "@flowrad/viewer-core";
 import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
@@ -815,6 +816,7 @@ export default function CornerstoneViewer({
   seriesPanel = null,
   onCycleLayout,
   onSetLayout,
+  onToggleMaximize,
   referencePlanes,
   toolbarHost,
   active = true,
@@ -911,7 +913,12 @@ export default function CornerstoneViewer({
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
   onCycleLayout?: () => void;
-  /** A named layout ("layout two" / "layout four" by voice): rows × columns. */
+  /**
+   * In a grid of panes: double-click maximises this pane / restores the grid
+   * (instead of fitting the image), as on the desktop viewer.
+   */
+  onToggleMaximize?: () => void;
+  /** A named layout ("layout two" / "four" / "six" by voice): rows × columns. */
   onSetLayout?: (rows: number, cols: number) => void;
   /** Other panes' image planes: drawn as reference lines where they cut this image (same frame only). */
   referencePlanes?: readonly RemotePlane[];
@@ -3893,7 +3900,7 @@ export default function CornerstoneViewer({
       case "layout":
         if (onSetLayout) {
           onSetLayout(a.rows, a.cols);
-          return flash(a.rows * a.cols === 1 ? "One up" : a.rows === 1 ? "Side by side" : "2 × 2");
+          return flash(layoutForShape(a.rows, a.cols)?.label ?? `${a.rows} × ${a.cols}`);
         }
         return runViewerAction({ type: "layout" });
       case "preset": {
@@ -4293,7 +4300,8 @@ export default function CornerstoneViewer({
           onDoubleClick={() => {
             // Annotation tools use double-click to edit; leave it to them.
             if (ANNOTATION_TOOL_NAMES.has(activeTool)) return;
-            fitRef.current();
+            if (onToggleMaximize) onToggleMaximize();
+            else fitRef.current();
           }}
           // Focusable so the reading-room keys (lib/viewerHotkeys.ts) can be
           // scoped to the image instead of fighting the session's global keys,
@@ -4461,6 +4469,7 @@ export default function CornerstoneViewer({
           overrides={viewerBindings}
           tab={helpTab}
           onTabChange={setHelpTab}
+          paneMaximize={!!onToggleMaximize}
           voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
         />
         <VoiceStatus

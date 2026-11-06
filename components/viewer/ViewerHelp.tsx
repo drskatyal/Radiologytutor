@@ -121,6 +121,7 @@ export function ViewerHelp({
   tab = "keys",
   onTabChange,
   voice,
+  paneMaximize = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -130,6 +131,8 @@ export function ViewerHelp({
   onTabChange?: (tab: ViewerHelpTab) => void;
   /** Voice commands, where the browser can listen. */
   voice?: ViewerHelpVoice;
+  /** In a grid that can maximise a pane: list Enter / double-click / Esc. */
+  paneMaximize?: boolean;
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -149,7 +152,7 @@ export function ViewerHelp({
   }, [customise]);
 
   if (!open) return null;
-  const groups = viewerShortcutGroups(overrides);
+  const groups = viewerShortcutGroups(overrides, undefined, paneMaximize);
   const pointer = viewerPointerHints(overrides);
   return (
     <div

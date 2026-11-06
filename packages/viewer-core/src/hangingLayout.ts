@@ -4,9 +4,12 @@
 // Pure: the case viewer renders whatever grid this returns. A teaching case
 // is small (a handful of series, sometimes a prior and a current), so the
 // layouts are the ones a reading room actually reaches for — 1 up, side by
-// side, stacked, and a 2×2 — not a configurable protocol engine.
+// side, stacked, and a 2×2 — not a configurable protocol engine. The free
+// viewer adds the desktop's larger grids (1×3, 2×3, 3×3) for studies with
+// many series (`READING_LAYOUTS`).
 
-export type HangingLayoutId = "1x1" | "1x2" | "2x1" | "2x2";
+/** "rows x cols". */
+export type HangingLayoutId = "1x1" | "1x2" | "2x1" | "2x2" | "1x3" | "2x3" | "3x3";
 
 export interface HangingLayout {
   id: HangingLayoutId;
@@ -22,8 +25,24 @@ export const HANGING_LAYOUTS: HangingLayout[] = [
   { id: "2x2", label: "2 × 2", cols: 2, rows: 2 },
 ];
 
+/**
+ * The desktop viewer's seven layouts (its Shift+1…7 order): the case
+ * viewer's four plus three across, two rows of three and a 3×3.
+ */
+export const READING_LAYOUTS: HangingLayout[] = [
+  ...HANGING_LAYOUTS,
+  { id: "1x3", label: "Three across", cols: 3, rows: 1 },
+  { id: "2x3", label: "2 × 3", cols: 3, rows: 2 },
+  { id: "3x3", label: "3 × 3", cols: 3, rows: 3 },
+];
+
 export function layoutById(id: string | null | undefined): HangingLayout {
-  return HANGING_LAYOUTS.find((l) => l.id === id) ?? HANGING_LAYOUTS[0]!;
+  return READING_LAYOUTS.find((l) => l.id === id) ?? READING_LAYOUTS[0]!;
+}
+
+/** The layout with exactly this grid, if there is one. */
+export function layoutForShape(rows: number, cols: number): HangingLayout | undefined {
+  return READING_LAYOUTS.find((l) => l.rows === rows && l.cols === cols);
 }
 
 export function paneCount(layout: HangingLayout): number {
@@ -31,19 +50,21 @@ export function paneCount(layout: HangingLayout): number {
 }
 
 /**
- * Layouts worth offering for this many series. One series still gets
- * side-by-side (same series twice: lung and mediastinal window), but a 2×2 of
- * one series is clutter.
+ * Layouts worth offering for this many series, from `layouts` (the case
+ * viewer's four by default). One series still gets side-by-side (same series
+ * twice: lung and mediastinal window), but a 2×2 of one series is clutter.
+ * Up to four panes are always offered for two or more series; a bigger grid
+ * only when there are series to fill it.
  */
-export function layoutsForSeriesCount(seriesCount: number): HangingLayout[] {
-  if (seriesCount <= 0) return [HANGING_LAYOUTS[0]!];
-  if (seriesCount === 1) return HANGING_LAYOUTS.filter((l) => paneCount(l) <= 2);
-  return HANGING_LAYOUTS;
+export function layoutsForSeriesCount(seriesCount: number, layouts: readonly HangingLayout[] = HANGING_LAYOUTS): HangingLayout[] {
+  if (seriesCount <= 0) return [layouts[0]!];
+  if (seriesCount === 1) return layouts.filter((l) => paneCount(l) <= 2);
+  return layouts.filter((l) => paneCount(l) <= Math.max(4, seriesCount));
 }
 
 /** Next layout for the G key, within what this case offers. */
-export function nextLayout(current: HangingLayoutId, seriesCount: number): HangingLayoutId {
-  const offered = layoutsForSeriesCount(seriesCount);
+export function nextLayout(current: HangingLayoutId, seriesCount: number, layouts: readonly HangingLayout[] = HANGING_LAYOUTS): HangingLayoutId {
+  const offered = layoutsForSeriesCount(seriesCount, layouts);
   const i = offered.findIndex((l) => l.id === current);
   return offered[(i + 1) % offered.length]!.id;
 }

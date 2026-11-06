@@ -7,6 +7,7 @@ import {
   VIEWER_HOTKEY_HINTS,
   isTextTarget,
   resolveViewerHotkey,
+  viewerShortcutGroups,
 } from "./viewerHotkeys";
 
 // Keys the student session already binds on `window`
@@ -189,4 +190,13 @@ test("rotate / flip: R, Shift+R, H, V (as on the desktop)", () => {
   assert.deepEqual(resolveViewerHotkey({ key: "v" }), { type: "orient", command: "flip:v" });
   // Browser combinations stay the browser's.
   assert.equal(resolveViewerHotkey({ key: "r", ctrlKey: true }), null);
+});
+
+test("the help lists Enter (maximise a pane) only where the grid can do it", () => {
+  const rows = (paneMaximize: boolean) =>
+    viewerShortcutGroups({}, false, paneMaximize).flatMap((g) => g.rows.map((r) => r.keys.join("+")));
+  assert.ok(rows(true).includes("Enter"));
+  assert.ok(!rows(false).includes("Enter"), "the case viewer's grid has no maximise");
+  // Enter is not a viewport key: the grid owns it.
+  assert.equal(resolveViewerHotkey({ key: "Enter" }, 0, {}, {}), null);
 });

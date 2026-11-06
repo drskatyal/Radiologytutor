@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HANGING_LAYOUTS,
+  READING_LAYOUTS,
+  layoutForShape,
   hangSeries,
   layoutById,
   layoutsForSeriesCount,
@@ -24,6 +26,27 @@ test("a one-series case is not offered a 2×2", () => {
   );
   assert.equal(layoutsForSeriesCount(3).length, HANGING_LAYOUTS.length);
   assert.deepEqual(layoutsForSeriesCount(0).map((l) => l.id), ["1x1"]);
+});
+
+test("the free viewer offers the desktop's seven layouts, a big grid only with series to fill it", () => {
+  const ids = (n: number) => layoutsForSeriesCount(n, READING_LAYOUTS).map((l) => l.id);
+  assert.deepEqual(
+    READING_LAYOUTS.map((l) => [l.rows, l.cols]),
+    [[1, 1], [1, 2], [2, 1], [2, 2], [1, 3], [2, 3], [3, 3]],
+    "the desktop's Shift+1…7 order"
+  );
+  assert.deepEqual(ids(1), ["1x1", "1x2", "2x1"]);
+  assert.deepEqual(ids(2), ["1x1", "1x2", "2x1", "2x2", "1x3"]);
+  assert.deepEqual(ids(5), ["1x1", "1x2", "2x1", "2x2", "1x3"]);
+  assert.deepEqual(ids(6), ["1x1", "1x2", "2x1", "2x2", "1x3", "2x3"]);
+  assert.deepEqual(ids(12), READING_LAYOUTS.map((l) => l.id));
+  // The case viewer keeps its four.
+  assert.deepEqual(layoutsForSeriesCount(12).map((l) => l.id), ["1x1", "1x2", "2x1", "2x2"]);
+  assert.equal(nextLayout("2x2", 9, READING_LAYOUTS), "1x3");
+  assert.equal(nextLayout("3x3", 9, READING_LAYOUTS), "1x1");
+  assert.equal(paneCount(layoutById("3x3")), 9);
+  assert.equal(layoutForShape(2, 3)?.id, "2x3");
+  assert.equal(layoutForShape(3, 2), undefined);
 });
 
 test("G cycles within the offered layouts", () => {
