@@ -43,7 +43,7 @@ Why our site rather than only GitHub: the release workflow makes **draft** relea
 
 ## Rolling out a release
 
-1. **Build.** Fast-forward `claude/desktop-release` to the integration tip. The `desktop-release` workflow builds Windows and the universal macOS app into a **draft** release with the signed `latest.json`. Its `updater-manifest` job checks the manifest has Windows and macOS, HTTPS URLs and signatures, and uploads it as the `updater-manifest` artifact.
+1. **Build.** Start the `desktop-release` workflow by hand on the integration branch (Actions → desktop-release → Run workflow). It builds Windows and the universal macOS app into a **draft** release with the signed `latest.json`. Its `updater-manifest` job checks the manifest has Windows and macOS, HTTPS URLs and signatures, and uploads it as the `updater-manifest` artifact.
 2. **HP test** the installers from the draft.
 3. **Publish** the GitHub release. This is a person's decision, not CI's; the bundle URLs only work once it is published.
 4. **Open a PR to `lib/desktopChannel.ts`:**

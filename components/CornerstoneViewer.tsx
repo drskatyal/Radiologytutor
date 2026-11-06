@@ -55,7 +55,7 @@ import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { imageMenu } from "@flowrad/viewer-core";
-import { shortcutForTool } from "../lib/viewerHotkeys";
+import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
 import { VoiceStatus } from "./viewer/voice/VoiceStatus";
@@ -195,7 +195,7 @@ import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/type
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
-  presetsForModality,
+  viewerWindowPresets,
   type WindowPreset,
 } from "../lib/windowPresets";
 import { Spinner } from "@/components/ui";
@@ -1108,7 +1108,8 @@ export default function CornerstoneViewer({
   const coronalRef = useRef<HTMLDivElement>(null);
   const sagittalRef = useRef<HTMLDivElement>(null);
 
-  const presets = presetsForModality(modality);
+  // Number-key order, shared with the desktop viewer (key n = entry n).
+  const presets = viewerWindowPresets(modality);
 
   // `source` is often a fresh object with the same study/series (Teach rebuilds
   // the compare descriptor every render). Object identity must not tear the
@@ -3673,14 +3674,14 @@ export default function CornerstoneViewer({
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
     if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
-      if (arg === "auto") return "Shift+0";
+      if (arg === "auto") return shortcutForPreset(0) ?? undefined;
       const i = presets.findIndex((p) => p.id === arg);
-      return i >= 0 && i < 9 ? `Shift+${i + 1}` : undefined;
+      return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
     }
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
-    return ({ invert: "I", reset: "0", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
+    return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
     imageMenu({
@@ -4159,7 +4160,7 @@ export default function CornerstoneViewer({
           inverted,
           presetLabel:
             activePreset && activePreset !== FULL_DYNAMIC_ID
-              ? WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? null
+              ? (presets.find((p) => p.id === activePreset) ?? WINDOW_PRESETS.find((p) => p.id === activePreset))?.label ?? null
               : null,
           cineFps: cinePlaying ? cineFps : null,
         }

@@ -4,23 +4,10 @@
 # synthetic real-size studies; no backend needed).
 name: web-ci
 
+# Runs only when started by hand (Actions → this workflow → Run workflow):
+# Actions minutes cost money, so nothing runs on push, PR or tag. Tests and
+# the build run locally before merge and are listed in the PR description.
 on:
-  pull_request:
-    paths:
-      - "app/**"
-      - "components/**"
-      - "lib/**"
-      - "packages/**"
-      - "e2e/visual/**"
-      - "scripts/make-test-ct.py"
-      - "scripts/make-test-mr.py"
-      - "scripts/perf/**"
-      - "playwright.visual.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "next.config.*"
-      - "tailwind.config.ts"
-      - ".github/workflows/web-ci.yml"
   workflow_dispatch:
 
 concurrency:

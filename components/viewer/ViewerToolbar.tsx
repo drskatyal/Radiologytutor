@@ -50,7 +50,7 @@ import { Menu, MenuItem, MenuLabel, MenuSeparator, Tooltip } from "@/components/
 import { cn } from "@/components/ui/cn";
 import { CINE_FPS_OPTIONS } from "@/lib/cinePlayer";
 import type { OverlayDensity } from "@/lib/dicomOverlay";
-import { shortcutForTool } from "@/lib/viewerHotkeys";
+import { shortcutForPreset, shortcutForTool } from "@/lib/viewerHotkeys";
 import type { MprMode, MprPlane, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
@@ -496,7 +496,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           <MenuItem
             label="Series default"
             hint="DICOM"
-            shortcut="⇧0"
+            shortcut={shortcutForPreset(0)}
             active={activePreset === FULL_DYNAMIC_ID}
             onSelect={() => props.onPreset(null)}
           />
@@ -506,7 +506,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
               key={p.id}
               label={p.label}
               hint={`${p.ww} / ${p.wc}`}
-              shortcut={i < 9 ? `⇧${i + 1}` : null}
+              shortcut={i < 9 ? shortcutForPreset(i + 1) : null}
               active={activePreset === p.id}
               onSelect={() => props.onPreset(p)}
             />
