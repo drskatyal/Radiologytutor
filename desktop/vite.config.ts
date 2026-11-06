@@ -73,32 +73,9 @@ function noEvalGlobalShim(): Plugin {
   };
 }
 
-/**
- * The app stylesheet off the first paint's critical path: the splash in
- * index.html is styled inline, but a stylesheet in <head> still holds the
- * first paint until it has loaded (WebKit: no paint while a head sheet is
- * pending). Loaded as `media="print"` (fetched, not render-blocking); main.tsx
- * waits for it and switches it on before React renders, so nothing ever
- * paints unstyled.
- */
-function nonBlockingAppCss(): Plugin {
-  return {
-    name: "flowrad-non-blocking-css",
-    apply: "build",
-    transformIndexHtml: {
-      order: "post",
-      handler(html) {
-        return html.replace(/<link rel="stylesheet"([^>]*?)>/g, (tag, attrs: string) =>
-          attrs.includes("media=") ? tag : `<link rel="stylesheet"${attrs} media="print" data-app-css>`
-        );
-      },
-    },
-  };
-}
-
 export default defineConfig({
   root: __dirname,
-  plugins: [react(), viteCommonjs(), preloadEngineChunks(), noEvalGlobalShim(), nonBlockingAppCss()],
+  plugins: [react(), viteCommonjs(), preloadEngineChunks(), noEvalGlobalShim()],
   clearScreen: false,
   resolve: {
     alias: [
