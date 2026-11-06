@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import { readSketchSr } from "../lib/dicomExport/sketchDicom";
+import { readSketchGsps, readSketchSr } from "../lib/dicomExport/sketchDicom";
 
 // Recording Studio teacher sketch: fake mic, draw, M marker, replay, export.
 //
@@ -105,18 +105,35 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   const popover = page.getByTestId("marker-label-popover");
   await expect(popover).toBeVisible();
   await popover.getByRole("textbox").fill("Enhancing lesion");
+  await shot(page, "studio-sketch-marker-label");
   await popover.getByRole("textbox").press("Enter");
   const marker = page.getByTestId("teacher-marker");
   await expect(marker).toHaveAttribute("data-number", "1");
   await expect(marker).toHaveAttribute("data-label", "Enhancing lesion");
   await expect(page.getByTestId("teacher-stroke")).toHaveCount(3);
+
+  // Q: a text note anchored on the image.
+  await page.keyboard.press("q");
+  await page.mouse.click(box.x + box.width * 0.22, box.y + box.height * 0.62);
+  const textBox = page.getByRole("textbox", { name: "Sketch text" });
+  await expect(textBox).toBeFocused();
+  await textBox.fill("T2 bright rim");
+  await shot(page, "studio-sketch-text");
+  await textBox.press("Enter");
+  await expect(page.getByTestId("teacher-text")).toHaveText("T2 bright rim");
+  await page.keyboard.press("v");
   await shot(page, "studio-sketch-recording");
 
   // Undo / redo are ops on the same timeline.
+  // Most recent first: the text note goes, then the marker's label reverts.
+  await page.keyboard.press("u");
+  await expect(page.getByTestId("teacher-text")).toHaveCount(0);
   await page.keyboard.press("u");
   await expect(marker).toHaveAttribute("data-label", "Finding 1");
   await page.keyboard.press("Control+Shift+z");
   await expect(marker).toHaveAttribute("data-label", "Enhancing lesion");
+  await page.keyboard.press("Control+Shift+z");
+  await expect(page.getByTestId("teacher-text")).toHaveText("T2 bright rim");
   await page.waitForTimeout(500);
   await page.getByRole("button", { name: "Finish recording" }).click();
   await expect(page.getByRole("button", { name: "Replay" })).toBeEnabled({ timeout: 30_000 });
@@ -128,13 +145,16 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   await page.keyboard.press("+");
   await page.keyboard.press("+");
   await expect.poll(async () => (await markerCenter(page)).x).not.toBeCloseTo(before.x, 0);
+  await page.waitForTimeout(300);
+  await shot(page, "studio-sketch-zoomed");
   await page.keyboard.press("0");
   await expect.poll(async () => Math.abs((await markerCenter(page)).x - before.x)).toBeLessThan(2);
   // Another frame of the stack: the ink is for its own image only.
   await page.keyboard.press("ArrowDown");
   await expect(page.getByTestId("teacher-sketch-layer")).toHaveAttribute("data-visible-count", "0");
+  await shot(page, "studio-sketch-other-frame");
   await page.keyboard.press("ArrowUp");
-  await expect(page.getByTestId("teacher-sketch-layer")).toHaveAttribute("data-visible-count", "4");
+  await expect(page.getByTestId("teacher-sketch-layer")).toHaveAttribute("data-visible-count", "5");
 
   // --- Reload: the live sketch comes back on the same pixels --------------
   await page.reload();
@@ -143,6 +163,8 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
 
   // --- Export: DICOM SR (TID 1500), read back with dcmjs -------------------
   await page.getByRole("button", { name: "Export marks" }).click();
+  await expect(page.getByRole("menuitemradio", { name: /DICOM SR/ })).toBeVisible();
+  await shot(page, "studio-sketch-export-menu");
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitemradio", { name: /DICOM SR/ }).click();
   const download = await downloadPromise;
@@ -150,12 +172,25 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   const bytes = await readFile(path!);
   const { dataset, groups } = readSketchSr(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
   expect(dataset.Modality).toBe("SR");
-  expect(groups.map((g) => g.kind).sort()).toEqual(["arrow", "ellipse", "marker", "pen"]);
+  expect(groups.map((g) => g.kind).sort()).toEqual(["arrow", "ellipse", "marker", "pen", "text"]);
+  expect(groups.find((g) => g.kind === "text")?.text).toBe("T2 bright rim");
   const m = groups.find((g) => g.kind === "marker")!;
   expect(m.label).toBe("#1 Enhancing lesion");
   expect(m.sopInstanceUID).toBeTruthy();
   // The sample is multi-frame: every mark names its frame.
   expect(groups.every((g) => g.frameNumber != null && g.frameNumber >= 1)).toBe(true);
+
+  // GSPS from the same menu: one graphic annotation per referenced frame.
+  await page.getByRole("button", { name: "Export marks" }).click();
+  const gspsPromise = page.waitForEvent("download");
+  await page.getByRole("menuitemradio", { name: /DICOM GSPS/ }).click();
+  const gspsBytes = await readFile((await (await gspsPromise).path())!);
+  const pr = readSketchGsps(gspsBytes.buffer.slice(gspsBytes.byteOffset, gspsBytes.byteOffset + gspsBytes.byteLength));
+  expect(pr.Modality).toBe("PR");
+  const annotations = pr.GraphicAnnotationSequence as Array<{ GraphicLayer: string; TextObjectSequence?: Array<{ UnformattedTextValue: string }> }>;
+  expect(annotations.length).toBeGreaterThanOrEqual(1);
+  expect(annotations.every((a) => a.GraphicLayer === "FLOWRAD_SKETCH")).toBe(true);
+  expect(annotations.flatMap((a) => a.TextObjectSequence ?? []).map((t) => t.UnformattedTextValue)).toContain("#1 Enhancing lesion");
 
   const sidecarRes = await page.request.post(`/api/cases/${caseId}/sketch-export`, {
     data: { format: "json", items: await page.evaluate((key) => JSON.parse(sessionStorage.getItem(key) ?? "[]"), `flowrad:studio-sketch:${caseId}`) },
@@ -163,7 +198,7 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   expect(sidecarRes.ok()).toBeTruthy();
   const sidecar = await sidecarRes.json();
   expect(sidecar.schema).toBe("flowrad.sketch-sidecar/1");
-  expect(sidecar.items).toHaveLength(4);
+  expect(sidecar.items).toHaveLength(5);
 });
 
 test("replay draws the teacher's ink back in time with the take", async ({ page }) => {
