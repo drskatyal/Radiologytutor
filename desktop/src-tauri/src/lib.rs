@@ -1010,10 +1010,42 @@ async fn native_layout(window: tauri::WebviewWindow, cells: Vec<native::CellRect
     }
     ensure_native(&window, native.inner()).await;
     native.set_layout(cells);
+    sync_surface_size(&window, native.inner());
+    native.render(frame_scale(&window, native.inner()))
+}
+
+/// Keep the native surface at the window's size before a frame. macOS, main
+/// window: its `Resized` events already do (and the surface took the
+/// window's size when it was built), so a frame does not ask the main thread
+/// for the size: it is busy while a study opens and its view first paints,
+/// and the first image's call waited for it. Elsewhere it is asked, as before.
+fn sync_surface_size(window: &tauri::WebviewWindow, native: &native::Native) {
+    #[cfg(target_os = "macos")]
+    if window.label() == "main" && native.has_gpu() {
+        return;
+    }
     if let Ok(size) = window.inner_size() {
         native.resize(size.width, size.height);
     }
-    native.render(window.scale_factor().unwrap_or(1.0))
+}
+
+/// The scale factor a native frame of `window` is drawn at. macOS, main
+/// window: the value kept from the window's own events (`set_window_facts`
+/// at init, `Resized`, `ScaleFactorChanged`), not asked of the window: on
+/// macOS `scale_factor()` is answered by the main thread, which is busy
+/// while a study opens and its view first paints (a step of the reader's
+/// first scroll waited for it). Elsewhere, and before the first value is
+/// known, the window is asked as before.
+fn frame_scale(window: &tauri::WebviewWindow, native: &native::Native) -> f64 {
+    #[cfg(target_os = "macos")]
+    if window.label() == "main" {
+        if let Some(scale) = native.window_scale() {
+            return scale;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = native;
+    window.scale_factor().unwrap_or(1.0)
 }
 
 /// Show a series (the app's file ids, display order) in a cell.
@@ -1030,13 +1062,11 @@ async fn native_cell_series(
     // Only files the user opened (the registry), like the dicom:// protocol.
     let paths: Vec<PathBuf> = paths_for(&state, &file_ids).into_iter().collect::<Option<Vec<_>>>().ok_or("unknown file id")?;
     ensure_native(&window, native.inner()).await;
-    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = frame_scale(&window, native.inner());
     // A new viewport's frame lands in its own rect: the page sends it with
     // the series, so the first image does not wait for the next `native_layout`.
     if rect.is_some() {
-        if let Ok(size) = window.inner_size() {
-            native.resize(size.width, size.height);
-        }
+        sync_surface_size(&window, native.inner());
     }
     tauri::async_runtime::spawn_blocking({
         let native = native.inner().clone();
@@ -1068,14 +1098,14 @@ async fn native_cell_view(
     patch: native_view::ViewPatch,
     native: tauri::State<'_, native::Shared>,
 ) -> Result<native::ShowResult, String> {
-    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = frame_scale(&window, native.inner());
     let native = native.inner().clone();
     tauri::async_runtime::spawn_blocking(move || native.update_view(&id, patch, scale)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn native_cell_scroll(window: tauri::WebviewWindow, id: String, delta: i64, native: tauri::State<'_, native::Shared>) -> Result<native::ShowResult, String> {
-    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = frame_scale(&window, native.inner());
     let native = native.inner().clone();
     tauri::async_runtime::spawn_blocking(move || native.scroll(&id, delta, scale)).await.map_err(|e| e.to_string())?
 }
@@ -1463,8 +1493,16 @@ pub fn run() {
                 // Native surface follows the window (no-op until it exists).
                 if let tauri::WindowEvent::Resized(size) = event {
                     if let Some(native) = window.app_handle().try_state::<native::Shared>() {
+                        let scale = window.scale_factor().unwrap_or(1.0);
+                        native.set_window_scale(scale);
                         native.resize(size.width, size.height);
-                        let _ = native.render(window.scale_factor().unwrap_or(1.0));
+                        let _ = native.render(scale);
+                    }
+                }
+                // Moved to a display with another pixel density.
+                if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                    if let Some(native) = window.app_handle().try_state::<native::Shared>() {
+                        native.set_window_scale(*scale_factor);
                     }
                 }
             }
