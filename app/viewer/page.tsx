@@ -12,19 +12,30 @@
 // scripts/viewer-bundle-budget.mjs; the latency budgets by
 // e2e/visual/free-viewer.perf.spec.ts.
 
+import type { Metadata } from "next";
+import { ProductLinks } from "@/components/marketing/ProductLinks";
 import Image from "next/image";
 import Link from "next/link";
 import { ShieldCheck } from "lucide-react";
 import { LocalStudyViewer } from "@/components/viewer/LocalStudyViewer";
 import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "FlowRad Viewer · Free DICOM viewer in your browser",
   description:
     "Open a DICOM folder, ZIP or CD in your browser and read it instantly. Free, no sign-in. Your images never leave your computer.",
+  alternates: { canonical: "https://app.viewer.flowrad.ai/viewer" },
   openGraph: {
+    url: "https://app.viewer.flowrad.ai/viewer",
+    images: ["https://app.viewer.flowrad.ai/opengraph-image"],
     title: "FlowRad Viewer — free DICOM viewer",
     description: "Drop a study and read it instantly. Your images never leave your computer.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "FlowRad Viewer — free DICOM viewer",
+    description: "Open a DICOM folder, ZIP or CD. Free, no sign-in. Your images never leave your computer.",
+    images: ["https://app.viewer.flowrad.ai/opengraph-image"],
   },
   icons: { icon: "/owlscan.svg" },
 };
@@ -65,6 +76,9 @@ export default function FreeViewerPage() {
           <LocalStudyViewer tone="reading" />
         </div>
       </main>
+      <footer className="shrink-0 border-t border-white/10 px-4 py-2 text-white/70">
+        <ProductLinks />
+      </footer>
     </div>
   );
 }
