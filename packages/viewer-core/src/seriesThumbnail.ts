@@ -1,7 +1,8 @@
 // Series thumbnails for the local (no-upload) viewer — the pure half.
 //
 // A thumbnail is the series' middle image, shown with the series' own default
-// window (the file's Window Center / Width, else the image's range), box-
+// window (the file's Window Center / Width, else the modality's standard window,
+// else the 1st–99th percentile of its values: defaultThumbWindow), box-
 // filtered down to THUMB_EDGE px and stored as a small JPEG. Decoding is the
 // engine's (its decode workers); this module holds the maths every step needs
 // so it is unit-tested in node:
@@ -88,30 +89,61 @@ export interface ThumbWindow {
 
 /** First finite number of a DICOM value that may be multi-valued. */
 function first(v: unknown): number | null {
-  const n = Array.isArray(v) ? Number(v[0]) : Number(v);
+  // An array (parsed multi-value) or the raw DICOM string "c1\\c2".
+  const head = Array.isArray(v) ? v[0] : typeof v === "string" ? v.split("\\")[0] : v;
+  if (head == null || (typeof head === "string" && head.trim() === "")) return null;
+  const n = Number(head);
   return Number.isFinite(n) ? n : null;
 }
 
+/** Modalities whose values are calibrated units with a standard soft-tissue window. */
+const MODALITY_DEFAULT_WINDOW: Record<string, ThumbWindow> = {
+  // Soft tissue (HU): the window a CT series opens with when the file has none.
+  CT: { wc: 40, ww: 400 },
+};
+
+/** Fraction of pixels clipped at each end of the auto window (1st–99th percentile). */
+const AUTO_WINDOW_CLIP = 0.01;
+
 /**
- * The series' default window: the file's Window Center / Width when present
- * (the image the reader opens shows exactly this), else the sample's range.
+ * Low / high percentile of the sample (lo at `clip`, hi at 1 − `clip`). Sorting
+ * a copy is fine here: the sample is at most SAMPLE_EDGE² (64k) values.
+ */
+export function percentileRange(values: Float32Array, clip = AUTO_WINDOW_CLIP): { lo: number; hi: number } | null {
+  const finite = values.filter((v) => Number.isFinite(v));
+  if (finite.length === 0) return null;
+  finite.sort();
+  const at = (q: number) => finite[Math.min(finite.length - 1, Math.max(0, Math.round(q * (finite.length - 1))))]!;
+  return { lo: at(clip), hi: at(1 - clip) };
+}
+
+/**
+ * The series' thumbnail window, in modality units (slope / intercept applied):
+ *
+ * 1. the file's Window Center / Width (first value; the image the reader
+ *    opens shows exactly this);
+ * 2. else the modality's standard window (CT: soft tissue 40 / 400);
+ * 3. else (MR, CR, DX, US, …) the 1st–99th percentile of the pixel values.
+ *    Not the min–max range: a few outliers (padding at −2000 / −3024, a
+ *    bright artefact, an overlay burned in at full scale) stretch it so far
+ *    that the anatomy lands in the bottom few grey levels — the "black
+ *    thumbnail".
  */
 export function defaultThumbWindow(
   sample: ThumbSample,
-  fileWindow?: { windowCenter?: unknown; windowWidth?: unknown } | null
+  fileWindow?: { windowCenter?: unknown; windowWidth?: unknown } | null,
+  modality?: string | null
 ): ThumbWindow {
   const wc = first(fileWindow?.windowCenter);
   const ww = first(fileWindow?.windowWidth);
   if (wc != null && ww != null && ww > 0) return { ww, wc };
   if (sample.channels === 3) return { ww: 256, wc: 128 };
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const v of sample.values) {
-    if (v < lo) lo = v;
-    if (v > hi) hi = v;
-  }
-  if (!Number.isFinite(lo) || hi <= lo) return { ww: 1, wc: Number.isFinite(lo) ? lo : 0 };
-  return { ww: hi - lo, wc: (hi + lo) / 2 };
+  const preset = modality ? MODALITY_DEFAULT_WINDOW[modality.trim().toUpperCase()] : undefined;
+  if (preset) return { ...preset };
+  const range = percentileRange(sample.values);
+  if (!range) return { ww: 1, wc: 0 };
+  if (range.hi <= range.lo) return { ww: 1, wc: range.lo };
+  return { ww: range.hi - range.lo, wc: (range.hi + range.lo) / 2 };
 }
 
 export interface ThumbRgba {

@@ -126,6 +126,7 @@ export function createLocalThumbnailer(): LocalThumbnailer {
     const fileWindow = core.metaData.get("voiLutModule", imageId) as
       | { windowCenter?: unknown; windowWidth?: unknown }
       | undefined;
+    const modality = (core.metaData.get("generalSeriesModule", imageId) as { modality?: string } | undefined)?.modality;
     if (!wasCached && !core.cache.getImageLoadObject(imageId)) void dropRawFile(imageId);
     const pixels = image.getPixelData();
     const components = Math.max(1, Math.round(pixels.length / Math.max(1, image.columns * image.rows)));
@@ -138,7 +139,7 @@ export function createLocalThumbnailer(): LocalThumbnailer {
       intercept: image.intercept,
     });
     if (!sample) return null;
-    const win = defaultThumbWindow(sample, fileWindow ?? null);
+    const win = defaultThumbWindow(sample, fileWindow ?? null, modality ?? null);
     return encode({ sample, window: win, invert: sample.channels === 1 && !!image.invert, edge: THUMB_EDGE });
   };
 
