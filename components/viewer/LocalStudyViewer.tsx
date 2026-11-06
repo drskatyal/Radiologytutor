@@ -20,30 +20,35 @@
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
 import { useViewerBindings } from "./useViewerBindings";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   ChevronUp,
+  Columns2,
   ExternalLink,
   FileArchive,
   FileText,
   FolderOpen,
+  Grid2x2,
   HardDrive,
   Layers,
   Link2,
   Maximize2,
   Minimize2,
+  Rows2,
   ShieldCheck,
   Sparkles,
+  Square,
   Unlink,
   X,
 } from "lucide-react";
 import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { useMultipleScreens } from "@/components/viewer/useMultipleScreens";
-import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner } from "@/components/ui";
+import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner, Tooltip } from "@/components/ui";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
-import { isSeriesPanelShortcut } from "@flowrad/viewer-core";
+import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, type HangingLayoutId } from "@flowrad/viewer-core";
+import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
 import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
@@ -199,6 +204,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [firstImageUp, setFirstImageUp] = useState(false);
   const [activeStudy, setActiveStudy] = useState(0);
   const [activeSeries, setActiveSeries] = useState(0);
+  // Hanging layout (1 up, side by side, stacked, 2×2). Pane 0 is the main
+  // viewer (activeStudy / activeSeries, the paint-first pipeline); panes 1–3
+  // each show their own series, from any study of the drop. One toolbar
+  // under the grid follows the focused pane.
+  const [layoutId, setLayoutId] = useState<HangingLayoutId>("1x1");
+  const [extraPanes, setExtraPanes] = useState<PaneSeries[]>([]);
+  const [activePane, setActivePane] = useState(0);
+  const activePaneRef = useRef(0);
+  activePaneRef.current = activePane;
+  const multiRef = useRef(false);
+  const [barHost, setBarHost] = useState<HTMLDivElement | null>(null);
+  const paneControls = useRef<MutableRefObject<CornerstoneControls | null>[]>([{ current: null }, { current: null }, { current: null }]);
   // Voice commands stay on across series (each series mounts its own viewer,
   // which hands the live microphone session to the next: voiceHandoff.ts).
   const [voiceOn, setVoiceOn] = useState(false);
@@ -396,8 +413,30 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   const pickStudySeries = useCallback(
     (studyIndex: number, seriesIndex: number) => {
+      // In a grid, the series goes to the focused pane.
+      const pane = multiRef.current ? activePaneRef.current : 0;
+      if (pane > 0) {
+        setExtraPanes((prev) => prev.map((p, i) => (i === pane - 1 ? { study: studyIndex, series: seriesIndex } : p)));
+        setDrawerOpen(false);
+        hapticTick();
+        return;
+      }
       setActiveStudy(studyIndex);
       pickSeries(seriesIndex);
+    },
+    [pickSeries]
+  );
+
+  /** Hang a series in a given pane (a series dragged from the panel onto it). */
+  const hangInPane = useCallback(
+    (pane: number, target: PaneSeries) => {
+      setActivePane(pane);
+      if (pane === 0) {
+        setActiveStudy(target.study);
+        pickSeries(target.series);
+        return;
+      }
+      setExtraPanes((prev) => prev.map((p, i) => (i === pane - 1 ? target : p)));
     },
     [pickSeries]
   );
@@ -711,6 +750,37 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   const result = phase.state === "open" ? phase.result : null;
 
+  // ── Hanging layout ──
+  const flat = useMemo(() => (result ? flattenSeries(result.studies) : []), [result]);
+  const layout = layoutById(layoutId);
+  const panesNow = paneCount(layout);
+  const multi = !!result && panesNow > 1;
+  multiRef.current = multi;
+  const offeredLayouts = layoutsForSeriesCount(flat.length);
+  // Re-hang when the layout or the study changes; keeps what is already hung.
+  const mainPaneRef = useRef<PaneSeries>({ study: 0, series: 0 });
+  mainPaneRef.current = { study: activeStudy, series: activeSeries };
+  useEffect(() => {
+    setExtraPanes((prev) => {
+      if (panesNow <= 1 || flat.length === 0) return prev.length ? [] : prev;
+      const next = hangLocal(layout, flat, [mainPaneRef.current, ...prev]).slice(1);
+      return next.length === prev.length && next.every((p, i) => samePane(p, prev[i])) ? prev : next;
+    });
+    setActivePane((p) => Math.min(p, Math.max(0, panesNow - 1)));
+  }, [layout, panesNow, flat]);
+  // A new study starts in its first pane.
+  useEffect(() => setActivePane(0), [result]);
+  const cycleLayout = useCallback(() => setLayoutId((current) => nextLayout(current, flat.length)), [flat.length]);
+  const setLayoutForGrid = useCallback((rows: number, cols: number) => setLayoutId(layoutForGrid(rows, cols)), []);
+  // A pane that changes size keeps its camera: refit every pane once the grid settles.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      viewerControls.current?.fit?.();
+      for (const ref of paneControls.current) if (ref.current?.ready) ref.current.fit?.();
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [layoutId]);
+
   // Series thumbnails: one thumbnailer per opened study, freed with it. It
   // waits for the first image (`firstImageUp`) so it never competes with it.
   const thumbs = useMemo(() => (result ? createLocalThumbnailer() : null), [result]);
@@ -829,11 +899,15 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   const sidePanel = (
     <div className="flex h-full flex-col gap-3">
+      {result && offeredLayouts.length > 1 && (
+        <LayoutPicker value={layoutId} options={offeredLayouts} onChange={setLayoutId} dark={reading} />
+      )}
       {result && study ? (
         <SeriesList
           result={result}
-          activeStudy={activeStudy}
-          activeSeries={activeSeries}
+          activeStudy={activePane > 0 && multi ? extraPanes[activePane - 1]?.study ?? activeStudy : activeStudy}
+          activeSeries={activePane > 0 && multi ? extraPanes[activePane - 1]?.series ?? activeSeries : activeSeries}
+          panes={multi ? [{ study: activeStudy, series: activeSeries }, ...extraPanes.slice(0, panesNow - 1)] : undefined}
           onPick={pickStudySeries}
           onOpenReport={setOpenReport}
           dark={reading}
@@ -1024,32 +1098,82 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                 {expanded ? <Minimize2 /> : <Maximize2 />}
               </IconButton>
             </div>
-            <div className={cn((expanded || reading) && "flex min-h-0 flex-1 flex-col")}>
-              <CornerstoneViewer
-                key={viewerKey}
-                source={source}
-                modality={modality}
-                controls={viewerControls}
-                onEvent={popOut.onViewerEvent}
-                chrome={expanded || reading ? "edge" : "dock"}
-                defaultTool="StackScroll"
-                questionMarkHelp
-                seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
-                onChunkLoadError={recoverFromChunkError}
-                voiceOn={voiceOn}
-                onVoiceChange={setVoiceOn}
-                onSeriesStep={(delta) => {
-                  const count = study?.series.length ?? 0;
-                  if (count > 1) pickSeries((activeSeries + delta + count) % count);
-                }}
-                onReady={(controls) => {
-                  setFirstImageUp(true);
-                  const slice = pendingSlice.current;
-                  if (slice == null || slice < 0) return;
-                  pendingSlice.current = null;
-                  controls.applyEvent({ t: 0, type: "slice", index: slice });
-                }}
-              />
+            <div className={cn((expanded || reading || multi) && "flex min-h-0 flex-1 flex-col")}>
+              {/* One tree in every layout, so the main viewer never remounts when
+                  the grid appears: in 1 up the grid and pane wrappers are
+                  `display: contents`. */}
+              <div className={cn(multi ? cn("grid min-h-0 flex-1 gap-px bg-[#1F1F1F]", GRID_CLASS[layoutId]) : "contents")}>
+                <ViewerPane index={0} multi={multi} active={activePane === 0} onDropSeries={hangInPane}>
+                  <CornerstoneViewer
+                    key={viewerKey}
+                    source={source}
+                    modality={modality}
+                    controls={viewerControls}
+                    onEvent={popOut.onViewerEvent}
+                    chrome={expanded || reading || multi ? "edge" : "dock"}
+                    toolbarHost={multi ? barHost : undefined}
+                    active={!multi || activePane === 0}
+                    onActivate={() => setActivePane(0)}
+                    defaultTool="StackScroll"
+                    questionMarkHelp
+                    seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
+                    onChunkLoadError={recoverFromChunkError}
+                    voiceOn={voiceOn}
+                    onVoiceChange={setVoiceOn}
+                    onCycleLayout={result ? cycleLayout : undefined}
+                    onSetLayout={result ? setLayoutForGrid : undefined}
+                    onSeriesStep={(delta) => {
+                      const count = study?.series.length ?? 0;
+                      if (count > 1) pickSeries((activeSeries + delta + count) % count);
+                    }}
+                    onReady={(controls) => {
+                      setFirstImageUp(true);
+                      const slice = pendingSlice.current;
+                      if (slice == null || slice < 0) return;
+                      pendingSlice.current = null;
+                      controls.applyEvent({ t: 0, type: "slice", index: slice });
+                    }}
+                  />
+                </ViewerPane>
+                {multi &&
+                  result &&
+                  extraPanes.slice(0, panesNow - 1).map((target, i) => {
+                    const pane = i + 1;
+                    const paneSeries = result.studies[target.study]?.series[target.series];
+                    if (!paneSeries) return null;
+                    const ids = seriesImageIds(paneSeries, result.imageIdsByFile);
+                    return (
+                      <ViewerPane key={pane} index={pane} multi active={activePane === pane} onDropSeries={hangInPane}>
+                        <CornerstoneViewer
+                          key={paneSeries.seriesInstanceUID}
+                          source={ids.length ? { kind: "imageIds", key: `pane${pane}:${paneSeries.seriesInstanceUID}`, imageIds: ids } : undefined}
+                          modality={paneSeries.modality}
+                          controls={paneControls.current[i]}
+                          chrome="edge"
+                          toolbarHost={barHost}
+                          active={activePane === pane}
+                          onActivate={() => setActivePane(pane)}
+                          instanceId={`local-pane-${pane}`}
+                          defaultTool="StackScroll"
+                          questionMarkHelp
+                          seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
+                          onChunkLoadError={recoverFromChunkError}
+                          onCycleLayout={cycleLayout}
+                          onSetLayout={setLayoutForGrid}
+                          onSeriesStep={(delta) => {
+                            const count = flat.length;
+                            if (count < 2) return;
+                            const at = flat.findIndex((f) => samePane(f, target));
+                            hangInPane(pane, flat[(at + delta + count) % count]!);
+                          }}
+                          className="h-full w-full"
+                        />
+                      </ViewerPane>
+                    );
+                  })}
+              </div>
+              {/* One toolbar for the whole grid; it acts on the outlined pane. */}
+              {multi && <div ref={setBarHost} className="shrink-0" />}
             </div>
             {/* Swipe up (or tap) for the series drawer. */}
             <button
@@ -1329,6 +1453,150 @@ function SignupPrompt({ onDismiss, dark = false }: { onDismiss: () => void; dark
   );
 }
 
+/**
+ * One pane of the grid: the outline on the focused pane, its number, and a
+ * drop target for a series dragged from the panel. In 1 up it adds nothing
+ * (`display: contents`), so the single viewer lays out exactly as before.
+ */
+function ViewerPane({
+  index,
+  multi,
+  active,
+  onDropSeries,
+  children,
+}: {
+  index: number;
+  multi: boolean;
+  active: boolean;
+  onDropSeries: (pane: number, target: PaneSeries) => void;
+  children: React.ReactNode;
+}) {
+  const [over, setOver] = useState(false);
+  if (!multi) return <div className="contents">{children}</div>;
+  return (
+    <div
+      data-testid="viewer-pane"
+      data-pane={index}
+      data-active={active || undefined}
+      className="relative min-h-0 min-w-0 bg-imaging"
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(SERIES_DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(event) => {
+        setOver(false);
+        const target = parseSeriesDrag(event.dataTransfer.getData(SERIES_DRAG_TYPE));
+        if (!target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onDropSeries(index, target);
+      }}
+    >
+      {children}
+      <span
+        aria-hidden="true"
+        className={cn(
+          "pointer-events-none absolute inset-0 z-20 transition-shadow duration-100",
+          over
+            ? "bg-accent/10 shadow-[inset_0_0_0_2px_rgb(var(--accent))]"
+            : active
+              ? "shadow-[inset_0_0_0_1.5px_rgb(var(--accent))]"
+              : ""
+        )}
+      />
+      <span
+        aria-hidden="true"
+        className={cn(
+          // Beside the bottom orientation letter, not on it.
+          "pointer-events-none absolute bottom-1.5 left-1/2 z-20 ml-4 rounded px-1.5 text-[10px] font-semibold tabular-nums",
+          active ? "bg-accent text-accent-foreground" : "bg-black/60 text-white/70"
+        )}
+      >
+        {index + 1}
+      </span>
+    </div>
+  );
+}
+
+/** A series dragged from the panel onto a pane: "studyIndex:seriesIndex". */
+const SERIES_DRAG_TYPE = "application/x-flowrad-series";
+
+function parseSeriesDrag(data: string): PaneSeries | null {
+  const m = /^(\d+):(\d+)$/.exec(data);
+  return m ? { study: Number(m[1]), series: Number(m[2]) } : null;
+}
+
+const LAYOUT_ICONS: Record<HangingLayoutId, typeof Square> = {
+  "1x1": Square,
+  "1x2": Columns2,
+  "2x1": Rows2,
+  "2x2": Grid2x2,
+};
+
+/** Grid template per layout. Static strings so Tailwind keeps them. */
+const GRID_CLASS: Record<HangingLayoutId, string> = {
+  "1x1": "grid-cols-1 grid-rows-1",
+  "1x2": "grid-cols-2 grid-rows-1 max-sm:grid-cols-1 max-sm:grid-rows-2",
+  "2x1": "grid-cols-1 grid-rows-2",
+  "2x2": "grid-cols-2 grid-rows-2",
+};
+
+/** 1 up, side by side, stacked, 2×2: the layouts this drop offers (G cycles them). */
+function LayoutPicker({
+  value,
+  options,
+  onChange,
+  dark,
+}: {
+  value: HangingLayoutId;
+  options: { id: HangingLayoutId; label: string }[];
+  onChange: (id: HangingLayoutId) => void;
+  dark: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className={cn("text-[11px] font-medium uppercase tracking-wide", dark ? "text-white/50" : "text-muted")}>Layout</span>
+      <div
+        role="radiogroup"
+        aria-label="Hanging layout"
+        className={cn("inline-flex items-center rounded-lg border p-0.5", dark ? "border-white/10 bg-black/40" : "border-subtle bg-canvas")}
+      >
+        {options.map((option) => {
+          const Icon = LAYOUT_ICONS[option.id];
+          const on = option.id === value;
+          return (
+            <Tooltip key={option.id} label={option.label} shortcut={["G"]} side="bottom">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={on}
+                aria-label={`${option.label} layout`}
+                onClick={() => onChange(option.id)}
+                className={cn(
+                  "inline-flex h-7 w-7 items-center justify-center rounded-md transition-[transform,background-color,color] duration-75 active:scale-[0.92]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+                  on
+                    ? dark
+                      ? "bg-white/15 text-white"
+                      : "bg-elevated text-primary shadow-sm"
+                    : dark
+                      ? "text-white/55 hover:text-white"
+                      : "text-muted hover:text-primary"
+                )}
+              >
+                <Icon className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** Study picker + series buttons, shared by the desktop panel and the phone drawer. */
 function SeriesList({
   result,
@@ -1340,10 +1608,13 @@ function SeriesList({
   dark = false,
   thumbs,
   imageIdsFor,
+  panes,
 }: {
   result: LocalIngestResult;
   activeStudy: number;
   activeSeries: number;
+  /** In a grid: what each pane shows (pane 1 first), for the pane badges. */
+  panes?: PaneSeries[];
   /** A series of any study was chosen (switches study when needed). */
   onPick: (studyIndex: number, seriesIndex: number) => void;
   /** A structured report (listed under its study) was chosen. */
@@ -1394,11 +1665,20 @@ function SeriesList({
             {study.series.map((item, index) => {
               const ids = imageIdsFor(item);
               const selected = studyIndex === activeStudy && index === activeSeries;
+              const inPanes = (panes ?? [])
+                .map((p, pane) => (p.study === studyIndex && p.series === index ? pane + 1 : 0))
+                .filter((n) => n > 0);
               return (
                 <li key={item.seriesInstanceUID}>
                   <button
                     type="button"
                     onClick={() => onPick(studyIndex, index)}
+                    // Drag onto a pane of the grid to hang it there.
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData(SERIES_DRAG_TYPE, `${studyIndex}:${index}`);
+                      event.dataTransfer.effectAllowed = "copy";
+                    }}
                     aria-pressed={selected}
                     title={describeLocalSeries(item)}
                     className={cn(
@@ -1424,6 +1704,14 @@ function SeriesList({
                         {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
                         {item.modality || "DICOM"}
                       </span>
+                      {inPanes.length > 0 && (
+                        <span
+                          className="shrink-0 rounded bg-accent/25 px-1 text-[10px] font-semibold text-white"
+                          aria-label={`In pane ${inPanes.join(" and ")}`}
+                        >
+                          {inPanes.join("·")}
+                        </span>
+                      )}
                       <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
                         {formatCount(item.imageCount)} im
                       </span>
