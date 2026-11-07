@@ -17,6 +17,36 @@ const SIZES = [
   { width: 390, height: 664 },
 ];
 
+/**
+ * Where the browser has the File System Access API, "Choose a folder" opens
+ * the native directory picker (its handle lets a reload reopen the study
+ * without a prompt) and Playwright sees no "filechooser" event. The stub below
+ * counts those calls and cancels, as a reader closing the dialog would.
+ */
+async function stubDirectoryPicker(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __dirPicks: number; showDirectoryPicker?: unknown };
+    w.__dirPicks = 0;
+    if ("showDirectoryPicker" in window) {
+      w.showDirectoryPicker = async () => {
+        w.__dirPicks += 1;
+        throw new DOMException("The user aborted a request.", "AbortError");
+      };
+    }
+  });
+}
+
+/** A click opened a picker: the file chooser, or the native directory picker. */
+async function pickerOpened(page: Page, click: () => Promise<void>): Promise<"chooser" | "directory"> {
+  const chooser = page.waitForEvent("filechooser", { timeout: 5_000 }).then(() => "chooser" as const);
+  const directory = (async () => {
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __dirPicks?: number }).__dirPicks ?? 0), { timeout: 5_000 }).toBeGreaterThan(0);
+    return "directory" as const;
+  })();
+  await click();
+  return Promise.any([chooser, directory]);
+}
+
 async function clickOpensChooser(page: Page, name: string) {
   const button = page.getByRole("button", { name });
   // Where a reader would have it: mid-screen (a fixed notice may cover the
@@ -30,8 +60,7 @@ async function clickOpensChooser(page: Page, name: string) {
   const topmost = await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest("button, [role=button]")?.textContent ?? null, [x, y]);
   expect(topmost, `nothing may sit over "${name}"`).toContain(name);
   // A real pointer click at the button's centre: an overlay there would take it.
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 5_000 }), page.mouse.click(x, y)]);
-  return chooser;
+  return { x, y };
 }
 
 /** A fresh first-visit page (cookie notice showing) with chooser interception on. */
@@ -41,6 +70,7 @@ async function openFresh(browser: Browser, viewport: { width: number; height: nu
   // Turn on chooser interception before any click: Playwright enables it
   // lazily on the first waitForEvent, which can race the click itself.
   page.on("filechooser", () => undefined);
+  if (javaScriptEnabled) await stubDirectoryPicker(page);
   await page.goto("/viewer/local");
   return { context, page };
 }
@@ -56,11 +86,18 @@ for (const viewport of SIZES) {
     test(`"${name}" opens a file chooser at ${viewport.width}×${viewport.height} with the cookie notice showing`, async ({ browser }) => {
       const { context, page } = await openFresh(browser, viewport);
       await expect(page.getByText("uses a session cookie")).toBeVisible();
-      const chooser = await clickOpensChooser(page, name);
-      expect(chooser.isMultiple()).toBe(true);
-      const attr = await chooser.element().getAttribute("webkitdirectory");
-      if (directory) expect(attr, "folder picker").not.toBeNull();
-      else expect(attr, "files picker").toBeNull();
+      const { x, y } = await clickOpensChooser(page, name);
+      if (directory) {
+        // The native directory picker, or the folder input where the browser lacks it.
+        let chooser: import("@playwright/test").FileChooser | null = null;
+        page.once("filechooser", (c) => (chooser = c));
+        const how = await pickerOpened(page, () => page.mouse.click(x, y));
+        if (how === "chooser") expect(await chooser!.element().getAttribute("webkitdirectory"), "folder picker").not.toBeNull();
+      } else {
+        const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 5_000 }), page.mouse.click(x, y)]);
+        expect(chooser.isMultiple()).toBe(true);
+        expect(await chooser.element().getAttribute("webkitdirectory"), "files picker").toBeNull();
+      }
       await context.close();
     });
   }
@@ -109,8 +146,8 @@ for (const name of ["Choose a folder", "Choose files"]) {
 
 test("keyboard: Enter on the focused picker opens it", async ({ page }) => {
   page.on("filechooser", () => undefined);
+  await stubDirectoryPicker(page);
   await page.goto("/viewer/local");
   await page.getByRole("button", { name: "Choose a folder" }).focus();
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 5_000 }), page.keyboard.press("Enter")]);
-  expect(chooser.isMultiple()).toBe(true);
+  await pickerOpened(page, () => page.keyboard.press("Enter"));
 });
