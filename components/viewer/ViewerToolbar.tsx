@@ -43,6 +43,7 @@ import {
   Play,
   RotateCcw,
   RotateCw,
+  Route,
   Ruler,
   ScanSearch,
   SlidersHorizontal,
@@ -277,6 +278,8 @@ export interface ViewerToolbarProps {
   onVoiceHelp?: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
+  /** Oblique, slab and curved MPR workspace (free viewer). */
+  onRecon?: () => void;
   /** Text-box tool (free viewer; saved in this browser only). */
   textBox?: { active: boolean; onToggle: () => void };
   /** Save the image with its measurements and text boxes burned in. */
@@ -443,6 +446,11 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             />
           </Menu>
         ) : null}
+        {props.onRecon && (
+          <ToolbarButton label="Oblique, slab and curved MPR" disabled={!ready} container={host} pressed={false} onClick={props.onRecon}>
+            <Icon as={Route} />
+          </ToolbarButton>
+        )}
 
         <Divider />
 
