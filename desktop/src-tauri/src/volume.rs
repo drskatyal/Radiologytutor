@@ -695,6 +695,13 @@ mod tests {
         assert_eq!(c(Slab::Mip), c(Slab::Off));
     }
 
+    #[test]
+    fn caps_the_long_side() {
+        let v = synthetic(512, 512, 10);
+        let (w, h, _) = render(&v, Plane::Axial, 0, 0.0, 400.0, 256);
+        assert_eq!((w, h), (256, 256));
+    }
+
     /// The row-wise resampler (`render_map`) against the per-voxel closure
     /// version it replaced, kept here as the reference: identical output for
     /// every plane, slab mode, thickness, edge index and output size, on an
@@ -819,13 +826,6 @@ mod tests {
             }
         }
         assert_eq!(cases, 3 * 4 * 4 * 4 * 4);
-    }
-
-    #[test]
-    fn caps_the_long_side() {
-        let v = synthetic(512, 512, 10);
-        let (w, h, _) = render(&v, Plane::Axial, 0, 0.0, 400.0, 256);
-        assert_eq!((w, h), (256, 256));
     }
 }
 
