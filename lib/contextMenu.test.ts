@@ -136,6 +136,11 @@ test("image menu: PET / CT fusion sits under Reformat only where the study has t
   assert.ok(!commandsOf(imageMenu(base({ can: { copyImage: true } }))).includes("fusion"));
 });
 
+test("image menu: Measurements… is offered where the app has the panel", () => {
+  assert.ok(commandsOf(imageMenu(base({ can: { measurements: true } }))).includes("measurements"));
+  assert.ok(!commandsOf(imageMenu(base({ can: {} }))).includes("measurements"));
+});
+
 test("image menu: 'Link at what each pane shows now' sits in the Link submenu where offered", () => {
   const linkSub = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "sub" && e.id === "links");
   const sub = linkSub(imageMenu(base({ can: { linkAtCurrent: true } })));

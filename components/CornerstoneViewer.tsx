@@ -269,6 +269,8 @@ const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").t
 /** Oblique, slab and curved MPR (free viewer), loaded on first use. */
 const WebReconOverlay = dynamicImport(() => import("./viewer/recon/WebReconOverlay").then((m) => m.WebReconOverlay), { ssr: false });
 /** Export images, video or anonymised DICOM (free viewer, Ctrl/⌘+E), loaded on first use. */
+/** Every measurement as a list and as report text (free viewer), loaded on first use. */
+const MeasurementsPanel = dynamicImport(() => import("./viewer/MeasurementsPanel").then((m) => m.MeasurementsPanel), { ssr: false });
 const WebExportDialog = dynamicImport(() => import("./viewer/WebExportDialog").then((m) => m.WebExportDialog), { ssr: false });
 /** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
 const CustomWindowDialog = dynamicImport(() => import("./viewer/CustomWindowDialog").then((m) => m.CustomWindowDialog), { ssr: false });
@@ -1152,6 +1154,7 @@ export default function CornerstoneViewer({
   /** The Export dialog (free viewer), and the kind it opens on. */
   // The stack and files are read once, when it opens: the export steps
   // through the slices, and must restore the one the reader was on.
+  const [measurementsOpen, setMeasurementsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState<{
     kind: WebExportKind;
     frames: ExportFrames | null;
@@ -4154,6 +4157,7 @@ export default function CornerstoneViewer({
         linkAtCurrent: !!paneLinks,
         video: readingTools && sliceCount >= 2,
         exportDialog: readingTools,
+        measurements: readingTools,
         fusion: !!onFusion,
       },
       shortcut: webMenuShortcut,
@@ -4253,6 +4257,8 @@ export default function CornerstoneViewer({
         return openExport("video");
       case "export":
         return openExport("image");
+      case "measurements":
+        return editCtx ? setMeasurementsOpen(true) : flash("Measurements open once the image has loaded");
       case "link": {
         if (!paneLinks || (arg !== "scroll" && arg !== "voi" && arg !== "zoom")) return;
         const on = !paneLinks[arg];
@@ -4533,6 +4539,7 @@ export default function CornerstoneViewer({
       textBox={readingTools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
       onSaveAnnotated={readingTools ? () => setAnnotatedExport(true) : undefined}
       onExport={readingTools ? () => openExport("image") : undefined}
+      onMeasurements={readingTools && editCtx ? () => setMeasurementsOpen(true) : undefined}
       onFusion={onFusion ?? undefined}
       onRecon={
         readingTools
@@ -4826,6 +4833,22 @@ export default function CornerstoneViewer({
               details are added. It is saved to this device only.
             </p>
           </Modal>
+        )}
+        {measurementsOpen && editCtx && (
+          <MeasurementsPanel
+            open
+            ctx={editCtx}
+            imageIds={(viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? []}
+            onJump={(index) => {
+              const vp = viewportRef.current as unknown as { setImageIdIndex?: (i: number) => unknown } | null;
+              void vp?.setImageIdIndex?.(index);
+            }}
+            onClose={() => {
+              setMeasurementsOpen(false);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            onDone={flash}
+          />
         )}
         {exportOpen && (
           <WebExportDialog
