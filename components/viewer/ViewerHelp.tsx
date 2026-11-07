@@ -122,6 +122,7 @@ export function ViewerHelp({
   onTabChange,
   voice,
   paneMaximize = false,
+  readingTools = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -133,6 +134,8 @@ export function ViewerHelp({
   voice?: ViewerHelpVoice;
   /** In a grid that can maximise a pane: list Enter / double-click / Esc. */
   paneMaximize?: boolean;
+  /** The free viewer's extra measure tools: list D (Bidirectional). */
+  readingTools?: boolean;
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -152,7 +155,7 @@ export function ViewerHelp({
   }, [customise]);
 
   if (!open) return null;
-  const groups = viewerShortcutGroups(overrides, undefined, paneMaximize);
+  const groups = viewerShortcutGroups(overrides, undefined, { paneMaximize, readingTools });
   const pointer = viewerPointerHints(overrides);
   return (
     <div

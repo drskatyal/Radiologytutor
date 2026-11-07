@@ -205,8 +205,10 @@ import { Spinner } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { MprLayout } from "./MprLayout";
 import {
+  ALL_TOOLS,
   MEASURE_TOOLS,
-  PRIMARY_TOOLS,
+  NAV_TOOLS,
+  READING_MEASURE_TOOLS,
   ViewerToolbar,
   toolLabel,
 } from "./viewer/ViewerToolbar";
@@ -266,9 +268,27 @@ const WEB_MENU_TOOLS = [
   { id: "Eraser", label: "Eraser" },
 ];
 
+/** The free viewer's menu: the desktop's full measure set (`readingTools`). */
+const READING_MENU_TOOLS = [
+  ...WEB_MENU_TOOLS.slice(0, 6),
+  { id: "CobbAngle", label: "Cobb angle" },
+  { id: "Bidirectional", label: "Bidirectional" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "CircleROI", label: "Circle ROI" },
+  { id: "PlanarFreehandROI", label: "Freehand ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Magnify", label: "Magnifying glass" },
+  { id: "Eraser", label: "Eraser" },
+];
+
 const ANNOTATION_TOOL_NAMES = new Set(
-  PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
+  ALL_TOOLS.filter((t) => t.annotation).map((t) => t.name)
 );
+/** Left-button tools each surface offers (a bound key for another is ignored). */
+const TEACHING_TOOL_NAMES = new Set([...NAV_TOOLS, ...MEASURE_TOOLS].map((t) => t.name));
+const READING_TOOL_NAMES = new Set([...NAV_TOOLS, ...READING_MEASURE_TOOLS].map((t) => t.name));
 
 // Minimal structural type for the bits of a StackViewport we drive.
 interface DrivableViewport {
@@ -813,6 +833,7 @@ export default function CornerstoneViewer({
   defaultTool = "WindowLevel",
   onViewModeChange,
   questionMarkHelp = false,
+  readingTools = false,
   seriesPanel = null,
   onCycleLayout,
   onSetLayout,
@@ -909,6 +930,12 @@ export default function CornerstoneViewer({
    * standalone viewer R / Shift+R rotate (R is the session's exam reveal).
    */
   questionMarkHelp?: boolean;
+  /**
+   * The free viewer's full measure set, as on the desktop: Cobb angle,
+   * bidirectional, circle and freehand ROIs, magnifying glass (D =
+   * bidirectional). Read once, when the viewport is built.
+   */
+  readingTools?: boolean;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
@@ -940,6 +967,8 @@ export default function CornerstoneViewer({
   const docked = chrome === "dock";
   const edge = chrome === "edge";
   const defaultToolRef = useRef(defaultTool);
+  const readingToolsRef = useRef(readingTools);
+  readingToolsRef.current = readingTools;
   defaultToolRef.current = defaultTool;
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
@@ -1271,6 +1300,11 @@ export default function CornerstoneViewer({
           RectangleROITool,
           EllipticalROITool,
           ProbeTool,
+          CobbAngleTool,
+          BidirectionalTool,
+          CircleROITool,
+          PlanarFreehandROITool,
+          MagnifyTool,
           annotation,
           Enums: toolsEnums,
         } = tools;
@@ -1279,10 +1313,16 @@ export default function CornerstoneViewer({
         // Cornerstone3D v5 docs the tool group + viewport must be wired up
         // BEFORE the stack is loaded/rendered so the annotation interaction +
         // SVG layer are in place for the very first interaction.
+        // The free viewer's extra measure tools join only where it offers them
+        // (`readingTools`): teaching recordings are built around the others.
+        const readingExtras = readingToolsRef.current
+          ? [CobbAngleTool, BidirectionalTool, CircleROITool, PlanarFreehandROITool, MagnifyTool]
+          : [];
         [
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
+          ...readingExtras,
         ].forEach((T) => {
           try {
             addTool(T);
@@ -1305,6 +1345,7 @@ export default function CornerstoneViewer({
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
+          ...readingExtras,
         ].forEach((T) =>
           // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
           tg.addTool(T.toolName, T === ArrowAnnotateTool ? annotationEditing.arrowAnnotateConfig : undefined)
@@ -2167,7 +2208,24 @@ export default function CornerstoneViewer({
         el.addEventListener(camEvt, emitCamera as EventListener);
         el.addEventListener(annCompleted, onAnnotationEvent as EventListener);
         el.addEventListener(annModified, onAnnotationEvent as EventListener);
+        // A closed freehand ROI computes its stats on a render after it is no
+        // longer the tool's active contour (annotationEditing.needsFreehandStats).
+        // That isn't the very next frame, so retry briefly until they land.
+        const onFreehandDone = (evt: Event) => {
+          const a = (evt as CustomEvent).detail?.annotation as (annotationEditing.AnnotationLike & { invalidated?: boolean }) | undefined;
+          if (!a || !annotationEditing.needsFreehandStats(a)) return;
+          const retry = (left: number) =>
+            window.setTimeout(() => {
+              if (!annotationEditing.needsFreehandStats(a)) return;
+              a.invalidated = true;
+              tools.utilities.triggerAnnotationRender(el);
+              if (left > 0) retry(left - 1);
+            }, 120);
+          retry(8);
+        };
+        core.eventTarget.addEventListener(annCompleted, onFreehandDone);
         detachListeners = () => {
+          core.eventTarget.removeEventListener(annCompleted, onFreehandDone);
           el.removeEventListener(stackEvt, emitSlice as EventListener);
           el.removeEventListener(voiEvt, emitVoi as EventListener);
           el.removeEventListener(camEvt, emitCamera as EventListener);
@@ -3555,7 +3613,7 @@ export default function CornerstoneViewer({
       setHelpOpen(false);
       return;
     }
-    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp });
+    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, readingTools });
     if (!action) return;
     event.preventDefault();
     if (action.type === "help") event.stopPropagation();
@@ -3567,6 +3625,8 @@ export default function CornerstoneViewer({
     switch (action.type) {
       case "tool":
         if (!ready) return;
+        // A key bound to a tool this surface doesn't offer does nothing.
+        if (action.tool !== "Eraser" && action.tool !== "Crosshairs" && !(readingTools ? READING_TOOL_NAMES : TEACHING_TOOL_NAMES).has(action.tool)) return;
         if (
           ANNOTATION_TOOL_NAMES.has(action.tool) &&
           (!annotationsEnabled || mprShowing)
@@ -3756,7 +3816,7 @@ export default function CornerstoneViewer({
   const webImageMenu = () =>
     imageMenu({
       modality,
-      tools: WEB_MENU_TOOLS,
+      tools: readingTools ? READING_MENU_TOOLS : WEB_MENU_TOOLS,
       activeTool,
       presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
       inverted,
@@ -4070,6 +4130,7 @@ export default function CornerstoneViewer({
       activeTool={activeTool}
       annotationsEnabled={annotationsEnabled}
       measurementsEnabled={!mprLive}
+      measureTools={readingTools ? READING_MEASURE_TOOLS : MEASURE_TOOLS}
       inverted={inverted}
       activePreset={activePreset}
       presets={presets}
@@ -4470,6 +4531,7 @@ export default function CornerstoneViewer({
           tab={helpTab}
           onTabChange={setHelpTab}
           paneMaximize={!!onToggleMaximize}
+          readingTools={readingTools}
           voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
         />
         <VoiceStatus

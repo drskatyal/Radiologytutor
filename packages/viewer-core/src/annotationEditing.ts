@@ -353,6 +353,19 @@ export function labelEditorPosition(
 }
 
 /**
+ * A freehand ROI that closed with no stats. Cornerstone's contour render
+ * clears `invalidated` on every frame, including the frames drawn while the
+ * contour is still the active one (when stats are skipped), so the finished
+ * contour can end with an empty stats map and never show its area / mean /
+ * HU. The viewer flags it again on the frame after completion and re-renders.
+ */
+export function needsFreehandStats(a: AnnotationLike & { data?: { contour?: { closed?: boolean } } }): boolean {
+  if (a.metadata?.toolName !== "PlanarFreehandROI" || !a.data?.contour?.closed) return false;
+  const stats = a.data.cachedStats;
+  return !stats || Object.keys(stats).length === 0;
+}
+
+/**
  * Wire the arrow placeholder clean-up and a change notifier (selection,
  * add, remove, modify, undo). Returns the uninstaller.
  */
