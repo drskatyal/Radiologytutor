@@ -41,6 +41,7 @@
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
 import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
+import { parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
 import {
   useCallback,
   useEffect,
@@ -1033,6 +1034,9 @@ export default function CornerstoneViewer({
     (to: number | ((current: number, count: number) => number), silent?: boolean) => void
   >(() => {});
   const nudgeZoomRef = useRef<(factor: number) => void>(() => {});
+  // RadiAnt zoom levels (Ctrl/⌘+0…4) and Ctrl/⌘+arrow pan; false when the pane has no camera to set (MPR, not loaded).
+  const zoomToRef = useRef<(scale: number | "fit") => boolean>(() => false);
+  const panByRef = useRef<(dx: number, dy: number) => boolean>(() => false);
   // Live viewport + the most recent rAF tween cancel fn (so we never overlap).
   const viewportRef = useRef<DrivableViewport | null>(null);
   const cancelTweenRef = useRef<() => void>(() => {});
@@ -2943,6 +2947,55 @@ export default function CornerstoneViewer({
             /* a 0x0 pane has no camera to scale */
           }
         };
+        zoomToRef.current = (scale) => {
+          const vp = viewportRef.current as (DrivableViewport & {
+            getImageData?: () => { spacing?: number[] } | undefined;
+            setCamera?: (camera: { parallelScale: number }) => void;
+          }) | null;
+          if (!vp || mprHeld) return false;
+          try {
+            if (scale === "fit") {
+              vp.resetCamera();
+            } else {
+              const parallelScale = parallelScaleForPixelZoom(elementRef.current?.clientHeight ?? 0, vp.getImageData?.()?.spacing?.[1] ?? 1, scale);
+              if (parallelScale == null || !vp.setCamera) return false;
+              vp.setCamera({ parallelScale });
+            }
+            vp.render();
+            emitCamera();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        panByRef.current = (dx, dy) => {
+          // The view moves `dx, dy` screen pixels (the image the other way), at any zoom.
+          if (mprHeld || !viewportRef.current) return false;
+          const vp = viewportRef.current as unknown as {
+            canvasToWorld?: (p: [number, number]) => number[];
+            getCamera?: () => { focalPoint?: number[]; position?: number[] };
+            setCamera?: (camera: { focalPoint: number[]; position: number[] }) => void;
+            render: () => void;
+          };
+          if (!vp.canvasToWorld || !vp.getCamera || !vp.setCamera) return false;
+          try {
+            const a = vp.canvasToWorld([0, 0]);
+            const b = vp.canvasToWorld([dx, dy]);
+            const { focalPoint, position } = vp.getCamera();
+            if (!focalPoint || !position || a.length < 3 || b.length < 3) return false;
+            const d = [0, 1, 2].map((k) => b[k]! - a[k]!);
+            if (!d.every(Number.isFinite)) return false;
+            vp.setCamera({
+              focalPoint: [0, 1, 2].map((k) => focalPoint[k]! + d[k]!),
+              position: [0, 1, 2].map((k) => position[k]! + d[k]!),
+            });
+            vp.render();
+            emitCamera();
+            return true;
+          } catch {
+            return false;
+          }
+        };
 
         // --- Replay / teach guide: re-apply ONE recorded event --------------
         // Slice and series are chained so a fast script doesn't race the decoder.
@@ -3786,8 +3839,37 @@ export default function CornerstoneViewer({
     };
   };
 
+  /** RadiAnt's reading keys, as on the desktop (zoom levels, pan, F12, F5). */
+  const runReadingKey = (action: ReadingKeyAction) => {
+    switch (action.type) {
+      case "zoomTo":
+        if (!zoomToRef.current(action.scale)) return flash(mprShowing ? "Zoom levels are for the stack" : "Zoom once the image has loaded");
+        return flash(zoomLevelLabel(action.scale));
+      case "pan":
+        if (!panByRef.current(action.dx, action.dy)) return flash(mprShowing ? "Pan with the middle button in MPR" : "Pan once the image has loaded");
+        return;
+      case "annotations":
+        return runWebMenuCommand("annotations");
+      case "referenceLines":
+        return paneLinks ? runWebMenuCommand("refLines") : flash("Reference lines need two or more panes");
+      case "link":
+        return paneLinks ? runWebMenuCommand(`link:${action.what}`) : flash("Linking needs two or more panes");
+    }
+  };
+
   const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (isTextTarget(event.target)) return;
+    // RadiAnt's keys (free viewer): Ctrl/⌘+0…4 zoom levels, Ctrl/⌘+arrows pan,
+    // F12 annotations, Ctrl/⌘+F12 reference lines, F5 / Shift+F5 / Alt+F5 links.
+    // Only while the image has focus, so F5 can't reload away an opened study.
+    if (readingTools) {
+      const reading = resolveReadingKey(event);
+      if (reading) {
+        event.preventDefault();
+        runReadingKey(reading);
+        return;
+      }
+    }
     // Ctrl/⌘+F11: set an exact window, as on the desktop (RadiAnt's key).
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "F11") {
       event.preventDefault();
@@ -4030,6 +4112,16 @@ export default function CornerstoneViewer({
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
+    if (readingTools) {
+      const reading: Record<string, string> = {
+        "zoom:fit": "Ctrl+0",
+        "zoom:1": "Ctrl+1",
+        "zoom:2": "Ctrl+2",
+        annotations: "F12",
+        ...(paneLinks ? { "link:scroll": "F5", "link:voi": "Shift+F5", "link:zoom": "Alt+F5", refLines: "Ctrl+F12" } : {}),
+      };
+      if (reading[command]) return reading[command];
+    }
     if (command === "window:custom") return "Ctrl+F11";
     if (command === "export" && readingTools) return "Ctrl+E";
     if (command === "linkAtCurrent" && paneLinks) return "Ctrl+Shift+L";
@@ -4095,10 +4187,14 @@ export default function CornerstoneViewer({
       case "overlay":
       case "mpr":
         return runViewerAction({ type: head } as ViewerHotkeyAction);
-      case "zoom":
-        if (arg === "fit") vp?.resetCamera?.();
-        else vp?.setZoom?.(Number(arg));
+      case "zoom": {
+        // "Actual size (1:1)" is one image pixel per screen pixel, as on the desktop.
+        const scale = arg === "fit" ? "fit" : Number(arg);
+        if (scale !== "fit" && !(scale > 0)) return;
+        if (zoomToRef.current(scale)) return;
+        if (scale === "fit") vp?.resetCamera?.();
         return vp?.render?.();
+      }
       case "rotate":
       case "flip":
       case "orient":

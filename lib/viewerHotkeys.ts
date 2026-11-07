@@ -265,6 +265,16 @@ export function viewerShortcutGroups(
   }
   push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "F11"], does: "Set an exact window (width / level)" });
   if (readingTools) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
+  if (readingTools) {
+    // RadiAnt's reading keys, as on the desktop (@flowrad/viewer-core/readingKeys).
+    const mod = mac ? "⌘" : "Ctrl";
+    push(groups, "Display", { keys: [mod, "0"], does: "Fit to the pane" });
+    push(groups, "Display", { keys: [mod, "1…4"], does: "Zoom 100 / 200 / 400 / 800 % (100 % = one image pixel per screen pixel)" });
+    push(groups, "Display", { keys: [mod, "Arrows"], does: "Pan the image (a step a press)" });
+    push(groups, "Display", { keys: ["F12"], does: "Show / hide annotations" });
+    push(groups, "Layout", { keys: [mod, "F12"], does: "Grid: reference lines on / off" });
+    push(groups, "Layout", { keys: ["F5"], does: "Grid: link scrolling (Shift+F5 window / level, Alt+F5 zoom and pan)" });
+  }
   if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "L"], does: "Grid: link the panes at what each shows now (a prior)" });
   if (readingTools) {
     push(groups, "Display", { keys: ["T"], does: "Slab: thin → MIP → MinIP → AvgIP (reformats the stack's plane)" });
