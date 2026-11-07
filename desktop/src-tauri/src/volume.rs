@@ -104,7 +104,8 @@ pub fn held_bytes() -> usize {
     CURRENT.lock().as_ref().map(|(v, _)| v.data.len() * 2).unwrap_or(0)
 }
 
-/// Drop whatever is held (tests, study closed).
+/// Drop whatever is held. Only the tests use it.
+#[cfg(test)]
 pub fn close() {
     *CURRENT.lock() = None;
 }

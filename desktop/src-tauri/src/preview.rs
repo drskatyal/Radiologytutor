@@ -60,6 +60,8 @@ fn text(obj: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<String> {
 }
 
 /// Encode the first frame as a PNG, or None when this file is not a cheap case.
+/// Only the tests use it; the app calls `render_png_sized`.
+#[cfg(test)]
 pub fn render_png(path: &Path) -> Option<Vec<u8>> {
     render_png_sized(path, None)
 }
