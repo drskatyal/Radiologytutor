@@ -45,9 +45,11 @@ export interface DicomTagsDialogProps {
   hidePatient?: boolean;
   /** Summary rows shown above the tag list (Series info). */
   summary?: { label: string; value: string }[];
+  /** `reading`: the free viewer's dark reading-room dialog. */
+  tone?: "app" | "reading";
 }
 
-export function DicomTagsDialog({ open, onClose, imageId, title = "DICOM tags", description, hidePatient = false, summary }: DicomTagsDialogProps) {
+export function DicomTagsDialog({ open, onClose, imageId, title = "DICOM tags", description, hidePatient = false, summary, tone }: DicomTagsDialogProps) {
   const [rows, setRows] = useState<DicomTagRow[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [query, setQuery] = useState("");
@@ -73,7 +75,7 @@ export function DicomTagsDialog({ open, onClose, imageId, title = "DICOM tags", 
   const shown = useMemo(() => (rows ? filterTagRows(rows, query) : []), [rows, query]);
 
   return (
-    <Modal open={open} onClose={onClose} title={title} description={description} size="2xl">
+    <Modal open={open} onClose={onClose} title={title} description={description} size="2xl" tone={tone}>
       <div className="flex flex-col gap-3" data-testid="dicom-tags">
         {summary?.length ? (
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 rounded-lg border border-subtle bg-surface p-3 text-sm">

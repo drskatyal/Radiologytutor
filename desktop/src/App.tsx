@@ -2065,6 +2065,8 @@ export default function App() {
         return arg === "axial" || arg === "coronal" || arg === "sagittal" ? { type: "reformat", plane: arg } : null;
       case "mpr":
         return { type: "mpr" };
+      case "window":
+        return arg === "custom" ? { type: "customWindow" } : null;
       case "3d":
         return { type: "volume3d" };
       case "layout": {

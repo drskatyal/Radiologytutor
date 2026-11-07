@@ -115,6 +115,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
           ...(mr || !ctx.presets.length ? [item(ctx, "preset:auto", mr ? "MR auto (from the image)" : "Auto (from the image)")] : []),
           ...ctx.presets.map((p) => item(ctx, `preset:${p.id}`, p.label, { hint: `${p.ww} / ${p.wc}` })),
           ...(!mr && ctx.presets.length ? [item(ctx, "preset:auto", "Series default")] : []),
+          item(ctx, "window:custom", "Set window…"),
           sep,
           item(ctx, "invert", "Invert", { checked: !!ctx.inverted }),
         ]),

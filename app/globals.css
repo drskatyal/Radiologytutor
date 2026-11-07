@@ -284,6 +284,27 @@
   color-scheme: dark;
 }
 
+/* Dialogs the free viewer opens while reading (Set window, DICOM tags,
+   structured report): <Modal tone="reading">. They portal to <body>, outside
+   the shell, so the reading room's dark surface and brand green ride on the
+   panel itself. A plain class on purpose: a `body:has(…)` rule re-matched the
+   whole page on every scroll frame (p95 frame 17 → 100 ms on the 520-slice CT). */
+.modal-reading {
+  --canvas: 9 13 12;
+  --surface: 17 24 22;
+  --elevated: 17 24 22;
+  --text-primary: 240 244 242;
+  --text-secondary: 190 202 197;
+  --text-muted: 160 174 168;
+  --border-subtle: 40 54 49;
+  --border-strong: 62 80 73;
+  --accent: 92 196 156;
+  --accent-foreground: 9 13 12;
+  --accent-muted: 20 46 38;
+  --accent-bright: 120 214 178;
+  color-scheme: dark;
+}
+
 /* The lockup with the wordmark that reads on the current surface. */
 .viewer-shell .vl-logo-dark {
   display: none;

@@ -22,6 +22,11 @@ export interface ModalProps {
   /** Footer actions, right-aligned. */
   footer?: React.ReactNode;
   size?: keyof typeof SIZES;
+  /**
+   * `reading`: the FlowRad Viewer reading room's dark surface and brand green
+   * (`.modal-reading` in globals.css), for dialogs opened over images.
+   */
+  tone?: "app" | "reading";
   children?: React.ReactNode;
 }
 
@@ -37,6 +42,7 @@ export function Modal({
   description,
   footer,
   size = "md",
+  tone = "app",
   children,
 }: ModalProps) {
   const reduce = useReducedMotion();
@@ -70,7 +76,9 @@ export function Modal({
                 <motion.div
                   className={cn(
                     "relative w-full overflow-hidden rounded-2xl border border-subtle bg-elevated shadow-lg surface-hairline focus:outline-none",
-                    SIZES[size]
+                    SIZES[size],
+                    // Its own text colour too: the portal inherits <body>'s.
+                    tone === "reading" && "modal-reading text-primary"
                   )}
                   initial={reduce ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.97 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}

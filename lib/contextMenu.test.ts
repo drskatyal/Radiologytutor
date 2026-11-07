@@ -51,7 +51,7 @@ const find = (entries: readonly MenuEntry[], id: string): MenuEntry | undefined 
 test("image menu: every section of the spec is there on a CT with two monitors", () => {
   const ids = commandsOf(imageMenu(base()));
   for (const id of [
-    "tool:Length", "preset:ct-lung", "invert", "zoom:fit", "zoom:1", "zoom:2", "rotate:90", "rotate:-90", "rotate:180", "flip:h", "flip:v", "orient:reset", "reset",
+    "tool:Length", "preset:ct-lung", "window:custom", "invert", "zoom:fit", "zoom:1", "zoom:2", "rotate:90", "rotate:-90", "rotate:180", "flip:h", "flip:v", "orient:reset", "reset",
     "slab:mip", "slab:minip", "slab:avg", "slab-mm:10", "reformat:coronal", "mpr", "3d", "layout:2x2", "layout:2x3", "layout:3x3",
     "monitor:B", "link:scroll", "link:voi", "link:zoom", "refLines", "cine", "fps:30", "overlay", "annotations",
     "copyImage", "save:png", "save:jpeg", "video", "tags", "comparePrior",

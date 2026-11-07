@@ -213,3 +213,10 @@ test("D is Bidirectional only where the free viewer's extra measure tools are on
   // belong to the student session), so the sheet doesn't list them.
   assert.ok(!does(true).some((d) => /Cobb|Circle ROI|Freehand|Magnif/.test(d)));
 });
+
+test("the help lists Ctrl+F11 (Set window), ⌘ on a Mac", () => {
+  const row = (mac: boolean) =>
+    viewerShortcutGroups({}, mac).flatMap((g) => g.rows).find((r) => /exact window/.test(r.does));
+  assert.deepEqual(row(false)?.keys, ["Ctrl", "F11"]);
+  assert.deepEqual(row(true)?.keys, ["⌘", "F11"]);
+});

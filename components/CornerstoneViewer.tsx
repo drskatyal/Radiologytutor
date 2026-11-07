@@ -198,6 +198,7 @@ import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/type
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
+  matchPreset,
   viewerWindowPresets,
   type WindowPreset,
 } from "../lib/windowPresets";
@@ -252,6 +253,8 @@ function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrom
 
 /** The DICOM tags viewer loads on first use. */
 const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
+/** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
+const CustomWindowDialog = dynamicImport(() => import("./viewer/CustomWindowDialog").then((m) => m.CustomWindowDialog), { ssr: false });
 
 /** Tools in the right-click menu, in order. */
 const WEB_MENU_TOOLS = [
@@ -1099,6 +1102,7 @@ export default function CornerstoneViewer({
     });
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [customWindowOpen, setCustomWindowOpen] = useState(false);
   /** Which list the help sheet shows: keys, or the voice commands. */
   const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
   // Mouse & keyboard bindings (local copy; the page shell syncs the account).
@@ -3605,8 +3609,24 @@ export default function CornerstoneViewer({
   // would fight it. The host div is focusable, so tabbing or clicking into the
   // image gives the reader a reading-room keyboard — and makes the viewer
   // keyboard-operable at all, which it was not. See lib/viewerHotkeys.ts.
+  /** Set window dialog. Not on an 8-bit preview: windowing it would reveal nothing real. */
+  const openCustomWindow = () => {
+    if (!ready) return;
+    if (previewing && !mprLive) {
+      flash("Window unlocks when full-quality pixels load");
+      return;
+    }
+    setCustomWindowOpen(true);
+  };
+
   const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (isTextTarget(event.target)) return;
+    // Ctrl/⌘+F11: set an exact window, as on the desktop (RadiAnt's key).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "F11") {
+      event.preventDefault();
+      openCustomWindow();
+      return;
+    }
     if (event.key === "Escape" && helpOpen) {
       event.preventDefault();
       event.stopPropagation();
@@ -3811,6 +3831,7 @@ export default function CornerstoneViewer({
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
+    if (command === "window:custom") return "Ctrl+F11";
     return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
@@ -3871,6 +3892,8 @@ export default function CornerstoneViewer({
         return;
       case "seriesPanel":
         return seriesPanel?.toggle();
+      case "window":
+        return arg === "custom" ? openCustomWindow() : undefined;
       case "fps":
         return setCineFps(clampCineFps(Number(arg)));
       case "annotations": {
@@ -4171,6 +4194,7 @@ export default function CornerstoneViewer({
       onClear={() => clearRef.current()}
       onViewMode={setViewMode}
       previewLocked={previewing && !mprLive}
+      onCustomWindow={openCustomWindow}
       onCineToggle={() => setCinePlaying((playing) => !playing)}
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
@@ -4392,8 +4416,33 @@ export default function CornerstoneViewer({
         {!mprLive && referencePlanes && referencePlanes.length > 0 && (
           <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
         )}
+        {customWindowOpen && (
+          <CustomWindowDialog
+            open
+            onClose={() => {
+              setCustomWindowOpen(false);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            initial={{ ww: readout?.ww, wc: readout?.wc }}
+            unit={modality === "CT" ? "HU" : undefined}
+            tone={readingTools ? "reading" : "app"}
+            onApply={(ww, wc) => {
+              // The same path as a preset: the window is the reader's own
+              // choice, so linked panes, pop-outs and recordings hear it.
+              const id = matchPreset(ww, wc);
+              applyPresetRef.current({ id: id ?? "custom", label: presets.find((p) => p.id === id)?.label ?? "Window", ww, wc, modalities: ["*"] });
+              flash(`Window   ${windowLine(ww, wc) ?? ""}`.trim());
+            }}
+          />
+        )}
         {tagsImageId && (
-          <DicomTagsDialog open onClose={() => setTagsImageId(null)} imageId={tagsImageId} description={modality ? `${modality} · current image` : undefined} />
+          <DicomTagsDialog
+            open
+            onClose={() => setTagsImageId(null)}
+            imageId={tagsImageId}
+            description={modality ? `${modality} · current image` : undefined}
+            tone={readingTools ? "reading" : "app"}
+          />
         )}
         {sliceScrollbar}
         {(viewMode === "mpr" || mprLive) && (

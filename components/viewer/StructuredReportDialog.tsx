@@ -12,7 +12,16 @@ function formatDate(da?: string): string {
   return `${da.slice(0, 4)}-${da.slice(4, 6)}-${da.slice(6, 8)}`;
 }
 
-export function StructuredReportDialog({ report, onClose }: { report: DicomDocument | null; onClose: () => void }) {
+export function StructuredReportDialog({
+  report,
+  onClose,
+  tone,
+}: {
+  report: DicomDocument | null;
+  onClose: () => void;
+  /** `reading`: the free viewer's dark reading-room dialog. */
+  tone?: "app" | "reading";
+}) {
   const images = report?.references.length ?? 0;
   const description =
     [formatDate(report?.date), images ? `${images} referenced image${images === 1 ? "" : "s"}` : ""]
@@ -25,6 +34,7 @@ export function StructuredReportDialog({ report, onClose }: { report: DicomDocum
       title={report?.title ?? "Structured report"}
       description={description}
       size="lg"
+      tone={tone}
       footer={<Button onClick={onClose}>Close</Button>}
     >
       {report && report.lines.length > 0 ? (

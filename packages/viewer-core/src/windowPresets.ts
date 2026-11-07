@@ -115,3 +115,21 @@ export function viewerWindowPresets(modality?: string): WindowPreset[] {
   const numbered = numberedWindowPresets(modality);
   return numbered.length > 0 ? numbered : presetsForModality(modality);
 }
+
+/**
+ * A typed window (Set window dialog, web and desktop): width and level as the
+ * reader entered them, or null when they don't make a window. Width must be at
+ * least 1 (DICOM C.11.2.1.2); either value may be negative (CT lung level).
+ * Commas are read as decimal points ("1,5" from a European keyboard).
+ */
+export function parseCustomWindow(ww: string, wc: string): { ww: number; wc: number } | null {
+  const num = (s: string) => {
+    const t = s.trim().replace(",", ".");
+    if (t === "" || !/^[-+]?(\d+\.?\d*|\.\d+)$/.test(t)) return Number.NaN;
+    return Number(t);
+  };
+  const w = num(ww);
+  const c = num(wc);
+  if (!Number.isFinite(w) || w < 1 || !Number.isFinite(c)) return null;
+  return { ww: w, wc: c };
+}

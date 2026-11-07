@@ -275,6 +275,8 @@ export interface ViewerToolbarProps {
   onVoiceHelp?: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
+  /** Opens the Set window dialog (exact width / level). */
+  onCustomWindow?: () => void;
   /** The measure menu (default: the teaching set, `MEASURE_TOOLS`). */
   measureTools?: ViewerTool[];
 }
@@ -548,6 +550,18 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
               onSelect={() => props.onPreset(p)}
             />
           ))}
+          {props.onCustomWindow && (
+            <>
+              <MenuSeparator />
+              <MenuItem
+                label="Set window…"
+                hint="exact WW / WL"
+                shortcut="Ctrl+F11"
+                active={activePreset === "custom"}
+                onSelect={props.onCustomWindow}
+              />
+            </>
+          )}
         </Menu>
 
         <ToolbarButton
