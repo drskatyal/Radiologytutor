@@ -256,6 +256,8 @@ function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrom
 /** The DICOM tags viewer loads on first use. */
 const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
 /** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
+/** Oblique, slab and curved MPR (free viewer), loaded on first use. */
+const WebReconOverlay = dynamicImport(() => import("./viewer/recon/WebReconOverlay").then((m) => m.WebReconOverlay), { ssr: false });
 const CustomWindowDialog = dynamicImport(() => import("./viewer/CustomWindowDialog").then((m) => m.CustomWindowDialog), { ssr: false });
 
 /** Tools in the right-click menu, in order. */
@@ -1111,6 +1113,7 @@ export default function CornerstoneViewer({
   const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
   useEffect(() => setStageEl(elementRef.current), []);
   const [annotatedExport, setAnnotatedExport] = useState(false);
+  const [recon, setRecon] = useState<{ imageIds: string[]; title: string } | null>(null);
   /** Which list the help sheet shows: keys, or the voice commands. */
   const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
   // Mouse & keyboard bindings (local copy; the page shell syncs the account).
@@ -4194,6 +4197,18 @@ export default function CornerstoneViewer({
       }}
       textBox={readingTools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
       onSaveAnnotated={readingTools ? () => setAnnotatedExport(true) : undefined}
+      onRecon={
+        readingTools
+          ? () => {
+              const ids: string[] = (viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? [];
+              if (ids.length < 3) return flash("Oblique and curved MPR need a stack of parallel slices");
+              void import("@cornerstonejs/core").then((core) => {
+                const s = core.metaData.get("generalSeriesModule", ids[0]) as { seriesDescription?: string; modality?: string } | undefined;
+                setRecon({ imageIds: ids.slice(), title: s?.seriesDescription || `${s?.modality ?? ""} series`.trim() });
+              });
+            }
+          : undefined
+      }
       onPreset={(preset) => {
         applyPresetRef.current(preset);
         flash(
@@ -4430,6 +4445,7 @@ export default function CornerstoneViewer({
         {!mprLive && referencePlanes && referencePlanes.length > 0 && (
           <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
         )}
+        {recon && <WebReconOverlay imageIds={recon.imageIds} title={recon.title} onExit={() => setRecon(null)} />}
         {readingTools && !mprLive && viewMode === "stack" && (
           <WebTextBoxLayer ref={textBoxRef} element={stageEl} active={textBoxTool} hidden={annotationsHidden} />
         )}
