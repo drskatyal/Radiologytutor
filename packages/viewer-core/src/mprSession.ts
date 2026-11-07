@@ -17,6 +17,7 @@ import {
   sliceCenterPatient,
   type MprSessionHandle,
   type PlaneSample,
+  type Slab,
 } from "./mpr";
 import { tuneStackScrollTool } from "./scrollSensitivity";
 import { applyCutPlane, applyVolumeLook } from "./volume3d";
@@ -442,23 +443,34 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
     }
     // Leaving 3D frees its WebGL work.
     if (render === "3d") disable3d();
+    render = mode;
+    applySlab(mode === "mip" ? { mode: "mip", mm: MIP_SLAB_MM } : { mode: "off", mm: MIP_SLAB_MM });
+    return true;
+  };
+
+  /** Blend mode + thickness on the three planes. */
+  const applySlab = (slab: Slab) => {
+    if (disposed || render === "3d") return;
+    const blend = core.Enums.BlendModes;
+    const mode =
+      slab.mode === "mip"
+        ? blend.MAXIMUM_INTENSITY_BLEND
+        : slab.mode === "minip"
+          ? blend.MINIMUM_INTENSITY_BLEND
+          : slab.mode === "avg"
+            ? blend.AVERAGE_INTENSITY_BLEND
+            : blend.COMPOSITE;
     for (const vp of viewports() as BlendViewport[]) {
       try {
-        if (mode === "mip") {
-          vp.setBlendMode?.(blend.MAXIMUM_INTENSITY_BLEND);
-          vp.setSlabThickness?.(MIP_SLAB_MM);
-        } else {
-          vp.setBlendMode?.(blend.COMPOSITE);
-          if (vp.resetSlabThickness) vp.resetSlabThickness();
-          else vp.setSlabThickness?.(0.1);
-        }
+        vp.setBlendMode?.(mode);
+        if (slab.mode !== "off") vp.setSlabThickness?.(slab.mm);
+        else if (vp.resetSlabThickness) vp.resetSlabThickness();
+        else vp.setSlabThickness?.(0.1);
         vp.render();
       } catch {
         /* actor not ready yet */
       }
     }
-    render = mode;
-    return true;
   };
 
   const scrollPlane = (plane: "axial" | "coronal" | "sagittal", delta: number) => {
@@ -515,6 +527,7 @@ export async function mountMprSession(args: MountMprArgs): Promise<MprSessionHan
     jumpToImageId,
     setVoi,
     setInvert,
+    setSlab: applySlab,
     resetView: () => {
       const groupNow = tools.ToolGroupManager.getToolGroup(ids.toolGroupId);
       const crosshairs = groupNow?.getToolInstance?.("Crosshairs") as

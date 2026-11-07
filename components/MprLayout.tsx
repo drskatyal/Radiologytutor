@@ -32,10 +32,13 @@ function Plane({
   className,
   style,
   readout,
+  slab,
   maximized,
   onToggleMaximize,
   canDoubleClick,
 }: {
+  /** "MIP 10 mm" while a slab is on. */
+  slab?: string | null;
   style?: React.CSSProperties;
   /** This plane fills the whole layout (the others stay mounted underneath). */
   maximized: boolean;
@@ -92,6 +95,11 @@ function Plane({
               style={{ backgroundColor: MPR_REFERENCE_LINE[plane] }}
             />
             {label}
+            {slab ? (
+              <span className="rounded-sm bg-accent/25 px-1 py-px normal-case tracking-normal text-white" data-mpr-slab={slab}>
+                {slab}
+              </span>
+            ) : null}
           </span>
           {readout ? (
             <span
@@ -215,6 +223,7 @@ export function MprLayout({
   framed = false,
   showLabels = true,
   render = "mpr",
+  slabLabel = null,
   volume3dRef,
   onPlanePointer,
   axialReadout,
@@ -236,6 +245,8 @@ export function MprLayout({
   /** "Im 42 / 240  W 400 L 40" — drawn in the axial plane's corner. */
   axialReadout?: string | null;
   render?: MprRender;
+  /** "MIP 10 mm" on each plane while a slab is on. */
+  slabLabel?: string | null;
   volume3dRef?: RefObject<HTMLDivElement>;
   onPlanePointer?: (plane: MprPlane) => void;
   axialRef: RefObject<HTMLDivElement>;
@@ -316,6 +327,7 @@ export function MprLayout({
   const planeProps = {
     tool,
     showLabels,
+    slab: slabLabel,
     onPointer: onPlanePointer,
     onToggleMaximize: toggleMaximize,
     canDoubleClick,

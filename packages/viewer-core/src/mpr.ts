@@ -23,6 +23,54 @@ export type MprRender = "mpr" | "mip" | "3d";
 /** MIP slab thickness, mm. Thick enough to follow a vessel or find a nodule. */
 export const MIP_SLAB_MM = 15;
 
+/** A slab through the volume: thin (one slice), maximum, minimum or average intensity. */
+export type SlabMode = "off" | "mip" | "minip" | "avg";
+export interface Slab {
+  mode: SlabMode;
+  /** Thickness, mm (kept when the mode is "off", for the next slab). */
+  mm: number;
+}
+/** T cycles in this order, as on the desktop viewer. */
+export const SLAB_MODES: readonly SlabMode[] = ["off", "mip", "minip", "avg"];
+export const SLAB_DEFAULT_MM = 10;
+export const SLAB_MIN_MM = 2;
+export const SLAB_MAX_MM = 60;
+/** Ctrl/⌘+] and Ctrl/⌘+[ step, mm (the desktop's). */
+export const SLAB_STEP_MM = 2;
+
+export function nextSlabMode(mode: SlabMode): SlabMode {
+  return SLAB_MODES[(SLAB_MODES.indexOf(mode) + 1) % SLAB_MODES.length]!;
+}
+
+/** Thickness after a step, clamped to SLAB_MIN_MM…SLAB_MAX_MM and to whole mm. */
+export function stepSlabMm(mm: number, deltaMm: number): number {
+  const next = Math.round((Number.isFinite(mm) ? mm : SLAB_DEFAULT_MM) + deltaMm);
+  return Math.min(SLAB_MAX_MM, Math.max(SLAB_MIN_MM, next));
+}
+
+/** "MIP 10 mm", "MinIP 6 mm", "AvgIP 4 mm"; "" for a thin slice. */
+export function slabLabel(slab: Slab): string {
+  if (slab.mode === "off") return "";
+  const name = slab.mode === "mip" ? "MIP" : slab.mode === "minip" ? "MinIP" : "AvgIP";
+  return `${name} ${slab.mm} mm`;
+}
+
+/**
+ * The patient plane a stack was acquired in, from its ImageOrientationPatient:
+ * the axis its slice normal runs along (z axial, y coronal, x sagittal).
+ * Null without an orientation, or for a strongly oblique stack.
+ */
+export function acquisitionPlane(iop: ArrayLike<number> | null | undefined): MprPlane | null {
+  if (!iop || iop.length < 6) return null;
+  const [r1, r2, r3, c1, c2, c3] = Array.from(iop).slice(0, 6) as [number, number, number, number, number, number];
+  const n = [r2 * c3 - r3 * c2, r3 * c1 - r1 * c3, r1 * c2 - r2 * c1].map(Math.abs) as [number, number, number];
+  const len = Math.hypot(...n);
+  if (!(len > 0)) return null;
+  const max = Math.max(...n);
+  if (max / len < 0.8) return null;
+  return max === n[2] ? "axial" : max === n[1] ? "coronal" : "sagittal";
+}
+
 /** Which plane the keyboard scrolls: the last one the reader touched. */
 export function planeForViewportId(
   viewportId: string | null | undefined,
@@ -76,6 +124,8 @@ export interface MprSessionHandle {
   restoreCrosshairs: () => void;
   /** Thin MPR, MIP slab, or a 3D volume render (needs `elements.volume3d`). */
   setRender: (mode: MprRender) => Promise<boolean>;
+  /** The slab on the three planes (MIP / MinIP / AvgIP at a thickness, or thin). Ignored in 3D. */
+  setSlab?: (slab: Slab) => void;
   /** Scroll one plane by `delta` slices (keyboard). */
   scrollPlane: (plane: MprPlane, delta: number) => void;
   /** 3D view: volume rendering with `preset`, or a shaded iso-surface at `surfaceThreshold`. No-op before 3D is shown. */
