@@ -127,6 +127,17 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await page.keyboard.press("Shift+ArrowUp");
   await expect(slider).toHaveAttribute("aria-valuenow", String(from));
 
+  // Shift+Backspace: rotation and flips back, zoom kept (the overlay's zoom is unchanged).
+  await image(page).focus();
+  await page.keyboard.press("Control+2");
+  const zoomText = () => image(page).locator("xpath=..").innerText().then((t) => /Zoom \d+%/.exec(t)?.[0] ?? "");
+  await expect.poll(zoomText).not.toBe("");
+  const zoomed = await zoomText();
+  await page.keyboard.press("r");
+  await page.keyboard.press("Shift+Backspace");
+  await expect(page.getByText("Reset orientation").first()).toBeVisible();
+  expect(await zoomText()).toBe(zoomed);
+
   // The help sheet lists them.
   await page.keyboard.press("Shift+?");
   const help = page.getByRole("dialog");

@@ -291,3 +291,10 @@ test("the free viewer's help lists Space cine, [ / ] series, F full screen, Ctrl
   assert.deepEqual(find(false, true, /^Overlay text on \/ off/)?.keys, ["Ctrl", "Shift", "F12"]);
   for (const re of [/^Play \/ pause cine \(as K\)/, /^Full screen/, /^MPR: three planes/]) assert.equal(find(false, false, re), undefined);
 });
+
+test("the free viewer's help lists Shift+Backspace (reset rotation and flips)", () => {
+  const find = (readingTools: boolean) =>
+    viewerShortcutGroups({}, false, { readingTools }).flatMap((g) => g.rows).find((r) => /^Reset rotation and flips/.test(r.does));
+  assert.deepEqual(find(true)?.keys, ["Shift", "Backspace"]);
+  assert.equal(find(false), undefined);
+});

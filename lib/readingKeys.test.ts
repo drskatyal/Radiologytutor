@@ -87,3 +87,9 @@ test("reading keys: PageUp / PageDown and Shift+↑ / ↓ jump 10 % of the image
   assert.equal(resolveReadingKey({ key: "PageDown", ctrlKey: true }), null);
   assert.deepEqual([pageStep(60), pageStep(520), pageStep(4), pageStep(0)], [6, 52, 1, 1]);
 });
+
+test("reading keys: Shift+Backspace resets rotation and flips only; bare Backspace stays the full reset", () => {
+  assert.deepEqual(resolveReadingKey({ key: "Backspace", shiftKey: true }), { type: "orientReset" });
+  assert.equal(resolveReadingKey({ key: "Backspace" }), null);
+  assert.deepEqual(resolveReadingKey({ key: "Backspace", ctrlKey: true, shiftKey: true }), { type: "clearMeasurements" });
+});

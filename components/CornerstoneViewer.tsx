@@ -3925,6 +3925,8 @@ export default function CornerstoneViewer({
         if (viewMode !== "mpr") setViewMode("mpr");
         return flash("3D");
       }
+      case "orientReset":
+        return applyOrientation("orient:reset");
       case "overlay": {
         // Ctrl/⌘+Shift+F12: overlay text on / off (O still cycles full → basic → off).
         const next: OverlayDensity = overlay === "off" ? "full" : "off";
@@ -4192,6 +4194,7 @@ export default function CornerstoneViewer({
       const i = presets.findIndex((p) => p.id === arg);
       return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
     }
+    if (readingTools && command === "orient:reset") return "Shift+Backspace";
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
