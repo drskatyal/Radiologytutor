@@ -258,8 +258,8 @@ export function AppShell({
 
   const readingRoom = pathname.startsWith("/case/") || pathname.startsWith("/s/");
   const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
-  // The free, public FlowRad Viewer brings its own reading-room bar.
-  const freeViewer = pathname === "/viewer";
+  // The free viewer (public, and its home inside Learn) brings its own reading-room bar.
+  const freeViewer = pathname === "/viewer" || pathname === "/viewer/local";
   const hideChrome = readingRoom || authScreen || freeViewer;
   const showDeveloper = process.env.NODE_ENV === "development";
   const nav = useMemo(() => navGroups(showDeveloper, me), [showDeveloper, me]);
@@ -407,7 +407,8 @@ export function AppShell({
           )}
         </div>
         {/* The free viewer signs no one in and sets no cookie to view. */}
-        {!readingRoom && !freeViewer && <CookieNotice />}
+        {/* /viewer is static and sets no cookie; /viewer/local is part of Learn, which does. */}
+        {!readingRoom && pathname !== "/viewer" && <CookieNotice />}
       </div>
     </ToastProvider>
   );
