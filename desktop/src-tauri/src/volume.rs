@@ -373,11 +373,14 @@ pub fn build(paths: Vec<PathBuf>) -> Result<VolumeInfo, String> {
     // The one big allocation: the 16-bit volume. Each output slice is decoded
     // (and, when reduced, box-averaged) straight into its slot.
     let mut data = vec![0i16; on * depth];
-    if step_xy == 1 && step_z == 1 {
+    // Min / max per output slice, taken right after it is written (still in
+    // cache) instead of a second pass over the whole volume.
+    let slice_range = |d: &[i16]| d.iter().fold((i16::MAX, i16::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    let ranges: Vec<(i16, i16)> = if step_xy == 1 && step_z == 1 {
         data.par_chunks_mut(n)
             .zip(slices.par_iter())
-            .map(|(dst, s)| decode_into(s, dst))
-            .collect::<Result<(), String>>()?;
+            .map(|(dst, s)| decode_into(s, dst).map(|()| slice_range(dst)))
+            .collect::<Result<_, String>>()?
     } else {
         data.par_chunks_mut(on)
             .enumerate()
@@ -401,10 +404,10 @@ pub fn build(paths: Vec<PathBuf>) -> Result<VolumeInfo, String> {
                 for (o, a) in dst.iter_mut().zip(&acc) {
                     *o = (a / div) as i16;
                 }
-                Ok(())
+                Ok(slice_range(dst))
             })
-            .collect::<Result<(), String>>()?;
-    }
+            .collect::<Result<_, String>>()?
+    };
     let window = slices[slices.len() / 2].window;
     let spacing = [
         slices[0].spacing[0] * step_xy as f64,
@@ -414,10 +417,7 @@ pub fn build(paths: Vec<PathBuf>) -> Result<VolumeInfo, String> {
     let (cols, rows) = (ocols, orows);
     let reduced = [step_xy, step_z];
     drop(slices);
-    let (min, max) = data.par_iter().fold(|| (i16::MAX, i16::MIN), |(a, b), &v| (a.min(v), b.max(v))).reduce(
-        || (i16::MAX, i16::MIN),
-        |(a, b), (c, d)| (a.min(c), b.max(d)),
-    );
+    let (min, max) = ranges.iter().fold((i16::MAX, i16::MIN), |(a, b), &(c, d)| (a.min(c), b.max(d)));
     let volume = Arc::new(Volume { key, dims: [cols, rows, depth], spacing, data, min, max, window, reduced });
     let info = info_of(&volume, started.elapsed().as_secs_f64() * 1000.0);
     *CURRENT.lock() = Some((volume, 1));
