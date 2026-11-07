@@ -26,6 +26,7 @@ import {
   Crosshair,
   DraftingCompass,
   Eraser,
+  ImageDown,
   Keyboard,
   Lasso,
   MessageSquareText,
@@ -48,6 +49,7 @@ import {
   Square,
   SunMoon,
   Triangle,
+  Type,
   ZoomIn,
   type LucideIcon,
 } from "lucide-react";
@@ -275,6 +277,10 @@ export interface ViewerToolbarProps {
   onVoiceHelp?: () => void;
   /** Offline voice commands (mic toggle); absent where the browser has no microphone API. */
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
+  /** Text-box tool (free viewer; saved in this browser only). */
+  textBox?: { active: boolean; onToggle: () => void };
+  /** Save the image with its measurements and text boxes burned in. */
+  onSaveAnnotated?: () => void;
   /** Opens the Set window dialog (exact width / level). */
   onCustomWindow?: () => void;
   /** The measure menu (default: the teaching set, `MEASURE_TOOLS`). */
@@ -503,6 +509,28 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             ))}
           </Menu>
         </div>
+        {props.textBox && (
+          <ToolbarButton
+            label="Text box (saved in this browser)"
+            active={props.textBox.active}
+            disabled={!ready || !measurementsEnabled}
+            container={host}
+            onClick={props.textBox.onToggle}
+          >
+            <Icon as={Type} />
+          </ToolbarButton>
+        )}
+        {props.onSaveAnnotated && (
+          <ToolbarButton
+            label="Save image with annotations (PNG)"
+            disabled={!ready || !measurementsEnabled}
+            container={host}
+            pressed={false}
+            onClick={props.onSaveAnnotated}
+          >
+            <Icon as={ImageDown} />
+          </ToolbarButton>
+        )}
 
         <Divider />
 
