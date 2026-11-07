@@ -990,6 +990,30 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     [controlsFor, refreshPlanes]
   );
 
+  /**
+   * The grid's links for the right-click menu and Ctrl/⌘+Shift+L. "Link at
+   * current" re-anchors the panes of another study (a prior) at what each
+   * shows now, and turns scroll linking on: the desktop's registration.
+   */
+  const paneLinks = useMemo(
+    () =>
+      multi
+        ? {
+            scroll: linkScroll,
+            voi: linkVoi,
+            zoom: linkZoom,
+            lines: refLines,
+            toggle: (what: "scroll" | "voi" | "zoom" | "lines") =>
+              (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : what === "zoom" ? setLinkZoom : setRefLines)((on) => !on),
+            linkAtCurrent: () => {
+              captureAnchors();
+              setLinkScroll(true);
+            },
+          }
+        : null,
+    [multi, linkScroll, linkVoi, linkZoom, refLines, captureAnchors]
+  );
+
   // New layout or series: planes again once the panes have drawn.
   useEffect(() => {
     if (!multi || !refLines) return;
@@ -1435,6 +1459,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     chrome={focusMode ? "off" : expanded || reading || multi ? "edge" : "dock"}
                     toolbarHost={multi && !focusMode ? barHost : undefined}
                     distractionFree={distractionFree}
+                    paneLinks={paneLinks}
                     referencePlanes={linesFor(0)}
                     active={!multi || activePane === 0}
                     onActivate={() => setActivePane(0)}
@@ -1490,6 +1515,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           chrome={focusMode ? "off" : "edge"}
                           toolbarHost={focusMode ? undefined : barHost}
                           distractionFree={distractionFree}
+                          paneLinks={paneLinks}
                           referencePlanes={linesFor(pane)}
                           active={activePane === pane}
                           onActivate={() => setActivePane(pane)}
