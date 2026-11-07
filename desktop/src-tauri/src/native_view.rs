@@ -128,7 +128,8 @@ impl Transform {
         }
     }
 
-    /// Image pixel → cell CSS px.
+    /// Image pixel → cell CSS px. Only the tests use it; native.rs carries the inverse.
+    #[cfg(test)]
     pub fn to_cell(&self, col: f32, row: f32) -> (f32, f32) {
         let fx = (col - self.cols / 2.0) * self.scale * self.flip_x;
         let fy = (row - self.rows / 2.0) * self.scale * self.flip_y;
