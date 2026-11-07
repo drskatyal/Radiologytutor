@@ -279,3 +279,15 @@ test("the free viewer's help lists Alt+A / C / S reformat, Shift+E eraser and Ct
   assert.deepEqual(find(true, true, /^Clear all measurements/)?.keys, ["⌘", "Shift", "Backspace"]);
   for (const re of [/^Reformat this pane/, /^Eraser/, /^Clear all measurements/]) assert.equal(find(false, false, re), undefined);
 });
+
+test("the free viewer's help lists Space cine, [ / ] series, F full screen, Ctrl/⌘+M MPR and Ctrl/⌘+Shift+M 3D", () => {
+  const find = (mac: boolean, readingTools: boolean, re: RegExp) =>
+    viewerShortcutGroups({}, mac, { readingTools }).flatMap((g) => g.rows).find((r) => re.test(r.does));
+  assert.deepEqual(find(false, true, /^Play \/ pause cine \(as K\)/)?.keys, ["Space"]);
+  assert.deepEqual(find(false, true, /^Previous \/ next series/)?.keys, ["[ / ]"]);
+  assert.deepEqual(find(false, true, /^Full screen/)?.keys, ["F"]);
+  assert.deepEqual(find(true, true, /^MPR: three planes/)?.keys, ["⌘", "M"]);
+  assert.deepEqual(find(false, true, /^3D volume rendering/)?.keys, ["Ctrl", "Shift", "M"]);
+  assert.deepEqual(find(false, true, /^Overlay text on \/ off/)?.keys, ["Ctrl", "Shift", "F12"]);
+  for (const re of [/^Play \/ pause cine \(as K\)/, /^Full screen/, /^MPR: three planes/]) assert.equal(find(false, false, re), undefined);
+});

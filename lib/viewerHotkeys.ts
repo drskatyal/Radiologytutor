@@ -278,6 +278,13 @@ export function viewerShortcutGroups(
     push(groups, "Layout", { keys: [alt, "A / C / S"], does: "Reformat this pane: axial / coronal / sagittal (again for the stack)" });
     push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
     push(groups, "Tools", { keys: [mod, "Shift", "Backspace"], does: "Clear all measurements (Ctrl+Z brings them back)" });
+    push(groups, "Stack", { keys: ["Space"], does: "Play / pause cine (as K)" });
+    push(groups, "Stack", { keys: ["Shift", "[ / ]"], does: "Cine slower / faster" });
+    push(groups, "Stack", { keys: ["[ / ]"], does: "Previous / next series" });
+    push(groups, "Display", { keys: [mod, "Shift", "F12"], does: "Overlay text on / off" });
+    push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
+    push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
+    push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
   }
   if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "L"], does: "Grid: link the panes at what each shows now (a prior)" });
   if (readingTools) {

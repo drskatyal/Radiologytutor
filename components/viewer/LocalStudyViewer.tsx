@@ -54,6 +54,7 @@ import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
+import { isFullScreenKey } from "@flowrad/viewer-core/readingKeys";
 import { pickFusionPair } from "@flowrad/viewer-core/petFusion";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
@@ -431,6 +432,22 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     if (await requestStageFullscreen(el)) el.dataset.nativeFullscreen = "true";
     setExpanded(true);
   }, [expanded]);
+
+  // F: full screen, as on the desktop (the same as the stage's Fullscreen
+  // button; Esc or F again leaves). Not while typing or in a dialog.
+  useEffect(() => {
+    if (!reading) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Not `defaultPrevented`: Cornerstone prevents every key on the viewport.
+      if (e.repeat || !isFullScreenKey(e)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="dialog"],[role="menu"]'))) return;
+      e.preventDefault();
+      void toggleExpanded();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reading, toggleExpanded]);
 
   // The stage changes shape: fit the image to it once the layout settles.
   useEffect(() => {
@@ -1422,7 +1439,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               </span>
               <IconButton
                 aria-label={expanded ? "Exit fullscreen" : "Fullscreen"}
-                title={expanded ? "Exit fullscreen" : "Fullscreen"}
+                title={expanded ? "Exit fullscreen (F or Esc)" : "Fullscreen (F)"}
                 size="sm"
                 onClick={() => void toggleExpanded()}
                 className={expanded || reading ? "text-white hover:bg-white/10" : undefined}
