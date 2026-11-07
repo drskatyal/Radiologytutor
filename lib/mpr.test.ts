@@ -151,3 +151,25 @@ test("series changes mount, replace, or fall back without leaving a stale volume
     "idle"
   );
 });
+
+test("slab: T cycles thin → MIP → MinIP → AvgIP → thin; thickness steps clamp; labels", async () => {
+  const { nextSlabMode, stepSlabMm, slabLabel, SLAB_MIN_MM, SLAB_MAX_MM } = await import("./mpr.ts");
+  assert.deepEqual(["off", "mip", "minip", "avg"].map((m) => nextSlabMode(m as never)), ["mip", "minip", "avg", "off"]);
+  assert.equal(stepSlabMm(10, 2), 12);
+  assert.equal(stepSlabMm(2, -2), SLAB_MIN_MM);
+  assert.equal(stepSlabMm(SLAB_MAX_MM, 2), SLAB_MAX_MM);
+  assert.equal(stepSlabMm(Number.NaN, 0), 10);
+  assert.equal(slabLabel({ mode: "off", mm: 10 }), "");
+  assert.equal(slabLabel({ mode: "mip", mm: 10 }), "MIP 10 mm");
+  assert.equal(slabLabel({ mode: "minip", mm: 6 }), "MinIP 6 mm");
+  assert.equal(slabLabel({ mode: "avg", mm: 4 }), "AvgIP 4 mm");
+});
+
+test("acquisitionPlane: the axis the slice normal runs along", async () => {
+  const { acquisitionPlane } = await import("./mpr.ts");
+  assert.equal(acquisitionPlane([1, 0, 0, 0, 1, 0]), "axial");
+  assert.equal(acquisitionPlane([1, 0, 0, 0, 0, -1]), "coronal");
+  assert.equal(acquisitionPlane([0, 1, 0, 0, 0, -1]), "sagittal");
+  assert.equal(acquisitionPlane([1, 0, 0, 0, 0.7, 0.7]), null, "45° oblique");
+  assert.equal(acquisitionPlane(null), null);
+});

@@ -232,6 +232,15 @@ import {
   type MprRender,
   type MprSessionHandle,
   type PlaneSample,
+  type Slab,
+  type SlabMode,
+  acquisitionPlane,
+  MIP_SLAB_MM,
+  nextSlabMode,
+  SLAB_DEFAULT_MM,
+  SLAB_STEP_MM,
+  slabLabel,
+  stepSlabMm,
 } from "../lib/mpr";
 
 // Tools selectable on the LEFT mouse button live in viewer/ViewerToolbar.tsx.
@@ -1170,6 +1179,19 @@ export default function CornerstoneViewer({
   const [cut3d, setCut3d] = useState<{ axis: CutAxis; fraction: number } | null>(null);
   const mprRenderRef = useRef<MprRender>("mpr");
   mprRenderRef.current = mprRender;
+  // Slab on the MPR planes (MIP / MinIP / AvgIP at a thickness), as on the
+  // desktop: T cycles it, Ctrl/⌘+] and [ change the thickness. From the stack
+  // it reformats the acquisition plane in this viewport; cycling back to a
+  // thin slice returns to the stack.
+  const [slab, setSlabState] = useState<Slab>({ mode: "off", mm: SLAB_DEFAULT_MM });
+  const slabRef = useRef(slab);
+  slabRef.current = slab;
+  const slabFromStack = useRef(false);
+  useEffect(() => {
+    if (viewMode !== "stack") return;
+    slabFromStack.current = false;
+    setSlabState((s) => (s.mode === "off" ? s : { ...s, mode: "off" }));
+  }, [viewMode]);
   // The plane the reader last touched; arrow keys scroll that one.
   const activePlaneRef = useRef<MprPlane>("axial");
   const [cinePlaying, setCinePlaying] = useState(false);
@@ -2505,6 +2527,7 @@ export default function CornerstoneViewer({
             const ok = await session.setRender(mprRenderRef.current);
             if (!ok) setMprRender("mpr");
           }
+          if (mprRenderRef.current !== "3d" && slabRef.current.mode !== "off") session.setSlab?.(slabRef.current);
           publishReadout();
           // The grid was visibility:hidden while the viewports attached.
           // Resize once it is shown so the canvases match the laid-out planes.
@@ -3559,6 +3582,13 @@ export default function CornerstoneViewer({
     };
   }, [mprRender, mprLive, flash]);
 
+  // The slab on the live planes (after the render effect above, which resets them).
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session || mprRender === "3d") return;
+    session.setSlab?.(slab);
+  }, [slab, mprLive, mprRender]);
+
   useEffect(() => {
     const session = mprSessionRef.current;
     if (!mprLive || !session || mprRender !== "3d") return;
@@ -3650,6 +3680,34 @@ export default function CornerstoneViewer({
     setCustomWindowOpen(true);
   };
 
+  /** Slab on (from the stack: the acquisition plane, reformatted in this viewport) or off. */
+  const setSlab = (next: { mode?: SlabMode; mm?: number }) => {
+    if (!ready || sliceCount < 3) return flash("A slab needs a stack of parallel slices");
+    const current = slabRef.current;
+    const target: Slab = { mode: next.mode ?? current.mode, mm: next.mm ?? current.mm };
+    if (target.mode === "off") {
+      setSlabState(target);
+      if (viewMode === "mpr" && slabFromStack.current) {
+        slabFromStack.current = false;
+        setViewMode("stack");
+      }
+      return flash("Thin slice");
+    }
+    if (mprRender === "3d") setMprRender("mpr");
+    if (viewMode === "stack") {
+      slabFromStack.current = true;
+      setMprFocus(acquisitionPlane(readout?.meta?.imageOrientationPatient) ?? "axial");
+      setViewMode("mpr");
+    }
+    setSlabState(target);
+    flash(slabLabel(target));
+  };
+  const cycleSlab = () => setSlab({ mode: nextSlabMode(slabRef.current.mode) });
+  const stepSlab = (deltaMm: number) => {
+    const current = slabRef.current;
+    setSlab({ mode: current.mode === "off" ? "mip" : current.mode, mm: stepSlabMm(current.mm, deltaMm) });
+  };
+
   const openExport = (kind: WebExportKind) => {
     if (!ready || mprLive || viewMode !== "stack") return flash("Export works on the stack view");
     if (previewing) return flash("Export unlocks when full-quality pixels load");
@@ -3723,6 +3781,18 @@ export default function CornerstoneViewer({
     if (onFusion && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       onFusion();
+      return;
+    }
+    // Slab, as on the desktop: T cycles Thin → MIP → MinIP → AvgIP;
+    // Ctrl/⌘+] and [ make it thicker / thinner.
+    if (readingTools && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
+      event.preventDefault();
+      cycleSlab();
+      return;
+    }
+    if (readingTools && (event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "]" || event.key === "[")) {
+      event.preventDefault();
+      stepSlab(event.key === "]" ? SLAB_STEP_MM : -SLAB_STEP_MM);
       return;
     }
     // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
@@ -3953,7 +4023,7 @@ export default function CornerstoneViewer({
       overlay: overlay !== "off",
       annotations: !annotationsHidden,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
-      slab: null,
+      slab: readingTools && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
       layout: null,
       seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
       can: {
@@ -4059,6 +4129,10 @@ export default function CornerstoneViewer({
         return openExport("video");
       case "export":
         return openExport("image");
+      case "slab":
+        return setSlab({ mode: arg as SlabMode });
+      case "slab-mm":
+        return setSlab({ mode: slabRef.current.mode === "off" ? "mip" : slabRef.current.mode, mm: Number(arg) });
       case "fusion":
         return onFusion?.();
       case "tags": {
@@ -4115,8 +4189,11 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "preset", ordinal: at + 1 });
       }
       case "slab":
+        if (!readingTools) return flash("Slabs are in the free viewer and the desktop app");
+        return setSlab({ mode: a.mode });
       case "slabThickness":
-        return flash("Slabs are in the desktop viewer");
+        if (!readingTools) return flash("Slabs are in the free viewer and the desktop app");
+        return stepSlab(a.deltaMm);
       case "stop":
         voiceSessionRef.current?.stop();
         return;
@@ -4280,9 +4357,17 @@ export default function CornerstoneViewer({
       activePreset={activePreset}
       presets={presets}
       viewMode={viewMode}
-      mprRender={mprRender}
+      mprRender={mprRender === "3d" ? "3d" : slab.mode !== "off" ? "mip" : "mpr"}
       onMprRender={(mode) => {
-        setMprRender(mode);
+        // MIP is the slab (15 mm unless one is already set); MPR is a thin slice.
+        if (mode === "mip") {
+          slabFromStack.current = false;
+          setSlabState((s) => ({ mode: "mip", mm: s.mode === "off" ? MIP_SLAB_MM : s.mm }));
+          setMprRender("mpr");
+        } else {
+          if (mode === "mpr") setSlabState((s) => (s.mode === "off" ? s : { ...s, mode: "off" }));
+          setMprRender(mode);
+        }
         if (viewMode !== "mpr") setViewMode("mpr");
       }}
       plane={viewMode === "stack" ? "acquired" : mprFocus ?? "all"}
@@ -4654,7 +4739,8 @@ export default function CornerstoneViewer({
             loading={mprLoading}
             notice={mprNotice}
             framed={docked && !sharedBar && mprLive}
-            render={mprRender}
+            render={mprRender === "3d" ? "3d" : slab.mode !== "off" ? "mip" : "mpr"}
+            slabLabel={mprRender === "3d" ? null : slabLabel(slab) || null}
             volume3dRef={volume3dRef}
             volume3dControls={
               <>
