@@ -257,3 +257,15 @@ test("the free viewer's help lists Ctrl/⌘+Shift+L (link at current)", () => {
   assert.deepEqual(row(false)?.keys, ["Ctrl", "Shift", "L"]);
   assert.deepEqual(row(true)?.keys, ["⌘", "Shift", "L"]);
 });
+
+test("the free viewer's help lists RadiAnt's reading keys (zoom levels, pan, F12, F5); teaching surfaces don't", () => {
+  const rows = (mac: boolean, readingTools: boolean) => viewerShortcutGroups({}, mac, { readingTools }).flatMap((g) => g.rows);
+  const find = (mac: boolean, readingTools: boolean, re: RegExp) => rows(mac, readingTools).find((r) => re.test(r.does));
+  assert.deepEqual(find(false, true, /^Fit to the pane/)?.keys, ["Ctrl", "0"]);
+  assert.deepEqual(find(true, true, /^Zoom 100/)?.keys, ["⌘", "1…4"]);
+  assert.deepEqual(find(false, true, /^Pan the image/)?.keys, ["Ctrl", "Arrows"]);
+  assert.deepEqual(find(false, true, /annotations/)?.keys, ["F12"]);
+  assert.deepEqual(find(false, true, /reference lines/)?.keys, ["Ctrl", "F12"]);
+  assert.deepEqual(find(false, true, /link scrolling/)?.keys, ["F5"]);
+  for (const re of [/^Fit to the pane/, /^Zoom 100/, /annotations/, /link scrolling/]) assert.equal(find(false, false, re), undefined);
+});
