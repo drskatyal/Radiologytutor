@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
+import { isFullScreenKey, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
 
 test("reading keys: Ctrl/⌘+0…4 zoom to fit, 100, 200, 400, 800 %", () => {
   assert.deepEqual(resolveReadingKey({ key: "0", ctrlKey: true }), { type: "zoomTo", scale: "fit" });
@@ -29,7 +29,7 @@ test("reading keys: Ctrl/⌘+arrows pan; bare arrows stay slice keys", () => {
 test("reading keys: F12 annotations, Ctrl/⌘+F12 reference lines, F5 family links", () => {
   assert.deepEqual(resolveReadingKey({ key: "F12" }), { type: "annotations" });
   assert.deepEqual(resolveReadingKey({ key: "F12", ctrlKey: true }), { type: "referenceLines" });
-  assert.equal(resolveReadingKey({ key: "F12", ctrlKey: true, shiftKey: true }), null);
+  assert.deepEqual(resolveReadingKey({ key: "F12", ctrlKey: true, shiftKey: true }), { type: "overlay" });
   assert.deepEqual(resolveReadingKey({ key: "F5" }), { type: "link", what: "scroll" });
   assert.deepEqual(resolveReadingKey({ key: "F5", shiftKey: true }), { type: "link", what: "voi" });
   assert.deepEqual(resolveReadingKey({ key: "F5", altKey: true }), { type: "link", what: "zoom" });
@@ -59,4 +59,21 @@ test("reading keys: Alt+A / C / S reformat (by physical key: å ç ß on a Mac),
   assert.deepEqual(resolveReadingKey({ key: "Backspace", ctrlKey: true, shiftKey: true }), { type: "clearMeasurements" });
   assert.deepEqual(resolveReadingKey({ key: "Delete", metaKey: true, shiftKey: true }), { type: "clearMeasurements" });
   assert.equal(resolveReadingKey({ key: "Backspace", ctrlKey: true }), null);
+});
+
+test("reading keys: Space cine, Shift+[ / ] cine speed, [ / ] series, Ctrl/⌘+M MPR, Ctrl/⌘+Shift+M 3D, Ctrl/⌘+Shift+F12 overlay, F full screen", () => {
+  assert.deepEqual(resolveReadingKey({ key: " ", code: "Space" }), { type: "cine" });
+  assert.equal(resolveReadingKey({ key: " ", code: "Space", shiftKey: true }), null);
+  assert.deepEqual(resolveReadingKey({ key: "{", code: "BracketLeft", shiftKey: true }), { type: "cineFps", delta: -1 });
+  assert.deepEqual(resolveReadingKey({ key: "}", code: "BracketRight", shiftKey: true }), { type: "cineFps", delta: 1 });
+  assert.deepEqual(resolveReadingKey({ key: "[", code: "BracketLeft" }), { type: "series", delta: -1 });
+  assert.deepEqual(resolveReadingKey({ key: "]", code: "BracketRight" }), { type: "series", delta: 1 });
+  assert.equal(resolveReadingKey({ key: "]", ctrlKey: true }), null, "Ctrl/⌘+] stays the slab key");
+  assert.deepEqual(resolveReadingKey({ key: "m", code: "KeyM", ctrlKey: true }), { type: "mpr" });
+  assert.deepEqual(resolveReadingKey({ key: "M", code: "KeyM", metaKey: true, shiftKey: true }), { type: "volume3d" });
+  assert.equal(resolveReadingKey({ key: "m", code: "KeyM" }), null, "bare M stays the pan tool");
+  assert.deepEqual(resolveReadingKey({ key: "F12", ctrlKey: true, shiftKey: true }), { type: "overlay" });
+  assert.equal(isFullScreenKey({ key: "f", code: "KeyF" }), true);
+  assert.equal(isFullScreenKey({ key: "f", code: "KeyF", ctrlKey: true }), false);
+  assert.equal(isFullScreenKey({ key: "F", code: "KeyF", shiftKey: true }), false, "Ctrl/⌘+Shift+F is fusion; Shift+F nothing");
 });
