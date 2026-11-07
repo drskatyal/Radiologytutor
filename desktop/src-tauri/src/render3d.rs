@@ -83,12 +83,87 @@ fn coarse_of(v: &Volume) -> Arc<Coarse> {
     c
 }
 
-/// Drop the interactive copy (the volume was released).
+/// Drop the interactive copy and the brick tables (the volume was released).
 pub fn release(key: u64) {
     let mut c = COARSE.lock();
     if c.as_ref().is_some_and(|c| c.key == key) {
         *c = None;
     }
+    for slot in BRICKS.lock().iter_mut() {
+        if slot.as_ref().is_some_and(|b| b.key == key) {
+            *slot = None;
+        }
+    }
+}
+
+/// Bricks of `BRICK`³ voxels with the min / max of every voxel a trilinear
+/// sample inside the brick can read (its own voxels plus the next one on each
+/// axis). A sample's value always lies within its brick's range, so a ray can
+/// skip a sample whose brick proves it cannot change the pixel: in MIP, a
+/// brick no brighter than the ray's maximum so far; in the shaded presets, a
+/// brick too dense for nothing and too faint to be opaque (and, for the skin,
+/// all on one side of the skin level). The skipped samples would have been
+/// read and discarded, so the frame is the same, only cheaper: CT is mostly air
+/// and soft tissue.
+const BRICK: usize = 8;
+
+struct Bricks {
+    key: u64,
+    /// The grid the table was built from (its buffer and size): the volume
+    /// key alone is not enough when a volume is rebuilt under the same key.
+    grid: (usize, [usize; 3]),
+    dims: [usize; 3],
+    min: Vec<f32>,
+    max: Vec<f32>,
+}
+
+impl Bricks {
+    /// The range of the brick a sample at voxel position `p` falls in, with
+    /// `p` clamped exactly as `Grid::sample` clamps it.
+    #[inline]
+    fn range(&self, grid: &Grid, p: [f32; 3]) -> (f32, f32) {
+        let [nx, ny, nz] = grid.dims;
+        let x = p[0].clamp(0.0, (nx - 1) as f32) as usize / BRICK;
+        let y = p[1].clamp(0.0, (ny - 1) as f32) as usize / BRICK;
+        let z = p[2].clamp(0.0, (nz - 1) as f32) as usize / BRICK;
+        let i = (z * self.dims[1] + y) * self.dims[0] + x;
+        (self.min[i], self.max[i])
+    }
+}
+
+/// Brick tables for the full volume (slot 0) and the interactive copy (slot 1).
+static BRICKS: Mutex<[Option<Arc<Bricks>>; 2]> = Mutex::new([None, None]);
+
+fn bricks_of(key: u64, grid: &Grid, slot: usize) -> Arc<Bricks> {
+    let ident = (grid.data.as_ptr() as usize, grid.dims);
+    if let Some(b) = BRICKS.lock()[slot].as_ref().filter(|b| b.key == key && b.grid == ident) {
+        return b.clone();
+    }
+    let [nx, ny, nz] = grid.dims;
+    let dims = [nx.div_ceil(BRICK), ny.div_ceil(BRICK), nz.div_ceil(BRICK)];
+    let per_z = dims[0] * dims[1];
+    let mut ranges = vec![(0f32, 0f32); per_z * dims[2]];
+    ranges.par_chunks_mut(per_z).enumerate().for_each(|(bz, layer)| {
+        let span = |b: usize, n: usize| b * BRICK..((b + 1) * BRICK + 1).min(n);
+        for by in 0..dims[1] {
+            for bx in 0..dims[0] {
+                let (mut lo, mut hi) = (i16::MAX, i16::MIN);
+                for z in span(bz, nz) {
+                    for y in span(by, ny) {
+                        let row = (z * ny + y) * nx;
+                        for &v in &grid.data[row + bx * BRICK..row + ((bx + 1) * BRICK + 1).min(nx)] {
+                            lo = lo.min(v);
+                            hi = hi.max(v);
+                        }
+                    }
+                }
+                layer[by * dims[0] + bx] = (lo as f32, hi as f32);
+            }
+        }
+    });
+    let b = Arc::new(Bricks { key, grid: ident, dims, min: ranges.iter().map(|r| r.0).collect(), max: ranges.iter().map(|r| r.1).collect() });
+    BRICKS.lock()[slot] = Some(b.clone());
+    b
 }
 
 struct Grid<'a> {
@@ -176,6 +251,13 @@ pub struct Frame {
 /// interactive path (half-resolution volume, nearest step 1 coarse voxel).
 #[allow(clippy::too_many_arguments)]
 pub fn render(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f32, width: f32, size: usize, fast: bool) -> Frame {
+    render_with(v, mode, yaw, pitch, zoom, center, width, size, fast, true)
+}
+
+/// `skip`: use the brick tables (always, outside tests, which compare against
+/// a render that samples every step).
+#[allow(clippy::too_many_arguments)]
+fn render_with(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f32, width: f32, size: usize, fast: bool, skip: bool) -> Frame {
     let coarse;
     let (grid, scale) = if fast {
         coarse = coarse_of(v);
@@ -183,6 +265,8 @@ pub fn render(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f
     } else {
         (Grid { dims: v.dims, data: &v.data }, 1.0f32)
     };
+    let bricks = skip.then(|| bricks_of(v.key, &grid, fast as usize));
+    let range = |p: [f32; 3]| bricks.as_ref().map_or((f32::MIN, f32::MAX), |b| b.range(&grid, p));
     let [nx, ny, nz] = grid.dims;
     // Voxel size in mm for this grid.
     let sp = [v.spacing[0] as f32 * scale, v.spacing[1] as f32 * scale, v.spacing[2] as f32 * scale];
@@ -242,7 +326,10 @@ pub fn render(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f
             if mode == Mode::Mip {
                 let mut best = f32::MIN;
                 while s < t1 {
-                    best = best.max(grid.sample(to_voxel(s)));
+                    let p = to_voxel(s);
+                    if range(p).1 > best {
+                        best = best.max(grid.sample(p));
+                    }
                     s += step;
                 }
                 let g = (wl(best) * 255.0) as u8;
@@ -251,14 +338,36 @@ pub fn render(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f
             }
             // Front-to-back compositing with simple gradient shading.
             let (mut acc, mut col) = (0.0f32, [0.0f32; 3]);
-            let mut prev: Option<f32> = None;
+            // Which side of the skin level the previous sample was on.
+            let mut prev: Option<bool> = None;
             while s < t1 && acc < 0.97 {
                 let p = to_voxel(s);
+                // Skip a sample its brick proves transparent (and, for the
+                // skin, on the same side of the skin level as the last one).
+                let (lo, hi) = range(p);
+                if transfer(mode, hi).0 <= 0.002 {
+                    let side = if hi < SKIN_HU {
+                        Some(true)
+                    } else if lo >= SKIN_HU {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                    if mode != Mode::Soft {
+                        s += step;
+                        continue;
+                    }
+                    if let Some(below) = side.filter(|&b| prev.map_or(true, |q| q == b)) {
+                        prev = Some(below);
+                        s += step;
+                        continue;
+                    }
+                }
                 let val = grid.sample(p);
                 if mode == Mode::Soft {
                     // Skin: one layer where the ray crosses air ↔ tissue, shaded
                     // by the surface normal; weak gradients (noise) are ignored.
-                    if prev.is_some_and(|q| (q < SKIN_HU) != (val < SKIN_HU)) {
+                    if prev.is_some_and(|q| q != (val < SKIN_HU)) {
                         // A wide (±2 voxel) stencil: tissue noise would
                         // otherwise speckle the shading of a smooth skin.
                         let g = [
@@ -276,7 +385,7 @@ pub fn render(v: &Volume, mode: Mode, yaw: f32, pitch: f32, zoom: f32, center: f
                             acc += wgt;
                         }
                     }
-                    prev = Some(val);
+                    prev = Some(val < SKIN_HU);
                 }
                 // Classify on the 7-point neighbourhood mean, not the single
                 // sample: quantum noise in soft tissue (σ 100+ HU on thin
@@ -461,6 +570,65 @@ mod tests {
         (mean, var.sqrt())
     }
 
+    /// Brick skipping only drops samples that cannot change the pixel: every
+    /// preset, fast and full, at several angles and zooms, renders the same
+    /// bytes as sampling every step. Noisy tissue around the skin level and the
+    /// bone threshold is the hard case (bricks that straddle both).
+    #[test]
+    fn brick_skipping_renders_the_same_frame() {
+        // A clean phantom too: whole bricks of air, of soft tissue, of lung
+        // (between the skin level and tissue) and of bone, so rays step from an all-air brick straight into an all-tissue
+        // one (the skin must still be found there).
+        let clean = {
+            let (nx, ny, nz) = (56usize, 48usize, 40usize);
+            let mut data = vec![-1000i16; nx * ny * nz];
+            for z in 4..36 {
+                for y in 8..40 {
+                    for x in 8..48 {
+                        let bone = (24..32).contains(&x) && (16..32).contains(&y);
+                        // Lung-like: below soft tissue but above the skin level,
+                        // reaching the surface on one side (air straight to lung).
+                        let lung = (36..48).contains(&x) && (14..34).contains(&y) && (10..30).contains(&z);
+                        data[(z * ny + y) * nx + x] = if bone {
+                            1200
+                        } else if lung {
+                            -300
+                        } else {
+                            30
+                        };
+                    }
+                }
+            }
+            Volume { key: 96, dims: [nx, ny, nz], spacing: [0.8, 0.8, 1.5], data, min: -1000, max: 1200, window: None, reduced: [1, 1] }
+        };
+        let mut noisy = noisy_body();
+        noisy.key = 97;
+        let views = [(0.0, 0.0, 1.0), (0.7, 0.3, 1.0), (2.4, -0.9, 1.6), (-1.2, 1.4, 0.7), (std::f32::consts::FRAC_PI_2, 0.0, 1.0)];
+        let mut frames = 0;
+        for v in [&clean, &noisy] {
+            for mode in [Mode::Mip, Mode::Bone, Mode::Soft] {
+                for fast in [false, true] {
+                    for &(yaw, pitch, zoom) in &views {
+                        let with = render_with(v, mode, yaw, pitch, zoom, 300.0, 1500.0, 96, fast, true);
+                        let without = render_with(v, mode, yaw, pitch, zoom, 300.0, 1500.0, 96, fast, false);
+                        assert!(with.rgb == without.rgb, "volume {} {mode:?} fast={fast} yaw {yaw} pitch {pitch} zoom {zoom}", v.key);
+                        frames += 1;
+                    }
+                }
+            }
+            let b = bricks_of(v.key, &Grid { dims: v.dims, data: &v.data }, 0);
+            assert!(b.min.iter().zip(&b.max).all(|(lo, hi)| lo <= hi));
+            assert!(b.max.iter().any(|&m| m < SKIN_HU), "some bricks are all air");
+            release(v.key);
+        }
+        assert_eq!(frames, 60);
+        // The clean phantom has bricks of soft tissue only: skippable, on the
+        // tissue side of the skin level.
+        let b = bricks_of(96, &Grid { dims: clean.dims, data: &clean.data }, 0);
+        assert!(b.min.iter().zip(&b.max).any(|(&lo, &hi)| lo >= SKIN_HU && transfer(Mode::Soft, hi).0 <= 0.002));
+        release(96);
+    }
+
     /// HP 0.8.1: a noisy, stripy block filled the body behind the bone render.
     /// Noise in soft tissue crossed the bone threshold voxel by voxel, and over
     /// a few hundred samples per ray those specks summed into a grainy slab.
@@ -529,3 +697,4 @@ mod real {
         crate::volume::close();
     }
 }
+
