@@ -25,8 +25,10 @@ export interface ModalProps {
   /**
    * `reading`: the FlowRad Viewer reading room's dark surface and brand green
    * (`.modal-reading` in globals.css), for dialogs opened over images.
+   * `viewer`: the free viewer landing's paper (or dark, with the system) and
+   * brand green (`.modal-viewer`).
    */
-  tone?: "app" | "reading";
+  tone?: "app" | "reading" | "viewer";
   children?: React.ReactNode;
 }
 
@@ -78,7 +80,8 @@ export function Modal({
                     "relative w-full overflow-hidden rounded-2xl border border-subtle bg-elevated shadow-lg surface-hairline focus:outline-none",
                     SIZES[size],
                     // Its own text colour too: the portal inherits <body>'s.
-                    tone === "reading" && "modal-reading text-primary"
+                    tone === "reading" && "modal-reading text-primary",
+                    tone === "viewer" && "modal-viewer text-primary"
                   )}
                   initial={reduce ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.97 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}

@@ -9,20 +9,9 @@
 // This is NOT a DICOM Presentation State (GSPS): other viewers will not see
 // these annotations. docs/RECON_AND_ANNOTATIONS.md explains the limits.
 
-/**
- * FNV-1a, 64-bit, as 16 hex digits: a stable, non-cryptographic key for a UID
- * (the same function FlowRad Viewer's watched folders use for study keys), so
- * stored keys never carry the UID text itself.
- */
-export function fnv1a64(text: string): string {
-  let h = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= BigInt(text.charCodeAt(i) & 0xffff);
-    h = (h * prime) & 0xffffffffffffffffn;
-  }
-  return h.toString(16).padStart(16, "0");
-}
+import { fnv1a64 } from "./folderWatch";
+// The same hash FlowRad Viewer's watched folders use for study keys.
+export { fnv1a64 };
 
 export const ANNOTATION_SCHEMA = 1;
 /** Longest text box (characters). */
