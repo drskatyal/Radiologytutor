@@ -65,6 +65,8 @@ export interface ImageMenuContext {
   layout?: { rows: number; cols: number } | null;
   /** The series panel beside the viewports: offered as "Hide / Show series panel" when the app has one. */
   seriesPanel?: { shown: boolean } | null;
+  /** Distraction-free reading (images only): offered, checked when on, where the app has it. */
+  distractionFree?: boolean | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
   can: Partial<Record<"reformat" | "mpr" | "threeD" | "video" | "exportDialog" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
@@ -248,6 +250,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
   entries.push(
     item(ctx, "overlay", "Image text (overlay)", { checked: ctx.overlay }),
     item(ctx, "annotations", "Annotations", { checked: ctx.annotations }),
+    ...(ctx.distractionFree != null ? [item(ctx, "distractionFree", "Distraction-free reading", { checked: ctx.distractionFree })] : []),
     sep
   );
   if (ctx.can.copyImage || ctx.can.saveImage || ctx.can.video || ctx.can.exportDialog) {

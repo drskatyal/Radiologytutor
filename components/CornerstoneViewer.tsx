@@ -845,6 +845,7 @@ export default function CornerstoneViewer({
   questionMarkHelp = false,
   readingTools = false,
   exportFiles,
+  distractionFree,
   seriesPanel = null,
   onCycleLayout,
   onSetLayout,
@@ -952,6 +953,8 @@ export default function CornerstoneViewer({
    * anonymised DICOM copy (free viewer). Called when the dialog opens.
    */
   exportFiles?: () => Promise<ExportDicomFiles | null>;
+  /** Free viewer: distraction-free reading (images only), offered in the right-click menu. */
+  distractionFree?: { on: boolean; toggle: () => void } | null;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
@@ -3929,6 +3932,7 @@ export default function CornerstoneViewer({
     if (command === "seriesPanel") return "Ctrl+B";
     if (command === "window:custom") return "Ctrl+F11";
     if (command === "export" && readingTools) return "Ctrl+E";
+    if (command === "distractionFree") return "Alt+Shift+Enter";
     return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
@@ -3942,6 +3946,7 @@ export default function CornerstoneViewer({
       referenceLines: false,
       overlay: overlay !== "off",
       annotations: !annotationsHidden,
+      distractionFree: distractionFree ? distractionFree.on : null,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
       slab: null,
       layout: null,
@@ -4048,6 +4053,8 @@ export default function CornerstoneViewer({
         return openExport("video");
       case "export":
         return openExport("image");
+      case "distractionFree":
+        return distractionFree?.toggle();
       case "tags": {
         const id = vp?.getCurrentImageId?.();
         if (id) setTagsImageId(id);

@@ -120,3 +120,13 @@ test("image menu: the free viewer's Export submenu offers video and the Export d
   const plain = commandsOf(imageMenu(base({ can: { copyImage: true, saveImage: true } })));
   assert.ok(!plain.includes("export"), "teaching surfaces keep the pixel-only saves");
 });
+
+test("image menu: distraction-free reading is offered (checked when on) only where the app has it", () => {
+  const find = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "item" && e.id === "distractionFree");
+  const off = find(imageMenu(base({ distractionFree: false })));
+  assert.ok(off?.kind === "item" && !off.checked);
+  const on = find(imageMenu(base({ distractionFree: true })));
+  assert.ok(on?.kind === "item" && on.checked);
+  assert.equal(find(imageMenu(base({ distractionFree: null }))), undefined);
+  assert.equal(find(imageMenu(base({}))), undefined);
+});
