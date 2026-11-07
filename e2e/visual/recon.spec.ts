@@ -63,7 +63,7 @@ test("recon: three linked oblique planes, slab, curved mode, back to the stack",
   // Curved mode, then back to the stack.
   await page.getByRole("radio", { name: "Curved" }).click();
   await expect(page.getByRole("radio", { name: "Curved" })).toHaveAttribute("aria-checked", "true");
-  await page.getByRole("button", { name: "Images" }).click();
+  await page.getByRole("button", { name: "Images", exact: true }).click();
   await expect(axial).toHaveCount(0);
   await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible();
   expect(errors).toEqual([]);
