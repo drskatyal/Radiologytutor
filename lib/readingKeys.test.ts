@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isFullScreenKey, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
+import { isFullScreenKey, pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
 
 test("reading keys: Ctrl/⌘+0…4 zoom to fit, 100, 200, 400, 800 %", () => {
   assert.deepEqual(resolveReadingKey({ key: "0", ctrlKey: true }), { type: "zoomTo", scale: "fit" });
@@ -23,7 +23,7 @@ test("reading keys: Ctrl/⌘+arrows pan; bare arrows stay slice keys", () => {
   assert.deepEqual(resolveReadingKey({ key: "ArrowUp", ctrlKey: true }), { type: "pan", dx: 0, dy: -40 });
   assert.deepEqual(resolveReadingKey({ key: "ArrowDown", ctrlKey: true }), { type: "pan", dx: 0, dy: 40 });
   assert.equal(resolveReadingKey({ key: "ArrowDown" }), null);
-  assert.equal(resolveReadingKey({ key: "ArrowDown", shiftKey: true }), null);
+  assert.deepEqual(resolveReadingKey({ key: "ArrowDown", shiftKey: true }), { type: "slicePage", dir: 1 });
 });
 
 test("reading keys: F12 annotations, Ctrl/⌘+F12 reference lines, F5 family links", () => {
@@ -76,4 +76,14 @@ test("reading keys: Space cine, Shift+[ / ] cine speed, [ / ] series, Ctrl/⌘+M
   assert.equal(isFullScreenKey({ key: "f", code: "KeyF" }), true);
   assert.equal(isFullScreenKey({ key: "f", code: "KeyF", ctrlKey: true }), false);
   assert.equal(isFullScreenKey({ key: "F", code: "KeyF", shiftKey: true }), false, "Ctrl/⌘+Shift+F is fusion; Shift+F nothing");
+});
+
+test("reading keys: PageUp / PageDown and Shift+↑ / ↓ jump 10 % of the images, as on the desktop", () => {
+  assert.deepEqual(resolveReadingKey({ key: "PageDown" }), { type: "slicePage", dir: 1 });
+  assert.deepEqual(resolveReadingKey({ key: "PageUp" }), { type: "slicePage", dir: -1 });
+  assert.deepEqual(resolveReadingKey({ key: "ArrowDown", shiftKey: true }), { type: "slicePage", dir: 1 });
+  assert.deepEqual(resolveReadingKey({ key: "ArrowUp", shiftKey: true }), { type: "slicePage", dir: -1 });
+  assert.equal(resolveReadingKey({ key: "ArrowDown" }), null, "a bare arrow is still one slice");
+  assert.equal(resolveReadingKey({ key: "PageDown", ctrlKey: true }), null);
+  assert.deepEqual([pageStep(60), pageStep(520), pageStep(4), pageStep(0)], [6, 52, 1, 1]);
 });

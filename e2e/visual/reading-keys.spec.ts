@@ -117,6 +117,16 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   expect(await page.evaluate(() => (window as unknown as { __kept?: boolean }).__kept)).toBe(true);
   await expect(slider).toBeVisible();
 
+  // PageDown / Shift+↑: 10 % of the images, as on the desktop.
+  await image(page).focus();
+  const total = Number(await slider.getAttribute("aria-valuemax")) - Number(await slider.getAttribute("aria-valuemin")) + 1;
+  const page10 = Math.max(1, Math.round(total / 10));
+  const from = Number(await slider.getAttribute("aria-valuenow"));
+  await page.keyboard.press("PageDown");
+  await expect(slider).toHaveAttribute("aria-valuenow", String(from + page10));
+  await page.keyboard.press("Shift+ArrowUp");
+  await expect(slider).toHaveAttribute("aria-valuenow", String(from));
+
   // The help sheet lists them.
   await page.keyboard.press("Shift+?");
   const help = page.getByRole("dialog");

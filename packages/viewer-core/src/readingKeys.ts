@@ -7,7 +7,8 @@
 // Ctrl/⌘+Shift+Backspace (or Delete) clears the measurements; Space plays
 // cine, Shift+[ / ] slows / speeds it, [ / ] change series, Ctrl/⌘+M MPR,
 // Ctrl/⌘+Shift+M 3D, Ctrl/⌘+Shift+F12 overlay on / off, and F full screen
-// (isFullScreenKey: the page that owns the stage handles it).
+// (isFullScreenKey: the page that owns the stage handles it); PageUp /
+// PageDown and Shift+↑ / ↓ jump 10 % of the images.
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -28,7 +29,8 @@ export type ReadingKeyAction =
   | { type: "series"; delta: 1 | -1 }
   | { type: "mpr" }
   | { type: "volume3d" }
-  | { type: "overlay" };
+  | { type: "overlay" }
+  | { type: "slicePage"; dir: 1 | -1 };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -86,6 +88,11 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     return null;
   }
   if (shift && !mod && !alt && (e.code === "KeyE" || e.key === "E")) return { type: "eraser" };
+  // PageUp / PageDown and Shift+↑ / ↓: jump 10 % of the images, as on the desktop.
+  if (!mod && !alt) {
+    if (e.key === "PageUp" || (shift && e.key === "ArrowUp")) return { type: "slicePage", dir: -1 };
+    if (e.key === "PageDown" || (shift && e.key === "ArrowDown")) return { type: "slicePage", dir: 1 };
+  }
   if (mod && shift && !alt && (e.key === "Backspace" || e.key === "Delete")) return { type: "clearMeasurements" };
   if (!mod || shift || alt) return null;
   const d = digitOf(e);
@@ -122,4 +129,9 @@ export function zoomLevelLabel(scale: number | "fit"): string {
 /** F (no modifiers): full screen, as on the desktop. For the page that owns the stage. */
 export function isFullScreenKey(e: ReadingKeyEvent): boolean {
   return !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.code === "KeyF" || e.key === "f" || e.key === "F");
+}
+
+/** A page (PageUp / PageDown, Shift+↑ / ↓): 10 % of the images, at least one, as on the desktop. */
+export function pageStep(count: number): number {
+  return Math.max(1, Math.round(Math.max(0, count) / 10));
 }
