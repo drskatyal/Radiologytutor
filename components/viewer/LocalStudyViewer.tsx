@@ -55,6 +55,7 @@ import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
+import { useWebFolderWatcher, WatchFoldersEntry } from "@/components/viewer/WebWatchFolders";
 import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
 import {
@@ -104,6 +105,12 @@ const RECOVERY_NOTICE_MS = 1500;
 function ViewerCodeUnavailable() {
   return <UpdatingNotice />;
 }
+
+/** The Watched folders dialog, on first open (Chrome / Edge only). */
+const WebWatchFoldersDialog = dynamic(
+  () => importWithRetry(() => import("@/components/viewer/WebWatchFoldersDialog")).then((m) => m.WebWatchFoldersDialog),
+  { ssr: false }
+);
 
 const CornerstoneViewer = dynamic(
   () =>
@@ -264,6 +271,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
    */
   const [nativeFolderPicker, setNativeFolderPicker] = useState(false);
   const [signupDismissed, setSignupDismissed] = useState(true);
+  // Watched folders (Chrome / Edge only; opt-in, read-only, while this tab is open).
+  const folderWatch = useWebFolderWatcher();
+  const [watchOpen, setWatchOpen] = useState(false);
+  const openWatch = useCallback(() => {
+    folderWatch.seen();
+    setWatchOpen(true);
+  }, [folderWatch]);
 
   /**
    * Where the first study's image will draw, from the reading-room layout:
@@ -1106,6 +1120,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             Close study
           </Button>
         </div>
+        {folderWatch.supported && <WatchFoldersEntry supported fresh={folderWatch.fresh} dark={reading} onOpen={openWatch} />}
       </div>
     </div>
   );
@@ -1138,6 +1153,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   return (
     <div ref={rootRef} className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
+      {folderWatch.watcher && watchOpen && (
+        <WebWatchFoldersDialog
+          open
+          onClose={() => setWatchOpen(false)}
+          watcher={folderWatch.watcher}
+          tone={!reading ? "app" : phase.state === "open" ? "reading" : "viewer"}
+          onOpenFiles={(files) => {
+            openingHandles.current = [];
+            void ingest(files);
+          }}
+        />
+      )}
       <input
         id={folderInputId}
         type="file"
@@ -1498,6 +1525,15 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               >
                 Choose files
               </FilePickerButton>
+              {folderWatch.supported && (
+                <WatchFoldersEntry
+                  supported
+                  fresh={folderWatch.fresh}
+                  onOpen={openWatch}
+                  variant="secondary"
+                  className={cn("h-10 px-4 text-sm", brandSecondary)}
+                />
+              )}
             </>
           }
         />
@@ -1579,6 +1615,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     </FilePickerButton>
                   </div>
                   {privacyLine}
+                  <WatchFoldersEntry supported={folderWatch.supported} fresh={folderWatch.fresh} dark={reading} onOpen={openWatch} />
                 </div>
               }
             />

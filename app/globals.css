@@ -305,6 +305,32 @@
   color-scheme: dark;
 }
 
+/* Dialogs over the free viewer's landing (<Modal tone="viewer">): the
+   landing's paper and forest green, dark with the system, as the landing is. */
+.modal-viewer {
+  --accent: 15 77 58;
+  --accent-foreground: 255 255 255;
+  --accent-muted: 226 239 233;
+  --accent-bright: 22 101 77;
+}
+@media (prefers-color-scheme: dark) {
+  .modal-viewer {
+    --canvas: 9 13 12;
+    --surface: 17 24 22;
+    --elevated: 17 24 22;
+    --text-primary: 240 244 242;
+    --text-secondary: 190 202 197;
+    --text-muted: 160 174 168;
+    --border-subtle: 40 54 49;
+    --border-strong: 62 80 73;
+    --accent: 92 196 156;
+    --accent-foreground: 9 13 12;
+    --accent-muted: 20 46 38;
+    --accent-bright: 120 214 178;
+    color-scheme: dark;
+  }
+}
+
 /* The lockup with the wordmark that reads on the current surface. */
 .viewer-shell .vl-logo-dark {
   display: none;
