@@ -41,6 +41,8 @@ export interface ViewerLandingProps {
   /** Open the bundled, de-identified sample study. Absent: no sample offered. */
   onSample?: () => void;
   sampleState?: "idle" | "loading" | "error";
+  /** Recent studies (Chromium: reopenable from a kept folder handle). */
+  recent?: React.ReactNode;
 }
 
 const FORMATS = ["Study folder", "ZIP", "CD / DICOMDIR", "Loose .dcm files"];
@@ -73,6 +75,7 @@ export function ViewerLanding({
   onCancel,
   onSample,
   sampleState = "idle",
+  recent,
 }: ViewerLandingProps) {
   const idle = status.kind === "idle";
   const problem = status.kind === "empty" || status.kind === "error";
@@ -152,7 +155,7 @@ export function ViewerLanding({
         )}
         <p className="mt-6 max-w-sm text-balance text-center text-xs text-vl-muted">
           <ShieldCheck className="mr-1.5 inline h-3.5 w-3.5 -translate-y-px text-vl-brand" aria-hidden />
-          Files stay in this browser. Nothing is uploaded or stored.
+          Files stay in this browser. Nothing is uploaded or copied.
         </p>
       </div>
 
@@ -177,6 +180,8 @@ export function ViewerLanding({
           )}
         </div>
       )}
+
+      {status.kind !== "reading" && recent}
 
       {idle && (
         <ul className="grid gap-3 sm:grid-cols-3">

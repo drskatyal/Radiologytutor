@@ -99,6 +99,9 @@ import {
   rememberStudyHandles,
   studyHandlesReadable,
 } from "@/lib/studyHandleStore";
+import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, rememberRecentStudy } from "@/lib/recentStudyStore";
+import { recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
+import { RecentStudies } from "./RecentStudies";
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
 const VIEWER_CHUNK_ERROR_EVENT = "flowrad:viewer-chunk-error";
@@ -276,6 +279,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const pendingSlice = useRef<number | null>(null);
   // Handles of the study being opened (folder picker / drop), kept on open.
   const openingHandles = useRef<FileSystemHandle[]>([]);
+  // Recent studies (Chromium): what was opened from a folder handle, newest first.
+  const [recent, setRecent] = useState<RecentStudy[]>([]);
+  const [recentOpening, setRecentOpening] = useState<string | null>(null);
+  const [recentNotice, setRecentNotice] = useState<string | null>(null);
   const [popOutNote, setPopOutNote] = useState<string | null>(null);
   /**
    * Chromium's `<input webkitdirectory>` asks "Upload N files to this site?" —
@@ -647,6 +654,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         setPhase({ state: "open", result, pinned: located ? pinnedNow : null });
         setRestore(null);
         void rememberStudyHandles(openingHandles.current);
+        // Recent studies: only what came from a folder / file handle (reopenable).
+        const recentEntry = recentStudyEntry(result.studies, Date.now());
+        if (recentEntry && openingHandles.current.length > 0) void rememberRecentStudy(recentEntry, openingHandles.current);
         // Decoded + raw must fit the device budget, not decoded alone (see
         // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
         // Key-image series borrow their instances: count each file once.
@@ -774,6 +784,51 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     return () => {
       alive = false;
     };
+  }, []);
+
+  // Recent studies: listed on the landing (reading room, where the browser keeps handles).
+  const landingIdle = phase.state === "idle" || phase.state === "empty" || phase.state === "error";
+  useEffect(() => {
+    if (!reading || !nativeFolderPicker || !landingIdle) return;
+    let alive = true;
+    void listRecentStudies().then((list) => {
+      if (alive) setRecent(list);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [reading, nativeFolderPicker, landingIdle]);
+
+  /** Reopen a recent study (inside the click: the browser asks only if read access lapsed). */
+  const openRecent = useCallback(
+    async (key: string) => {
+      if (recentOpening) return;
+      setRecentOpening(key);
+      setRecentNotice(null);
+      try {
+        const handles = await regainStudyHandles(await recentStudyHandles(key));
+        if (handles.length === 0) {
+          setRecentNotice("Reading that folder was not allowed. Choose it again to open it.");
+          return;
+        }
+        if (!(await openFromHandles(handles, undefined))) {
+          setRecentNotice("That folder has moved or holds no images now. Forget it, or choose it again.");
+        }
+      } finally {
+        setRecentOpening(null);
+      }
+    },
+    [recentOpening, openFromHandles]
+  );
+  const forgetRecent = useCallback((key: string) => {
+    setRecent((list) => list.filter((e) => e.key !== key));
+    setRecentNotice(null);
+    void forgetRecentStudy(key);
+  }, []);
+  const clearRecent = useCallback(() => {
+    setRecent([]);
+    setRecentNotice(null);
+    void clearRecentStudies();
   }, []);
 
   const reopenStudy = useCallback(async () => {
@@ -1644,6 +1699,17 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           onCancel={closeStudy}
           onSample={() => void openSample()}
           sampleState={sampleState}
+          recent={
+            <RecentStudies
+              entries={recent}
+              opening={recentOpening}
+              notice={recentNotice}
+              onOpen={(key) => void openRecent(key)}
+              onForget={forgetRecent}
+              onClear={clearRecent}
+              now={Date.now()}
+            />
+          }
           actions={
             <>
               {restore && phase.state === "idle" && restore.handles.length > 0 && (
