@@ -229,6 +229,14 @@ test("the free viewer's help lists Ctrl/⌘+E (Export); teaching surfaces don't"
   assert.equal(row(false, false), undefined);
 });
 
+test("the free viewer's help lists Alt+Shift+Enter (distraction-free reading), ⌥ on a Mac", () => {
+  const row = (mac: boolean, readingTools: boolean) =>
+    viewerShortcutGroups({}, mac, { readingTools }).flatMap((g) => g.rows).find((r) => /Distraction-free/.test(r.does));
+  assert.deepEqual(row(false, true)?.keys, ["Alt", "Shift", "Enter"]);
+  assert.deepEqual(row(true, true)?.keys, ["⌥", "Shift", "Enter"]);
+  assert.equal(row(false, false), undefined);
+});
+
 test("the free viewer's help lists Ctrl/⌘+Shift+F (PET / CT fusion)", () => {
   const row = (mac: boolean) =>
     viewerShortcutGroups({}, mac, { readingTools: true }).flatMap((g) => g.rows).find((r) => /PET \/ CT fusion/.test(r.does));

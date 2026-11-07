@@ -252,6 +252,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   /** Phones: the series list is a bottom drawer, and the stage can go fullscreen. */
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  /** Distraction-free reading (free viewer, as on the desktop): the images only. */
+  const [focusMode, setFocusMode] = useState(false);
+  /** Its "how to leave" hint, shown for a moment after it starts. */
+  const [focusHint, setFocusHint] = useState(false);
   /** The structured report being read (dialog), if any. */
   const [openReport, setOpenReport] = useState<DicomDocument | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -431,7 +435,37 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   useEffect(() => {
     const t = window.setTimeout(() => viewerControls.current?.fit?.(), 250);
     return () => window.clearTimeout(t);
-  }, [expanded]);
+  }, [expanded, focusMode]);
+
+  const toggleFocusMode = useCallback(() => setFocusMode((on) => !on), []);
+  useEffect(() => {
+    if (!focusMode) return setFocusHint(false);
+    setFocusHint(true);
+    const t = window.setTimeout(() => setFocusHint(false), 3000);
+    return () => window.clearTimeout(t);
+  }, [focusMode]);
+  // Alt+Shift+Enter toggles it (the desktop's key); Esc leaves it.
+  useEffect(() => {
+    if (!reading || phase.state !== "open") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      if (e.key === "Enter" && e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        toggleFocusMode();
+        return;
+      }
+      if (e.key !== "Escape" || !focusMode || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || t.closest("input, textarea, select, [role=dialog], [role=menu]"))) return;
+      setFocusMode(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reading, phase.state, focusMode, toggleFocusMode]);
+  const distractionFree = useMemo(
+    () => (reading ? { on: focusMode, toggle: toggleFocusMode } : null),
+    [reading, focusMode, toggleFocusMode]
+  );
 
   const pickSeries = useCallback((index: number) => {
     setActiveSeries(index);
@@ -474,6 +508,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     abortRef.current = null;
     setDrawerOpen(false);
     setExpanded(false);
+    setFocusMode(false);
     setOpenReport(null);
     setPhase({ state: "idle" });
     setRestore(null);
@@ -800,6 +835,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   useEffect(() => setActivePane(0), [result]);
   // Another layout or study shows the whole grid again.
   useEffect(() => setMaximized(null), [layoutId, result]);
+  useEffect(() => setFocusMode(false), [result]);
   const shown = multi && maximized != null && maximized < panesNow ? maximized : null;
   const toggleMaximize = useCallback((pane: number) => {
     setActivePane(pane);
@@ -1272,8 +1308,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             className={cn(
               "relative min-w-0 flex-1 scroll-mt-4",
               reading && "flex min-h-0 flex-col bg-imaging",
-              expanded && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
+              (expanded || focusMode) && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
+            data-distraction-free={focusMode ? "true" : undefined}
           >
             {fusionOpen && (
               <WebFusionOverlay
@@ -1286,7 +1323,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             )}
             {/* Two or more monitors: open this series in another browser window (drag it there).
                 Already-open pop-outs keep their "linked" toggle even if a monitor is unplugged. */}
-            {!expanded && phase.state === "open" && (multipleScreens || popOut.hasOtherWindows) && (
+            {focusMode && (
+              <div
+                role="status"
+                className={cn(
+                  "pointer-events-none absolute left-1/2 top-3 z-50 -translate-x-1/2 rounded-full border border-white/15 bg-black/75 px-3 py-1.5 text-xs text-white/85 shadow-lg backdrop-blur transition-opacity duration-500",
+                  focusHint ? "opacity-100" : "opacity-0"
+                )}
+              >
+                Distraction-free reading · Esc or Alt+Shift+Enter to leave
+              </div>
+            )}
+            {!expanded && !focusMode && phase.state === "open" && (multipleScreens || popOut.hasOtherWindows) && (
               <div className="mb-2 hidden items-center gap-2 lg:flex">
                 {multipleScreens && (
                 <Button
@@ -1384,8 +1432,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                       popOut.onViewerEvent(event);
                       onPaneEvent(0, event);
                     }}
-                    chrome={expanded || reading || multi ? "edge" : "dock"}
-                    toolbarHost={multi ? barHost : undefined}
+                    chrome={focusMode ? "off" : expanded || reading || multi ? "edge" : "dock"}
+                    toolbarHost={multi && !focusMode ? barHost : undefined}
+                    distractionFree={distractionFree}
                     referencePlanes={linesFor(0)}
                     active={!multi || activePane === 0}
                     onActivate={() => setActivePane(0)}
@@ -1438,8 +1487,9 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           modality={paneSeries.modality}
                           controls={paneControls.current[i]}
                           onEvent={(event) => onPaneEvent(pane, event)}
-                          chrome="edge"
-                          toolbarHost={barHost}
+                          chrome={focusMode ? "off" : "edge"}
+                          toolbarHost={focusMode ? undefined : barHost}
+                          distractionFree={distractionFree}
                           referencePlanes={linesFor(pane)}
                           active={activePane === pane}
                           onActivate={() => setActivePane(pane)}
@@ -1467,7 +1517,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                   })}
               </div>
               {/* One toolbar for the whole grid; it acts on the outlined pane. */}
-              {multi && <div ref={setBarHost} className="shrink-0" />}
+              {multi && <div ref={setBarHost} className={cn("shrink-0", focusMode && "hidden")} />}
             </div>
             {/* Swipe up (or tap) for the series drawer. */}
             <button
