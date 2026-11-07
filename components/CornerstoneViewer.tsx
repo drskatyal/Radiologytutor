@@ -856,6 +856,7 @@ export default function CornerstoneViewer({
   questionMarkHelp = false,
   readingTools = false,
   exportFiles,
+  paneLinks,
   distractionFree,
   onFusion,
   seriesPanel = null,
@@ -965,6 +966,19 @@ export default function CornerstoneViewer({
    * anonymised DICOM copy (free viewer). Called when the dialog opens.
    */
   exportFiles?: () => Promise<ExportDicomFiles | null>;
+  /**
+   * Free viewer grid: the panes' links (scroll by position, W/L, zoom, reference
+   * lines) and "link at what each pane shows now" (Ctrl/⌘+Shift+L), offered in
+   * the right-click menu. Null for a single pane.
+   */
+  paneLinks?: {
+    scroll: boolean;
+    voi: boolean;
+    zoom: boolean;
+    lines: boolean;
+    toggle: (what: "scroll" | "voi" | "zoom" | "lines") => void;
+    linkAtCurrent: () => void;
+  } | null;
   /** Free viewer: distraction-free reading (images only), offered in the right-click menu. */
   distractionFree?: { on: boolean; toggle: () => void } | null;
   /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
@@ -3801,6 +3815,13 @@ export default function CornerstoneViewer({
       stepSlab(event.key === "]" ? SLAB_STEP_MM : -SLAB_STEP_MM);
       return;
     }
+    // Ctrl/⌘+Shift+L: link the panes at what each shows now (registers a prior), as on the desktop.
+    if (paneLinks && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      paneLinks.linkAtCurrent();
+      flash("Linked at what each pane shows now");
+      return;
+    }
     // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
     if (readingTools && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
       event.preventDefault();
@@ -4014,6 +4035,7 @@ export default function CornerstoneViewer({
     if (command === "seriesPanel") return "Ctrl+B";
     if (command === "window:custom") return "Ctrl+F11";
     if (command === "export" && readingTools) return "Ctrl+E";
+    if (command === "linkAtCurrent" && paneLinks) return "Ctrl+Shift+L";
     if (command === "distractionFree") return "Alt+Shift+Enter";
     if (command === "fusion" && onFusion) return "Ctrl+Shift+F";
     return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
@@ -4025,8 +4047,8 @@ export default function CornerstoneViewer({
       activeTool,
       presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
       inverted,
-      links: { scroll: false, voi: false, zoom: false },
-      referenceLines: false,
+      links: paneLinks ? { scroll: paneLinks.scroll, voi: paneLinks.voi, zoom: paneLinks.zoom } : { scroll: false, voi: false, zoom: false },
+      referenceLines: !!paneLinks?.lines,
       overlay: overlay !== "off",
       annotations: !annotationsHidden,
       distractionFree: distractionFree ? distractionFree.on : null,
@@ -4039,7 +4061,8 @@ export default function CornerstoneViewer({
         copyImage: true,
         saveImage: true,
         tags: true,
-        links: false,
+        links: !!paneLinks,
+        linkAtCurrent: !!paneLinks,
         video: readingTools && sliceCount >= 2,
         exportDialog: readingTools,
         measurements: readingTools,
@@ -4140,6 +4163,20 @@ export default function CornerstoneViewer({
         return openExport("image");
       case "measurements":
         return editCtx ? setMeasurementsOpen(true) : flash("Measurements open once the image has loaded");
+      case "link": {
+        if (!paneLinks || (arg !== "scroll" && arg !== "voi" && arg !== "zoom")) return;
+        const on = !paneLinks[arg];
+        paneLinks.toggle(arg);
+        return flash(`${arg === "scroll" ? "Scroll" : arg === "voi" ? "Window / level" : "Zoom and pan"} link ${on ? "on" : "off"}`);
+      }
+      case "refLines":
+        if (!paneLinks) return;
+        paneLinks.toggle("lines");
+        return flash(`Reference lines ${paneLinks.lines ? "off" : "on"}`);
+      case "linkAtCurrent":
+        if (!paneLinks) return;
+        paneLinks.linkAtCurrent();
+        return flash("Linked at what each pane shows now");
       case "slab":
         return setSlab({ mode: arg as SlabMode });
       case "slab-mm":

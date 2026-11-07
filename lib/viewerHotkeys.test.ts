@@ -250,3 +250,10 @@ test("the free viewer's help lists T (slab cycle) and Ctrl/⌘+] / [ (slab thick
   assert.deepEqual(rows(true, true).find((r) => /slab \(2 mm/.test(r.does))?.keys, ["⌘", "] / ["]);
   assert.equal(rows(false, false).find((r) => /slab/i.test(r.does)), undefined);
 });
+
+test("the free viewer's help lists Ctrl/⌘+Shift+L (link at current)", () => {
+  const row = (mac: boolean) =>
+    viewerShortcutGroups({}, mac, { readingTools: true }).flatMap((g) => g.rows).find((r) => /link the panes at what each shows now/.test(r.does));
+  assert.deepEqual(row(false)?.keys, ["Ctrl", "Shift", "L"]);
+  assert.deepEqual(row(true)?.keys, ["⌘", "Shift", "L"]);
+});

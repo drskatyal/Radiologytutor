@@ -140,3 +140,13 @@ test("image menu: Measurements… is offered where the app has the panel", () =>
   assert.ok(commandsOf(imageMenu(base({ can: { measurements: true } }))).includes("measurements"));
   assert.ok(!commandsOf(imageMenu(base({ can: {} }))).includes("measurements"));
 });
+
+test("image menu: 'Link at what each pane shows now' sits in the Link submenu where offered", () => {
+  const linkSub = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "sub" && e.id === "links");
+  const sub = linkSub(imageMenu(base({ can: { linkAtCurrent: true } })));
+  assert.ok(sub?.kind === "sub");
+  assert.ok(sub.items().some((e) => e.kind === "item" && e.id === "linkAtCurrent"));
+  const plain = linkSub(imageMenu(base({ can: {} })));
+  assert.ok(plain?.kind === "sub" && !plain.items().some((e) => e.kind === "item" && e.id === "linkAtCurrent"));
+  assert.equal(linkSub(imageMenu(base({ can: { links: false } }))), undefined);
+});

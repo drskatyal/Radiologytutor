@@ -68,7 +68,7 @@ export interface ImageMenuContext {
   /** Distraction-free reading (images only): offered, checked when on, where the app has it. */
   distractionFree?: boolean | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
-  can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "measurements" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
+  can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "measurements" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "linkAtCurrent" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
   shortcut: (id: MenuCommand) => string | undefined;
 }
@@ -227,6 +227,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
         item(ctx, "link:scroll", "Scroll (position)", { checked: ctx.links.scroll }),
         item(ctx, "link:voi", "Window / level", { checked: ctx.links.voi }),
         item(ctx, "link:zoom", "Zoom and pan", { checked: ctx.links.zoom }),
+        ...(ctx.can.linkAtCurrent ? [sep, item(ctx, "linkAtCurrent", "Link at what each pane shows now")] : []),
       ],
     },
     item(ctx, "refLines", "Reference lines", { checked: ctx.referenceLines }),
