@@ -208,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)] // the 2×2 box spelled out, zero included
     fn downsample_box_averages_to_the_cap() {
         let gray: Vec<u8> = (0..16).map(|i| (i * 10) as u8).collect(); // 4×4
         let (out, r, c) = super::downsample(&gray, 4, 4, 2);

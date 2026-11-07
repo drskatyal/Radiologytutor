@@ -2115,7 +2115,7 @@ mod tests {
         let tiny = wgpu::Limits { max_non_sampler_bindings: 100, ..wgpu::Limits::default() };
         assert_eq!(super::device_limits(tiny).max_non_sampler_bindings, 100);
         // Two descriptors a viewport: room for thousands of live bind groups.
-        assert!(super::VIEW_DESCRIPTORS >= 4096);
+        const _: () = assert!(super::VIEW_DESCRIPTORS >= 4096);
         assert!(!super::instance_flags().contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL));
         match super::memory_hints() {
             wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: r } => assert_eq!(r, (4 << 20)..(64 << 20)),
