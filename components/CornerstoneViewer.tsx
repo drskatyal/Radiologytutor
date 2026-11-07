@@ -854,6 +854,7 @@ export default function CornerstoneViewer({
   questionMarkHelp = false,
   readingTools = false,
   exportFiles,
+  distractionFree,
   onFusion,
   seriesPanel = null,
   onCycleLayout,
@@ -962,6 +963,8 @@ export default function CornerstoneViewer({
    * anonymised DICOM copy (free viewer). Called when the dialog opens.
    */
   exportFiles?: () => Promise<ExportDicomFiles | null>;
+  /** Free viewer: distraction-free reading (images only), offered in the right-click menu. */
+  distractionFree?: { on: boolean; toggle: () => void } | null;
   /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
   onFusion?: (() => void) | null;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
@@ -4008,6 +4011,7 @@ export default function CornerstoneViewer({
     if (command === "seriesPanel") return "Ctrl+B";
     if (command === "window:custom") return "Ctrl+F11";
     if (command === "export" && readingTools) return "Ctrl+E";
+    if (command === "distractionFree") return "Alt+Shift+Enter";
     if (command === "fusion" && onFusion) return "Ctrl+Shift+F";
     return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
@@ -4022,6 +4026,7 @@ export default function CornerstoneViewer({
       referenceLines: false,
       overlay: overlay !== "off",
       annotations: !annotationsHidden,
+      distractionFree: distractionFree ? distractionFree.on : null,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
       slab: readingTools && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
       layout: null,
@@ -4133,6 +4138,8 @@ export default function CornerstoneViewer({
         return setSlab({ mode: arg as SlabMode });
       case "slab-mm":
         return setSlab({ mode: slabRef.current.mode === "off" ? "mip" : slabRef.current.mode, mm: Number(arg) });
+      case "distractionFree":
+        return distractionFree?.toggle();
       case "fusion":
         return onFusion?.();
       case "tags": {
