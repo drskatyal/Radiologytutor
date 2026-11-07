@@ -14,6 +14,7 @@
  * frames plus the still strip.
  */
 
+import { teacherMarkerInWindow } from "./teacherSketch";
 import {
   AGENTIC_VIDEO_MIN_MS,
   compileVideoProcessing,
@@ -265,10 +266,15 @@ function materializeFindings(
       : [];
     const importance = Number(prose.clinicalImportance);
     const sub = track ? sliceTrack(track, tStart, tEnd) : undefined;
+    // A numbered marker the teacher dropped while saying this is the landing.
+    const pinned = teacherMarkerInWindow(track, tStart, tEnd);
     const whatToNotice = textOf("whatToNotice") ?? (description || undefined);
     // Marker, slice, window, and series stay on the track. Model coordinates are dropped.
     return {
-      label: typeof f.label === "string" && f.label.trim() ? f.label.trim() : `Finding ${i + 1}`,
+      label:
+        typeof f.label === "string" && f.label.trim()
+          ? f.label.trim()
+          : pinned?.label?.trim() || `Finding ${i + 1}`,
       description,
       teachingPoints,
       whatToNotice,
@@ -280,8 +286,8 @@ function materializeFindings(
       landmark: textOf("landmark"),
       tStartMs: tStart,
       tEndMs: tEnd,
-      suggestedMarker: markerNearTime(track, mid) ?? undefined,
-      suggestedSliceIndex: sliceNearTime(track, mid) ?? undefined,
+      suggestedMarker: pinned?.marker ?? markerNearTime(track, mid) ?? undefined,
+      suggestedSliceIndex: pinned?.sliceIndex ?? sliceNearTime(track, mid) ?? undefined,
       teachingGuide: sub
         ? guideForFindingTrack(sub, { description: whatToNotice ?? description, teachingPoints })
         : undefined,

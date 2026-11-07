@@ -19,6 +19,7 @@
  * orient line that names it.
  */
 
+import { withSketchAnnotations } from "./teacherSketch";
 import { displaySliceNumber } from "./findingDisplayState";
 import { splitSentences } from "./performancePlan";
 import {
@@ -828,7 +829,8 @@ export function guideForFindingTrack(
     point?: { x: number; y: number };
   }
 ): TeachingGuide {
-  return buildTeachingGuide(track, {
+  // Teacher arrows / ellipses become the guide's annotate beats (authored ink).
+  return buildTeachingGuide(withSketchAnnotations(track), {
     narration: narration.spans ?? track.narration,
     anchors: {
       label: narration.label,

@@ -18,7 +18,8 @@ import { TrackRecorder } from "@/lib/recorder";
 import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
-import type { RecordedTrack, ViewerEvent } from "@/lib/types";
+import type { RecordedTrack, TeacherSketchOp, ViewerEvent } from "@/lib/types";
+import { sketchOpOf } from "@/lib/teacherSketch";
 import {
   pushViewportStill,
   VIEWPORT_SAMPLE_MS,
@@ -154,8 +155,13 @@ export function useRecordReplay(opts: {
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
   ready: boolean;
+  /**
+   * Teacher sketch layer (Studio). Replay hands it each recorded sketch op so
+   * strokes draw back in sync with the narration.
+   */
+  sketchSink?: MutableRefObject<((op: TeacherSketchOp) => void) | null>;
 }): UseRecordReplay {
-  const { controls, overlay, ready } = opts;
+  const { controls, overlay, ready, sketchSink } = opts;
 
   const [phase, setPhase] = useState<RecordPhase>("idle");
   const [micCapture, setMicCapture] = useState<"unknown" | "live" | "unavailable">("unknown");
@@ -282,6 +288,7 @@ export function useRecordReplay(opts: {
           overlay: {
             cursor: (x, y) => overlay.current?.cursor(x, y),
             annotation: (e) => overlay.current?.annotation(e),
+            sketch: (e) => sketchSink?.current?.(sketchOpOf(e)),
             clear: () => overlay.current?.clear(),
           },
           onProgress: (f) => setProgress(f),
@@ -294,7 +301,7 @@ export function useRecordReplay(opts: {
       );
       replayRef.current = ctrl;
     },
-    [track, controls, overlay, stopReplay]
+    [track, controls, overlay, stopReplay, sketchSink]
   );
 
   const reset = useCallback(() => {

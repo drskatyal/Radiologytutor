@@ -179,7 +179,7 @@ import {
   toolGroupIdFor,
   type ViewPresentation,
 } from "../lib/compareViewport";
-import type { SketchFrame } from "../lib/sketchProjection";
+import type { SketchFrame, SketchFrameImage } from "../lib/sketchProjection";
 import {
   normalizeMeasurements,
   statsFromAnnotation,
@@ -1991,6 +1991,70 @@ export default function CornerstoneViewer({
         let voiTrail = 0;
         let camTrail = 0;
 
+        // Identity + plane of the image under the camera, for the teacher sketch
+        // layer's image-space anchors (SOP, frame, pixel grid, patient mm).
+        // Series/study/SOP-common modules only — never a patient module.
+        const readFrameImage = (
+          vp: DrivableViewport,
+          sliceIndex: number,
+          dims: number[] | undefined
+        ): SketchFrameImage | undefined => {
+          try {
+            const ids = vp.getImageIds();
+            const imageId =
+              (typeof vp.getCurrentImageId === "function" ? vp.getCurrentImageId() : undefined) || ids[sliceIndex];
+            if (!imageId) return undefined;
+            const meta = (type: string) => core.metaData.get(type, imageId) as Record<string, unknown> | undefined;
+            const series = meta("generalSeriesModule");
+            const sop = meta("sopCommonModule");
+            const plane = meta("imagePlaneModule");
+            const multi = meta("multiframeModule");
+            const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+            // The rail's offline-sample ids are placeholders, not DICOM UIDs.
+            const dicomUid = (v: unknown) => (typeof v === "string" && /^[0-9.]+$/.test(v) ? v : undefined);
+            const rail = seriesRef.current?.[loadedSeriesIndexRef.current];
+            const vec = (v: unknown, n: number) => {
+              const arr = v ? Array.from(v as ArrayLike<number>).map(Number) : [];
+              return arr.length >= n && arr.slice(0, n).every(Number.isFinite) ? arr.slice(0, n) : null;
+            };
+            const frameMatch = /\/frames\/(\d+)|[?&]frame=(\d+)/.exec(imageId);
+            const frame = frameMatch ? Number(frameMatch[1] ?? frameMatch[2]) : undefined;
+            const frames = Number(multi?.numberOfFrames ?? multi?.NumberOfFrames);
+            const columns = Number(plane?.columns) || dims?.[0] || undefined;
+            const rows = Number(plane?.rows) || dims?.[1] || undefined;
+            const ipp = vec(plane?.imagePositionPatient, 3);
+            const iop = vec(plane?.imageOrientationPatient, 6);
+            const rowCos = vec(plane?.rowCosines, 3) ?? iop?.slice(0, 3) ?? null;
+            const colCos = vec(plane?.columnCosines, 3) ?? iop?.slice(3, 6) ?? null;
+            const rowSpacing = Number(plane?.rowPixelSpacing);
+            const colSpacing = Number(plane?.columnPixelSpacing);
+            const image: SketchFrameImage = {
+              sliceIndex,
+              studyInstanceUID:
+                str(series?.studyInstanceUID) ?? str(meta("generalStudyModule")?.studyInstanceUID) ?? dicomUid(rail?.studyInstanceUID),
+              seriesInstanceUID: str(series?.seriesInstanceUID) ?? dicomUid(rail?.seriesInstanceUID),
+              sopInstanceUID: str(sop?.sopInstanceUID) ?? sopUidFromImageId(imageId),
+              sopClassUID: str(sop?.sopClassUID),
+              frameOfReferenceUID: str(plane?.frameOfReferenceUID),
+              ...(frame && (frame > 1 || frames > 1) ? { frameNumber: frame } : {}),
+              ...(columns && rows ? { columns, rows } : {}),
+            };
+            if (ipp && rowCos && colCos && columns && rows && plane?.usingDefaultValues !== true) {
+              image.plane = {
+                imagePositionPatient: ipp as [number, number, number],
+                rowCosines: rowCos as [number, number, number],
+                columnCosines: colCos as [number, number, number],
+                pixelSpacing: [rowSpacing > 0 ? rowSpacing : 1, colSpacing > 0 ? colSpacing : rowSpacing > 0 ? rowSpacing : 1],
+                columns,
+                rows,
+              };
+            }
+            return image;
+          } catch {
+            return undefined;
+          }
+        };
+
         const readProjector = (): SketchFrame | null => {
           if (mprSessionRef.current) return null;
           const vp = viewportRef.current;
@@ -2059,7 +2123,7 @@ export default function CornerstoneViewer({
               return null;
             }
           };
-          return { sliceIndex, width, height, project, unproject };
+          return { sliceIndex, width, height, project, unproject, image: readFrameImage(vp, sliceIndex, dims) };
         };
         const publishView = () => {
           if (viewRaf) return;
@@ -4500,6 +4564,7 @@ export default function CornerstoneViewer({
       >
         <div
           ref={elementRef}
+          data-imaging-element
           className={cn(
             "touch-none select-none overscroll-contain bg-imaging",
             "outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
