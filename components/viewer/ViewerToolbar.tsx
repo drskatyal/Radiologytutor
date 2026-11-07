@@ -18,6 +18,7 @@
 import { Fragment, useContext, useEffect, useState, type ReactNode } from "react";
 import {
   Blend,
+  Combine,
   Captions,
   CaptionsOff,
   ChevronDown,
@@ -281,6 +282,8 @@ export interface ViewerToolbarProps {
   voice?: { state: "off" | "loading" | "listening" | "error"; onToggle: () => void; onWarm?: () => void };
   /** Oblique, slab and curved MPR workspace (free viewer). */
   onRecon?: () => void;
+  /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion. */
+  onFusion?: () => void;
   /** Text-box tool (free viewer; saved in this browser only). */
   textBox?: { active: boolean; onToggle: () => void };
   /** Save the image with its measurements and text boxes burned in. */
@@ -452,6 +455,11 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         {props.onRecon && (
           <ToolbarButton label="Oblique, slab and curved MPR" disabled={!ready} container={host} pressed={false} onClick={props.onRecon}>
             <Icon as={Route} />
+          </ToolbarButton>
+        )}
+        {props.onFusion && (
+          <ToolbarButton label="PET / CT fusion" disabled={!ready} container={host} pressed={false} onClick={props.onFusion}>
+            <Icon as={Combine} />
           </ToolbarButton>
         )}
 

@@ -120,3 +120,8 @@ test("image menu: the free viewer's Export submenu offers video and the Export d
   const plain = commandsOf(imageMenu(base({ can: { copyImage: true, saveImage: true } })));
   assert.ok(!plain.includes("export"), "teaching surfaces keep the pixel-only saves");
 });
+
+test("image menu: PET / CT fusion sits under Reformat only where the study has the pair", () => {
+  assert.ok(commandsOf(imageMenu(base({ can: { fusion: true } }))).includes("fusion"));
+  assert.ok(!commandsOf(imageMenu(base({ can: { copyImage: true } }))).includes("fusion"));
+});
