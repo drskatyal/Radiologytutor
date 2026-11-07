@@ -50,6 +50,7 @@ import {
   isObviouslyNotDicom,
   withKeyImageSeries,
   type LocalInstanceHeader,
+  type LocalSeries,
 } from "./localStudy";
 import { isStructuredDocumentClass, type DicomDocument } from "./srDocument";
 import { listZipFile, looksLikeZipName } from "./zipArchive";
@@ -99,7 +100,7 @@ export interface IngestOptions {
   workerCount?: number;
 }
 
-type FileManager = { add(file: File): string; remove(index: number): void };
+type FileManager = { add(file: File): string; get(index: number): File | undefined; remove(index: number): void };
 
 let fileManagerPromise: Promise<FileManager> | null = null;
 function loadFileManager(): Promise<FileManager> {
@@ -202,6 +203,23 @@ export function prewarmLocalIngest(): void {
   void loadHeaderParser().catch(() => undefined);
   void loadFileManager().catch(() => undefined);
   headerPool(defaultWorkerCount());
+}
+
+/**
+ * The `File`s behind a series, one per instance in stack order: loose files
+ * and expanded ZIP entries alike (the loader's file manager holds both).
+ * For the free viewer's anonymised DICOM export; instances whose file has
+ * been released are left out.
+ */
+export async function localSeriesFiles(series: LocalSeries, imageIdsByFile: ReadonlyMap<string, readonly string[]>): Promise<File[]> {
+  const files = await loadFileManager();
+  const out = new Set<File>();
+  for (const instance of series.instances) {
+    const match = /^dicomfile:(\d+)/.exec(imageIdsByFile.get(instance.fileName)?.[0] ?? "");
+    const file = match ? files.get(Number(match[1])) : undefined;
+    if (file) out.add(file);
+  }
+  return [...out];
 }
 
 // --- input expansion ----------------------------------------------------------

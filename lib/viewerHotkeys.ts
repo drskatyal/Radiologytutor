@@ -264,6 +264,7 @@ export function viewerShortcutGroups(
     push(groups, c.group, { keys: inputs.map((s) => inputLabel(s, mac)), does: c.label });
   }
   push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "F11"], does: "Set an exact window (width / level)" });
+  if (readingTools) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
   push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });
   if (paneMaximize) push(groups, "Layout", { keys: ["Enter"], does: "Maximise / restore the outlined pane (or double-click it; Esc restores)" });
   return groups;
