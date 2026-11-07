@@ -4,7 +4,8 @@ import path from "node:path";
 
 // Set window (exact width / level), as on the desktop (Ctrl+F11): from the
 // Window menu, the keyboard and the right-click menu. Values are validated,
-// Esc cancels, and the overlay shows the typed window. Synthetic CT only.
+// Esc cancels, and the overlay shows the typed window. Synthetic CT only (its
+// files carry W 400 / L 40).
 
 const DIR = process.env.TEST_CT_DIR;
 test.skip(!DIR, "TEST_CT_DIR is not set (scripts/make-test-ct.py)");
@@ -34,8 +35,8 @@ test("Set window: Window menu, Ctrl+F11 and right-click; validated; Esc cancels"
   const width = dialog.getByLabel(/^Width \(WW\)/);
   const level = dialog.getByLabel(/^Level \(WL\)/);
 
-  // Window menu → Set window…, starts from the window on screen, as the
-  // overlay shows it (CT: HU).
+  // Window menu → Set window…, starts from the window on screen: the file's
+  // own W 400 / L 40, read back exactly (not 399 / 39.5). CT: HU.
   await page.getByRole("button", { name: /^Window presets/ }).click();
   await page.getByRole("menuitemradio", { name: /^Set window/ }).click();
   await expect(dialog).toBeVisible();
@@ -44,8 +45,8 @@ test("Set window: Window menu, Ctrl+F11 and right-click; validated; Esc cancels"
   const bg = await dialog.evaluate((el) => getComputedStyle(el).backgroundColor);
   const [r, g, b] = (bg.match(/\d+/g) ?? []).map(Number);
   expect(r! + g! + b!, `dialog background ${bg}`).toBeLessThan(150);
-  await showsWindow(page, 399, 40);
-  await expect(width).toHaveValue("399");
+  await showsWindow(page, 400, 40);
+  await expect(width).toHaveValue("400");
   await expect(level).toHaveValue("40");
   await width.fill("1500");
   await level.fill("-600");
