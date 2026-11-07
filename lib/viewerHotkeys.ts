@@ -265,6 +265,10 @@ export function viewerShortcutGroups(
   }
   push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "F11"], does: "Set an exact window (width / level)" });
   if (readingTools) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
+  if (readingTools) {
+    push(groups, "Display", { keys: ["T"], does: "Slab: thin → MIP → MinIP → AvgIP (reformats the stack's plane)" });
+    push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "] / ["], does: "Thicker / thinner slab (2 mm steps)" });
+  }
   if (readingTools) push(groups, "Layout", { keys: [mac ? "⌥" : "Alt", "Shift", "Enter"], does: "Distraction-free reading: images only (Esc exits)" });
   if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "F"], does: "PET / CT fusion (a study with a CT and a PET)" });
   push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });

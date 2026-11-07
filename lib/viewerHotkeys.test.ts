@@ -243,3 +243,10 @@ test("the free viewer's help lists Ctrl/⌘+Shift+F (PET / CT fusion)", () => {
   assert.deepEqual(row(false)?.keys, ["Ctrl", "Shift", "F"]);
   assert.deepEqual(row(true)?.keys, ["⌘", "Shift", "F"]);
 });
+
+test("the free viewer's help lists T (slab cycle) and Ctrl/⌘+] / [ (slab thickness)", () => {
+  const rows = (mac: boolean, readingTools: boolean) => viewerShortcutGroups({}, mac, { readingTools }).flatMap((g) => g.rows);
+  assert.deepEqual(rows(false, true).find((r) => /^Slab:/.test(r.does))?.keys, ["T"]);
+  assert.deepEqual(rows(true, true).find((r) => /slab \(2 mm/.test(r.does))?.keys, ["⌘", "] / ["]);
+  assert.equal(rows(false, false).find((r) => /slab/i.test(r.does)), undefined);
+});
