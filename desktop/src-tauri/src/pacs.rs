@@ -402,6 +402,7 @@ fn store_instance(data: &[u8], ts_uid: &str, sop_class: &str, sop_instance: &str
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dimse_move(host: &str, port: u16, called: &str, calling: &str, local_port: u16, study_uid: &str, dest: &Path, on_progress: &dyn Fn(usize, Option<usize>)) -> Result<usize, String> {
     let received = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));

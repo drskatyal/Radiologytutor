@@ -40,7 +40,7 @@ pub fn tree_of(root: u32, all: &[(u32, Option<u32>, String, u64)]) -> TreeMem {
         .filter(|(pid, ..)| members.contains(pid))
         .map(|(_, _, name, bytes)| ProcMem { name: name.clone(), mb: bytes / 1_048_576 })
         .collect();
-    processes.sort_by(|a, b| b.mb.cmp(&a.mb));
+    processes.sort_by_key(|p| std::cmp::Reverse(p.mb));
     TreeMem { total_mb: processes.iter().map(|p| p.mb).sum(), processes }
 }
 
