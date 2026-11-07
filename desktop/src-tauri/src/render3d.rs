@@ -59,22 +59,34 @@ fn coarse_of(v: &Volume) -> Arc<Coarse> {
     let (cx, cy, cz) = ((nx / 2).max(1), (ny / 2).max(1), (nz / 2).max(1));
     let mut data = vec![0i16; cx * cy * cz];
     data.par_chunks_mut(cx * cy).enumerate().for_each(|(z, plane)| {
-        for y in 0..cy {
-            for x in 0..cx {
-                let mut sum = 0i32;
-                let mut n = 0i32;
-                for dz in 0..2 {
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let (sx, sy, sz) = (2 * x + dx, 2 * y + dy, 2 * z + dz);
-                            if sx < nx && sy < ny && sz < nz {
-                                sum += v.data[(sz * ny + sy) * nx + sx] as i32;
-                                n += 1;
-                            }
-                        }
+        // Row by row: the (up to) four source rows of each output row, summed
+        // pairwise along x. Same integer sum and count as averaging each 2×2×2
+        // block voxel by voxel (a block cut by the volume's edge averages the
+        // voxels it has), without the per-voxel bounds tests.
+        let rows = |y: usize| {
+            let mut r: [Option<&[i16]>; 4] = [None; 4];
+            for (k, (dz, dy)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
+                let (sy, sz) = (2 * y + dy, 2 * z + dz);
+                if sy < ny && sz < nz {
+                    r[k] = Some(&v.data[(sz * ny + sy) * nx..][..nx]);
+                }
+            }
+            r
+        };
+        for (y, out) in plane.chunks_mut(cx).enumerate() {
+            let src = rows(y);
+            let rows_in = src.iter().flatten().count() as i32;
+            for (x, o) in out.iter_mut().enumerate() {
+                let (x0, x1) = (2 * x, 2 * x + 1);
+                let (mut sum, mut n) = (0i32, 0i32);
+                for row in src.iter().flatten() {
+                    sum += row[x0] as i32;
+                    if x1 < nx {
+                        sum += row[x1] as i32;
                     }
                 }
-                plane[y * cx + x] = (sum / n.max(1)) as i16;
+                n += rows_in * if x1 < nx { 2 } else { 1 };
+                *o = (sum / n.max(1)) as i16;
             }
         }
     });
@@ -371,6 +383,46 @@ mod tests {
             }
         }
         Volume { key: 99, dims: [n, n, n], spacing: [1.0, 1.0, 1.0], data, min: -1000, max: 1000, window: None, reduced: [1, 1] }
+    }
+
+    /// The row-wise half-resolution copy equals the voxel-by-voxel 2×2×2
+    /// mean it replaced, including odd and tiny sizes (blocks cut by an edge).
+    #[test]
+    fn coarse_copy_matches_the_blockwise_mean() {
+        let mut key = 1000;
+        for dims in [[7usize, 5, 3], [8, 8, 8], [1, 1, 1], [1, 4, 5], [9, 1, 2], [33, 17, 11]] {
+            let [nx, ny, nz] = dims;
+            let mut seed = 0x9E37_79B9u32 ^ (nx * 31 + ny * 7 + nz) as u32;
+            let data: Vec<i16> = (0..nx * ny * nz)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    (seed % 65536) as u16 as i16
+                })
+                .collect();
+            key += 1;
+            let v = Volume { key, dims, spacing: [1.0, 1.0, 1.0], data, min: i16::MIN, max: i16::MAX, window: None, reduced: [1, 1] };
+            let c = coarse_of(&v);
+            let (cx, cy, cz) = ((nx / 2).max(1), (ny / 2).max(1), (nz / 2).max(1));
+            assert_eq!(c.dims, [cx, cy, cz]);
+            for z in 0..cz {
+                for y in 0..cy {
+                    for x in 0..cx {
+                        let (mut sum, mut n) = (0i32, 0i32);
+                        for (dx, dy, dz) in (0..8).map(|i| (i & 1, (i >> 1) & 1, i >> 2)) {
+                            let (sx, sy, sz) = (2 * x + dx, 2 * y + dy, 2 * z + dz);
+                            if sx < nx && sy < ny && sz < nz {
+                                sum += v.data[(sz * ny + sy) * nx + sx] as i32;
+                                n += 1;
+                            }
+                        }
+                        assert_eq!(c.data[(z * cy + y) * cx + x], (sum / n.max(1)) as i16, "{dims:?} at {x},{y},{z}");
+                    }
+                }
+            }
+            release(key);
+        }
     }
 
     #[test]
