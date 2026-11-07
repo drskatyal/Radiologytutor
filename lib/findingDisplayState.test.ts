@@ -2,9 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   authoredDisplayState,
+  displaySliceNumber,
   sopUidFromImageId,
+  withAnchorSnapshot,
   withDisplaySnapshot,
 } from "./findingDisplayState.ts";
+
+test("displaySliceNumber is the 1-based slice Studio shows", () => {
+  assert.equal(displaySliceNumber(0), 1);
+  assert.equal(displaySliceNumber(32), 33);
+  assert.equal(displaySliceNumber(40), 41);
+});
 
 test("sopUidFromImageId parses wadors imageIds", () => {
   const id =
@@ -22,6 +30,21 @@ test("withDisplaySnapshot copies VOI and SOP onto a finding draft", () => {
   assert.equal(f.windowWidth, 1500);
   assert.equal(f.windowCenter, -600);
   assert.equal(f.sopInstanceUID, "1.2.3");
+});
+
+test("withAnchorSnapshot copies the live camera onto a compare landing", () => {
+  const anchor = withAnchorSnapshot(
+    {
+      marker: { x_pct: 0.2, y_pct: 0.3, shape: "circle" },
+      viewportRole: "secondary",
+    },
+    { sliceIndex: 47, ww: 1500, wc: -600, zoom: 1, pan: [4, -2] }
+  );
+  assert.equal(anchor.sliceIndex, 47);
+  assert.equal(anchor.windowWidth, 1500);
+  assert.equal(anchor.windowCenter, -600);
+  assert.equal(anchor.zoom, 1);
+  assert.deepEqual(anchor.pan, [4, -2]);
 });
 
 test("authoredDisplayState prefers authored VOI over Pacsbin fallback", () => {

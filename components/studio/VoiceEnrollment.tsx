@@ -113,7 +113,7 @@ export function VoiceEnrollment({ authorName }: { authorName: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           consent: true,
-          name: `${authorName || "Teacher"} (FlowRad tutor)`,
+          name: `${authorName || "Teacher"} (RadLearn tutor)`,
           samples: [
             {
               base64: sample.base64,
@@ -227,7 +227,7 @@ export function VoiceEnrollment({ authorName }: { authorName: string }) {
           onChange={(e) => setConsent(e.target.checked)}
         />
         <span>
-          I consent to FlowRad creating a synthetic teaching voice from my
+          I consent to RadLearn creating a synthetic teaching voice from my
           samples for live Q&A. Students will see a disclosure. Recorded case
           narration remains my original audio.
         </span>

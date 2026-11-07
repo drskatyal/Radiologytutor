@@ -22,6 +22,7 @@ import {
   type CatalogFilter,
 } from "@/lib/cases";
 import { BODY_SYSTEMS, DIFFICULTIES, type BodySystem, type Difficulty } from "@/lib/types";
+import { toLearnerCatalog } from "@/lib/catalogPlaceholders";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,5 +61,7 @@ export async function GET(req: NextRequest) {
     listPlaylists(ORG),
   ]);
 
-  return NextResponse.json({ cases, facets, authors, courses, playlists });
+  return NextResponse.json(
+    toLearnerCatalog({ cases, facets, authors, courses, playlists })
+  );
 }

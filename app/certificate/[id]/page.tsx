@@ -14,7 +14,7 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   return {
     title: certificate
       ? `Certificate · ${certificate.courseTitle}`
-      : "Certificate · FlowRad Learn",
+      : "Certificate · RadLearn",
   };
 }
 
@@ -74,7 +74,7 @@ export default async function CertificatePage({ params }: { params: { id: string
             </span>
 
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted">
-              FlowRad Learn
+              RadLearn
             </p>
             <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight text-primary sm:text-4xl">
               Certificate of Completion

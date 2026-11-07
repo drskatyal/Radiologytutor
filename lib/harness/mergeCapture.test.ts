@@ -19,14 +19,26 @@ const track: RecordedTrack = {
   ],
 };
 
-test("HARNESS_VIEWER_TOOLS declares the five viewer drives", () => {
+test("HARNESS_VIEWER_TOOLS declares viewer drives including the teach script", () => {
   const names = HARNESS_VIEWER_TOOLS.map((t) => t.name).sort();
   assert.deepEqual(names, [
+    "clear_overlay",
+    "draw_annotation",
+    "draw_arrow",
+    "draw_circle",
+    "jump_to_key_view",
     "next_in_tour",
+    "place_card",
+    "play_guide",
     "point_to",
     "prev_in_tour",
+    "scroll_to",
+    "set_invert",
+    "set_series",
     "set_window",
+    "set_zoom",
     "show_finding",
+    "zoom_to",
   ]);
 });
 
@@ -76,6 +88,13 @@ test("mergeCaptureDemonstration aligns speech segments to the track clock", () =
   assert.equal(findings[0].label, "Nodule");
   assert.equal(findings[0].captureSessionId, "cap_test");
   assert.ok(findings[0].track);
+  assert.ok(findings[0].teachingGuide);
+  assert.ok(
+    findings[0].teachingGuide!.beats.some((b) =>
+      b.actions.some((a) => a.type === "scroll" || a.type === "window" || a.type === "point")
+    )
+  );
+  assert.match(findings[0].teachingGuide!.beats.map((b) => b.say ?? "").join(" "), /nodule|Lung/i);
   assert.equal(findings[0].sliceIndex, 5);
   assert.equal(findings[0].windowWidth, 400);
   assert.ok(findings[0].marker);

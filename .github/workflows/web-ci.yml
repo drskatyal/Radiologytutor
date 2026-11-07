@@ -1,0 +1,117 @@
+# Web app checks on every PR that touches the web app or the shared viewer:
+# unit tests, the production build, the free viewer's bundle budget, and the
+# viewer's visual-regression + perf + privacy gates (e2e/visual, against
+# synthetic real-size studies; no backend needed).
+name: web-ci
+
+# Runs only when started by hand (Actions → this workflow → Run workflow):
+# Actions minutes cost money, so nothing runs on push, PR or tag. Tests and
+# the build run locally before merge and are listed in the PR description.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build-visual:
+    runs-on: ubuntu-24.04
+    # The suite itself takes ~7 min; the margin is for a slow runner, not a hang
+    # (every network step below has its own cap).
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      # The model is pinned by SHA-256, so the packaged tar.gz is cached under
+      # that digest: a cache hit makes no request to the model host at all.
+      - name: Voice model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            public/voice/model.tar.gz
+            desktop/public/voice/model.tar.gz
+          key: voice-model-${{ hashFiles('scripts/voice-model.sha256') }}
+      - name: Voice model (served from public/voice) and spoken test commands
+        # A stalled mirror or model download once held this step until the job
+        # limit cancelled the run before the build; cap it and fail fast instead.
+        timeout-minutes: 8
+        run: |
+          # apt: per-request timeout + retries (a stalled mirror connection is
+          # dropped and retried) instead of killing the whole command, and try
+          # the install before an index update: the runner image's lists are
+          # usually current, and `apt-get update` is the step that stalls.
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          sudo apt-get install -y -qq $APT_OPTS espeak-ng ffmpeg \
+            || { sudo apt-get update -qq $APT_OPTS && sudo apt-get install -y -qq $APT_OPTS espeak-ng ffmpeg; }
+          command -v espeak-ng >/dev/null || { echo "::error::espeak-ng is not installed (apt failed above)"; exit 1; }
+          timeout 150 python3 scripts/fetch-voice-model.py || { echo "::warning::voice model download failed, retrying once"; sleep 10; timeout 150 python3 scripts/fetch-voice-model.py; }
+          python3 desktop/scripts/make-voice-wav.py "$RUNNER_TEMP/voice.wav" "layout two" "lung window" "zoom in"
+      - name: Production build
+        # next/font downloads Google Fonts at build time; a bad response from
+        # Google (seen on runners) fails the build with a parse error. Retry
+        # once after a pause: a real compile error fails both attempts.
+        run: npm run build || { echo "::warning::build failed, retrying once (next/font download)"; sleep 20; npm run build; }
+      - name: Free viewer shell bundle budget (/viewer ≤ 300 KB gzipped JS)
+        run: node scripts/perf/viewer-bundle-budget.mjs --route /viewer --budget-kb 300 --json "$RUNNER_TEMP/bundle.json"
+      - name: Synthetic studies (deterministic)
+        # CT 60 for the visual baselines; CT 520 × 512² (263 MB) and a 5-series
+        # JPEG 2000 brain MR for the free viewer's perf gates; a PET/CT for fusion.
+        run: |
+          pip install pydicom numpy pylibjpeg pylibjpeg-openjpeg
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct" --slices 60
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-520" --slices 520
+          python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
+          python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-40" --slices 40 --size 256
+          python3 scripts/make-test-multiseries.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-multi"
+          python3 scripts/make-test-ortho.py "$RUNNER_TEMP/test-ortho"
+          python3 scripts/make-test-petct.py "$RUNNER_TEMP/test-petct"
+          # pydicom's own public samples: a rescaled CT with no window and an
+          # MR from another study (the 0.8.1 HP report's two dropped files).
+          mkdir -p "$RUNNER_TEMP/test-pydicom"
+          python3 -c "import shutil, sys; from pydicom.data import get_testdata_file as f; [shutil.copy(f(n), sys.argv[1]) for n in ('CT_small.dcm', 'MR_small.dcm')]" "$RUNNER_TEMP/test-pydicom"
+      - name: Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Visual regression + perf + privacy gates (/viewer/local, /viewer)
+        env:
+          CI: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+          TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
+          TEST_MR_DIR: ${{ runner.temp }}/test-mr
+          TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+          TEST_PYDICOM_DIR: ${{ runner.temp }}/test-pydicom
+          TEST_ORTHO_DIR: ${{ runner.temp }}/test-ortho
+          TEST_PETCT_DIR: ${{ runner.temp }}/test-petct
+        # One worker: the perf gates measure frame times and must not share
+        # the runner's cores with another test (nor the voice recognizer's WASM).
+        run: npx playwright test -c playwright.visual.config.ts --workers=1 --grep-invert "voice:|pop out:"
+      - name: Perf table (job summary)
+        if: always()
+        run: |
+          node scripts/perf/viewer-perf-table.mjs "$RUNNER_TEMP/bundle.json" test-results/perf/free-viewer.json | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/bundle.json" test-results/perf/ 2>/dev/null || true
+      - name: Voice commands and pop-out windows (after the timed suite, alone)
+        env:
+          CI: "1"
+          TEST_CT_DIR: ${{ runner.temp }}/test-ct
+          TEST_VOICE_WAV: ${{ runner.temp }}/voice.wav
+          TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+        run: npx playwright test -c playwright.visual.config.ts voice.spec.ts voice-recorded.spec.ts popout.spec.ts --workers=1
+      - name: Upload screenshots and samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

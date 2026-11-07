@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FlowRad Viewer</title>
+    <style>
+      /* Splash: painted by the webview before any JS runs; React replaces #root's children.
+         The FlowRad "Owl Scan" master (brand/owlscan.svg, inline) sits above the
+         product name. No fonts, no requests. A real <img>, not a CSS background:
+         WebKit holds the first paint until the page is "visually non-empty" (an
+         image over 32x32 px, or enough text), and without one it waited for the
+         whole JS bundle to load (macOS cold start). A small PNG (112 px, 2x), not the
+         SVG: WebKit builds a whole document to draw an SVG <img>, and the paint
+         waited ~80 ms after the HTML parsed for it (macOS app share 175 ms). */
+      html, body { margin: 0; height: 100%; background: #0b0d10; }
+      .boot {
+        position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 20px; padding-bottom: 8px;
+        font: 600 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+        letter-spacing: 0.18em; text-transform: uppercase; color: #a9c4b9;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"><div class="boot" aria-hidden="true"><img width="56" height="56" alt="" src="data:image/png;base64,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S0023W18rlcJLL4IOfC220wYxPjssa12V9JUWCQnfHTyrKZMG6RzDbOs448oOFLqf0oybQXqycO90GQNnX8lJGfjhxjZXWe8fU1gNNLyZFT0jMFdo6R3Hy+JMUl691sQthmZpu6Jvj8821PeMWLWXZ/b3m5fBR4aePhUK/dusRw+lssffCUgpxSDp6beEcshQreCPfqiRUVfUmQDKlqRfivUFWZPvthBJWlo7y6izrlc1KISBn72HolduR4V3yTxKipv6KYxMgL/7itzEWVAW48+dNT8+Cszdx6jQ+Tm1XgxYgts1/BSvPjsq3LQX69+a+z2MZtBv554LX78nvsxRPIE3BM3FUj9SHrt3lTYP8EcUzzR6xMBZQ8+0BOIpQzsefkEHvoA7095Byta9lTAfAefx6cQ0XN4x/f5rygtVjMC6ktYf815zeyvBbjMec9MX6Q7neZSEe3/OUmTvv0732XIb3378m0eo6rrnm/mfull9gut6sruy8c2vZT88dpLtEjq17l2/dJr0Gj9v+6168viff8qJRHYv/vb8yD6ZsArr86fbr8c8P39ui8HnL77vo0wz9cf/gM4DU/v52LYkwAAAABJRU5ErkJggg==" /><span>FlowRad Viewer</span></div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

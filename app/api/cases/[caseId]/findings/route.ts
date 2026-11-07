@@ -29,6 +29,8 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       // Self-hosted record/replay: ordered event log + narration audio.
       track: body.track,
       durationMs: body.durationMs,
+      // Teach script from a recorded take or a no-mic click-annotate save.
+      teachingGuide: body.teachingGuide,
       order: body.order ?? 0,
       // Series/study anchors — drive student series switch + prefetch.
       studyInstanceUID: body.studyInstanceUID,
@@ -36,6 +38,7 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       sopInstanceUIDs: body.sopInstanceUIDs,
       sopInstanceUID: body.sopInstanceUID,
       sliceIndex: body.sliceIndex,
+      landmark: body.landmark?.trim() || undefined,
       windowWidth: body.windowWidth,
       windowCenter: body.windowCenter,
       measurements: body.measurements,

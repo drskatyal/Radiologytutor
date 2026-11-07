@@ -1,0 +1,102 @@
+// FlowRad Viewer — the free, public, no-sign-in DICOM viewer.
+//
+// Drop a folder, a ZIP, a CD or loose files and read the study in this
+// browser. Nothing is uploaded, stored, or analysed: headers are parsed in Web
+// Workers, pixels are decoded off disk on demand, and closing the study frees
+// it. No account and no paywall to view; signing up (free) is only offered for
+// what needs one — saving, sharing, teaching, the AI tutor and priors.
+//
+// Static on purpose: no session, no data fetching, so the shell is served from
+// cache and the first drop pays only for the engine chunks (prewarmed while
+// the dropzone is showing). The bundle budget for this route is enforced by
+// scripts/viewer-bundle-budget.mjs; the latency budgets by
+// e2e/visual/free-viewer.perf.spec.ts.
+
+import type { Metadata } from "next";
+import { ProductLinks } from "@/components/marketing/ProductLinks";
+import Image from "next/image";
+import Link from "next/link";
+import { ShieldCheck } from "lucide-react";
+import { LocalStudyViewer } from "@/components/viewer/LocalStudyViewer";
+import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
+// Imported, not referenced by /brand/ path: Next copies the files byte for
+// byte to a hashed /_next/static/media/ URL. The dark lockup can first load
+// after a drop (the shell turns black when a study opens), and after a drop
+// this page may only make static asset GETs (free-viewer.perf.spec privacy).
+import lockupLight from "@/public/brand/flowrad-lockup.svg";
+import lockupDark from "@/public/brand/flowrad-lockup-dark.svg";
+
+export const metadata: Metadata = {
+  title: "FlowRad Viewer · Free DICOM viewer in your browser",
+  description:
+    "Open a DICOM folder, ZIP or CD in your browser and read it instantly. Free, no sign-in. Your images never leave your computer.",
+  alternates: { canonical: "https://app.viewer.flowrad.ai/viewer" },
+  openGraph: {
+    url: "https://app.viewer.flowrad.ai/viewer",
+    images: ["https://app.viewer.flowrad.ai/opengraph-image"],
+    title: "FlowRad Viewer — free DICOM viewer",
+    description: "Drop a study and read it instantly. Your images never leave your computer.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "FlowRad Viewer — free DICOM viewer",
+    description: "Open a DICOM folder, ZIP or CD. Free, no sign-in. Your images never leave your computer.",
+    images: ["https://app.viewer.flowrad.ai/opengraph-image"],
+  },
+  icons: { icon: "/owlscan.svg" },
+};
+
+export default function FreeViewerPage() {
+  return (
+    <div className="viewer-shell flex h-dvh min-h-0 flex-col bg-vl-bg text-vl-fg">
+      {/* The engine chunks warm while the user is choosing a folder. */}
+      <ViewerPrewarm />
+      <header className="flex shrink-0 items-center gap-2 border-b border-vl-border px-4 py-2 sm:gap-3">
+        <Link
+          href="/viewer"
+          aria-label="FlowRad Viewer"
+          className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vl-brand"
+        >
+          {/* The approved Owl Scan lockups, byte for byte (brand/brand.md): the
+              green wordmark on light, the white one on dark and while reading. */}
+          <Image
+            src={lockupLight}
+            alt="FlowRad"
+            width={120}
+            height={32}
+            // Lazy, not priority: the variant hidden by the theme is never
+            // fetched, so first load pays for one ~8 KB lockup only.
+            loading="lazy"
+            unoptimized
+            className="vl-logo-light h-8 w-auto"
+          />
+          <Image
+            src={lockupDark}
+            alt="FlowRad"
+            width={113}
+            height={32}
+            loading="lazy"
+            unoptimized
+            className="vl-logo-dark h-8 w-auto"
+          />
+          <span className="text-sm font-semibold tracking-tight text-vl-muted">Viewer</span>
+        </Link>
+        <span className="ml-1 hidden rounded-full border border-vl-brand/30 bg-vl-brand-soft px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-vl-brand sm:inline">
+          Free
+        </span>
+        <p className="ml-auto hidden min-w-0 items-center gap-1.5 pl-3 text-right text-xs leading-tight text-vl-muted sm:flex">
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-vl-brand" aria-hidden />
+          <span>Your images never leave your computer.</span>
+        </p>
+      </header>
+      <main className="flex min-h-0 flex-1 flex-col" aria-label="DICOM viewer">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-6 sm:py-10 has-[[data-testid=local-stage]]:overflow-visible has-[[data-testid=local-stage]]:p-0">
+          <LocalStudyViewer tone="reading" />
+        </div>
+      </main>
+      <footer className="shrink-0 border-t border-white/10 px-4 py-2 text-white/70">
+        <ProductLinks />
+      </footer>
+    </div>
+  );
+}

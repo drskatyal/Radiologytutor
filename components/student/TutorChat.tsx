@@ -13,8 +13,10 @@ import { useEffect, useRef, useState } from "react";
 import { Globe, Mic, Play, Square } from "lucide-react";
 import { Badge, Spinner, cn, type MicState } from "@/components/ui";
 import { Composer } from "./Composer";
+import { CheckInCard } from "./CheckInCard";
 import type { OrbState } from "./AgentOrb";
 import type { ChatSource, ChatTurn, SessionPhase } from "./useStudentSession";
+import type { ActiveCheckIn } from "@/lib/tourCheckIn";
 
 const STATUS: Partial<Record<OrbState, string>> = {
   listening: "Listening to you…",
@@ -40,6 +42,8 @@ export function TutorChat({
   onTypingFocus,
   onTypingBlur,
   hideMic = false,
+  checkIn = null,
+  onAnswerCheckIn,
 }: {
   turns: ChatTurn[];
   phase: SessionPhase;
@@ -58,13 +62,16 @@ export function TutorChat({
   onTypingBlur: () => void;
   /** Dock already has the mic — hide the duplicate in the rail composer. */
   hideMic?: boolean;
+  /** Text MCQ while the Teach tour waits. Null during scripted beats. */
+  checkIn?: ActiveCheckIn | null;
+  onAnswerCheckIn?: (index: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Keep the latest turn / status in view.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [turns, phase]);
+  }, [turns, phase, checkIn]);
 
   const statusLabel = STATUS[orbState];
   const hasTurns = turns.length > 0;
@@ -85,6 +92,14 @@ export function TutorChat({
             onReplay={() => onReplayTurn(t)}
           />
         ))}
+
+        {checkIn && onAnswerCheckIn && (
+          <CheckInCard
+            prompt={checkIn.prompt}
+            options={checkIn.options}
+            onSelect={onAnswerCheckIn}
+          />
+        )}
 
         {statusLabel && (
           <div className="flex animate-fade-up items-center gap-2 text-xs text-secondary" aria-live="polite">
@@ -129,9 +144,9 @@ function ConversationHint() {
     <div className="animate-fade-up rounded-lg border border-subtle bg-elevated/50 p-4">
       <p className="text-sm font-medium text-primary">Discuss the case with your attending.</p>
       <p className="mt-1 text-sm text-muted">
-        In Teach mode the tutor drives the viewer while explaining how to report.
-        Interrupt anytime — ask “why that window?”, “what goes in Impression?”, or
-        switch to Exam for viva.
+        Open the microphone to start. The attending teaches on the study and the
+        captions land here. Scroll whenever you like — scrolling does not start
+        the session. Switch to Examiner when you want to be questioned.
       </p>
     </div>
   );

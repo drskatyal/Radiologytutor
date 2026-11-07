@@ -1,16 +1,13 @@
 // Studio recording studio — /studio/cases/[caseId]/record (steps 3-4 of the
-// create-a-case arc). Server component: resolves the case (tenant-scoped) +
-// its full series rail from Orthanc, then hands both to the client
-// RecordingStudio. Mirrors the student page's series resolution so the
-// author records against the SAME navigator the learner sees. Falls back to
-// the bundled sample when imaging isn't resolved, so the studio always
-// renders end to end.
+// create-a-case arc). Server component: loads the case and the series UIDs
+// already stored on it. The client asks DICOMweb for the rest of the rail
+// after the first frame can start. The bundled sample is only a fallback
+// when the case has no series UIDs and the archive list is empty.
 
 import { notFound } from "next/navigation";
 import { getCaseForOrg } from "@/lib/cases";
 import { activeOrgId } from "@/lib/auth";
-import { resolveCaseSeries } from "@/lib/prefetch";
-import type { CaseSeries } from "@/lib/viewerSource";
+import { seriesHintFromCase } from "@/lib/viewerLoad";
 import { RecordingStudio } from "@/components/author/RecordingStudio";
 
 export const dynamic = "force-dynamic";
@@ -23,9 +20,14 @@ export default async function StudioRecordPage({ params }: { params: { caseId: s
   const caseData = await getCaseForOrg(orgId, params.caseId);
   if (!caseData) notFound();
 
-  // Empty when imaging can't be resolved — the studio falls back to the sample.
-  const resolved = await resolveCaseSeries(params.caseId, orgId, WADO_RS_ROOT);
-  const series: CaseSeries[] = resolved && resolved.length > 0 ? resolved : [];
+  const series = seriesHintFromCase(
+    {
+      modality: caseData.modality,
+      findings: caseData.findings,
+      studyRefs: caseData.studyRefs,
+    },
+    WADO_RS_ROOT
+  );
 
   return <RecordingStudio initialCase={caseData} initialSeries={series} />;
 }

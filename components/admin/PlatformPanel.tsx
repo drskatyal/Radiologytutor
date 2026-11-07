@@ -30,7 +30,7 @@ export function PlatformPanel() {
         >
           <p className="text-sm font-semibold text-primary">Platform operations</p>
           <p className="mt-1.5 text-xs leading-relaxed text-muted">
-            FlowRad staff (User.platformRole = super_admin) run teacher verification,
+            RadLearn staff (User.platformRole = super_admin) run teacher verification,
             de-identification review, and marketplace health. Labeled here; gated when sessions
             carry that role.
           </p>

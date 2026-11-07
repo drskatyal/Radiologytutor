@@ -1,0 +1,14 @@
+{
+  "id": "stu_lidc_nodule",
+  "orgId": "org_demo",
+  "patientId": "pat_lidc_nodule",
+  "studyInstanceUID": "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+  "studyDate": "20000101",
+  "modality": "CT",
+  "description": "Diagnostic chest CT (CAP 5 mm, soft kernel) — TCIA LIDC-IDRI.",
+  "seriesInstanceUIDs": [
+    "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463"
+  ],
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}

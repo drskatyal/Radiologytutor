@@ -1,0 +1,644 @@
+// Native MPR (Phase 1): the volume lives in Rust (src-tauri/src/volume.rs) as
+// one 16-bit buffer; each pane shows a windowed 8-bit plane Rust renders on
+// request. The webview holds three small PNGs, never the stack, the volume or
+// a volume texture, so MPR costs the renderer next to nothing and closing it
+// returns the volume's memory at once (volume_close).
+//
+// Interaction: wheel scrolls the pane's plane (Shift ×5), drag sets
+// window/level, click moves the crosshair (the other two planes follow),
+// arrow keys scroll the active pane, double-click resets.
+//
+// Layout: three boxes, a tall one on the left and two stacked on the right
+// (mprSlots.ts). Each box has a plane dropdown; the X in the header closes
+// MPR and returns to the normal viewer.
+
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { dragModeFor, resolveWheel } from "./mouseBindings";
+import { ArrowLeft, RotateCcw, X } from "lucide-react";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
+import { Select } from "@/components/ui/Input";
+import { Slider } from "@/components/ui/Slider";
+import { Spinner } from "@/components/ui/Spinner";
+import { cn } from "@/components/ui/cn";
+import { invoke, volumePlaneUrl } from "../platform";
+import { useNativeMode } from "../native/nativeLayout";
+import type { ViewerSeries } from "../types";
+import { installToolCursors } from "./toolCursor";
+import { ViewerContextMenu } from "@/components/viewer/ViewerContextMenu";
+import type { MenuCommand, MenuEntry } from "@flowrad/viewer-core";
+import { applySlabChange, mprPaneMenu, slabChangeOf, SLAB_MAX_MM, type Slab, type SlabChange, type SlabMode } from "./slabCommands";
+import { assignMprSlot, loadMprSlots, MPR_PLANE_LABELS, MPR_PLANES, MPR_SLOT_CLASSES, saveMprSlots, type MprSlots, type Plane } from "./mprSlots";
+
+// Phase 2: in native mode the plane is drawn by Rust, not loaded as a PNG.
+const NativePlaneSurface = lazy(() => import("../native/NativePlaneSurface"));
+
+installToolCursors();
+
+export type { Plane } from "./mprSlots";
+
+export type { Slab, SlabMode } from "./slabCommands";
+export { SLAB_MAX_MM } from "./slabCommands";
+export const SLAB_MODES: { mode: SlabMode; label: string }[] = [
+  { mode: "off", label: "Slice" },
+  { mode: "mip", label: "MIP" },
+  { mode: "minip", label: "MinIP" },
+  { mode: "avg", label: "AvgIP" },
+];
+export function slabLabel(s: Slab): string | null {
+  if (s.mode === "off" || s.mm <= 0) return null;
+  return `${SLAB_MODES.find((m) => m.mode === s.mode)?.label} ${s.mm.toFixed(s.mm < 10 ? 1 : 0)} mm`;
+}
+
+export interface VolumeInfo {
+  key: string;
+  /** columns, rows, slices */
+  dims: [number, number, number];
+  /** mm: column, row, slice */
+  spacing: [number, number, number];
+  min: number;
+  max: number;
+  window: [number, number] | null;
+  bytes: number;
+  buildMs: number;
+  /** [in-plane, slice] reduction to fit the memory budget (1 = full resolution). */
+  reduced: [number, number];
+}
+
+/** "Reduced resolution …" note for a volume built under the memory budget, or null. */
+export function reducedNote(v: VolumeInfo): string | null {
+  const [xy, z] = v.reduced ?? [1, 1];
+  if (xy === 1 && z === 1) return null;
+  const parts = [xy > 1 ? `${xy}× in-plane` : null, z > 1 ? `${z} slices averaged` : null].filter(Boolean);
+  return `Reduced resolution to fit memory (${parts.join(", ")})`;
+}
+
+interface Props {
+  series: ViewerSeries;
+  onExit: () => void;
+  /** The native core cannot read this series (e.g. JPEG-LS): use the GPU MPR. */
+  onUnsupported?: () => void;
+  onVolumeReady?: (t: { shellMs: number; loadedMs: number }) => void;
+  /** Start with a slab (bench / shortcut); default a single slice. */
+  initialSlab?: Slab;
+  /** Slab change from outside (keys, voice, menu); applied when `seq` bumps. */
+  slabCommand?: SlabChange & { seq: number };
+  /** Bench: every pane has drawn its first plane (brightest pixel per pane). */
+  onPainted?: (t: { ms: number; maxLum: Record<string, number> }) => void;
+}
+
+/** Slice count along a plane's own axis. */
+export function depthOf(info: VolumeInfo, plane: Plane): number {
+  return plane === "axial" ? info.dims[2] : plane === "coronal" ? info.dims[1] : info.dims[0];
+}
+
+/** Physical width / height (mm) of a plane's image. */
+function mmOf(info: VolumeInfo, plane: Plane): [number, number] {
+  const [nx, ny, nz] = info.dims;
+  const [sx, sy, sz] = info.spacing;
+  if (plane === "axial") return [nx * sx, ny * sy];
+  if (plane === "coronal") return [nx * sx, nz * sz];
+  return [ny * sy, nz * sz];
+}
+
+/** Crosshair as fractions of the plane image (x from left, y from top). */
+function crosshair(info: VolumeInfo, plane: Plane, at: Record<Plane, number>): [number, number] {
+  const [nx, ny, nz] = info.dims;
+  const top = (z: number) => 1 - (z + 0.5) / nz; // last slice at the top
+  if (plane === "axial") return [(at.sagittal + 0.5) / nx, (at.coronal + 0.5) / ny];
+  if (plane === "coronal") return [(at.sagittal + 0.5) / nx, top(at.axial)];
+  return [(at.coronal + 0.5) / ny, top(at.axial)];
+}
+
+/** Brightest pixel of a decoded image (0–255): the "is anything drawn" check. */
+function maxLuminance(img: HTMLImageElement): number {
+  const c = document.createElement("canvas");
+  c.width = c.height = 48;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return -1;
+  let d: Uint8ClampedArray;
+  try {
+    ctx.drawImage(img, 0, 0, 48, 48);
+    d = ctx.getImageData(0, 0, 48, 48).data;
+  } catch {
+    return -1; // tainted canvas: unknown, not blank
+  }
+  let max = 0;
+  for (let i = 0; i < d.length; i += 4) max = Math.max(max, d[i]);
+  return max;
+}
+
+/**
+ * Latest-wins image loading: no flicker, never a queue of stale planes. A
+ * failed plane (the volume is being rebuilt) is retried, 3 times, backing off.
+ */
+export function usePlaneImage(url: string | null, onLoaded?: (maxLum: number) => void): { src: string | null; failed: boolean } {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const busy = useRef(false);
+  const wanted = useRef<string | null>(null);
+  const tries = useRef(0);
+  const loadedCb = useRef(onLoaded);
+  loadedCb.current = onLoaded;
+  const load = useCallback(() => {
+    const next = wanted.current;
+    if (!next || busy.current) return;
+    busy.current = true;
+    const img = new Image();
+    img.decoding = "async";
+    // The protocol answers with Access-Control-Allow-Origin: *; anonymous CORS
+    // keeps the pixels readable for the paint check.
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      busy.current = false;
+      tries.current = 0;
+      setSrc(next);
+      setFailed(false);
+      loadedCb.current?.(maxLuminance(img));
+      if (wanted.current !== next) load();
+    };
+    img.onerror = () => {
+      busy.current = false;
+      if (wanted.current !== next) return load();
+      if (tries.current < 3) {
+        tries.current += 1;
+        window.setTimeout(load, 150 * tries.current);
+      } else setFailed(true);
+    };
+    img.src = next;
+  }, []);
+  useEffect(() => {
+    wanted.current = url;
+    tries.current = 0;
+    load();
+  }, [url, load]);
+  return { src, failed };
+}
+
+export function Pane({
+  info,
+  plane,
+  label,
+  at,
+  center,
+  width,
+  active,
+  onActivate,
+  onScroll,
+  onWindow,
+  onPoint,
+  onReset,
+  onPainted,
+  slab,
+  onSlab,
+  crosshair: showCrosshair = true,
+  menu,
+  onMenuCommand,
+  planePicker,
+  className,
+}: {
+  info: VolumeInfo;
+  plane: Plane;
+  label: string;
+  at: Record<Plane, number>;
+  center: number;
+  width: number;
+  active: boolean;
+  onActivate: () => void;
+  onScroll: (delta: number) => void;
+  onWindow: (dCenter: number, dWidth: number) => void;
+  onPoint: (fx: number, fy: number) => void;
+  onReset: () => void;
+  onPainted?: (maxLum: number) => void;
+  slab: Slab;
+  /** Change the slab thickness by `deltaMm` (Ctrl+wheel). */
+  onSlab: (deltaMm: number) => void;
+  /** Draw the crosshair (MPR); a single-plane reformat hides it. */
+  crosshair?: boolean;
+  /** The pane's right-click menu (shared contextMenu.ts), built when it opens. */
+  menu?: () => readonly MenuEntry[];
+  onMenuCommand?: (command: MenuCommand) => void;
+  /** Replaces the plane label (MPR: a dropdown to pick the box's plane). */
+  planePicker?: ReactNode;
+  /** Grid placement (MPR boxes). */
+  className?: string;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<[number, number]>([0, 0]);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize([el.clientWidth, el.clientHeight]));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const [mmW, mmH] = mmOf(info, plane);
+  // The image rect inside the pane (object-contain), for the crosshair.
+  const scale = size[0] && size[1] ? Math.min(size[0] / mmW, size[1] / mmH) : 0;
+  const rect = { w: mmW * scale, h: mmH * scale, x: (size[0] - mmW * scale) / 2, y: (size[1] - mmH * scale) / 2 };
+  const maxDim = Math.min(1024, Math.max(128, Math.ceil(Math.max(rect.w, rect.h) * (window.devicePixelRatio || 1))));
+  // Native renderer (Phase 2): the plane is drawn by Rust under the page.
+  const native = useNativeMode();
+  const [nativePainted, setNativePainted] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const paneId = useRef(`mpr:${plane}:${Math.random().toString(36).slice(2, 8)}`).current;
+  const url = scale && !native ? volumePlaneUrl(info.key, plane, at[plane], center, width, maxDim, slab) : null;
+  const slabText = slabLabel(slab);
+  const img = usePlaneImage(url, onPainted);
+  const src = native ? (nativePainted ? "native" : null) : img.src;
+  const failed = native ? !!nativeError : img.failed;
+  const [cx, cy] = crosshair(info, plane, at);
+
+  const drag = useRef<{ x: number; y: number; moved: boolean; button: number } | null>(null);
+  // A right press that did not drag opens the image menu (a right drag
+  // windows, like every other viewport). The browser menu never shows.
+  const rightMoved = useRef(false);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <div
+      ref={box}
+      role="img"
+      aria-label={`${label}, slice ${at[plane] + 1} of ${depthOf(info, plane)}`}
+      tabIndex={0}
+      onFocus={onActivate}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowUp" || e.key === "ArrowRight") onScroll(1);
+        else if (e.key === "ArrowDown" || e.key === "ArrowLeft") onScroll(-1);
+        else return;
+        e.preventDefault();
+      }}
+      onWheel={(e) => {
+        // Tilt notches are commands (bindings, App); the vertical wheel follows
+        // the bindings: Ctrl+wheel = slab thickness by default (Shift: ×5).
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+        const action = resolveWheel({ ctrl: e.ctrlKey || e.metaKey, alt: e.altKey })?.command;
+        if (action === "slab" || action === "zoom") {
+          e.preventDefault();
+          onSlab((e.deltaY > 0 ? -1 : 1) * (e.shiftKey ? 5 : 1));
+        } else onScroll((e.deltaY > 0 ? 1 : -1) * (e.shiftKey ? 5 : 1));
+      }}
+      onPointerDown={(e) => {
+        onActivate();
+        (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+        drag.current = { x: e.clientX, y: e.clientY, moved: false, button: e.button };
+        if (e.button === 2) rightMoved.current = false;
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        const dx = e.clientX - d.x;
+        const dy = e.clientY - d.y;
+        if (!d.moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+        d.moved = true;
+        if (d.button === 2) rightMoved.current = true;
+        d.x = e.clientX;
+        d.y = e.clientY;
+        // Left drag windows here (a click places the crosshair); other buttons
+        // window only where the bindings say so (default: right drag).
+        if (d.button !== 0 && dragModeFor(d.button, "", { ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, shift: e.shiftKey }) !== "WindowLevel") return;
+        onWindow(dy * 2, dx * 4);
+      }}
+      onPointerUp={(e) => {
+        const d = drag.current;
+        drag.current = null;
+        // Only a left click moves the crosshair (a right click opens the menu).
+        if (!d || d.moved || d.button !== 0 || !rect.w) return;
+        const b = box.current!.getBoundingClientRect();
+        const fx = (e.clientX - b.left - rect.x) / rect.w;
+        const fy = (e.clientY - b.top - rect.y) / rect.h;
+        if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) onPoint(fx, fy);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (rightMoved.current || !menu) return;
+        onActivate();
+        setMenuAt({ x: e.clientX, y: e.clientY });
+      }}
+      onDoubleClick={onReset}
+      className={cn(
+        // Click places the crosshair; without one, drag only windows.
+        showCrosshair ? "cursor-crosshair" : "tool-cursor-wl",
+        "relative min-h-0 min-w-0 touch-none select-none overflow-hidden outline-none",
+        // Native: transparent, the plane is drawn under the page.
+        native ? "bg-transparent" : "bg-black",
+        active ? "ring-1 ring-inset ring-accent" : "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",
+        className
+      )}
+    >
+      {native && scale > 0 && (
+        <Suspense fallback={null}>
+          <NativePlaneSurface
+            id={paneId}
+            volumeKey={info.key}
+            plane={plane}
+            index={at[plane]}
+            slab={slab}
+            center={center}
+            width={width}
+            maxDim={maxDim}
+            rect={rect}
+            onPainted={(lum) => {
+              setNativePainted(true);
+              onPainted?.(lum);
+            }}
+            onError={setNativeError}
+          />
+        </Suspense>
+      )}
+      {src && !native && (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          className="pointer-events-none absolute [image-rendering:auto]"
+          // Dynamic geometry: the image rect inside the pane.
+          style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
+        />
+      )}
+      {src && showCrosshair && (
+        <div className="pointer-events-none absolute" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
+          <span className="absolute inset-y-0 w-px bg-accent/60" style={{ left: `${cx * 100}%` }} />
+          <span className="absolute inset-x-0 h-px bg-accent/60" style={{ top: `${cy * 100}%` }} />
+        </div>
+      )}
+      {!src && !failed && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Spinner label={`Rendering ${label.toLowerCase()}`} />
+        </div>
+      )}
+      {failed && !src && (
+        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-white/60">
+          This plane could not be rendered.
+        </div>
+      )}
+      {planePicker ?? <div className="pointer-events-none absolute left-2 top-2 text-xs font-medium text-white/80">{label}</div>}
+      <div className="pointer-events-none absolute bottom-2 left-2 text-[11px] tabular-nums text-white/60">
+        {at[plane] + 1} / {depthOf(info, plane)}
+      </div>
+      {slabText && (
+        <div data-testid="slab-overlay" className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-accent">
+          {slabText}
+        </div>
+      )}
+      {menuAt && menu && (
+        <ViewerContextMenu
+          at={menuAt}
+          label={label}
+          entries={menu()}
+          onSelect={(command) => {
+            setMenuAt(null);
+            onMenuCommand?.(command);
+          }}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The plane dropdown in an MPR box. Its events never reach the pane (no scroll, window or crosshair). */
+function PlanePicker({ box, plane, onPick }: { box: number; plane: Plane; onPick: (plane: Plane) => void }) {
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  const where = box === 0 ? "left box" : box === 1 ? "top right box" : "bottom right box";
+  return (
+    <div
+      className="absolute left-2 top-2 z-[1]"
+      onPointerDown={stop}
+      onPointerUp={stop}
+      onWheel={stop}
+      onKeyDown={stop}
+      onDoubleClick={stop}
+      onContextMenu={stop}
+      onFocus={stop}
+    >
+      <Select
+        aria-label={`Plane in ${where}`}
+        title="Choose the plane for this box"
+        value={plane}
+        onChange={(e) => onPick(e.target.value as Plane)}
+        className="h-7 w-[7.25rem] rounded-md border-white/15 bg-black/70 py-0 pl-2 pr-8 text-xs font-medium text-white hover:border-white/30 focus:bg-black/80"
+      >
+        {MPR_PLANES.map((p) => (
+          <option key={p} value={p}>
+            {MPR_PLANE_LABELS[p]}
+          </option>
+        ))}
+      </Select>
+    </div>
+  );
+}
+
+export function NativeMprView({ series, onExit, onUnsupported, onVolumeReady, onPainted, initialSlab, slabCommand }: Props) {
+  const [info, setInfo] = useState<VolumeInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [at, setAt] = useState<Record<Plane, number>>({ axial: 0, coronal: 0, sagittal: 0 });
+  const [voi, setVoi] = useState<{ center: number; width: number }>({ center: 40, width: 400 });
+  const [active, setActive] = useState<Plane>("axial");
+  const [slots, setSlots] = useState<MprSlots>(loadMprSlots);
+  const pickPlane = (box: number, plane: Plane) => {
+    const next = assignMprSlot(slots, box, plane);
+    if (next === slots) return;
+    setSlots(next);
+    saveMprSlots(next);
+    setActive(plane);
+  };
+  const [slab, setSlab] = useState<Slab>(initialSlab ?? { mode: "off", mm: 0 });
+  const changeSlab = (deltaMm: number) => setSlab((s) => applySlabChange(s, { deltaMm }));
+  const pickSlabMode = (mode: SlabMode) => setSlab((s) => applySlabChange(s, { mode }));
+  // Keys / voice / the app menu (0.8.1 never forwarded them to the MPR).
+  useEffect(() => {
+    if (slabCommand) setSlab((s) => applySlabChange(s, slabCommand));
+    // Applied once per command.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slabCommand?.seq]);
+  const runPaneCommand = (command: MenuCommand) => {
+    const change = slabChangeOf(command);
+    if (change) setSlab((s) => applySlabChange(s, change));
+    else if (command === "reset" && info) reset(info);
+    else if (command === "exit") onExit();
+  };
+  // Keyed on the SET of files, not the series object: a cold open rebuilds the
+  // study list (new objects, same files) and must not rebuild the volume.
+  const filesKey = useMemo(() => series.headers.map((h) => h.fileId).sort((a, b) => a - b).join(","), [series]);
+  const fileIds = useMemo(() => (filesKey ? filesKey.split(",").map(Number) : []), [filesKey]);
+  const seriesRef = useRef(series);
+  seriesRef.current = series;
+  const opened = useRef(0);
+  const painted = useRef<Record<string, number>>({});
+  const paintedCb = useRef(onPainted);
+  paintedCb.current = onPainted;
+  const readyCb = useRef(onVolumeReady);
+  readyCb.current = onVolumeReady;
+  const notePaint = (plane: Plane, lum: number) => {
+    if (plane in painted.current) return;
+    painted.current[plane] = lum;
+    if (Object.keys(painted.current).length === 3) {
+      paintedCb.current?.({ ms: performance.now() - opened.current, maxLum: { ...painted.current } });
+    }
+  };
+
+  const reset = useCallback((v: VolumeInfo) => {
+    setAt({ axial: Math.floor(v.dims[2] / 2), coronal: Math.floor(v.dims[1] / 2), sagittal: Math.floor(v.dims[0] / 2) });
+    const headers = seriesRef.current.headers;
+    const h = headers[Math.floor(headers.length / 2)];
+    if (h?.windowWidth && h.windowWidth > 1 && h.windowCenter != null) setVoi({ center: h.windowCenter, width: h.windowWidth });
+    else if (v.window) setVoi({ center: v.window[0], width: v.window[1] });
+    else setVoi({ center: (v.min + v.max) / 2, width: Math.max(1, v.max - v.min) });
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    let key: string | null = null;
+    const started = performance.now();
+    opened.current = started;
+    painted.current = {};
+    setInfo(null);
+    setError(null);
+    invoke<VolumeInfo>("volume_build", { fileIds })
+      .then((v) => {
+        key = v.key;
+        if (!live) {
+          // Unmounted while building: hand the volume back.
+          void invoke("volume_close", { key }).catch(() => undefined);
+          return;
+        }
+        reset(v);
+        setInfo(v);
+        readyCb.current?.({ shellMs: v.buildMs, loadedMs: performance.now() - started });
+      })
+      .catch((e) => {
+        if (!live) return;
+        if (/Unsupported TransferSyntax/i.test(String(e)) && onUnsupported) onUnsupported();
+        else setError(String(e));
+      });
+    return () => {
+      live = false;
+      if (key) void invoke("volume_close", { key }).catch(() => undefined);
+    };
+    // The volume depends on the set of files only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filesKey, reset]);
+
+  const scroll = (plane: Plane, delta: number) =>
+    info && setAt((a) => ({ ...a, [plane]: Math.max(0, Math.min(depthOf(info, plane) - 1, a[plane] + delta)) }));
+
+  const point = (plane: Plane, fx: number, fy: number) => {
+    if (!info) return;
+    const [nx, ny, nz] = info.dims;
+    const z = Math.max(0, Math.min(nz - 1, Math.round((1 - fy) * nz - 0.5)));
+    setAt((a) =>
+      plane === "axial"
+        ? { ...a, sagittal: Math.floor(fx * nx), coronal: Math.floor(fy * ny) }
+        : plane === "coronal"
+          ? { ...a, sagittal: Math.floor(fx * nx), axial: z }
+          : { ...a, coronal: Math.floor(fx * ny), axial: z }
+    );
+  };
+
+  return (
+    <section aria-label="MPR" data-native-transparent className="flex min-w-0 flex-1 flex-col bg-black">
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-subtle bg-surface px-2 text-sm">
+        <Button size="sm" variant="ghost" onClick={onExit} leadingIcon={<ArrowLeft className="h-4 w-4" />}>
+          Back to 2D
+        </Button>
+        <span className="font-medium text-primary">MPR</span>
+        {info && (
+          <span className="tabular-nums text-muted">
+            W {Math.round(voi.width)} · L {Math.round(voi.center)} · {info.dims[0]}×{info.dims[1]}×{info.dims[2]}
+          </span>
+        )}
+        {info && (
+          <div role="radiogroup" aria-label="Slab" className="ml-2 flex items-center gap-1">
+            {SLAB_MODES.map((m) => (
+              <Button
+                key={m.mode}
+                size="sm"
+                variant={slab.mode === m.mode ? "secondary" : "ghost"}
+                role="radio"
+                aria-checked={slab.mode === m.mode}
+                onClick={() => pickSlabMode(m.mode)}
+              >
+                {m.label}
+              </Button>
+            ))}
+            {slab.mode !== "off" && (
+              <Slider
+                label="Thickness"
+                min={1}
+                max={SLAB_MAX_MM}
+                value={slab.mm}
+                valueLabel={`${slab.mm} mm`}
+                onChange={(mm) => setSlab((s) => ({ ...s, mm }))}
+                className="ml-2 w-40"
+              />
+            )}
+          </div>
+        )}
+        {info && reducedNote(info) && <span className="text-xs text-warning">{reducedNote(info)}</span>}
+        <span className="flex-1" />
+        {info && (
+          <Button size="sm" variant="ghost" onClick={() => reset(info)} leadingIcon={<RotateCcw className="h-4 w-4" />}>
+            Reset
+          </Button>
+        )}
+        <span aria-hidden className="h-5 w-px bg-subtle" />
+        <IconButton aria-label="Close MPR" title="Close MPR and return to the viewer" size="sm" variant="secondary" onClick={onExit}>
+          <X />
+        </IconButton>
+      </header>
+      {error ? (
+        <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-white/70">
+          <p>This series couldn&apos;t be reconstructed: {error}</p>
+          <Button size="sm" variant="secondary" onClick={onExit}>
+            Back to 2D
+          </Button>
+        </div>
+      ) : !info ? (
+        <div aria-busy="true" className="flex flex-1 items-center justify-center">
+          <Spinner label={`Building the volume (${fileIds.length.toLocaleString()} images)`} />
+        </div>
+      ) : (
+        <>
+          <div
+            data-native-transparent
+            data-mpr-slots={slots.join(",")}
+            className="grid min-h-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(0,1fr)] grid-rows-2 gap-px bg-black"
+          >
+            {MPR_PLANES.map((plane) => {
+              const box = slots.indexOf(plane);
+              return (
+                <Pane
+                  // Keyed by box too: a moved plane remounts, so its native
+                  // surface re-registers at its new position.
+                  key={`${plane}@${box}`}
+                  className={MPR_SLOT_CLASSES[box]}
+                  planePicker={<PlanePicker box={box} plane={plane} onPick={(p) => pickPlane(box, p)} />}
+                  info={info}
+                  plane={plane}
+                  label={MPR_PLANE_LABELS[plane]}
+                  at={at}
+                  center={voi.center}
+                  width={voi.width}
+                  active={active === plane}
+                  onActivate={() => setActive(plane)}
+                  onScroll={(d) => scroll(plane, d)}
+                  onWindow={(dc, dw) => setVoi((v) => ({ center: v.center + dc, width: Math.max(1, v.width + dw) }))}
+                  onPoint={(fx, fy) => point(plane, fx, fy)}
+                  onReset={() => reset(info)}
+                  onPainted={(lum) => notePaint(plane, lum)}
+                  slab={slab}
+                  onSlab={changeSlab}
+                  menu={() => mprPaneMenu(slab)}
+                  onMenuCommand={runPaneCommand}
+                />
+              );
+            })}
+          </div>
+          <p className="shrink-0 truncate border-t border-subtle bg-surface px-3 py-1 text-center text-[11px] text-muted">
+            Scroll to move through a plane · Ctrl+scroll for slab thickness · drag to window · click to move the crosshair
+          </p>
+        </>
+      )}
+    </section>
+  );
+}

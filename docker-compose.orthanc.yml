@@ -1,0 +1,27 @@
+# Local Orthanc for development. Not used by Cloud Run.
+# Production pixels live in a Cloud Healthcare API DICOM store (docs/GCP_CLOUD_RUN.md).
+#
+#   docker compose -f docker-compose.orthanc.yml up -d
+#   ORTHANC_URL=http://127.0.0.1:8042
+#   ORTHANC_USER=flowrad
+#   ORTHANC_PASSWORD=flowrad
+#
+# Leave DICOMWEB_BACKEND unset (or orthanc). Do not point this file at GCP.
+
+services:
+  orthanc:
+    image: orthancteam/orthanc:25.3.3
+    ports:
+      - "8042:8042"
+    environment:
+      ORTHANC__NAME: FlowRad
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"flowrad":"flowrad"}'
+      ORTHANC__DICOM_WEB__ENABLE: "true"
+      ORTHANC__DICOM_WEB__PublicRoot: /dicom-web/
+      VERBOSE_ENABLED: "false"
+    volumes:
+      - orthanc_data:/var/lib/orthanc/db
+
+volumes:
+  orthanc_data:

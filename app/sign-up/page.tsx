@@ -6,7 +6,7 @@ import { demoAuthEnabled, googleAuthEnabled } from "@/lib/auth";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Create account · FlowRad Learn",
+  title: "Create account · RadLearn",
 };
 
 export default function SignUpPage({
@@ -14,28 +14,18 @@ export default function SignUpPage({
 }: {
   searchParams?: { next?: string };
 }) {
-  const next = searchParams?.next?.startsWith("/") ? searchParams.next : "/dashboard";
+  const next =
+    searchParams?.next?.startsWith("/") && !searchParams.next.startsWith("//")
+      ? searchParams.next
+      : "/dashboard";
   return (
-    <div className="relative flex min-h-[calc(100vh-0px)] flex-col items-center justify-center px-6 py-16">
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute inset-0 bg-imaging" />
-        <div
-          className="absolute inset-0"
-          style={{
-            backgroundImage: [
-              "radial-gradient(ellipse 55% 40% at 50% 28%, rgb(70 75 82 / 0.35), transparent 60%)",
-              "linear-gradient(180deg, rgb(0 0 0) 0%, rgb(14 13 12) 100%)",
-            ].join(", "),
-          }}
-        />
-        <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-canvas to-transparent" />
-      </div>
-      <div className="relative z-10 w-full max-w-sm">
-        <Link href="/" className="mb-10 flex items-center justify-center gap-3">
+    <div className="flex min-h-dvh flex-col items-center justify-center bg-canvas px-4 py-16">
+      <div className="w-full max-w-sm">
+        <Link href="/" className="mb-8 flex items-center justify-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
           <BrandMark size="lg" />
           <Wordmark size="lg" />
         </Link>
-        <div className="border-y border-subtle bg-surface/80 px-1 py-8 backdrop-blur-sm sm:px-2">
+        <div className="rounded-2xl border border-subtle bg-surface p-6 shadow-sm">
           <AuthForm
             mode="sign-up"
             googleEnabled={googleAuthEnabled()}
@@ -43,6 +33,17 @@ export default function SignUpPage({
             next={next}
           />
         </div>
+        <p className="mt-6 text-center text-sm text-secondary">
+          <Link href="/privacy" className="font-semibold hover:text-primary">
+            Privacy
+          </Link>
+          <span className="px-2" aria-hidden="true">
+            ·
+          </span>
+          <Link href="/terms" className="font-semibold hover:text-primary">
+            Terms
+          </Link>
+        </p>
       </div>
     </div>
   );

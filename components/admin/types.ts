@@ -63,6 +63,10 @@ export interface SkippedFile {
 /** Result of uploading one batch of files (one POST /api/upload call). */
 export interface UploadResult {
   stored: number;
+  /** Instances already in the archive (or repeated in this batch) and not counted again. */
+  duplicates?: number;
+  /** Instances whose patient-identifier tags were removed before storage. */
+  deidentified?: number;
   series: UploadedSeries[];
   /** Files that reached the server but failed to store, with reasons. */
   failed: SkippedFile[];

@@ -1,47 +1,32 @@
 "use client";
 
-// Warm the cache as soon as the case list renders: on idle, hit each case's
-// prefetch manifest in parallel batches of 4 (Promise.allSettled) so opening a
-// case is instant and multi-series work stays off the list render. Finding-first
-// warming of actual frames happens in components/student/prefetch.ts (≤30s).
+// Case-list warmer. Renders nothing.
+//
+// It used to issue one `/api/cases/{id}/prefetch` request per listed case on
+// idle. That route's manifest is deliberately instance-free — enumerating
+// every slice of every series was the multi-series open bottleneck, so
+// `buildPrefetchManifest` returns series order with `hasImaging: false` and
+// empty `instances` (see lib/prefetch.ts). Nothing on the list page read the
+// response. N requests for a payload nobody consumed.
+//
+// What a case list can usefully warm is the part of opening a case that does
+// not depend on which case: the Cornerstone engine chunks, ~3.8 MB raw /
+// ~1.0 MB gzipped, code-split out of the page because the viewer is
+// `next/dynamic({ssr:false})`. Warming them on idle means the click into a
+// case skips that download and parse entirely.
+//
+// Per-case pixel warming belongs to the case page, where the series is known:
+// `components/viewer/ViewerPrewarm.tsx`.
 
 import { useEffect } from "react";
-
-const BATCH = 4;
+import { warmViewerModules } from "@/lib/viewerWarmup";
 
 export default function CasesPrefetcher({ caseIds }: { caseIds: string[] }) {
+  const hasCases = caseIds.length > 0;
   useEffect(() => {
-    if (caseIds.length === 0) return;
-    let cancelled = false;
-
-    const runIdle = (cb: () => void) =>
-      typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback ===
-      "function"
-        ? (
-            window as unknown as {
-              requestIdleCallback: (cb: () => void) => number;
-            }
-          ).requestIdleCallback(cb)
-        : window.setTimeout(cb, 300);
-
-    runIdle(async () => {
-      for (let i = 0; i < caseIds.length; i += BATCH) {
-        if (cancelled) break;
-        const slice = caseIds.slice(i, i + BATCH);
-        await Promise.allSettled(
-          slice.map((id) =>
-            fetch(`/api/cases/${encodeURIComponent(id)}/prefetch`, {
-              priority: "low",
-            } as RequestInit).catch(() => null)
-          )
-        );
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [caseIds]);
+    if (!hasCases) return;
+    void warmViewerModules();
+  }, [hasCases]);
 
   return null;
 }

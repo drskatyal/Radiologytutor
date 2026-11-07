@@ -130,6 +130,7 @@ export function DicomDropzone({
   const [progress, setProgress] = useState<Progress | null>(null);
   const [skipped, setSkipped] = useState<SkippedFile[]>([]);
   const [failed, setFailed] = useState<SkippedFile[]>([]);
+  const [deidentified, setDeidentified] = useState(0);
   /** DICOM candidates that failed, kept so the user can retry just those. */
   const failedFilesRef = useRef<File[]>([]);
   const { toast } = useToast();
@@ -140,25 +141,34 @@ export function DicomDropzone({
     setProgress(null);
     setSkipped([]);
     setFailed([]);
+    setDeidentified(0);
     failedFilesRef.current = [];
   }
 
   function finalize(
     storedImages: number,
+    duplicateImages: number,
+    deidentifiedImages: number,
     accFailed: SkippedFile[],
     accFailedFiles: File[]
   ) {
     abortRef.current = null;
     setFailed(accFailed);
+    setDeidentified(deidentifiedImages);
     failedFilesRef.current = accFailedFiles;
-    setPhase(storedImages > 0 || accFailed.length ? "done" : "idle");
-    if (storedImages > 0) {
+    setPhase(storedImages > 0 || duplicateImages > 0 || accFailed.length ? "done" : "idle");
+    if (storedImages > 0 || duplicateImages > 0) {
+      const parts = [
+        deidentifiedImages > 0 ? "Patient identifiers removed" : "",
+        `${storedImages} image${storedImages === 1 ? "" : "s"} stored`,
+        duplicateImages > 0
+          ? `${duplicateImages} duplicate${duplicateImages === 1 ? "" : "s"} already included`
+          : "",
+        accFailed.length > 0 ? `${accFailed.length} failed` : "",
+      ].filter(Boolean);
       toast({
-        title: "Study uploaded",
-        description:
-          accFailed.length > 0
-            ? `${storedImages} image(s) stored · ${accFailed.length} failed.`
-            : `${storedImages} image(s) stored.`,
+        title: storedImages > 0 ? "Study uploaded" : "Study already uploaded",
+        description: `${parts.join(" · ")}.`,
         variant: accFailed.length > 0 ? "warning" : "success",
       });
     }
@@ -195,6 +205,8 @@ export function DicomDropzone({
     const totalFiles = all.length;
     let doneFiles = 0;
     let storedImages = 0;
+    let duplicateImages = 0;
+    let deidentifiedImages = 0;
     const accSkipped = [...preSkipped];
     const accFailed: SkippedFile[] = [];
     const accFailedFiles: File[] = [];
@@ -206,13 +218,12 @@ export function DicomDropzone({
         const result = await uploadDicomBatch(batch, { signal: controller.signal });
         doneFiles += batch.length;
         storedImages += result.stored;
+        duplicateImages += result.duplicates ?? 0;
+        deidentifiedImages += result.deidentified ?? 0;
         if (result.series.length) onUploaded(result);
         if (result.failed.length) {
           accFailed.push(...result.failed);
-          for (const f of result.failed) {
-            const match = batch.find((b) => b.name === f.name);
-            if (match) accFailedFiles.push(match);
-          }
+          collectFailedFiles(batch, result.failed, accFailedFiles);
         }
         if (result.skipped.length) accSkipped.push(...result.skipped);
         setProgress({ totalFiles, doneFiles, storedImages });
@@ -235,7 +246,7 @@ export function DicomDropzone({
               : "No images were uploaded.",
           variant: "warning",
         });
-        finalize(storedImages, accFailed, accFailedFiles);
+        finalize(storedImages, duplicateImages, deidentifiedImages, accFailed, accFailedFiles);
         return;
       }
       toast({
@@ -245,7 +256,7 @@ export function DicomDropzone({
       });
     }
 
-    finalize(storedImages, accFailed, accFailedFiles);
+    finalize(storedImages, duplicateImages, deidentifiedImages, accFailed, accFailedFiles);
   }
 
   async function handleSelected(files: File[]) {
@@ -309,7 +320,7 @@ export function DicomDropzone({
         <p className="mb-4 mt-1 text-xs text-muted">
           {busy
             ? "Please keep this dialog open until it finishes."
-            : "Loose .dcm files, a whole folder, or a PACS export .zip · upload only anonymized studies"}
+            : "Loose .dcm files, a whole folder, or a PACS export .zip. Patient names and IDs are removed automatically."}
         </p>
 
         {busy ? (
@@ -391,7 +402,13 @@ export function DicomDropzone({
         />
       </div>
 
-      {/* Partial-failure panel with retry. */}
+      {phase === "done" && deidentified > 0 && failed.length === 0 && !busy && (
+        <p className="text-xs text-secondary">
+          Patient identifiers were removed from the DICOM headers before the study was stored.
+        </p>
+      )}
+
+      {/* Partial-failure panel with retry. Reasons are grouped so a whole study that fails the same way is one summary, not a 90-line list. */}
       {failed.length > 0 && !busy && (
         <div className="rounded-lg border border-warning/30 bg-warning/5 px-3.5 py-3">
           <div className="flex items-center justify-between gap-3">
@@ -404,13 +421,22 @@ export function DicomDropzone({
               </Button>
             )}
           </div>
-          <ul className="mt-2 flex flex-col gap-1 text-xs text-muted">
-            {failed.slice(0, 5).map((f, i) => (
-              <li key={`${f.name}-${i}`} className="truncate">
-                <span className="text-secondary">{f.name}</span> — {f.reason}
+          <ul className="mt-2 flex flex-col gap-2 text-xs text-muted">
+            {groupFailures(failed).map((group) => (
+              <li key={group.reason}>
+                <p>
+                  <span className="font-medium text-secondary">
+                    {group.names.length} file{group.names.length === 1 ? "" : "s"}
+                  </span>
+                  {" — "}
+                  {group.reason}
+                </p>
+                <p className="mt-0.5 truncate">
+                  {group.names.slice(0, 3).join(", ")}
+                  {group.names.length > 3 ? `, and ${group.names.length - 3} more` : ""}
+                </p>
               </li>
             ))}
-            {failed.length > 5 && <li>…and {failed.length - 5} more.</li>}
           </ul>
         </div>
       )}
@@ -426,6 +452,36 @@ export function DicomDropzone({
       )}
     </div>
   );
+}
+
+/** Match failed names back to the batch, including browser " (1)" copies and a whole zip. */
+function collectFailedFiles(batch: File[], failed: SkippedFile[], into: File[]) {
+  if (batch.length === 1 && /\.zip$/i.test(baseName(batch[0].name))) {
+    if (!into.includes(batch[0])) into.push(batch[0]);
+    return;
+  }
+  const used = new Set<File>(into);
+  for (const f of failed) {
+    const target = baseName(f.name);
+    const match = batch.find((b) => !used.has(b) && (b.name === f.name || baseName(b.name) === target));
+    if (!match) continue;
+    used.add(match);
+    into.push(match);
+  }
+}
+
+function groupFailures(failed: SkippedFile[]): { reason: string; names: string[] }[] {
+  const order: string[] = [];
+  const byReason = new Map<string, string[]>();
+  for (const file of failed) {
+    const names = byReason.get(file.reason);
+    if (names) names.push(file.name);
+    else {
+      byReason.set(file.reason, [file.name]);
+      order.push(file.reason);
+    }
+  }
+  return order.map((reason) => ({ reason, names: byReason.get(reason) ?? [] }));
 }
 
 /** "3 not a DICOM file, 1 system file" — a compact reason rollup. */

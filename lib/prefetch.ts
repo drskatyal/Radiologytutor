@@ -6,15 +6,15 @@
 // which series + instances a case will display and hand the client a manifest
 // it can use to warm the /api/dicomweb cache with idle/low-priority fetches.
 //
-// Finding-first, parallel, ≤30s interactive:
-//   • seriesOrder is the finding walk-through (not Orthanc series-number order).
-//   • Cover metadata for the LIST is cheap and fetched in parallel batches of
-//     3–4 from CasesPrefetcher (Promise.allSettled) — never serial.
-//   • On OPEN, the client warms finding series 0 immediately, then remaining
-//     series in parallel batches (see components/student/prefetch.ts). Do not
-//     waterfall 2–3 GB CTAs; cap slices and overlap series.
+// Finding-first, and off the first-pixel path:
+//   • seriesOrder is the finding walk-through (not archive series-number order).
+//   • The case page does not wait on this manifest. Enumerating every instance
+//     of every series before HTML was the multi-series open bottleneck.
+//   • On OPEN, the viewer prefetches the active series ± a few neighbors
+//     (lib/viewerLoad.ts) after the first frame is requested. Other series
+//     stay metadata-only until selected.
 //   • Frames may later be served from the R2 cache (lib/r2.ts) via the
-//     DICOMweb proxy; the manifest shape stays the same.
+//     DICOMweb proxy.
 //
 // Two products:
 //   1. listCaseCover(caseId)      — cheap cover metadata for the case LIST.
@@ -28,12 +28,11 @@ import { getCaseForOrg, DEFAULT_ORG_ID } from "./cases";
 import {
   orthancConfigured,
   orthancFindStudyByUID,
-  orthancFindSeriesByUID,
   orthancStudySeriesMeta,
-  orthancSeriesInstances,
   type SeriesMeta,
   type InstanceRef,
 } from "./orthanc";
+import { collectFocusSlices, type WarmFocus } from "./prefetchWarm";
 import type { Case, CaseStudyRef } from "./types";
 import type { CaseSeries } from "./viewerSource";
 
@@ -121,13 +120,17 @@ export interface PrefetchManifest {
   series: PrefetchSeries[];
   /** True when imaging metadata resolved from Orthanc; else manifest is sparse. */
   hasImaging: boolean;
+  /**
+   * Finding slice indexes (0-based, teaching order). The client warms these
+   * and the stack's opening slice — not a prefix of the series.
+   */
+  focus: WarmFocus[];
 }
 
 /**
- * Build the ordered prefetch manifest for a case. We derive the needed series
- * from (a) the findings' anchored `seriesInstanceUID`s (in finding order) and
- * (b) the case's `studyRefs` as a fallback, then resolve each series' ordered
- * instances from Orthanc so the client can warm the cache slice by slice.
+ * Series order + finding focus for a case. Instance SOP lists are intentionally
+ * empty: resolving every slice of every series blocked the first frame. The
+ * viewer loads the active series itself and prefetches only its neighbors.
  */
 export async function buildPrefetchManifest(
   caseId: string,
@@ -138,40 +141,18 @@ export async function buildPrefetchManifest(
 
   const { studyUIDs, seriesOrder } = collectRefs(c);
 
-  const manifest: PrefetchManifest = {
+  return {
     caseId: c.caseId,
     studyInstanceUIDs: studyUIDs,
     seriesOrder,
-    series: [],
+    series: seriesOrder.map((seriesUID) => ({
+      studyInstanceUID: studyForSeries(c, seriesUID) ?? studyUIDs[0] ?? "",
+      seriesInstanceUID: seriesUID,
+      instances: [],
+    })),
     hasImaging: false,
+    focus: collectFocusSlices(c.findings),
   };
-
-  if (!orthancConfigured()) return manifest;
-
-  // Resolve every series in parallel (finding-first order preserved in the
-  // result array). Best-effort per series — one miss must not stall the rest.
-  const series = await Promise.all(
-    seriesOrder.map(async (seriesUID): Promise<PrefetchSeries> => {
-      const entry: PrefetchSeries = {
-        studyInstanceUID: studyForSeries(c, seriesUID) ?? studyUIDs[0] ?? "",
-        seriesInstanceUID: seriesUID,
-        instances: [],
-      };
-      try {
-        const orthancSeriesId = await orthancFindSeriesByUID(seriesUID);
-        if (orthancSeriesId) {
-          entry.instances = await orthancSeriesInstances(orthancSeriesId);
-          manifest.hasImaging = true;
-        }
-      } catch {
-        // Leave instances empty for this series; client falls back to on-demand.
-      }
-      return entry;
-    })
-  );
-
-  manifest.series = series;
-  return manifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +209,9 @@ export async function resolveCaseSeries(
             modality: m.modality,
             description: m.seriesDescription,
             seriesNumber: m.seriesNumber,
-            instanceCount: m.instanceCount,
+            ...(m.instanceCount != null && m.instanceCount > 0
+              ? { instanceCount: m.instanceCount }
+              : {}),
             thumbnailInstanceUID: m.firstInstanceUID,
             wadoRsRoot,
           });

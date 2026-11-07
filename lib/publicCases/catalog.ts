@@ -93,6 +93,9 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
           "Do not chase mediastinum until both lungs are surveyed.",
         ],
+        reportGold:
+          "Narrow lung window (W 1500 / L -600). Both lungs surveyed from the carina inferiorly before the mediastinum.",
+        reportMustMention: ["1500", "-600", "both lungs", "carina"],
         state: " ",
         marker: { x_pct: 0.52, y_pct: 0.42, shape: "circle" },
         order: 1,
@@ -105,17 +108,37 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
       {
         label: "Peripheral nodule survey",
         description:
-          "On lung windows scrutinise the periphery for round opacities. Compare size on adjacent slices to confirm a true nodule versus vessel on end.",
+          "On lung windows scrutinise the periphery for round opacities. In the left upper lobe apex a small solid nodule is present on one slice and gone on the slices above and below, so it is a nodule, not a vessel on end.",
         teachingPoints: [
-          "Scroll through the nodule — if it disappears it may be a vessel.",
+          "Scroll through the nodule — if it runs on as a tube it is a vessel; a nodule appears and disappears.",
           "Note solid vs subsolid density before measuring.",
         ],
+        landmark: "left lung apex",
+        reportGold:
+          "Periphery checked on lung windows for round opacities. A true nodule is distinguished from a vessel on end on adjacent slices. Density is noted as solid or subsolid before measuring.",
+        reportMustMention: ["round opacities", "nodule", "vessel", "solid", "subsolid"],
         state: " ",
-        marker: { x_pct: 0.68, y_pct: 0.55, shape: "circle" },
+        // A real lesion, not a placeholder position: LIDC-IDRI DICOM-SEG
+        // nodule 2 (three readers), about 5 mm, solid, left upper lobe apex.
+        // On the 65-image stack (cranial first) it is index 6. Template slices
+        // are scaled by the deepest finding (42 → 64), so 4 lands on 6.
+        marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+        measurements: [
+          {
+            id: "m_lidc_n2",
+            kind: "ellipse",
+            sliceIndex: 6,
+            handles: [
+              [0.6751, 0.4873],
+              [0.6849, 0.501],
+            ],
+            label: "LIDC reader extent",
+          },
+        ],
         order: 2,
         studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
         seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
-        sliceIndex: sliceAt(0.5, 65),
+        sliceIndex: sliceAt(0.0625, 65),
         windowWidth: 1500,
         windowCenter: -600,
       },
@@ -127,6 +150,9 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Two-pass reading reduces missed apical or posterior nodules.",
           "Finish with an impression that separates actionable nodules from benign calcified granulomas.",
         ],
+        reportGold:
+          "Mediastinal windows through the hila and mediastinum, then a second peripheral sweep on lung windows. Impression separates actionable nodules from benign calcified granulomas.",
+        reportMustMention: ["mediastinal", "hila", "calcified granulomas"],
         state: " ",
         marker: { x_pct: 0.48, y_pct: 0.38, shape: "circle" },
         order: 3,

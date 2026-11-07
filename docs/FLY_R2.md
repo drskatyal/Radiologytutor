@@ -1,6 +1,8 @@
 # Fly.io + Cloudflare R2
 
-Locked infra for FlowRad Learn. Product decisions: `docs/DECISIONS.md`.
+Current Fly deployment. **Production target is RadLearn on Cloud Run** (project `radlearn-app`, `europe-west2`) with a Cloud Healthcare API DICOM store and MongoDB Atlas — see `docs/GCP_CLOUD_RUN.md`. Keep Fly until that cutover checklist has been run. Local Orthanc (`ORTHANC_URL`, `docker-compose.orthanc.yml`) is unchanged.
+
+Product decisions: `docs/DECISIONS.md`.
 
 ## Two Fly apps
 

@@ -2,13 +2,14 @@
 
 // ContinuousCapture — harness demonstration UI ("speak once" authoring).
 //
-// The radiologist scrolls/windows/clicks while holding one mic take. We record
-// the full viewer event log + audio on one clock. On stop, Gemini segments the
-// dictation into structured findings (JSON schema) with time ranges; then
-// mergeCaptureDemonstration aligns each segment to the DICOM track and we
-// persist Findings + CaptureSession — the teaching script the AI teammate follows.
+// The radiologist scrolls/windows/clicks while holding one take. We record the
+// viewer event log, viewport stills, and the microphone when it opens, on one
+// clock. Finish shows that recording for review and does not compile.
+// Process and teach case sends it to Gemini. With no microphone the same
+// stop still keeps the viewer track, and Save builds a notes-voiced
+// teaching guide from that track and the typed label, description, and points.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Layers, Mic, Sparkles, Trash2 } from "lucide-react";
 import {
   Badge,
@@ -24,20 +25,68 @@ import {
 } from "@/components/ui";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { Finding, RecordedTrack, StructuredSessionFinding } from "@/lib/types";
+import { type CompileFrame } from "@/lib/compileMedia";
+import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import {
   AiUnavailableError,
   LIMITS,
+  markerFromTrack,
   structureSession,
   uploadAudio,
+  uploadTeachingVideo,
   addFinding,
   saveCaptureSession,
+  commitLiveTeachingPack,
 } from "@/components/author/lib";
+import { updateCase } from "@/components/admin/api";
+import { materializeLiveTeachingPack, type LiveProse } from "@/lib/liveTeachingPack";
+import {
+  compileProgressPlan,
+  phaseAfterFinish,
+  TEACHER_PROCESSING_LABEL,
+  useAgenticViewportVideo,
+} from "@/lib/teacherCapture";
+import type { TeacherReview } from "@/components/author/TakeReview";
 import { mergeCaptureDemonstration } from "@/lib/harness/mergeCapture";
-import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { displaySliceNumber, withDisplaySnapshot } from "@/lib/findingDisplayState";
+import {
+  commitSpeakOnceWithoutMic,
+  formatRecordedSave,
+  settledDisplay,
+} from "@/lib/teachingGuide";
 import type { useRecordReplay } from "@/components/record/useRecordReplay";
 import type { MutableRefObject } from "react";
 
 type RR = ReturnType<typeof useRecordReplay>;
+
+/**
+ * The speak-once disc follows the recorder. `settling` only covers the gap
+ * while a stop is flushing; it must not keep the red stop square up after
+ * the take has ended (the transport bar and Alt+X stop the recorder directly).
+ */
+export function speakOnceMicState(
+  recording: boolean,
+  structuring: boolean,
+  settling: boolean
+): MicState {
+  if (structuring || settling) return "processing";
+  if (recording) return "recording";
+  return "idle";
+}
+
+export type TeacherCapturePhase = "idle" | "recording" | "review" | "processing" | "ready";
+
+export interface TeacherCompileProgress {
+  index: number;
+  total: number;
+  label: string;
+}
+
+export type TeacherCaptureApi = {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+  process: () => Promise<void>;
+};
 
 export function ContinuousCapture({
   caseId,
@@ -45,17 +94,50 @@ export function ContinuousCapture({
   controls,
   seriesInstanceUID,
   studyInstanceUID,
+  modality,
+  clinicalQuestion,
+  diagnosis,
+  studySeriesUIDs,
+  study,
+  adoptExternalTakes = false,
   onCaseUpdated,
+  onPhaseChange,
+  onProgress,
+  onReview,
+  onApi,
 }: {
   caseId: string;
   rr: RR;
   controls: MutableRefObject<CornerstoneControls | null>;
   seriesInstanceUID?: string;
   studyInstanceUID?: string;
+  modality?: string;
+  clinicalQuestion?: string;
+  diagnosis?: string;
+  studySeriesUIDs?: string[];
+  /** Case stem sent with the compile call. Not a source of coordinates. */
+  study?: {
+    title?: string;
+    modality?: string;
+    specialty?: string;
+    clinicalHistory?: string;
+    patientAge?: string;
+    patientSex?: string;
+  };
+  /**
+   * When true, a take started outside this panel (Alt+X, the studio transport)
+   * is compiled on stop. Re-recording one finding leaves this off.
+   */
+  adoptExternalTakes?: boolean;
   onCaseUpdated: (c: Awaited<ReturnType<typeof addFinding>>) => void;
+  onPhaseChange?: (phase: TeacherCapturePhase) => void;
+  onProgress?: (progress: TeacherCompileProgress | null) => void;
+  /** Viewport recording + log for the studio review player. Null clears it. */
+  onReview?: (review: TeacherReview | null) => void;
+  onApi?: (api: TeacherCaptureApi | null) => void;
 }) {
   const { toast } = useToast();
-  const [micState, setMicState] = useState<MicState>("idle");
+  const [settling, setSettling] = useState(false);
   const [structuring, setStructuring] = useState(false);
   const [saving, setSaving] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -63,75 +145,313 @@ export function ContinuousCapture({
   const [notice, setNotice] = useState("");
   const [lastTake, setLastTake] = useState<{
     track: RecordedTrack;
-    audio: { base64: string; mimeType: string };
+    audio: { base64: string; mimeType: string } | null;
   } | null>(null);
 
   const recording = rr.phase === "recording";
+  const notesMode = Boolean(lastTake && !lastTake.audio && proposals.length > 0 && !recording);
+  // True only after Speak once itself started the take. The transport bar and
+  // the Alt+X hotkey call rr.stopRecording() without going through stop(), so
+  // the button state is derived from the recorder and this flag adopts the take.
+  const speakSession = useRef(false);
+  const held = useRef<{
+    track: RecordedTrack;
+    audio: { base64: string; mimeType: string };
+    frames: CompileFrame[];
+    videoBlob: Blob | null;
+  } | null>(null);
 
   async function start() {
     setNotice("");
     setProposals([]);
     setTranscript("");
+    setLastTake(null);
+    held.current = null;
+    onReview?.(null);
+    onProgress?.(null);
+    speakSession.current = true;
+    onPhaseChange?.("recording");
     try {
-      await rr.startRecording();
-      setMicState("recording");
+      const started = await rr.startRecording();
+      if (!started) {
+        if (!recording) {
+          speakSession.current = false;
+          onPhaseChange?.("idle");
+        }
+        setNotice("The viewer isn't ready yet — wait for the study, then start again.");
+      }
     } catch {
+      speakSession.current = false;
+      onPhaseChange?.("idle");
       toast({
         variant: "warning",
         title: "Couldn't start capture",
-        description: "Allow microphone access, then try again.",
+        description: "The viewer track didn't start. Try again once the study is open.",
       });
-      setMicState("idle");
     }
   }
 
-  async function stop() {
-    setMicState("processing");
-    const captured = await rr.stopRecording();
-    if (!captured?.track || !captured.audio) {
-      setMicState("idle");
-      setNotice("Nothing captured — hold the mic while you scroll and speak.");
+  function openNotesDraft(track: RecordedTrack) {
+    const marker =
+      markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
+    setProposals([
+      {
+        label: "",
+        description: "",
+        teachingPoints: [],
+        tStartMs: 0,
+        tEndMs: Math.max(track.durationMs, 1),
+        suggestedMarker: marker,
+        suggestedSliceIndex: settledDisplay(track).sliceIndex,
+      },
+    ]);
+    setNotice("");
+  }
+
+  function publishReview(
+    track: RecordedTrack,
+    playback: {
+      videoUrl?: string | null;
+      audioUrl?: string | null;
+      videoOffsetMs?: number;
+      audioOffsetMs?: number;
+    } | null
+  ) {
+    onReview?.({
+      videoUrl: playback?.videoUrl ?? null,
+      audioUrl: playback?.audioUrl ?? null,
+      videoOffsetMs: playback?.videoOffsetMs ?? 0,
+      audioOffsetMs: playback?.audioOffsetMs ?? 0,
+      track,
+    });
+  }
+
+  async function finishStoppedTake(
+    captured: {
+      track: RecordedTrack;
+      audio: { base64: string; mimeType: string } | null;
+      frames?: CompileFrame[];
+      videoBlob?: Blob | null;
+      playback?: {
+        videoUrl?: string | null;
+        audioUrl?: string | null;
+        videoOffsetMs?: number;
+        audioOffsetMs?: number;
+      } | null;
+    } | null
+  ) {
+    const outcome = phaseAfterFinish({
+      hasTrack: Boolean(captured?.track),
+      hasAudio: Boolean(captured?.audio),
+    });
+    if (outcome === "empty" || !captured?.track) {
+      onPhaseChange?.("idle");
+      onReview?.(null);
+      setNotice("Nothing captured — scroll the study, then finish.");
       return;
     }
-    const { track, audio } = captured;
+    const { track, audio, frames } = captured;
     setLastTake({ track, audio });
+    if (outcome === "notes" || !audio) {
+      held.current = null;
+      onPhaseChange?.("idle");
+      if (captured.playback?.videoUrl || captured.videoBlob) {
+        publishReview(track, captured.playback ?? null);
+      } else {
+        onReview?.(null);
+      }
+      openNotesDraft(track);
+      return;
+    }
+    held.current = {
+      track,
+      audio,
+      frames: frames ?? [],
+      videoBlob: captured.videoBlob ?? null,
+    };
+    publishReview(track, captured.playback ?? null);
+    onPhaseChange?.("review");
+    setNotice("Recording ready. Replay it, then process and teach the case.");
+  }
+
+  async function processTake() {
+    const take = held.current;
+    if (!take || structuring) return;
+    const agentic = Boolean(take.videoBlob) && useAgenticViewportVideo(take.track.durationMs);
+    const steps = compileProgressPlan(agentic);
+    const report = (index: number) =>
+      onProgress?.({ index, total: steps.length, label: steps[index] ?? steps[steps.length - 1] });
     setStructuring(true);
+    onPhaseChange?.("processing");
+    report(0);
+    const sessionId = `cap_${Date.now().toString(36)}`;
     try {
+      let audioUrl: string | undefined;
+      try {
+        audioUrl = await uploadAudio(take.audio.base64, take.audio.mimeType);
+      } catch {
+        audioUrl = undefined;
+      }
+      const persisted = await saveCaptureSession(caseId, {
+        id: sessionId,
+        durationMs: take.track.durationMs,
+        track: audioUrl ? { ...take.track, audioUrl } : take.track,
+        ...(audioUrl ? { audioUrl } : {}),
+        createdAt: new Date().toISOString(),
+      });
+      onCaseUpdated(persisted);
+
+      report(1);
+      let video: { fileUri: string; mimeType: string } | undefined;
+      if (agentic && take.videoBlob) {
+        try {
+          video = await uploadTeachingVideo(take.videoBlob);
+        } catch (err) {
+          if (err instanceof AiUnavailableError) throw err;
+          video = undefined;
+          toast({
+            variant: "warning",
+            title: "Viewport video wasn't uploaded",
+            description: "Compiling from the viewer log and stills instead.",
+          });
+        }
+      }
+
+      report(2);
       const result = await structureSession({
-        audioBase64: audio.base64,
-        audioMime: audio.mimeType,
-        durationMs: track.durationMs,
-        track,
+        audioBase64: take.audio.base64,
+        audioMime: take.audio.mimeType,
+        durationMs: take.track.durationMs,
+        track: take.track,
+        frames: video ? undefined : take.frames,
+        video,
+        study,
+        caseId,
+        modality: modality || study?.modality,
+        clinicalQuestion,
+        diagnosis,
+        studySeriesUIDs,
       });
       if (!result) {
+        onPhaseChange?.("review");
         setNotice(
-          "AI structuring is off (no Gemini key). You can still save a single walk-through from the panel below."
+          "AI structuring is off (no Gemini key). The recording is saved. You can still type a walk-through below."
         );
-        setMicState("idle");
         return;
       }
       setTranscript(result.transcript);
-      setProposals(result.findings);
+      if (!result.findings.length) {
+        onPhaseChange?.("review");
+        setNotice("No findings detected in the recording — try naming each lesion as you scroll.");
+        return;
+      }
+      report(3);
+      const updated = await commitLiveTeachingPack(caseId, {
+        captureSessionId: sessionId,
+        transcript: result.transcript,
+        seriesInstanceUID,
+        studyInstanceUID,
+        findings: result.findings.map((finding) => ({
+          label: finding.label,
+          description: finding.description,
+          teachingPoints: finding.teachingPoints,
+          whatToNotice: finding.whatToNotice,
+          pearl: finding.pearl,
+          mimics: finding.mimics,
+          clinicalImportance: finding.clinicalImportance,
+          whyClinicallyFirst: finding.whyClinicallyFirst,
+          reportLine: finding.reportLine,
+          landmark: finding.landmark,
+          tStartMs: finding.tStartMs,
+          tEndMs: finding.tEndMs,
+        })),
+      });
+      onCaseUpdated(updated);
+      setProposals([]);
+      onProgress?.(null);
+      onPhaseChange?.("ready");
+      const count = updated.liveTeachingPack?.findings.length ?? result.findings.length;
       setNotice(
-        result.findings.length
-          ? `Segmented into ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"} — review fields, then save all.`
-          : "No findings detected in the dictation — try speaking lesion names and signs clearly."
+        `Teaching pack ready — ${count} finding${count === 1 ? "" : "s"} ordered by clinical importance.`
       );
+      toast({
+        variant: "success",
+        title: "Teaching pack ready",
+        description: "Test as student, then add the case to your library.",
+      });
     } catch (e) {
+      onPhaseChange?.("review");
+      onProgress?.(null);
       if (e instanceof AiUnavailableError) {
         setNotice(e.message);
       } else {
         toast({
           variant: "danger",
-          title: "Couldn't structure session",
+          title: "Couldn't compile the teaching pack",
           description: e instanceof Error ? e.message : undefined,
         });
       }
     } finally {
       setStructuring(false);
-      setMicState("idle");
     }
   }
+
+  const finishRef = useRef(finishStoppedTake);
+  finishRef.current = finishStoppedTake;
+  const processRef = useRef(processTake);
+  processRef.current = processTake;
+  const apiRef = useRef({
+    start,
+    stop: async () => {},
+    process: async () => {},
+  });
+  apiRef.current.start = start;
+  apiRef.current.process = () => processRef.current();
+
+  useEffect(() => {
+    onApi?.({
+      start: () => apiRef.current.start(),
+      stop: () => apiRef.current.stop(),
+      process: () => apiRef.current.process(),
+    });
+    return () => onApi?.(null);
+  }, [onApi]);
+
+  useEffect(() => {
+    if (adoptExternalTakes && recording) speakSession.current = true;
+  }, [adoptExternalTakes, recording]);
+
+  useEffect(() => {
+    if (recording || !speakSession.current) return;
+    speakSession.current = false;
+    const playback = rr.playback;
+    const captured = rr.track
+      ? {
+          track: rr.track,
+          audio: rr.audio,
+          frames: rr.frames,
+          videoBlob: playback?.videoBlob ?? null,
+          playback,
+        }
+      : null;
+    void finishRef.current(captured);
+  }, [recording, rr.track, rr.audio, rr.frames, rr.playback]);
+
+  async function stop() {
+    setSettling(true);
+    try {
+      const captured = await rr.stopRecording();
+      if (!captured) {
+        speakSession.current = false;
+        setNotice("Nothing captured — scroll the study, then stop.");
+      }
+    } catch {
+      speakSession.current = false;
+    } finally {
+      setSettling(false);
+    }
+  }
+  apiRef.current.stop = stop;
 
   function patchProposal(i: number, patch: Partial<StructuredSessionFinding>) {
     setProposals((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
@@ -141,14 +461,108 @@ export function ContinuousCapture({
     setProposals((prev) => prev.filter((_, idx) => idx !== i));
   }
 
+  async function saveNotes(parentTrack: RecordedTrack) {
+    const draft = proposals.find((p) => p.label.trim());
+    if (!draft) return;
+    setSaving(true);
+    try {
+      const marker =
+        draft.suggestedMarker ??
+        markerFromTrack(parentTrack) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
+      const { finding, receipt } = commitSpeakOnceWithoutMic<Partial<Finding>>(
+        {
+          label: draft.label.trim(),
+          description: draft.description.trim(),
+          teachingPoints: draft.teachingPoints.map((point) => point.trim()).filter(Boolean),
+          marker,
+          state: " ",
+          studyInstanceUID,
+          seriesInstanceUID: seriesInstanceUID || controls.current?.activeSeriesUID,
+        },
+        parentTrack
+      );
+      const live = controls.current?.getStartState();
+      const money = settledDisplay(finding.track ?? parentTrack);
+      const seriesUID =
+        finding.seriesInstanceUID || seriesInstanceUID || controls.current?.activeSeriesUID;
+      const sessionId = `cap_${Date.now().toString(36)}`;
+      const snap = {
+        sliceIndex: money.sliceIndex,
+        ww: money.ww,
+        wc: money.wc,
+        sopInstanceUID:
+          money.sliceIndex === live?.sliceIndex ? live?.sopInstanceUID : undefined,
+      };
+      const stored = withDisplaySnapshot(
+        {
+          ...finding,
+          state: finding.state || " ",
+          marker,
+          seriesInstanceUID: seriesUID,
+          studyInstanceUID,
+          anchors: [
+            withDisplaySnapshot(
+              {
+                studyInstanceUID,
+                seriesInstanceUID: seriesUID,
+                marker,
+                viewportRole: "primary" as const,
+                studyRole: "current" as const,
+              },
+              snap
+            ),
+          ],
+          captureSessionId: sessionId,
+          tStartMs: 0,
+          tEndMs: Math.max(finding.durationMs ?? parentTrack.durationMs, 1),
+        },
+        snap
+      );
+      let updated = await addFinding(caseId, stored);
+      const narration = (finding.track?.narration ?? []).map((span) => span.text).join(" ");
+      updated = await saveCaptureSession(caseId, {
+        id: sessionId,
+        durationMs: finding.track?.durationMs ?? parentTrack.durationMs,
+        track: finding.track ?? parentTrack,
+        ...(narration ? { transcript: narration } : {}),
+        createdAt: new Date().toISOString(),
+      });
+      onCaseUpdated(updated);
+      const message = formatRecordedSave(receipt);
+      toast({
+        variant: message.tone === "degraded" ? "warning" : "success",
+        title: message.title,
+        description: message.description,
+        duration: 7000,
+      });
+      setProposals([]);
+      setTranscript("");
+      setLastTake(null);
+      setNotice("");
+      rr.reset();
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't save findings",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveAll() {
     if (!proposals.length || saving) return;
     const parentTrack = lastTake?.track ?? (rr.track as RecordedTrack | null);
-    const takeAudio = lastTake?.audio ?? rr.audio;
     if (!parentTrack) {
       toast({ variant: "warning", title: "No recorded track to attach" });
       return;
     }
+    if (notesMode) {
+      await saveNotes(parentTrack);
+      return;
+    }
+    const takeAudio = lastTake?.audio ?? rr.audio;
     setSaving(true);
     try {
       let audioUrl: string | undefined;
@@ -196,6 +610,34 @@ export function ContinuousCapture({
 
       if (updated) {
         updated = await saveCaptureSession(caseId, session);
+        const prose: LiveProse[] = proposals.map((item) => ({
+          tStartMs: item.tStartMs,
+          label: item.label,
+          whatToNotice: item.whatToNotice,
+          pearl: item.pearl,
+          mimics: item.mimics,
+          clinicalImportance: item.clinicalImportance,
+          whyClinicallyFirst: item.whyClinicallyFirst,
+          reportLine: item.reportLine,
+          landmark: item.landmark,
+        }));
+        try {
+          const packed = await updateCase(caseId, {
+            liveTeachingPack: materializeLiveTeachingPack({
+              caseId,
+              modality: modality || updated.modality,
+              clinicalQuestion,
+              diagnosis,
+              findings: updated.findings,
+              prose,
+              prior: updated.liveTeachingPack,
+              studySeriesUIDs,
+            }),
+          });
+          updated = packed;
+        } catch {
+          /* Findings are already saved. The session rebuilds a pack from them. */
+        }
         onCaseUpdated(updated);
         toast({
           variant: "success",
@@ -218,6 +660,21 @@ export function ContinuousCapture({
     }
   }
 
+  function guideFor(p: StructuredSessionFinding) {
+    if (notesMode && lastTake) {
+      return commitSpeakOnceWithoutMic<Partial<Finding>>(
+        {
+          label: p.label,
+          description: p.description,
+          teachingPoints: p.teachingPoints,
+          marker: p.suggestedMarker,
+        },
+        lastTake.track
+      ).finding.teachingGuide;
+    }
+    return p.teachingGuide;
+  }
+
   return (
     <Card padded={false} className="p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -225,31 +682,42 @@ export function ContinuousCapture({
           <Layers className="h-4 w-4 text-accent" aria-hidden="true" />
           Speak once — structure many
         </h2>
-        {recording && (
-          <Badge variant="danger" dot>
-            Capturing
-          </Badge>
-        )}
+        <div className="flex items-center gap-1.5">
+          {recording && (
+            <Badge variant="danger" dot>
+              Capturing
+            </Badge>
+          )}
+          {(recording && rr.micCapture === "unavailable") || notesMode ? (
+            <Badge variant="warning">No microphone</Badge>
+          ) : null}
+        </div>
       </div>
 
       <p className="mb-3 text-xs leading-relaxed text-muted">
-        Scroll the study and narrate every finding in one take. We timestamp the
-        viewer + your voice, structure JSON findings, then merge them into the
-        teaching script the AI attending will drive.
+        Scroll the study and narrate every finding in one take. Finish recording
+        shows the viewport video and the viewer log so you can replay them.
+        Process and teach case compiles the pack. Viewport stills and the
+        microphone share one clock. Without a microphone the track still
+        records and Save teaches from notes.
       </p>
 
       <div className="rounded-xl border border-subtle bg-surface/80 px-3 py-3">
         <MicButton
-          state={structuring ? "processing" : micState}
+          state={speakOnceMicState(recording, structuring, settling)}
           onStart={start}
           onStop={stop}
           disabled={structuring || saving || rr.phase === "replaying"}
           label={
             recording
-              ? "Capturing — keep scrolling & speaking…"
-              : structuring
-                ? "Structuring session…"
-                : "Start continuous capture"
+              ? rr.micCapture === "live"
+                ? "Capturing — keep scrolling and speaking…"
+                : rr.micCapture === "unavailable"
+                  ? "Capturing the viewer — no microphone"
+                  : "Capturing the viewer…"
+              : structuring || settling
+                ? TEACHER_PROCESSING_LABEL
+                : "Start recording"
           }
         />
       </div>
@@ -261,9 +729,26 @@ export function ContinuousCapture({
       )}
 
       {structuring && (
-        <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
-          <Spinner size="sm" />
-          Transcribing &amp; segmenting findings…
+        <div className="mt-3 flex items-center gap-2 text-sm text-secondary" role="status">
+          <Spinner size="sm" label={TEACHER_PROCESSING_LABEL} />
+          {TEACHER_PROCESSING_LABEL}
+        </div>
+      )}
+
+      {notesMode && lastTake && (
+        <div className="mt-3">
+          <RecordedTakeNote
+            track={lastTake.track}
+            hasAudio={false}
+            point={
+              proposals[0]?.suggestedMarker
+                ? {
+                    x: proposals[0].suggestedMarker.x_pct,
+                    y: proposals[0].suggestedMarker.y_pct,
+                  }
+                : undefined
+            }
+          />
         </div>
       )}
 
@@ -280,7 +765,9 @@ export function ContinuousCapture({
 
       {proposals.length > 0 && (
         <ul className="mt-3 flex flex-col gap-3">
-          {proposals.map((p, i) => (
+          {proposals.map((p, i) => {
+            const guide = guideFor(p);
+            return (
             <li
               key={`${p.tStartMs}-${i}`}
               className="rounded-xl border border-subtle bg-elevated/40 p-3"
@@ -290,12 +777,17 @@ export function ContinuousCapture({
                   {(p.tStartMs / 1000).toFixed(1)}s – {(p.tEndMs / 1000).toFixed(1)}s
                 </Badge>
                 <div className="flex items-center gap-1">
+                  {guide && guide.beats.length > 0 && (
+                    <Badge variant="neutral">
+                      {guide.beats.length} teach {guide.beats.length === 1 ? "beat" : "beats"}
+                    </Badge>
+                  )}
                   {p.suggestedMarker && (
                     <Badge variant="neutral">
                       mark {(p.suggestedMarker.x_pct * 100).toFixed(0)}%,
                       {(p.suggestedMarker.y_pct * 100).toFixed(0)}%
                       {p.suggestedSliceIndex != null
-                        ? ` · slice ${p.suggestedSliceIndex + 1}`
+                        ? ` · slice ${displaySliceNumber(p.suggestedSliceIndex)}`
                         : ""}
                     </Badge>
                   )}
@@ -352,19 +844,28 @@ export function ContinuousCapture({
                 </Field>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
 
       {proposals.length > 0 && (
-        <Button
-          className="mt-3 w-full"
-          leadingIcon={<Check className="h-4 w-4" />}
-          onClick={saveAll}
-          loading={saving}
-        >
-          Save {proposals.length} finding{proposals.length === 1 ? "" : "s"} to sequence
-        </Button>
+        <>
+          <Button
+            className="mt-3 w-full"
+            leadingIcon={<Check className="h-4 w-4" />}
+            onClick={saveAll}
+            loading={saving}
+            disabled={notesMode && !proposals.some((p) => p.label.trim())}
+          >
+            Save {proposals.length} finding{proposals.length === 1 ? "" : "s"} to sequence
+          </Button>
+          {notesMode && !proposals.some((p) => p.label.trim()) && (
+            <p className="mt-2 text-center text-[11px] text-muted">
+              Add a label. Save builds the teach script from this track and your notes.
+            </p>
+          )}
+        </>
       )}
 
       {!proposals.length && !recording && !structuring && (
@@ -378,7 +879,11 @@ export function ContinuousCapture({
       {recording && (
         <p className="mt-3 flex items-center gap-2 text-xs text-danger">
           <Mic className="h-3.5 w-3.5" />
-          Session live — viewer events are timestamped with your voice.
+          {rr.micCapture === "unavailable"
+            ? "Session live — viewer events are timestamped. Save will teach from your notes."
+            : rr.micCapture === "live"
+              ? "Session live — voice, viewport stills, and viewer events share one clock."
+              : "Session live — viewer events are timestamped."}
         </p>
       )}
     </Card>

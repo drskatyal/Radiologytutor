@@ -154,7 +154,11 @@ slots in later without touching callers.
 ## 5. Repo map
 - `app/` routes (student `case/`, `author/`, `admin/`, `cornerstone/` viewer spike, `api/`).
 - `components/` feature components; `components/ui/` design-system primitives.
-- `lib/` data layer, viewer logic, Orthanc client, Gemini, types.
+- `lib/` data layer, Orthanc client, Gemini, types (RadLearn app logic).
+- `packages/viewer-core/` (`@flowrad/viewer-core`) — the standalone, fork-ready viewer core shared by
+  FlowRad Viewer (desktop), the web viewer and mobile web. No app/auth/case/teaching imports
+  (enforced by `lib/viewerCoreBoundary.test.ts`); old `lib/<module>` paths are re-export shims.
+- `desktop/` FlowRad Viewer (Tauri 2): Rust shell + Vite renderer on the same viewer core.
 - `public/dicom/` bundled sample study. `seed/` seed cases.
 
 ---

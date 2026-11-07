@@ -17,7 +17,13 @@ import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
 import { getCaseForOrg } from "@/lib/cases";
-import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
+import { formatFindingsContextFromCase, formatSeriesCatalog } from "@/lib/teachingPrompt";
+import {
+  authoredSeriesAllowlist,
+  parseSeriesCatalog,
+  promptSeriesCatalog,
+} from "@/lib/setSeries";
+import { spokenFindingSources } from "@/lib/tutorSpeech";
 
 export const runtime = "nodejs";
 
@@ -25,6 +31,7 @@ export const runtime = "nodejs";
 interface InMessage {
   role: "user" | "assistant";
   text: string;
+  findingId?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -77,11 +84,30 @@ export async function POST(req: NextRequest) {
         : (lastUser?.text ?? "");
 
     // History = the turns before the current question (so we don't duplicate it).
-    const history =
+    // findingId keeps the hint ladder on one finding when the chat has several.
+    const history = (
       lastUser && messages[messages.length - 1]?.text === question
         ? messages.slice(0, -1)
-        : messages;
+        : messages
+    ).map((turn) => ({
+      role: turn.role,
+      text: String(turn.text ?? ""),
+      findingId: turn.findingId ? String(turn.findingId) : undefined,
+    }));
 
+    const findings = spokenFindingSources(data.findings, data.primaryDiagnosis);
+    const clientSeries = parseSeriesCatalog(body.series);
+    const authored = authoredSeriesAllowlist({
+      series: clientSeries,
+      studyRefs: data.studyRefs,
+      findings: data.findings,
+      pack: data.liveTeachingPack,
+    });
+    const seriesEntries = promptSeriesCatalog(clientSeries, authored);
+    const seriesAllowlist = seriesEntries.map((entry) => entry.seriesInstanceUID);
+
+    // history excludes the current question. runTeachingPlan turns that into
+    // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
     const result = await runTeachingPlan({
       question,
       history,
@@ -89,7 +115,10 @@ export async function POST(req: NextRequest) {
       modality: data.modality,
       mode,
       findingsContext: formatFindingsContextFromCase(data),
+      seriesCatalog: formatSeriesCatalog(seriesEntries),
+      seriesAllowlist,
       currentFindingId,
+      findings,
     });
 
     return NextResponse.json(result);

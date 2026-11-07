@@ -22,6 +22,7 @@ import {
   useToast,
 } from "@/components/ui";
 import type { CaseData, Finding } from "@/lib/types";
+import { formatRecordedSave, type RecordedSaveReceipt } from "@/lib/teachingGuide";
 import { FindingsList } from "@/components/author/FindingsList";
 import { AddFindingDialog } from "@/components/author/AddFindingDialog";
 import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
@@ -213,11 +214,21 @@ export function CaseEditor({ caseId }: { caseId: string }) {
     }
   }
 
-  async function createFinding(finding: Partial<Finding>) {
+  async function createFinding(finding: Partial<Finding>, receipt?: RecordedSaveReceipt) {
     try {
       const updated = await addFinding(caseId, finding);
       setCaseData(updated);
-      toast({ variant: "success", title: "Finding added" });
+      if (receipt) {
+        const message = formatRecordedSave(receipt);
+        toast({
+          variant: message.tone === "degraded" ? "warning" : "success",
+          title: message.title,
+          description: message.description,
+          duration: 7000,
+        });
+      } else {
+        toast({ variant: "success", title: "Finding added" });
+      }
     } catch (e) {
       toast({
         variant: "danger",
@@ -321,7 +332,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
             </Button>
             {findings.length > 0 && (
               <Button variant="ghost" size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openPreview}>
-                Preview as student
+                Test as student
               </Button>
             )}
             <Button
@@ -352,7 +363,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
               <>
                 Click <span className="font-medium text-primary">Edit</span> on a finding to fix its text, drag to
                 reorder the teaching sequence, then{" "}
-                <span className="font-medium text-primary">Preview as student</span> to see the replay. Every change
+                <span className="font-medium text-primary">Test as student</span> to open the microphone on this study. Every change
                 saves automatically.
               </>
             )}

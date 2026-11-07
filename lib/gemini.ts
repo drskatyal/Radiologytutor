@@ -5,18 +5,25 @@
 // Never import this into client components — it reads GEMINI_API_KEY.
 //
 // We hit the REST endpoint directly with fetch to avoid SDK version churn.
-// Model is configurable via GEMINI_MODEL (default: current Flash workhorse).
+// Model is configurable via GEMINI_MODEL (default: gemini-3.8-flash).
 // ============================================================================
 
 import { teachingSystemPrompt } from "./teachingPrompt";
+import {
+  ensureSpokenAnswer,
+  examHintLevel,
+  seatExamReveal,
+  type SpokenFindingSource,
+} from "./tutorSpeech";
 import {
   HARNESS_VIEWER_TOOLS,
   harnessActionFromCall,
   type HarnessViewerAction,
 } from "./harness/tools";
+import { sanitizeSeriesActions } from "./setSeries";
 
-/** Orchestration / STT / tools. Override via GEMINI_MODEL when Google ships next Flash. */
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+/** Orchestration / STT / tools. Gemini 3.8 Flash (stable). Override with GEMINI_MODEL. */
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 /** Viewer action alias — canonical definition lives in lib/harness/tools. */
@@ -24,9 +31,17 @@ export type TeachingViewerAction = HarnessViewerAction;
 
 export interface GeminiPart {
   text?: string;
-  /** Inline audio/image bytes (base64). Gemini Flash is multimodal — we send
-   * mic audio here so Gemini does STT + reasoning in one call. */
+  /** Inline audio/image/video bytes (base64). */
   inlineData?: { mimeType: string; data: string };
+  /** Files API reference. Used for a long viewport recording. */
+  fileData?: { fileUri: string; mimeType: string };
+  /**
+   * Video only. AGENTIC lets Flash walk a long viewer recording without
+   * tokenizing every frame. STATIC is the fixed-rate pass for a short take.
+   */
+  mediaProcessing?: "AGENTIC" | "STATIC";
+  /** DICOM viewport video stays low unless overlay text must be read. */
+  mediaResolution?: "MEDIA_RESOLUTION_LOW" | "MEDIA_RESOLUTION_MEDIUM" | "MEDIA_RESOLUTION_HIGH";
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -70,12 +85,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function callGemini(
   model: string,
   key: string,
-  body: unknown
+  body: unknown,
+  timeoutMs = REQUEST_TIMEOUT_MS
 ): Promise<Response> {
   let lastStatus = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
         method: "POST",
@@ -103,7 +119,7 @@ async function callGemini(
       if (attempt === MAX_ATTEMPTS) {
         throw new Error(
           aborted
-            ? `Gemini request timed out after ${REQUEST_TIMEOUT_MS}ms`
+            ? `Gemini request timed out after ${timeoutMs}ms`
             : `Gemini request failed: network error`
         );
       }
@@ -116,13 +132,30 @@ async function callGemini(
   throw new Error(`Gemini API error ${lastStatus || 500}`);
 }
 
-/** Build a user content part list from optional text + optional audio. */
+/** Build a user content part list from optional stills, audio, and text. */
 export function userParts(opts: {
   text?: string;
   audioBase64?: string;
   audioMime?: string;
+  /** Viewport stills. Each caption is a text part immediately before the image. */
+  images?: Array<{ mimeType: string; data: string; caption?: string }>;
+  /** Viewer-only recording. Flash compile only — never sent to Gemini Live. */
+  video?: { data: string; mimeType: string; mediaProcessing: "AGENTIC" | "STATIC" };
 }): GeminiPart[] {
   const parts: GeminiPart[] = [];
+  if (opts.video?.data) {
+    parts.push({
+      inlineData: { mimeType: opts.video.mimeType || "video/webm", data: opts.video.data },
+      mediaProcessing: opts.video.mediaProcessing,
+    });
+  }
+  for (const image of opts.images ?? []) {
+    if (!image?.data) continue;
+    if (image.caption) parts.push({ text: image.caption });
+    parts.push({
+      inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data },
+    });
+  }
   if (opts.audioBase64) {
     parts.push({
       inlineData: { mimeType: opts.audioMime || "audio/webm", data: opts.audioBase64 },
@@ -153,6 +186,8 @@ interface GenerateOptions {
   tools?: FunctionDeclaration[];
   /** Enable Gemini's built-in Google Search grounding tool (web-grounded). */
   googleSearch?: boolean;
+  /** Override the default deadline. Agentic video needs longer than a text call. */
+  timeoutMs?: number;
 }
 
 /** A web source surfaced by Google Search grounding. */
@@ -197,11 +232,14 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
   if (opts.systemInstruction) {
     body.systemInstruction = { parts: [{ text: opts.systemInstruction }] };
   }
-  // Tools: our viewer function declarations and/or Gemini's built-in Google
-  // Search grounding. Current Gemini Flash supports both in one request; each
-  // tool is its own entry in the `tools` array.
+  // Tools: viewer function declarations and/or Google Search. Each tool is
+  // its own entry. Gemini 3 returns 400 when both are set unless tool context
+  // circulation is on. The error names the proto field
+  // tool_config.include_server_side_tool_invocations; this REST body uses the
+  // camelCase JSON name, same as generationConfig and functionDeclarations.
   const toolEntries: Record<string, unknown>[] = [];
-  if (opts.tools && opts.tools.length > 0) {
+  const hasFunctionDeclarations = Boolean(opts.tools && opts.tools.length > 0);
+  if (hasFunctionDeclarations) {
     toolEntries.push({ functionDeclarations: opts.tools });
   }
   if (opts.googleSearch) {
@@ -210,8 +248,11 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
   if (toolEntries.length > 0) {
     body.tools = toolEntries;
   }
+  if (hasFunctionDeclarations && opts.googleSearch) {
+    body.toolConfig = { includeServerSideToolInvocations: true };
+  }
 
-  const res = await callGemini(MODEL, key, body);
+  const res = await callGemini(MODEL, key, body, opts.timeoutMs);
   const data = await res.json();
   const candidate = data?.candidates?.[0];
   const parts: GeminiPart[] = candidate?.content?.parts ?? [];
@@ -299,12 +340,58 @@ export async function transcribeAudio(
   return result.text.trim();
 }
 
+export interface NarrationTranscript {
+  transcript: string;
+  segments: Array<{ tStartMs?: number; tEndMs?: number; text?: string }>;
+}
+
+/**
+ * Transcribe a teaching take into verbatim text plus sentence segments.
+ * Segment times are the model's estimate of when it heard each phrase.
+ * Callers must run them through coerceNarrationSpans — a missing or single
+ * full-take span is not alignment.
+ */
+export async function transcribeNarrationTake(
+  audioBase64: string,
+  audioMime: string,
+  durationMs: number
+): Promise<NarrationTranscript> {
+  const duration = Math.max(0, Math.round(durationMs));
+  const result = await generate({
+    systemInstruction:
+      "You transcribe a radiologist teaching at a workstation. Return ONLY JSON with exactly " +
+      '{ "transcript": string, "segments": [ { "tStartMs": number, "tEndMs": number, "text": string } ] }. ' +
+      "transcript is the full verbatim speech. segments are sentence-sized slices of that transcript, in order. " +
+      `tStartMs and tEndMs are milliseconds from the start of this audio, within 0..${duration || "the audio length"}. ` +
+      "Estimate each phrase from when you hear it. Do not invent words, findings, or measurements. " +
+      "If the audio is silent, transcript is an empty string and segments is an empty array.",
+    temperature: 0,
+    jsonOnly: true,
+    contents: [
+      {
+        role: "user",
+        parts: userParts({
+          text: `durationMs=${duration}. Transcribe and segment.`,
+          audioBase64,
+          audioMime,
+        }),
+      },
+    ],
+  });
+  const parsed = parseJsonLoose<Partial<NarrationTranscript>>(result.text);
+  const transcript = typeof parsed.transcript === "string" ? parsed.transcript.trim() : "";
+  const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
+  return { transcript, segments };
+}
+
 /** @deprecated Use TeachingViewerAction (harness). Kept as comment anchor. */
 // Viewer actions: see HarnessViewerAction in lib/harness/tools.ts
 
 export interface TeachingTurn {
   role: "user" | "assistant";
   text: string;
+  /** Finding this turn was about. Other findings do not climb the hint ladder. */
+  findingId?: string;
 }
 
 export interface TeachingPlanInput {
@@ -317,8 +404,20 @@ export interface TeachingPlanInput {
   mode: "guided" | "socratic" | "free" | "reporting" | "viva";
   /** Compact, ordered finding context the tutor reasons over. */
   findingsContext: string;
+  /** Series catalog (`formatSeriesCatalog`). UIDs the model may copy. */
+  seriesCatalog?: string;
   /** The finding the student is currently looking at (for "what is this?"). */
   currentFindingId?: string;
+  /**
+   * SeriesInstanceUIDs set_series / scroll_to may name. When set, any other
+   * UID is removed before the reply leaves the server.
+   */
+  seriesAllowlist?: readonly string[];
+  /**
+   * Authored findings used only when the model returns tools and no speech.
+   * The spoken fallback copies label / description / teaching points from here.
+   */
+  findings?: SpokenFindingSource[];
 }
 
 export interface TeachingPlanResult {
@@ -356,8 +455,23 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     parts: [{ text: input.question || "Begin the session." }],
   });
 
+  const spokenFindings = input.findings ?? [];
+  const hinted =
+    spokenFindings.find((finding) => finding.id === input.currentFindingId) ??
+    [...spokenFindings].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0];
+  // Same rung the empty-text fallback speaks, so a partial answer is not told
+  // to reveal just because the model may call show_finding.
+  const hintLevel = examHintLevel({
+    mode: input.mode,
+    question: input.question,
+    finding: hinted,
+    findings: spokenFindings,
+    history: input.history,
+    currentFindingId: input.currentFindingId ?? hinted?.id,
+  });
+
   const result = await generate({
-    systemInstruction: teachingSystemPrompt(input),
+    systemInstruction: teachingSystemPrompt({ ...input, hintLevel }),
     temperature: 0.4,
     tools: TEACHING_TOOLS,
     // Web-grounded teaching: answers cite current radiology references.
@@ -365,12 +479,33 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     contents,
   });
 
-  const actions = result.functionCalls
+  const called = result.functionCalls
     .map((call) => toAction(call))
     .filter((a) => a.type !== "none");
 
-  return {
+  // Reveal without a seat leaves the slice still and Located unchanged.
+  const seated =
+    input.mode === "socratic" || input.mode === "viva"
+      ? seatExamReveal(called, hintLevel, input.currentFindingId ?? hinted?.id)
+      : called;
+  const actions = input.seriesAllowlist
+    ? sanitizeSeriesActions(seated, new Set(input.seriesAllowlist))
+    : seated;
+
+  // Tool-only replies leave Discussion blank and stall Teach on speech onEnd.
+  // Fill a drive-first line from the authored finding; never invent anatomy.
+  const answer = ensureSpokenAnswer({
     answer: result.text,
+    mode: input.mode,
+    question: input.question,
+    actions,
+    findings: spokenFindings,
+    currentFindingId: input.currentFindingId,
+    history: input.history,
+  });
+
+  return {
+    answer,
     action: actions[0] ?? { type: "none" },
     actions,
     sources: result.sources,
@@ -396,15 +531,22 @@ export interface SynthesizedSpeech {
 }
 
 /**
- * Synthesize speech for the given text with Gemini TTS. Returns WAV bytes (we
- * wrap the raw PCM the API returns in a 44-byte WAV header so the browser can
- * play it directly). Throws if the key is missing or the API errors.
+ * Director note for teach-guide beats. Gemini TTS treats a short leading
+ * instruction as style, then reads the line. We do not play the teacher's mic.
  */
-export async function synthesizeSpeech(text: string): Promise<SynthesizedSpeech> {
+export const ATTENDING_TTS_DIRECTION =
+  "Say the following in a calm attending radiologist voice, measured pace, verbatim, with no preamble:";
+
+export async function synthesizeSpeech(
+  text: string,
+  opts?: { persona?: "attending" }
+): Promise<SynthesizedSpeech> {
   const key = requireKey();
+  const spoken =
+    opts?.persona === "attending" ? `${ATTENDING_TTS_DIRECTION}\n${text}` : text;
 
   const body = {
-    contents: [{ role: "user", parts: [{ text }] }],
+    contents: [{ role: "user", parts: [{ text: spoken }] }],
     generationConfig: {
       responseModalities: ["AUDIO"],
       speechConfig: {

@@ -9,6 +9,15 @@
 import type { Finding, FindingAnchor } from "./types";
 import type { CornerstoneViewerState } from "./viewerController";
 
+/**
+ * 1-based slice Studio shows and notes Teach speaks.
+ * `sliceIndex` is the 0-based Cornerstone image index stored on the finding,
+ * the track, and scroll actions. The viewer readout uses this same number.
+ */
+export function displaySliceNumber(sliceIndex: number): number {
+  return sliceIndex + 1;
+}
+
 /** Parse SOP Instance UID from a Cornerstone wadors:/wadouri: imageId. */
 export function sopUidFromImageId(imageId: string | undefined | null): string | undefined {
   if (!imageId) return undefined;
@@ -21,6 +30,9 @@ export type DisplaySnapshot = {
   ww?: number;
   wc?: number;
   sopInstanceUID?: string;
+  /** Live camera. Applied to anchors only — findings keep zoom on the guide. */
+  zoom?: number;
+  pan?: [number, number];
 };
 
 /** Merge a live viewport snapshot onto a Finding / FindingAnchor draft. */
@@ -41,6 +53,27 @@ export function withDisplaySnapshot<T extends Partial<Finding> | FindingAnchor>(
   }
   if (snap.sopInstanceUID) {
     (next as { sopInstanceUID?: string }).sopInstanceUID = snap.sopInstanceUID;
+  }
+  return next;
+}
+
+/** Slice, window, and camera from the live viewport onto a compare landing. */
+export function withAnchorSnapshot<T extends FindingAnchor>(
+  anchor: T,
+  snap: DisplaySnapshot | null | undefined
+): T {
+  const next = withDisplaySnapshot(anchor, snap);
+  if (!snap) return next;
+  if (snap.zoom != null && Number.isFinite(snap.zoom) && snap.zoom > 0) {
+    next.zoom = snap.zoom;
+  }
+  if (
+    snap.pan &&
+    snap.pan.length >= 2 &&
+    Number.isFinite(snap.pan[0]) &&
+    Number.isFinite(snap.pan[1])
+  ) {
+    next.pan = [snap.pan[0], snap.pan[1]];
   }
   return next;
 }

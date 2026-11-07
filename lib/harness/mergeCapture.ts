@@ -12,6 +12,8 @@ import {
   sliceTrack,
   segmentMidMs,
 } from "../captureSession";
+import { measurementsFromTrack } from "../findingMeasurements";
+import { guideForFindingTrack } from "../teachingGuide";
 import type {
   CaptureSession,
   Finding,
@@ -111,10 +113,17 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       studyRole: "current",
     };
 
+    const description = (seg.description ?? "").trim();
+    const teachingPoints = (seg.teachingPoints ?? [])
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const teachingGuide = guideForFindingTrack(sub, { description, teachingPoints });
+    const measurements = measurementsFromTrack(sub);
+
     const finding: Partial<Finding> = {
       label: seg.label.trim(),
-      description: (seg.description ?? "").trim(),
-      teachingPoints: (seg.teachingPoints ?? []).map((t) => t.trim()).filter(Boolean),
+      description,
+      teachingPoints,
       state: " ",
       marker,
       studyInstanceUID: input.studyInstanceUID,
@@ -122,6 +131,8 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       anchors: [anchor],
       track: sub,
       durationMs: sub.durationMs,
+      teachingGuide,
+      ...(measurements.length ? { measurements } : {}),
       captureSessionId: session.id,
       tStartMs: seg.tStartMs,
       tEndMs: seg.tEndMs,

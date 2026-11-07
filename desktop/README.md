@@ -1,0 +1,201 @@
+# FlowRad Viewer (desktop)
+
+A free, offline DICOM viewer for Windows, macOS and Linux. Tauri 2 shell (Rust)
+around a Vite + React renderer that reuses the web app's `lib/` (stack ordering,
+window presets, cine, viewer runtime tuning) and `components/ui` design system.
+Plan: [`docs/DESKTOP_PLAN.md`](../docs/DESKTOP_PLAN.md). Competitive benchmark:
+[`docs/RADIANT_BENCHMARK.md`](../docs/RADIANT_BENCHMARK.md).
+
+**Not for diagnostic use.**
+
+## What it does
+
+- **Opens** folders, individual files, DICOMDIR (index-driven, case-insensitive,
+  ISO 9660 `;1` tolerant), zip archives (extracted once into the app cache, zip-slip
+  safe), and CD / DVD / USB media (auto-detected on Windows, macOS and Linux).
+  Drag-and-drop onto the window, "Open with…", and command-line paths.
+- **Progressive open.** The Rust scanner parses headers on every core and streams
+  them to the renderer in batches; the first series is on screen while a disc is
+  still being read. Re-opening a study hits an on-disk scan cache keyed by
+  path + size + mtime. The cache holds no patient identifiers.
+- **Decodes locally**, in web workers: JPEG baseline/extended, JPEG lossless,
+  JPEG-LS, JPEG 2000, HTJ2K, RLE, implicit/explicit LE, deflated LE (inflated
+  in Rust), and multiframe instances.
+- **Reads** with a series browser (decoded thumbnails; click to show a series in
+  the selected viewport, outlined in the accent colour, or drag it onto any
+  viewport), layouts from 1×1 to 3×3, synchronized scrolling, reference lines,
+  window/level with modality presets, zoom/pan/rotate/flip/invert, length,
+  angle, Cobb angle, ellipse/rectangle/circle/freehand ROI with HU stats, probe,
+  arrow, bidirectional, magnifier, cine, and a cursor that matches the tool.
+- **Keyboard, RadiAnt-style.** ↑/↓ slice, ←/→ series, PgUp/PgDn 10 % of the
+  series, Home/End, tool letters, Shift+1…7 layouts, Alt+C/S/A reformat, T slab
+  mode, Ctrl+[ / ] slab thickness, I invert, Backspace reset. `?` or F1 shows
+  the sheet; any tool or navigation key can be re-mapped in Settings.
+- **Annotations you can edit.** Arrows draw without a prompt; double-click (or
+  right-click → Add label) puts an inline label field next to the arrowhead.
+  Click to select, Delete to remove, an eraser tool, right-click for Delete ·
+  Copy value · Delete all on this image / in the series, and Ctrl+Z / Ctrl+Y
+  for all of it.
+- **MPR, 3D and fusion.**
+  - MPR: axial, sagittal and coronal planes with linked crosshairs (a 3D
+    cursor), oblique planes by dragging a line, and MIP / MinIP / average
+    slabs (Ctrl+wheel sets the thickness, shown on the image).
+  - Quick reformat: a coronal, sagittal or axial-slab plane of any series in a
+    normal viewport (toolbar or Alt+C / Alt+S / Alt+A), rendered from the
+    native volume; Esc goes back to the slices.
+  - 3D: volume rendering with presets.
+  - PET/CT fusion in SUVbw, with a PET MIP.
+  - Volumes are built before they are attached (≈2 s for 300 slices).
+- **Exports.**
+  - PNG or JPEG, for one image or a whole series.
+  - Video: MP4 (H.264 via WebCodecs), or Motion-JPEG AVI where the OS has no
+    encoder.
+  - An anonymised DICOM copy (PS3.15 basic profile header scrub; free). The
+    text overlay on exported images is anonymous by default, and file names
+    never carry patient text.
+- **PACS (opt-in).** DICOMweb (QIDO-RS search, WADO-RS retrieve) or DIMSE
+  (C-ECHO, C-FIND, and C-MOVE into a built-in storage SCP). Retrieved studies
+  open like a local folder and stay cached for offline use. Node settings
+  persist; passwords are kept in memory only.
+- **RadLearn (optional sign-in).** Send a study to your RadLearn studio,
+  anonymised on this computer first.
+- **Auto-update.** Signed. Checks at launch (can be turned off), always asks
+  first.
+- **Remembers** recently opened studies, searchable (paths and descriptions
+  only).
+
+## Develop
+
+```bash
+npm ci                      # repo root: the renderer imports ../lib and ../components
+npm ci --prefix desktop
+npm --prefix desktop run tauri dev
+```
+
+The renderer also runs in a plain browser (`npm --prefix desktop run dev`, then
+open http://localhost:1420): opening falls back to the web loader
+(`lib/localDicomFiles.ts`) and persistence to `localStorage`.
+
+Linux needs the WebKitGTK toolchain:
+
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+```
+
+## Test
+
+```bash
+npm --prefix desktop test                              # renderer unit tests
+RADLEARN_FIXTURES=/tmp/fixtures cargo test --manifest-path desktop/src-tauri/Cargo.toml
+# Against a live PACS (e.g. Orthanc AE TESTPACS on :4242 that knows RADLEARN@127.0.0.1:11112):
+RADLEARN_TEST_PACS=localhost:4242 cargo test --manifest-path desktop/src-tauri/Cargo.toml pacs
+python3 desktop/scripts/make-fixtures.py --bench /tmp/fixtures   # every transfer syntax, DICOMDIR, zip, PET/CT
+npx --prefix desktop tauri build --debug --no-bundle
+xvfb-run -a desktop/scripts/fixture-matrix.sh desktop/src-tauri/target/debug/flowrad-viewer /tmp/fixtures
+# Per-codec decode check: the app's decoders vs pydicom, bit-exact for lossless syntaxes
+xvfb-run -a python3 desktop/scripts/codec-check.py desktop/src-tauri/target/debug/flowrad-viewer /tmp/fixtures
+# e2e: a NORMAL launch with a study must put non-blank pixels in the main viewport (also on Windows CI)
+xvfb-run -a python3 desktop/scripts/e2e-paint.py desktop/src-tauri/target/debug/flowrad-viewer [study-dir …]
+# e2e: MPR / 3D / quick reformat / slabs draw real pixels on a cold open (flushes the OS file cache)
+xvfb-run -a python3 desktop/scripts/e2e-volume.py <binary> [study-dir] --view mpr|3d|both|coronal|sagittal|axial|reformat [--slab mip:20]
+# e2e: the UI with real mouse and keys (border, drag-and-drop, keys, re-mapping, cursors, annotations)
+npm --prefix desktop run build && node desktop/scripts/e2e-ui.mjs /tmp/fixtures/ct-phantom [--shots dir]
+```
+
+## Benchmark
+
+```bash
+B=desktop/src-tauri/target/release/flowrad-viewer
+node desktop/scripts/bench.mjs coldstart $B --runs 6
+node desktop/scripts/bench.mjs idle $B
+node desktop/scripts/bench.mjs desktop $B /tmp/fixtures/bench/ct-1200 --runs 5
+node desktop/scripts/bench.mjs browser /tmp/fixtures/ct-phantom     # the web loader, for before/after
+```
+
+On Windows use the `.exe` path. The app is a GUI program, so when you run it
+directly with a bench variable it attaches to the terminal it was started from
+to print its report, and always appends the report to `%TEMP%\flowrad-bench.jsonl`:
+
+```powershell
+$env:FLOWRAD_LEAK_ROUNDS=5; & "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe" D:\studies\ct
+Get-Content $env:TEMP\flowrad-bench.jsonl -Tail 1
+```
+ Memory is always the **whole process tree**,
+including WebView2's browser, GPU, renderer and utility processes on Windows:
+working set and private bytes, plus the peak during a `desktop` run.
+
+Bench environment:
+
+| variable | effect |
+|---|---|
+| `FLOWRAD_BENCH=1` | print `FLOWRAD_BENCH {json}` when the first image is on screen, and `FLOWRAD_BENCH_SCAN {json}` from the shell as soon as the scan ends |
+| `FLOWRAD_BENCH_EXIT=1` | exit after the report |
+| `FLOWRAD_BENCH_PAINT_TIMEOUT_MS` | report without a frame after this long; default 20000; see `paint.timedOut` |
+| `FLOWRAD_BENCH_TIMEOUT_MS` | watchdog: print what is known and exit 3; default 120000 |
+| `FLOWRAD_BENCH_VIEW=mpr\|3d\|fusion` | report when that volume is built |
+| `FLOWRAD_LEAK_ROUNDS=5` | feature on/off leak test: open and close MPR, 3D, cine, tools and dialogs that many times, then report memory per round (implies `FLOWRAD_BENCH=1` and the leak view) |
+| `FLOWRAD_BENCH_VIEW=openclose\|steps\|hooks` | open/close rounds (with `FLOWRAD_LEAK_ROUNDS` and `FLOWRAD_BENCH_CLOSE_AFTER_MS`), the scripted interaction pass, the test hook self-test; driven by `bench.mjs openclose\|steps\|hooks` |
+| `FLOWRAD_BENCH_OUT` | also append every report line to this file; default `flowrad-bench.jsonl` in the temp folder (`%TEMP%` on Windows) |
+| `FLOWRAD_BENCH_PIXELS=1` | include decoded-pixel stats (used by `codec-check.py`) |
+| `FLOWRAD_PROBE_AFTER_MS=8000` | on a normal launch, report every viewport's on-screen pixels after that long (`FLOWRAD_PROBE {json}`) |
+| `FLOWRAD_WEBVIEW2_EXTRA_ARGS` | Windows: WebView2 flags appended to the app's own (every window), to A/B memory experiments, e.g. `--in-process-gpu`; `!--flag` takes one of the app's own out, e.g. `!--enable-features=NetworkServiceInProcess2` |
+| `FLOWRAD_GPU_WARM=eager\|lazy` | when the native renderer's GPU device is built. Default on Windows `lazy`: when a study is about to open (command line, Open dialog, drag over the window, pointer on a recent study), released 15 s after the last study closed. `eager`: at launch, held all session (0.8.2; macOS / Linux default) |
+| `FLOWRAD_MEM_REPORT_MS=<ms>` | print `FLOWRAD_BENCH_MEM {json}` once, that long after start: the app process's private bytes by owner (Rust heap, Windows heaps, stacks, written DLL pages, other VirtualAlloc'd memory and its biggest allocations); the bench's empty-app baseline uses it |
+
+### Real-hardware runs (open/close rounds, interaction pass, test hook)
+
+From the repo root in PowerShell, with the release build or the installed app:
+
+```powershell
+$exe = "C:\Program Files\FlowRad Viewer\flowrad-viewer.exe"   # or desktop\src-tauri\target\release\flowrad-viewer.exe
+# Open the CT, close it (Home), re-open it: 5 rounds. Whole-tree PRIVATE MB per round
+# (study open, after the close), growth per round and first → last close, last close − empty app.
+node desktop/scripts/bench.mjs openclose $exe D:\studies\ct --rounds 5 --hold 20 --after-close 30
+# Scripted interaction: scroll 120 slices, 60 W/L steps, 24 × 90° rotations, one per frame.
+# p50 / p95 / max per kind and overall, the slowest step, long tasks (> 50 ms) during the pass.
+node desktop/scripts/bench.mjs steps $exe D:\studies\ct
+# Test hook self-test: rotation / flips applied and drawn, thumbnails rendered (one per
+# series), bindings set → reset all → preset. Your own bindings are put back afterwards.
+node desktop/scripts/bench.mjs hooks $exe D:\studies\ct
+```
+
+`leak` (`FLOWRAD_LEAK_ROUNDS`) keeps the study open and opens / closes the
+features; `openclose` closes and re-opens the study itself. All three new
+modes are informational unless a `--max-*` flag is given (see the header of
+`bench.mjs`). In CI they run in `perf-windows` as informational steps.
+
+**Test hook.** In bench or test mode only (`FLOWRAD_BENCH=1`, or `?bench` in
+the browser build) the app exposes `window.__flowradTest` (`desktop/src/testHook.ts`):
+`rotate(deg)`, `flip("h"|"v")`, `resetOrientation()`, `orientation()`,
+`thumbnails()`, `bindings.set(id, spec)` / `bindings.reset()`, and the checks
+`checkOrientation()`, `checkThumbnails()`, `checkBindings()`, `selfTest()`.
+Every action is the app's own (the viewport handle, the Settings bindings
+path); the hook waits for the drawn result and compares. The UI e2e drives it
+with `node desktop/scripts/e2e-ui.mjs <study> --only hooks`.
+
+## Build installers
+
+```bash
+npm --prefix desktop run tauri build      # .msi + .exe (Windows), .dmg + .app (macOS), .AppImage + .deb (Linux)
+```
+
+Signed release builds, notarisation and auto-update manifests are produced by
+`.github/workflows/desktop-release.yml`, started by hand (Actions → Run
+workflow), as a **draft** GitHub release tagged `desktop-v<version>`. The file header lists the secrets it reads. Every secret is
+optional; without them the build is unsigned and has no working updater.
+`.github/workflows/desktop-ci.yml` runs only when started by hand (Actions
+minutes cost money; run the same checks locally before merging). It type-checks, runs the unit and Rust tests,
+builds the app, and opens every fixture in it under Xvfb.
+
+Optional build-time variable: `RADLEARN_SERVER_URL`, the default address
+offered at sign-in.
+
+## Privacy
+
+- Opening, viewing and exporting never touch the network. The only network
+  features are PACS, RadLearn sign-in and update checks; the first two are
+  off until configured, and update checks can be turned off.
+- The `dicom://` protocol serves only files the user opened, by index; the
+  renderer cannot name an arbitrary path. There is no filesystem plugin.
+- History stores paths, study descriptions, modalities and counts. The scan
+  cache stores identity and geometry. Neither stores patient names or pixels.

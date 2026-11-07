@@ -6,9 +6,9 @@
  *   2. Gemini TTS (platform default)
  *   3. Caller falls back to browser speechSynthesis
  *
- * Gemini Live (realtime native audio) is the latency escape hatch — see
- * `preferRealtimeFallback` / docs/CONSULTANT_READING.md. Mint a short-lived
- * token via `/api/voice/realtime` when TTS exceeds VOICE_LATENCY_BUDGET_MS.
+ * Gemini Live (gemini-3.8-live) is the learner session. Opening the microphone
+ * mints a token via `/api/voice/realtime` and the browser speaks with the
+ * attending. TTS here is still the authored-guide and clone path.
  */
 
 import { geminiConfigured, synthesizeSpeech } from "./gemini";
@@ -29,10 +29,33 @@ export type TutorSpeech = {
   exceededBudget: boolean;
 };
 
+export type TutorPersona = "attending" | "discussion";
+
+/**
+ * Teach-guide beats use Gemini TTS in an attending voice.
+ * Live Q&A still prefers an enrolled ElevenLabs clone.
+ */
+export function voiceRouteFor(opts: {
+  persona?: TutorPersona;
+  voiceId?: string | null;
+  elevenLabs: boolean;
+  gemini: boolean;
+}): "elevenlabs" | "gemini_tts" | "none" {
+  if (opts.persona === "attending") return opts.gemini ? "gemini_tts" : "none";
+  if (opts.voiceId?.trim() && opts.elevenLabs) return "elevenlabs";
+  if (opts.gemini) return "gemini_tts";
+  return "none";
+}
+
 export type SynthesizeTutorOpts = {
   text: string;
   /** ElevenLabs voice id from Author.voice.voiceId */
   voiceId?: string | null;
+  /**
+   * `attending` is the teach-guide clock: Gemini TTS, never the microphone
+   * and never the clone. Omit for live discussion.
+   */
+  persona?: TutorPersona;
   /**
    * When true and ELEVENLABS is slow/unavailable, callers should open the
    * Gemini Live path instead of waiting on this promise. We still try TTS
@@ -66,7 +89,9 @@ export function voiceStackStatus(): {
 }
 
 /**
- * Synthesize a live tutor turn. Recorded lesson narration must NEVER call this.
+ * Synthesize speech for a live tutor turn or a teach-guide beat.
+ * The teacher's microphone recording is never passed here.
+ * `persona: "attending"` forces Gemini TTS for the guide clock.
  */
 export async function synthesizeTutorSpeech(
   opts: SynthesizeTutorOpts
@@ -75,12 +100,24 @@ export async function synthesizeTutorSpeech(
   if (!text) throw new Error("text is required for tutor speech.");
 
   const started = Date.now();
-  const voiceId = opts.voiceId?.trim();
+  const voiceId = opts.persona === "attending" ? undefined : opts.voiceId?.trim();
+  const route = voiceRouteFor({
+    persona: opts.persona,
+    voiceId,
+    elevenLabs: elevenLabsConfigured(),
+    gemini: geminiConfigured(),
+  });
   let audio: Buffer | null = null;
   let mimeType = "audio/mpeg";
   let provider: VoiceProvider = "none";
 
-  if (voiceId && elevenLabsConfigured()) {
+  if (route === "none") {
+    throw new Error(
+      "No TTS provider configured (set ELEVENLABS_API_KEY or GEMINI_API_KEY)."
+    );
+  }
+
+  if (route === "elevenlabs" && voiceId) {
     try {
       const r = await elevenLabsSynthesize(text, voiceId);
       audio = r.audio;
@@ -98,7 +135,9 @@ export async function synthesizeTutorSpeech(
         "No TTS provider configured (set ELEVENLABS_API_KEY or GEMINI_API_KEY)."
       );
     }
-    const r = await synthesizeSpeech(text);
+    const r = await synthesizeSpeech(text, {
+      persona: opts.persona === "attending" ? "attending" : undefined,
+    });
     audio = r.audio;
     mimeType = r.mimeType;
     provider = "gemini_tts";
@@ -114,15 +153,15 @@ export async function synthesizeTutorSpeech(
   };
 }
 
+/** Default Live model. gemini-3.8-live is GA and does not take thinking_level. */
+export const GEMINI_LIVE_MODEL_DEFAULT = "gemini-3.8-live";
+
 /**
- * Gemini Live model id for the realtime fallback path.
- * Override with GEMINI_LIVE_MODEL when Google ships a newer Live Flash.
+ * Gemini Live model id for the mic-gated learner session.
+ * Override with GEMINI_LIVE_MODEL.
  */
 export function geminiLiveModelId(): string {
-  return (
-    process.env.GEMINI_LIVE_MODEL?.trim() ||
-    "gemini-live-2.5-flash-native-audio"
-  );
+  return process.env.GEMINI_LIVE_MODEL?.trim() || GEMINI_LIVE_MODEL_DEFAULT;
 }
 
 /** Whether the orchestrator should advertise realtime as an alternative. */

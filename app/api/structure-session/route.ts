@@ -1,114 +1,106 @@
 // POST /api/structure-session
-// Continuous authoring take → full transcript + ordered findings with time
-// ranges. Body: { audioBase64, audioMime, durationMs, track? }
+// Continuous authoring take → ordered findings with time ranges.
+// Body: { audioBase64?, audioMime?, transcript?, durationMs, track?, frames?, video? }
 //
-// Gemini STT + segmentation in one jsonOnly call. We then enrich each segment
-// with suggestedMarker / suggestedSliceIndex from the recorded track clock so
-// the author (and later the tutor) land on real pixels — never invented coords.
+// Gemini Flash (the shared generateContent stack) hears the audio and, when
+// the author captured them, sees viewport stills or a long viewport recording.
+// We then enrich each segment with suggestedMarker / suggestedSliceIndex from
+// the recorded track clock so landings are real viewer samples — never
+// coordinates the model invented.
+// A separate speech-to-text pass is optional scaffolding, not required.
 
 import { NextRequest, NextResponse } from "next/server";
-import { generate, parseJsonLoose, userParts } from "@/lib/gemini";
-import { STRUCTURE_SESSION_SYSTEM } from "@/lib/teachingPrompt";
-import {
-  markerNearTime,
-  segmentMidMs,
-  sliceNearTime,
-} from "@/lib/captureSession";
-import type {
-  RecordedTrack,
-  StructuredSession,
-  StructuredSessionFinding,
-} from "@/lib/types";
+import { coerceCompileFrames } from "@/lib/compileMedia";
+import { compileStructuredSession, type CompileStudyContext, type CompileVideo } from "@/lib/compileSession";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import type { RecordedTrack } from "@/lib/types";
+
+function videoOf(body: {
+  video?: unknown;
+  videoBase64?: unknown;
+  videoMime?: unknown;
+}): CompileVideo | undefined {
+  const raw = body.video;
+  const fromObject = raw && typeof raw === "object" ? (raw as { fileUri?: unknown; mimeType?: unknown; base64?: unknown }) : undefined;
+  const fileUri = typeof fromObject?.fileUri === "string" ? fromObject.fileUri.trim() : "";
+  const inline = typeof body.videoBase64 === "string" && body.videoBase64
+    ? body.videoBase64
+    : typeof fromObject?.base64 === "string"
+      ? fromObject.base64
+      : "";
+  const mimeSource =
+    (typeof body.videoMime === "string" && body.videoMime) ||
+    (typeof fromObject?.mimeType === "string" && fromObject.mimeType) ||
+    "video/webm";
+  const mimeType = mimeSource.startsWith("video/") ? mimeSource : "video/webm";
+  const trustedFile = fileUri.startsWith("https://generativelanguage.googleapis.com/") ? fileUri : undefined;
+  if (!trustedFile && !inline) return undefined;
+  return {
+    mimeType,
+    ...(trustedFile ? { fileUri: trustedFile } : {}),
+    ...(inline ? { base64: inline } : {}),
+  };
+}
+
+function studyContext(raw: unknown): CompileStudyContext | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const source = raw as Record<string, unknown>;
+  const pick = (key: keyof CompileStudyContext) =>
+    typeof source[key] === "string" ? (source[key] as string).trim() : undefined;
+  const study: CompileStudyContext = {
+    title: pick("title"),
+    modality: pick("modality"),
+    specialty: pick("specialty"),
+    clinicalHistory: pick("clinicalHistory"),
+    patientAge: pick("patientAge"),
+    patientSex: pick("patientSex"),
+  };
+  return Object.values(study).some(Boolean) ? study : undefined;
+}
 
 export const runtime = "nodejs";
-
-const SYSTEM = STRUCTURE_SESSION_SYSTEM;
 
 export async function POST(req: NextRequest) {
   try {
     await requireAuthorOrg();
     const body = await req.json();
-    const audioBase64 = body.audioBase64 as string | undefined;
+    const audioBase64 = typeof body.audioBase64 === "string" ? body.audioBase64 : undefined;
     const audioMime = (body.audioMime as string | undefined) || "audio/webm";
     const durationMs = Number(body.durationMs) || 0;
     const track = body.track as RecordedTrack | undefined;
-    const transcriptHint =
-      typeof body.transcript === "string" ? body.transcript.trim() : "";
-
-    if (!audioBase64 && !transcriptHint) {
+    const transcriptHint = typeof body.transcript === "string" ? body.transcript.trim() : "";
+    const video = videoOf(body);
+    if (!audioBase64 && !transcriptHint && !video) {
       return NextResponse.json(
         { error: "audioBase64 or transcript is required" },
         { status: 400 }
       );
     }
 
-    const parts = userParts({
-      text:
-        (transcriptHint
-          ? `Here is the transcript (prefer this if audio is also provided):\n${transcriptHint}\n\n`
-          : "") +
-        `Session durationMs=${durationMs || "unknown"}. ` +
-        `Transcribe (if needed) and segment into teaching findings with time ranges.`,
+    const session = await compileStructuredSession({
       audioBase64,
       audioMime: audioBase64 ? audioMime : undefined,
+      transcript: transcriptHint,
+      durationMs,
+      track,
+      frames: coerceCompileFrames(body.frames),
+      video,
+      caseId: typeof body.caseId === "string" ? body.caseId : undefined,
+      modality: typeof body.modality === "string" ? body.modality : undefined,
+      clinicalQuestion: typeof body.clinicalQuestion === "string" ? body.clinicalQuestion : undefined,
+      diagnosis: typeof body.diagnosis === "string" ? body.diagnosis : undefined,
+      studySeriesUIDs: Array.isArray(body.studySeriesUIDs)
+        ? body.studySeriesUIDs.filter((uid: unknown) => typeof uid === "string")
+        : undefined,
+      study: studyContext(body.study),
     });
-
-    const result = await generate({
-      systemInstruction: SYSTEM,
-      temperature: 0.15,
-      jsonOnly: true,
-      contents: [{ role: "user", parts }],
-    });
-
-    const parsed = parseJsonLoose<Partial<StructuredSession>>(result.text);
-    const rawFindings = Array.isArray(parsed.findings) ? parsed.findings : [];
-
-    const findings: StructuredSessionFinding[] = rawFindings.map((f, i) => {
-      let tStart = Number((f as StructuredSessionFinding).tStartMs);
-      let tEnd = Number((f as StructuredSessionFinding).tEndMs);
-      if (!Number.isFinite(tStart)) tStart = 0;
-      if (!Number.isFinite(tEnd) || tEnd <= tStart) {
-        // Evenly partition when the model omits times.
-        const n = Math.max(1, rawFindings.length);
-        const span = Math.max(1, durationMs || 1000);
-        tStart = Math.round((i / n) * span);
-        tEnd = Math.round(((i + 1) / n) * span);
-      }
-      if (durationMs > 0) {
-        tStart = Math.max(0, Math.min(durationMs, tStart));
-        tEnd = Math.max(tStart + 1, Math.min(durationMs, tEnd));
-      }
-      const mid = segmentMidMs(tStart, tEnd);
-      return {
-        label:
-          typeof f.label === "string" && f.label.trim()
-            ? f.label.trim()
-            : `Finding ${i + 1}`,
-        description: typeof f.description === "string" ? f.description : "",
-        teachingPoints: Array.isArray(f.teachingPoints)
-          ? f.teachingPoints.filter((p): p is string => typeof p === "string")
-          : [],
-        tStartMs: tStart,
-        tEndMs: tEnd,
-        suggestedMarker: markerNearTime(track, mid) ?? undefined,
-        suggestedSliceIndex: sliceNearTime(track, mid) ?? undefined,
-      };
-    });
-
-    const session: StructuredSession = {
-      transcript:
-        typeof parsed.transcript === "string" && parsed.transcript.trim()
-          ? parsed.transcript.trim()
-          : transcriptHint,
-      findings,
-    };
 
     return NextResponse.json(session);
   } catch (err) {
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const status = message === "audioBase64 or transcript is required" ? 400 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

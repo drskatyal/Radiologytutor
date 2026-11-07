@@ -4,7 +4,7 @@
 // where Gemini Flash does speech-to-text + reasoning in a single call (no
 // separate STT). Surface stays stable so callers don't care what's behind it.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface Recording {
   base64: string;
@@ -18,10 +18,16 @@ function pickMime(): string {
 }
 
 export function useRecorder() {
-  const supported =
-    typeof navigator !== "undefined" &&
-    !!navigator.mediaDevices &&
-    typeof MediaRecorder !== "undefined";
+  // True on the server and the first client render. Detecting the mic during
+  // render made `disabled` disagree and Next painted an error toast over the case.
+  const [supported, setSupported] = useState(true);
+  useEffect(() => {
+    setSupported(
+      typeof navigator !== "undefined" &&
+        !!navigator.mediaDevices &&
+        typeof MediaRecorder !== "undefined"
+    );
+  }, []);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);

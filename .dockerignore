@@ -11,3 +11,5 @@ data
 .cursor
 .claude
 npm-debug.log*
+deploy
+docker-compose.orthanc.yml

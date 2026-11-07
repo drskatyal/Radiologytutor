@@ -132,8 +132,8 @@ export async function POST(req: NextRequest) {
 
     try {
       const { voiceId } = await elevenLabsCloneVoice({
-        name: body.name?.trim() || `${author.name} (FlowRad tutor)`,
-        description: `FlowRad Learn teaching voice for ${author.name}`,
+        name: body.name?.trim() || `${author.name} (RadLearn tutor)`,
+        description: `RadLearn teaching voice for ${author.name}`,
         samples,
       });
       const ready: AuthorVoice = {

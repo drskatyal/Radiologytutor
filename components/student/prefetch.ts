@@ -2,76 +2,82 @@
 
 // Client-side cache warming for the student session (CLAUDE.md §4a).
 //
-// Finding-first, parallel, ≤30s interactive:
-//   The server-built PrefetchManifest lists series in finding order. We warm
-//   series[0] (the first finding) immediately with more slices, then remaining
-//   series in Promise.allSettled batches of 3 so a prior+current CTA is not a
-//   serial waterfall. Failures are swallowed; the viewer still loads on demand.
+// The manifest no longer lists instances (that listing blocked first pixel).
+// When a caller does pass instance refs, only the active series' opening
+// window is fetched. The viewer prefetches ±N after it has asked for the
+// opening frame. A prefix of the series is the wrong end of a chest CT, and
+// firing those frames with Accept: application/octet-stream makes the archive
+// return 400 — one console error per slice.
 //
-// Requests are same-origin /api/dicomweb (and later R2-backed frames). Never
-// block playback on this work.
+// Accept matches the Cornerstone wadors loader so a 200 is the body the
+// viewer will reuse. Concurrency stays small so the warmer cannot stampede
+// the viewer's own retrieve. Failures are swallowed; playback never waits.
 
-import type { PrefetchManifest, PrefetchSeries } from "@/lib/prefetch";
+import { WADORS_FRAME_ACCEPT } from "@/lib/dicomwebProxy";
+import type { PrefetchManifest } from "@/lib/prefetch";
+import {
+  WARM_CONCURRENCY,
+  selectWarmTargets,
+  wadoFrameUrl,
+  type WarmTarget,
+} from "@/lib/prefetchWarm";
 
 const WADO_ROOT = "/api/dicomweb";
-/** Opening series: enough slices to start scrolling while others warm. */
-const FIRST_SERIES_SLICES = 32;
-/** Other series: keep the proxy / Orthanc off the critical path. */
-const OTHER_SERIES_SLICES = 16;
-/** Parallel series at a time (matches CasesPrefetcher batch size). */
-const SERIES_BATCH = 3;
 
 const warmed = new Set<string>();
 
 function whenIdle(fn: () => void): void {
-  const ric = (globalThis as { requestIdleCallback?: (cb: () => void) => void })
+  const ric = (globalThis as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number })
     .requestIdleCallback;
-  if (ric) ric(fn);
+  if (ric) ric(fn, { timeout: 1500 });
   else setTimeout(fn, 200);
 }
 
-function frameUrl(series: PrefetchSeries, sopInstanceUID: string): string {
-  return (
-    `${WADO_ROOT}/studies/${series.studyInstanceUID}` +
-    `/series/${series.seriesInstanceUID}/instances/${sopInstanceUID}/frames/1`
-  );
-}
-
-function warmFrame(url: string): Promise<unknown> {
+function warmFrame(target: WarmTarget): Promise<void> {
+  const url = wadoFrameUrl(WADO_ROOT, target);
   return fetch(url, {
     priority: "low",
     cache: "force-cache",
-    headers: { Accept: "application/octet-stream" },
-  } as RequestInit & { priority: "low" }).catch(() => null);
+    credentials: "same-origin",
+    headers: { Accept: WADORS_FRAME_ACCEPT },
+  } as RequestInit & { priority: "low" })
+    .then(async (res) => {
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        return;
+      }
+      // Consume the body so the HTTP cache actually stores the frame.
+      await res.arrayBuffer();
+    })
+    .then(() => undefined)
+    .catch(() => undefined);
 }
 
-async function warmSeries(series: PrefetchSeries, maxSlices: number): Promise<void> {
-  const { studyInstanceUID, seriesInstanceUID, instances } = series;
-  if (!studyInstanceUID || !seriesInstanceUID) return;
-  await Promise.allSettled(
-    instances.slice(0, maxSlices).map((inst) => warmFrame(frameUrl(series, inst.sopInstanceUID)))
+async function warmPool(targets: WarmTarget[]): Promise<void> {
+  let next = 0;
+  const workers = Math.min(WARM_CONCURRENCY, targets.length);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (next < targets.length) {
+        const target = targets[next];
+        next += 1;
+        if (target) await warmFrame(target);
+      }
+    })
   );
 }
 
 /**
- * Warm the DICOMweb cache for a case's findings. Finding series first, then
- * remaining series in parallel batches. Idempotent per page load.
+ * Warm the DICOMweb cache for the slices Teach will show. Idempotent per
+ * page load. Never blocks playback.
  */
 export function warmPrefetch(manifest: PrefetchManifest): void {
   if (warmed.has(manifest.caseId) || !manifest.hasImaging) return;
+  const targets = selectWarmTargets(manifest.series, manifest.focus ?? []);
+  if (targets.length === 0) return;
   warmed.add(manifest.caseId);
 
   whenIdle(() => {
-    void (async () => {
-      const list = manifest.series;
-      const first = list[0];
-      if (first) await warmSeries(first, FIRST_SERIES_SLICES);
-
-      const rest = list.slice(1);
-      for (let i = 0; i < rest.length; i += SERIES_BATCH) {
-        const batch = rest.slice(i, i + SERIES_BATCH);
-        await Promise.allSettled(batch.map((s) => warmSeries(s, OTHER_SERIES_SLICES)));
-      }
-    })();
+    void warmPool(targets);
   });
 }
