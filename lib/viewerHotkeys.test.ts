@@ -269,3 +269,13 @@ test("the free viewer's help lists RadiAnt's reading keys (zoom levels, pan, F12
   assert.deepEqual(find(false, true, /link scrolling/)?.keys, ["F5"]);
   for (const re of [/^Fit to the pane/, /^Zoom 100/, /annotations/, /link scrolling/]) assert.equal(find(false, false, re), undefined);
 });
+
+test("the free viewer's help lists Alt+A / C / S reformat, Shift+E eraser and Ctrl/⌘+Shift+Backspace clear", () => {
+  const find = (mac: boolean, readingTools: boolean, re: RegExp) =>
+    viewerShortcutGroups({}, mac, { readingTools }).flatMap((g) => g.rows).find((r) => re.test(r.does));
+  assert.deepEqual(find(false, true, /^Reformat this pane/)?.keys, ["Alt", "A / C / S"]);
+  assert.deepEqual(find(true, true, /^Reformat this pane/)?.keys, ["⌥", "A / C / S"]);
+  assert.deepEqual(find(false, true, /^Eraser/)?.keys, ["Shift", "E"]);
+  assert.deepEqual(find(true, true, /^Clear all measurements/)?.keys, ["⌘", "Shift", "Backspace"]);
+  for (const re of [/^Reformat this pane/, /^Eraser/, /^Clear all measurements/]) assert.equal(find(false, false, re), undefined);
+});
