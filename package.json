@@ -20,6 +20,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1112.0",
     "@aws-sdk/s3-request-presigner": "^3.1112.0",
+    "@cornerstonejs/calculate-suv": "^1.0.3",
     "@cornerstonejs/core": "^5.0.10",
     "@cornerstonejs/dicom-image-loader": "^5.0.10",
     "@cornerstonejs/metadata": "5.0.10",

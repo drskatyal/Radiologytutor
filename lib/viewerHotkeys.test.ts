@@ -236,3 +236,10 @@ test("the free viewer's help lists Alt+Shift+Enter (distraction-free reading), �
   assert.deepEqual(row(true, true)?.keys, ["⌥", "Shift", "Enter"]);
   assert.equal(row(false, false), undefined);
 });
+
+test("the free viewer's help lists Ctrl/⌘+Shift+F (PET / CT fusion)", () => {
+  const row = (mac: boolean) =>
+    viewerShortcutGroups({}, mac, { readingTools: true }).flatMap((g) => g.rows).find((r) => /PET \/ CT fusion/.test(r.does));
+  assert.deepEqual(row(false)?.keys, ["Ctrl", "Shift", "F"]);
+  assert.deepEqual(row(true)?.keys, ["⌘", "Shift", "F"]);
+});

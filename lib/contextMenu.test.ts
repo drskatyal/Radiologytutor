@@ -130,3 +130,8 @@ test("image menu: distraction-free reading is offered (checked when on) only whe
   assert.equal(find(imageMenu(base({ distractionFree: null }))), undefined);
   assert.equal(find(imageMenu(base({}))), undefined);
 });
+
+test("image menu: PET / CT fusion sits under Reformat only where the study has the pair", () => {
+  assert.ok(commandsOf(imageMenu(base({ can: { fusion: true } }))).includes("fusion"));
+  assert.ok(!commandsOf(imageMenu(base({ can: { copyImage: true } }))).includes("fusion"));
+});

@@ -53,6 +53,7 @@ import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
+import { pickFusionPair } from "@flowrad/viewer-core/petFusion";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
 import { useWebFolderWatcher, WatchFoldersEntry } from "@/components/viewer/WebWatchFolders";
@@ -111,6 +112,12 @@ function ViewerCodeUnavailable() {
 /** The Watched folders dialog, on first open (Chrome / Edge only). */
 const WebWatchFoldersDialog = dynamic(
   () => importWithRetry(() => import("@/components/viewer/WebWatchFoldersDialog")).then((m) => m.WebWatchFoldersDialog),
+  { ssr: false }
+);
+
+/** PET / CT fusion over the stage, on first open. */
+const WebFusionOverlay = dynamic(
+  () => importWithRetry(() => import("@/components/viewer/fusion/WebFusionOverlay")).then((m) => m.WebFusionOverlay),
   { ssr: false }
 );
 
@@ -1016,6 +1023,28 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
+  /** PET / CT fusion: the study's CT and PET volumes (the active one when it is either). */
+  const fusionPair = useMemo(() => {
+    if (!study || !result) return null;
+    const pair = pickFusionPair(
+      study.series.map((s) => ({ modality: isKeyImageSeries(s) ? null : s.modality, imageCount: s.imageCount })),
+      activeSeries
+    );
+    if (!pair) return null;
+    const ct = study.series[pair.ct]!;
+    const pt = study.series[pair.pt]!;
+    return {
+      ctImageIds: seriesImageIds(ct, result.imageIdsByFile),
+      ptImageIds: seriesImageIds(pt, result.imageIdsByFile),
+      ctLabel: describeLocalSeries(ct),
+      ptLabel: describeLocalSeries(pt),
+    };
+  }, [study, result, activeSeries]);
+  const [fusionOpen, setFusionOpen] = useState<NonNullable<typeof fusionPair> | null>(null);
+  // A new study closes it.
+  useEffect(() => setFusionOpen(null), [result, activeStudy]);
+  const openFusion = useMemo(() => (fusionPair ? () => setFusionOpen(fusionPair) : null), [fusionPair]);
+
   /** Export › DICOM (anonymised): the files behind a pane's series and its study. */
   const exportFilesFor = useCallback(
     (target: { study: number; series: number }) => async (): Promise<ExportDicomFiles | null> => {
@@ -1277,12 +1306,21 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             data-expanded={expanded ? "true" : undefined}
             data-testid="local-stage"
             className={cn(
-              "min-w-0 flex-1 scroll-mt-4",
+              "relative min-w-0 flex-1 scroll-mt-4",
               reading && "flex min-h-0 flex-col bg-imaging",
               (expanded || focusMode) && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
             data-distraction-free={focusMode ? "true" : undefined}
           >
+            {fusionOpen && (
+              <WebFusionOverlay
+                ctImageIds={fusionOpen.ctImageIds}
+                ptImageIds={fusionOpen.ptImageIds}
+                ctLabel={fusionOpen.ctLabel}
+                ptLabel={fusionOpen.ptLabel}
+                onExit={() => setFusionOpen(null)}
+              />
+            )}
             {/* Two or more monitors: open this series in another browser window (drag it there).
                 Already-open pop-outs keep their "linked" toggle even if a monitor is unplugged. */}
             {focusMode && (
@@ -1404,6 +1442,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     questionMarkHelp
                     readingTools
                     exportFiles={exportFilesFor({ study: activeStudy, series: activeSeries })}
+                    onFusion={openFusion}
                     seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                     onChunkLoadError={recoverFromChunkError}
                     voiceOn={voiceOn}
@@ -1459,6 +1498,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           questionMarkHelp
                           readingTools
                           exportFiles={exportFilesFor(target)}
+                          onFusion={openFusion}
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                           onChunkLoadError={recoverFromChunkError}
                           onCycleLayout={cycleLayout}
