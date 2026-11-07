@@ -227,6 +227,46 @@ fn read_header(path: &Path) -> Result<SliceHeader, String> {
     })
 }
 
+/// The intercept as an integer when the rescale is `raw * 1 + whole number`, so
+/// stored values can be computed without floating point. The bound keeps
+/// `raw + intercept` inside i32 for any 16-bit raw value.
+fn integer_rescale(slope: f64, intercept: f64) -> Option<i32> {
+    (slope == 1.0 && intercept.fract() == 0.0 && intercept.abs() <= 1e9).then_some(intercept as i32)
+}
+
+/// Raw little-endian 8- or 16-bit pixels → stored values (`raw * slope +
+/// intercept`, rounded and clamped to i16).
+fn store_raw(bytes: &[u8], bits: i64, signed: bool, slope: f64, intercept: f64, dst: &mut [i16]) {
+    if let Some(icpt) = integer_rescale(slope, intercept) {
+        // Slope 1 and a whole intercept (CT, most MR): integer maths gives exactly
+        // what the f64 path below does, without a float multiply, round and clamp
+        // per pixel.
+        let clamp = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        if bits == 16 {
+            for (o, c) in dst.iter_mut().zip(bytes.chunks_exact(2)) {
+                let raw = if signed { i16::from_le_bytes([c[0], c[1]]) as i32 } else { u16::from_le_bytes([c[0], c[1]]) as i32 };
+                *o = clamp(raw + icpt);
+            }
+        } else {
+            for (o, &b) in dst.iter_mut().zip(bytes) {
+                *o = clamp(b as i32 + icpt);
+            }
+        }
+        return;
+    }
+    let clamp = |v: f64| v.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+    if bits == 16 {
+        for (o, c) in dst.iter_mut().zip(bytes.chunks_exact(2)) {
+            let raw = if signed { i16::from_le_bytes([c[0], c[1]]) as f64 } else { u16::from_le_bytes([c[0], c[1]]) as f64 };
+            *o = clamp(raw * slope + intercept);
+        }
+    } else {
+        for (o, &b) in dst.iter_mut().zip(bytes) {
+            *o = clamp(b as f64 * slope + intercept);
+        }
+    }
+}
+
 /// Pass 2: decode one slice straight into its slot of the volume (no
 /// per-slice buffer for the common uncompressed case).
 pub(crate) fn decode_into(h: &SliceHeader, dst: &mut [i16]) -> Result<(), String> {
@@ -243,16 +283,7 @@ pub(crate) fn decode_into(h: &SliceHeader, dst: &mut [i16]) -> Result<(), String
         if let Some((map, pad)) = mapped {
             let end = map.len() - pad;
             let bytes = &map[end - len..end];
-            if h.bits == 16 {
-                for (o, c) in dst.iter_mut().zip(bytes.chunks_exact(2)) {
-                    let raw = if signed { i16::from_le_bytes([c[0], c[1]]) as f64 } else { u16::from_le_bytes([c[0], c[1]]) as f64 };
-                    *o = clamp(raw * slope + intercept);
-                }
-            } else {
-                for (o, &b) in dst.iter_mut().zip(bytes) {
-                    *o = clamp(b as f64 * slope + intercept);
-                }
-            }
+            store_raw(bytes, h.bits, signed, slope, intercept, dst);
             return Ok(());
         }
     }
@@ -692,6 +723,31 @@ mod tests {
         // Coronal slab runs along y: constant along y here, so MIP = single.
         let c = |slab| render_slab(&v, Plane::Coronal, 4, 150.0, 300.0, 64, slab, 4.0).2;
         assert_eq!(c(Slab::Mip), c(Slab::Off));
+    }
+
+    /// The integer fast path stores exactly what `raw * slope + intercept`
+    /// (rounded, clamped to i16) does, for every 16-bit and 8-bit raw value.
+    #[test]
+    fn integer_rescale_matches_the_float_path() {
+        let reference = |raw: f64, slope: f64, icpt: f64| (raw * slope + icpt).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+        let bytes16: Vec<u8> = (0..=u16::MAX).flat_map(|v| v.to_le_bytes()).collect();
+        let bytes8: Vec<u8> = (0..=u8::MAX).collect();
+        for (slope, icpt) in [(1.0, 0.0), (1.0, -1024.0), (1.0, -32768.0), (1.0, 40000.0), (1.0, -1e9), (1.0, 2e9), (1.0, -0.5), (2.0, -1024.0), (0.5, 3.0)] {
+            assert_eq!(super::integer_rescale(slope, icpt).is_some(), slope == 1.0 && icpt.fract() == 0.0 && icpt.abs() <= 1e9);
+            for signed in [false, true] {
+                let mut got = vec![0i16; 1 << 16];
+                super::store_raw(&bytes16, 16, signed, slope, icpt, &mut got);
+                for (v, &g) in got.iter().enumerate() {
+                    let raw = if signed { v as u16 as i16 as f64 } else { v as f64 };
+                    assert_eq!(g, reference(raw, slope, icpt), "16-bit raw {raw} slope {slope} intercept {icpt}");
+                }
+            }
+            let mut got = vec![0i16; 256];
+            super::store_raw(&bytes8, 8, false, slope, icpt, &mut got);
+            for (v, &g) in got.iter().enumerate() {
+                assert_eq!(g, reference(v as f64, slope, icpt), "8-bit raw {v} slope {slope} intercept {icpt}");
+            }
+        }
     }
 
     #[test]
