@@ -135,3 +135,8 @@ test("image menu: PET / CT fusion sits under Reformat only where the study has t
   assert.ok(commandsOf(imageMenu(base({ can: { fusion: true } }))).includes("fusion"));
   assert.ok(!commandsOf(imageMenu(base({ can: { copyImage: true } }))).includes("fusion"));
 });
+
+test("image menu: Measurements… is offered where the app has the panel", () => {
+  assert.ok(commandsOf(imageMenu(base({ can: { measurements: true } }))).includes("measurements"));
+  assert.ok(!commandsOf(imageMenu(base({ can: {} }))).includes("measurements"));
+});

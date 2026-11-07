@@ -68,7 +68,7 @@ export interface ImageMenuContext {
   /** Distraction-free reading (images only): offered, checked when on, where the app has it. */
   distractionFree?: boolean | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
-  can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
+  can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "measurements" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
   shortcut: (id: MenuCommand) => string | undefined;
 }
@@ -268,6 +268,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
         ]),
     });
   }
+  if (ctx.can.measurements) entries.push(item(ctx, "measurements", "Measurements…", { hint: "list · copy as text" }));
   if (ctx.can.tags) entries.push(item(ctx, "tags", "DICOM tags…"));
   if (ctx.can.comparePrior) entries.push(item(ctx, "comparePrior", "Compare with prior…"));
   return tidy(entries);
