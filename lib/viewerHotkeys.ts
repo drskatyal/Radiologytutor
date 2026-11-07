@@ -265,6 +265,7 @@ export function viewerShortcutGroups(
   }
   push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "F11"], does: "Set an exact window (width / level)" });
   if (readingTools) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
+  if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "L"], does: "Grid: link the panes at what each shows now (a prior)" });
   if (readingTools) {
     push(groups, "Display", { keys: ["T"], does: "Slab: thin → MIP → MinIP → AvgIP (reformats the stack's plane)" });
     push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "] / ["], does: "Thicker / thinner slab (2 mm steps)" });
