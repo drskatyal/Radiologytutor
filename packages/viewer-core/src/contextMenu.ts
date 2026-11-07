@@ -66,7 +66,7 @@ export interface ImageMenuContext {
   /** The series panel beside the viewports: offered as "Hide / Show series panel" when the app has one. */
   seriesPanel?: { shown: boolean } | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
-  can: Partial<Record<"reformat" | "mpr" | "threeD" | "video" | "exportDialog" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
+  can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
   shortcut: (id: MenuCommand) => string | undefined;
 }
@@ -161,7 +161,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
       ],
     });
   }
-  if (ctx.can.reformat || ctx.can.mpr || ctx.can.threeD) {
+  if (ctx.can.reformat || ctx.can.mpr || ctx.can.threeD || ctx.can.fusion) {
     entries.push({
       kind: "sub",
       id: "reformat",
@@ -174,6 +174,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
           sep,
           ...(ctx.can.mpr ? [item(ctx, "mpr", "Open MPR")] : []),
           ...(ctx.can.threeD ? [item(ctx, "3d", "3D volume")] : []),
+          ...(ctx.can.fusion ? [item(ctx, "fusion", "PET / CT fusion")] : []),
         ]),
     });
   }

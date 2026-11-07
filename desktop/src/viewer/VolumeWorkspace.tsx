@@ -46,6 +46,7 @@ import {
 import { edgeLabels, type EdgeLabels, type Vec3 } from "./orientation";
 import { voiRangeOf, windowPresetsFor, wwwcOf } from "./presets";
 import { ensureSuv } from "./suv";
+import { PET_COLORMAPS, PET_COLORMAP_LABELS } from "@flowrad/viewer-core/petFusion";
 import { setToolCursor } from "./toolCursor";
 
 export type VolumeMode = "mpr" | "3d" | "fusion";
@@ -65,7 +66,6 @@ const VR_PRESETS = [
   "MR-Angio",
   "MR-MIP",
 ];
-const PET_COLORMAPS = ["hsv", "Hot Iron", "jet", "Black-Body Radiation"];
 
 interface Props {
   mode: VolumeMode;
@@ -732,7 +732,7 @@ export function VolumeWorkspace({ mode, series, study, petSeries, showOverlay, o
               >
                 {PET_COLORMAPS.map((c) => (
                   <option key={c} value={c}>
-                    {c}
+                    {PET_COLORMAP_LABELS[c]}
                   </option>
                 ))}
               </select>

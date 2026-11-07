@@ -845,6 +845,7 @@ export default function CornerstoneViewer({
   questionMarkHelp = false,
   readingTools = false,
   exportFiles,
+  onFusion,
   seriesPanel = null,
   onCycleLayout,
   onSetLayout,
@@ -952,6 +953,8 @@ export default function CornerstoneViewer({
    * anonymised DICOM copy (free viewer). Called when the dialog opens.
    */
   exportFiles?: () => Promise<ExportDicomFiles | null>;
+  /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
+  onFusion?: (() => void) | null;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
@@ -3716,6 +3719,12 @@ export default function CornerstoneViewer({
       openCustomWindow();
       return;
     }
+    // Ctrl/⌘+Shift+F: PET / CT fusion, as on the desktop.
+    if (onFusion && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      onFusion();
+      return;
+    }
     // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
     if (readingTools && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
       event.preventDefault();
@@ -3929,6 +3938,7 @@ export default function CornerstoneViewer({
     if (command === "seriesPanel") return "Ctrl+B";
     if (command === "window:custom") return "Ctrl+F11";
     if (command === "export" && readingTools) return "Ctrl+E";
+    if (command === "fusion" && onFusion) return "Ctrl+Shift+F";
     return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
@@ -3954,6 +3964,7 @@ export default function CornerstoneViewer({
         links: false,
         video: readingTools && sliceCount >= 2,
         exportDialog: readingTools,
+        fusion: !!onFusion,
       },
       shortcut: webMenuShortcut,
     });
@@ -4048,6 +4059,8 @@ export default function CornerstoneViewer({
         return openExport("video");
       case "export":
         return openExport("image");
+      case "fusion":
+        return onFusion?.();
       case "tags": {
         const id = vp?.getCurrentImageId?.();
         if (id) setTagsImageId(id);
@@ -4295,6 +4308,7 @@ export default function CornerstoneViewer({
       textBox={readingTools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
       onSaveAnnotated={readingTools ? () => setAnnotatedExport(true) : undefined}
       onExport={readingTools ? () => openExport("image") : undefined}
+      onFusion={onFusion ?? undefined}
       onRecon={
         readingTools
           ? () => {

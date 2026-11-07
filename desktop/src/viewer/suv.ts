@@ -12,6 +12,7 @@ import { calculateSUVScalingFactors } from "@cornerstonejs/calculate-suv";
 import { invoke, isTauri } from "../platform";
 import type { ViewerSeries } from "../types";
 import { getEngine } from "./engine";
+import { sanitizePetMeta } from "@flowrad/viewer-core/petFusion";
 
 type SuvState = "suv" | "raw";
 const bySeries = new Map<string, Promise<SuvState>>();
@@ -56,17 +57,5 @@ async function computeSuv(series: ViewerSeries): Promise<SuvState> {
   return "suv";
 }
 
-/**
- * Shape the Rust tags for calculate-suv: drop absent (null) fields, and drop
- * sex + height unless the sex is M or F. Those two only feed SUL/BSA, and the
- * library throws on "O" (other) — which would otherwise cost the reader SUVbw.
- */
-export function sanitizePetMeta(meta: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(meta)) if (v != null && !(Array.isArray(v) && v.length === 0)) out[k] = v;
-  if (out.PatientSex !== "M" && out.PatientSex !== "F") {
-    delete out.PatientSex;
-    delete out.PatientSize;
-  }
-  return out;
-}
+// Shared with the web viewer (one copy of the SL/BSA guard).
+export { sanitizePetMeta } from "@flowrad/viewer-core/petFusion";
