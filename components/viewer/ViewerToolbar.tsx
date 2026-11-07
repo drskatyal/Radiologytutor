@@ -47,6 +47,7 @@ import {
   RotateCw,
   Route,
   Ruler,
+  ListOrdered,
   ScanSearch,
   SlidersHorizontal,
   Square,
@@ -290,6 +291,8 @@ export interface ViewerToolbarProps {
   onSaveAnnotated?: () => void;
   /** Free viewer: the Export dialog (images, video, anonymised DICOM). */
   onExport?: () => void;
+  /** Free viewer: every measurement as a list and as report text. */
+  onMeasurements?: () => void;
   /** Opens the Set window dialog (exact width / level). */
   onCustomWindow?: () => void;
   /** The measure menu (default: the teaching set, `MEASURE_TOOLS`). */
@@ -548,6 +551,11 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             onClick={props.onSaveAnnotated}
           >
             <Icon as={ImageDown} />
+          </ToolbarButton>
+        )}
+        {props.onMeasurements && (
+          <ToolbarButton label="Measurements (list, copy as report text)" disabled={!ready} container={host} pressed={false} onClick={props.onMeasurements}>
+            <Icon as={ListOrdered} />
           </ToolbarButton>
         )}
         {props.onExport && (
