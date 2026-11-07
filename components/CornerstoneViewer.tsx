@@ -62,6 +62,7 @@ import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
 import { VoiceStatus } from "./viewer/voice/VoiceStatus";
+import type { ExportDicomFiles, ExportFrames, WebExportKind } from "./viewer/WebExportDialog";
 import type { VoiceAction, VoiceSink, VoiceSinkBox } from "@flowrad/viewer-core";
 import { adoptParkedVoice, parkVoice, stopParkedVoice } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
@@ -255,9 +256,11 @@ function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrom
 
 /** The DICOM tags viewer loads on first use. */
 const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
-/** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
 /** Oblique, slab and curved MPR (free viewer), loaded on first use. */
 const WebReconOverlay = dynamicImport(() => import("./viewer/recon/WebReconOverlay").then((m) => m.WebReconOverlay), { ssr: false });
+/** Export images, video or anonymised DICOM (free viewer, Ctrl/⌘+E), loaded on first use. */
+const WebExportDialog = dynamicImport(() => import("./viewer/WebExportDialog").then((m) => m.WebExportDialog), { ssr: false });
+/** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
 const CustomWindowDialog = dynamicImport(() => import("./viewer/CustomWindowDialog").then((m) => m.CustomWindowDialog), { ssr: false });
 
 /** Tools in the right-click menu, in order. */
@@ -841,6 +844,7 @@ export default function CornerstoneViewer({
   onViewModeChange,
   questionMarkHelp = false,
   readingTools = false,
+  exportFiles,
   seriesPanel = null,
   onCycleLayout,
   onSetLayout,
@@ -943,6 +947,11 @@ export default function CornerstoneViewer({
    * bidirectional). Read once, when the viewport is built.
    */
   readingTools?: boolean;
+  /**
+   * The files behind this pane's series and study, for the Export dialog's
+   * anonymised DICOM copy (free viewer). Called when the dialog opens.
+   */
+  exportFiles?: () => Promise<ExportDicomFiles | null>;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
@@ -1107,6 +1116,14 @@ export default function CornerstoneViewer({
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [customWindowOpen, setCustomWindowOpen] = useState(false);
+  /** The Export dialog (free viewer), and the kind it opens on. */
+  // The stack and files are read once, when it opens: the export steps
+  // through the slices, and must restore the one the reader was on.
+  const [exportOpen, setExportOpen] = useState<{
+    kind: WebExportKind;
+    frames: ExportFrames | null;
+    dicom: ExportDicomFiles | null;
+  } | null>(null);
   // Text boxes (free viewer, saved in this browser) and the annotated-PNG save.
   const [textBoxTool, setTextBoxTool] = useState(false);
   const textBoxRef = useRef<TextBoxLayerHandle>(null);
@@ -3630,12 +3647,79 @@ export default function CornerstoneViewer({
     setCustomWindowOpen(true);
   };
 
+  const openExport = (kind: WebExportKind) => {
+    if (!ready || mprLive || viewMode !== "stack") return flash("Export works on the stack view");
+    if (previewing) return flash("Export unlocks when full-quality pixels load");
+    const frames = exportFrames();
+    void (exportFiles?.() ?? Promise.resolve(null))
+      .catch(() => null)
+      .then((dicom) => setExportOpen({ kind, frames, dicom }));
+  };
+  /** The pane's stack for the Export dialog: step, wait for the draw, capture. */
+  const exportFrames = (): ExportFrames | null => {
+    const vp = viewportRef.current as unknown as {
+      getImageIds?: () => string[];
+      getCurrentImageIdIndex?: () => number;
+      setImageIdIndex?: (i: number) => Promise<unknown>;
+      getProperties?: () => { voiRange?: { lower: number; upper: number } };
+    } | null;
+    const element = elementRef.current;
+    const ids = vp?.getImageIds?.() ?? [];
+    if (!vp || !element || !ids.length) return null;
+    const meta = readout?.meta;
+    const seriesNumber = meta?.seriesNumber != null && meta.seriesNumber !== "" ? Number(meta.seriesNumber) : undefined;
+    const rendered = () =>
+      new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          element.removeEventListener("CORNERSTONE_IMAGE_RENDERED", finish);
+          // One more frame so the annotation SVG has caught up with the image.
+          requestAnimationFrame(() => resolve());
+        };
+        element.addEventListener("CORNERSTONE_IMAGE_RENDERED", finish);
+        window.setTimeout(finish, 1500);
+      });
+    return {
+      count: ids.length,
+      current: vp.getCurrentImageIdIndex?.() ?? 0,
+      modality: modality || meta?.modality || undefined,
+      seriesNumber: Number.isFinite(seriesNumber) ? seriesNumber : undefined,
+      show: async (index) => {
+        if (vp.getCurrentImageIdIndex?.() === index) return;
+        const wait = rendered();
+        await vp.setImageIdIndex?.(index);
+        await wait;
+      },
+      capture: async ({ annotations, overlay }) => {
+        const { anonymousLines, withOverlayText } = await import("../lib/viewerExport");
+        const canvas = element.querySelector("canvas");
+        if (!canvas) throw new Error("Nothing is rendered in this viewport yet.");
+        const base = (annotations ? await textBoxRef.current?.composite() : null) ?? canvas;
+        const index = vp.getCurrentImageIdIndex?.() ?? 0;
+        const voi = voiToWwWc(vp.getProperties?.().voiRange);
+        const lines =
+          overlay === "anonymous"
+            ? anonymousLines({ modality: modality || meta?.modality, seriesNumber: meta?.seriesNumber, index, count: ids.length, ww: voi?.ww, wc: voi?.wc })
+            : [];
+        return withOverlayText(base, lines, element.getBoundingClientRect().width);
+      },
+    };
+  };
+
   const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (isTextTarget(event.target)) return;
     // Ctrl/⌘+F11: set an exact window, as on the desktop (RadiAnt's key).
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "F11") {
       event.preventDefault();
       openCustomWindow();
+      return;
+    }
+    // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
+    if (readingTools && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
+      event.preventDefault();
+      openExport("image");
       return;
     }
     if (event.key === "Escape" && helpOpen) {
@@ -3844,6 +3928,7 @@ export default function CornerstoneViewer({
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
     if (command === "window:custom") return "Ctrl+F11";
+    if (command === "export" && readingTools) return "Ctrl+E";
     return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
@@ -3861,7 +3946,15 @@ export default function CornerstoneViewer({
       slab: null,
       layout: null,
       seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
-      can: { mpr: ready && sliceCount >= 3, copyImage: true, saveImage: true, tags: true, links: false },
+      can: {
+        mpr: ready && sliceCount >= 3,
+        copyImage: true,
+        saveImage: true,
+        tags: true,
+        links: false,
+        video: readingTools && sliceCount >= 2,
+        exportDialog: readingTools,
+      },
       shortcut: webMenuShortcut,
     });
   const viewportCanvas = () => elementRef.current?.querySelector("canvas") ?? null;
@@ -3951,6 +4044,10 @@ export default function CornerstoneViewer({
         );
         return;
       }
+      case "video":
+        return openExport("video");
+      case "export":
+        return openExport("image");
       case "tags": {
         const id = vp?.getCurrentImageId?.();
         if (id) setTagsImageId(id);
@@ -4197,6 +4294,7 @@ export default function CornerstoneViewer({
       }}
       textBox={readingTools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
       onSaveAnnotated={readingTools ? () => setAnnotatedExport(true) : undefined}
+      onExport={readingTools ? () => openExport("image") : undefined}
       onRecon={
         readingTools
           ? () => {
@@ -4489,6 +4587,19 @@ export default function CornerstoneViewer({
               details are added. It is saved to this device only.
             </p>
           </Modal>
+        )}
+        {exportOpen && (
+          <WebExportDialog
+            open
+            initial={{ kind: exportOpen.kind }}
+            frames={exportOpen.frames}
+            dicom={exportOpen.dicom}
+            onClose={() => {
+              setExportOpen(null);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            onDone={flash}
+          />
         )}
         {customWindowOpen && (
           <CustomWindowDialog

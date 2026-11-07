@@ -113,3 +113,10 @@ test("image menu: 'Hide series panel' only where the app has a series panel", ()
   const hidden = find(imageMenu({ ...base(), seriesPanel: { shown: false } }), "seriesPanel");
   assert.ok(hidden?.kind === "item" && hidden.label === "Show series panel");
 });
+
+test("image menu: the free viewer's Export submenu offers video and the Export dialog", () => {
+  const ids = commandsOf(imageMenu(base({ can: { copyImage: true, saveImage: true, video: true, exportDialog: true } })));
+  for (const id of ["copyImage", "save:png", "save:jpeg", "video", "export"]) assert.ok(ids.includes(id), id);
+  const plain = commandsOf(imageMenu(base({ can: { copyImage: true, saveImage: true } })));
+  assert.ok(!plain.includes("export"), "teaching surfaces keep the pixel-only saves");
+});

@@ -27,6 +27,7 @@ import {
   DraftingCompass,
   Eraser,
   ImageDown,
+  Download,
   Keyboard,
   Lasso,
   MessageSquareText,
@@ -284,6 +285,8 @@ export interface ViewerToolbarProps {
   textBox?: { active: boolean; onToggle: () => void };
   /** Save the image with its measurements and text boxes burned in. */
   onSaveAnnotated?: () => void;
+  /** Free viewer: the Export dialog (images, video, anonymised DICOM). */
+  onExport?: () => void;
   /** Opens the Set window dialog (exact width / level). */
   onCustomWindow?: () => void;
   /** The measure menu (default: the teaching set, `MEASURE_TOOLS`). */
@@ -537,6 +540,17 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             onClick={props.onSaveAnnotated}
           >
             <Icon as={ImageDown} />
+          </ToolbarButton>
+        )}
+        {props.onExport && (
+          <ToolbarButton
+            label="Export images, video or DICOM"
+            disabled={!ready}
+            container={host}
+            pressed={false}
+            onClick={props.onExport}
+          >
+            <Icon as={Download} />
           </ToolbarButton>
         )}
 

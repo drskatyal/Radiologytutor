@@ -220,3 +220,11 @@ test("the help lists Ctrl+F11 (Set window), ⌘ on a Mac", () => {
   assert.deepEqual(row(false)?.keys, ["Ctrl", "F11"]);
   assert.deepEqual(row(true)?.keys, ["⌘", "F11"]);
 });
+
+test("the free viewer's help lists Ctrl/⌘+E (Export); teaching surfaces don't", () => {
+  const row = (mac: boolean, readingTools: boolean) =>
+    viewerShortcutGroups({}, mac, { readingTools }).flatMap((g) => g.rows).find((r) => /^Export/.test(r.does));
+  assert.deepEqual(row(false, true)?.keys, ["Ctrl", "E"]);
+  assert.deepEqual(row(true, true)?.keys, ["⌘", "E"]);
+  assert.equal(row(false, false), undefined);
+});

@@ -75,10 +75,12 @@ import {
   localMetadataEntryCount,
   localRawBytesHeld,
   releaseLocalImages,
+  localSeriesFiles,
   type FirstLocalImage,
   type LocalIngestResult,
 } from "@flowrad/viewer-core/localIngest";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
+import type { ExportDicomFiles } from "@/components/viewer/WebExportDialog";
 import { hapticTick, isSwipeUp } from "@/lib/sheetGesture";
 import { EDGE_TOOLBAR_PX, NARROW_LAYOUT_MEDIA, READING_SERIES_ASIDE_PX, requestStageFullscreen } from "@/lib/viewerLayout";
 import {
@@ -978,6 +980,20 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
+  /** Export › DICOM (anonymised): the files behind a pane's series and its study. */
+  const exportFilesFor = useCallback(
+    (target: { study: number; series: number }) => async (): Promise<ExportDicomFiles | null> => {
+      if (!result) return null;
+      const inStudy = result.studies[target.study];
+      const wanted = inStudy?.series[target.series];
+      if (!inStudy || !wanted || isKeyImageSeries(wanted)) return null;
+      const groups = await Promise.all(
+        inStudy.series.filter((s) => !isKeyImageSeries(s)).map((s) => localSeriesFiles(s, result.imageIdsByFile))
+      );
+      return { series: await localSeriesFiles(wanted, result.imageIdsByFile), study: groups.filter((g) => g.length > 0) };
+    },
+    [result]
+  );
   const pinnedIsActive =
     !!pinned && (phase.state === "reading" || !!series?.instances.some((i) => i.fileName === pinned.fileName));
   // Multi-monitor UI only with two or more monitors (lib/screens.ts).
@@ -1338,6 +1354,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     defaultTool="StackScroll"
                     questionMarkHelp
                     readingTools
+                    exportFiles={exportFilesFor({ study: activeStudy, series: activeSeries })}
                     seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                     onChunkLoadError={recoverFromChunkError}
                     voiceOn={voiceOn}
@@ -1391,6 +1408,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           defaultTool="StackScroll"
                           questionMarkHelp
                           readingTools
+                          exportFiles={exportFilesFor(target)}
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                           onChunkLoadError={recoverFromChunkError}
                           onCycleLayout={cycleLayout}

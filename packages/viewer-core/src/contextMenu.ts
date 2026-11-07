@@ -66,7 +66,7 @@ export interface ImageMenuContext {
   /** The series panel beside the viewports: offered as "Hide / Show series panel" when the app has one. */
   seriesPanel?: { shown: boolean } | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
-  can: Partial<Record<"reformat" | "mpr" | "threeD" | "video" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
+  can: Partial<Record<"reformat" | "mpr" | "threeD" | "video" | "exportDialog" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
   shortcut: (id: MenuCommand) => string | undefined;
 }
@@ -250,7 +250,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
     item(ctx, "annotations", "Annotations", { checked: ctx.annotations }),
     sep
   );
-  if (ctx.can.copyImage || ctx.can.saveImage || ctx.can.video) {
+  if (ctx.can.copyImage || ctx.can.saveImage || ctx.can.video || ctx.can.exportDialog) {
     entries.push({
       kind: "sub",
       id: "export",
@@ -260,6 +260,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
           ...(ctx.can.copyImage ? [item(ctx, "copyImage", "Copy image")] : []),
           ...(ctx.can.saveImage ? [item(ctx, "save:png", "Save as PNG…", { hint: "anonymised" }), item(ctx, "save:jpeg", "Save as JPEG…", { hint: "anonymised" })] : []),
           ...(ctx.can.video ? [sep, item(ctx, "video", "Series as video…")] : []),
+          ...(ctx.can.exportDialog ? [sep, item(ctx, "export", "Export images, video or DICOM…")] : []),
         ]),
     });
   }
