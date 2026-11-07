@@ -7,6 +7,9 @@ import appCss from "./styles.css?inline";
 import { watchLongTasks } from "./perfWatch";
 import { installContextMenuGuard } from "./contextMenuGuard";
 
+// Cold-start breakdown (bench report `pageTiming.main`): this module body starts
+// running (its imports, the app included, are evaluated by now).
+(window as unknown as { __mainAt?: number }).__mainAt = performance.now();
 // Benchmark: when did our JS start, relative to process start?
 if (isTauri) {
   void invoke<number>("startup_elapsed_ms").then((ms) => {

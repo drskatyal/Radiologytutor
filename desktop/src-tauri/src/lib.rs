@@ -1540,7 +1540,17 @@ pub fn run() {
                 if let Some(t0) = STARTED.get() {
                     splash::arm(*t0, &config.title);
                 }
-                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
+                // Cold-start trace only: when Rust has the page and its entry
+                // script ready to hand to the webview (the page's share starts
+                // at navigation; these split it into Rust vs webview).
+                let builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.on_web_resource_request(|req, _resp| {
+                    let p = req.uri().path();
+                    if p == "/" || p.ends_with(".html") {
+                        trace("page html served");
+                    } else if p.starts_with("/assets/index-") && p.ends_with(".js") {
+                        trace("entry script served");
+                    }
+                });
                 // macOS, GPU built at launch: the page is transparent over the
                 // native surface from its first line (styles.css
                 // `native-transparent`), not restyled when native_init answers

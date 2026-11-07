@@ -1259,6 +1259,8 @@ export default function App() {
                   dcl: r1(nav.domContentLoadedEventEnd),
                   load: r1(nav.loadEventStart),
                   fcp: r1(fcp),
+                  // The entry module (main.tsx) running: its imports evaluated.
+                  main: r1((window as unknown as { __mainAt?: number }).__mainAt),
                 }
               : null;
             await benchReport({
