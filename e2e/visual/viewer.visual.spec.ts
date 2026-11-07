@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
-// Visual regression + perf gate for the web viewer (/viewer/local).
+// Visual regression + perf gate for the web viewer (/viewer/local, the reading room inside Learn).
 //
 // Opens the deterministic synthetic CT (scripts/make-test-ct.py, TEST_CT_DIR)
 // at desktop, tablet, phone and phone-landscape sizes and compares what the
@@ -131,8 +131,8 @@ for (const size of SIZES) {
     }
 
     if (size.mobile && size.viewport.width < 1024) {
-      // Phone/tablet chrome: the series drawer and fullscreen (#92).
-      await page.getByRole("button", { name: "Show series" }).tap();
+      // Phone/tablet chrome: the series drawer (the bar's "Series" button) and fullscreen (#92).
+      await page.getByRole("button", { name: /^Series\s*\d*$/ }).tap();
       await expect(page.getByRole("dialog")).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(page.getByRole("dialog")).toBeHidden();

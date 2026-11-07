@@ -5,7 +5,8 @@
 // Two homes, one component:
 //   • /viewer        — the free, public FlowRad Viewer (tone "reading"): a
 //                      full-height dark reading room, no account, no paywall.
-//   • /viewer/local  — the same reader inside the RadLearn app shell (tone "page").
+//   • /viewer/local  — the same reading room inside FlowRad Learn (ViewerShell).
+//   tone "page" (the reader inside an app page) remains for other callers.
 //
 // Drop or pick a folder, a ZIP, a CD (DICOMDIR) or loose files. The pipeline
 // (packages/viewer-core/src/localIngest.ts) parses headers in a Web Worker pool
