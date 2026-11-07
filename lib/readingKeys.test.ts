@@ -47,3 +47,16 @@ test("reading keys: 100 % is one image row per screen pixel", () => {
   assert.equal(zoomLevelLabel("fit"), "Fit to the pane");
   assert.equal(zoomLevelLabel(4), "Zoom 400 %");
 });
+
+test("reading keys: Alt+A / C / S reformat (by physical key: å ç ß on a Mac), Shift+E eraser, Ctrl/⌘+Shift+Backspace clears", () => {
+  assert.deepEqual(resolveReadingKey({ key: "c", code: "KeyC", altKey: true }), { type: "reformat", plane: "coronal" });
+  assert.deepEqual(resolveReadingKey({ key: "ß", code: "KeyS", altKey: true }), { type: "reformat", plane: "sagittal" });
+  assert.deepEqual(resolveReadingKey({ key: "å", code: "KeyA", altKey: true }), { type: "reformat", plane: "axial" });
+  assert.equal(resolveReadingKey({ key: "x", code: "KeyX", altKey: true }), null);
+  assert.equal(resolveReadingKey({ key: "c", code: "KeyC", altKey: true, ctrlKey: true }), null);
+  assert.deepEqual(resolveReadingKey({ key: "E", code: "KeyE", shiftKey: true }), { type: "eraser" });
+  assert.equal(resolveReadingKey({ key: "e", code: "KeyE" }), null, "bare E stays the ellipse");
+  assert.deepEqual(resolveReadingKey({ key: "Backspace", ctrlKey: true, shiftKey: true }), { type: "clearMeasurements" });
+  assert.deepEqual(resolveReadingKey({ key: "Delete", metaKey: true, shiftKey: true }), { type: "clearMeasurements" });
+  assert.equal(resolveReadingKey({ key: "Backspace", ctrlKey: true }), null);
+});

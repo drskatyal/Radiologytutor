@@ -2,7 +2,9 @@
 // built on this core: Ctrl/⌘+0 fit, Ctrl/⌘+1…4 zoom 100 / 200 / 400 / 800 %
 // (one image pixel per screen pixel at 100 %), Ctrl/⌘+arrows pan, F12 show /
 // hide annotations, Ctrl/⌘+F12 reference lines, and F5 / Shift+F5 / Alt+F5
-// to link scroll, window / level and zoom across panes.
+// to link scroll, window / level and zoom across panes; Alt+A / C / S
+// reformat the pane to axial / coronal / sagittal; Shift+E the eraser;
+// Ctrl/⌘+Shift+Backspace (or Delete) clears the measurements.
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -14,7 +16,10 @@ export type ReadingKeyAction =
   | { type: "pan"; dx: number; dy: number }
   | { type: "annotations" }
   | { type: "referenceLines" }
-  | { type: "link"; what: "scroll" | "voi" | "zoom" };
+  | { type: "link"; what: "scroll" | "voi" | "zoom" }
+  | { type: "reformat"; plane: "axial" | "coronal" | "sagittal" }
+  | { type: "eraser" }
+  | { type: "clearMeasurements" };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -53,6 +58,16 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     if (alt && !shift) return { type: "link", what: "zoom" };
     return null;
   }
+  // Alt+A / C / S: by physical key, since on a Mac Alt types å / ç / ß.
+  if (alt && !mod && !shift) {
+    const letter = /^Key([ACS])$/.exec(e.code ?? "")?.[1] ?? (/^[acs]$/i.test(e.key) ? e.key.toUpperCase() : undefined);
+    if (letter === "A") return { type: "reformat", plane: "axial" };
+    if (letter === "C") return { type: "reformat", plane: "coronal" };
+    if (letter === "S") return { type: "reformat", plane: "sagittal" };
+    return null;
+  }
+  if (shift && !mod && !alt && (e.code === "KeyE" || e.key === "E")) return { type: "eraser" };
+  if (mod && shift && !alt && (e.key === "Backspace" || e.key === "Delete")) return { type: "clearMeasurements" };
   if (!mod || shift || alt) return null;
   const d = digitOf(e);
   if (d != null && d < ZOOM_LEVELS.length) return { type: "zoomTo", scale: ZOOM_LEVELS[d]! };

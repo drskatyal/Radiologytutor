@@ -42,6 +42,7 @@ import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
 import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
 import { parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
+import { MEASUREMENT_TOOLS } from "@flowrad/viewer-core/measurementReport";
 import {
   useCallback,
   useEffect,
@@ -3842,6 +3843,40 @@ export default function CornerstoneViewer({
     };
   };
 
+  /**
+   * The toolbar's plane picker: the acquired stack, one plane reformatted
+   * from the series' volume and enlarged in this viewport, or ("all") the
+   * three-pane MPR.
+   */
+  const showPlane = (plane: MprPlane | "acquired" | "all") => {
+    if (plane === "acquired") {
+      setViewMode("stack");
+      return;
+    }
+    setMprRender((mode) => (mode === "3d" ? "mpr" : mode));
+    setMprFocus(plane === "all" ? null : plane);
+    if (viewMode !== "mpr") setViewMode("mpr");
+  };
+  /** Alt+A / C / S and right-click › Reformat, as on the desktop: the same key again returns to the stack. */
+  const reformatPane = (plane: MprPlane) => {
+    if (!ready || sliceCount < 3) return flash("Reformats need a stack of parallel slices");
+    const name = plane[0]!.toUpperCase() + plane.slice(1);
+    if (viewMode === "mpr" && mprFocus === plane && mprRender !== "3d") {
+      showPlane("acquired");
+      return flash("Stack");
+    }
+    showPlane(plane);
+    flash(`${name} reformat · Alt+${name[0]} again for the stack`);
+  };
+  /** Ctrl/⌘+Shift+Backspace: every measurement in the study, in one undo step. */
+  const clearMeasurements = () => {
+    if (!editCtx) return flash("Measurements clear once the image has loaded");
+    const list = annotationEditing.allAnnotations(editCtx).filter((a) => MEASUREMENT_TOOLS.has(a.metadata?.toolName ?? ""));
+    if (!list.length) return flash("No measurements to clear");
+    const n = annotationEditing.remove(editCtx, list);
+    flash(`${n} measurement${n === 1 ? "" : "s"} cleared · Ctrl+Z to undo`);
+  };
+
   /** RadiAnt's reading keys, as on the desktop (zoom levels, pan, F12, F5). */
   const runReadingKey = (action: ReadingKeyAction) => {
     switch (action.type) {
@@ -3857,6 +3892,12 @@ export default function CornerstoneViewer({
         return paneLinks ? runWebMenuCommand("refLines") : flash("Reference lines need two or more panes");
       case "link":
         return paneLinks ? runWebMenuCommand(`link:${action.what}`) : flash("Linking needs two or more panes");
+      case "reformat":
+        return reformatPane(action.plane);
+      case "eraser":
+        return runViewerAction({ type: "tool", tool: "Eraser" });
+      case "clearMeasurements":
+        return clearMeasurements();
     }
   };
 
@@ -4106,6 +4147,7 @@ export default function CornerstoneViewer({
   const [annotationsHidden, setAnnotationsHidden] = useState(false);
   const webMenuShortcut = (command: string): string | undefined => {
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
+    if (head === "tool" && arg === "Eraser" && readingTools) return "Shift+E";
     if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
       if (arg === "auto") return shortcutForPreset(0) ?? undefined;
@@ -4121,6 +4163,9 @@ export default function CornerstoneViewer({
         "zoom:1": "Ctrl+1",
         "zoom:2": "Ctrl+2",
         annotations: "F12",
+        "reformat:axial": "Alt+A",
+        "reformat:coronal": "Alt+C",
+        "reformat:sagittal": "Alt+S",
         ...(paneLinks ? { "link:scroll": "F5", "link:voi": "Shift+F5", "link:zoom": "Alt+F5", refLines: "Ctrl+F12" } : {}),
       };
       if (reading[command]) return reading[command];
@@ -4150,6 +4195,7 @@ export default function CornerstoneViewer({
       seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
       can: {
         mpr: ready && sliceCount >= 3,
+        reformat: readingTools && ready && sliceCount >= 3,
         copyImage: true,
         saveImage: true,
         tags: true,
@@ -4203,6 +4249,9 @@ export default function CornerstoneViewer({
       case "flip":
       case "orient":
         if (isOrientationCommand(command)) applyOrientation(command);
+        return;
+      case "reformat":
+        if (arg === "axial" || arg === "coronal" || arg === "sagittal") return reformatPane(arg);
         return;
       case "seriesPanel":
         return seriesPanel?.toggle();
@@ -4517,17 +4566,7 @@ export default function CornerstoneViewer({
         if (viewMode !== "mpr") setViewMode("mpr");
       }}
       plane={viewMode === "stack" ? "acquired" : mprFocus ?? "all"}
-      onPlane={(plane) => {
-        if (plane === "acquired") {
-          setViewMode("stack");
-          return;
-        }
-        // One plane reformatted from the series' volume, enlarged in this
-        // viewport; "all" is the three-pane MPR.
-        setMprRender((mode) => (mode === "3d" ? "mpr" : mode));
-        setMprFocus(plane === "all" ? null : plane);
-        if (viewMode !== "mpr") setViewMode("mpr");
-      }}
+      onPlane={showPlane}
       cineOffered={cineOffered}
       cinePlaying={cinePlaying}
       cineFps={cineFps}
