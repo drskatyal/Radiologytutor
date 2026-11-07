@@ -6,7 +6,8 @@
 // (it re-exports Toast) silently puts it back in the entry chunk. That happened via
 // components/viewer/voice/VoiceStatus.tsx: 650 kB → 507 kB once it was fixed. This walks
 // the static import graph from main.tsx (dynamic `import()` and `import type` excluded,
-// as Vite does) and fails if it reaches either module.
+// as Vite does) and fails if it reaches any of them. Tooltip (Radix + floating-ui) is
+// only used by the series panel frame, which loads with the study view (App.tsx).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -54,12 +55,12 @@ function startupGraph(entry: string): Set<string> {
   return seen;
 }
 
-test("startup bundle: the shared UI barrel and the Toast component stay out of the entry", () => {
+test("startup bundle: the shared UI barrel, Toast and Tooltip stay out of the entry", () => {
   const graph = startupGraph(path.join(desktopSrc, "main.tsx"));
   assert.ok(graph.has(path.join(desktopSrc, "App.tsx")), "the walk reaches App.tsx (sanity)");
   const rel = (p: string) => path.relative(repoRoot, p);
-  for (const banned of ["components/ui/index.ts", "components/ui/Toast.tsx"]) {
-    assert.ok(!graph.has(path.join(repoRoot, banned)), `${banned} is statically reachable from main.tsx; import the primitive's own file (e.g. "@/components/ui/Button") instead of "@/components/ui"`);
+  for (const banned of ["components/ui/index.ts", "components/ui/Toast.tsx", "components/ui/Tooltip.tsx"]) {
+    assert.ok(!graph.has(path.join(repoRoot, banned)), `${banned} is statically reachable from main.tsx: import a primitive's own file (e.g. "@/components/ui/Button"), never the "@/components/ui" barrel, and load anything that needs Toast or Tooltip lazily (src/toast.tsx, preloadable() in App.tsx)`);
   }
   // Sanity: the lazy toast shim itself is on the path, and it only reaches Toast via import().
   assert.ok([...graph].some((p) => rel(p) === "desktop/src/toast.tsx"), "src/toast.tsx is on the startup path");
