@@ -4,7 +4,10 @@
 // hide annotations, Ctrl/⌘+F12 reference lines, and F5 / Shift+F5 / Alt+F5
 // to link scroll, window / level and zoom across panes; Alt+A / C / S
 // reformat the pane to axial / coronal / sagittal; Shift+E the eraser;
-// Ctrl/⌘+Shift+Backspace (or Delete) clears the measurements.
+// Ctrl/⌘+Shift+Backspace (or Delete) clears the measurements; Space plays
+// cine, Shift+[ / ] slows / speeds it, [ / ] change series, Ctrl/⌘+M MPR,
+// Ctrl/⌘+Shift+M 3D, Ctrl/⌘+Shift+F12 overlay on / off, and F full screen
+// (isFullScreenKey: the page that owns the stage handles it).
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -19,7 +22,13 @@ export type ReadingKeyAction =
   | { type: "link"; what: "scroll" | "voi" | "zoom" }
   | { type: "reformat"; plane: "axial" | "coronal" | "sagittal" }
   | { type: "eraser" }
-  | { type: "clearMeasurements" };
+  | { type: "clearMeasurements" }
+  | { type: "cine" }
+  | { type: "cineFps"; delta: 1 | -1 }
+  | { type: "series"; delta: 1 | -1 }
+  | { type: "mpr" }
+  | { type: "volume3d" }
+  | { type: "overlay" };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -50,8 +59,18 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
   if (e.key === "F12") {
     if (!mod && !shift && !alt) return { type: "annotations" };
     if (mod && !shift && !alt) return { type: "referenceLines" };
+    if (mod && shift && !alt) return { type: "overlay" };
     return null;
   }
+  if (!mod && !alt) {
+    if (!shift && (e.key === " " || e.code === "Space")) return { type: "cine" };
+    // Shift+[ / ] type { / } on most layouts.
+    if (e.key === "{" || (shift && e.key === "[")) return { type: "cineFps", delta: -1 };
+    if (e.key === "}" || (shift && e.key === "]")) return { type: "cineFps", delta: 1 };
+    if (!shift && e.key === "[") return { type: "series", delta: -1 };
+    if (!shift && e.key === "]") return { type: "series", delta: 1 };
+  }
+  if (mod && !alt && (e.code === "KeyM" || e.key.toLowerCase() === "m")) return shift ? { type: "volume3d" } : { type: "mpr" };
   if (e.key === "F5" && !mod) {
     if (!shift && !alt) return { type: "link", what: "scroll" };
     if (shift && !alt) return { type: "link", what: "voi" };
@@ -98,4 +117,9 @@ export function parallelScaleForPixelZoom(paneCssHeight: number, rowSpacingMm: n
 /** "Zoom 200 %", "Fit to the pane": the confirmation a key press shows. */
 export function zoomLevelLabel(scale: number | "fit"): string {
   return scale === "fit" ? "Fit to the pane" : `Zoom ${Math.round(scale * 100)} %`;
+}
+
+/** F (no modifiers): full screen, as on the desktop. For the page that owns the stage. */
+export function isFullScreenKey(e: ReadingKeyEvent): boolean {
+  return !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.code === "KeyF" || e.key === "f" || e.key === "F");
 }

@@ -3898,6 +3898,42 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "tool", tool: "Eraser" });
       case "clearMeasurements":
         return clearMeasurements();
+      case "cine":
+      case "cineFps":
+      case "series":
+        return runViewerAction(action);
+      case "mpr": {
+        // Ctrl/⌘+M, as on the desktop: the three-plane MPR, or back to the stack.
+        if (!ready || sliceCount < 3) return flash("MPR needs a stack of parallel slices");
+        if (viewMode === "mpr" && mprRender !== "3d" && mprFocus == null) {
+          showPlane("acquired");
+          return flash("Stack");
+        }
+        showPlane("all");
+        return flash("MPR");
+      }
+      case "volume3d": {
+        // Ctrl/⌘+Shift+M: 3D volume rendering, or back to the stack.
+        if (!ready || sliceCount < 3) return flash("3D needs a stack of parallel slices");
+        if (viewMode === "mpr" && mprRender === "3d") {
+          showPlane("acquired");
+          return flash("Stack");
+        }
+        setMprRender("3d");
+        if (viewMode !== "mpr") setViewMode("mpr");
+        return flash("3D");
+      }
+      case "overlay": {
+        // Ctrl/⌘+Shift+F12: overlay text on / off (O still cycles full → basic → off).
+        const next: OverlayDensity = overlay === "off" ? "full" : "off";
+        setOverlay(next);
+        try {
+          window.localStorage.setItem(OVERLAY_STORAGE_KEY, next);
+        } catch {
+          /* storage blocked — still toggles for this session */
+        }
+        return flash(next === "off" ? "Overlay off" : "Overlay on");
+      }
     }
   };
 
