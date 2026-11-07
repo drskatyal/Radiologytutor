@@ -77,3 +77,9 @@ test("reading keys: Space cine, Shift+[ / ] cine speed, [ / ] series, Ctrl/⌘+M
   assert.equal(isFullScreenKey({ key: "f", code: "KeyF", ctrlKey: true }), false);
   assert.equal(isFullScreenKey({ key: "F", code: "KeyF", shiftKey: true }), false, "Ctrl/⌘+Shift+F is fusion; Shift+F nothing");
 });
+
+test("reading keys: Shift+Backspace resets rotation and flips only; bare Backspace stays the full reset", () => {
+  assert.deepEqual(resolveReadingKey({ key: "Backspace", shiftKey: true }), { type: "orientReset" });
+  assert.equal(resolveReadingKey({ key: "Backspace" }), null);
+  assert.deepEqual(resolveReadingKey({ key: "Backspace", ctrlKey: true, shiftKey: true }), { type: "clearMeasurements" });
+});

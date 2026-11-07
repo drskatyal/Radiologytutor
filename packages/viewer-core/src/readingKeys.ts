@@ -7,7 +7,8 @@
 // Ctrl/⌘+Shift+Backspace (or Delete) clears the measurements; Space plays
 // cine, Shift+[ / ] slows / speeds it, [ / ] change series, Ctrl/⌘+M MPR,
 // Ctrl/⌘+Shift+M 3D, Ctrl/⌘+Shift+F12 overlay on / off, and F full screen
-// (isFullScreenKey: the page that owns the stage handles it).
+// (isFullScreenKey: the page that owns the stage handles it); Shift+Backspace
+// resets rotation and flips only.
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -28,7 +29,8 @@ export type ReadingKeyAction =
   | { type: "series"; delta: 1 | -1 }
   | { type: "mpr" }
   | { type: "volume3d" }
-  | { type: "overlay" };
+  | { type: "overlay" }
+  | { type: "orientReset" };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -86,6 +88,8 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     return null;
   }
   if (shift && !mod && !alt && (e.code === "KeyE" || e.key === "E")) return { type: "eraser" };
+  // Shift+Backspace: rotation and flips back to the file's (zoom, pan and window kept), as on the desktop.
+  if (shift && !mod && !alt && e.key === "Backspace") return { type: "orientReset" };
   if (mod && shift && !alt && (e.key === "Backspace" || e.key === "Delete")) return { type: "clearMeasurements" };
   if (!mod || shift || alt) return null;
   const d = digitOf(e);
