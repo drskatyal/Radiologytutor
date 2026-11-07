@@ -1585,7 +1585,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           )}
         </div>
       )}
-      <StructuredReportDialog report={openReport} onClose={() => setOpenReport(null)} />
+      <StructuredReportDialog report={openReport} onClose={() => setOpenReport(null)} tone="reading" />
     </div>
   );
 }

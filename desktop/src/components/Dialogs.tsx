@@ -5,8 +5,6 @@ import { Disc3, Mouse, Usb } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Kbd } from "@/components/ui/Kbd";
-import { Field } from "@/components/ui/Field";
-import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
 import { Slider } from "@/components/ui/Slider";
 import { ScrollFade } from "@/components/ui/ScrollFade";
@@ -87,74 +85,8 @@ export function ShortcutsDialog({
   );
 }
 
-export function CustomWindowDialog({
-  open,
-  onClose,
-  initial,
-  onApply,
-}: {
-  open: boolean;
-  onClose: () => void;
-  initial: { ww?: number; wc?: number };
-  onApply: (ww: number, wc: number) => void;
-}) {
-  const [ww, setWw] = useState("");
-  const [wc, setWc] = useState("");
-  useEffect(() => {
-    if (open) {
-      setWw(initial.ww != null ? String(Math.round(initial.ww)) : "400");
-      setWc(initial.wc != null ? String(Math.round(initial.wc)) : "40");
-    }
-  }, [open, initial.ww, initial.wc]);
-  const w = Number(ww);
-  const c = Number(wc);
-  const valid = Number.isFinite(w) && w >= 1 && Number.isFinite(c);
-  const apply = () => {
-    if (!valid) return;
-    onApply(w, c);
-    onClose();
-  };
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Set window"
-      size="sm"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button onClick={apply} disabled={!valid}>
-            Apply
-          </Button>
-        </>
-      }
-    >
-      <form
-        className="grid grid-cols-2 gap-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          apply();
-        }}
-      >
-        <Field label="Width (WW)" error={!valid && ww !== "" ? "Width must be at least 1" : undefined}>
-          {(field) => (
-            <Input {...field} inputMode="decimal" value={ww} onChange={(e) => setWw(e.target.value)} autoFocus className="tabular-nums" />
-          )}
-        </Field>
-        <Field label="Level (WL)">
-          {(field) => (
-            <Input {...field} inputMode="decimal" value={wc} onChange={(e) => setWc(e.target.value)} className="tabular-nums" />
-          )}
-        </Field>
-        <button type="submit" className="sr-only">
-          Apply
-        </button>
-      </form>
-    </Modal>
-  );
-}
+// One Set window dialog for the desktop and the web viewer.
+export { CustomWindowDialog } from "@/components/viewer/CustomWindowDialog";
 
 export function DiscPickerDialog({
   open,
