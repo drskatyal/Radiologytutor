@@ -424,6 +424,31 @@ pub fn render(v: &Volume, plane: Plane, index: usize, center: f64, width: f64, m
     render_slab(v, plane, index, center, width, max_dim, Slab::Off, 0.0)
 }
 
+/// What one output pixel reduces over along the plane's own axis.
+#[derive(Clone, Copy)]
+enum Reduce {
+    /// One slice (clamped to the volume).
+    One(usize),
+    /// Slices `lo..=hi`, projected by the slab mode (never `Slab::Off`).
+    Slab(Slab, usize, usize),
+}
+
+/// Voxels each side of the centre along the plane's axis, and that axis' depth.
+fn slab_half_and_depth(v: &Volume, plane: Plane, slab: Slab, thickness_mm: f64) -> (isize, isize) {
+    let axis_mm = match plane {
+        Plane::Axial => v.spacing[2],
+        Plane::Coronal => v.spacing[1],
+        Plane::Sagittal => v.spacing[0],
+    };
+    let half = if slab == Slab::Off { 0 } else { ((thickness_mm / axis_mm.max(1e-3)) / 2.0).round() as isize };
+    let depth = match plane {
+        Plane::Axial => v.dims[2],
+        Plane::Coronal => v.dims[1],
+        Plane::Sagittal => v.dims[0],
+    } as isize;
+    (half, depth)
+}
+
 /// One plane, optionally as a slab of `thickness_mm` centred on `index`
 /// (MIP / MinIP / average along the plane's own axis).
 #[allow(clippy::too_many_arguments)]
@@ -437,62 +462,13 @@ pub fn render_slab(
     slab: Slab,
     thickness_mm: f64,
 ) -> (usize, usize, Vec<u8>) {
-    let [_, _, _] = v.dims;
-    // Voxels each side of the centre along the plane's axis.
-    let axis_mm = match plane {
-        Plane::Axial => v.spacing[2],
-        Plane::Coronal => v.spacing[1],
-        Plane::Sagittal => v.spacing[0],
-    };
-    let half = if slab == Slab::Off { 0 } else { ((thickness_mm / axis_mm.max(1e-3)) / 2.0).round() as isize };
-    let depth = match plane {
-        Plane::Axial => v.dims[2],
-        Plane::Coronal => v.dims[1],
-        Plane::Sagittal => v.dims[0],
-    } as isize;
+    let (half, depth) = slab_half_and_depth(v, plane, slab, thickness_mm);
     let lo = (index as isize - half).max(0) as usize;
     let hi = (index as isize + half).min(depth - 1) as usize;
-    if half == 0 {
-        return render_one(v, plane, index, center, width, max_dim, &|f| f(index));
-    }
-    let combine = move |f: &dyn Fn(usize) -> f64| -> f64 {
-        let mut acc = match slab {
-            Slab::Mip => f64::MIN,
-            Slab::MinIp => f64::MAX,
-            _ => 0.0,
-        };
-        for i in lo..=hi {
-            let val = f(i);
-            acc = match slab {
-                Slab::Mip => acc.max(val),
-                Slab::MinIp => acc.min(val),
-                _ => acc + val,
-            };
-        }
-        if slab == Slab::Avg {
-            acc / (hi - lo + 1) as f64
-        } else {
-            acc
-        }
-    };
-    render_one(v, plane, index, center, width, max_dim, &combine)
-}
-
-/// The plane renderer: `reduce` turns "value at slice i of the plane's axis"
-/// into the pixel value (one slice, or a slab projection).
-#[allow(clippy::too_many_arguments)]
-fn render_one(
-    v: &Volume,
-    plane: Plane,
-    _index: usize,
-    center: f64,
-    width: f64,
-    max_dim: usize,
-    reduce: &(dyn Fn(&dyn Fn(usize) -> f64) -> f64 + Sync),
-) -> (usize, usize, Vec<u8>) {
+    let reduce = if half == 0 { Reduce::One(index) } else { Reduce::Slab(slab, lo, hi) };
     let lower = center - width / 2.0;
     let scale = 255.0 / width.max(1.0);
-    let (w, h, out, _) = render_map(v, plane, max_dim, reduce, &|val: f64| ((val - lower) * scale).clamp(0.0, 255.0) as u8);
+    let (w, h, out, _) = render_map(v, plane, max_dim, reduce, |val: f64| ((val - lower) * scale).clamp(0.0, 255.0) as u8);
     (w, h, out)
 }
 
@@ -501,61 +477,25 @@ fn render_one(
 /// image decode, no second texture in WebView2's GPU process. Returns
 /// (width, height, values, mm per output pixel).
 pub fn render_values(v: &Volume, plane: Plane, index: usize, max_dim: usize, slab: Slab, thickness_mm: f64) -> (usize, usize, Vec<i16>, f64) {
-    let axis_mm = match plane {
-        Plane::Axial => v.spacing[2],
-        Plane::Coronal => v.spacing[1],
-        Plane::Sagittal => v.spacing[0],
-    };
-    let half = if slab == Slab::Off { 0 } else { ((thickness_mm / axis_mm.max(1e-3)) / 2.0).round() as isize };
-    let depth = match plane {
-        Plane::Axial => v.dims[2],
-        Plane::Coronal => v.dims[1],
-        Plane::Sagittal => v.dims[0],
-    } as isize;
+    let (half, depth) = slab_half_and_depth(v, plane, slab, thickness_mm);
     let index = (index as isize).clamp(0, depth - 1);
     let lo = (index - half).max(0) as usize;
     let hi = (index + half).min(depth - 1) as usize;
-    let i16v = |val: f64| val.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
-    if half == 0 {
-        let i = index as usize;
-        return render_map(v, plane, max_dim, &|f| f(i), &i16v);
-    }
-    let combine = move |f: &dyn Fn(usize) -> f64| -> f64 {
-        let mut acc = match slab {
-            Slab::Mip => f64::MIN,
-            Slab::MinIp => f64::MAX,
-            _ => 0.0,
-        };
-        for i in lo..=hi {
-            let val = f(i);
-            acc = match slab {
-                Slab::Mip => acc.max(val),
-                Slab::MinIp => acc.min(val),
-                _ => acc + val,
-            };
-        }
-        if slab == Slab::Avg {
-            acc / (hi - lo + 1) as f64
-        } else {
-            acc
-        }
-    };
-    render_map(v, plane, max_dim, &combine, &i16v)
+    let reduce = if half == 0 { Reduce::One(index as usize) } else { Reduce::Slab(slab, lo, hi) };
+    render_map(v, plane, max_dim, reduce, |val: f64| val.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16)
 }
 
 /// The shared resampler: plane grid in mm (square output pixels), `reduce`
-/// over the plane's axis, `out` maps the value to the output type.
-fn render_map<T: Send + Default + Clone>(
-    v: &Volume,
-    plane: Plane,
-    max_dim: usize,
-    reduce: &(dyn Fn(&dyn Fn(usize) -> f64) -> f64 + Sync),
-    out_of: &(dyn Fn(f64) -> T + Sync),
-) -> (usize, usize, Vec<T>, f64) {
+/// over the plane's axis, `out_of` maps the value to the output type.
+///
+/// It runs on every scroll step of an MPR view, so it is written as plain
+/// loops over each output row (no per-voxel closures), reading the volume
+/// along its rows wherever the plane allows. Every pixel still folds its
+/// slices in ascending order with the same f64 maths, so the output does not
+/// depend on the loop order.
+fn render_map<T: Send + Default + Clone>(v: &Volume, plane: Plane, max_dim: usize, reduce: Reduce, out_of: impl Fn(f64) -> T + Sync) -> (usize, usize, Vec<T>, f64) {
     let [nx, ny, nz] = v.dims;
     let [sx, sy, sz] = v.spacing;
-    let grey = out_of;
-    let at = |x: usize, y: usize, z: usize| v.data[(z * ny + y) * nx + x] as f64;
     // Output grid in mm, then fit to max_dim.
     let (mm_w, mm_h) = match plane {
         Plane::Axial => (nx as f64 * sx, ny as f64 * sy),
@@ -564,16 +504,70 @@ fn render_map<T: Send + Default + Clone>(
     };
     let px = (mm_w.max(mm_h) / max_dim.max(16) as f64).max(sx.min(sy).min(sz).min(sx));
     let (w, h) = (((mm_w / px).round() as usize).max(1), ((mm_h / px).round() as usize).max(1));
-    let mut out = vec![T::default(); w * h];
-    out.par_chunks_mut(w).enumerate().for_each(|(oy, row)| {
-        for (ox, o) in row.iter_mut().enumerate() {
+    // The in-plane column each output column samples: x (axial, coronal) or y (sagittal).
+    let cols: Vec<usize> = (0..w)
+        .map(|ox| {
             let u = (ox as f64 + 0.5) * mm_w / w as f64;
+            match plane {
+                Plane::Sagittal => ((u / sy) as usize).min(ny - 1),
+                _ => ((u / sx) as usize).min(nx - 1),
+            }
+        })
+        .collect();
+    let mut out = vec![T::default(); w * h];
+    match reduce {
+        Reduce::One(i) => plane_rows(v, plane, &cols, w, h, mm_h, i, i, |_, val| val, f64::NAN, |acc| acc, &out_of, &mut out),
+        Reduce::Slab(Slab::Mip, lo, hi) => plane_rows(v, plane, &cols, w, h, mm_h, lo, hi, |acc, val| if val > acc { val } else { acc }, f64::MIN, |acc| acc, &out_of, &mut out),
+        Reduce::Slab(Slab::MinIp, lo, hi) => plane_rows(v, plane, &cols, w, h, mm_h, lo, hi, |acc, val| if val < acc { val } else { acc }, f64::MAX, |acc| acc, &out_of, &mut out),
+        Reduce::Slab(_, lo, hi) => {
+            let n = (hi - lo + 1) as f64;
+            plane_rows(v, plane, &cols, w, h, mm_h, lo, hi, |acc, val| acc + val, 0.0, |acc| acc / n, &out_of, &mut out)
+        }
+    }
+    (w, h, out, px)
+}
+
+/// Fill `out` (h rows of w) with `finish(fold(...fold(init, s_lo)..., s_hi))`
+/// per pixel, `s_i` being the sample at position `i` along the plane's axis
+/// (clamped to the volume). Monomorphised per slab mode.
+#[allow(clippy::too_many_arguments)]
+fn plane_rows<T: Send, F, G, O>(
+    v: &Volume,
+    plane: Plane,
+    cols: &[usize],
+    w: usize,
+    h: usize,
+    mm_h: f64,
+    lo: usize,
+    hi: usize,
+    fold: F,
+    init: f64,
+    finish: G,
+    out_of: &O,
+    out: &mut [T],
+) where
+    F: Fn(f64, f64) -> f64 + Sync,
+    G: Fn(f64) -> f64 + Sync,
+    O: Fn(f64) -> T + Sync,
+{
+    let [nx, ny, nz] = v.dims;
+    let [_, sy, sz] = v.spacing;
+    let d = &v.data[..];
+    out.par_chunks_mut(w).enumerate().for_each_init(
+        || vec![0f64; w],
+        |acc, (oy, row)| {
             let t = (oy as f64 + 0.5) * mm_h / h as f64;
-            let val = match plane {
+            acc.fill(init);
+            match plane {
                 Plane::Axial => {
-                    let x = ((u / sx) as usize).min(nx - 1);
                     let y = ((t / sy) as usize).min(ny - 1);
-                    reduce(&|i| at(x, y, i.min(nz - 1)))
+                    // Slice by slice: each pass reads one row of one slice.
+                    for i in lo..=hi {
+                        let base = (i.min(nz - 1) * ny + y) * nx;
+                        for (a, &x) in acc.iter_mut().zip(cols) {
+                            *a = fold(*a, d[base + x] as f64);
+                        }
+                    }
                 }
                 Plane::Coronal | Plane::Sagittal => {
                     // Top of the image = last slice.
@@ -582,24 +576,31 @@ fn render_map<T: Send + Default + Clone>(
                     let z1 = (z0 + 1).min(nz - 1);
                     let f = zf - z0 as f64;
                     if plane == Plane::Coronal {
-                        let x = ((u / sx) as usize).min(nx - 1);
-                        reduce(&|i| {
+                        // y by y: each pass reads one row of the two bracketing slices.
+                        for i in lo..=hi {
                             let y = i.min(ny - 1);
-                            at(x, y, z0) * (1.0 - f) + at(x, y, z1) * f
-                        })
+                            let (b0, b1) = ((z0 * ny + y) * nx, (z1 * ny + y) * nx);
+                            for (a, &x) in acc.iter_mut().zip(cols) {
+                                *a = fold(*a, d[b0 + x] as f64 * (1.0 - f) + d[b1 + x] as f64 * f);
+                            }
+                        }
                     } else {
-                        let y = ((u / sy) as usize).min(ny - 1);
-                        reduce(&|i| {
-                            let x = i.min(nx - 1);
-                            at(x, y, z0) * (1.0 - f) + at(x, y, z1) * f
-                        })
+                        // The slab runs along x, which is contiguous in memory: fold it per pixel.
+                        for (a, &y) in acc.iter_mut().zip(cols) {
+                            let (b0, b1) = ((z0 * ny + y) * nx, (z1 * ny + y) * nx);
+                            for i in lo..=hi {
+                                let x = i.min(nx - 1);
+                                *a = fold(*a, d[b0 + x] as f64 * (1.0 - f) + d[b1 + x] as f64 * f);
+                            }
+                        }
                     }
                 }
-            };
-            *o = grey(val);
-        }
-    });
-    (w, h, out, px)
+            }
+            for (o, &a) in row.iter_mut().zip(acc.iter()) {
+                *o = out_of(finish(a));
+            }
+        },
+    );
 }
 
 pub fn png(w: usize, h: usize, grey: &[u8]) -> Option<Vec<u8>> {
@@ -692,6 +693,132 @@ mod tests {
         // Coronal slab runs along y: constant along y here, so MIP = single.
         let c = |slab| render_slab(&v, Plane::Coronal, 4, 150.0, 300.0, 64, slab, 4.0).2;
         assert_eq!(c(Slab::Mip), c(Slab::Off));
+    }
+
+    /// The row-wise resampler (`render_map`) against the per-voxel closure
+    /// version it replaced, kept here as the reference: identical output for
+    /// every plane, slab mode, thickness, edge index and output size, on an
+    /// anisotropic volume of varied values.
+    #[test]
+    fn row_resampler_matches_the_reference() {
+        fn reference(v: &Volume, plane: Plane, index: usize, max_dim: usize, slab: Slab, thickness_mm: f64, clamp_index: bool) -> (usize, usize, Vec<f64>) {
+            let [nx, ny, nz] = v.dims;
+            let [sx, sy, sz] = v.spacing;
+            let axis_mm = match plane {
+                Plane::Axial => sz,
+                Plane::Coronal => sy,
+                Plane::Sagittal => sx,
+            };
+            let half = if slab == Slab::Off { 0 } else { ((thickness_mm / axis_mm.max(1e-3)) / 2.0).round() as isize };
+            let depth = match plane {
+                Plane::Axial => nz,
+                Plane::Coronal => ny,
+                Plane::Sagittal => nx,
+            } as isize;
+            let index = if clamp_index { (index as isize).clamp(0, depth - 1) } else { index as isize };
+            let lo = (index - half).max(0) as usize;
+            let hi = (index + half).min(depth - 1) as usize;
+            let reduce = |f: &dyn Fn(usize) -> f64| -> f64 {
+                if half == 0 {
+                    return f(index as usize);
+                }
+                let mut acc = match slab {
+                    Slab::Mip => f64::MIN,
+                    Slab::MinIp => f64::MAX,
+                    _ => 0.0,
+                };
+                for i in lo..=hi {
+                    let val = f(i);
+                    acc = match slab {
+                        Slab::Mip => acc.max(val),
+                        Slab::MinIp => acc.min(val),
+                        _ => acc + val,
+                    };
+                }
+                if slab == Slab::Avg {
+                    acc / (hi - lo + 1) as f64
+                } else {
+                    acc
+                }
+            };
+            let at = |x: usize, y: usize, z: usize| v.data[(z * ny + y) * nx + x] as f64;
+            let (mm_w, mm_h) = match plane {
+                Plane::Axial => (nx as f64 * sx, ny as f64 * sy),
+                Plane::Coronal => (nx as f64 * sx, nz as f64 * sz),
+                Plane::Sagittal => (ny as f64 * sy, nz as f64 * sz),
+            };
+            let px = (mm_w.max(mm_h) / max_dim.max(16) as f64).max(sx.min(sy).min(sz).min(sx));
+            let (w, h) = (((mm_w / px).round() as usize).max(1), ((mm_h / px).round() as usize).max(1));
+            let mut out = vec![0.0; w * h];
+            for oy in 0..h {
+                for ox in 0..w {
+                    let u = (ox as f64 + 0.5) * mm_w / w as f64;
+                    let t = (oy as f64 + 0.5) * mm_h / h as f64;
+                    out[oy * w + ox] = match plane {
+                        Plane::Axial => {
+                            let x = ((u / sx) as usize).min(nx - 1);
+                            let y = ((t / sy) as usize).min(ny - 1);
+                            reduce(&|i| at(x, y, i.min(nz - 1)))
+                        }
+                        _ => {
+                            let zf = (nz as f64 - t / sz - 0.5).clamp(0.0, (nz - 1) as f64);
+                            let z0 = zf.floor() as usize;
+                            let z1 = (z0 + 1).min(nz - 1);
+                            let f = zf - z0 as f64;
+                            if plane == Plane::Coronal {
+                                let x = ((u / sx) as usize).min(nx - 1);
+                                reduce(&|i| at(x, i.min(ny - 1), z0) * (1.0 - f) + at(x, i.min(ny - 1), z1) * f)
+                            } else {
+                                let y = ((u / sy) as usize).min(ny - 1);
+                                reduce(&|i| at(i.min(nx - 1), y, z0) * (1.0 - f) + at(i.min(nx - 1), y, z1) * f)
+                            }
+                        }
+                    };
+                }
+            }
+            (w, h, out)
+        }
+
+        let (nx, ny, nz) = (37, 29, 23);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let data: Vec<i16> = (0..nx * ny * nz)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed % 4096) as i16 - 1024
+            })
+            .collect();
+        let v = Volume { key: 1, dims: [nx, ny, nz], spacing: [0.7, 0.9, 2.5], data, min: -1024, max: 3071, window: None, reduced: [1, 1] };
+        let mut cases = 0;
+        for plane in [Plane::Axial, Plane::Coronal, Plane::Sagittal] {
+            let depth = match plane {
+                Plane::Axial => nz,
+                Plane::Coronal => ny,
+                Plane::Sagittal => nx,
+            };
+            for slab in [Slab::Off, Slab::Mip, Slab::MinIp, Slab::Avg] {
+                for thickness in [0.0, 3.0, 7.5, 40.0] {
+                    for max_dim in [16, 50, 100, 400] {
+                        for index in [0, 1, depth / 2, depth - 1] {
+                            let (w, h, values, _) = render_values(&v, plane, index, max_dim, slab, thickness);
+                            let (rw, rh, want) = reference(&v, plane, index, max_dim, slab, thickness, true);
+                            assert_eq!((w, h), (rw, rh));
+                            let want_i16: Vec<i16> = want.iter().map(|&x| x.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16).collect();
+                            assert_eq!(values, want_i16, "values {plane:?} {slab:?} {thickness} mm, max {max_dim}, index {index}");
+                            let (center, width) = (300.0, 1500.0);
+                            let (gw, gh, grey) = render_slab(&v, plane, index, center, width, max_dim, slab, thickness);
+                            let (rw, rh, want) = reference(&v, plane, index, max_dim, slab, thickness, false);
+                            let (lower, scale) = (center - width / 2.0, 255.0 / width);
+                            let want_grey: Vec<u8> = want.iter().map(|&x| ((x - lower) * scale).clamp(0.0, 255.0) as u8).collect();
+                            assert_eq!((gw, gh, grey), (rw, rh, want_grey), "grey {plane:?} {slab:?} {thickness} mm, max {max_dim}, index {index}");
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 3 * 4 * 4 * 4 * 4);
     }
 
     #[test]
