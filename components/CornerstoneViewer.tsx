@@ -202,7 +202,9 @@ import {
   viewerWindowPresets,
   type WindowPreset,
 } from "../lib/windowPresets";
-import { Spinner } from "@/components/ui";
+import { Button, Modal, Spinner } from "@/components/ui";
+import { WebTextBoxLayer, type TextBoxLayerHandle } from "./viewer/WebTextBoxLayer";
+import { BURNED_IN_WARNING } from "@flowrad/viewer-core/annotationPersistence";
 import { cn } from "@/components/ui/cn";
 import { MprLayout } from "./MprLayout";
 import {
@@ -1103,6 +1105,12 @@ export default function CornerstoneViewer({
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [customWindowOpen, setCustomWindowOpen] = useState(false);
+  // Text boxes (free viewer, saved in this browser) and the annotated-PNG save.
+  const [textBoxTool, setTextBoxTool] = useState(false);
+  const textBoxRef = useRef<TextBoxLayerHandle>(null);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => setStageEl(elementRef.current), []);
+  const [annotatedExport, setAnnotatedExport] = useState(false);
   /** Which list the help sheet shows: keys, or the voice commands. */
   const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
   // Mouse & keyboard bindings (local copy; the page shell syncs the account).
@@ -3654,6 +3662,7 @@ export default function CornerstoneViewer({
           flash(mprShowing ? "Measurements stay on the stack" : "No pixel spacing — can't measure");
           return;
         }
+        setTextBoxTool(false);
         setLeftToolRef.current(action.tool);
         flash(toolLabel(action.tool));
         return;
@@ -4179,7 +4188,12 @@ export default function CornerstoneViewer({
       cinePlaying={cinePlaying}
       cineFps={cineFps}
       overlay={overlay}
-      onSelectTool={(name) => setLeftToolRef.current(name)}
+      onSelectTool={(name) => {
+        setTextBoxTool(false);
+        setLeftToolRef.current(name);
+      }}
+      textBox={readingTools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
+      onSaveAnnotated={readingTools ? () => setAnnotatedExport(true) : undefined}
       onPreset={(preset) => {
         applyPresetRef.current(preset);
         flash(
@@ -4415,6 +4429,50 @@ export default function CornerstoneViewer({
         )}
         {!mprLive && referencePlanes && referencePlanes.length > 0 && (
           <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
+        )}
+        {readingTools && !mprLive && viewMode === "stack" && (
+          <WebTextBoxLayer ref={textBoxRef} element={stageEl} active={textBoxTool} hidden={annotationsHidden} />
+        )}
+        {annotatedExport && (
+          <Modal
+            open
+            onClose={() => setAnnotatedExport(false)}
+            title="Save the image with annotations"
+            description={BURNED_IN_WARNING}
+            size="sm"
+            tone="reading"
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setAnnotatedExport(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    setAnnotatedExport(false);
+                    void textBoxRef.current?.composite().then((canvas) =>
+                      canvas?.toBlob((blob) => {
+                        if (!blob) return;
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        // A name without patient details.
+                        a.download = `${(modality || "image").toLowerCase()}-annotated-${Date.now().toString(36)}.png`;
+                        a.click();
+                        window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+                        flash("Saved with annotations");
+                      }, "image/png")
+                    );
+                  }}
+                >
+                  Save PNG
+                </Button>
+              </>
+            }
+          >
+            <p>
+              The PNG holds the image as shown, its measurements and text boxes. No overlay text or patient
+              details are added. It is saved to this device only.
+            </p>
+          </Modal>
         )}
         {customWindowOpen && (
           <CustomWindowDialog
