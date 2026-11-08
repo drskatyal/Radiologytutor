@@ -9,7 +9,8 @@
 // Ctrl/⌘+Shift+M 3D, Ctrl/⌘+Shift+F12 overlay on / off, and F full screen
 // (isFullScreenKey: the page that owns the stage handles it); Shift+Backspace
 // resets rotation and flips only; PageUp / PageDown and Shift+↑ / ↓ jump
-// 10 % of the images; Y arrow, N freehand ROI, Q / Shift+Q rotate.
+// 10 % of the images; Y arrow, N freehand ROI, Q / Shift+Q rotate; Shift+1…7
+// the layouts (1×1, 1×2, 2×1, 2×2, 1×3, 2×3, 3×3).
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -34,7 +35,8 @@ export type ReadingKeyAction =
   | { type: "orientReset" }
   | { type: "slicePage"; dir: 1 | -1 }
   | { type: "tool"; tool: "ArrowAnnotate" | "PlanarFreehandROI" }
-  | { type: "rotate"; dir: 1 | -1 };
+  | { type: "rotate"; dir: 1 | -1 }
+  | { type: "layout"; n: number };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -92,6 +94,11 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     return null;
   }
   if (shift && !mod && !alt && (e.code === "KeyE" || e.key === "E")) return { type: "eraser" };
+  // Shift+1…7: the desktop's layouts (by physical key: Shift+1 types "!"). 8, 9, 0 stay presets.
+  if (shift && !mod && !alt) {
+    const n = Number(/^Digit([1-7])$/.exec(e.code ?? "")?.[1] ?? NaN);
+    if (n >= 1) return { type: "layout", n };
+  }
   // The desktop's letters the web had left free: Y arrow with label, N freehand ROI, Q / Shift+Q rotate.
   if (!mod && !alt) {
     // By the letter typed, as the desktop matches it (a QWERTZ Y is the key QWERTY calls Z).

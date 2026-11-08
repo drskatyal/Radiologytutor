@@ -258,7 +258,8 @@ export function viewerShortcutGroups(
     // The nine presets read as one row by default.
     if (c.id.startsWith("preset.") && c.id !== "preset.default" && !isCustomised(overrides, c.id)) {
       if (c.id !== "preset.1") continue;
-      push(groups, c.group, { keys: ["Shift", "1…9"], does: "Window preset" });
+      // The free viewer gives Shift+1…7 to layouts, as the desktop does.
+      push(groups, c.group, readingTools ? { keys: ["1…9"], does: "Window preset" } : { keys: ["Shift", "1…9"], does: "Window preset" });
       continue;
     }
     push(groups, c.group, { keys: inputs.map((s) => inputLabel(s, mac)), does: c.label });
@@ -280,6 +281,7 @@ export function viewerShortcutGroups(
     push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
     push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
     push(groups, "Rotate / flip", { keys: ["Q / Shift+Q"], does: "Rotate 90° (as R / Shift+R)" });
+    push(groups, "Layout", { keys: ["Shift", "1…7"], does: "Layout: 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3" });
     push(groups, "Tools", { keys: [mod, "Shift", "Backspace"], does: "Clear all measurements (Ctrl+Z brings them back)" });
     push(groups, "Stack", { keys: ["Space"], does: "Play / pause cine (as K)" });
     push(groups, "Stack", { keys: ["Shift", "[ / ]"], does: "Cine slower / faster" });

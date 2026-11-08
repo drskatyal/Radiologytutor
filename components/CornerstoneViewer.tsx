@@ -863,6 +863,7 @@ export default function CornerstoneViewer({
   onFusion,
   seriesPanel = null,
   onCycleLayout,
+  onLayout,
   onSetLayout,
   onToggleMaximize,
   referencePlanes,
@@ -989,6 +990,11 @@ export default function CornerstoneViewer({
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
   onCycleLayout?: () => void;
+  /**
+   * Free viewer grid: Shift+1…7 picks the desktop's nth layout. Returns its
+   * label, or null when this study has too few series for it.
+   */
+  onLayout?: ((n: number) => string | null) | null;
   /**
    * In a grid of panes: double-click maximises this pane / restores the grid
    * (instead of fitting the image), as on the desktop viewer.
@@ -3902,6 +3908,11 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "tool", tool: action.tool });
       case "rotate":
         return applyOrientation(action.dir > 0 ? "rotate:90" : "rotate:-90");
+      case "layout": {
+        if (!onLayout) return flash("Layouts are in the free viewer's grid");
+        const label = onLayout(action.n);
+        return flash(label ? `Layout: ${label}` : "That layout needs more series in this study");
+      }
       case "slicePage":
         return runViewerAction({ type: "slice", delta: action.dir * pageStep(sliceCount) });
       case "cine":

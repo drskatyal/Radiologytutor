@@ -44,7 +44,7 @@ import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { useMultipleScreens } from "@/components/viewer/useMultipleScreens";
 import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner, Tooltip } from "@/components/ui";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
-import { isSeriesPanelShortcut, layoutsForSeriesCount, nextLayout, paneCount, READING_LAYOUTS, type HangingLayoutId } from "@flowrad/viewer-core";
+import { isSeriesPanelShortcut, layoutForShortcut, layoutsForSeriesCount, nextLayout, paneCount, READING_LAYOUTS, type HangingLayoutId } from "@flowrad/viewer-core";
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
 import { linkedIndex, planeSign, sameCamera, sameModality, sameWindow, seriesGeometry } from "@/lib/paneScrollLink";
 import type { ViewerEvent } from "@/lib/types";
@@ -939,6 +939,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     [flat.length]
   );
   const setLayoutForGrid = useCallback((rows: number, cols: number) => setLayoutId(layoutForGrid(rows, cols)), []);
+  /** Shift+1…7, as on the desktop: the nth layout if this study offers it; its label, else null. */
+  const pickLayout = useCallback(
+    (n: number) => {
+      const chosen = layoutForShortcut(n, flat.length);
+      if (!chosen) return null;
+      setLayoutId(chosen.id);
+      return chosen.label;
+    },
+    [flat.length]
+  );
   // ── Linked scrolling between panes (lib/paneScrollLink.ts) ──
   // On by default, like the reading room: scroll one pane and every pane on a
   // parallel plane goes to the same place in the patient. Panes of another
@@ -1546,6 +1556,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     voiceOn={voiceOn}
                     onVoiceChange={setVoiceOn}
                     onCycleLayout={result ? cycleLayout : undefined}
+                    onLayout={result ? pickLayout : undefined}
                     onSetLayout={result ? setLayoutForGrid : undefined}
                     onToggleMaximize={multi ? () => toggleMaximize(0) : undefined}
                     onSeriesStep={(delta) => {
@@ -1601,6 +1612,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                           onChunkLoadError={recoverFromChunkError}
                           onCycleLayout={cycleLayout}
+                          onLayout={pickLayout}
                           onSetLayout={setLayoutForGrid}
                           onToggleMaximize={() => toggleMaximize(pane)}
                           onSeriesStep={(delta) => {
