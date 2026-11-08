@@ -11,6 +11,7 @@
  */
 
 import { ORIENTATION_COMMANDS } from "./viewOrientation";
+import { CINE_FPS_OPTIONS } from "./cinePlayer";
 
 export type MenuCommand = string;
 
@@ -94,7 +95,8 @@ export function tidy(entries: MenuEntry[]): MenuEntry[] {
 }
 
 export const SLAB_THICKNESS_MM = [2, 5, 10, 15, 20, 30] as const;
-export const CINE_FPS = [5, 10, 15, 20, 30, 60] as const;
+/** The Cine submenu's rates: the same list as the toolbar and the speed keys. */
+export const CINE_FPS = CINE_FPS_OPTIONS;
 
 /** Right-click on the image. */
 export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {

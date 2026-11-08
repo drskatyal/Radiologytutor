@@ -17,8 +17,12 @@
 
 export type CineWrap = "loop" | "bounce";
 
-/** Frame rates offered in the toolbar. DICOM cine is usually 10–30. */
-export const CINE_FPS_OPTIONS = [5, 10, 15, 20, 30] as const;
+/**
+ * Frame rates offered in the toolbar and the right-click Cine menu, and the
+ * steps the cine speed keys move through. DICOM cine is usually 10–30; 60
+ * for a fast sweep through a long stack.
+ */
+export const CINE_FPS_OPTIONS = [5, 10, 15, 20, 30, 60] as const;
 export const DEFAULT_CINE_FPS = 15;
 /** Below this a cine is a slideshow; above it the decoders cannot keep up. */
 export const MIN_CINE_FPS = 1;
@@ -27,6 +31,19 @@ export const MAX_CINE_FPS = 60;
 export function clampCineFps(fps: number): number {
   if (!Number.isFinite(fps)) return DEFAULT_CINE_FPS;
   return Math.min(MAX_CINE_FPS, Math.max(MIN_CINE_FPS, Math.round(fps)));
+}
+
+/**
+ * One step slower (-1) or faster (+1) through CINE_FPS_OPTIONS. A rate that
+ * is not in the list (set by voice or a saved setting) moves to the next
+ * listed rate in that direction, never back to the start of the list.
+ */
+export function stepCineFps(fps: number, delta: 1 | -1): number {
+  const options = CINE_FPS_OPTIONS as readonly number[];
+  const current = clampCineFps(fps);
+  // Past either end of the list there is nowhere to go: the rate stays.
+  if (delta > 0) return options.find((o) => o > current) ?? current;
+  return [...options].reverse().find((o) => o < current) ?? current;
 }
 
 /** Milliseconds between frames at `fps`. */

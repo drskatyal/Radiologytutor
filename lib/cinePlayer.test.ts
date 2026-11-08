@@ -96,3 +96,19 @@ test("a DICOM frame rate wins over our default", () => {
   assert.equal(initialCineFps(0), DEFAULT_CINE_FPS);
   assert.equal(initialCineFps(500), MAX_CINE_FPS);
 });
+
+test("cine speed keys step through the same rates as the toolbar and the right-click menu, up to 60", async () => {
+  const { stepCineFps } = await import("@flowrad/viewer-core/cinePlayer");
+  const { CINE_FPS } = await import("@flowrad/viewer-core/contextMenu");
+  assert.deepEqual([...CINE_FPS], [...CINE_FPS_OPTIONS], "one list for the toolbar, the menu and the keys");
+  assert.equal(stepCineFps(15, 1), 20);
+  assert.equal(stepCineFps(30, 1), 60);
+  assert.equal(stepCineFps(60, 1), 60, "the top stays the top");
+  assert.equal(stepCineFps(60, -1), 30, "from the menu's 60, slower is 30 (it used to jump to 5)");
+  assert.equal(stepCineFps(5, -1), 5);
+  // A rate that is not listed (voice, a saved setting) moves to the next listed rate that way.
+  assert.equal(stepCineFps(12, 1), 15);
+  assert.equal(stepCineFps(12, -1), 10);
+  assert.equal(stepCineFps(45, -1), 30);
+  assert.equal(stepCineFps(2, -1), 2, "already slower than the list: stays, never jumps faster");
+});

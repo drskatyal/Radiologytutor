@@ -31,7 +31,14 @@ test("nav keys: Space cine, [ / ] series, Ctrl+M MPR, Ctrl+Shift+M 3D, Ctrl+Shif
   await page.keyboard.press("Space");
   await expect(page.getByRole("button", { name: "Pause cine" }).first()).toBeVisible();
   await page.keyboard.press("Shift+BracketRight");
-  await expect(page.getByText(/^Cine \d+ fps$/).first()).toBeVisible();
+  await expect(page.getByText("Cine 20 fps").first()).toBeVisible();
+  // The keys step through the same rates as the right-click Cine menu, up to its 60,
+  // and slower from 60 is 30 (it used to fall back to the start of a shorter list).
+  await page.keyboard.press("Shift+BracketRight");
+  await page.keyboard.press("Shift+BracketRight");
+  await expect(page.getByText("Cine 60 fps").first()).toBeVisible();
+  await page.keyboard.press("Shift+BracketLeft");
+  await expect(page.getByText("Cine 30 fps").first()).toBeVisible();
   await page.keyboard.press("Space");
   await expect(page.getByRole("button", { name: "Play cine" }).first()).toBeVisible();
 

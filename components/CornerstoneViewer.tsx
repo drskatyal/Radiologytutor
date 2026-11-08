@@ -131,7 +131,7 @@ import {
 } from "../lib/viewerController";
 import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
 import {
-  CINE_FPS_OPTIONS,
+  stepCineFps,
   advanceCine,
   cineAvailable,
   cineFrameMs,
@@ -4119,10 +4119,8 @@ export default function CornerstoneViewer({
         return;
       case "cineFps": {
         if (!cineOffered) return;
-        const options = CINE_FPS_OPTIONS as readonly number[];
-        const at = Math.max(0, options.indexOf(cineFps));
-        const next = options[Math.min(options.length - 1, Math.max(0, at + action.delta))]!;
-        setCineFps(clampCineFps(next));
+        const next = stepCineFps(cineFps, action.delta > 0 ? 1 : -1);
+        setCineFps(next);
         flash(`Cine ${next} fps`);
         return;
       }
