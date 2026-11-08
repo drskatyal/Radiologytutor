@@ -41,7 +41,7 @@
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
 import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
-import { parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
+import { pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
 import { MEASUREMENT_TOOLS } from "@flowrad/viewer-core/measurementReport";
 import {
   useCallback,
@@ -3898,6 +3898,8 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "tool", tool: "Eraser" });
       case "clearMeasurements":
         return clearMeasurements();
+      case "slicePage":
+        return runViewerAction({ type: "slice", delta: action.dir * pageStep(sliceCount) });
       case "cine":
       case "cineFps":
       case "series":

@@ -283,6 +283,7 @@ export function viewerShortcutGroups(
     push(groups, "Stack", { keys: ["[ / ]"], does: "Previous / next series" });
     push(groups, "Display", { keys: [mod, "Shift", "F12"], does: "Overlay text on / off" });
     push(groups, "Rotate / flip", { keys: ["Shift", "Backspace"], does: "Reset rotation and flips (zoom and window kept)" });
+    push(groups, "Stack", { keys: ["PageUp / PageDown"], does: "Jump 10 % of the images (also Shift+↑ / ↓)" });
     push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
     push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
     push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
