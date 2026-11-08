@@ -154,6 +154,24 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await expect(page.getByText("Rotate 90° anticlockwise").first()).toBeVisible();
   await page.keyboard.press("s");
 
+  // Esc, as on the desktop: a length being drawn is cancelled (nothing kept), then the tool goes back to scroll.
+  await page.keyboard.press("Control+0");
+  const onImage = () => page.getByTestId("annotation-state").evaluate((el: HTMLElement) => Number(el.dataset.onImage));
+  const kept = await onImage();
+  const box = (await image(page).boundingBox())!;
+  await image(page).focus();
+  await page.keyboard.press("l");
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.7);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.7, { steps: 6 });
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(page.getByText("Measurement cancelled").first()).toBeVisible();
+  await expect.poll(onImage).toBe(kept);
+  await image(page).focus();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: /^Scroll/ }).first()).toHaveAttribute("aria-pressed", "true");
+
   // Ctrl+= / Ctrl+−: the image zooms a step (the page does not), as on the desktop.
   await image(page).focus();
   await page.keyboard.press("Control+0");
@@ -215,5 +233,16 @@ test("reading keys in the grid: F5 / Shift+F5 / Alt+F5 links and Ctrl+F12 refere
   await expect(page.getByText("That layout needs more series in this study").first()).toBeVisible();
   await page.keyboard.press("Shift+Digit1");
   await expect(page.getByRole("radio", { name: "Single layout" })).toHaveAttribute("aria-checked", "true");
+
+  // Right-click › Layout, as on the desktop: the shapes with their Shift+n keys; picking one hangs it.
+  const pane = (await page.locator('[role="img"][aria-label^="DICOM viewer"]').first().boundingBox())!;
+  await page.mouse.click(pane.x + pane.width * 0.3, pane.y + pane.height * 0.3, { button: "right" });
+  const menu = page.getByRole("menu", { name: "Image" });
+  await menu.getByRole("menuitem", { name: /^Layout/ }).hover();
+  await expect(page.getByRole("menuitemradio", { name: /^1 × 1/ })).toHaveAttribute("aria-checked", "true");
+  const twoByTwo = page.getByRole("menuitemradio", { name: /^2 × 2/ });
+  await expect(twoByTwo.locator("kbd")).toContainText("4");
+  await twoByTwo.click();
+  await expect(page.getByRole("radio", { name: "2 × 2 layout" })).toHaveAttribute("aria-checked", "true");
   expect(errors).toEqual([]);
 });

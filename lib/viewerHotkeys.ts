@@ -281,6 +281,7 @@ export function viewerShortcutGroups(
     push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
     push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
     push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
+    push(groups, "Tools", { keys: ["Esc"], does: "Cancel the measurement being drawn, then back to scroll" });
     push(groups, "Rotate / flip", { keys: ["Q / Shift+Q"], does: "Rotate 90° (as R / Shift+R)" });
     push(groups, "Layout", { keys: ["Shift", "1…7"], does: "Layout: 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3" });
     push(groups, "Tools", { keys: [mod, "Shift", "Backspace"], does: "Clear all measurements (Ctrl+Z brings them back)" });
@@ -291,6 +292,8 @@ export function viewerShortcutGroups(
     push(groups, "Rotate / flip", { keys: ["Shift", "Backspace"], does: "Reset rotation and flips (zoom and window kept)" });
     push(groups, "Stack", { keys: ["PageUp / PageDown"], does: "Jump 10 % of the images (also Shift+↑ / ↓)" });
     push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
+    push(groups, "Layout", { keys: [mod, "O"], does: "Open DICOM files" });
+    push(groups, "Layout", { keys: [mod, "Shift", "O"], does: "Open a folder" });
     push(groups, "Layout", { keys: ["F1"], does: "This sheet (as Shift+?)" });
     push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
     push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });

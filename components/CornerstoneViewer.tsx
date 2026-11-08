@@ -59,7 +59,7 @@ import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
 import { RemoteReferenceLines, type RemotePlane } from "./viewer/RemoteReferenceLines";
 import type { XVec3 } from "@flowrad/viewer-core";
 import { imageMenu } from "@flowrad/viewer-core";
-import { layoutForShape } from "@flowrad/viewer-core";
+import { layoutForShape, READING_LAYOUTS } from "@flowrad/viewer-core";
 import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
@@ -865,6 +865,7 @@ export default function CornerstoneViewer({
   onCycleLayout,
   onLayout,
   onSetLayout,
+  currentLayout,
   onToggleMaximize,
   referencePlanes,
   toolbarHost,
@@ -1002,6 +1003,8 @@ export default function CornerstoneViewer({
   onToggleMaximize?: () => void;
   /** A named layout ("layout two" / "four" / "six" by voice): rows × columns. */
   onSetLayout?: (rows: number, cols: number) => void;
+  /** Free viewer grid: the layout on screen, for the right-click Layout submenu (as on the desktop). */
+  currentLayout?: { rows: number; cols: number } | null;
   /** Other panes' image planes: drawn as reference lines where they cut this image (same frame only). */
   referencePlanes?: readonly RemotePlane[];
   /**
@@ -4017,6 +4020,42 @@ export default function CornerstoneViewer({
       setHelpOpen(false);
       return;
     }
+    // Esc, as on the desktop (free viewer): 1) a measurement being drawn is
+    // cancelled; 2) a tool other than the default goes back to it; 3) only
+    // then does Esc pass on (distraction-free, full screen leave on it).
+    if (readingTools && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      const element = elementRef.current;
+      const tools = editCtx?.tools as unknown as {
+        cancelActiveManipulations?: (el: HTMLDivElement) => string | undefined;
+        annotation?: { state?: { removeAnnotation?: (uid: string) => void } };
+      } | undefined;
+      let cancelled = false;
+      try {
+        // Cornerstone's cancel finishes the shape; a cancel should drop it
+        // (never finished, so no undo step), as the reader expects.
+        const uid = element ? tools?.cancelActiveManipulations?.(element) : undefined;
+        if (uid) {
+          tools?.annotation?.state?.removeAnnotation?.(uid);
+          viewportRef.current?.render();
+          cancelled = true;
+        }
+      } catch {
+        /* nothing being drawn */
+      }
+      if (cancelled) {
+        event.preventDefault();
+        event.stopPropagation();
+        return flash("Measurement cancelled");
+      }
+      const home = defaultToolRef.current || "WindowLevel";
+      if (activeTool !== home) {
+        event.preventDefault();
+        event.stopPropagation();
+        setTextBoxTool(false);
+        setLeftToolRef.current(home);
+        return flash(toolLabel(home));
+      }
+    }
     const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, readingTools });
     if (!action) return;
     event.preventDefault();
@@ -4216,6 +4255,11 @@ export default function CornerstoneViewer({
       const i = presets.findIndex((p) => p.id === arg);
       return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
     }
+    if (readingTools && head === "layout") {
+      const m = /^(\d)x(\d)$/.exec(arg);
+      const at = m ? READING_LAYOUTS.findIndex((l) => l.rows === Number(m[1]) && l.cols === Number(m[2])) : -1;
+      if (at >= 0) return `Shift+${at + 1}`;
+    }
     if (readingTools && command === "orient:reset") return "Shift+Backspace";
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
@@ -4254,7 +4298,7 @@ export default function CornerstoneViewer({
       distractionFree: distractionFree ? distractionFree.on : null,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
       slab: readingTools && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
-      layout: null,
+      layout: readingTools && onSetLayout && currentLayout ? currentLayout : null,
       seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
       can: {
         mpr: ready && sliceCount >= 3,
@@ -4266,6 +4310,7 @@ export default function CornerstoneViewer({
         linkAtCurrent: !!paneLinks,
         video: readingTools && sliceCount >= 2,
         exportDialog: readingTools,
+        customLayout: readingTools,
         measurements: readingTools,
         fusion: !!onFusion,
       },
@@ -4316,6 +4361,14 @@ export default function CornerstoneViewer({
       case "reformat":
         if (arg === "axial" || arg === "coronal" || arg === "sagittal") return reformatPane(arg);
         return;
+      case "layout": {
+        const m = /^(\d)x(\d)$/.exec(arg);
+        if (!m || !onSetLayout) return;
+        const rows = Number(m[1]);
+        const cols = Number(m[2]);
+        onSetLayout(rows, cols);
+        return flash(`Layout: ${layoutForShape(rows, cols)?.label ?? `${rows} × ${cols}`}`);
+      }
       case "seriesPanel":
         return seriesPanel?.toggle();
       case "window":
