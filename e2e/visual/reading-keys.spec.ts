@@ -195,5 +195,16 @@ test("reading keys in the grid: F5 / Shift+F5 / Alt+F5 links and Ctrl+F12 refere
   await expect(page.getByText("That layout needs more series in this study").first()).toBeVisible();
   await page.keyboard.press("Shift+Digit1");
   await expect(page.getByRole("radio", { name: "Single layout" })).toHaveAttribute("aria-checked", "true");
+
+  // Right-click › Layout, as on the desktop: the shapes with their Shift+n keys; picking one hangs it.
+  const pane = (await page.locator('[role="img"][aria-label^="DICOM viewer"]').first().boundingBox())!;
+  await page.mouse.click(pane.x + pane.width * 0.3, pane.y + pane.height * 0.3, { button: "right" });
+  const menu = page.getByRole("menu", { name: "Image" });
+  await menu.getByRole("menuitem", { name: /^Layout/ }).hover();
+  await expect(page.getByRole("menuitemradio", { name: /^1 × 1/ })).toHaveAttribute("aria-checked", "true");
+  const twoByTwo = page.getByRole("menuitemradio", { name: /^2 × 2/ });
+  await expect(twoByTwo.locator("kbd")).toContainText("4");
+  await twoByTwo.click();
+  await expect(page.getByRole("radio", { name: "2 × 2 layout" })).toHaveAttribute("aria-checked", "true");
   expect(errors).toEqual([]);
 });

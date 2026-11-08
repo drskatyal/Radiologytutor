@@ -1558,6 +1558,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     onCycleLayout={result ? cycleLayout : undefined}
                     onLayout={result ? pickLayout : undefined}
                     onSetLayout={result ? setLayoutForGrid : undefined}
+                    currentLayout={result ? { rows: layout.rows, cols: layout.cols } : null}
                     onToggleMaximize={multi ? () => toggleMaximize(0) : undefined}
                     onSeriesStep={(delta) => {
                       const count = study?.series.length ?? 0;
@@ -1614,6 +1615,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           onCycleLayout={cycleLayout}
                           onLayout={pickLayout}
                           onSetLayout={setLayoutForGrid}
+                          currentLayout={{ rows: layout.rows, cols: layout.cols }}
                           onToggleMaximize={() => toggleMaximize(pane)}
                           onSeriesStep={(delta) => {
                             const count = flat.length;
