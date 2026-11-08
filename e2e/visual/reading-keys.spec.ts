@@ -154,6 +154,24 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await expect(page.getByText("Rotate 90° anticlockwise").first()).toBeVisible();
   await page.keyboard.press("s");
 
+  // Esc, as on the desktop: a length being drawn is cancelled (nothing kept), then the tool goes back to scroll.
+  await page.keyboard.press("Control+0");
+  const onImage = () => page.getByTestId("annotation-state").evaluate((el: HTMLElement) => Number(el.dataset.onImage));
+  const kept = await onImage();
+  const box = (await image(page).boundingBox())!;
+  await image(page).focus();
+  await page.keyboard.press("l");
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.7);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.7, { steps: 6 });
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(page.getByText("Measurement cancelled").first()).toBeVisible();
+  await expect.poll(onImage).toBe(kept);
+  await image(page).focus();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: /^Scroll/ }).first()).toHaveAttribute("aria-pressed", "true");
+
   // The help sheet lists them.
   await page.keyboard.press("Shift+?");
   const help = page.getByRole("dialog");

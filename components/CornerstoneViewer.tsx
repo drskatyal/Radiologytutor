@@ -4012,6 +4012,42 @@ export default function CornerstoneViewer({
       setHelpOpen(false);
       return;
     }
+    // Esc, as on the desktop (free viewer): 1) a measurement being drawn is
+    // cancelled; 2) a tool other than the default goes back to it; 3) only
+    // then does Esc pass on (distraction-free, full screen leave on it).
+    if (readingTools && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      const element = elementRef.current;
+      const tools = editCtx?.tools as unknown as {
+        cancelActiveManipulations?: (el: HTMLDivElement) => string | undefined;
+        annotation?: { state?: { removeAnnotation?: (uid: string) => void } };
+      } | undefined;
+      let cancelled = false;
+      try {
+        // Cornerstone's cancel finishes the shape; a cancel should drop it
+        // (never finished, so no undo step), as the reader expects.
+        const uid = element ? tools?.cancelActiveManipulations?.(element) : undefined;
+        if (uid) {
+          tools?.annotation?.state?.removeAnnotation?.(uid);
+          viewportRef.current?.render();
+          cancelled = true;
+        }
+      } catch {
+        /* nothing being drawn */
+      }
+      if (cancelled) {
+        event.preventDefault();
+        event.stopPropagation();
+        return flash("Measurement cancelled");
+      }
+      const home = defaultToolRef.current || "WindowLevel";
+      if (activeTool !== home) {
+        event.preventDefault();
+        event.stopPropagation();
+        setTextBoxTool(false);
+        setLeftToolRef.current(home);
+        return flash(toolLabel(home));
+      }
+    }
     const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, readingTools });
     if (!action) return;
     event.preventDefault();
