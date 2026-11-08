@@ -270,6 +270,7 @@ export function viewerShortcutGroups(
     // RadiAnt's reading keys, as on the desktop (@flowrad/viewer-core/readingKeys).
     const mod = mac ? "⌘" : "Ctrl";
     push(groups, "Display", { keys: [mod, "0"], does: "Fit to the pane" });
+    push(groups, "Display", { keys: [mod, "= / −"], does: "Zoom in / out a step (the image, not the page)" });
     push(groups, "Display", { keys: [mod, "1…4"], does: "Zoom 100 / 200 / 400 / 800 % (100 % = one image pixel per screen pixel)" });
     push(groups, "Display", { keys: [mod, "Arrows"], does: "Pan the image (a step a press)" });
     push(groups, "Display", { keys: ["F12"], does: "Show / hide annotations" });
@@ -290,6 +291,7 @@ export function viewerShortcutGroups(
     push(groups, "Rotate / flip", { keys: ["Shift", "Backspace"], does: "Reset rotation and flips (zoom and window kept)" });
     push(groups, "Stack", { keys: ["PageUp / PageDown"], does: "Jump 10 % of the images (also Shift+↑ / ↓)" });
     push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
+    push(groups, "Layout", { keys: ["F1"], does: "This sheet (as Shift+?)" });
     push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
     push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
   }

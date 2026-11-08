@@ -10,7 +10,8 @@
 // (isFullScreenKey: the page that owns the stage handles it); Shift+Backspace
 // resets rotation and flips only; PageUp / PageDown and Shift+↑ / ↓ jump
 // 10 % of the images; Y arrow, N freehand ROI, Q / Shift+Q rotate; Shift+1…7
-// the layouts (1×1, 1×2, 2×1, 2×2, 1×3, 2×3, 3×3).
+// the layouts (1×1, 1×2, 2×1, 2×2, 1×3, 2×3, 3×3); F1 help; Ctrl/⌘+= / −
+// zoom in / out (the image, not the page).
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -36,7 +37,9 @@ export type ReadingKeyAction =
   | { type: "slicePage"; dir: 1 | -1 }
   | { type: "tool"; tool: "ArrowAnnotate" | "PlanarFreehandROI" }
   | { type: "rotate"; dir: 1 | -1 }
-  | { type: "layout"; n: number };
+  | { type: "layout"; n: number }
+  | { type: "help" }
+  | { type: "zoomBy"; factor: number };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -49,6 +52,9 @@ export interface ReadingKeyEvent {
 
 /** Screen pixels a Ctrl/⌘+arrow press pans, as on the desktop. */
 export const PAN_STEP_PX = 40;
+
+/** One Ctrl/⌘+= / − step, as on the desktop (and the bare = / − keys). */
+export const ZOOM_STEP = 1.25;
 
 /** Ctrl/⌘+0…4: fit, then 100 / 200 / 400 / 800 %. */
 export const ZOOM_LEVELS: readonly (number | "fit")[] = ["fit", 1, 2, 4, 8];
@@ -115,6 +121,14 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     if (e.key === "PageDown" || (shift && e.key === "ArrowDown")) return { type: "slicePage", dir: 1 };
   }
   if (mod && shift && !alt && (e.key === "Backspace" || e.key === "Delete")) return { type: "clearMeasurements" };
+  // F1: the shortcuts sheet, as on the desktop (instead of the browser's help page).
+  if (e.key === "F1" && !mod && !shift && !alt) return { type: "help" };
+  // Ctrl/⌘+= / −: zoom the image in / out a step, as on the desktop, not the page.
+  // By key (Shift+= types "+") or by physical key.
+  if (mod && !alt) {
+    if (e.key === "=" || e.key === "+" || e.code === "Equal" || e.code === "NumpadAdd") return { type: "zoomBy", factor: ZOOM_STEP };
+    if (e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract") return { type: "zoomBy", factor: 1 / ZOOM_STEP };
+  }
   if (!mod || shift || alt) return null;
   const d = digitOf(e);
   if (d != null && d < ZOOM_LEVELS.length) return { type: "zoomTo", scale: ZOOM_LEVELS[d]! };

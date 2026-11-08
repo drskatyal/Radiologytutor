@@ -112,3 +112,14 @@ test("reading keys: Shift+1…7 pick the desktop's layouts (by physical key); Sh
   assert.equal(resolveReadingKey({ key: "*", code: "Digit8", shiftKey: true }), null);
   assert.equal(resolveReadingKey({ key: "1", code: "Digit1" }), null, "a bare digit is still a window preset");
 });
+
+test("reading keys: F1 help; Ctrl/⌘+= / − zoom the image a step (by key or physical key)", () => {
+  assert.deepEqual(resolveReadingKey({ key: "F1" }), { type: "help" });
+  assert.equal(resolveReadingKey({ key: "F1", ctrlKey: true }), null);
+  assert.deepEqual(resolveReadingKey({ key: "=", code: "Equal", ctrlKey: true }), { type: "zoomBy", factor: 1.25 });
+  assert.deepEqual(resolveReadingKey({ key: "+", code: "Equal", metaKey: true, shiftKey: true }), { type: "zoomBy", factor: 1.25 });
+  assert.deepEqual(resolveReadingKey({ key: "-", code: "Minus", ctrlKey: true }), { type: "zoomBy", factor: 0.8 });
+  assert.deepEqual(resolveReadingKey({ key: "ß", code: "Minus", ctrlKey: true }), { type: "zoomBy", factor: 0.8 }, "a layout with another character there");
+  assert.equal(resolveReadingKey({ key: "=", code: "Equal" }), null, "bare = stays the web zoom command");
+  assert.equal(resolveReadingKey({ key: "-", code: "Minus", ctrlKey: true, altKey: true }), null);
+});

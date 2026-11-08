@@ -3902,6 +3902,11 @@ export default function CornerstoneViewer({
         return reformatPane(action.plane);
       case "eraser":
         return runViewerAction({ type: "tool", tool: "Eraser" });
+      case "help":
+        return runViewerAction({ type: "help" });
+      case "zoomBy":
+        if (mprShowing) return flash("Zoom with the right button in MPR");
+        return runViewerAction({ type: "zoom", factor: action.factor });
       case "clearMeasurements":
         return clearMeasurements();
       case "tool":
