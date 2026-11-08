@@ -301,3 +301,11 @@ test("the free viewer's help lists Shift+Backspace (reset rotation and flips)", 
   assert.deepEqual(find(true)?.keys, ["Shift", "Backspace"]);
   assert.equal(find(false), undefined);
 });
+
+test("the free viewer's help: presets on 1…9, Shift+1…7 the layouts; teaching surfaces keep Shift+1…9 presets", () => {
+  const rows = (readingTools: boolean) => viewerShortcutGroups({}, false, { readingTools }).flatMap((g) => g.rows);
+  assert.deepEqual(rows(true).find((r) => r.does === "Window preset")?.keys, ["1…9"]);
+  assert.deepEqual(rows(true).find((r) => /^Layout: 1×1/.test(r.does))?.keys, ["Shift", "1…7"]);
+  assert.deepEqual(rows(false).find((r) => r.does === "Window preset")?.keys, ["Shift", "1…9"]);
+  assert.equal(rows(false).find((r) => /^Layout: 1×1/.test(r.does)), undefined);
+});

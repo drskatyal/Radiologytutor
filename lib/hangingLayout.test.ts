@@ -84,3 +84,14 @@ test("arrow moves between panes and stops at the edge", () => {
   assert.equal(movePane(grid, 3, "left"), 2);
   assert.equal(movePane(grid, 2, "up"), 0);
 });
+
+test("Shift+1…7 layouts: the desktop's order, only where the study has the series for it", async () => {
+  const { layoutForShortcut } = await import("@flowrad/viewer-core/hangingLayout");
+  assert.equal(layoutForShortcut(1, 1)?.id, "1x1");
+  assert.equal(layoutForShortcut(2, 1)?.id, "1x2", "one series: side by side is still offered");
+  assert.equal(layoutForShortcut(4, 1), null, "one series: no 2×2");
+  assert.equal(layoutForShortcut(4, 3)?.id, "2x2");
+  assert.equal(layoutForShortcut(7, 4), null, "3×3 needs more than four series");
+  assert.equal(layoutForShortcut(7, 9)?.id, "3x3");
+  assert.equal(layoutForShortcut(8, 9), null);
+});

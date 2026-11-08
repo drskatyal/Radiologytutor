@@ -105,3 +105,10 @@ test("reading keys: Y arrow, N freehand ROI, Q / Shift+Q rotate (the desktop's l
   assert.deepEqual(resolveReadingKey({ key: "y", code: "KeyZ" }), { type: "tool", tool: "ArrowAnnotate" });
   assert.equal(resolveReadingKey({ key: "z", code: "KeyY" }), null);
 });
+
+test("reading keys: Shift+1…7 pick the desktop's layouts (by physical key); Shift+8 / 9 stay presets", () => {
+  assert.deepEqual(resolveReadingKey({ key: "!", code: "Digit1", shiftKey: true }), { type: "layout", n: 1 });
+  assert.deepEqual(resolveReadingKey({ key: "&", code: "Digit7", shiftKey: true }), { type: "layout", n: 7 });
+  assert.equal(resolveReadingKey({ key: "*", code: "Digit8", shiftKey: true }), null);
+  assert.equal(resolveReadingKey({ key: "1", code: "Digit1" }), null, "a bare digit is still a window preset");
+});

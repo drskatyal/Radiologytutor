@@ -129,9 +129,13 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
 
   // Shift+Backspace: rotation and flips back, zoom kept (the overlay's zoom is unchanged).
   await image(page).focus();
-  await page.keyboard.press("Control+2");
   const zoomText = () => image(page).locator("xpath=..").innerText().then((t) => /Zoom \d+%/.exec(t)?.[0] ?? "");
+  await page.keyboard.press("Control+0");
   await expect.poll(zoomText).not.toBe("");
+  const fitted = await zoomText();
+  await page.keyboard.press("Control+2");
+  // Wait for the overlay to show the new zoom before taking it as the reference.
+  await expect.poll(zoomText).not.toBe(fitted);
   const zoomed = await zoomText();
   await page.keyboard.press("r");
   await page.keyboard.press("Shift+Backspace");
@@ -181,5 +185,15 @@ test("reading keys in the grid: F5 / Shift+F5 / Alt+F5 links and Ctrl+F12 refere
   await flip("Shift+F5", "Link window / level");
   await flip("Alt+F5", "Link zoom and pan");
   await flip("Control+F12", "Reference lines");
+
+  // Shift+1…7: the desktop's layouts (4 = 2 × 2, 1 = single); 3 × 3 needs more series than this study has.
+  await page.getByTestId("viewer-pane").first().click({ position: { x: 80, y: 80 } });
+  await page.keyboard.press("Shift+Digit4");
+  await expect(page.getByRole("radio", { name: "2 × 2 layout" })).toHaveAttribute("aria-checked", "true");
+  await page.getByTestId("viewer-pane").first().click({ position: { x: 80, y: 80 } });
+  await page.keyboard.press("Shift+Digit7");
+  await expect(page.getByText("That layout needs more series in this study").first()).toBeVisible();
+  await page.keyboard.press("Shift+Digit1");
+  await expect(page.getByRole("radio", { name: "Single layout" })).toHaveAttribute("aria-checked", "true");
   expect(errors).toEqual([]);
 });

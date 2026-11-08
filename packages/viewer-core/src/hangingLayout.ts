@@ -122,3 +122,13 @@ export function movePane(
   }[direction] as [number, number];
   return next[1] * layout.cols + next[0];
 }
+
+/**
+ * Shift+1…7, as on the desktop: the nth reading layout when this study
+ * offers it (enough series for its panes), else null.
+ */
+export function layoutForShortcut(n: number, seriesCount: number): HangingLayout | null {
+  const layout = READING_LAYOUTS[n - 1];
+  if (!layout) return null;
+  return layoutsForSeriesCount(seriesCount, READING_LAYOUTS).some((l) => l.id === layout.id) ? layout : null;
+}
