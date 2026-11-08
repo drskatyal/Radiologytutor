@@ -172,9 +172,29 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: /^Scroll/ }).first()).toHaveAttribute("aria-pressed", "true");
 
-  // The help sheet lists them.
-  await page.keyboard.press("Shift+?");
+  // Ctrl+= / Ctrl+−: the image zooms a step (the page does not), as on the desktop.
+  await image(page).focus();
+  await page.keyboard.press("Control+0");
+  // The reference once the overlay has settled on the fitted zoom (the same twice, 300 ms apart).
+  let fitZoom = 0;
+  await expect
+    .poll(async () => {
+      const a = await zoomText();
+      await page.waitForTimeout(300);
+      fitZoom = Number(/\d+/.exec(a)?.[0] ?? 0);
+      return a !== "" && a === (await zoomText());
+    })
+    .toBe(true);
+  await page.keyboard.press("Control+Equal");
+  await expect.poll(async () => Number(/\d+/.exec(await zoomText())?.[0] ?? 0)).toBeGreaterThan(fitZoom);
+  expect(await page.evaluate(() => window.visualViewport?.scale ?? 1)).toBe(1);
+  await page.keyboard.press("Control+Minus");
+  await expect.poll(async () => Number(/\d+/.exec(await zoomText())?.[0] ?? 0)).toBe(fitZoom);
+
+  // F1 opens the help sheet (not the browser's help), and it lists them.
+  await page.keyboard.press("F1");
   const help = page.getByRole("dialog");
+  await expect(help.getByText("This sheet (as Shift+?)")).toBeVisible();
   await expect(help.getByText("Fit to the pane")).toBeVisible();
   await expect(help.getByText(/Zoom 100 \/ 200 \/ 400 \/ 800 %/)).toBeVisible();
   await expect(help.getByText("Show / hide annotations")).toBeVisible();

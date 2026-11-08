@@ -124,3 +124,14 @@ test("open keys: Ctrl/⌘+O files, Ctrl/⌘+Shift+O a folder (by physical key to
   // The open keys are not reading keys: the image never sees them as anything.
   assert.equal(resolveReadingKey({ key: "o", code: "KeyO", ctrlKey: true }), null);
 });
+
+test("reading keys: F1 help; Ctrl/⌘+= / − zoom the image a step (by key or physical key)", () => {
+  assert.deepEqual(resolveReadingKey({ key: "F1" }), { type: "help" });
+  assert.equal(resolveReadingKey({ key: "F1", ctrlKey: true }), null);
+  assert.deepEqual(resolveReadingKey({ key: "=", code: "Equal", ctrlKey: true }), { type: "zoomBy", factor: 1.25 });
+  assert.deepEqual(resolveReadingKey({ key: "+", code: "Equal", metaKey: true, shiftKey: true }), { type: "zoomBy", factor: 1.25 });
+  assert.deepEqual(resolveReadingKey({ key: "-", code: "Minus", ctrlKey: true }), { type: "zoomBy", factor: 0.8 });
+  assert.deepEqual(resolveReadingKey({ key: "ß", code: "Minus", ctrlKey: true }), { type: "zoomBy", factor: 0.8 }, "a layout with another character there");
+  assert.equal(resolveReadingKey({ key: "=", code: "Equal" }), null, "bare = stays the web zoom command");
+  assert.equal(resolveReadingKey({ key: "-", code: "Minus", ctrlKey: true, altKey: true }), null);
+});
