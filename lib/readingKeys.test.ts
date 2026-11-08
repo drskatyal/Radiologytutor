@@ -93,3 +93,15 @@ test("reading keys: Shift+Backspace resets rotation and flips only; bare Backspa
   assert.equal(resolveReadingKey({ key: "Backspace" }), null);
   assert.deepEqual(resolveReadingKey({ key: "Backspace", ctrlKey: true, shiftKey: true }), { type: "clearMeasurements" });
 });
+
+test("reading keys: Y arrow, N freehand ROI, Q / Shift+Q rotate (the desktop's letters)", () => {
+  assert.deepEqual(resolveReadingKey({ key: "y", code: "KeyY" }), { type: "tool", tool: "ArrowAnnotate" });
+  assert.deepEqual(resolveReadingKey({ key: "n", code: "KeyN" }), { type: "tool", tool: "PlanarFreehandROI" });
+  assert.deepEqual(resolveReadingKey({ key: "q", code: "KeyQ" }), { type: "rotate", dir: 1 });
+  assert.deepEqual(resolveReadingKey({ key: "Q", code: "KeyQ", shiftKey: true }), { type: "rotate", dir: -1 });
+  assert.equal(resolveReadingKey({ key: "y", code: "KeyY", ctrlKey: true }), null, "Ctrl/⌘+Y stays redo");
+  assert.equal(resolveReadingKey({ key: "N", code: "KeyN", shiftKey: true }), null);
+  // A QWERTZ keyboard: the key labelled Y sits where QWERTY has Z (code KeyZ, key "y"): the letter typed wins, as on the desktop.
+  assert.deepEqual(resolveReadingKey({ key: "y", code: "KeyZ" }), { type: "tool", tool: "ArrowAnnotate" });
+  assert.equal(resolveReadingKey({ key: "z", code: "KeyY" }), null);
+});

@@ -138,6 +138,18 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await expect(page.getByText("Reset orientation").first()).toBeVisible();
   expect(await zoomText()).toBe(zoomed);
 
+  // The desktop's letters: Y arrow with label, N freehand ROI, Q / Shift+Q rotate.
+  await image(page).focus();
+  await page.keyboard.press("y");
+  await expect(page.getByText(/^Arrow/).first()).toBeVisible();
+  await page.keyboard.press("n");
+  await expect(page.getByText(/^Freehand/).first()).toBeVisible();
+  await page.keyboard.press("q");
+  await expect(page.getByText("Rotate 90° clockwise").first()).toBeVisible();
+  await page.keyboard.press("Shift+Q");
+  await expect(page.getByText("Rotate 90° anticlockwise").first()).toBeVisible();
+  await page.keyboard.press("s");
+
   // The help sheet lists them.
   await page.keyboard.press("Shift+?");
   const help = page.getByRole("dialog");

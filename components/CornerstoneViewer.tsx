@@ -3898,6 +3898,10 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "tool", tool: "Eraser" });
       case "clearMeasurements":
         return clearMeasurements();
+      case "tool":
+        return runViewerAction({ type: "tool", tool: action.tool });
+      case "rotate":
+        return applyOrientation(action.dir > 0 ? "rotate:90" : "rotate:-90");
       case "slicePage":
         return runViewerAction({ type: "slice", delta: action.dir * pageStep(sliceCount) });
       case "cine":
@@ -4188,6 +4192,8 @@ export default function CornerstoneViewer({
   const webMenuShortcut = (command: string): string | undefined => {
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
     if (head === "tool" && arg === "Eraser" && readingTools) return "Shift+E";
+    if (head === "tool" && arg === "ArrowAnnotate" && readingTools) return "Y";
+    if (head === "tool" && arg === "PlanarFreehandROI" && readingTools) return "N";
     if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
       if (arg === "auto") return shortcutForPreset(0) ?? undefined;

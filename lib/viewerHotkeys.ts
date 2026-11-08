@@ -277,6 +277,9 @@ export function viewerShortcutGroups(
     const alt = mac ? "⌥" : "Alt";
     push(groups, "Layout", { keys: [alt, "A / C / S"], does: "Reformat this pane: axial / coronal / sagittal (again for the stack)" });
     push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
+    push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
+    push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
+    push(groups, "Rotate / flip", { keys: ["Q / Shift+Q"], does: "Rotate 90° (as R / Shift+R)" });
     push(groups, "Tools", { keys: [mod, "Shift", "Backspace"], does: "Clear all measurements (Ctrl+Z brings them back)" });
     push(groups, "Stack", { keys: ["Space"], does: "Play / pause cine (as K)" });
     push(groups, "Stack", { keys: ["Shift", "[ / ]"], does: "Cine slower / faster" });
