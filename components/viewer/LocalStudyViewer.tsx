@@ -54,7 +54,7 @@ import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
-import { isFullScreenKey } from "@flowrad/viewer-core/readingKeys";
+import { isFullScreenKey, openKeyOf } from "@flowrad/viewer-core/readingKeys";
 import { pickFusionPair } from "@flowrad/viewer-core/petFusion";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
@@ -715,6 +715,25 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     if (files.length > 0) void ingest(files);
     else setPhase({ state: "empty", inspected: 0, warnings: [] });
   }, [ingest]);
+
+  // Ctrl/⌘+O: open DICOM files; Ctrl/⌘+Shift+O: open a folder, as on the
+  // desktop (instead of the browser's "open a page" / bookmarks). On the
+  // landing and with a study open; a key press is the gesture the pickers
+  // need. Not while typing or in a dialog.
+  useEffect(() => {
+    if (!reading) return;
+    const onKey = (e: KeyboardEvent) => {
+      const what = e.repeat ? null : openKeyOf(e);
+      if (!what) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="dialog"]'))) return;
+      e.preventDefault();
+      if (what === "folder" && nativeFolderPicker) return void pickFolderNative();
+      document.getElementById(what === "folder" ? folderInputId : fileInputId)?.click();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reading, nativeFolderPicker, pickFolderNative, folderInputId, fileInputId]);
 
   // The viewer's code could not be fetched even after retries: a new build
   // replaced the one this tab started with (or the network dropped it). Show

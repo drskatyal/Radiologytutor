@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isFullScreenKey, pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
+import { isFullScreenKey, openKeyOf, pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
 
 test("reading keys: Ctrl/⌘+0…4 zoom to fit, 100, 200, 400, 800 %", () => {
   assert.deepEqual(resolveReadingKey({ key: "0", ctrlKey: true }), { type: "zoomTo", scale: "fit" });
@@ -111,4 +111,16 @@ test("reading keys: Shift+1…7 pick the desktop's layouts (by physical key); Sh
   assert.deepEqual(resolveReadingKey({ key: "&", code: "Digit7", shiftKey: true }), { type: "layout", n: 7 });
   assert.equal(resolveReadingKey({ key: "*", code: "Digit8", shiftKey: true }), null);
   assert.equal(resolveReadingKey({ key: "1", code: "Digit1" }), null, "a bare digit is still a window preset");
+});
+
+test("open keys: Ctrl/⌘+O files, Ctrl/⌘+Shift+O a folder (by physical key too); nothing else", () => {
+  assert.equal(openKeyOf({ key: "o", code: "KeyO", ctrlKey: true }), "files");
+  assert.equal(openKeyOf({ key: "o", code: "KeyO", metaKey: true }), "files");
+  assert.equal(openKeyOf({ key: "O", code: "KeyO", ctrlKey: true, shiftKey: true }), "folder");
+  assert.equal(openKeyOf({ key: "ø", code: "KeyO", metaKey: true }), "files", "a layout that types another letter");
+  assert.equal(openKeyOf({ key: "o", code: "KeyO" }), null, "a bare O stays the overlay key");
+  assert.equal(openKeyOf({ key: "o", code: "KeyO", ctrlKey: true, altKey: true }), null);
+  assert.equal(openKeyOf({ key: "p", code: "KeyP", ctrlKey: true }), null);
+  // The open keys are not reading keys: the image never sees them as anything.
+  assert.equal(resolveReadingKey({ key: "o", code: "KeyO", ctrlKey: true }), null);
 });

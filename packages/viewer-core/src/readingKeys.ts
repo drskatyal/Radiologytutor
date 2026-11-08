@@ -10,7 +10,8 @@
 // (isFullScreenKey: the page that owns the stage handles it); Shift+Backspace
 // resets rotation and flips only; PageUp / PageDown and Shift+↑ / ↓ jump
 // 10 % of the images; Y arrow, N freehand ROI, Q / Shift+Q rotate; Shift+1…7
-// the layouts (1×1, 1×2, 2×1, 2×2, 1×3, 2×3, 3×3).
+// the layouts (1×1, 1×2, 2×1, 2×2, 1×3, 2×3, 3×3); Ctrl/⌘+O open files and
+// Ctrl/⌘+Shift+O a folder (openKeyOf: the page that owns the pickers).
 //
 // Pure: key in, intent out. The host decides what it can do (a single pane
 // has nothing to link) and must only call this for keys aimed at the image,
@@ -155,4 +156,15 @@ export function isFullScreenKey(e: ReadingKeyEvent): boolean {
 /** A page (PageUp / PageDown, Shift+↑ / ↓): 10 % of the images, at least one, as on the desktop. */
 export function pageStep(count: number): number {
   return Math.max(1, Math.round(Math.max(0, count) / 10));
+}
+
+/**
+ * Ctrl/⌘+O open DICOM files, Ctrl/⌘+Shift+O open a folder, as on the desktop
+ * (by physical key too, so Alt-less layouts that type another letter still
+ * work). For the page that owns the file pickers; null for anything else.
+ */
+export function openKeyOf(e: ReadingKeyEvent): "files" | "folder" | null {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return null;
+  if (e.code !== "KeyO" && e.key.toLowerCase() !== "o") return null;
+  return e.shiftKey ? "folder" : "files";
 }

@@ -291,6 +291,8 @@ export function viewerShortcutGroups(
     push(groups, "Rotate / flip", { keys: ["Shift", "Backspace"], does: "Reset rotation and flips (zoom and window kept)" });
     push(groups, "Stack", { keys: ["PageUp / PageDown"], does: "Jump 10 % of the images (also Shift+↑ / ↓)" });
     push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
+    push(groups, "Layout", { keys: [mod, "O"], does: "Open DICOM files" });
+    push(groups, "Layout", { keys: [mod, "Shift", "O"], does: "Open a folder" });
     push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
     push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
   }
