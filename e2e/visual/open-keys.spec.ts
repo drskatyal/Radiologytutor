@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type FileChooser } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -29,8 +29,13 @@ test("open keys: Ctrl+O opens files (landing and with a study open), Ctrl+Shift+
   const files = fs.readdirSync(CT!).sort().slice(0, 12).map((f) => path.join(CT!, f));
 
   // Landing: Ctrl+O is the file picker, and what it picks opens.
+  // The key is handled once the page has hydrated (the landing is server-rendered first),
+  // so press until the picker opens rather than racing hydration.
   await page.locator("body").click({ position: { x: 5, y: 5 } });
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.keyboard.press("Control+o")]);
+  let chooser!: FileChooser;
+  await expect(async () => {
+    [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 2_000 }), page.keyboard.press("Control+o")]);
+  }).toPass({ timeout: 20_000 });
   expect(chooser.isMultiple()).toBe(true);
   await chooser.setFiles(files);
   const slider = page.getByRole("slider", { name: "Slice" }).first();
