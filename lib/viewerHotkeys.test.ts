@@ -209,12 +209,14 @@ test("D is Bidirectional only where the free viewer's extra measure tools are on
     viewerShortcutGroups({}, false, { readingTools }).flatMap((g) => g.rows.map((r) => r.does));
   assert.ok(does(true).includes("Bidirectional"));
   assert.ok(!does(false).includes("Bidirectional"));
-  // Cobb, circle and the magnifier have no default key (C belongs to the
-  // student session), so the sheet doesn't list them. Freehand has N in the
-  // free viewer only (as on the desktop); teaching surfaces keep N free.
-  assert.ok(!does(true).some((d) => /Cobb|Circle ROI|Magnif/.test(d)));
+  // Circle and the magnifier have no default key, so the sheet doesn't list
+  // them. Freehand (N) and Cobb (C) have the desktop's letters in the free
+  // viewer only; teaching surfaces keep N and C free (the student session owns C).
+  assert.ok(!does(true).some((d) => /Circle ROI|Magnif/.test(d)));
   assert.ok(does(true).includes("Freehand ROI"));
+  assert.ok(does(true).includes("Cobb angle"));
   assert.ok(!does(false).includes("Freehand ROI"));
+  assert.ok(!does(false).includes("Cobb angle"));
 });
 
 test("the help lists Ctrl+F11 (Set window), ⌘ on a Mac", () => {

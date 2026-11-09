@@ -4247,6 +4247,7 @@ export default function CornerstoneViewer({
     if (head === "tool" && arg === "Eraser" && readingTools) return "Shift+E";
     if (head === "tool" && arg === "ArrowAnnotate" && readingTools) return "Y";
     if (head === "tool" && arg === "PlanarFreehandROI" && readingTools) return "N";
+    if (head === "tool" && arg === "CobbAngle" && readingTools) return "C";
     if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
       if (arg === "auto") return shortcutForPreset(0) ?? undefined;

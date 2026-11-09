@@ -281,6 +281,8 @@ export function viewerShortcutGroups(
     push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
     push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
     push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
+    push(groups, "Tools", { keys: ["C"], does: "Cobb angle" });
+    push(groups, "Tools", { keys: ["P"], does: "Pan (as M)" });
     push(groups, "Tools", { keys: ["Esc"], does: "Cancel the measurement being drawn, then back to scroll" });
     push(groups, "Rotate / flip", { keys: ["Q / Shift+Q"], does: "Rotate 90° (as R / Shift+R)" });
     push(groups, "Layout", { keys: ["Shift", "1…7"], does: "Layout: 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3" });
