@@ -966,13 +966,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const setLayoutForGrid = useCallback((rows: number, cols: number) => setLayoutId(layoutForGrid(rows, cols)), []);
   // A series thumbnail's right-click menu, as on the desktop.
   const canAddPane = !!layoutWithMorePanes(layoutId, flat.length, READING_LAYOUTS);
+  // "Quick coronal / sagittal": the pane to reformat once its new series is up.
+  const [planeRequest, setPlaneRequest] = useState<{ pane: number; plane: "coronal" | "sagittal" } | null>(null);
   const onThumbCommand = useCallback(
     (study: number, series: number, command: MenuCommand) => {
       const target = { study, series };
-      if (command === "thumb:open") {
+      if (command === "thumb:open" || command === "thumb:reformat:coronal" || command === "thumb:reformat:sagittal") {
         // The active pane: the main one, or the outlined pane of a grid.
-        if (multi) hangInPane(activePane, target);
+        const pane = multi ? activePane : 0;
+        if (multi) hangInPane(pane, target);
         else pickStudySeries(study, series);
+        // Quick coronal / sagittal, as on the desktop: that pane shows it reformatted.
+        if (command !== "thumb:open") setPlaneRequest({ pane, plane: command === "thumb:reformat:coronal" ? "coronal" : "sagittal" });
         return;
       }
       if (command === "thumb:newLayout") {
@@ -1622,6 +1627,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     questionMarkHelp
                     readingTools
                     popOutOffered={popOutOffered}
+                    startPlane={planeRequest?.pane === 0 ? planeRequest.plane : null}
+                    onStartPlaneDone={() => setPlaneRequest(null)}
                     exportFiles={exportFilesFor({ study: activeStudy, series: activeSeries })}
                     onFusion={openFusion}
                     seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
@@ -1682,6 +1689,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           questionMarkHelp
                           readingTools
                           popOutOffered={popOutOffered}
+                          startPlane={planeRequest?.pane === pane ? planeRequest.plane : null}
+                          onStartPlaneDone={() => setPlaneRequest(null)}
                           exportFiles={exportFilesFor(target)}
                           onFusion={openFusion}
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
@@ -2409,6 +2418,7 @@ function SeriesList({
         <SeriesThumbMenu
           at={{ x: menuAt.x, y: menuAt.y }}
           canAddPane={thumbMenu.canAddPane}
+          canReformat={(studies[menuAt.study]?.series[menuAt.series]?.imageCount ?? 0) >= 3}
           onSelect={(command) => {
             const { study, series } = menuAt;
             setMenuAt(null);

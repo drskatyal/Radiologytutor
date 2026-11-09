@@ -41,3 +41,27 @@ test("series thumbnail menu: open in a new layout pane, then in the active pane"
   await expect(page.getByRole("radio", { name: "Side by side layout" })).toHaveAttribute("aria-checked", "true");
   expect(errors).toEqual([]);
 });
+
+test("series thumbnail menu: Quick sagittal opens the series reformatted in the active pane", async ({ page }) => {
+  test.skip(!MULTI, "TEST_MULTI_DIR is not set (scripts/make-test-multiseries.py)");
+  test.setTimeout(120_000);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/viewer");
+  await page.locator("input[type=file]:not([webkitdirectory])").first().setInputFiles(fs.readdirSync(MULTI!).map((f) => path.join(MULTI!, f)));
+  await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(800);
+  const plane = page.getByTestId("plane-switch").first();
+  await expect(plane).toHaveAccessibleName("Plane, Acquired");
+
+  await thumb(page, "Axial bone").click({ button: "right" });
+  const item = (name: RegExp) => page.locator('[role^="menuitem"]').filter({ hasText: name }).first();
+  await expect(item(/Quick coronal/)).toBeVisible();
+  await item(/Quick sagittal/).click();
+  // The pane now shows bone (selected in the list), reformatted sagittally.
+  await expect(thumb(page, "Axial bone")).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
+  await expect(plane).toHaveAccessibleName("Plane, Sagittal", { timeout: 30_000 });
+  expect(errors).toEqual([]);
+});
