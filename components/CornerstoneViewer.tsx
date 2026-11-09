@@ -143,7 +143,7 @@ import {
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
 import { isTextTarget, resolveViewerHotkey, resolveViewerInput, WEB_COMMANDS, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
 import { viewerFixedBindings } from "../lib/viewerMouseBindings";
-import { attachMouseCommands, inputIndex, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
+import { attachMouseCommands, inputIndex, isMac, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
 import { useViewerBindings } from "./viewer/useViewerBindings";
 import {
   ORIENTATION_COMMANDS,
@@ -3890,7 +3890,7 @@ export default function CornerstoneViewer({
   };
 
   /** RadiAnt's reading keys, as on the desktop (zoom levels, pan, F12, F5). */
-  const runReadingKey = (action: ReadingKeyAction) => {
+  const runReadingKey = (action: ReadingKeyAction): void => {
     switch (action.type) {
       case "zoomTo":
         if (!zoomToRef.current(action.scale)) return flash(mprShowing ? "Zoom levels are for the stack" : "Zoom once the image has loaded");
@@ -4254,6 +4254,12 @@ export default function CornerstoneViewer({
     if (head === "tool" && arg === "ArrowAnnotate" && readingTools) return "Y";
     if (head === "tool" && arg === "PlanarFreehandROI" && readingTools) return "N";
     if (head === "tool" && arg === "CobbAngle" && readingTools) return "C";
+    if (readingTools && (head === "3d" || head === "reformat")) {
+      const mac = isMac();
+      if (head === "3d") return `${mac ? "⌘" : "Ctrl"}+Shift+M`;
+      const letter = { axial: "A", coronal: "C", sagittal: "S" }[arg as "axial" | "coronal" | "sagittal"];
+      if (letter) return `${mac ? "⌥" : "Alt"}+${letter}`;
+    }
     if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
       if (arg === "auto") return shortcutForPreset(0) ?? undefined;
@@ -4308,6 +4314,8 @@ export default function CornerstoneViewer({
       can: {
         mpr: ready && sliceCount >= 3,
         reformat: readingTools && ready && sliceCount >= 3,
+        // 3D volume rendering from the menu, as on the desktop (also Ctrl/⌘+Shift+M and the toolbar's 3D).
+        threeD: readingTools && ready && sliceCount >= 3,
         copyImage: true,
         saveImage: true,
         tags: true,
@@ -4366,6 +4374,8 @@ export default function CornerstoneViewer({
       case "reformat":
         if (arg === "axial" || arg === "coronal" || arg === "sagittal") return reformatPane(arg);
         return;
+      case "3d":
+        return runReadingKey({ type: "volume3d" });
       case "layout": {
         const m = /^(\d)x(\d)$/.exec(arg);
         if (!m || !onSetLayout) return;
