@@ -31,6 +31,7 @@ import {
   FileText,
   FolderOpen,
   HardDrive,
+  Columns2,
   Layers,
   Link2,
   Maximize2,
@@ -64,6 +65,7 @@ import type { ViewerSource } from "@/lib/viewerSource";
 import { stackOpenIndex } from "@/lib/stackIndex";
 import {
   isKeyImageSeries,
+  localComparePlan,
   primarySeriesIndexByProtocol,
   reportsForStudy,
   stopParkedVoice,
@@ -246,6 +248,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   /** The pane filling the grid (double-click or Enter; Esc restores), or null. */
   const [maximized, setMaximized] = useState<number | null>(null);
   const [extraPanes, setExtraPanes] = useState<PaneSeries[]>([]);
+  // Current vs prior, as on the desktop: what the protocol hung, for its label.
+  const [comparison, setComparison] = useState<{ current: PaneSeries; prior: PaneSeries; label: string } | null>(null);
+  /** The prior's registration (mm) until both panes are up to apply it. */
+  const compareOffset = useRef<number | null>(null);
   const [activePane, setActivePane] = useState(0);
   const activePaneRef = useRef(0);
   activePaneRef.current = activePane;
@@ -681,6 +687,23 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             pendingSlice.current = place.slice ?? null;
           }
         }
+        // Current vs prior, as on the desktop: a study and an earlier one of the
+        // same patient, opened together, hang side by side (the newest study's
+        // primary series beside the prior's closest series), scrolling together
+        // from the superior ends. Not when a pop-out or a reload asked for a series.
+        const compare = reading && !at && !place ? localComparePlan(result.studies) : null;
+        if (compare) {
+          setActiveStudy(compare.current.study);
+          setActiveSeries(compare.current.series);
+          setLayoutId("1x2");
+          setExtraPanes([compare.prior]);
+          setActivePane(0);
+          compareOffset.current = compare.priorOffsetMm;
+          setComparison({ current: compare.current, prior: compare.prior, label: compare.label });
+        } else {
+          compareOffset.current = null;
+          setComparison(null);
+        }
         setPhase({ state: "open", result, pinned: located ? pinnedNow : null });
         setRestore(null);
         void rememberStudyHandles(openingHandles.current);
@@ -938,6 +961,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, [layout, panesNow, flat]);
   // A new study starts in its first pane.
   useEffect(() => setActivePane(0), [result]);
+  // The current-vs-prior label, while the panes still show what the protocol hung.
+  const comparisonShown =
+    !!comparison &&
+    multi &&
+    layoutId === "1x2" &&
+    samePane({ study: activeStudy, series: activeSeries }, comparison.current) &&
+    samePane(extraPanes[0], comparison.prior);
   // Thumbnail menu: series hidden from the list (until "Show all" or another study), and series info.
   const [hiddenSeries, setHiddenSeries] = useState<ReadonlySet<string>>(() => new Set());
   const [seriesInfoFor, setSeriesInfoFor] = useState<{ study: number; series: number } | null>(null);
@@ -1073,9 +1103,47 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   // Re-anchor when linking is switched on or a pane gets another series.
   useEffect(() => {
     if (!multi || !linkScroll) return;
-    const timer = window.setTimeout(captureAnchors, 400);
+    // A current-vs-prior hang registers its panes itself (below).
+    const timer = window.setTimeout(() => compareOffset.current == null && captureAnchors(), 400);
     return () => window.clearTimeout(timer);
   }, [multi, linkScroll, paneTargets, captureAnchors]);
+  // Current vs prior: once both panes are up, put the prior at the current's
+  // level (superior ends aligned, as on the desktop) and link them there.
+  useEffect(() => {
+    if (!multi || compareOffset.current == null) return;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      const offset = compareOffset.current;
+      const [current, prior] = linkLive.current.geoms;
+      const a = controlsFor(0);
+      const b = controlsFor(1);
+      // Both panes on their whole series (the main pane opens on a one-image preview first).
+      const up = !!current && !!prior && !!a?.ready && !!b?.ready && a.imageCount === current.positions.length && b.imageCount === prior.positions.length;
+      const index = up ? a!.getStartState?.()?.sliceIndex : undefined;
+      if (offset == null || !current || !prior || !b || index == null) {
+        // Not a stack with positions (or never up): leave the panes linked where they open.
+        if (offset == null || ++tries > 60) {
+          window.clearInterval(timer);
+          if (compareOffset.current != null) {
+            compareOffset.current = null;
+            captureAnchors();
+          }
+        }
+        return;
+      }
+      window.clearInterval(timer);
+      compareOffset.current = null;
+      const sign = planeSign(current, prior);
+      const z = current.positions[index];
+      if (!sign || z == null) return captureAnchors();
+      anchors.current = [z, sign * z + offset];
+      const target = linkedIndex(current, index, prior, offset);
+      if (target == null || b.getStartState?.()?.sliceIndex === target) return;
+      echoes.current.set(1, target);
+      b.applyEvent({ t: 0, type: "slice", index: target });
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, [multi, paneTargets, controlsFor, captureAnchors]);
   // Each pane's visible plane, refreshed once a frame while panes move.
   const planeFrame = useRef(0);
   const refreshPlanes = useCallback(() => {
@@ -1377,6 +1445,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : what === "zoom" ? setLinkZoom : setRefLines)((on) => !on)
           }
         />
+      )}
+      {comparisonShown && (
+        <p
+          data-testid="hanging-label"
+          title="Hanging protocol: current vs prior"
+          className={cn("flex items-center gap-1.5 text-xs tabular-nums", reading ? "text-white/70" : "text-secondary")}
+        >
+          <Columns2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="truncate">{comparison?.label}</span>
+        </p>
       )}
       {result && study ? (
         <SeriesList

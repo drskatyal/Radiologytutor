@@ -45,6 +45,11 @@ export interface LocalInstanceHeader {
   seriesDescription?: string;
   studyDescription?: string;
   studyDate?: string;
+  /**
+   * A one-way key of the Patient ID (patientKeyOf), never the ID itself: only
+   * to tell whether two studies of a drop are the same patient's (current vs prior).
+   */
+  patientKey?: string;
   /** Multiframe instances (a cine loop, an enhanced CT) hold many images. */
   numberOfFrames?: number;
   rows?: number;
@@ -72,9 +77,30 @@ export interface LocalStudy {
   studyInstanceUID: string;
   description?: string;
   studyDate?: string;
+  /** The patient's one-way key (see LocalInstanceHeader.patientKey). */
+  patientKey?: string;
   /** Finding-irrelevant here: ordered by series number, then UID. */
   series: LocalSeries[];
   imageCount: number;
+}
+
+/**
+ * A one-way key for a Patient ID (FNV-1a, 64-bit as two halves), or undefined
+ * when there is none. Compared only within what is open, to tell a prior of
+ * the same patient from another patient's study; never stored or shown.
+ */
+export function patientKeyOf(patientId: string | undefined | null): string | undefined {
+  const id = (patientId ?? "").trim();
+  if (!id) return undefined;
+  const text = `patient\u0000${id}`;
+  let h1 = 0x811c9dc5;
+  let h2 = 0xcbf29ce4;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ c, 0x0100019b) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
 }
 
 /**
@@ -269,6 +295,7 @@ export function* groupLocalStudiesSteps(
         studyInstanceUID: studyUid,
         description: header.studyDescription,
         studyDate: header.studyDate,
+        patientKey: header.patientKey,
         series: [],
         imageCount: 0,
       };
@@ -276,6 +303,7 @@ export function* groupLocalStudiesSteps(
     }
     study.description ||= header.studyDescription;
     study.studyDate ||= header.studyDate;
+    study.patientKey ||= header.patientKey;
 
     const seriesKey = `${studyUid}\u0000${seriesUid}`;
     let series = seriesIndex.get(seriesKey);
