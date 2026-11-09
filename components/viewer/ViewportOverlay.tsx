@@ -7,8 +7,25 @@
 // Content comes from lib/dicomOverlay.ts (an allow-list — no patient fields
 // can reach this component). Pointer-transparent: it never steals a drag.
 
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/components/ui/cn";
-import type { OrientationMarkers, OverlayCorners } from "@/lib/dicomOverlay";
+import { compactCorners, isCompactPane, type OrientationMarkers, type OverlayCorners } from "@/lib/dicomOverlay";
+
+/** Whether the pane under `ref` is small enough for the compact overlay (tracks resizes). */
+function useCompactPane() {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setCompact(isCompactPane(el.clientWidth, el.clientHeight));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, compact };
+}
 
 const type =
   "pointer-events-none absolute z-10 select-none text-[11px] font-medium leading-[1.4] tabular-nums text-white/90 sm:text-xs " +
@@ -42,16 +59,21 @@ export function ViewportOverlay({
   /** Screen-reader summary; the visual text is decorative duplication. */
   label?: string;
 }) {
+  // A small pane (a grid cell) shows one line per corner, as the desktop does.
+  const pane = useCompactPane();
+  const shown = pane.compact ? compactCorners(corners) : corners;
   const right = scrollbar ? "right-7" : "right-2";
   const marker =
     "pointer-events-none absolute z-10 select-none text-xs font-semibold text-white/80 sm:text-sm " +
     "[text-shadow:0_0_3px_rgba(0,0,0,1),0_1px_1px_rgba(0,0,0,1)]";
   return (
     <div className="contents" role={label ? "status" : undefined} aria-label={label}>
-      <Lines lines={corners.topLeft} className="imaging-readout left-2 top-2 max-w-[45%] [&>p]:truncate" />
-      <Lines lines={corners.topRight} className={cn(right, "top-2 text-right")} />
-      <Lines lines={corners.bottomLeft} className="imaging-readout bottom-2 left-2" />
-      <Lines lines={corners.bottomRight} className={cn(right, "bottom-2 text-right")} />
+      {/* Measures the pane (the overlay itself is display: contents). */}
+      <span ref={pane.ref} aria-hidden="true" data-overlay-compact={pane.compact} className="pointer-events-none invisible absolute inset-0" />
+      <Lines lines={shown.topLeft} className="imaging-readout left-2 top-2 max-w-[45%] [&>p]:truncate" />
+      <Lines lines={shown.topRight} className={cn(right, "top-2 text-right")} />
+      <Lines lines={shown.bottomLeft} className="imaging-readout bottom-2 left-2" />
+      <Lines lines={shown.bottomRight} className={cn(right, "bottom-2 text-right")} />
       {markers ? (
         <>
           <span aria-hidden="true" data-imaging-chrome data-edge="top" className={cn(marker, "left-1/2 top-1.5 -translate-x-1/2")}>

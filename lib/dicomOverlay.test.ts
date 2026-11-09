@@ -121,3 +121,25 @@ test("no orientation → no markers", () => {
   assert.equal(orientationMarkers([NaN, 0, 0, 0, 1, 0]), null);
   assert.equal(orientationMarkers([0, 0, 0, 0, 0, 0]), null);
 });
+
+test("compact overlay: a pane under 520 × 380 keeps one line per corner, as the desktop does", async () => {
+  const { isCompactPane, compactCorners } = await import("@flowrad/viewer-core/dicomOverlay");
+  assert.equal(isCompactPane(1200, 800), false);
+  assert.equal(isCompactPane(519, 800), true, "narrow");
+  assert.equal(isCompactPane(1200, 379), true, "short");
+  assert.equal(isCompactPane(520, 380), false, "the threshold itself is full");
+  assert.equal(isCompactPane(0, 0), false, "not measured yet: full");
+  const full = {
+    topLeft: ["Chest CT", "CT  ·  Se 3"],
+    topRight: ["Im 31 / 60", "Th 1.0  Loc −12.5"],
+    bottomLeft: ["W 400  L 40  Soft tissue", "Inverted"],
+    bottomRight: ["Zoom 125%", "512 × 512"],
+  };
+  assert.deepEqual(compactCorners(full), {
+    topLeft: ["Chest CT"],
+    topRight: ["Im 31 / 60"],
+    bottomLeft: ["W 400  L 40  Soft tissue"],
+    bottomRight: ["Zoom 125%"],
+  });
+  assert.deepEqual(compactCorners({ topLeft: [], topRight: [], bottomLeft: [], bottomRight: [] }), { topLeft: [], topRight: [], bottomLeft: [], bottomRight: [] });
+});
