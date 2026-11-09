@@ -88,6 +88,8 @@ export interface ShortcutSheetOptions {
   paneMaximize?: boolean;
   /** The free viewer's extra measure tools (D = Bidirectional). */
   readingTools?: boolean;
+  /** Two or more monitors: the pop-out to a new window is offered (and its key). */
+  popOut?: boolean;
 }
 
 /** Commands that exist only where `readingTools` is on. */
@@ -247,7 +249,7 @@ const GROUP_TITLES: Record<string, string> = {
 export function viewerShortcutGroups(
   overrides: BindingOverrides = getLiveBindings(),
   mac = isMac(),
-  { paneMaximize = false, readingTools = false }: ShortcutSheetOptions = {}
+  { paneMaximize = false, readingTools = false, popOut = false }: ShortcutSheetOptions = {}
 ): ShortcutGroup[] {
   const eff = effectiveInputs(WEB_COMMANDS, overrides);
   const groups: ShortcutGroup[] = [];
@@ -308,6 +310,7 @@ export function viewerShortcutGroups(
   if (readingTools) push(groups, "Layout", { keys: [mac ? "⌥" : "Alt", "Shift", "Enter"], does: "Distraction-free reading: images only (Esc exits)" });
   if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "F"], does: "PET / CT fusion (a study with a CT and a PET)" });
   push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });
+  if (popOut) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", mac ? "⌥" : "Alt", "N"], does: "Pop the study out to a new window (for the other monitor)" });
   if (paneMaximize) push(groups, "Layout", { keys: ["Enter"], does: "Maximise / restore the outlined pane (or double-click it; Esc restores)" });
   return groups;
 }

@@ -172,6 +172,15 @@ export function isFullScreenKey(e: ReadingKeyEvent): boolean {
   return !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.code === "KeyF" || e.key === "f" || e.key === "F");
 }
 
+/**
+ * Ctrl/⌘+Alt+N: send the study to a window for the next monitor, as on the
+ * desktop. By physical key, since on a Mac Option+N types a dead key. For the
+ * page that owns the pop-out (and only with two or more monitors).
+ */
+export function isPopOutKey(e: ReadingKeyEvent): boolean {
+  return !!(e.ctrlKey || e.metaKey) && !!e.altKey && !e.shiftKey && (e.code === "KeyN" || e.key.toLowerCase() === "n");
+}
+
 /** A page (PageUp / PageDown, Shift+↑ / ↓): 10 % of the images, at least one, as on the desktop. */
 export function pageStep(count: number): number {
   return Math.max(1, Math.round(Math.max(0, count) / 10));

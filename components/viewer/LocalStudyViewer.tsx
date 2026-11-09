@@ -54,7 +54,7 @@ import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
-import { isFullScreenKey, openKeyOf } from "@flowrad/viewer-core/readingKeys";
+import { isFullScreenKey, isPopOutKey, openKeyOf } from "@flowrad/viewer-core/readingKeys";
 import { pickFusionPair } from "@flowrad/viewer-core/petFusion";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
 import { ViewerLanding, type LandingStatus } from "@/components/viewer/ViewerLanding";
@@ -1200,6 +1200,25 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       void ingest(h.files);
     },
   });
+  const popOutOffered = reading && multipleScreens && phase.state === "open";
+  const popOutNow = useCallback(() => {
+    setPopOutNote(popOut.popOut() ? "Opened in a new window. Drag it to another monitor." : "The browser blocked the new window. Allow pop-ups for this site.");
+  }, [popOut]);
+  // Ctrl/⌘+Alt+N: the same as "Pop out to new window", as the desktop sends the
+  // layout to the next monitor. Only where that button is offered (two or more
+  // monitors); not while typing or in a dialog.
+  useEffect(() => {
+    if (!popOutOffered) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || !isPopOutKey(e)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="dialog"]'))) return;
+      e.preventDefault();
+      popOutNow();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [popOutOffered, popOutNow]);
 
   const source = useMemo<ViewerSource | null>(() => {
     // The paint-first source stays the SAME object through the swap so the
@@ -1467,7 +1486,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                   size="sm"
                   variant="secondary"
                   leadingIcon={<ExternalLink className="h-4 w-4" aria-hidden />}
-                  onClick={() => setPopOutNote(popOut.popOut() ? "Opened in a new window. Drag it to another monitor." : "The browser blocked the new window. Allow pop-ups for this site.")}
+                  onClick={popOutNow}
                 >
                   Pop out to new window
                 </Button>
@@ -1568,6 +1587,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     defaultTool="StackScroll"
                     questionMarkHelp
                     readingTools
+                    popOutOffered={popOutOffered}
                     exportFiles={exportFilesFor({ study: activeStudy, series: activeSeries })}
                     onFusion={openFusion}
                     seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
@@ -1627,6 +1647,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           defaultTool="StackScroll"
                           questionMarkHelp
                           readingTools
+                          popOutOffered={popOutOffered}
                           exportFiles={exportFilesFor(target)}
                           onFusion={openFusion}
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}

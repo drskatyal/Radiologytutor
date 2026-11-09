@@ -311,3 +311,12 @@ test("the free viewer's help: presets on 1…9, Shift+1…7 the layouts; teachin
   assert.deepEqual(rows(false).find((r) => r.does === "Window preset")?.keys, ["Shift", "1…9"]);
   assert.equal(rows(false).find((r) => /^Layout: 1×1/.test(r.does)), undefined);
 });
+
+test("the pop-out key is listed only where pop-out is offered (two or more monitors)", () => {
+  const rows = (popOut: boolean, mac = false) =>
+    viewerShortcutGroups({}, mac, { readingTools: true, popOut }).flatMap((g) => g.rows);
+  const row = rows(true).find((r) => /Pop the study out/.test(r.does));
+  assert.deepEqual(row?.keys, ["Ctrl", "Alt", "N"]);
+  assert.deepEqual(rows(true, true).find((r) => /Pop the study out/.test(r.does))?.keys, ["⌘", "⌥", "N"]);
+  assert.ok(!rows(false).some((r) => /Pop the study out/.test(r.does)), "one monitor: not listed");
+});

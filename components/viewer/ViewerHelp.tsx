@@ -123,6 +123,7 @@ export function ViewerHelp({
   voice,
   paneMaximize = false,
   readingTools = false,
+  popOut = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -136,6 +137,8 @@ export function ViewerHelp({
   paneMaximize?: boolean;
   /** The free viewer's extra measure tools: list D (Bidirectional). */
   readingTools?: boolean;
+  /** Two or more monitors: list Ctrl/⌘+Alt+N (pop out to a new window). */
+  popOut?: boolean;
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -155,7 +158,7 @@ export function ViewerHelp({
   }, [customise]);
 
   if (!open) return null;
-  const groups = viewerShortcutGroups(overrides, undefined, { paneMaximize, readingTools });
+  const groups = viewerShortcutGroups(overrides, undefined, { paneMaximize, readingTools, popOut });
   const pointer = viewerPointerHints(overrides);
   return (
     <div
