@@ -68,6 +68,8 @@ export interface ImageMenuContext {
   seriesPanel?: { shown: boolean } | null;
   /** Distraction-free reading (images only): offered, checked when on, where the app has it. */
   distractionFree?: boolean | null;
+  /** The scale bar's state, when this viewer offers one (null / absent: no item). */
+  scaleBar?: boolean | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
   can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "measurements" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "linkAtCurrent" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
@@ -254,6 +256,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
   entries.push(
     item(ctx, "overlay", "Image text (overlay)", { checked: ctx.overlay }),
     item(ctx, "annotations", "Annotations", { checked: ctx.annotations }),
+    ...(ctx.scaleBar != null ? [item(ctx, "scaleBar", "Scale bar", { checked: ctx.scaleBar })] : []),
     ...(ctx.distractionFree != null ? [item(ctx, "distractionFree", "Distraction-free reading", { checked: ctx.distractionFree })] : []),
     sep
   );

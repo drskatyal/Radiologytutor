@@ -37,6 +37,8 @@ export interface OverlayMeta {
   columns?: number | null;
   /** Six direction cosines: row (x,y,z) then column (x,y,z). */
   imageOrientationPatient?: ArrayLike<number> | null;
+  /** Row pixel spacing (mm) from the header, when it has one: the scale bar's calibration. */
+  pixelSpacingMm?: number | null;
 }
 
 export interface OverlayView {

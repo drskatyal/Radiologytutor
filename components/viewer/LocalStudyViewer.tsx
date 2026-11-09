@@ -105,6 +105,7 @@ import {
 } from "@/lib/studyHandleStore";
 import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy } from "@/lib/recentStudyStore";
 import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
+import { SCALE_BAR_STORAGE_KEY } from "@flowrad/viewer-core/scaleBar";
 import { RecentStudies } from "./RecentStudies";
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
@@ -517,6 +518,27 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     () => (reading ? { on: focusMode, toggle: toggleFocusMode } : null),
     [reading, focusMode, toggleFocusMode]
   );
+  // The scale bar (the desktop's setting, on the image menu here): one choice
+  // for every pane, remembered in this browser. Off by default, as on the desktop.
+  const [scaleBarOn, setScaleBarOn] = useState(false);
+  useEffect(() => {
+    try {
+      setScaleBarOn(window.localStorage.getItem(SCALE_BAR_STORAGE_KEY) === "1");
+    } catch {
+      /* storage blocked: off */
+    }
+  }, []);
+  const toggleScaleBar = useCallback(() => {
+    setScaleBarOn((on) => {
+      try {
+        window.localStorage.setItem(SCALE_BAR_STORAGE_KEY, on ? "0" : "1");
+      } catch {
+        /* storage blocked: still toggles for this visit */
+      }
+      return !on;
+    });
+  }, []);
+  const scaleBar = useMemo(() => (reading ? { on: scaleBarOn, toggle: toggleScaleBar } : null), [reading, scaleBarOn, toggleScaleBar]);
 
   const pickSeries = useCallback((index: number) => {
     setActiveSeries(index);
@@ -1787,6 +1809,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     chrome={focusMode ? "off" : expanded || reading || multi ? "edge" : "dock"}
                     toolbarHost={multi && !focusMode ? barHost : undefined}
                     distractionFree={distractionFree}
+                    scaleBar={scaleBar}
                     paneLinks={paneLinks}
                     referencePlanes={linesFor(0)}
                     active={!multi || activePane === 0}
@@ -1849,6 +1872,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           chrome={focusMode ? "off" : "edge"}
                           toolbarHost={focusMode ? undefined : barHost}
                           distractionFree={distractionFree}
+                          scaleBar={scaleBar}
                           paneLinks={paneLinks}
                           referencePlanes={linesFor(pane)}
                           active={activePane === pane}
