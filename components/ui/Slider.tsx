@@ -15,18 +15,21 @@ export interface SliderProps {
   description?: React.ReactNode;
   disabled?: boolean;
   className?: string;
+  /** "imaging": on the viewer's black panels (light type); default follows the theme. */
+  tone?: "default" | "imaging";
 }
 
 /** Labelled range input, themed with the accent token. Keyboard: arrows / PgUp / PgDn / Home / End. */
-export function Slider({ label, value, min, max, step = 1, onChange, valueLabel, description, disabled, className }: SliderProps) {
+export function Slider({ label, value, min, max, step = 1, onChange, valueLabel, description, disabled, className, tone = "default" }: SliderProps) {
+  const imaging = tone === "imaging";
   const id = useId();
   return (
     <div className={cn("flex flex-col gap-1.5 py-2", disabled && "opacity-50", className)}>
       <div className="flex items-baseline justify-between gap-4">
-        <label htmlFor={id} className="text-sm font-medium text-primary">
+        <label htmlFor={id} className={cn("text-sm font-medium", imaging ? "text-white" : "text-primary")}>
           {label}
         </label>
-        <span className="text-xs text-secondary tabular-nums">{valueLabel ?? value}</span>
+        <span className={cn("text-xs tabular-nums", imaging ? "text-white/70" : "text-secondary")}>{valueLabel ?? value}</span>
       </div>
       <input
         id={id}
@@ -39,7 +42,7 @@ export function Slider({ label, value, min, max, step = 1, onChange, valueLabel,
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full cursor-pointer accent-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed"
       />
-      {description && <span className="text-xs text-muted">{description}</span>}
+      {description && <span className={cn("text-xs", imaging ? "text-white/50" : "text-muted")}>{description}</span>}
     </div>
   );
 }

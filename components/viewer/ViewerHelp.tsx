@@ -23,6 +23,8 @@ import { saveViewerBindings, syncViewerBindingsWithAccount, viewerBindingsSynced
 
 // Settings › Mouse & Keyboard: its own chunk, loaded when the reader opens it.
 const BindingsPanel = lazy(() => import("@/components/bindings/BindingsPanel"));
+// Settings › Scrolling (the free viewer), with it.
+const ScrollSettings = lazy(() => import("@/components/viewer/ScrollSettings").then((m) => ({ default: m.ScrollSettings })));
 
 function Keys({ keys }: { keys: string[] }) {
   return (
@@ -228,6 +230,7 @@ export function ViewerHelp({
               </div>
             }
           >
+            {readingTools && <ScrollSettings />}
             <BindingsPanel
               table={WEB_COMMANDS}
               overrides={overrides}
