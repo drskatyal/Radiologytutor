@@ -3910,6 +3910,9 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "tool", tool: "Eraser" });
       case "help":
         return runViewerAction({ type: "help" });
+      case "voice":
+        if (!canVoice) return flash("Voice commands aren't available in this browser");
+        return void toggleVoice();
       case "zoomBy":
         if (mprShowing) return flash("Zoom with the right button in MPR");
         return runViewerAction({ type: "zoom", factor: action.factor });

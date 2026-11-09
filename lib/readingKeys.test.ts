@@ -153,3 +153,11 @@ test("pop-out key: Ctrl/⌘+Alt+N (by physical key: Option+N is a dead key on a 
   assert.equal(isPopOutKey({ key: "n", code: "KeyN", altKey: true }), false);
   assert.equal(resolveReadingKey({ key: "n", code: "KeyN", ctrlKey: true, altKey: true }), null, "not a reading key: the page owns it");
 });
+
+test("reading keys: Ctrl/⌘+Shift+V voice commands on / off (the desktop's key); Ctrl/⌘+V and Shift+V are not ours", () => {
+  assert.deepEqual(resolveReadingKey({ key: "V", code: "KeyV", ctrlKey: true, shiftKey: true }), { type: "voice" });
+  assert.deepEqual(resolveReadingKey({ key: "v", code: "KeyV", metaKey: true, shiftKey: true }), { type: "voice" });
+  assert.equal(resolveReadingKey({ key: "v", code: "KeyV", ctrlKey: true }), null, "Ctrl/⌘+V stays paste");
+  assert.equal(resolveReadingKey({ key: "V", code: "KeyV", shiftKey: true }), null);
+  assert.equal(resolveReadingKey({ key: "v", code: "KeyV" }), null, "bare V stays flip vertical");
+});

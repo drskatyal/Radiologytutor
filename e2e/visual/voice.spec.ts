@@ -125,3 +125,21 @@ test("voice: a blocked microphone says so (with Retry), the load stops", async (
   await page.waitForTimeout(500);
   expect(page.workers().filter((w) => /recognizer-worker/.test(w.url())).length, "the recognizer is freed after the failure").toBe(0);
 });
+
+test("voice: Ctrl+Shift+V on the image switches voice commands on and off, as on the desktop", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await openStudy(page);
+  const image = page.locator('[role="img"][aria-label^="DICOM viewer"]').first();
+  await image.focus();
+  await page.keyboard.press("Control+Shift+KeyV");
+  await expect(page.getByRole("button", { name: /^Voice commands on/ })).toBeVisible({ timeout: 90_000 });
+  await image.focus();
+  await page.keyboard.press("Control+Shift+KeyV");
+  await expect(page.getByRole("button", { name: /^Voice commands$/ })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.workers().filter((w) => /recognizer-worker/.test(w.url())).length, { timeout: 5_000 }).toBe(0);
+  // The help sheet lists it.
+  await image.focus();
+  await page.keyboard.press("Shift+?");
+  await expect(page.getByRole("dialog").getByText("Voice commands on / off")).toBeVisible();
+});

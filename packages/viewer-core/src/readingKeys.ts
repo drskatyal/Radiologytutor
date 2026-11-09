@@ -41,7 +41,8 @@ export type ReadingKeyAction =
   | { type: "rotate"; dir: 1 | -1 }
   | { type: "layout"; n: number }
   | { type: "help" }
-  | { type: "zoomBy"; factor: number };
+  | { type: "zoomBy"; factor: number }
+  | { type: "voice" };
 
 export interface ReadingKeyEvent {
   key: string;
@@ -127,6 +128,8 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     if (e.key === "PageDown" || (shift && e.key === "ArrowDown")) return { type: "slicePage", dir: 1 };
   }
   if (mod && shift && !alt && (e.key === "Backspace" || e.key === "Delete")) return { type: "clearMeasurements" };
+  // Ctrl/⌘+Shift+V: voice commands on / off, as on the desktop (on the image there is nothing to paste).
+  if (mod && shift && !alt && (e.code === "KeyV" || e.key.toLowerCase() === "v")) return { type: "voice" };
   // F1: the shortcuts sheet, as on the desktop (instead of the browser's help page).
   if (e.key === "F1" && !mod && !shift && !alt) return { type: "help" };
   // Ctrl/⌘+= / −: zoom the image in / out a step, as on the desktop, not the page.
