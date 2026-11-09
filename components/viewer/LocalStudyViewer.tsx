@@ -44,7 +44,7 @@ import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { useMultipleScreens } from "@/components/viewer/useMultipleScreens";
 import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner, Tooltip } from "@/components/ui";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
-import { isSeriesPanelShortcut, layoutForShortcut, layoutsForSeriesCount, nextLayout, paneCount, READING_LAYOUTS, type HangingLayoutId } from "@flowrad/viewer-core";
+import { isSeriesPanelShortcut, layoutForShortcut, layoutsForSeriesCount, layoutWithMorePanes, nextLayout, paneCount, READING_LAYOUTS, type HangingLayoutId, type MenuCommand } from "@flowrad/viewer-core";
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
 import { linkedIndex, planeSign, sameCamera, sameModality, sameWindow, seriesGeometry } from "@/lib/paneScrollLink";
 import type { ViewerEvent } from "@/lib/types";
@@ -117,6 +117,12 @@ function ViewerCodeUnavailable() {
 /** The Watched folders dialog, on first open (Chrome / Edge only). */
 const WebWatchFoldersDialog = dynamic(
   () => importWithRetry(() => import("@/components/viewer/WebWatchFoldersDialog")).then((m) => m.WebWatchFoldersDialog),
+  { ssr: false }
+);
+
+/** A series thumbnail's right-click menu, on the first right-click. */
+const SeriesThumbMenu = dynamic(
+  () => importWithRetry(() => import("@/components/viewer/SeriesThumbMenu")).then((m) => m.SeriesThumbMenu),
   { ssr: false }
 );
 
@@ -958,6 +964,33 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     [flat.length]
   );
   const setLayoutForGrid = useCallback((rows: number, cols: number) => setLayoutId(layoutForGrid(rows, cols)), []);
+  // A series thumbnail's right-click menu, as on the desktop.
+  const canAddPane = !!layoutWithMorePanes(layoutId, flat.length, READING_LAYOUTS);
+  const onThumbCommand = useCallback(
+    (study: number, series: number, command: MenuCommand) => {
+      const target = { study, series };
+      if (command === "thumb:open") {
+        // The active pane: the main one, or the outlined pane of a grid.
+        if (multi) hangInPane(activePane, target);
+        else pickStudySeries(study, series);
+        return;
+      }
+      if (command === "thumb:newLayout") {
+        const next = layoutWithMorePanes(layoutId, flat.length, READING_LAYOUTS);
+        if (!next) return;
+        const pane = panesNow; // the first new pane (0-based)
+        setLayoutId(next.id);
+        // Put the series in the new pane; the re-hang keeps what is already hung.
+        setExtraPanes((prev) => {
+          const list = prev.slice(0, Math.max(0, pane - 1));
+          list[pane - 1] = target;
+          return list;
+        });
+        setActivePane(pane);
+      }
+    },
+    [multi, activePane, hangInPane, pickStudySeries, layoutId, flat.length, panesNow]
+  );
   /** Shift+1…7, as on the desktop: the nth layout if this study offers it; its label, else null. */
   const pickLayout = useCallback(
     (n: number) => {
@@ -1328,6 +1361,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           panes={multi ? [{ study: activeStudy, series: activeSeries }, ...extraPanes.slice(0, panesNow - 1)] : undefined}
           onPick={pickStudySeries}
           onOpenReport={setOpenReport}
+          thumbMenu={reading ? { canAddPane, onCommand: onThumbCommand } : undefined}
           dark={reading}
           thumbs={thumbs}
           imageIdsFor={imageIdsFor}
@@ -2229,7 +2263,13 @@ function SeriesList({
   thumbs,
   imageIdsFor,
   panes,
+  thumbMenu,
 }: {
+  /**
+   * Right-click a thumbnail (as on the desktop): open in the active pane, or
+   * in a new layout pane when the layout can grow. Absent: no menu.
+   */
+  thumbMenu?: { canAddPane: boolean; onCommand: (studyIndex: number, seriesIndex: number, command: MenuCommand) => void };
   result: LocalIngestResult;
   activeStudy: number;
   activeSeries: number;
@@ -2249,6 +2289,7 @@ function SeriesList({
   // one hidden behind a study picker.
   const studies = result.studies;
   const many = studies.length > 1;
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number; study: number; series: number } | null>(null);
   const seriesTotal = studies.reduce((n, s) => n + s.series.length, 0);
   const imageTotal = studies.reduce((n, s) => n + s.imageCount, 0);
   const only = studies[0];
@@ -2293,6 +2334,14 @@ function SeriesList({
                   <button
                     type="button"
                     onClick={() => onPick(studyIndex, index)}
+                    onContextMenu={
+                      thumbMenu
+                        ? (event) => {
+                            event.preventDefault();
+                            setMenuAt({ x: event.clientX, y: event.clientY, study: studyIndex, series: index });
+                          }
+                        : undefined
+                    }
                     // Drag onto a pane of the grid to hang it there.
                     draggable
                     onDragStart={(event) => {
@@ -2356,6 +2405,18 @@ function SeriesList({
           />
         </section>
       ))}
+      {thumbMenu && menuAt && (
+        <SeriesThumbMenu
+          at={{ x: menuAt.x, y: menuAt.y }}
+          canAddPane={thumbMenu.canAddPane}
+          onSelect={(command) => {
+            const { study, series } = menuAt;
+            setMenuAt(null);
+            thumbMenu.onCommand(study, series, command);
+          }}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
     </div>
   );
 }

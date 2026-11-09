@@ -95,3 +95,18 @@ test("Shift+1…7 layouts: the desktop's order, only where the study has the ser
   assert.equal(layoutForShortcut(7, 9)?.id, "3x3");
   assert.equal(layoutForShortcut(8, 9), null);
 });
+
+test("a new layout pane: the smallest offered layout with more panes, none past the largest", async () => {
+  const { layoutWithMorePanes, READING_LAYOUTS } = await import("@flowrad/viewer-core/hangingLayout");
+  const next = (id: string, series = 9) => layoutWithMorePanes(id as never, series, READING_LAYOUTS)?.id ?? null;
+  assert.equal(next("1x1"), "1x2");
+  assert.equal(next("1x2"), "1x3");
+  assert.equal(next("2x1"), "1x3");
+  assert.equal(next("1x3"), "2x2");
+  assert.equal(next("2x2"), "2x3");
+  assert.equal(next("2x3"), "3x3");
+  assert.equal(next("3x3"), null);
+  // What the study offers bounds it: one series offers up to two panes.
+  assert.equal(next("1x1", 1), "1x2");
+  assert.equal(next("1x2", 1), null);
+});

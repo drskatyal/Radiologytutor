@@ -62,6 +62,25 @@ export function layoutsForSeriesCount(seriesCount: number, layouts: readonly Han
   return layouts.filter((l) => paneCount(l) <= Math.max(4, seriesCount));
 }
 
+/**
+ * "Open in a new layout pane" (a series thumbnail's menu, as on the desktop):
+ * the smallest layout this case offers with more panes than `current`, or
+ * null when it is already the largest.
+ */
+export function layoutWithMorePanes(
+  current: HangingLayoutId,
+  seriesCount: number,
+  layouts: readonly HangingLayout[] = HANGING_LAYOUTS
+): HangingLayout | null {
+  const now = paneCount(layoutById(current));
+  let best: HangingLayout | null = null;
+  for (const l of layoutsForSeriesCount(seriesCount, layouts)) {
+    const n = paneCount(l);
+    if (n > now && (!best || n < paneCount(best))) best = l;
+  }
+  return best;
+}
+
 /** Next layout for the G key, within what this case offers. */
 export function nextLayout(current: HangingLayoutId, seriesCount: number, layouts: readonly HangingLayout[] = HANGING_LAYOUTS): HangingLayoutId {
   const offered = layoutsForSeriesCount(seriesCount, layouts);
