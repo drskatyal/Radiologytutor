@@ -62,6 +62,7 @@ import { cn } from "@/components/ui/cn";
 import { CINE_FPS_OPTIONS } from "@/lib/cinePlayer";
 import type { OverlayDensity } from "@/lib/dicomOverlay";
 import { shortcutForPreset, shortcutForToolIn } from "@/lib/viewerHotkeys";
+import { isMac } from "@flowrad/viewer-core/bindings";
 import type { MprMode, MprPlane, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
@@ -384,7 +385,11 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
               ["mip", "MIP", "Maximum-intensity slab (15 mm)", null],
               ["3d", "3D", "Volume render — drag to rotate", null],
             ] as const
-          ).map(([value, label, tip, keys]) => {
+          ).map(([value, label, tip, baseKeys]) => {
+            // The free viewer also has the desktop's keys: Ctrl/⌘+M three planes, Ctrl/⌘+Shift+M 3D.
+            const mod = isMac() ? "⌘" : "Ctrl";
+            const extra = !props.readingKeys ? null : value === "mpr" ? `${mod}+M` : value === "3d" ? `${mod}+Shift+M` : null;
+            const keys = baseKeys || extra ? [...(baseKeys ?? []), ...(extra ? [extra] : [])] : null;
             const on =
               value === "stack" ? viewMode === "stack" : viewMode === "mpr" && mprRender === value;
             return (
@@ -444,6 +449,8 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
                 key={plane}
                 label={PLANE_LABEL[plane]}
                 hint="Reformatted"
+                // Alt+A / C / S, as on the desktop (the same toggle: again for the acquired stack).
+                shortcut={props.readingKeys ? `${isMac() ? "⌥" : "Alt"}+${plane[0]!.toUpperCase()}` : null}
                 active={props.plane === plane}
                 onSelect={() => props.onPlane?.(plane)}
               />

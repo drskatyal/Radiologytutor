@@ -209,6 +209,43 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await page.keyboard.press("Control+Minus");
   await expect.poll(async () => Number(/\d+/.exec(await zoomText())?.[0] ?? 0)).toBe(fitZoom);
 
+  // The toolbar's Plane menu shows the desktop's Alt keys, and Alt+C is the same toggle.
+  await image(page).focus();
+  await page.keyboard.press("Control+0");
+  await page.getByTestId("plane-switch").first().click();
+  const coronalRow = page.locator('[role="menuitem"], [role="menuitemradio"]').filter({ hasText: /^Coronal/ }).first();
+  await expect(coronalRow.locator("kbd")).toContainText("C");
+  await coronalRow.click();
+  await expect(page.getByTestId("plane-switch").first()).toHaveAccessibleName("Plane, Coronal", { timeout: 30_000 });
+  // The reformat shows in its own pane (the stack image is hidden): click it, as a reader would.
+  await page.locator('[aria-label="Coronal plane"]').first().click();
+  await page.keyboard.press("Alt+KeyC");
+  await expect(page.getByTestId("plane-switch").first()).toHaveAccessibleName("Plane, Acquired", { timeout: 15_000 });
+
+  // Right-click › Reformat, as on the desktop: the planes with their Alt keys, and 3D volume (Ctrl+Shift+M).
+  // Back on the stack: its image is shown again before the right-click.
+  await expect(image(page)).toBeVisible();
+  await image(page).focus();
+  await page.keyboard.press("Control+0");
+  const ibox = (await image(page).boundingBox())!;
+  await page.mouse.click(ibox.x + ibox.width * 0.2, ibox.y + ibox.height * 0.2, { button: "right" });
+  const imageMenu = page.getByRole("menu", { name: "Image" });
+  await imageMenu.getByRole("menuitem", { name: /^Reformat/ }).hover();
+  // Either role: a plane already visited shows as a checkable row.
+  const sub = (name: RegExp) => page.locator('[role="menuitem"], [role="menuitemradio"]').filter({ hasText: name }).last();
+  await expect(sub(/^Coronal/).locator("kbd")).toContainText("C");
+  const vol = sub(/^3D volume/);
+  await expect(vol.locator("kbd")).toContainText("M");
+  // No wait for a navigation after the click: building the volume keeps the page busy for a moment.
+  await vol.click({ noWaitAfter: true });
+  const t3d = Date.now();
+  const view = (name: string) => page.getByRole("radiogroup", { name: "View" }).first().getByRole("radio", { name, exact: true });
+  await expect(view("3D")).toHaveAttribute("aria-checked", "true", { timeout: 30_000 });
+  // In 3D the stack image is hidden: click the render (focus goes to the viewer), then the key goes back.
+  await page.locator('[aria-label="3D volume render"]').first().click();
+  await page.keyboard.press("Control+Shift+KeyM");
+  await expect(view("Stack")).toHaveAttribute("aria-checked", "true", { timeout: 15_000 });
+
   // F1 opens the help sheet (not the browser's help), and it lists them.
   await page.keyboard.press("F1");
   const help = page.getByRole("dialog");
