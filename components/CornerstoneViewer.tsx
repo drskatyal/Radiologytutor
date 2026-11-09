@@ -867,6 +867,7 @@ export default function CornerstoneViewer({
   onSetLayout,
   currentLayout,
   onToggleMaximize,
+  popOutOffered = false,
   referencePlanes,
   toolbarHost,
   active = true,
@@ -1001,6 +1002,8 @@ export default function CornerstoneViewer({
    * (instead of fitting the image), as on the desktop viewer.
    */
   onToggleMaximize?: () => void;
+  /** Two or more monitors: the page offers pop-out (Ctrl/⌘+Alt+N); the help lists it. */
+  popOutOffered?: boolean;
   /** A named layout ("layout two" / "four" / "six" by voice): rows × columns. */
   onSetLayout?: (rows: number, cols: number) => void;
   /** Free viewer grid: the layout on screen, for the right-click Layout submenu (as on the desktop). */
@@ -5183,6 +5186,7 @@ export default function CornerstoneViewer({
           onTabChange={setHelpTab}
           paneMaximize={!!onToggleMaximize}
           readingTools={readingTools}
+          popOut={popOutOffered}
           voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
         />
         <VoiceStatus

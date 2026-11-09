@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isFullScreenKey, openKeyOf, pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
+import { isFullScreenKey, isPopOutKey, openKeyOf, pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel } from "@flowrad/viewer-core/readingKeys";
 
 test("reading keys: Ctrl/⌘+0…4 zoom to fit, 100, 200, 400, 800 %", () => {
   assert.deepEqual(resolveReadingKey({ key: "0", ctrlKey: true }), { type: "zoomTo", scale: "fit" });
@@ -143,4 +143,13 @@ test("reading keys: C Cobb angle and P pan (the desktop's letters); Shift / Ctrl
   assert.equal(resolveReadingKey({ key: "c", code: "KeyC", ctrlKey: true }), null, "Ctrl/⌘+C stays copy");
   assert.equal(resolveReadingKey({ key: "p", code: "KeyP", metaKey: true }), null, "Ctrl/⌘+P stays the browser's");
   assert.deepEqual(resolveReadingKey({ key: "c", code: "KeyC", altKey: true }), { type: "reformat", plane: "coronal" }, "Alt+C stays coronal");
+});
+
+test("pop-out key: Ctrl/⌘+Alt+N (by physical key: Option+N is a dead key on a Mac); nothing else", () => {
+  assert.equal(isPopOutKey({ key: "n", code: "KeyN", ctrlKey: true, altKey: true }), true);
+  assert.equal(isPopOutKey({ key: "Dead", code: "KeyN", metaKey: true, altKey: true }), true);
+  assert.equal(isPopOutKey({ key: "n", code: "KeyN", ctrlKey: true }), false, "Ctrl/⌘+N stays the browser's new window");
+  assert.equal(isPopOutKey({ key: "N", code: "KeyN", ctrlKey: true, altKey: true, shiftKey: true }), false);
+  assert.equal(isPopOutKey({ key: "n", code: "KeyN", altKey: true }), false);
+  assert.equal(resolveReadingKey({ key: "n", code: "KeyN", ctrlKey: true, altKey: true }), null, "not a reading key: the page owns it");
 });
