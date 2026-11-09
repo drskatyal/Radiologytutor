@@ -18,7 +18,7 @@ import { ViewerShell } from "@/components/viewer/ViewerShell";
 export const metadata: Metadata = {
   title: "FlowRad Viewer · Free DICOM viewer in your browser",
   description:
-    "Open a DICOM folder, ZIP or CD in your browser and read it instantly. Free, no sign-in. Your images never leave your computer.",
+    "Open a DICOM folder, ZIP or CD in your browser and read it instantly. Free, no sign-in. Your images never leave your computer. For education and research. Not for diagnostic use.",
   alternates: { canonical: "https://app.viewer.flowrad.ai/viewer" },
   openGraph: {
     url: "https://app.viewer.flowrad.ai/viewer",

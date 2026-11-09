@@ -110,6 +110,9 @@ export function ViewerLanding({
             CT, MR, X-ray and more from a folder, a ZIP or a study CD, in your browser. Nothing to
             install and nothing uploaded.
           </p>
+          <p className="text-xs font-medium text-vl-muted">
+            For education and research. Not for diagnostic use.
+          </p>
         </section>
       )}
 

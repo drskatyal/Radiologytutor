@@ -86,7 +86,12 @@ export function ViewerShell({ home, product, badge, actions }: ViewerShellProps)
         </div>
       </main>
       {/* Theme tokens, so the links read on the paper landing and on the black reading room alike. */}
-      <footer className="shrink-0 border-t border-vl-border px-4 py-2 text-vl-muted">
+      {/* The diagnostic-use notice sits here, server-rendered and visible at every width,
+          on the landing and while a study is open. */}
+      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-5 gap-y-1 border-t border-vl-border px-4 py-2 text-vl-muted">
+        <p className="text-xs font-medium leading-5 text-vl-fg" data-testid="diagnostic-notice">
+          For education and research. Not for diagnostic use.
+        </p>
         <ProductLinks />
       </footer>
     </div>
