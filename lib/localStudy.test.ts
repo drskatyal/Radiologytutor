@@ -254,3 +254,23 @@ test("every frame of a long cine loop is present exactly once", () => {
   assert.ok(ids[0].endsWith("frame=1"), "the first frame is 1, not 0");
   assert.ok(ids[95].endsWith("frame=96"), "the last frame is included");
 });
+
+test("series info summary: images, files when multiframe, matrix, transfer syntax, volume (placed slices only)", async () => {
+  const { localSeriesSummary } = await import("@flowrad/viewer-core/localStudy");
+  const inst = (n: number) => ({ fileName: `IM${n}`, sizeBytes: 1, rows: 512, columns: 512, transferSyntaxUID: "1.2.840.10008.1.2.1", imagePositionPatient: [0, 0, n] });
+  const ct = { seriesInstanceUID: "s", studyInstanceUID: "t", modality: "CT", instances: [inst(1), inst(2), inst(3)], imageCount: 3 };
+  assert.deepEqual(localSeriesSummary(ct), [
+    { label: "Images", value: "3" },
+    { label: "Matrix", value: "512 × 512" },
+    { label: "Transfer syntax", value: "1.2.840.10008.1.2.1" },
+    { label: "Volume (MPR / 3D)", value: "Yes" },
+  ]);
+  const cine = { seriesInstanceUID: "c", studyInstanceUID: "t", instances: [{ fileName: "US1", sizeBytes: 1 }], imageCount: 120 };
+  assert.deepEqual(localSeriesSummary(cine), [
+    { label: "Images", value: "120" },
+    { label: "Files", value: "1" },
+    { label: "Volume (MPR / 3D)", value: "No" },
+  ]);
+  const xr = { seriesInstanceUID: "x", studyInstanceUID: "t", instances: [{ fileName: "XR", sizeBytes: 1 }], imageCount: 1 };
+  assert.equal(localSeriesSummary(xr).at(-1)?.value, "No");
+});

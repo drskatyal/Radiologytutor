@@ -54,6 +54,7 @@ import { FilePickerButton } from "@/components/ui/FilePickerButton";
 import { cn } from "@/components/ui/cn";
 import { seriesImageIds, type LocalOpenProgress } from "@/lib/localDicomFiles";
 import { describeLocalSeries, type LocalSeries, type LocalStudy } from "@/lib/localStudy";
+import { localSeriesSummary } from "@flowrad/viewer-core/localStudy";
 import { isFullScreenKey, isPopOutKey, openKeyOf } from "@flowrad/viewer-core/readingKeys";
 import { pickFusionPair } from "@flowrad/viewer-core/petFusion";
 import { StructuredReportDialog } from "@/components/viewer/StructuredReportDialog";
@@ -117,6 +118,12 @@ function ViewerCodeUnavailable() {
 /** The Watched folders dialog, on first open (Chrome / Edge only). */
 const WebWatchFoldersDialog = dynamic(
   () => importWithRetry(() => import("@/components/viewer/WebWatchFoldersDialog")).then((m) => m.WebWatchFoldersDialog),
+  { ssr: false }
+);
+
+/** A series' info (its tags), from a thumbnail's menu: loaded on first use. */
+const DicomTagsDialog = dynamic(
+  () => importWithRetry(() => import("@/components/viewer/DicomTagsDialog")).then((m) => m.DicomTagsDialog),
   { ssr: false }
 );
 
@@ -931,6 +938,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   }, [layout, panesNow, flat]);
   // A new study starts in its first pane.
   useEffect(() => setActivePane(0), [result]);
+  // Thumbnail menu: series hidden from the list (until "Show all" or another study), and series info.
+  const [hiddenSeries, setHiddenSeries] = useState<ReadonlySet<string>>(() => new Set());
+  const [seriesInfoFor, setSeriesInfoFor] = useState<{ study: number; series: number } | null>(null);
+  useEffect(() => {
+    setHiddenSeries(new Set());
+    setSeriesInfoFor(null);
+  }, [result]);
   // Another layout or study shows the whole grid again.
   useEffect(() => setMaximized(null), [layoutId, result]);
   useEffect(() => setFocusMode(false), [result]);
@@ -980,6 +994,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         if (command !== "thumb:open") setPlaneRequest({ pane, plane: command === "thumb:reformat:coronal" ? "coronal" : "sagittal" });
         return;
       }
+      if (command === "thumb:info") return setSeriesInfoFor({ study, series });
+      if (command === "thumb:hide") {
+        const uid = result?.studies[study]?.series[series]?.seriesInstanceUID;
+        if (uid) setHiddenSeries((prev) => new Set([...prev, uid]));
+        return;
+      }
       if (command === "thumb:newLayout") {
         const next = layoutWithMorePanes(layoutId, flat.length, READING_LAYOUTS);
         if (!next) return;
@@ -994,7 +1014,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         setActivePane(pane);
       }
     },
-    [multi, activePane, hangInPane, pickStudySeries, layoutId, flat.length, panesNow]
+    [multi, activePane, hangInPane, pickStudySeries, layoutId, flat.length, panesNow, result]
   );
   /** Shift+1…7, as on the desktop: the nth layout if this study offers it; its label, else null. */
   const pickLayout = useCallback(
@@ -1367,6 +1387,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           onPick={pickStudySeries}
           onOpenReport={setOpenReport}
           thumbMenu={reading ? { canAddPane, onCommand: onThumbCommand } : undefined}
+          hidden={reading ? hiddenSeries : undefined}
+          onShowHidden={() => setHiddenSeries(new Set())}
           dark={reading}
           thumbs={thumbs}
           imageIdsFor={imageIdsFor}
@@ -1418,6 +1440,20 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   return (
     <div ref={rootRef} className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
+      {seriesInfoFor && result?.studies[seriesInfoFor.study]?.series[seriesInfoFor.series] && (() => {
+        const info = result.studies[seriesInfoFor.study]!.series[seriesInfoFor.series]!;
+        return (
+          <DicomTagsDialog
+            open
+            onClose={() => setSeriesInfoFor(null)}
+            imageId={imageIdsFor(info)[0] ?? null}
+            title="Series info"
+            description={describeLocalSeries(info)}
+            summary={localSeriesSummary(info)}
+            tone={reading ? "reading" : "app"}
+          />
+        );
+      })()}
       {folderWatch.watcher && watchOpen && (
         <WebWatchFoldersDialog
           open
@@ -2273,7 +2309,12 @@ function SeriesList({
   imageIdsFor,
   panes,
   thumbMenu,
+  hidden,
+  onShowHidden,
 }: {
+  /** Series hidden from the list (thumbnail menu › Hide series), and the way back. */
+  hidden?: ReadonlySet<string>;
+  onShowHidden?: () => void;
   /**
    * Right-click a thumbnail (as on the desktop): open in the active pane, or
    * in a new layout pane when the layout can grow. Absent: no menu.
@@ -2315,6 +2356,16 @@ function SeriesList({
           </p>
         </div>
       )}
+      {hidden && hidden.size > 0 && (
+        <div className={cn("flex items-center justify-between gap-2 text-xs", dark ? "text-white/60" : "text-secondary")} data-testid="hidden-series">
+          <span className="tabular-nums">
+            {hidden.size} hidden series
+          </span>
+          <Button size="sm" variant={dark ? "imaging" : "ghost"} className="h-7 px-2 text-xs" onClick={onShowHidden}>
+            Show all
+          </Button>
+        </div>
+      )}
       {studies.map((study, studyIndex) => (
         <section key={study.studyInstanceUID} aria-label={studyLabel(study, studyIndex)} className="flex flex-col gap-2">
           {many && (
@@ -2333,6 +2384,7 @@ function SeriesList({
           )}
           <ul className="grid grid-cols-2 gap-2" aria-label="Series">
             {study.series.map((item, index) => {
+              if (hidden?.has(item.seriesInstanceUID)) return null;
               const ids = imageIdsFor(item);
               const selected = studyIndex === activeStudy && index === activeSeries;
               const inPanes = (panes ?? [])

@@ -25,7 +25,7 @@ export function SeriesThumbMenu({
     <ViewerContextMenu
       at={at}
       label="Series"
-      entries={thumbnailMenu({ can: { newLayout: canAddPane, reformat: canReformat }, shortcut: () => undefined })}
+      entries={thumbnailMenu({ can: { newLayout: canAddPane, reformat: canReformat, info: true, hide: true }, shortcut: () => undefined })}
       onSelect={onSelect}
       onClose={onClose}
     />
