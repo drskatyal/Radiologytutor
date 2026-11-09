@@ -57,8 +57,25 @@ async function tx(mode: IDBTransactionMode, work: (studies: IDBObjectStore, hand
   });
 }
 
+/**
+ * One operation at a time, in call order. Each runs in its own transaction,
+ * and remembering is a read then a write: without this, Forget clicked while a
+ * just-reopened study was still being remembered could be undone by that
+ * late write (the entry came back).
+ */
+let queue: Promise<unknown> = Promise.resolve();
+function serial<T>(op: () => Promise<T>): Promise<T> {
+  const run = queue.then(op, op);
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 /** Newest first (entries only: no handle is read). */
-export async function listRecentStudies(): Promise<RecentStudy[]> {
+export function listRecentStudies(): Promise<RecentStudy[]> {
+  return serial(readAll);
+}
+
+async function readAll(): Promise<RecentStudy[]> {
   let all: RecentStudy[] = [];
   await tx("readonly", (studies) => {
     const req = studies.getAll();
@@ -82,9 +99,13 @@ export async function recentStudyHandles(key: string): Promise<FileSystemHandle[
 }
 
 /** Put `entry` at the top (replacing the same study) and drop the oldest past the cap. */
-export async function rememberRecentStudy(entry: RecentStudy, handles: readonly FileSystemHandle[]): Promise<void> {
-  if (handles.length === 0) return;
-  const current = await listRecentStudies();
+export function rememberRecentStudy(entry: RecentStudy, handles: readonly FileSystemHandle[]): Promise<void> {
+  if (handles.length === 0) return Promise.resolve();
+  return serial(() => remember(entry, handles));
+}
+
+async function remember(entry: RecentStudy, handles: readonly FileSystemHandle[]): Promise<void> {
+  const current = await readAll();
   const next = withRecentStudy(current, entry, RECENT_STUDIES_MAX);
   const keep = new Set(next.map((e) => e.key));
   await tx("readwrite", (studies, store) => {
@@ -98,16 +119,20 @@ export async function rememberRecentStudy(entry: RecentStudy, handles: readonly 
   });
 }
 
-export async function forgetRecentStudy(key: string): Promise<void> {
-  await tx("readwrite", (studies, store) => {
-    studies.delete(key);
-    store.delete(key);
+export function forgetRecentStudy(key: string): Promise<void> {
+  return serial(async () => {
+    await tx("readwrite", (studies, store) => {
+      studies.delete(key);
+      store.delete(key);
+    });
   });
 }
 
-export async function clearRecentStudies(): Promise<void> {
-  await tx("readwrite", (studies, store) => {
-    studies.clear();
-    store.clear();
+export function clearRecentStudies(): Promise<void> {
+  return serial(async () => {
+    await tx("readwrite", (studies, store) => {
+      studies.clear();
+      store.clear();
+    });
   });
 }

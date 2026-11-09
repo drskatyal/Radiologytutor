@@ -45,6 +45,21 @@ test("recent studies: listed with no patient details, survive a reload, reopen i
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/viewer");
+  const storedCount = () =>
+    page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          const req = indexedDB.open("flowrad-viewer-recent");
+          req.onsuccess = () => {
+            const count = req.result.transaction("studies").objectStore("studies").count();
+            count.onsuccess = () => {
+              req.result.close();
+              resolve(count.result);
+            };
+          };
+          req.onerror = () => resolve(-1);
+        })
+    );
 
   // A dozen slices of the synthetic CT into OPFS.
   const names = fs.readdirSync(DIR!).sort().slice(0, 12);
@@ -73,6 +88,16 @@ test("recent studies: listed with no patient details, survive a reload, reopen i
   await expect(row).toHaveCount(1);
   await expect(recent(page)).toContainText("Recent studies");
   await expect(recent(page)).toContainText(/CT · .*1 series, 12 images/);
+
+  // Search, as on the desktop: every word must match (description, modality, date).
+  const search = recent(page).getByRole("searchbox", { name: "Search recent studies" });
+  await search.fill("mr");
+  await expect(row).toHaveCount(0);
+  await expect(recent(page)).toContainText("No recent study matches “mr”.");
+  await search.fill("ct");
+  await expect(row).toHaveCount(1);
+  await search.fill("");
+  await expect(row).toHaveCount(1);
 
   // What is kept: no patient name or ID, and no UID.
   const stored = await page.evaluate(
@@ -106,6 +131,8 @@ test("recent studies: listed with no patient details, survive a reload, reopen i
   await expect(recent(page)).toBeVisible({ timeout: 10_000 });
   await recent(page).getByRole("button", { name: /^Forget / }).click();
   await expect(recent(page)).toHaveCount(0);
+  // Saved before the reload (a reload can abort a write still in flight).
+  await expect.poll(storedCount).toBe(0);
   await page.reload();
   await expect(page.getByRole("button", { name: "Choose a folder" })).toBeVisible();
   await expect(recent(page)).toHaveCount(0);
