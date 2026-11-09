@@ -141,6 +141,31 @@ export function overlayCorners(
   return { topLeft, topRight, bottomLeft, bottomRight };
 }
 
+/**
+ * A pane this small shows the compact overlay, as the desktop does: under
+ * 520 CSS px wide or 380 tall (a 2 × 2 or 3 × 3 grid on most screens).
+ */
+export const COMPACT_PANE = { width: 520, height: 380 } as const;
+
+export function isCompactPane(width: number, height: number): boolean {
+  if (!(width > 0) || !(height > 0)) return false;
+  return width < COMPACT_PANE.width || height < COMPACT_PANE.height;
+}
+
+/**
+ * The compact overlay: the first line of each corner (series description,
+ * slice, window / level, and cine or zoom), so the text never covers a small
+ * pane's anatomy.
+ */
+export function compactCorners(c: OverlayCorners): OverlayCorners {
+  return {
+    topLeft: c.topLeft.slice(0, 1),
+    topRight: c.topRight.slice(0, 1),
+    bottomLeft: c.bottomLeft.slice(0, 1),
+    bottomRight: c.bottomRight.slice(0, 1),
+  };
+}
+
 // --- Orientation markers ---------------------------------------------------
 // DICOM patient space is LPS: +x toward the patient's Left, +y Posterior,
 // +z Head (superior). A direction cosine names the side it points to.
