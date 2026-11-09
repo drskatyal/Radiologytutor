@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   chooseHangingProtocol,
+  localComparePlan,
   orientationOf,
   priorOffsetMm,
   seriesSimilarity,
   type HpSeries,
   type HpStudy,
 } from "../packages/viewer-core/src/hangingProtocols";
+import { patientKeyOf, type LocalSeries, type LocalStudy } from "../packages/viewer-core/src/localStudy";
 
 const s = (uid: string, modality: string, description: string, imageCount: number, extra: Partial<HpSeries> = {}): HpSeries => ({
   uid, modality, description, imageCount, orientation: "axial", ...extra,
@@ -109,4 +111,59 @@ test("local-study adapter: a single-viewport viewer opens on the protocol's prim
     ],
   };
   assert.equal(primarySeriesIndexByProtocol(study as never), 1);
+});
+
+// ── The web viewer's current-vs-prior hanging (localComparePlan) ──
+
+
+const localSeries = (studyUid: string, uid: string, description: string, count: number, z0: number): LocalSeries => ({
+  seriesInstanceUID: uid,
+  studyInstanceUID: studyUid,
+  modality: "CT",
+  description,
+  imageCount: count,
+  instances: Array.from({ length: count }, (_, i) => ({
+    fileName: `${uid}/${i}`,
+    sizeBytes: 1,
+    imageOrientationPatient: [1, 0, 0, 0, 1, 0],
+    imagePositionPatient: [0, 0, z0 - i * 5],
+  })),
+});
+const localStudy = (uid: string, date: string, patient: string | undefined, series: LocalSeries[]): LocalStudy => ({
+  studyInstanceUID: uid,
+  studyDate: date,
+  patientKey: patientKeyOf(patient),
+  series,
+  imageCount: series.reduce((n, x) => n + x.imageCount, 0),
+});
+
+test("patient key: one-way, stable, none without an ID", () => {
+  const k = patientKeyOf("CI-0001")!;
+  assert.match(k, /^[0-9a-f]{16}$/);
+  assert.equal(patientKeyOf(" CI-0001 "), k);
+  assert.notEqual(patientKeyOf("CI-0002"), k);
+  assert.ok(!k.includes("0001"));
+  assert.equal(patientKeyOf(""), undefined);
+  assert.equal(patientKeyOf(undefined), undefined);
+});
+
+test("local compare: the newest study's primary series beside the matching prior series", () => {
+  // Opened in any order: the prior first here.
+  const prior = localStudy("p", "20230105", "CI-0001", [localSeries("p", "p-lung", "Lung 1mm", 40, 100), localSeries("p", "p-soft", "Abdomen 3mm", 40, 120)]);
+  const current = localStudy("c", "20240312", "CI-0001", [localSeries("c", "c-soft", "Abdomen 3mm", 40, 150), localSeries("c", "c-scout", "Topogram", 1, 0)]);
+  const plan = localComparePlan([prior, current])!;
+  assert.deepEqual(plan.current, { study: 1, series: 0 });
+  assert.deepEqual(plan.prior, { study: 0, series: 1 });
+  assert.equal(plan.label, "Current 2024-03-12 vs prior 2023-01-05");
+  // Superior ends aligned: the prior's top (120) is 30 mm below the current's (150).
+  assert.equal(plan.priorOffsetMm, -30);
+});
+
+test("local compare: never another patient's study, a same-day study, or a single study", () => {
+  const current = localStudy("c", "20240312", "CI-0001", [localSeries("c", "c-soft", "Abdomen 3mm", 40, 150)]);
+  const other = localStudy("o", "20230105", "CI-0002", [localSeries("o", "o-soft", "Abdomen 3mm", 40, 120)]);
+  const sameDay = localStudy("s", "20240312", "CI-0001", [localSeries("s", "s-soft", "Abdomen 3mm", 40, 120)]);
+  assert.equal(localComparePlan([current, other]), null);
+  assert.equal(localComparePlan([current, sameDay]), null);
+  assert.equal(localComparePlan([current]), null);
 });

@@ -73,6 +73,7 @@ jobs:
           python3 scripts/make-test-mr.py "$RUNNER_TEMP/test-mr"
           python3 scripts/make-test-ct.py "$RUNNER_TEMP/test-ct-40" --slices 40 --size 256
           python3 scripts/make-test-multiseries.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-multi"
+          python3 scripts/make-test-prior.py "$RUNNER_TEMP/test-ct-40" "$RUNNER_TEMP/test-prior"
           python3 scripts/make-test-ortho.py "$RUNNER_TEMP/test-ortho"
           python3 scripts/make-test-petct.py "$RUNNER_TEMP/test-petct"
           # pydicom's own public samples: a rescaled CT with no window and an
@@ -88,6 +89,7 @@ jobs:
           TEST_CT_LARGE_DIR: ${{ runner.temp }}/test-ct-520
           TEST_MR_DIR: ${{ runner.temp }}/test-mr
           TEST_MULTI_DIR: ${{ runner.temp }}/test-multi
+          TEST_PRIOR_DIR: ${{ runner.temp }}/test-prior
           TEST_PYDICOM_DIR: ${{ runner.temp }}/test-pydicom
           TEST_ORTHO_DIR: ${{ runner.temp }}/test-ortho
           TEST_PETCT_DIR: ${{ runner.temp }}/test-petct
