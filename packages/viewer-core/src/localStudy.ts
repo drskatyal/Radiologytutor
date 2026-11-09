@@ -348,6 +348,23 @@ export function describeLocalSeries(series: LocalSeries): string {
   return parts.join(" · ");
 }
 
+/**
+ * "Series info" (a thumbnail's menu, as on the desktop): the summary rows
+ * above the series' tags. Facts from the headers already read; no patient
+ * fields.
+ */
+export function localSeriesSummary(series: LocalSeries): { label: string; value: string }[] {
+  const first = series.instances[0];
+  const rows: { label: string; value: string }[] = [{ label: "Images", value: series.imageCount.toLocaleString("en-US") }];
+  if (series.instances.length !== series.imageCount) rows.push({ label: "Files", value: series.instances.length.toLocaleString("en-US") });
+  if (first?.columns && first?.rows) rows.push({ label: "Matrix", value: `${first.columns} × ${first.rows}` });
+  if (first?.transferSyntaxUID) rows.push({ label: "Transfer syntax", value: first.transferSyntaxUID });
+  // A volume needs slices placed in space: 3+ images that carry a position (a cine loop has none).
+  const placed = series.instances.filter((i) => i.imagePositionPatient?.length === 3).length;
+  rows.push({ label: "Volume (MPR / 3D)", value: placed >= 3 ? "Yes" : "No" });
+  return rows;
+}
+
 /** Series id prefix of a key-image note's derived series (see `withKeyImageSeries`). */
 export const KEY_IMAGE_SERIES_PREFIX = "ko:";
 
