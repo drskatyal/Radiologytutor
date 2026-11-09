@@ -33,7 +33,9 @@ import {
   HardDrive,
   Columns2,
   Layers,
+  LayoutGrid,
   Link2,
+  List,
   Maximize2,
   Minimize2,
   ShieldCheck,
@@ -106,6 +108,7 @@ import {
 import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy } from "@/lib/recentStudyStore";
 import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 import { SCALE_BAR_STORAGE_KEY } from "@flowrad/viewer-core/scaleBar";
+import { readSeriesListCompact, writeSeriesListCompact } from "@flowrad/viewer-core/seriesPanel";
 import { RecentStudies } from "./RecentStudies";
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
@@ -535,6 +538,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       } catch {
         /* storage blocked: still toggles for this visit */
       }
+      return !on;
+    });
+  }, []);
+  // Compact series list (the desktop's setting, a toggle on the list here):
+  // one line per series instead of thumbnails. Remembered on this device.
+  const [compactSeries, setCompactSeries] = useState(false);
+  useEffect(() => setCompactSeries(readSeriesListCompact()), []);
+  const toggleCompactSeries = useCallback(() => {
+    setCompactSeries((on) => {
+      writeSeriesListCompact(!on);
       return !on;
     });
   }, []);
@@ -1543,6 +1556,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           thumbMenu={reading ? { canAddPane, onCommand: onThumbCommand } : undefined}
           hidden={reading ? hiddenSeries : undefined}
           onShowHidden={() => setHiddenSeries(new Set())}
+          compact={reading && compactSeries}
+          onToggleCompact={reading ? toggleCompactSeries : undefined}
           dark={reading}
           thumbs={thumbs}
           imageIdsFor={imageIdsFor}
@@ -2469,7 +2484,15 @@ function SeriesList({
   thumbMenu,
   hidden,
   onShowHidden,
+  compact = false,
+  onToggleCompact,
 }: {
+  /**
+   * One line per series instead of thumbnails (the desktop's "Compact series
+   * list"), and its toggle in the heading. No toggle: always as `compact` says.
+   */
+  compact?: boolean;
+  onToggleCompact?: () => void;
   /** Series hidden from the list (thumbnail menu › Hide series), and the way back. */
   hidden?: ReadonlySet<string>;
   onShowHidden?: () => void;
@@ -2505,9 +2528,24 @@ function SeriesList({
     <div className="flex flex-col gap-3">
       {!hideHeading && (
         <div className="flex flex-col gap-1">
-          <h2 className={cn("text-sm font-medium", dark ? "text-white" : "text-primary")}>
-            {many ? `${formatCount(studies.length)} studies` : only?.description?.trim() || "Local study"}
-          </h2>
+          <div className="flex items-start justify-between gap-2">
+            <h2 className={cn("min-w-0 text-sm font-medium", dark ? "text-white" : "text-primary")}>
+              {many ? `${formatCount(studies.length)} studies` : only?.description?.trim() || "Local study"}
+            </h2>
+            {onToggleCompact && (
+              <Tooltip label={compact ? "Show thumbnails" : "Compact list: one line per series"} side="bottom">
+                <IconButton
+                  size="sm"
+                  aria-label="Compact series list"
+                  aria-pressed={compact}
+                  onClick={onToggleCompact}
+                  className={cn("-mr-1 -mt-1 shrink-0", dark && "text-white/60 hover:bg-white/10 hover:text-white")}
+                >
+                  {compact ? <LayoutGrid aria-hidden /> : <List aria-hidden />}
+                </IconButton>
+              </Tooltip>
+            )}
+          </div>
           <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
             {formatCount(seriesTotal)} series · {formatCount(imageTotal)} images
             {!many && only?.studyDate ? ` · ${only.studyDate}` : ""}
@@ -2540,7 +2578,7 @@ function SeriesList({
               </span>
             </h3>
           )}
-          <ul className="grid grid-cols-2 gap-2" aria-label="Series">
+          <ul className={compact ? "flex flex-col gap-0.5" : "grid grid-cols-2 gap-2"} aria-label="Series" data-compact={compact}>
             {study.series.map((item, index) => {
               if (hidden?.has(item.seriesInstanceUID)) return null;
               const ids = imageIdsFor(item);
@@ -2548,6 +2586,15 @@ function SeriesList({
               const inPanes = (panes ?? [])
                 .map((p, pane) => (p.study === studyIndex && p.series === index ? pane + 1 : 0))
                 .filter((n) => n > 0);
+              const paneBadge =
+                inPanes.length > 0 ? (
+                  <span
+                    className="shrink-0 rounded bg-accent/25 px-1 text-[10px] font-semibold text-white"
+                    aria-label={`In pane ${inPanes.join(" and ")}`}
+                  >
+                    {inPanes.join("·")}
+                  </span>
+                ) : null;
               return (
                 <li key={item.seriesInstanceUID}>
                   <button
@@ -2570,7 +2617,9 @@ function SeriesList({
                     aria-pressed={selected}
                     title={describeLocalSeries(item)}
                     className={cn(
-                      "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left text-[11px] transition-colors",
+                      compact
+                        ? "group flex min-h-8 w-full items-center gap-2 rounded-md border px-2 py-1 text-left text-[11px] transition-colors"
+                        : "group flex w-full flex-col gap-1 rounded-lg border p-1 text-left text-[11px] transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                       dark
                         ? selected
@@ -2581,6 +2630,18 @@ function SeriesList({
                           : "border-transparent text-secondary hover:border-strong hover:bg-elevated/60 hover:text-primary"
                     )}
                   >
+                    {compact ? (
+                      <>
+                        <span className={cn("w-14 shrink-0 truncate font-semibold tabular-nums", dark ? "text-white" : "text-primary")}>
+                          {item.modality || "DICOM"}
+                          {item.seriesNumber != null ? ` ${item.seriesNumber}` : ""}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate">{item.description?.trim() || "No description"}</span>
+                        {paneBadge}
+                        <span className={cn("shrink-0 tabular-nums", dark ? "text-white/50" : "text-muted")}>{formatCount(item.imageCount)}</span>
+                      </>
+                    ) : (
+                    <>
                     <LocalSeriesThumb
                       thumbs={thumbs}
                       seriesKey={item.seriesInstanceUID}
@@ -2592,14 +2653,7 @@ function SeriesList({
                         {item.seriesNumber != null ? `#${item.seriesNumber} · ` : ""}
                         {item.modality || "DICOM"}
                       </span>
-                      {inPanes.length > 0 && (
-                        <span
-                          className="shrink-0 rounded bg-accent/25 px-1 text-[10px] font-semibold text-white"
-                          aria-label={`In pane ${inPanes.join(" and ")}`}
-                        >
-                          {inPanes.join("·")}
-                        </span>
-                      )}
+                      {paneBadge}
                       <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
                         {formatCount(item.imageCount)} im
                       </span>
@@ -2612,6 +2666,8 @@ function SeriesList({
                     >
                       {item.description?.trim() || "No description"}
                     </span>
+                    </>
+                    )}
                   </button>
                 </li>
               );
