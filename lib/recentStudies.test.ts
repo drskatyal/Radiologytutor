@@ -62,3 +62,26 @@ test("recent studies: labels", () => {
   assert.equal(openedAgo(now - 26 * 3600_000, now), "yesterday");
   assert.equal(openedAgo(now - 3 * 86400_000, now), "3 days ago");
 });
+
+test("recent studies: searched as the desktop searches its history (every word, any order, no case or accents)", async () => {
+  const { searchRecentStudies } = await import("@flowrad/viewer-core/recentStudies");
+  const mk = (key: string, description: string, modalities: string, studyDate?: string) => ({
+    key, description, modalities, studyDate, studies: 1, series: 1, images: 10, openedAt: 1,
+  });
+  const list = [
+    mk("a", "CT Thorax Abdomen", "CT", "20240312"),
+    mk("b", "IRM Cérébrale", "MR", "20231105"),
+    mk("c", "", "CT · PT", "20240101"),
+  ];
+  const keys = (q: string) => searchRecentStudies(list, q).map((e) => e.key);
+  assert.deepEqual(keys(""), ["a", "b", "c"]);
+  assert.deepEqual(keys("  "), ["a", "b", "c"]);
+  assert.deepEqual(keys("ct"), ["a", "c"]);
+  assert.deepEqual(keys("abdomen thorax"), ["a"], "every word, any order");
+  assert.deepEqual(keys("cerebrale"), ["b"], "accents ignored");
+  assert.deepEqual(keys("2024-03"), ["a"], "ISO date");
+  assert.deepEqual(keys("mar 2024"), ["a"], "the date as shown");
+  assert.deepEqual(keys("20231105"), ["b"], "DICOM date");
+  assert.deepEqual(keys("pt"), ["c"]);
+  assert.deepEqual(keys("knee"), []);
+});

@@ -34,8 +34,8 @@ export interface RecentStudy {
   openedAt: number;
 }
 
-/** How many the list keeps. */
-export const RECENT_STUDIES_MAX = 12;
+/** How many the list keeps (searchable, as the desktop's study history is). */
+export const RECENT_STUDIES_MAX = 50;
 
 /** FNV-1a, 64-bit as two 32-bit halves: a stable, one-way dedupe key. */
 function hashKey(text: string): string {
@@ -108,4 +108,27 @@ export function openedAgo(openedAt: number, now: number): string {
   if (d < 7) return `${d} days ago`;
   const date = new Date(openedAt);
   return `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+const fold = (v: string) => v.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+/** Everything an entry can be found by: description, modalities and the study date (DA, ISO and "12 Mar 2024"). */
+function haystack(e: RecentStudy): string {
+  const date = e.studyDate ?? "";
+  const iso = /^\d{8}$/.test(date) ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6)}` : "";
+  return fold([e.description, e.modalities, date, iso, studyDateLabel(date)].filter(Boolean).join(" \u0000 "));
+}
+
+/**
+ * The entries matching `query`, as the desktop searches its study history:
+ * every word must appear (any order, case and accents ignored). An empty
+ * query keeps the whole list.
+ */
+export function searchRecentStudies<T extends RecentStudy>(list: readonly T[], query: string): T[] {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return [...list];
+  return list.filter((e) => {
+    const text = haystack(e);
+    return words.every((w) => text.includes(w));
+  });
 }
