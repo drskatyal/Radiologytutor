@@ -9,7 +9,8 @@
 // Ctrl/⌘+Shift+M 3D, Ctrl/⌘+Shift+F12 overlay on / off, and F full screen
 // (isFullScreenKey: the page that owns the stage handles it); Shift+Backspace
 // resets rotation and flips only; PageUp / PageDown and Shift+↑ / ↓ jump
-// 10 % of the images; Y arrow, N freehand ROI, Q / Shift+Q rotate; Shift+1…7
+// 10 % of the images; Y arrow, N freehand ROI, C Cobb angle, P pan, Q /
+// Shift+Q rotate; Shift+1…7
 // the layouts (1×1, 1×2, 2×1, 2×2, 1×3, 2×3, 3×3); Ctrl/⌘+O open files and
 // Ctrl/⌘+Shift+O a folder (openKeyOf: the page that owns the pickers); F1
 // help; Ctrl/⌘+= / − zoom in / out (the image, not the page).
@@ -36,7 +37,7 @@ export type ReadingKeyAction =
   | { type: "overlay" }
   | { type: "orientReset" }
   | { type: "slicePage"; dir: 1 | -1 }
-  | { type: "tool"; tool: "ArrowAnnotate" | "PlanarFreehandROI" }
+  | { type: "tool"; tool: "ArrowAnnotate" | "PlanarFreehandROI" | "CobbAngle" | "Pan" }
   | { type: "rotate"; dir: 1 | -1 }
   | { type: "layout"; n: number }
   | { type: "help" }
@@ -113,6 +114,10 @@ export function resolveReadingKey(e: ReadingKeyEvent): ReadingKeyAction | null {
     if (letter === "Q") return { type: "rotate", dir: shift ? -1 : 1 };
     if (!shift && letter === "Y") return { type: "tool", tool: "ArrowAnnotate" };
     if (!shift && letter === "N") return { type: "tool", tool: "PlanarFreehandROI" };
+    // C Cobb angle and P pan, the desktop's letters (M stays pan too). Free viewer
+    // only: in the teaching viewer the student session owns C and P.
+    if (!shift && letter === "C") return { type: "tool", tool: "CobbAngle" };
+    if (!shift && letter === "P") return { type: "tool", tool: "Pan" };
   }
   // Shift+Backspace: rotation and flips back to the file's (zoom, pan and window kept), as on the desktop.
   if (shift && !mod && !alt && e.key === "Backspace") return { type: "orientReset" };

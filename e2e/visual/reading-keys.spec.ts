@@ -148,6 +148,11 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await expect(page.getByText(/^Arrow/).first()).toBeVisible();
   await page.keyboard.press("n");
   await expect(page.getByText(/^Freehand/).first()).toBeVisible();
+  // C Cobb angle, P pan (the desktop's letters; the toolbar follows).
+  await page.keyboard.press("c");
+  await expect(page.getByText(/^Cobb/).first()).toBeVisible();
+  await page.keyboard.press("p");
+  await expect(page.getByRole("button", { name: /^Pan/ }).first()).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("q");
   await expect(page.getByText("Rotate 90° clockwise").first()).toBeVisible();
   await page.keyboard.press("Shift+Q");

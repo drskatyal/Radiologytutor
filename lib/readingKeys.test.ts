@@ -135,3 +135,12 @@ test("reading keys: F1 help; Ctrl/⌘+= / − zoom the image a step (by key or p
   assert.equal(resolveReadingKey({ key: "=", code: "Equal" }), null, "bare = stays the web zoom command");
   assert.equal(resolveReadingKey({ key: "-", code: "Minus", ctrlKey: true, altKey: true }), null);
 });
+
+test("reading keys: C Cobb angle and P pan (the desktop's letters); Shift / Ctrl versions are not ours", () => {
+  assert.deepEqual(resolveReadingKey({ key: "c", code: "KeyC" }), { type: "tool", tool: "CobbAngle" });
+  assert.deepEqual(resolveReadingKey({ key: "p", code: "KeyP" }), { type: "tool", tool: "Pan" });
+  assert.equal(resolveReadingKey({ key: "C", code: "KeyC", shiftKey: true }), null);
+  assert.equal(resolveReadingKey({ key: "c", code: "KeyC", ctrlKey: true }), null, "Ctrl/⌘+C stays copy");
+  assert.equal(resolveReadingKey({ key: "p", code: "KeyP", metaKey: true }), null, "Ctrl/⌘+P stays the browser's");
+  assert.deepEqual(resolveReadingKey({ key: "c", code: "KeyC", altKey: true }), { type: "reformat", plane: "coronal" }, "Alt+C stays coronal");
+});
