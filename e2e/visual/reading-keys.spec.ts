@@ -156,11 +156,14 @@ test("reading keys: Ctrl+0…4 zoom levels, Ctrl+arrows pan, F12 annotations, F5
   await expect(row(/^Arrow/)).toContainText("Y");
   await expect(row(/^Eraser/)).toContainText("E");
   await page.keyboard.press("Escape");
+  // The menu hands focus back to its trigger as it closes: focus the image only once it is gone.
+  await expect(page.getByRole("menu", { name: "Measurement tools" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "More measurement tools" }).first()).toBeFocused();
   await image(page).focus();
 
   // C Cobb angle, P pan (the desktop's letters; the toolbar follows).
   await page.keyboard.press("c");
-  await expect(page.getByText(/^Cobb/).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Cobb angle/ }).first()).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("p");
   await expect(page.getByRole("button", { name: /^Pan/ }).first()).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("q");
