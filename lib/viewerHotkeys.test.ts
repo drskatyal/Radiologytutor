@@ -320,3 +320,26 @@ test("the pop-out key is listed only where pop-out is offered (two or more monit
   assert.deepEqual(rows(true, true).find((r) => /Pop the study out/.test(r.does))?.keys, ["⌘", "⌥", "N"]);
   assert.ok(!rows(false).some((r) => /Pop the study out/.test(r.does)), "one monitor: not listed");
 });
+
+test("tool keys for tooltips and menus: the free viewer adds the desktop letters, teaching surfaces don't", async () => {
+  const { shortcutForToolIn, READING_TOOL_KEYS } = await import("./viewerHotkeys");
+  assert.equal(shortcutForToolIn("CobbAngle", true), "C");
+  assert.equal(shortcutForToolIn("PlanarFreehandROI", true), "N");
+  assert.equal(shortcutForToolIn("ArrowAnnotate", true), "Y");
+  assert.equal(shortcutForToolIn("Eraser", true), "Shift+E");
+  assert.equal(shortcutForToolIn("Pan", true), "M · P", "the bound key first, then the desktop letter");
+  assert.equal(shortcutForToolIn("Length", true), "L");
+  assert.equal(shortcutForToolIn("CobbAngle", false), null, "teaching: C belongs to the student session");
+  assert.equal(shortcutForToolIn("Pan", false), "M");
+  // Every letter here is one the reading keys really resolve (no tooltip promises a dead key).
+  const { resolveReadingKey } = await import("@flowrad/viewer-core/readingKeys");
+  for (const [tool, key] of Object.entries(READING_TOOL_KEYS)) {
+    const shift = key.startsWith("Shift+");
+    const letter = key.slice(-1);
+    const action = resolveReadingKey({ key: shift ? letter.toUpperCase() : letter.toLowerCase(), code: `Key${letter.toUpperCase()}`, shiftKey: shift });
+    assert.ok(
+      action && ((action.type === "tool" && action.tool === tool) || (tool === "Eraser" && action.type === "eraser")),
+      `${key} resolves to ${tool}`
+    );
+  }
+});

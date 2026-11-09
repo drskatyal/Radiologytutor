@@ -217,6 +217,28 @@ export function shortcutForTool(tool: string, overrides: BindingOverrides = getL
 }
 
 /**
+ * The desktop's tool letters the free viewer adds on the image (readingKeys in
+ * @flowrad/viewer-core): fixed keys, not rebindable, and only where
+ * `readingTools` is on (the student session owns C, N and P elsewhere).
+ */
+export const READING_TOOL_KEYS: Readonly<Record<string, string>> = {
+  ArrowAnnotate: "Y",
+  PlanarFreehandROI: "N",
+  CobbAngle: "C",
+  Pan: "P",
+  Eraser: "Shift+E",
+};
+
+/**
+ * A tool's keys for its tooltip / menu row: the bound ones, then (free viewer)
+ * the desktop letter. "M · P" for pan, "C" for Cobb angle; null when none.
+ */
+export function shortcutForToolIn(tool: string, readingTools: boolean): string | null {
+  const keys = [shortcutForTool(tool), readingTools ? READING_TOOL_KEYS[tool] : undefined].filter(Boolean);
+  return keys.length ? keys.join(" · ") : null;
+}
+
+/**
  * The first key bound to window preset `ordinal` (0 = series default): "1",
  * "0", or a reader's own key. Shown on each row of the preset menu.
  */

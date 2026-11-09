@@ -61,7 +61,7 @@ import { Menu, MenuItem, MenuLabel, MenuSeparator, Tooltip } from "@/components/
 import { cn } from "@/components/ui/cn";
 import { CINE_FPS_OPTIONS } from "@/lib/cinePlayer";
 import type { OverlayDensity } from "@/lib/dicomOverlay";
-import { shortcutForPreset, shortcutForTool } from "@/lib/viewerHotkeys";
+import { shortcutForPreset, shortcutForToolIn } from "@/lib/viewerHotkeys";
 import type { MprMode, MprPlane, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
@@ -297,6 +297,8 @@ export interface ViewerToolbarProps {
   onCustomWindow?: () => void;
   /** The measure menu (default: the teaching set, `MEASURE_TOOLS`). */
   measureTools?: ViewerTool[];
+  /** The free viewer: tooltips and menu rows also show the desktop's tool letters (Y, N, C, P, Shift+E). */
+  readingKeys?: boolean;
 }
 
 const PLANE_LABEL: Record<"acquired" | "all" | MprPlane, string> = {
@@ -472,7 +474,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           <ToolbarButton
             key={tool.name}
             label={tool.label}
-            shortcut={keysOf(shortcutForTool(tool.name))}
+            shortcut={keysOf(shortcutForToolIn(tool.name, !!props.readingKeys))}
             active={activeTool === tool.name}
             disabled={!ready}
             container={host}
@@ -488,7 +490,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         <div className="flex shrink-0 items-center">
           <ToolbarButton
             label={blockedReason ? `${activeMeasure.label} — ${blockedReason}` : activeMeasure.label}
-            shortcut={keysOf(shortcutForTool(activeMeasure.name))}
+            shortcut={keysOf(shortcutForToolIn(activeMeasure.name, !!props.readingKeys))}
             active={measureActive}
             disabled={!ready || measureBlocked(activeMeasure)}
             container={host}
@@ -523,7 +525,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
                 key={tool.name}
                 label={tool.label}
                 hint={measureBlocked(tool) ? (measurementsEnabled ? "no spacing" : "stack only") : undefined}
-                shortcut={shortcutForTool(tool.name)?.split(" · ").pop() ?? null}
+                shortcut={shortcutForToolIn(tool.name, !!props.readingKeys)?.split(" · ").pop() ?? null}
                 active={activeTool === tool.name}
                 disabled={!ready || measureBlocked(tool)}
                 onSelect={() => props.onSelectTool(tool.name)}
