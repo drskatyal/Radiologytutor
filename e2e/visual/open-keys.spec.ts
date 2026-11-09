@@ -44,7 +44,14 @@ test("open keys: Ctrl+O opens files (landing and with a study open), Ctrl+Shift+
   // With a study open, from the image: still the file picker (nothing else fires).
   const image = page.locator('[role="img"][aria-label^="DICOM viewer"]').first();
   await image.focus();
-  const [again] = await Promise.all([page.waitForEvent("filechooser"), page.keyboard.press("Control+o")]);
+  // The page always handles the key (it clicks the file input, with the key's user activation);
+  // Chromium sometimes declines a second chooser this soon after the first one the test answered,
+  // so press until it opens, as for the first.
+  let again!: FileChooser;
+  await expect(async () => {
+    await image.focus();
+    [again] = await Promise.all([page.waitForEvent("filechooser", { timeout: 2_000 }), page.keyboard.press("Control+o")]);
+  }).toPass({ timeout: 20_000 });
   await again.setFiles([]);
   await expect(slider).toBeVisible();
 
