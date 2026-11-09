@@ -2528,11 +2528,17 @@ function SeriesList({
     <div className="flex flex-col gap-3">
       {!hideHeading && (
         <div className="flex flex-col gap-1">
+          {/* With the toggle: heading and toggle on one row. Without: the heading alone, as before. */}
+          {!onToggleCompact ? (
+            <h2 className={cn("text-sm font-medium", dark ? "text-white" : "text-primary")}>
+              {many ? `${formatCount(studies.length)} studies` : only?.description?.trim() || "Local study"}
+            </h2>
+          ) : (
           <div className="flex items-start justify-between gap-2">
             <h2 className={cn("min-w-0 text-sm font-medium", dark ? "text-white" : "text-primary")}>
               {many ? `${formatCount(studies.length)} studies` : only?.description?.trim() || "Local study"}
             </h2>
-            {onToggleCompact && (
+            {(
               <Tooltip label={compact ? "Show thumbnails" : "Compact list: one line per series"} side="bottom">
                 <IconButton
                   size="sm"
@@ -2546,6 +2552,7 @@ function SeriesList({
               </Tooltip>
             )}
           </div>
+          )}
           <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
             {formatCount(seriesTotal)} series · {formatCount(imageTotal)} images
             {!many && only?.studyDate ? ` · ${only.studyDate}` : ""}
