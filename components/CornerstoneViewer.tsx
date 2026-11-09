@@ -60,7 +60,7 @@ import { RemoteReferenceLines, type RemotePlane } from "./viewer/RemoteReference
 import type { XVec3 } from "@flowrad/viewer-core";
 import { imageMenu } from "@flowrad/viewer-core";
 import { layoutForShape, READING_LAYOUTS } from "@flowrad/viewer-core";
-import { shortcutForPreset, shortcutForTool } from "../lib/viewerHotkeys";
+import { shortcutForPreset, shortcutForToolIn } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
 import { VoiceStatus } from "./viewer/voice/VoiceStatus";
@@ -4250,17 +4250,13 @@ export default function CornerstoneViewer({
   const [annotationsHidden, setAnnotationsHidden] = useState(false);
   const webMenuShortcut = (command: string): string | undefined => {
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
-    if (head === "tool" && arg === "Eraser" && readingTools) return "Shift+E";
-    if (head === "tool" && arg === "ArrowAnnotate" && readingTools) return "Y";
-    if (head === "tool" && arg === "PlanarFreehandROI" && readingTools) return "N";
-    if (head === "tool" && arg === "CobbAngle" && readingTools) return "C";
     if (readingTools && (head === "3d" || head === "reformat")) {
       const mac = isMac();
       if (head === "3d") return `${mac ? "⌘" : "Ctrl"}+Shift+M`;
       const letter = { axial: "A", coronal: "C", sagittal: "S" }[arg as "axial" | "coronal" | "sagittal"];
       if (letter) return `${mac ? "⌥" : "Alt"}+${letter}`;
     }
-    if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
+    if (head === "tool") return shortcutForToolIn(arg, readingTools)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
       if (arg === "auto") return shortcutForPreset(0) ?? undefined;
       const i = presets.findIndex((p) => p.id === arg);
@@ -4679,6 +4675,7 @@ export default function CornerstoneViewer({
       annotationsEnabled={annotationsEnabled}
       measurementsEnabled={!mprLive}
       measureTools={readingTools ? READING_MEASURE_TOOLS : MEASURE_TOOLS}
+      readingKeys={readingTools}
       inverted={inverted}
       activePreset={activePreset}
       presets={presets}
