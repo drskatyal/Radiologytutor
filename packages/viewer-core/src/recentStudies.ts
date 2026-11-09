@@ -8,7 +8,11 @@
 // No patient identifiers: an entry holds the study description, modality,
 // study date and counts, never a name, ID, birth date or accession, and not
 // even the Study Instance UID: the key is a one-way hash of the UIDs, used
-// only to replace an entry when the same study is opened again.
+// only to replace an entry when the same study is opened again. To offer
+// "Compare with prior…" an entry may also hold a patient key: the study's
+// one-way patient key (localStudy.patientKeyOf) hashed again with a random
+// salt that never leaves this browser, so it matches only this browser's
+// other entries and tells nothing about the patient on its own.
 
 export interface RecentStudyStudy {
   studyInstanceUID: string;
@@ -16,6 +20,8 @@ export interface RecentStudyStudy {
   studyDate?: string;
   imageCount: number;
   series: readonly { modality?: string }[];
+  /** One-way patient key (localStudy.patientKeyOf), never the Patient ID. */
+  patientKey?: string;
 }
 
 export interface RecentStudy {
@@ -32,6 +38,8 @@ export interface RecentStudy {
   images: number;
   /** ms since epoch. */
   openedAt: number;
+  /** Salted one-way patient key (see the module header), when one patient's studies were opened. */
+  patientKey?: string;
 }
 
 /** How many the list keeps (searchable, as the desktop's study history is). */
@@ -49,8 +57,12 @@ function hashKey(text: string): string {
   return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
 }
 
-/** The entry for what was just opened (one or more studies), or null when there is nothing. */
-export function recentStudyEntry(studies: readonly RecentStudyStudy[], now: number): RecentStudy | null {
+/**
+ * The entry for what was just opened (one or more studies), or null when there
+ * is nothing. With this browser's `salt`, it also holds the patient key when
+ * every study is the same patient's.
+ */
+export function recentStudyEntry(studies: readonly RecentStudyStudy[], now: number, salt?: string): RecentStudy | null {
   if (studies.length === 0) return null;
   const uids = studies.map((s) => s.studyInstanceUID).sort();
   const first = studies[0]!;
@@ -65,7 +77,24 @@ export function recentStudyEntry(studies: readonly RecentStudyStudy[], now: numb
     series: studies.reduce((n, s) => n + s.series.length, 0),
     images: studies.reduce((n, s) => n + s.imageCount, 0),
     openedAt: now,
+    ...(salt && first.patientKey && studies.every((s) => s.patientKey === first.patientKey)
+      ? { patientKey: hashKey(`${salt}|${first.patientKey}`) }
+      : {}),
   };
+}
+
+/**
+ * The desktop's "Compare with prior": this patient's earlier single-study
+ * entries, newest first. Only entries of the same patient key and an earlier
+ * study date (a same-day or undated study is no prior); never the open study
+ * itself, nor an entry that already holds several studies.
+ */
+export function priorsAmong<T extends RecentStudy>(list: readonly T[], current: Pick<RecentStudy, "key" | "patientKey" | "studyDate">): T[] {
+  const date = current.studyDate;
+  if (!current.patientKey || !date) return [];
+  return list
+    .filter((e) => e.key !== current.key && e.studies === 1 && e.patientKey === current.patientKey && !!e.studyDate && e.studyDate < date)
+    .sort((a, b) => (b.studyDate ?? "").localeCompare(a.studyDate ?? ""));
 }
 
 /** The list with `entry` at the top (replacing the same study), capped. */

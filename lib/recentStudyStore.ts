@@ -10,6 +10,10 @@
 // its schema. Two stores: the entries (what the landing lists) and, apart,
 // their handles, read only when the reader clicks one to reopen it. Listing
 // never deserialises a handle.
+//
+// One more record, beside the handles: this browser's random salt for the
+// entries' patient keys (recentStudies.ts). It never leaves the browser, so a
+// key matches only this browser's own entries. Clearing the list drops it too.
 
 import { RECENT_STUDIES_MAX, withRecentStudy, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 
@@ -84,6 +88,29 @@ async function readAll(): Promise<RecentStudy[]> {
     };
   });
   return all.sort((a, b) => b.openedAt - a.openedAt);
+}
+
+/** Where the salt lives in the handles store (no entry key can collide: those are 16 hex digits). */
+const SALT_KEY = "salt:patient";
+
+/** This browser's salt for patient keys, made on first use; null when storage is unavailable. */
+export function recentStudySalt(): Promise<string | null> {
+  return serial(async () => {
+    let salt: string | null = null;
+    await tx("readonly", (_studies, store) => {
+      const req = store.get(SALT_KEY);
+      req.onsuccess = () => {
+        if (typeof req.result === "string" && req.result.length >= 32) salt = req.result;
+      };
+    });
+    if (salt) return salt;
+    if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") return null;
+    const fresh = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    const saved = await tx("readwrite", (_studies, store) => {
+      store.put(fresh, SALT_KEY);
+    });
+    return saved ? fresh : null;
+  });
 }
 
 /** The handles to reopen `key` from (read only on the reader's click). */

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   RECENT_STUDIES_MAX,
   openedAgo,
+  priorsAmong,
   recentStudyDetail,
   recentStudyEntry,
   recentStudyTitle,
@@ -84,4 +85,37 @@ test("recent studies: searched as the desktop searches its history (every word, 
   assert.deepEqual(keys("20231105"), ["b"], "DICOM date");
   assert.deepEqual(keys("pt"), ["c"]);
   assert.deepEqual(keys("knee"), []);
+});
+
+test("recent studies: a salted patient key, only for one patient's studies", () => {
+  const one = (uid: string, patientKey?: string, studyDate = "20240312") => ({ ...study(uid, { studyDate }), patientKey });
+  const a = recentStudyEntry([one("1", "pk1")], 0, "salt-a")!;
+  assert.match(a.patientKey!, /^[0-9a-f]{16}$/);
+  assert.ok(!JSON.stringify(a).includes("pk1"), "the key is hashed again, never stored as given");
+  assert.equal(recentStudyEntry([one("2", "pk1")], 0, "salt-a")!.patientKey, a.patientKey, "same patient, same browser: same key");
+  assert.notEqual(recentStudyEntry([one("1", "pk1")], 0, "salt-b")!.patientKey, a.patientKey, "another browser's salt: another key");
+  assert.equal(recentStudyEntry([one("1", "pk1")], 0)!.patientKey, undefined, "no salt, no key");
+  assert.equal(recentStudyEntry([one("1")], 0, "salt-a")!.patientKey, undefined, "no patient key in the files");
+  assert.equal(recentStudyEntry([one("1", "pk1"), one("2", "pk2")], 0, "salt-a")!.patientKey, undefined, "two patients");
+});
+
+test("recent studies: priors are this patient's earlier single studies, newest first", () => {
+  const entry = (key: string, patientKey: string | undefined, studyDate: string | undefined, studies = 1): RecentStudy => ({
+    key, description: key, modalities: "CT", studyDate, studies, series: 1, images: 1, openedAt: 0, patientKey,
+  });
+  const current = entry("now", "p", "20250101");
+  const list = [
+    current,
+    entry("older", "p", "20230105"),
+    entry("newer", "p", "20240105"),
+    entry("sameDay", "p", "20250101"),
+    entry("later", "p", "20250601"),
+    entry("undated", "p", undefined),
+    entry("pair", "p", "20240105", 2),
+    entry("other", "q", "20240105"),
+    entry("unkeyed", undefined, "20240105"),
+  ];
+  assert.deepEqual(priorsAmong(list, current).map((e) => e.key), ["newer", "older"]);
+  assert.deepEqual(priorsAmong(list, { ...current, patientKey: undefined }), []);
+  assert.deepEqual(priorsAmong(list, { ...current, studyDate: undefined }), []);
 });

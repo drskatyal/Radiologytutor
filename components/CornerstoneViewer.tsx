@@ -861,6 +861,7 @@ export default function CornerstoneViewer({
   paneLinks,
   distractionFree,
   onFusion,
+  onComparePrior = null,
   seriesPanel = null,
   onCycleLayout,
   onLayout,
@@ -990,6 +991,8 @@ export default function CornerstoneViewer({
   distractionFree?: { on: boolean; toggle: () => void } | null;
   /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
   onFusion?: (() => void) | null;
+  /** The image menu's "Compare with prior…" (free viewer: a prior of this patient among the recent studies). */
+  onComparePrior?: (() => void) | null;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
@@ -4341,6 +4344,7 @@ export default function CornerstoneViewer({
         customLayout: readingTools,
         measurements: readingTools,
         fusion: !!onFusion,
+        comparePrior: !!onComparePrior,
       },
       shortcut: webMenuShortcut,
     });
@@ -4476,6 +4480,8 @@ export default function CornerstoneViewer({
         return distractionFree?.toggle();
       case "fusion":
         return onFusion?.();
+      case "comparePrior":
+        return onComparePrior?.();
       case "tags": {
         const id = vp?.getCurrentImageId?.();
         if (id) setTagsImageId(id);
