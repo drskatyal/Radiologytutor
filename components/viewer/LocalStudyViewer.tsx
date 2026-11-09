@@ -103,8 +103,8 @@ import {
   rememberStudyHandles,
   studyHandlesReadable,
 } from "@/lib/studyHandleStore";
-import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, rememberRecentStudy } from "@/lib/recentStudyStore";
-import { recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
+import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy } from "@/lib/recentStudyStore";
+import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 import { RecentStudies } from "./RecentStudies";
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
@@ -299,6 +299,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const pendingSlice = useRef<number | null>(null);
   // Handles of the study being opened (folder picker / drop), kept on open.
   const openingHandles = useRef<FileSystemHandle[]>([]);
+  // "Compare with prior…", as on the desktop: this patient's newest earlier
+  // study among the recent studies, offered while one study opened from a
+  // folder / file handle is up. Reopens both together (the compare hanging).
+  const [priorOffer, setPriorOffer] = useState<{ handles: FileSystemHandle[]; prior: RecentStudy } | null>(null);
+  const [priorNotice, setPriorNotice] = useState<string | null>(null);
+  const [priorOpening, setPriorOpening] = useState(false);
+  const openGeneration = useRef(0);
   // Recent studies (Chromium): what was opened from a folder handle, newest first.
   const [recent, setRecent] = useState<RecentStudy[]>([]);
   const [recentOpening, setRecentOpening] = useState<string | null>(null);
@@ -708,8 +715,23 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         setRestore(null);
         void rememberStudyHandles(openingHandles.current);
         // Recent studies: only what came from a folder / file handle (reopenable).
-        const recentEntry = recentStudyEntry(result.studies, Date.now());
-        if (recentEntry && openingHandles.current.length > 0) void rememberRecentStudy(recentEntry, openingHandles.current);
+        // With this browser's salt, the entry holds a patient key, so a later
+        // study of the same patient can offer this one as its prior.
+        const handlesNow = openingHandles.current;
+        const generation = ++openGeneration.current;
+        setPriorOffer(null);
+        setPriorNotice(null);
+        if (handlesNow.length > 0) {
+          void (async () => {
+            const salt = await recentStudySalt();
+            const recentEntry = recentStudyEntry(result.studies, Date.now(), salt ?? undefined);
+            if (!recentEntry) return;
+            await rememberRecentStudy(recentEntry, handlesNow);
+            if (!reading || result.studies.length !== 1 || generation !== openGeneration.current) return;
+            const prior = priorsAmong(await listRecentStudies(), recentEntry)[0];
+            if (prior && generation === openGeneration.current) setPriorOffer({ handles: [...handlesNow], prior });
+          })();
+        }
         // Decoded + raw must fit the device budget, not decoded alone (see
         // localMemoryBudget.ts). After the engine's init, which sets the plain cap.
         // Key-image series borrow their instances: count each file once.
@@ -811,15 +833,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   /** Read readable handles and open them where the reader was. False: nothing to open. */
   const openFromHandles = useCallback(
     async (handles: FileSystemHandle[], place: Record<string, number> | undefined): Promise<boolean> => {
-      const files: File[] = [];
-      for (const handle of handles) {
-        try {
-          if (handle.kind === "directory") files.push(...(await filesFromDirectoryHandle(handle as FileSystemDirectoryHandle)));
-          else files.push(await (handle as FileSystemFileHandle).getFile());
-        } catch {
-          /* moved or deleted since */
-        }
-      }
+      const files = await filesFromHandles(handles);
       if (files.length === 0) return false;
       openingHandles.current = handles;
       restorePlace.current = place ?? null;
@@ -892,6 +906,36 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     },
     [recentOpening, openFromHandles]
   );
+  /** "Compare with prior…": reopen this study with the prior (inside the click: the browser asks only if read access lapsed). */
+  const comparePrior = useCallback(async () => {
+    const offer = priorOffer;
+    if (!offer || priorOpening) return;
+    setPriorOpening(true);
+    setPriorNotice(null);
+    try {
+      const saved = await recentStudyHandles(offer.prior.key);
+      const handles = saved.length > 0 ? await regainStudyHandles([...offer.handles, ...saved]) : [];
+      if (handles.length === 0) {
+        setPriorNotice(
+          saved.length === 0
+            ? "That prior is no longer in your recent studies. Open it with this study to compare."
+            : "Reading the prior's folder was not allowed. Open it with this study to compare."
+        );
+        return;
+      }
+      const priorFiles = await filesFromHandles(saved);
+      const currentFiles = priorFiles.length > 0 ? await filesFromHandles(offer.handles) : [];
+      if (priorFiles.length === 0 || currentFiles.length === 0) {
+        setPriorNotice(`The ${priorFiles.length === 0 ? "prior's" : "study's"} folder has moved or holds no images now.`);
+        return;
+      }
+      openingHandles.current = handles;
+      restorePlace.current = null;
+      void ingest([...currentFiles, ...priorFiles]);
+    } finally {
+      setPriorOpening(false);
+    }
+  }, [priorOffer, priorOpening, ingest]);
   const forgetRecent = useCallback((key: string) => {
     setRecent((list) => list.filter((e) => e.key !== key));
     setRecentNotice(null);
@@ -1296,6 +1340,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   // A new study closes it.
   useEffect(() => setFusionOpen(null), [result, activeStudy]);
   const openFusion = useMemo(() => (fusionPair ? () => setFusionOpen(fusionPair) : null), [fusionPair]);
+  // The image menu's "Compare with prior…" (one study up, a prior among the recent studies).
+  const onComparePrior = useMemo(
+    () => (reading && priorOffer && result?.studies.length === 1 && !priorOpening ? () => void comparePrior() : null),
+    [reading, priorOffer, result, priorOpening, comparePrior]
+  );
 
   /** Export › DICOM (anonymised): the files behind a pane's series and its study. */
   const exportFilesFor = useCallback(
@@ -1445,6 +1494,11 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : what === "zoom" ? setLinkZoom : setRefLines)((on) => !on)
           }
         />
+      )}
+      {priorNotice && (
+        <p role="status" className="text-xs text-warning">
+          {priorNotice}
+        </p>
       )}
       {comparisonShown && (
         <p
@@ -1745,6 +1799,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     onStartPlaneDone={() => setPlaneRequest(null)}
                     exportFiles={exportFilesFor({ study: activeStudy, series: activeSeries })}
                     onFusion={openFusion}
+                    onComparePrior={onComparePrior}
                     seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                     onChunkLoadError={recoverFromChunkError}
                     voiceOn={voiceOn}
@@ -1807,6 +1862,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           onStartPlaneDone={() => setPlaneRequest(null)}
                           exportFiles={exportFilesFor(target)}
                           onFusion={openFusion}
+                    onComparePrior={onComparePrior}
                           seriesPanel={reading ? { shown: !seriesPanel.collapsed, toggle: seriesPanel.toggle } : null}
                           onChunkLoadError={recoverFromChunkError}
                           onCycleLayout={cycleLayout}
@@ -2620,6 +2676,20 @@ function withRelativePath(file: File, path: string): File {
 }
 
 /** Every file under a File System Access directory handle, with its path. */
+/** Every file under these folder / file handles (a moved or deleted one is skipped). */
+async function filesFromHandles(handles: readonly FileSystemHandle[]): Promise<File[]> {
+  const files: File[] = [];
+  for (const handle of handles) {
+    try {
+      if (handle.kind === "directory") files.push(...(await filesFromDirectoryHandle(handle as FileSystemDirectoryHandle)));
+      else files.push(await (handle as FileSystemFileHandle).getFile());
+    } catch {
+      /* moved or deleted since */
+    }
+  }
+  return files;
+}
+
 async function filesFromDirectoryHandle(root: FileSystemDirectoryHandle): Promise<File[]> {
   const out: File[] = [];
   type Iterable = FileSystemDirectoryHandle & {
