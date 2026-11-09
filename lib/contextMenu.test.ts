@@ -131,6 +131,16 @@ test("image menu: distraction-free reading is offered (checked when on) only whe
   assert.equal(find(imageMenu(base({}))), undefined);
 });
 
+test("image menu: the scale bar is offered (checked when on) only where the viewer has it", () => {
+  const find = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "item" && e.id === "scaleBar");
+  const off = find(imageMenu(base({ scaleBar: false })));
+  assert.ok(off?.kind === "item" && !off.checked && off.label === "Scale bar");
+  const on = find(imageMenu(base({ scaleBar: true })));
+  assert.ok(on?.kind === "item" && on.checked);
+  assert.equal(find(imageMenu(base({ scaleBar: null }))), undefined);
+  assert.equal(find(imageMenu(base({}))), undefined, "the desktop keeps it in Settings");
+});
+
 test("image menu: PET / CT fusion sits under Reformat only where the study has the pair", () => {
   assert.ok(commandsOf(imageMenu(base({ can: { fusion: true } }))).includes("fusion"));
   assert.ok(!commandsOf(imageMenu(base({ can: { copyImage: true } }))).includes("fusion"));

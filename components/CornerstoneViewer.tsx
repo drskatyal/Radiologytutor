@@ -42,6 +42,7 @@ import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
 import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
 import { pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
+import { mmPerCssPixel, scaleBarFor } from "@flowrad/viewer-core/scaleBar";
 import { MEASUREMENT_TOOLS } from "@flowrad/viewer-core/measurementReport";
 import {
   useCallback,
@@ -862,6 +863,7 @@ export default function CornerstoneViewer({
   distractionFree,
   onFusion,
   onComparePrior = null,
+  scaleBar = null,
   seriesPanel = null,
   onCycleLayout,
   onLayout,
@@ -993,6 +995,8 @@ export default function CornerstoneViewer({
   onFusion?: (() => void) | null;
   /** The image menu's "Compare with prior…" (free viewer: a prior of this patient among the recent studies). */
   onComparePrior?: (() => void) | null;
+  /** The scale bar (free viewer, as the desktop's setting): on / off, shared by every pane. Null: not offered. */
+  scaleBar?: { on: boolean; toggle: () => void } | null;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
@@ -1151,6 +1155,9 @@ export default function CornerstoneViewer({
     imageId?: string;
     meta?: OverlayMeta;
     zoom?: number;
+    /** Millimetres per CSS pixel on a calibrated stack image (the scale bar), and the pane's width. */
+    mmPerPx?: number;
+    paneWidth?: number;
   } | null>(null);
   // Corner overlay density, remembered per browser. Hydrated after mount so
   // server and first client render agree.
@@ -1621,6 +1628,7 @@ export default function CornerstoneViewer({
                   rows?: number;
                   columns?: number;
                   imageOrientationPatient?: number[];
+                  rowPixelSpacing?: number | null;
                 }
               | undefined;
             return {
@@ -1632,6 +1640,7 @@ export default function CornerstoneViewer({
               rows: plane?.rows ?? null,
               columns: plane?.columns ?? null,
               imageOrientationPatient: plane?.imageOrientationPatient ?? null,
+              pixelSpacingMm: plane?.rowPixelSpacing && plane.rowPixelSpacing > 0 ? plane.rowPixelSpacing : null,
             };
           } catch {
             return undefined;
@@ -1649,6 +1658,8 @@ export default function CornerstoneViewer({
           prev.plane === next.plane &&
           prev.imageId === next.imageId &&
           prev.zoom === next.zoom &&
+          prev.mmPerPx === next.mmPerPx &&
+          prev.paneWidth === next.paneWidth &&
           (prev.meta != null) === (next.meta != null);
         const publishReadout = () => {
           if (mprHeld) {
@@ -1684,6 +1695,18 @@ export default function CornerstoneViewer({
             zoom = undefined;
           }
           const imageId = vp.getCurrentImageId?.() || vp.getImageIds()[vp.getCurrentImageIdIndex()];
+          const meta = overlayMetaFor(imageId);
+          // The scale bar's calibration: only where the header gives the pixel spacing.
+          let mmPerPx: number | undefined;
+          const host = elementRef.current;
+          if (meta?.pixelSpacingMm && host) {
+            try {
+              const mm = mmPerCssPixel((vp as unknown as { getCamera?: () => { parallelScale?: number } }).getCamera?.()?.parallelScale, host.clientHeight);
+              mmPerPx = mm == null ? undefined : Math.round(mm * 1e5) / 1e5;
+            } catch {
+              mmPerPx = undefined;
+            }
+          }
           const next = {
             slice,
             count,
@@ -1691,8 +1714,10 @@ export default function CornerstoneViewer({
             wc,
             plane: undefined,
             imageId,
-            meta: overlayMetaFor(imageId),
+            meta,
             zoom,
+            mmPerPx,
+            paneWidth: host?.clientWidth,
           };
           setReadout((prev) => (sameReadout(prev, next) ? prev : next));
           rememberPresentation();
@@ -4325,6 +4350,7 @@ export default function CornerstoneViewer({
       overlay: overlay !== "off",
       annotations: !annotationsHidden,
       distractionFree: distractionFree ? distractionFree.on : null,
+      scaleBar: scaleBar ? scaleBar.on : null,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
       slab: readingTools && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
       layout: readingTools && onSetLayout && currentLayout ? currentLayout : null,
@@ -4482,6 +4508,8 @@ export default function CornerstoneViewer({
         return onFusion?.();
       case "comparePrior":
         return onComparePrior?.();
+      case "scaleBar":
+        return scaleBar?.toggle();
       case "tags": {
         const id = vp?.getCurrentImageId?.();
         if (id) setTagsImageId(id);
@@ -5166,6 +5194,7 @@ export default function CornerstoneViewer({
             markers={markers}
             scrollbar={scrollbarVisible}
             label={readoutLabel}
+            scaleBar={scaleBar?.on ? scaleBarFor(readout.mmPerPx, readout.paneWidth ?? 0) : null}
           />
         )}
 

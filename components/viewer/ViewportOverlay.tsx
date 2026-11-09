@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/components/ui/cn";
 import { compactCorners, isCompactPane, type OrientationMarkers, type OverlayCorners } from "@/lib/dicomOverlay";
+import type { ScaleBar } from "@flowrad/viewer-core/scaleBar";
 
 /** Whether the pane under `ref` is small enough for the compact overlay (tracks resizes). */
 function useCompactPane() {
@@ -52,12 +53,15 @@ export function ViewportOverlay({
   /** Right inset that clears the slice scrollbar. */
   scrollbar = false,
   label,
+  scaleBar = null,
 }: {
   corners: OverlayCorners;
   markers: OrientationMarkers | null;
   scrollbar?: boolean;
   /** Screen-reader summary; the visual text is decorative duplication. */
   label?: string;
+  /** A calibrated ruler along the bottom (the desktop's scale bar), or null. */
+  scaleBar?: ScaleBar | null;
 }) {
   // A small pane (a grid cell) shows one line per corner, as the desktop does.
   const pane = useCompactPane();
@@ -74,6 +78,7 @@ export function ViewportOverlay({
       <Lines lines={shown.topRight} className={cn(right, "top-2 text-right")} />
       <Lines lines={shown.bottomLeft} className="imaging-readout bottom-2 left-2" />
       <Lines lines={shown.bottomRight} className={cn(right, "bottom-2 text-right")} />
+      {scaleBar ? <ScaleBarRuler bar={scaleBar} /> : null}
       {markers ? (
         <>
           <span aria-hidden="true" data-imaging-chrome data-edge="top" className={cn(marker, "left-1/2 top-1.5 -translate-x-1/2")}>
@@ -111,6 +116,30 @@ export function ViewerHud({ text }: { text: string | null }) {
       className="pointer-events-none absolute left-1/2 top-10 z-20 -translate-x-1/2 animate-overlay-in rounded-md bg-black/80 px-3 py-1.5 text-sm font-medium tabular-nums text-white shadow-lg ring-1 ring-white/10"
     >
       {text}
+    </div>
+  );
+}
+
+/**
+ * The scale bar: a ruler with end ticks and a middle tick, its length above
+ * it, centred over the bottom orientation letter. Drawn like the corner text
+ * (light line, hard shadow), never over the corners.
+ */
+function ScaleBarRuler({ bar }: { bar: ScaleBar }) {
+  const w = bar.px;
+  return (
+    <div
+      data-imaging-chrome
+      data-testid="scale-bar"
+      data-mm={bar.mm}
+      aria-hidden="true"
+      className={cn(type, "bottom-7 left-1/2 flex -translate-x-1/2 flex-col items-center gap-0.5")}
+    >
+      <span className="whitespace-nowrap">{bar.label}</span>
+      {/* The ruler's length is the dynamic value: its pixel width. */}
+      <svg width={w + 2} height={8} viewBox={`-1 0 ${w + 2} 8`} className="overflow-visible drop-shadow-[0_0_2px_rgba(0,0,0,1)]">
+        <path d={`M0 0V8M${w / 2} 3V8M${w} 0V8M0 7.5H${w}`} fill="none" stroke="currentColor" strokeWidth={1.5} />
+      </svg>
     </div>
   );
 }
