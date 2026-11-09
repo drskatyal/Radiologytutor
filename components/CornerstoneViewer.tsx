@@ -868,6 +868,8 @@ export default function CornerstoneViewer({
   currentLayout,
   onToggleMaximize,
   popOutOffered = false,
+  startPlane = null,
+  onStartPlaneDone,
   referencePlanes,
   toolbarHost,
   active = true,
@@ -1004,6 +1006,12 @@ export default function CornerstoneViewer({
   onToggleMaximize?: () => void;
   /** Two or more monitors: the page offers pop-out (Ctrl/⌘+Alt+N); the help lists it. */
   popOutOffered?: boolean;
+  /**
+   * Show this series reformatted (a thumbnail's "Quick coronal / sagittal", as
+   * on the desktop): applied once the series is ready, then `onStartPlaneDone`.
+   */
+  startPlane?: MprPlane | null;
+  onStartPlaneDone?: () => void;
   /** A named layout ("layout two" / "four" / "six" by voice): rows × columns. */
   onSetLayout?: (rows: number, cols: number) => void;
   /** Free viewer grid: the layout on screen, for the right-click Layout submenu (as on the desktop). */
@@ -3869,6 +3877,17 @@ export default function CornerstoneViewer({
     setMprFocus(plane === "all" ? null : plane);
     if (viewMode !== "mpr") setViewMode("mpr");
   };
+  // A requested start plane (thumbnail menu): once the stack is ready, reformat to it.
+  useEffect(() => {
+    if (!startPlane || !ready) return;
+    if (sliceCount >= 3) {
+      showPlane(startPlane);
+      flash(`${startPlane[0]!.toUpperCase()}${startPlane.slice(1)} reformat`);
+    } else flash("Reformats need a stack of parallel slices");
+    onStartPlaneDone?.();
+    // Once per request; showPlane reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startPlane, ready, sliceCount]);
   /** Alt+A / C / S and right-click › Reformat, as on the desktop: the same key again returns to the stack. */
   const reformatPane = (plane: MprPlane) => {
     if (!ready || sliceCount < 3) return flash("Reformats need a stack of parallel slices");

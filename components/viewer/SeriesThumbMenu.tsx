@@ -10,11 +10,14 @@ import { ViewerContextMenu } from "./ViewerContextMenu";
 export function SeriesThumbMenu({
   at,
   canAddPane,
+  canReformat,
   onSelect,
   onClose,
 }: {
   at: { x: number; y: number };
   canAddPane: boolean;
+  /** A stack of parallel slices: offer Quick coronal / sagittal. */
+  canReformat: boolean;
   onSelect: (command: MenuCommand) => void;
   onClose: () => void;
 }) {
@@ -22,7 +25,7 @@ export function SeriesThumbMenu({
     <ViewerContextMenu
       at={at}
       label="Series"
-      entries={thumbnailMenu({ can: { newLayout: canAddPane }, shortcut: () => undefined })}
+      entries={thumbnailMenu({ can: { newLayout: canAddPane, reformat: canReformat }, shortcut: () => undefined })}
       onSelect={onSelect}
       onClose={onClose}
     />
