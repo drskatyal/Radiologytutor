@@ -44,8 +44,7 @@ import { usePopOutWindows } from "@/components/viewer/usePopOutWindows";
 import { useMultipleScreens } from "@/components/viewer/useMultipleScreens";
 import { Button, CollapsiblePanel, EmptyState, IconButton, Panel, Sheet, Spinner, Tooltip } from "@/components/ui";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
-import { isSeriesPanelShortcut, layoutForShortcut, layoutsForSeriesCount, layoutWithMorePanes, nextLayout, paneCount, READING_LAYOUTS, thumbnailMenu, type HangingLayoutId, type MenuCommand } from "@flowrad/viewer-core";
-import { ViewerContextMenu } from "./ViewerContextMenu";
+import { isSeriesPanelShortcut, layoutForShortcut, layoutsForSeriesCount, layoutWithMorePanes, nextLayout, paneCount, READING_LAYOUTS, type HangingLayoutId, type MenuCommand } from "@flowrad/viewer-core";
 import { flattenSeries, hangLocal, layoutById, layoutForGrid, samePane, type PaneSeries } from "@/lib/localHanging";
 import { linkedIndex, planeSign, sameCamera, sameModality, sameWindow, seriesGeometry } from "@/lib/paneScrollLink";
 import type { ViewerEvent } from "@/lib/types";
@@ -118,6 +117,12 @@ function ViewerCodeUnavailable() {
 /** The Watched folders dialog, on first open (Chrome / Edge only). */
 const WebWatchFoldersDialog = dynamic(
   () => importWithRetry(() => import("@/components/viewer/WebWatchFoldersDialog")).then((m) => m.WebWatchFoldersDialog),
+  { ssr: false }
+);
+
+/** A series thumbnail's right-click menu, on the first right-click. */
+const SeriesThumbMenu = dynamic(
+  () => importWithRetry(() => import("@/components/viewer/SeriesThumbMenu")).then((m) => m.SeriesThumbMenu),
   { ssr: false }
 );
 
@@ -2401,10 +2406,9 @@ function SeriesList({
         </section>
       ))}
       {thumbMenu && menuAt && (
-        <ViewerContextMenu
+        <SeriesThumbMenu
           at={{ x: menuAt.x, y: menuAt.y }}
-          label="Series"
-          entries={thumbnailMenu({ can: { newLayout: thumbMenu.canAddPane }, shortcut: () => undefined })}
+          canAddPane={thumbMenu.canAddPane}
           onSelect={(command) => {
             const { study, series } = menuAt;
             setMenuAt(null);
