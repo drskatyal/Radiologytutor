@@ -299,6 +299,7 @@ export function viewerShortcutGroups(
     push(groups, "Layout", { keys: [mod, "O"], does: "Open DICOM files" });
     push(groups, "Layout", { keys: [mod, "Shift", "O"], does: "Open a folder" });
     push(groups, "Layout", { keys: ["F1"], does: "This sheet (as Shift+?)" });
+    push(groups, "Layout", { keys: [mod, "Shift", "V"], does: "Voice commands on / off" });
     push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
     push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
   }
