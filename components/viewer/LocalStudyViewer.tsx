@@ -109,6 +109,7 @@ import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHa
 import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 import { SCALE_BAR_STORAGE_KEY } from "@flowrad/viewer-core/scaleBar";
 import { loadScrollPreferences } from "@/lib/scrollPreferencesStore";
+import { getRecentStudiesEnabled, setRecentStudiesEnabled, useRecentStudiesEnabled } from "@/lib/recentStudiesSetting";
 import { readSeriesListCompact, writeSeriesListCompact } from "@flowrad/viewer-core/seriesPanel";
 import { RecentStudies } from "./RecentStudies";
 
@@ -761,7 +762,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         const generation = ++openGeneration.current;
         setPriorOffer(null);
         setPriorNotice(null);
-        if (handlesNow.length > 0) {
+        // Only while "Remember studies I open" is on (Help › Customise › Privacy & storage).
+        if (handlesNow.length > 0 && getRecentStudiesEnabled()) {
           void (async () => {
             const salt = await recentStudySalt();
             const recentEntry = recentStudyEntry(result.studies, Date.now(), salt ?? undefined);
@@ -914,8 +916,13 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
 
   // Recent studies: listed on the landing (reading room, where the browser keeps handles).
   const landingIdle = phase.state === "idle" || phase.state === "empty" || phase.state === "error";
+  const rememberRecent = useRecentStudiesEnabled();
   useEffect(() => {
     if (!reading || !nativeFolderPicker || !landingIdle) return;
+    if (!rememberRecent) {
+      setRecent([]);
+      return;
+    }
     let alive = true;
     void listRecentStudies().then((list) => {
       if (alive) setRecent(list);
@@ -923,7 +930,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     return () => {
       alive = false;
     };
-  }, [reading, nativeFolderPicker, landingIdle]);
+  }, [reading, nativeFolderPicker, landingIdle, rememberRecent]);
 
   /** Reopen a recent study (inside the click: the browser asks only if read access lapsed). */
   const openRecent = useCallback(
@@ -2028,6 +2035,18 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           onSample={() => void openSample()}
           sampleState={sampleState}
           recent={
+            reading && nativeFolderPicker && !rememberRecent ? (
+              <p data-testid="recent-studies-off" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-vl-muted">
+                <span>Recent studies are off: nothing you open is remembered in this browser.</span>
+                <button
+                  type="button"
+                  onClick={() => void setRecentStudiesEnabled(true)}
+                  className="rounded-md px-1 font-medium text-vl-fg underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vl-brand"
+                >
+                  Turn on
+                </button>
+              </p>
+            ) : (
             <RecentStudies
               entries={recent}
               opening={recentOpening}
@@ -2037,6 +2056,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
               onClear={clearRecent}
               now={Date.now()}
             />
+            )
           }
           actions={
             <>

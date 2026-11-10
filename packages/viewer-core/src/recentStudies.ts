@@ -161,3 +161,30 @@ export function searchRecentStudies<T extends RecentStudy>(list: readonly T[], q
     return words.every((w) => text.includes(w));
   });
 }
+
+// ── On / off (the desktop's "Local study database" setting) ──
+// On by default, as on the desktop. Off: nothing opened is remembered from
+// then on, and the app clears what was kept (list, handles and salt).
+
+export const RECENT_STUDIES_ENABLED_STORAGE_KEY = "flowrad.viewer.recentStudies";
+
+export interface RecentStudiesSettingStore {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export function readRecentStudiesEnabled(store: RecentStudiesSettingStore | null): boolean {
+  try {
+    return store?.getItem(RECENT_STUDIES_ENABLED_STORAGE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function writeRecentStudiesEnabled(on: boolean, store: RecentStudiesSettingStore | null): void {
+  try {
+    store?.setItem(RECENT_STUDIES_ENABLED_STORAGE_KEY, on ? "1" : "0");
+  } catch {
+    /* not remembered; still applies for this visit */
+  }
+}
