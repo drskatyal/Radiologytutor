@@ -1,4 +1,5 @@
-// A stand-in Orthanc for the case-viewer e2e (e2e/visual/case-viewer.spec.ts).
+// A stand-in Orthanc for the archive-backed e2e (playwright.archive.config.ts,
+// e2e/archive/case-viewer.spec.ts).
 //
 // The real app talks to Orthanc two ways, and both are served here:
 //   REST      POST /tools/find, GET /studies/{id}, GET /series/{id}

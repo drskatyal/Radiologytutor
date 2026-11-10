@@ -1,14 +1,9 @@
 import { defineConfig } from "@playwright/test";
-import os from "node:os";
-import path from "node:path";
 
 // Visual-regression + perf gate for the web viewer (e2e/visual). Runs against a
 // production build (`npm run build` first) of /viewer/local, which needs no
 // backend: the study is local files (scripts/make-test-ct.py → TEST_CT_DIR).
-// The case viewer spec reads an archive: a local stand-in, started below.
 const PORT = Number(process.env.VISUAL_PORT ?? 3100);
-const MOCK_ARCHIVE_PORT = Number(process.env.MOCK_ARCHIVE_PORT ?? 3199);
-const MOCK_ARCHIVE_DATA_DIR = path.join(os.tmpdir(), "flowrad-e2e-archive-data");
 
 export default defineConfig({
   testDir: "e2e/visual",
@@ -26,35 +21,18 @@ export default defineConfig({
       ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH, args: ["--headless", "--no-sandbox"] } }
       : {}),
   },
-  webServer: [
-    // A stand-in Orthanc for the case viewer (e2e/visual/case-viewer.spec.ts):
-    // Orthanc REST + the bench DICOMweb origin, and a seeded data dir with one
-    // archive case. Starts first; the app below reads both.
-    {
-      command: `node e2e/support/mockArchive.mjs`,
-      url: `http://127.0.0.1:${MOCK_ARCHIVE_PORT}/health`,
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
-      env: { MOCK_ARCHIVE_PORT: String(MOCK_ARCHIVE_PORT), MOCK_ARCHIVE_DATA_DIR },
+  webServer: {
+    command: `npx next start -p ${PORT}`,
+    url: `http://127.0.0.1:${PORT}/viewer/local`,
+    reuseExistingServer: !process.env.CI,
+    // Fail fast with a clear message rather than hang a CI job on one step.
+  timeout: 60_000,
+    // The auth module refuses to serve without a signing secret; this run has
+    // no accounts, so a throwaway one is fine. FLOWRAD_DEV_ROUTES serves the
+    // /dev fixtures (e.g. /dev/teaching-layer) from this production build.
+    env: {
+      BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "visual-regression-only-not-a-real-secret",
+      FLOWRAD_DEV_ROUTES: "1",
     },
-    {
-      command: `npx next start -p ${PORT}`,
-      url: `http://127.0.0.1:${PORT}/viewer/local`,
-      reuseExistingServer: !process.env.CI,
-      // Fail fast with a clear message rather than hang a CI job on one step.
-      timeout: 60_000,
-      // The auth module refuses to serve without a signing secret; this run has
-      // no accounts, so a throwaway one is fine. FLOWRAD_DEV_ROUTES serves the
-      // /dev fixtures (e.g. /dev/teaching-layer) from this production build.
-      // The archive and data dir are the mock's; demo sign-in lets the case
-      // viewer spec read pixels (lib/studyAccess gates them on a session).
-      env: {
-        BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "visual-regression-only-not-a-real-secret",
-        FLOWRAD_DEV_ROUTES: "1",
-        ORTHANC_URL: `http://127.0.0.1:${MOCK_ARCHIVE_PORT}`,
-        DATA_DIR: MOCK_ARCHIVE_DATA_DIR,
-        DEMO_AUTH_ENABLED: "1",
-      },
-    },
-  ],
+  },
 });
