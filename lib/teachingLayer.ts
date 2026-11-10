@@ -24,6 +24,7 @@
 import type { ReactNode } from "react";
 import type { CornerstoneViewerState } from "./viewerController";
 import type { SketchFrame } from "./sketchProjection";
+import type { ViewerEvent } from "./types";
 import { TEACHING_FEATURES, viewerFeatures, type ViewerFeatures } from "./viewerFeatures";
 
 // --- the viewer a teaching layer drives ---------------------------------------
@@ -255,6 +256,11 @@ export interface TeachingLayer {
    * compare pane leaves it off.
    */
   layoutControl?: boolean;
+  /**
+   * Every viewer event of a pane (scroll, window, zoom, tool, series…): the
+   * record stream of an author capture (components/record/RecordStage).
+   */
+  onViewerEvent?: (pane: TeachingPane, event: ViewerEvent) => void;
 }
 
 export interface TeachingCompare {

@@ -113,6 +113,27 @@ export function caseSeriesToSource(s: CaseSeries): ViewerSource {
 }
 
 /**
+ * The series list for a caller that only has one `ViewerSource` (the /record
+ * demo's bundled sample): the bundled sample as its 1-series case, a WADO-RS
+ * series as itself. Local `imageIds` stacks have no archive series: [].
+ */
+export function seriesForSource(source: ViewerSource): CaseSeries[] {
+  if (source.kind === "wadouri") {
+    return BUNDLED_CASE.kind === "wadouri" && source.url === BUNDLED_CASE.url ? BUNDLED_CASE_SERIES : [];
+  }
+  if (source.kind === "wadors") {
+    return [
+      {
+        seriesInstanceUID: source.SeriesInstanceUID,
+        studyInstanceUID: source.StudyInstanceUID,
+        wadoRsRoot: source.wadoRsRoot,
+      },
+    ];
+  }
+  return [];
+}
+
+/**
  * Content identity of a viewer source. `caseSeriesToSource` allocates a new
  * object on every call; two equal keys are the same stack and must not reload
  * the engine. A reload opens at the mid-slice default and drops a seated

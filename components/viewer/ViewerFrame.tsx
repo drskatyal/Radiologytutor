@@ -2220,6 +2220,7 @@ export function ViewerFrame({
                     onEvent={(event) => {
                       popOut.onViewerEvent(event);
                       onPaneEvent(0, event);
+                      teachingRef.current?.onViewerEvent?.(teachingPane(0, series?.seriesInstanceUID ?? null), event);
                     }}
                     chrome={focusMode ? "off" : expanded || reading || multi ? "edge" : "dock"}
                     toolbarHost={multi && !focusMode ? barHost : undefined}
@@ -2309,7 +2310,10 @@ export function ViewerFrame({
                           layoutChoice={layoutChoice}
                           modality={paneSeries.modality}
                           controls={bindsControls ? boundControls[pane] : paneControls.current[i]}
-                          onEvent={(event) => onPaneEvent(pane, event)}
+                          onEvent={(event) => {
+                            onPaneEvent(pane, event);
+                            teachingRef.current?.onViewerEvent?.(teachingPane(pane, paneSeries.seriesInstanceUID), event);
+                          }}
                           chrome={focusMode ? "off" : "edge"}
                           toolbarHost={focusMode ? undefined : barHost}
                           distractionFree={distractionFree}
@@ -2379,7 +2383,7 @@ export function ViewerFrame({
                 "mt-1 flex w-full touch-none flex-col items-center gap-0.5 rounded-lg py-1.5 text-[11px] text-muted lg:hidden",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                 // Fullscreen and the reading room keep every pixel for the image.
-                (expanded || reading) && "hidden lg:hidden"
+                (expanded || reading || nothingToPick) && "hidden lg:hidden"
               )}
             >
               <ChevronUp className="h-4 w-4" aria-hidden />
@@ -2429,7 +2433,8 @@ export function ViewerFrame({
             ) : phase.state === "reading" ? (
               <ReadingProgress progress={phase.progress} />
             ) : null}
-            <div className="mt-3 flex flex-col gap-2 border-t border-subtle pt-3">
+            {/* Files from this computer: none of it applies to an archive case. */}
+            {!cloud && <div className="mt-3 flex flex-col gap-2 border-t border-subtle pt-3">
               {result && !signupDismissed && !teaching && <SignupPrompt onDismiss={dismissSignup} />}
               <p className="flex items-start gap-1.5 text-xs text-secondary">
                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" aria-hidden />
@@ -2443,7 +2448,7 @@ export function ViewerFrame({
                   Close study
                 </Button>
               </div>
-            </div>
+            </div>}
           </Sheet>
         </div>
       ) : reading ? (
