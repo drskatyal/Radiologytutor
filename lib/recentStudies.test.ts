@@ -4,6 +4,9 @@ import {
   RECENT_STUDIES_MAX,
   openedAgo,
   priorsAmong,
+  readRecentStudiesEnabled,
+  writeRecentStudiesEnabled,
+  RECENT_STUDIES_ENABLED_STORAGE_KEY,
   recentStudyDetail,
   recentStudyEntry,
   recentStudyTitle,
@@ -118,4 +121,26 @@ test("recent studies: priors are this patient's earlier single studies, newest f
   assert.deepEqual(priorsAmong(list, current).map((e) => e.key), ["newer", "older"]);
   assert.deepEqual(priorsAmong(list, { ...current, patientKey: undefined }), []);
   assert.deepEqual(priorsAmong(list, { ...current, studyDate: undefined }), []);
+});
+
+test("recent studies: on by default, off when turned off, and blocked storage keeps them on", () => {
+  const data = new Map<string, string>();
+  const store = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+  assert.equal(readRecentStudiesEnabled(store), true);
+  writeRecentStudiesEnabled(false, store);
+  assert.equal(data.get(RECENT_STUDIES_ENABLED_STORAGE_KEY), "0");
+  assert.equal(readRecentStudiesEnabled(store), false);
+  writeRecentStudiesEnabled(true, store);
+  assert.equal(readRecentStudiesEnabled(store), true);
+  assert.equal(readRecentStudiesEnabled(null), true);
+  const throwing = {
+    getItem: () => {
+      throw new Error("blocked");
+    },
+    setItem: () => {
+      throw new Error("blocked");
+    },
+  };
+  assert.equal(readRecentStudiesEnabled(throwing), true);
+  assert.doesNotThrow(() => writeRecentStudiesEnabled(false, throwing));
 });

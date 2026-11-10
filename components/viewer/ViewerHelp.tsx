@@ -25,6 +25,8 @@ import { saveViewerBindings, syncViewerBindingsWithAccount, viewerBindingsSynced
 const BindingsPanel = lazy(() => import("@/components/bindings/BindingsPanel"));
 // Settings › Scrolling (the free viewer), with it.
 const ScrollSettings = lazy(() => import("@/components/viewer/ScrollSettings").then((m) => ({ default: m.ScrollSettings })));
+// Settings › Privacy & storage (the free viewer), with it.
+const PrivacySettings = lazy(() => import("@/components/viewer/PrivacySettings").then((m) => ({ default: m.PrivacySettings })));
 
 function Keys({ keys }: { keys: string[] }) {
   return (
@@ -231,6 +233,7 @@ export function ViewerHelp({
             }
           >
             {readingTools && <ScrollSettings />}
+            {readingTools && <PrivacySettings />}
             <BindingsPanel
               table={WEB_COMMANDS}
               overrides={overrides}
