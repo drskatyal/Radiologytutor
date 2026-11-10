@@ -142,6 +142,7 @@ import {
   type CineWrap,
 } from "../lib/cinePlayer";
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
+import { viewerFeatures, type ViewerFeatures } from "../lib/viewerFeatures";
 import { isTextTarget, resolveViewerHotkey, resolveViewerInput, WEB_COMMANDS, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
 import { viewerFixedBindings } from "../lib/viewerMouseBindings";
 import { attachMouseCommands, inputIndex, isMac, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
@@ -292,7 +293,7 @@ const WEB_MENU_TOOLS = [
   { id: "Eraser", label: "Eraser" },
 ];
 
-/** The free viewer's menu: the desktop's full measure set (`readingTools`). */
+/** The free viewer's menu: the desktop's full measure set (`features.tools`). */
 const READING_MENU_TOOLS = [
   ...WEB_MENU_TOOLS.slice(0, 6),
   { id: "CobbAngle", label: "Cobb angle" },
@@ -857,7 +858,7 @@ export default function CornerstoneViewer({
   defaultTool = "WindowLevel",
   onViewModeChange,
   questionMarkHelp = false,
-  readingTools = false,
+  features: featuresProp,
   exportFiles,
   paneLinks,
   distractionFree,
@@ -966,11 +967,13 @@ export default function CornerstoneViewer({
    */
   questionMarkHelp?: boolean;
   /**
-   * The free viewer's full measure set, as on the desktop: Cobb angle,
-   * bidirectional, circle and freehand ROIs, magnifying glass (D =
-   * bidirectional). Read once, when the viewport is built.
+   * What this surface offers beyond the shared core, as named groups
+   * (lib/viewerFeatures.ts): `tools`, `layouts`, `export`, `slabs`,
+   * `localStudies`, `keys`. Omitted groups are off — RadLearn's teaching set.
+   * The free viewer passes FREE_VIEWER_FEATURES. `tools` is read once, when
+   * the viewport is built (it decides which Cornerstone tools register).
    */
-  readingTools?: boolean;
+  features?: Partial<ViewerFeatures>;
   /**
    * The files behind this pane's series and study, for the Export dialog's
    * anonymised DICOM copy (free viewer). Called when the dialog opens.
@@ -1043,8 +1046,9 @@ export default function CornerstoneViewer({
   const docked = chrome === "dock";
   const edge = chrome === "edge";
   const defaultToolRef = useRef(defaultTool);
-  const readingToolsRef = useRef(readingTools);
-  readingToolsRef.current = readingTools;
+  const f = viewerFeatures(featuresProp);
+  const featuresRef = useRef(f);
+  featuresRef.current = f;
   defaultToolRef.current = defaultTool;
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
@@ -1426,8 +1430,8 @@ export default function CornerstoneViewer({
         // BEFORE the stack is loaded/rendered so the annotation interaction +
         // SVG layer are in place for the very first interaction.
         // The free viewer's extra measure tools join only where it offers them
-        // (`readingTools`): teaching recordings are built around the others.
-        const readingExtras = readingToolsRef.current
+        // (`features.tools`): teaching recordings are built around the others.
+        const readingExtras = featuresRef.current.tools
           ? [CobbAngleTool, BidirectionalTool, CircleROITool, PlanarFreehandROITool, MagnifyTool]
           : [];
         [
@@ -4022,7 +4026,7 @@ export default function CornerstoneViewer({
     // RadiAnt's keys (free viewer): Ctrl/⌘+0…4 zoom levels, Ctrl/⌘+arrows pan,
     // F12 annotations, Ctrl/⌘+F12 reference lines, F5 / Shift+F5 / Alt+F5 links.
     // Only while the image has focus, so F5 can't reload away an opened study.
-    if (readingTools) {
+    if (f.keys) {
       const reading = resolveReadingKey(event);
       if (reading) {
         event.preventDefault();
@@ -4044,12 +4048,12 @@ export default function CornerstoneViewer({
     }
     // Slab, as on the desktop: T cycles Thin → MIP → MinIP → AvgIP;
     // Ctrl/⌘+] and [ make it thicker / thinner.
-    if (readingTools && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
+    if (f.slabs && f.keys && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
       event.preventDefault();
       cycleSlab();
       return;
     }
-    if (readingTools && (event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "]" || event.key === "[")) {
+    if (f.slabs && (event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "]" || event.key === "[")) {
       event.preventDefault();
       stepSlab(event.key === "]" ? SLAB_STEP_MM : -SLAB_STEP_MM);
       return;
@@ -4062,7 +4066,7 @@ export default function CornerstoneViewer({
       return;
     }
     // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
-    if (readingTools && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
+    if (f.export && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
       event.preventDefault();
       openExport("image");
       return;
@@ -4076,7 +4080,7 @@ export default function CornerstoneViewer({
     // Esc, as on the desktop (free viewer): 1) a measurement being drawn is
     // cancelled; 2) a tool other than the default goes back to it; 3) only
     // then does Esc pass on (distraction-free, full screen leave on it).
-    if (readingTools && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    if (f.keys && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
       const element = elementRef.current;
       const tools = editCtx?.tools as unknown as {
         cancelActiveManipulations?: (el: HTMLDivElement) => string | undefined;
@@ -4109,7 +4113,7 @@ export default function CornerstoneViewer({
         return flash(toolLabel(home));
       }
     }
-    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, readingTools });
+    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, features: f });
     if (!action) return;
     event.preventDefault();
     if (action.type === "help") event.stopPropagation();
@@ -4122,7 +4126,7 @@ export default function CornerstoneViewer({
       case "tool":
         if (!ready) return;
         // A key bound to a tool this surface doesn't offer does nothing.
-        if (action.tool !== "Eraser" && action.tool !== "Crosshairs" && !(readingTools ? READING_TOOL_NAMES : TEACHING_TOOL_NAMES).has(action.tool)) return;
+        if (action.tool !== "Eraser" && action.tool !== "Crosshairs" && !(f.tools ? READING_TOOL_NAMES : TEACHING_TOOL_NAMES).has(action.tool)) return;
         if (
           ANNOTATION_TOOL_NAMES.has(action.tool) &&
           (!annotationsEnabled || mprShowing)
@@ -4297,28 +4301,28 @@ export default function CornerstoneViewer({
   const [annotationsHidden, setAnnotationsHidden] = useState(false);
   const webMenuShortcut = (command: string): string | undefined => {
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
-    if (readingTools && (head === "3d" || head === "reformat")) {
+    if (f.keys && (head === "3d" || head === "reformat")) {
       const mac = isMac();
       if (head === "3d") return `${mac ? "⌘" : "Ctrl"}+Shift+M`;
       const letter = { axial: "A", coronal: "C", sagittal: "S" }[arg as "axial" | "coronal" | "sagittal"];
       if (letter) return `${mac ? "⌥" : "Alt"}+${letter}`;
     }
-    if (head === "tool") return shortcutForToolIn(arg, readingTools)?.split(" · ")[0] ?? undefined;
+    if (head === "tool") return shortcutForToolIn(arg, f.keys)?.split(" · ")[0] ?? undefined;
     if (head === "preset") {
       if (arg === "auto") return shortcutForPreset(0) ?? undefined;
       const i = presets.findIndex((p) => p.id === arg);
       return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
     }
-    if (readingTools && head === "layout") {
+    if (f.keys && f.layouts && head === "layout") {
       const m = /^(\d)x(\d)$/.exec(arg);
       const at = m ? READING_LAYOUTS.findIndex((l) => l.rows === Number(m[1]) && l.cols === Number(m[2])) : -1;
       if (at >= 0) return `Shift+${at + 1}`;
     }
-    if (readingTools && command === "orient:reset") return "Shift+Backspace";
+    if (f.keys && command === "orient:reset") return "Shift+Backspace";
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
-    if (readingTools) {
+    if (f.keys) {
       const reading: Record<string, string> = {
         "zoom:fit": "Ctrl+0",
         "zoom:1": "Ctrl+1",
@@ -4332,7 +4336,7 @@ export default function CornerstoneViewer({
       if (reading[command]) return reading[command];
     }
     if (command === "window:custom") return "Ctrl+F11";
-    if (command === "export" && readingTools) return "Ctrl+E";
+    if (command === "export" && f.export) return "Ctrl+E";
     if (command === "linkAtCurrent" && paneLinks) return "Ctrl+Shift+L";
     if (command === "distractionFree") return "Alt+Shift+Enter";
     if (command === "fusion" && onFusion) return "Ctrl+Shift+F";
@@ -4341,7 +4345,7 @@ export default function CornerstoneViewer({
   const webImageMenu = () =>
     imageMenu({
       modality,
-      tools: readingTools ? READING_MENU_TOOLS : WEB_MENU_TOOLS,
+      tools: f.tools ? READING_MENU_TOOLS : WEB_MENU_TOOLS,
       activeTool,
       presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
       inverted,
@@ -4352,23 +4356,23 @@ export default function CornerstoneViewer({
       distractionFree: distractionFree ? distractionFree.on : null,
       scaleBar: scaleBar ? scaleBar.on : null,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
-      slab: readingTools && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
-      layout: readingTools && onSetLayout && currentLayout ? currentLayout : null,
+      slab: f.slabs && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
+      layout: f.layouts && onSetLayout && currentLayout ? currentLayout : null,
       seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
       can: {
         mpr: ready && sliceCount >= 3,
-        reformat: readingTools && ready && sliceCount >= 3,
+        reformat: f.slabs && ready && sliceCount >= 3,
         // 3D volume rendering from the menu, as on the desktop (also Ctrl/⌘+Shift+M and the toolbar's 3D).
-        threeD: readingTools && ready && sliceCount >= 3,
+        threeD: f.slabs && ready && sliceCount >= 3,
         copyImage: true,
         saveImage: true,
         tags: true,
         links: !!paneLinks,
         linkAtCurrent: !!paneLinks,
-        video: readingTools && sliceCount >= 2,
-        exportDialog: readingTools,
-        customLayout: readingTools,
-        measurements: readingTools,
+        video: f.export && sliceCount >= 2,
+        exportDialog: f.export,
+        customLayout: f.layouts,
+        measurements: f.tools,
         fusion: !!onFusion,
         comparePrior: !!onComparePrior,
       },
@@ -4564,10 +4568,10 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "preset", ordinal: at + 1 });
       }
       case "slab":
-        if (!readingTools) return flash("Slabs are in the free viewer and the desktop app");
+        if (!f.slabs) return flash("Slabs are in the free viewer and the desktop app");
         return setSlab({ mode: a.mode });
       case "slabThickness":
-        if (!readingTools) return flash("Slabs are in the free viewer and the desktop app");
+        if (!f.slabs) return flash("Slabs are in the free viewer and the desktop app");
         return stepSlab(a.deltaMm);
       case "stop":
         voiceSessionRef.current?.stop();
@@ -4727,8 +4731,8 @@ export default function CornerstoneViewer({
       activeTool={activeTool}
       annotationsEnabled={annotationsEnabled}
       measurementsEnabled={!mprLive}
-      measureTools={readingTools ? READING_MEASURE_TOOLS : MEASURE_TOOLS}
-      readingKeys={readingTools}
+      measureTools={f.tools ? READING_MEASURE_TOOLS : MEASURE_TOOLS}
+      readingKeys={f.keys}
       inverted={inverted}
       activePreset={activePreset}
       presets={presets}
@@ -4756,13 +4760,13 @@ export default function CornerstoneViewer({
         setTextBoxTool(false);
         setLeftToolRef.current(name);
       }}
-      textBox={readingTools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
-      onSaveAnnotated={readingTools ? () => setAnnotatedExport(true) : undefined}
-      onExport={readingTools ? () => openExport("image") : undefined}
-      onMeasurements={readingTools && editCtx ? () => setMeasurementsOpen(true) : undefined}
+      textBox={f.tools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
+      onSaveAnnotated={f.export ? () => setAnnotatedExport(true) : undefined}
+      onExport={f.export ? () => openExport("image") : undefined}
+      onMeasurements={f.tools && editCtx ? () => setMeasurementsOpen(true) : undefined}
       onFusion={onFusion ?? undefined}
       onRecon={
-        readingTools
+        f.slabs
           ? () => {
               const ids: string[] = (viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? [];
               if (ids.length < 3) return flash("Oblique and curved MPR need a stack of parallel slices");
@@ -5010,7 +5014,7 @@ export default function CornerstoneViewer({
           <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
         )}
         {recon && <WebReconOverlay imageIds={recon.imageIds} title={recon.title} onExit={() => setRecon(null)} />}
-        {readingTools && !mprLive && viewMode === "stack" && (
+        {f.tools && !mprLive && viewMode === "stack" && (
           <WebTextBoxLayer ref={textBoxRef} element={stageEl} active={textBoxTool} hidden={annotationsHidden} />
         )}
         {annotatedExport && (
@@ -5092,7 +5096,7 @@ export default function CornerstoneViewer({
             }}
             initial={{ ww: readout?.ww, wc: readout?.wc }}
             unit={modality === "CT" ? "HU" : undefined}
-            tone={readingTools ? "reading" : "app"}
+            tone={f.keys ? "reading" : "app"}
             onApply={(ww, wc) => {
               // The same path as a preset: the window is the reader's own
               // choice, so linked panes, pop-outs and recordings hear it.
@@ -5108,7 +5112,7 @@ export default function CornerstoneViewer({
             onClose={() => setTagsImageId(null)}
             imageId={tagsImageId}
             description={modality ? `${modality} · current image` : undefined}
-            tone={readingTools ? "reading" : "app"}
+            tone={f.keys ? "reading" : "app"}
           />
         )}
         {sliceScrollbar}
@@ -5249,7 +5253,7 @@ export default function CornerstoneViewer({
           tab={helpTab}
           onTabChange={setHelpTab}
           paneMaximize={!!onToggleMaximize}
-          readingTools={readingTools}
+          features={f}
           popOut={popOutOffered}
           voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
         />
