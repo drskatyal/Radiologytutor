@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { FREE_VIEWER_FEATURES, TEACHING_FEATURES } from "./viewerFeatures";
 import {
   frameFeatures,
+  isPaneClick,
   teachingViewer,
   tourMove,
   tourOrder,
@@ -159,4 +160,11 @@ test("frame features: free viewer without a layer, the teaching set by default w
   assert.deepEqual(frameFeatures(null, FREE_VIEWER_FEATURES), FREE_VIEWER_FEATURES);
   assert.deepEqual(frameFeatures({}, FREE_VIEWER_FEATURES), TEACHING_FEATURES);
   assert.deepEqual(frameFeatures({ features: { slabs: true } }, FREE_VIEWER_FEATURES), { ...TEACHING_FEATURES, slabs: true });
+});
+
+test("a pane click is a pointer that barely moved; a drag (scroll, pan, window) is not", () => {
+  assert.equal(isPaneClick({ x: 10, y: 10 }, { x: 10, y: 10 }), true);
+  assert.equal(isPaneClick({ x: 10, y: 10 }, { x: 15, y: 16 }), true, "within 8 px");
+  assert.equal(isPaneClick({ x: 10, y: 10 }, { x: 19, y: 10 }), false);
+  assert.equal(isPaneClick(null, { x: 10, y: 10 }), false, "no down (the press began elsewhere)");
 });

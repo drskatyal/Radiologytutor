@@ -21,7 +21,7 @@
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
 import { FREE_VIEWER_FEATURES } from "@/lib/viewerFeatures";
-import { frameFeatures, teachingViewer, type TeachingLayer, type TeachingPane } from "@/lib/teachingLayer";
+import { frameFeatures, isPaneClick, teachingViewer, type TeachingLayer, type TeachingPane } from "@/lib/teachingLayer";
 import type { OpenSlice } from "@/lib/viewerLoad";
 import { useViewerBindings } from "./useViewerBindings";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
@@ -393,6 +393,36 @@ export function ViewerFrame({
   const paneControls = useRef<MutableRefObject<CornerstoneControls | null>[]>(
     Array.from({ length: 8 }, () => ({ current: null }))
   );
+  // A teaching session that drives the viewer through its own handle refs
+  // (lib/teachingLayer bindControls): each pane writes its live handle into
+  // the frame's ref and the session's. Stable objects, so a layer rebuilt on
+  // every render never re-binds a viewer.
+  const boundControls = useMemo(() => {
+    const own = (pane: number) => (pane === 0 ? viewerControls : paneControls.current[pane - 1]);
+    return Array.from({ length: 9 }, (_, pane): MutableRefObject<CornerstoneControls | null> => ({
+      get current() {
+        return own(pane)?.current ?? null;
+      },
+      set current(value) {
+        const mine = own(pane);
+        if (mine) mine.current = value;
+        const theirs = teachingRef.current?.bindControls?.(pane);
+        if (theirs) theirs.current = value;
+      },
+    }));
+    // viewerControls / paneControls / teachingRef are refs: stable for the frame's life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const bindsControls = !!teaching?.bindControls;
+  // A layer swapped in after a pane is up still gets the live handle.
+  useEffect(() => {
+    if (!teaching?.bindControls) return;
+    for (let pane = 0; pane < 9; pane += 1) {
+      const theirs = teaching.bindControls(pane);
+      const mine = pane === 0 ? viewerControls.current : (paneControls.current[pane - 1]?.current ?? null);
+      if (theirs && theirs.current !== mine) theirs.current = mine;
+    }
+  }, [teaching]);
   // Voice commands stay on across series (each series mounts its own viewer,
   // which hands the live microphone session to the next: voiceHandoff.ts).
   const [voiceOn, setVoiceOn] = useState(false);
@@ -1691,6 +1721,80 @@ export function ViewerFrame({
   const mainOpenSlice = cloud && mainUid ? (initialRef.current?.openSlice?.(mainUid) ?? null) : null;
   const mainWindow = cloud && mainUid ? (initialRef.current?.window?.(mainUid) ?? null) : null;
 
+  // Archive series switch in place (setStack, no remount), as the case viewer
+  // always did: the viewer gets the case's series list, and a switch it makes
+  // itself (a tutor's set_series, a key) comes back through onSeriesChange.
+  const cloudList = cloudSeries as CaseSeries[] | null;
+  const cloudIndexOf = (uid: string | null | undefined) =>
+    cloudList && uid ? Math.max(0, cloudList.findIndex((item) => item.seriesInstanceUID === uid)) : 0;
+  const locateSeries = (uid: string): PaneSeries | null => {
+    if (!result) return null;
+    for (let si = 0; si < result.studies.length; si += 1) {
+      const i = result.studies[si]!.series.findIndex((item) => item.seriesInstanceUID === uid);
+      if (i >= 0) return { study: si, series: i };
+    }
+    return null;
+  };
+  const onMainSeriesChange = (uid: string) => {
+    const at = locateSeries(uid);
+    if (at && (at.study !== activeStudy || at.series !== activeSeries)) {
+      setActiveStudy(at.study);
+      setActiveSeries(at.series);
+    }
+    teachingRef.current?.onSeriesChange?.(uid);
+  };
+
+  // A teaching compare landing: a second pane on its series, then back to one.
+  const compareUid = teaching?.compare?.seriesInstanceUID ?? null;
+  const comparing = useRef(false);
+  useEffect(() => {
+    if (!result) return;
+    if (compareUid) {
+      const at = locateSeries(compareUid);
+      if (!at) return;
+      comparing.current = true;
+      setLayoutId("1x2");
+      setExtraPanes([at]);
+      return;
+    }
+    if (comparing.current) {
+      comparing.current = false;
+      setLayoutId("1x1");
+      setActivePane(0);
+    }
+    // locateSeries reads `result`, already a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareUid, result]);
+  const primaryLabel = teaching?.compare ? (teaching.compare.primaryLabel ?? "Current") : undefined;
+
+  // A short click on a pane's image, for the layer (lib/teachingLayer onPaneClick).
+  const pointerDown = useRef<{ x: number; y: number } | null>(null);
+  const paneClickHandlers = teaching?.onPaneClick
+    ? {
+        onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
+          const target = event.target as HTMLElement;
+          pointerDown.current = target.closest('[role="toolbar"],[role="menu"],[role="dialog"],button')
+            ? null
+            : { x: event.clientX, y: event.clientY };
+        },
+        onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => {
+          const down = pointerDown.current;
+          pointerDown.current = null;
+          if (!isPaneClick(down, { x: event.clientX, y: event.clientY })) return;
+          const paneEl = (event.target as HTMLElement).closest<HTMLElement>("[data-pane]");
+          const index = paneEl ? Number(paneEl.dataset.pane) : 0;
+          const target = index === 0 ? series : (() => {
+            const t = extraPanes[index - 1];
+            return t ? (result?.studies[t.study]?.series[t.series] ?? null) : null;
+          })();
+          teachingRef.current?.onPaneClick?.(teachingPane(index, target?.seriesInstanceUID ?? null), {
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+        },
+      }
+    : null;
+
   const teachingPane = (index: number, seriesInstanceUID: string | null): TeachingPane => ({
     index,
     seriesInstanceUID,
@@ -1967,7 +2071,14 @@ export function ViewerFrame({
               (expanded || focusMode) && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
             data-distraction-free={focusMode ? "true" : undefined}
+            {...(paneClickHandlers ?? {})}
           >
+            {expanded && teaching?.dock ? (
+              // The session's microphone stays reachable in full screen.
+              <div className="pointer-events-none absolute inset-x-0 bottom-[max(4.5rem,env(safe-area-inset-bottom))] z-50 flex justify-center px-3">
+                <div className="pointer-events-auto rounded-full bg-black/80 p-1 ring-1 ring-white/20">{teaching.dock}</div>
+              </div>
+            ) : null}
             {fusionOpen && (
               <WebFusionOverlay
                 ctImageIds={fusionOpen.ctImageIds}
@@ -2085,10 +2196,14 @@ export function ViewerFrame({
                   onToggleMaximize={toggleMaximize}
                 >
                   <CornerstoneViewer
-                    key={viewerKey}
+                    key={cloud ? "cloud-main" : viewerKey}
                     source={source}
+                    series={cloudList ?? undefined}
+                    activeSeriesIndex={cloudList ? cloudIndexOf(series?.seriesInstanceUID) : undefined}
+                    onSeriesChange={cloudList ? onMainSeriesChange : undefined}
+                    paneLabel={primaryLabel}
                     modality={modality}
-                    controls={viewerControls}
+                    controls={bindsControls ? boundControls[0] : viewerControls}
                     onEvent={(event) => {
                       popOut.onViewerEvent(event);
                       onPaneEvent(0, event);
@@ -2165,10 +2280,21 @@ export function ViewerFrame({
                         onToggleMaximize={toggleMaximize}
                       >
                         <CornerstoneViewer
-                          key={paneSeries.seriesInstanceUID}
+                          key={cloud ? `cloud-pane${pane}` : paneSeries.seriesInstanceUID}
                           source={paneSource}
+                          series={cloudList ?? undefined}
+                          activeSeriesIndex={cloudList ? cloudIndexOf(paneSeries.seriesInstanceUID) : undefined}
+                          onSeriesChange={
+                            cloudList
+                              ? (uid) => {
+                                  const at = locateSeries(uid);
+                                  if (at && !samePane(at, target)) hangInPane(pane, at);
+                                }
+                              : undefined
+                          }
+                          paneLabel={teaching?.compare && pane === 1 ? (teaching.compare.label ?? "Compare") : undefined}
                           modality={paneSeries.modality}
-                          controls={paneControls.current[i]}
+                          controls={bindsControls ? boundControls[pane] : paneControls.current[i]}
                           onEvent={(event) => onPaneEvent(pane, event)}
                           chrome={focusMode ? "off" : "edge"}
                           toolbarHost={focusMode ? undefined : barHost}
