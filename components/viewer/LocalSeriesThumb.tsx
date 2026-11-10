@@ -19,7 +19,13 @@ export function LocalSeriesThumb({
   seriesKey,
   imageId,
   dark = true,
+  src = null,
 }: {
+  /**
+   * A cover the source already serves (a cloud series' rendered middle slice).
+   * Shown as-is; the on-device thumbnailer is not asked.
+   */
+  src?: string | null;
   thumbs: LocalThumbnailer | null;
   seriesKey: string;
   imageId: string | null;
@@ -46,7 +52,7 @@ export function LocalSeriesThumb({
 
   useEffect(() => {
     const el = ref.current;
-    if (!el || !thumbs || !imageId) return;
+    if (src || !el || !thumbs || !imageId) return;
     if (typeof IntersectionObserver === "undefined") {
       thumbs.request(seriesKey, imageId);
       return;
@@ -63,21 +69,22 @@ export function LocalSeriesThumb({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [thumbs, seriesKey, imageId]);
+  }, [thumbs, seriesKey, imageId, src]);
 
+  const shown: ThumbState = src ? { status: "ready", url: src } : state;
   return (
     <div
       ref={ref}
-      data-thumb-state={state.status}
+      data-thumb-state={shown.status}
       className={cn(
         "relative aspect-square w-full overflow-hidden rounded-md bg-imaging",
         dark ? "ring-1 ring-white/10" : "ring-1 ring-subtle"
       )}
     >
-      {state.status === "ready" ? (
+      {shown.status === "ready" ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={state.url} alt="" draggable={false} className="h-full w-full object-contain" />
-      ) : state.status === "error" || !imageId ? (
+        <img src={shown.url} alt="" draggable={false} className="h-full w-full object-contain" />
+      ) : shown.status === "error" || !imageId ? (
         <div className="absolute inset-0 flex items-center justify-center">
           <ImageOff className="h-5 w-5 text-white/50" aria-hidden />
         </div>

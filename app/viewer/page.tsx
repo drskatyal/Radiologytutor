@@ -36,5 +36,12 @@ export const metadata: Metadata = {
 };
 
 export default function FreeViewerPage() {
-  return <ViewerShell home={{ href: "/viewer", label: "FlowRad Viewer" }} product="Viewer" badge="Free" />;
+  return (
+    <ViewerShell
+      home={{ href: "/viewer", label: "FlowRad Viewer" }}
+      product="Viewer"
+      badge="Free"
+      source={{ kind: "local" }}
+    />
+  );
 }
