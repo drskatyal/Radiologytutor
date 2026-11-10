@@ -16,6 +16,7 @@
 // key matches only this browser's own entries. Clearing the list drops it too.
 
 import { RECENT_STUDIES_MAX, withRecentStudy, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
+import { clearKeptStudies, forgetKeptStudy } from "@/lib/studyLibrary";
 
 const DB = "flowrad-viewer-recent";
 const STORE = "studies";
@@ -133,8 +134,12 @@ export function rememberRecentStudy(entry: RecentStudy, handles: readonly FileSy
 
 async function remember(entry: RecentStudy, handles: readonly FileSystemHandle[]): Promise<void> {
   const current = await readAll();
+  // Opened again: a kept copy stays kept.
+  const kept = current.find((e) => e.key === entry.key)?.keptBytes;
+  if (kept && !entry.keptBytes) entry = { ...entry, keptBytes: kept };
   const next = withRecentStudy(current, entry, RECENT_STUDIES_MAX);
   const keep = new Set(next.map((e) => e.key));
+  for (const e of current) if (!keep.has(e.key) && e.keptBytes) void forgetKeptStudy(e.key);
   await tx("readwrite", (studies, store) => {
     for (const e of current) {
       if (keep.has(e.key)) continue;
@@ -146,7 +151,22 @@ async function remember(entry: RecentStudy, handles: readonly FileSystemHandle[]
   });
 }
 
+/** Mark `key` as kept in the study library (bytes), or not (undefined). */
+export function setRecentStudyKept(key: string, keptBytes: number | undefined): Promise<void> {
+  return serial(async () => {
+    const entry = (await readAll()).find((e) => e.key === key);
+    if (!entry) return;
+    await tx("readwrite", (studies) => {
+      const next: RecentStudy = { ...entry };
+      if (keptBytes) next.keptBytes = keptBytes;
+      else delete next.keptBytes;
+      studies.put(next);
+    });
+  });
+}
+
 export function forgetRecentStudy(key: string): Promise<void> {
+  void forgetKeptStudy(key);
   return serial(async () => {
     await tx("readwrite", (studies, store) => {
       studies.delete(key);
@@ -156,6 +176,7 @@ export function forgetRecentStudy(key: string): Promise<void> {
 }
 
 export function clearRecentStudies(): Promise<void> {
+  void clearKeptStudies();
   return serial(async () => {
     await tx("readwrite", (studies, store) => {
       studies.clear();

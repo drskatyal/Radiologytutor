@@ -8,7 +8,7 @@
 // (@flowrad/viewer-core/recentStudies).
 
 import { useId, useState } from "react";
-import { Clock3, FolderOpen, Search, X } from "lucide-react";
+import { Clock3, FolderOpen, HardDrive, Search, X } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
@@ -85,10 +85,23 @@ export function RecentStudies({ entries, opening, notice, onOpen, onForget, onCl
                 )}
               >
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-vl-brand-soft text-vl-brand">
-                  {busy ? <Spinner size="sm" label={`Reopening ${title}`} /> : <FolderOpen className="h-4 w-4" aria-hidden />}
+                  {busy ? (
+                    <Spinner size="sm" label={`Reopening ${title}`} />
+                  ) : e.keptBytes ? (
+                    <HardDrive className="h-4 w-4" aria-hidden />
+                  ) : (
+                    <FolderOpen className="h-4 w-4" aria-hidden />
+                  )}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-vl-fg">{title}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium text-vl-fg">{title}</span>
+                    {e.keptBytes ? (
+                      <span data-testid="kept-badge" className="shrink-0 rounded-full bg-vl-brand-soft px-1.5 py-px text-[10px] font-medium text-vl-brand">
+                        Kept
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="block truncate text-xs tabular-nums text-vl-muted">{recentStudyDetail(e)}</span>
                 </span>
                 <span className="hidden shrink-0 text-xs tabular-nums text-vl-muted sm:block">{openedAgo(e.openedAt, now)}</span>
@@ -106,7 +119,7 @@ export function RecentStudies({ entries, opening, notice, onOpen, onForget, onCl
         </p>
       ) : (
         <p className="text-xs text-vl-muted">
-          Kept only in this browser, as links to the folders: no images and no patient details. Reopening asks to read the folder again if needed.
+          Kept only in this browser, as links to the folders: no patient details. A study marked Kept also has a copy of its files here, so it reopens without the folder. Reopening asks to read a folder again if needed.
         </p>
       )}
     </section>
