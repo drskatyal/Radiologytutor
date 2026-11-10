@@ -1,7 +1,9 @@
-// The free viewer's page frame: a full-height reading room with a slim brand
-// bar, the reader, and the FlowRad product links. Used by /viewer (the public
-// FlowRad Viewer) and /viewer/local (the same reader inside FlowRad Learn),
-// so both look and behave the same; only the bar's label and links differ.
+// The shared viewer's page frame: a full-height reading room with a slim brand
+// bar, the reader (ViewerFrame over a source adapter), and the FlowRad product
+// links. Used by /viewer (the public FlowRad Viewer) and /viewer/local (the
+// same reader inside FlowRad Learn), so both look and behave the same; only
+// the bar's label and links differ. Both read local files; `source` is the
+// seam a RadLearn surface uses for archive series.
 //
 // Server component: no session, no data fetching. Theme tokens come from
 // `.viewer-shell` (app/globals.css): paper or dark with the system, black
@@ -12,7 +14,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ShieldCheck } from "lucide-react";
 import { ProductLinks } from "@/components/marketing/ProductLinks";
-import { LocalStudyViewer } from "@/components/viewer/LocalStudyViewer";
+import { ViewerFrame, type ViewerFrameSource } from "@/components/viewer/ViewerFrame";
 import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
 // Imported, not referenced by /brand/ path: Next copies the files byte for
 // byte to a hashed /_next/static/media/ URL. The dark lockup can first load
@@ -30,11 +32,13 @@ export interface ViewerShellProps {
   badge?: string;
   /** Extra controls at the right of the bar, before the privacy line. */
   actions?: ReactNode;
+  /** Where studies come from (default: files from this computer). */
+  source?: ViewerFrameSource;
 }
 
-export function ViewerShell({ home, product, badge, actions }: ViewerShellProps) {
+export function ViewerShell({ home, product, badge, actions, source = { kind: "local" } }: ViewerShellProps) {
   return (
-    <div className="viewer-shell flex h-dvh min-h-0 flex-col bg-vl-bg text-vl-fg">
+    <div className="viewer-shell group/shell flex h-dvh min-h-0 flex-col bg-vl-bg text-vl-fg">
       {/* The engine chunks warm while the user is choosing a folder. */}
       <ViewerPrewarm />
       <header className="flex shrink-0 items-center gap-2 border-b border-vl-border px-4 py-2 sm:gap-3">
@@ -82,17 +86,21 @@ export function ViewerShell({ home, product, badge, actions }: ViewerShellProps)
       </header>
       <main className="flex min-h-0 flex-1 flex-col" aria-label="DICOM viewer">
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-6 sm:py-10 has-[[data-testid=local-stage]]:overflow-visible has-[[data-testid=local-stage]]:p-0">
-          <LocalStudyViewer tone="reading" />
+          <ViewerFrame tone="reading" source={source} />
         </div>
       </main>
       {/* Theme tokens, so the links read on the paper landing and on the black reading room alike. */}
       {/* The diagnostic-use notice sits here, server-rendered and visible at every width,
-          on the landing and while a study is open. */}
-      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-5 gap-y-1 border-t border-vl-border px-4 py-2 text-vl-muted">
+          on the landing and while a study is open. On a phone with a study open
+          the footer is that one line: the product links wrap to three rows
+          there and would take ~120 px from the image. They stay on the landing. */}
+      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-5 gap-y-1 border-t border-vl-border px-4 py-2 text-vl-muted max-sm:group-has-[[data-testid=local-stage]]/shell:py-1">
         <p className="text-xs font-medium leading-5 text-vl-fg" data-testid="diagnostic-notice">
           For education and research. Not for diagnostic use.
         </p>
-        <ProductLinks />
+        <div className="max-sm:group-has-[[data-testid=local-stage]]/shell:hidden">
+          <ProductLinks />
+        </div>
       </footer>
     </div>
   );

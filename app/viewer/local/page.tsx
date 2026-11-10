@@ -20,6 +20,7 @@ export default function LocalViewerPage() {
     <ViewerShell
       home={{ href: "/", label: "FlowRad Learn home" }}
       product="Learn"
+      source={{ kind: "local" }}
       actions={
         <Link
           href="/"
