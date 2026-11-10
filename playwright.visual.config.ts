@@ -28,7 +28,11 @@ export default defineConfig({
     // Fail fast with a clear message rather than hang a CI job on one step.
   timeout: 60_000,
     // The auth module refuses to serve without a signing secret; this run has
-    // no accounts, so a throwaway one is fine.
-    env: { BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "visual-regression-only-not-a-real-secret" },
+    // no accounts, so a throwaway one is fine. FLOWRAD_DEV_ROUTES serves the
+    // /dev fixtures (e.g. /dev/teaching-layer) from this production build.
+    env: {
+      BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "visual-regression-only-not-a-real-secret",
+      FLOWRAD_DEV_ROUTES: "1",
+    },
   },
 });

@@ -256,7 +256,11 @@ export function AppShell({
     };
   }, [menuOpen]);
 
-  const readingRoom = pathname.startsWith("/case/") || pathname.startsWith("/s/");
+  const readingRoom =
+    pathname.startsWith("/case/") ||
+    pathname.startsWith("/s/") ||
+    // The teaching-layer fixture is a reading room too (app/dev/teaching-layer).
+    pathname === "/dev/teaching-layer";
   const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
   // The free viewer (public, and its home inside Learn) brings its own reading-room bar.
   const freeViewer = pathname === "/viewer" || pathname === "/viewer/local";

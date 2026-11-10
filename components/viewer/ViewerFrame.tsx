@@ -21,6 +21,7 @@
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
 import { FREE_VIEWER_FEATURES } from "@/lib/viewerFeatures";
+import { frameFeatures, teachingViewer, type TeachingLayer, type TeachingPane } from "@/lib/teachingLayer";
 import { useViewerBindings } from "./useViewerBindings";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
@@ -266,15 +267,24 @@ function cloudOpenResult(studies: readonly LocalStudy[]): LocalIngestResult {
 /**
  * The shared reading frame: series panel, hanging layouts, panes and one
  * toolbar, over a source adapter. /viewer and /viewer/local use it with local
- * files; RadLearn's teaching layers will sit on the same frame.
+ * files and no teaching layer (the free viewer); RadLearn passes a
+ * `teaching` layer (lib/teachingLayer.ts) for its markers, tour and tutor.
  */
 export function ViewerFrame({
   tone = "page",
   source: frameSource = LOCAL_SOURCE,
+  teaching = null,
 }: {
   tone?: LocalViewerTone;
   source?: ViewerFrameSource;
+  /** Teaching on top of the reader. None = the FlowRad free viewer. */
+  teaching?: TeachingLayer | null;
 }) {
+  const features = frameFeatures(teaching, FREE_VIEWER_FEATURES);
+  const defaultTool = teaching?.defaultTool ?? "StackScroll";
+  // Read through a ref so a layer rebuilt each render never re-fires onViewer.
+  const teachingRef = useRef(teaching);
+  teachingRef.current = teaching;
   // Mouse & keyboard bindings: the local copy, and the signed-in copy fetched
   // now — before any study is opened (no request may follow a drop).
   useViewerBindings({ account: true });
@@ -1579,6 +1589,11 @@ export function ViewerFrame({
   }, [pinned, pinnedIsActive, series, studySource]);
 
   const viewerKey = source?.kind === "imageIds" ? source.key : source?.kind === "wadors" ? source.SeriesInstanceUID : "none";
+  const teachingPane = (index: number, seriesInstanceUID: string | null): TeachingPane => ({
+    index,
+    seriesInstanceUID,
+    active: activePane === index,
+  });
   const landingStatus: LandingStatus =
     phase.state === "reading"
       ? { kind: "reading", progress: <ReadingProgress progress={phase.progress} centered landing /> }
@@ -1715,7 +1730,7 @@ export function ViewerFrame({
         <ReadingProgress progress={phase.progress} dark={reading} />
       ) : null}
       <div className={cn("mt-auto flex flex-col gap-2 border-t pt-3", reading ? "border-white/10" : "border-subtle")}>
-        {result && !signupDismissed && <SignupPrompt dark={reading} onDismiss={dismissSignup} />}
+        {result && !signupDismissed && !teaching && <SignupPrompt dark={reading} onDismiss={dismissSignup} />}
         {privacyLine}
         <div className="flex flex-wrap gap-2">
           <FilePickerButton inputId={fileInputId} size="sm" variant={reading ? "imaging" : "secondary"}>
@@ -1978,9 +1993,9 @@ export function ViewerFrame({
                     referencePlanes={linesFor(0)}
                     active={!multi || activePane === 0}
                     onActivate={() => setActivePane(0)}
-                    defaultTool="StackScroll"
+                    defaultTool={defaultTool}
                     questionMarkHelp
-                    features={FREE_VIEWER_FEATURES}
+                    features={features}
                     popOutOffered={popOutOffered}
                     startPlane={planeRequest?.pane === 0 ? planeRequest.plane : null}
                     onStartPlaneDone={() => setPlaneRequest(null)}
@@ -2000,12 +2015,18 @@ export function ViewerFrame({
                       const count = study?.series.length ?? 0;
                       if (count > 1) pickSeries((activeSeries + delta + count) % count);
                     }}
+                    imageOverlay={teaching?.overlay?.(teachingPane(0, series?.seriesInstanceUID ?? null))}
                     onReady={(controls) => {
                       setFirstImageUp(true);
                       const slice = pendingSlice.current;
-                      if (slice == null || slice < 0) return;
-                      pendingSlice.current = null;
-                      controls.applyEvent({ t: 0, type: "slice", index: slice });
+                      if (slice != null && slice >= 0) {
+                        pendingSlice.current = null;
+                        controls.applyEvent({ t: 0, type: "slice", index: slice });
+                      }
+                      teachingRef.current?.onViewer?.(
+                        teachingViewer(() => viewerControls.current),
+                        teachingPane(0, series?.seriesInstanceUID ?? null)
+                      );
                     }}
                   />
                 </ViewerPane>
@@ -2048,9 +2069,9 @@ export function ViewerFrame({
                           active={activePane === pane}
                           onActivate={() => setActivePane(pane)}
                           instanceId={`local-pane-${pane}`}
-                          defaultTool="StackScroll"
+                          defaultTool={defaultTool}
                           questionMarkHelp
-                          features={FREE_VIEWER_FEATURES}
+                          features={features}
                           popOutOffered={popOutOffered}
                           startPlane={planeRequest?.pane === pane ? planeRequest.plane : null}
                           onStartPlaneDone={() => setPlaneRequest(null)}
@@ -2070,6 +2091,16 @@ export function ViewerFrame({
                             const at = flat.findIndex((f) => samePane(f, target));
                             hangInPane(pane, flat[(at + delta + count) % count]!);
                           }}
+                          imageOverlay={teaching?.overlay?.(teachingPane(pane, paneSeries.seriesInstanceUID))}
+                          onReady={
+                            teaching?.onViewer
+                              ? () =>
+                                  teachingRef.current?.onViewer?.(
+                                    teachingViewer(() => paneControls.current[i]?.current),
+                                    teachingPane(pane, paneSeries.seriesInstanceUID)
+                                  )
+                              : undefined
+                          }
                           className="h-full w-full"
                         />
                       </ViewerPane>
@@ -2149,7 +2180,7 @@ export function ViewerFrame({
               <ReadingProgress progress={phase.progress} />
             ) : null}
             <div className="mt-3 flex flex-col gap-2 border-t border-subtle pt-3">
-              {result && !signupDismissed && <SignupPrompt onDismiss={dismissSignup} />}
+              {result && !signupDismissed && !teaching && <SignupPrompt onDismiss={dismissSignup} />}
               <p className="flex items-start gap-1.5 text-xs text-secondary">
                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" aria-hidden />
                 Your images never leave your computer.
