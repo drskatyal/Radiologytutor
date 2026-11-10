@@ -905,14 +905,14 @@ function useToolbarFit() {
     setEdges((e) => (e.left === left && e.right === right ? e : { left, right }));
   }, []);
 
+  // Measured on resize only (the row is `w-max`, so a control appearing or
+  // going resizes it too), never on every render: reading scrollWidth forces
+  // a layout, and the toolbar re-renders often while a volume is building.
   useLayoutEffect(() => {
-    measure();
-  });
-
-  useEffect(() => {
     const scroller = scrollerRef.current;
     const row = rowRef.current;
     if (!scroller || !row) return;
+    measure();
     const observer = new ResizeObserver(() => measure());
     observer.observe(scroller);
     observer.observe(row);
