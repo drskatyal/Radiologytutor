@@ -22,7 +22,7 @@ export function studioHotkey(e: Pick<KeyboardEvent, "key" | "code" | "altKey" | 
 // Inside the Studio these keys are taken in the CAPTURE phase on `window`, so
 // they win over the viewport's own letter shortcuts while the image has focus.
 // The viewer tools they shadow (M Pan, A Angle, E Ellipse ROI, O overlay)
-// stay one click away on the viewer toolbar and on the digit keys (4 = Pan).
+// stay one click away on the viewer toolbar (digits are window presets).
 //
 // Excalidraw muscle memory where it does not fight the student keys:
 //   D draw (pen) · A arrow · O ellipse · Q text (T is the student rail)

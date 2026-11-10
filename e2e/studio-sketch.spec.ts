@@ -147,7 +147,8 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   await expect.poll(async () => (await markerCenter(page)).x).not.toBeCloseTo(before.x, 0);
   await page.waitForTimeout(300);
   await shot(page, "studio-sketch-zoomed");
-  await page.keyboard.press("0");
+  // Reset view (Backspace; digits are window presets on the shared viewer).
+  await page.keyboard.press("Backspace");
   await expect.poll(async () => Math.abs((await markerCenter(page)).x - before.x)).toBeLessThan(2);
   // Another frame of the stack: the ink is for its own image only.
   await page.keyboard.press("ArrowDown");

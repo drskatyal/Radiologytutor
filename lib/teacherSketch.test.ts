@@ -416,7 +416,8 @@ test("Studio sketch keys never reuse a student-session key, and Alt+X stays with
   assert.equal(resolveStudioHotkey({ key: "c" }), null);
   assert.equal(resolveStudioHotkey({ key: "p" }), null);
   assert.equal(resolveStudioHotkey({ key: "t" }), null);
-  // Digits still reach the viewer (4 = Pan is the way back to pan in the Studio).
+  // Digits still reach the viewer: they are window presets there now (4 = the
+  // preset menu's fourth entry), as on the desktop. Pan stays on the toolbar.
   assert.equal(resolveStudioHotkey({ key: "4" }), null);
-  assert.deepEqual(resolveViewerHotkey({ key: "4" }), { type: "tool", tool: "Pan" });
+  assert.deepEqual(resolveViewerHotkey({ key: "4" }), { type: "preset", ordinal: 4 });
 });
