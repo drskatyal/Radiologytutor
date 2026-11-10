@@ -219,6 +219,7 @@ import {
   READING_MEASURE_TOOLS,
   ViewerToolbar,
   toolLabel,
+  type ToolbarLayoutChoice,
 } from "./viewer/ViewerToolbar";
 import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
 import { ViewerHelp, type ViewerHelpTab } from "./viewer/ViewerHelp";
@@ -863,6 +864,7 @@ export default function CornerstoneViewer({
   paneLinks,
   distractionFree,
   onFusion,
+  layoutChoice = null,
   onComparePrior = null,
   scaleBar = null,
   seriesPanel = null,
@@ -996,6 +998,8 @@ export default function CornerstoneViewer({
   distractionFree?: { on: boolean; toggle: () => void } | null;
   /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
   onFusion?: (() => void) | null;
+  /** A hanging-layout picker on the toolbar (pages without a series-panel picker). */
+  layoutChoice?: ToolbarLayoutChoice | null;
   /** The image menu's "Compare with prior…" (free viewer: a prior of this patient among the recent studies). */
   onComparePrior?: (() => void) | null;
   /** The scale bar (free viewer, as the desktop's setting): on / off, shared by every pane. Null: not offered. */
@@ -4765,6 +4769,7 @@ export default function CornerstoneViewer({
       onExport={f.export ? () => openExport("image") : undefined}
       onMeasurements={f.tools && editCtx ? () => setMeasurementsOpen(true) : undefined}
       onFusion={onFusion ?? undefined}
+      layoutChoice={layoutChoice}
       onRecon={
         f.slabs
           ? () => {
@@ -4943,6 +4948,9 @@ export default function CornerstoneViewer({
         "min-w-0 max-w-full",
         className
       )}
+      // Overlays (tutor ink, cards) find their canvas and the chrome to keep
+      // clear of from here: the pane, not the whole page.
+      data-viewer-root
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
     >

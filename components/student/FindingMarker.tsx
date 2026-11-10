@@ -29,6 +29,7 @@ export function FindingMarker({
         style={position}
         aria-hidden="true"
         data-testid="finding-marker"
+        data-source="marker"
         data-visible={visible || undefined}
       >
         <ArrowDown
@@ -49,6 +50,7 @@ export function FindingMarker({
         style={position}
         aria-hidden="true"
         data-testid="finding-marker"
+        data-source="marker"
         data-visible={visible || undefined}
       >
         <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_1px_#000]" />

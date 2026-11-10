@@ -2,9 +2,9 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { GraduationCap, Link2 } from "lucide-react";
-import { Badge, Button, Tooltip, useToast } from "@/components/ui";
+import { usePathname, useSearchParams } from "next/navigation";
+import { GraduationCap, Link2, LogIn } from "lucide-react";
+import { Badge, Button, EmptyState, Tooltip, useToast } from "@/components/ui";
 import { ViewerFrame, type FrameInitialView, type FrameState } from "@/components/viewer/ViewerFrame";
 import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import { caseTeachHref } from "@/lib/caseShare";
@@ -37,7 +37,14 @@ export function CaseViewer({
   sharedLink,
   namedStudy = false,
   openSlice = null,
+  signedIn = true,
 }: {
+  /**
+   * False for a signed-out visitor on a case link: the archive serves pixels
+   * to signed-in members only, so the image area asks them to sign in. A
+   * share link (`sharedLink`) carries its own access and is never asked.
+   */
+  signedIn?: boolean;
   /**
    * The teacher's landing on series 0. The page prewarm (ViewerPrewarm) warms
    * exactly this slice, so the viewer must open on it too — opening mid-stack
@@ -88,6 +95,8 @@ export function CaseViewer({
   }, []);
   const teaching = useMemo<TeachingLayer>(
     () => ({
+      // Layouts are the reader's to choose here (the header picker's old job).
+      layoutControl: true,
       onViewer: (viewer, pane) => {
         viewers.current.set(pane.index, viewer);
         if (pane.index === 0) setReady(true);
@@ -129,6 +138,11 @@ export function CaseViewer({
   }, [sharedLink, toast, viewState]);
 
   const frameSource = useMemo(() => ({ kind: "cloud" as const, series: rail, label: title }), [rail, title]);
+  const askSignIn = !signedIn && !sharedLink;
+  // Back to this exact view after signing in (the link's series / image / window too).
+  const pathname = usePathname();
+  const query = params?.toString() ?? "";
+  const here = `${pathname ?? `/case/${encodeURIComponent(caseId)}`}${query ? `?${query}` : ""}`;
 
   return (
     <div className="flex h-dvh min-h-0 flex-col bg-canvas">
@@ -164,7 +178,7 @@ export function CaseViewer({
               size="sm"
               variant="ghost"
               onClick={() => void copyViewLink()}
-              disabled={!ready}
+              disabled={!ready || askSignIn}
               leadingIcon={<Link2 className="h-3.5 w-3.5" aria-hidden="true" />}
             >
               <span className="max-sm:sr-only">View link</span>
@@ -194,13 +208,36 @@ export function CaseViewer({
           label, and two identically-named landmarks make a screen reader
           announce the same thing twice. */}
       <div className="viewer-shell relative flex min-h-0 flex-1 flex-col bg-imaging" role="region" aria-label="Imaging pane">
-        <ViewerFrame
-          tone="reading"
-          source={frameSource}
-          teaching={teaching}
-          initial={initial}
-          onFrameState={onFrameState}
-        />
+        {askSignIn ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6" data-testid="case-sign-in">
+            <EmptyState
+              tone="imaging"
+              icon={<LogIn className="h-5 w-5" aria-hidden="true" />}
+              title="Sign in to view this study"
+              description="Case images are shown to signed-in members. It's free, and you'll come straight back to this case."
+              action={
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <Link href={`/sign-in?next=${encodeURIComponent(here)}`}>
+                    <Button size="sm">Sign in</Button>
+                  </Link>
+                  <Link href={`/sign-up?next=${encodeURIComponent(here)}`}>
+                    <Button size="sm" variant="imaging">
+                      Create a free account
+                    </Button>
+                  </Link>
+                </div>
+              }
+            />
+          </div>
+        ) : (
+          <ViewerFrame
+            tone="reading"
+            source={frameSource}
+            teaching={teaching}
+            initial={initial}
+            onFrameState={onFrameState}
+          />
+        )}
       </div>
     </div>
   );

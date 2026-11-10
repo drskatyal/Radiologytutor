@@ -62,6 +62,29 @@ for (const route of ["/viewer", "/viewer/local"]) {
       await expect(page.getByTestId("toolbar-more-left")).toBeVisible();
     });
 
+    test("each page of the toolbar ends on whole controls: no half button beside the chevron", async ({ page }) => {
+      await open(page, route);
+      const sliver = () =>
+        page.evaluate(() => {
+          const more = document.querySelector('[data-testid="toolbar-more-right"]');
+          const row = document.querySelector('[role="toolbar"][aria-label="Viewer tools"]');
+          if (!more || !row) return null;
+          const solid = more.parentElement!.getBoundingClientRect();
+          const fade = more.parentElement!.previousElementSibling?.getBoundingClientRect() ?? null;
+          const edge = fade ? fade.left : solid.left;
+          return [...row.querySelectorAll("button")]
+            .filter((b) => !b.closest('[role="radiogroup"]'))
+            .map((b) => b.getBoundingClientRect())
+            .filter((r) => r.width >= 2 && r.left < edge - 0.5 && r.right > edge + 0.5)
+            .map((r) => [Math.round(r.left), Math.round(r.right), Math.round(edge)]);
+        });
+      for (let i = 0; i < 10 && (await page.getByTestId("toolbar-more-right").count()); i++) {
+        expect(await sliver(), `page ${i}: a control straddles the edge`).toEqual([]);
+        await page.getByTestId("toolbar-more-right").tap();
+        await page.waitForTimeout(400);
+      }
+    });
+
     test("the footer is one line under the image, the notice still showing", async ({ page }) => {
       await open(page, route);
       const notice = page.getByTestId("diagnostic-notice");

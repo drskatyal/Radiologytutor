@@ -49,7 +49,12 @@ async function seedData() {
     id: `f_e2e_${order}`,
     order,
     label: `E2E finding ${order}`,
-    description: `Synthetic finding ${order}.`,
+    // Finding 2 reads like a real one: long enough that a short pane (a
+    // phone's stacked compare) cannot seat its card at full size.
+    description:
+      order === 2
+        ? "Scattered ill-defined nodular opacities in both lower lobes, some with a ground-glass halo; compare with the prior and look for new or enlarging round opacities."
+        : `Synthetic finding ${order}.`,
     teachingPoints: [],
     state: "",
     studyInstanceUID: STUDY_UID,

@@ -1677,7 +1677,10 @@ export function ViewerFrame({
       void ingest(h.files);
     },
   });
-  const popOutOffered = reading && multipleScreens && phase.state === "open";
+  // Pop-out hands this window's local files to a new one: nothing to hand for
+  // an archive case, so RadLearn's viewers never offer it (no bar, key or menu
+  // item — the light "Pop out" strip above the image on a two-screen desktop).
+  const popOutOffered = reading && !cloud && multipleScreens && phase.state === "open";
   const popOutNow = useCallback(() => {
     setPopOutNote(popOut.popOut() ? "Opened in a new window. Drag it to another monitor." : "The browser blocked the new window. Allow pop-ups for this site.");
   }, [popOut]);
@@ -1766,6 +1769,15 @@ export function ViewerFrame({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compareUid, result]);
   const primaryLabel = teaching?.compare ? (teaching.compare.primaryLabel ?? "Current") : undefined;
+  // The case viewer's own layouts, on the toolbar (it shows no series panel for one series).
+  const layoutChoice =
+    teaching?.layoutControl && result
+      ? {
+          current: layoutId,
+          options: layoutsForSeriesCount(flat.length).map(({ id, label }) => ({ id, label })),
+          onChange: (id: HangingLayoutId) => setLayoutId(id),
+        }
+      : null;
 
   // A short click on a pane's image, for the layer (lib/teachingLayer onPaneClick).
   const pointerDown = useRef<{ x: number; y: number } | null>(null);
@@ -2101,7 +2113,7 @@ export function ViewerFrame({
                 Distraction-free reading · Esc or Alt+Shift+Enter to leave
               </div>
             )}
-            {!expanded && !focusMode && phase.state === "open" && (multipleScreens || popOut.hasOtherWindows) && (
+            {!expanded && !focusMode && !cloud && phase.state === "open" && (multipleScreens || popOut.hasOtherWindows) && (
               <div className="mb-2 hidden items-center gap-2 lg:flex">
                 {multipleScreens && (
                 <Button
@@ -2202,6 +2214,7 @@ export function ViewerFrame({
                     activeSeriesIndex={cloudList ? cloudIndexOf(series?.seriesInstanceUID) : undefined}
                     onSeriesChange={cloudList ? onMainSeriesChange : undefined}
                     paneLabel={primaryLabel}
+                    layoutChoice={layoutChoice}
                     modality={modality}
                     controls={bindsControls ? boundControls[0] : viewerControls}
                     onEvent={(event) => {
@@ -2293,6 +2306,7 @@ export function ViewerFrame({
                               : undefined
                           }
                           paneLabel={teaching?.compare && pane === 1 ? (teaching.compare.label ?? "Compare") : undefined}
+                          layoutChoice={layoutChoice}
                           modality={paneSeries.modality}
                           controls={bindsControls ? boundControls[pane] : paneControls.current[i]}
                           onEvent={(event) => onPaneEvent(pane, event)}
@@ -2724,7 +2738,8 @@ function ViewerPane({
         )}
       />
       {/* Beside the bottom orientation letter, not on it: the pane number, then maximise. */}
-      <div className="pointer-events-none absolute bottom-1.5 left-1/2 z-30 ml-4 flex items-center gap-1">
+      {/* data-imaging-chrome: tutor cards are seated clear of it. */}
+      <div data-imaging-chrome className="pointer-events-none absolute bottom-1.5 left-1/2 z-30 ml-4 flex items-center gap-1">
         <span
           aria-hidden="true"
           className={cn(

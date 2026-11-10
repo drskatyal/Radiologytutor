@@ -68,7 +68,26 @@ import { isMac } from "@flowrad/viewer-core/bindings";
 import type { MprMode, MprPlane, MprRender } from "@/lib/mpr";
 import { FULL_DYNAMIC_ID, type WindowPreset } from "@/lib/windowPresets";
 import { ImagingStageContext } from "./stageContext";
-import { ORIENTATION_COMMANDS, type OrientationCommand } from "@flowrad/viewer-core";
+import { edgeSnap } from "@/lib/toolbarEdge";
+import { ORIENTATION_COMMANDS, type HangingLayoutId, type OrientationCommand } from "@flowrad/viewer-core";
+import { Columns2 as LayoutSideBySide, Columns3 as LayoutThreeAcross, Grid2x2 as LayoutGrid4, Grid3x3 as LayoutGrid9, Rows2 as LayoutStacked, Square as LayoutSingle } from "lucide-react";
+
+/** A hanging-layout picker on the bar (RadLearn's case viewer, which has no series panel picker). */
+export interface ToolbarLayoutChoice {
+  current: HangingLayoutId;
+  options: readonly { id: HangingLayoutId; label: string }[];
+  onChange: (id: HangingLayoutId) => void;
+}
+
+const LAYOUT_GLYPH: Record<HangingLayoutId, LucideIcon> = {
+  "1x1": LayoutSingle,
+  "1x2": LayoutSideBySide,
+  "2x1": LayoutStacked,
+  "2x2": LayoutGrid4,
+  "1x3": LayoutThreeAcross,
+  "2x3": LayoutGrid9,
+  "3x3": LayoutGrid9,
+};
 
 export type ViewerTool = {
   name: string;
@@ -289,6 +308,8 @@ export interface ViewerToolbarProps {
   onRecon?: () => void;
   /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion. */
   onFusion?: () => void;
+  /** Hanging layouts on the bar. Omitted where the page has its own picker (the free viewer's series panel). */
+  layoutChoice?: ToolbarLayoutChoice | null;
   /** Text-box tool (free viewer; saved in this browser only). */
   textBox?: { active: boolean; onToggle: () => void };
   /** Save the image with its measurements and text boxes burned in. */
@@ -709,6 +730,42 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           </>
         ) : null}
 
+        {props.layoutChoice && props.layoutChoice.options.length > 1 ? (
+          <>
+            <Divider />
+            <Menu
+              label="Layout"
+              container={host}
+              trigger={
+                <button
+                  type="button"
+                  aria-label={`Layout, ${props.layoutChoice.options.find((o) => o.id === props.layoutChoice!.current)?.label ?? "Single"}`}
+                  title="Layout · G cycles"
+                  data-testid="toolbar-layout"
+                  className={cn(
+                    "inline-flex h-9 shrink-0 items-center gap-0.5 rounded-md pl-2 pr-1 [@media(pointer:coarse)]:h-11",
+                    pressable,
+                    props.layoutChoice.current === "1x1" ? idle : "bg-white/10 text-white"
+                  )}
+                >
+                  <Icon as={LAYOUT_GLYPH[props.layoutChoice.current]} />
+                  <ChevronDown className="h-3.5 w-3.5 opacity-70" strokeWidth={2} aria-hidden="true" />
+                </button>
+              }
+            >
+              <MenuLabel>Layout</MenuLabel>
+              {props.layoutChoice.options.map((option) => (
+                <MenuItem
+                  key={option.id}
+                  label={option.label}
+                  active={option.id === props.layoutChoice!.current}
+                  onSelect={() => props.layoutChoice!.onChange(option.id)}
+                />
+              ))}
+            </Menu>
+          </>
+        ) : null}
+
         <span aria-hidden="true" className="min-w-2 flex-1" />
 
         <Menu
@@ -824,15 +881,18 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
       </div>
       {/* More tools than room (a phone, a narrow pane): the cut edge says so,
           and a tap pages the row. Every control stays in the row itself. */}
-      {edges.left ? <ScrollEdge side="left" onPage={() => page(-1)} /> : null}
-      {edges.right ? <ScrollEdge side="right" onPage={() => page(1)} /> : null}
+      {edges.left ? <ScrollEdge side="left" onPage={() => page(-1)} cover={edges.leftCover} /> : null}
+      {edges.right ? <ScrollEdge side="right" onPage={() => page(1)} cover={edges.rightCover} /> : null}
     </div>
   );
 }
 
-function ScrollEdge({ side, onPage }: { side: "left" | "right"; onPage: () => void }) {
+
+/** The chevron on a cut edge; `cover` (px) snaps its black to whole controls (no white sliver). */
+function ScrollEdge({ side, onPage, cover = 0 }: { side: "left" | "right"; onPage: () => void; cover?: number }) {
   const Chevron = side === "left" ? ChevronLeft : ChevronRight;
-  const fade = (
+  // Snapped to whole controls: a clean edge, no fade over the next control.
+  const fade = cover > 0 ? null : (
     <span
       aria-hidden="true"
       className={cn("h-full w-5 from-black to-transparent", side === "left" ? "bg-gradient-to-r" : "bg-gradient-to-l")}
@@ -846,7 +906,11 @@ function ScrollEdge({ side, onPage }: { side: "left" | "right"; onPage: () => vo
       )}
     >
       {fade}
-      <span className="flex items-center bg-black px-0.5">
+      <span
+        className={cn("flex items-center bg-black px-0.5", side === "left" ? "justify-start" : "justify-end")}
+        // Dynamic: the cut button's visible width, measured.
+        style={cover > 0 ? { minWidth: cover } : undefined}
+      >
         <button
           type="button"
           // The row's own buttons are in the tab order and scroll into view on
@@ -880,7 +944,7 @@ function useToolbarFit() {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const [dense, setDense] = useState(false);
-  const [edges, setEdges] = useState({ left: false, right: false });
+  const [edges, setEdges] = useState({ left: false, right: false, leftCover: 0, rightCover: 0 });
   // Width the row needed at full size when it went dense: un-dense only once
   // the pane can hold that again, so the row never flickers between the two.
   const fullWidth = useRef(0);
@@ -902,7 +966,21 @@ function useToolbarFit() {
     });
     const left = scroller.scrollLeft > 1;
     const right = scroller.scrollLeft + room < scroller.scrollWidth - 1;
-    setEdges((e) => (e.left === left && e.right === right ? e : { left, right }));
+    // Snap each cut edge to whole controls: the edge's black starts in the gap
+    // before the first control it would overlap, so no half button (a white
+    // selected tool) shows as a sliver beside the chevron. 0 = the plain fade.
+    const box = scroller.getBoundingClientRect();
+    const controls = Array.from(row.children).flatMap((child) =>
+      child.matches("button") ? [child] : Array.from(child.querySelectorAll("button"))
+    );
+    const rects = controls.map((el) => el.getBoundingClientRect()).filter((r) => r.width >= 2);
+    const rightCover = right ? edgeSnap(rects.map((r) => ({ from: box.right - r.right, to: box.right - r.left }))) : 0;
+    const leftCover = left ? edgeSnap(rects.map((r) => ({ from: r.left - box.left, to: r.right - box.left }))) : 0;
+    setEdges((e) =>
+      e.left === left && e.right === right && e.leftCover === leftCover && e.rightCover === rightCover
+        ? e
+        : { left, right, leftCover, rightCover }
+    );
   }, []);
 
   // Measured on resize only (the row is `w-max`, so a control appearing or

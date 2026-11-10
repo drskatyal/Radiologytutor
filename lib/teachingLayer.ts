@@ -248,6 +248,13 @@ export interface TeachingLayer {
   onPaneClick?: (pane: TeachingPane, point: { clientX: number; clientY: number }) => void;
   /** Kept reachable while the stage is full screen (the session's microphone). */
   dock?: ReactNode;
+  /**
+   * A hanging-layout picker on the toolbar (1×1, side by side, stacked, 2×2
+   * when there are series to fill it). For a screen whose layouts are the
+   * reader's to choose (the case viewer); a session that drives its own
+   * compare pane leaves it off.
+   */
+  layoutControl?: boolean;
 }
 
 export interface TeachingCompare {
