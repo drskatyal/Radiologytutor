@@ -15,13 +15,15 @@
 //
 // No Cornerstone import: this file only renders state the viewer owns.
 
-import { Fragment, useContext, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   Blend,
   Combine,
   Captions,
   CaptionsOff,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Circle,
   CircleDot,
   Crosshair,
@@ -175,7 +177,8 @@ const pressable =
 const idle = "text-white/75 hover:bg-white/10 hover:text-white active:bg-white/20";
 // Neutral on the image: the tutor's ink is the only colour over the CT.
 const selected = "bg-white text-black shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]";
-const square = "h-9 w-9 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11";
+const square =
+  "h-9 w-9 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 group-data-[dense=true]/tb:w-8";
 
 export function ToolbarButton({
   label,
@@ -228,7 +231,7 @@ export function ToolbarButton({
 }
 
 function Divider() {
-  return <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-white/10" />;
+  return <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-white/10 group-data-[dense=true]/tb:mx-0.5" />;
 }
 
 function Icon({ as: As }: { as: LucideIcon }) {
@@ -353,20 +356,30 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
   const overlayLabel =
     overlay === "full" ? "Overlay: full" : overlay === "basic" ? "Overlay: basic" : "Overlay: off";
 
+  const { scrollerRef, rowRef, dense, edges, page } = useToolbarFit();
+
   return (
     <div
       className={cn(
-        // The scroller is a block, not the flex row: a flex row that is also
-        // the scroller reports its content width to the page and opens a
-        // horizontal scrollbar on narrow stages.
-        "w-full min-w-0 max-w-full touch-pan-x overflow-x-auto overscroll-x-contain bg-black text-white",
-        "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        "relative w-full min-w-0 max-w-full bg-black text-white",
         variant === "edge"
           ? "border-t border-[#1F1F1F]"
-          : "rounded-lg border border-[#1F1F1F]"
+          : "overflow-hidden rounded-lg border border-[#1F1F1F]"
       )}
     >
       <div
+        ref={scrollerRef}
+        data-dense={dense}
+        className={cn(
+          // The scroller is a block, not the flex row: a flex row that is also
+          // the scroller reports its content width to the page and opens a
+          // horizontal scrollbar on narrow stages.
+          "group/tb w-full min-w-0 max-w-full touch-pan-x overflow-x-auto overscroll-x-contain",
+          "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        )}
+      >
+      <div
+        ref={rowRef}
         role="toolbar"
         aria-label="Viewer tools"
         aria-orientation="horizontal"
@@ -403,7 +416,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
                     value === "stack" ? props.onViewMode("stack") : props.onMprRender(value)
                   }
                   className={cn(
-                    "h-8 rounded px-2.5 text-xs font-semibold tracking-wide [@media(pointer:coarse)]:h-10",
+                    "h-8 rounded px-2.5 text-xs font-semibold tracking-wide [@media(pointer:coarse)]:h-10 group-data-[dense=true]/tb:px-2",
                     pressable,
                     on ? "bg-white/15 text-white" : "text-white/60 hover:text-white"
                   )}
@@ -588,7 +601,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             <button
               type="button"
               disabled={!ready || previewLocked}
-              title={previewLocked ? "Window presets unlock when full-quality pixels load" : undefined}
+              title={previewLocked ? "Window presets unlock when full-quality pixels load" : `Window: ${presetName}`}
               aria-label={
                 previewLocked
                   ? "Window presets — unlock when full-quality pixels load"
@@ -601,7 +614,8 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
               )}
             >
               <SlidersHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-              <span className="max-w-[5.5rem] truncate">{presetName}</span>
+              {/* Dense: the name moves to the tooltip and the overlay's window line. */}
+              <span className="max-w-[5.5rem] truncate group-data-[dense=true]/tb:hidden">{presetName}</span>
               <ChevronDown className="h-3.5 w-3.5 opacity-70" strokeWidth={2} aria-hidden="true" />
             </button>
           }
@@ -807,6 +821,114 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           </ToolbarButton>
         ) : null}
       </div>
+      </div>
+      {/* More tools than room (a phone, a narrow pane): the cut edge says so,
+          and a tap pages the row. Every control stays in the row itself. */}
+      {edges.left ? <ScrollEdge side="left" onPage={() => page(-1)} /> : null}
+      {edges.right ? <ScrollEdge side="right" onPage={() => page(1)} /> : null}
     </div>
   );
+}
+
+function ScrollEdge({ side, onPage }: { side: "left" | "right"; onPage: () => void }) {
+  const Chevron = side === "left" ? ChevronLeft : ChevronRight;
+  const fade = (
+    <span
+      aria-hidden="true"
+      className={cn("h-full w-5 from-black to-transparent", side === "left" ? "bg-gradient-to-r" : "bg-gradient-to-l")}
+    />
+  );
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute inset-y-0 flex items-stretch",
+        side === "left" ? "left-0 flex-row-reverse" : "right-0"
+      )}
+    >
+      {fade}
+      <span className="flex items-center bg-black px-0.5">
+        <button
+          type="button"
+          // The row's own buttons are in the tab order and scroll into view on
+          // focus; this is the pointer / touch affordance.
+          tabIndex={-1}
+          aria-label={side === "left" ? "Earlier tools" : "More tools"}
+          data-testid={`toolbar-more-${side}`}
+          onClick={onPage}
+          className={cn(
+            "pointer-events-auto inline-flex h-9 w-7 items-center justify-center rounded-md [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-8",
+            pressable,
+            idle
+          )}
+        >
+          <Chevron className="h-4 w-4" strokeWidth={2.25} aria-hidden="true" />
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Fit the one-row toolbar to its pane. With a fine pointer the row first goes
+ * dense (32 px icon buttons, the window name in the tooltip) — enough for the
+ * full free-viewer set beside the series panel at 1440 px. When even that
+ * overflows (phones, split panes) the row scrolls and the cut edges show a
+ * chevron. Measured, not breakpoint-guessed: the row's contents vary by mode
+ * and product.
+ */
+function useToolbarFit() {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [dense, setDense] = useState(false);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  // Width the row needed at full size when it went dense: un-dense only once
+  // the pane can hold that again, so the row never flickers between the two.
+  const fullWidth = useRef(0);
+
+  const measure = useCallback(() => {
+    const scroller = scrollerRef.current;
+    const row = rowRef.current;
+    if (!scroller || !row) return;
+    const room = scroller.clientWidth;
+    const need = row.scrollWidth;
+    const fine = typeof window !== "undefined" && window.matchMedia?.("(pointer: fine)").matches;
+    setDense((was) => {
+      if (!was && fine && need > room + 1) {
+        fullWidth.current = need;
+        return true;
+      }
+      if (was && (!fine || room >= fullWidth.current)) return false;
+      return was;
+    });
+    const left = scroller.scrollLeft > 1;
+    const right = scroller.scrollLeft + room < scroller.scrollWidth - 1;
+    setEdges((e) => (e.left === left && e.right === right ? e : { left, right }));
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+  });
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    const row = rowRef.current;
+    if (!scroller || !row) return;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(scroller);
+    observer.observe(row);
+    scroller.addEventListener("scroll", measure, { passive: true });
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener("scroll", measure);
+    };
+  }, [measure]);
+
+  const page = useCallback((direction: 1 | -1) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    scroller.scrollBy({ left: direction * scroller.clientWidth * 0.75, behavior: reduce ? "auto" : "smooth" });
+  }, []);
+
+  return { scrollerRef, rowRef, dense, edges, page };
 }
