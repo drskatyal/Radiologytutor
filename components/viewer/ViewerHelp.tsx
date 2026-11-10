@@ -5,6 +5,7 @@
 // where the viewer owns it. Drawn inside the imaging pane (not a body
 // portal) so it survives fullscreen and covers only the image it describes.
 
+import { viewerFeatures, type ViewerFeatures } from "@/lib/viewerFeatures";
 import { Suspense, lazy, useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, Keyboard, Mic, MicOff, Mouse, X } from "lucide-react";
 import { cn } from "@/components/ui/cn";
@@ -126,7 +127,7 @@ export function ViewerHelp({
   onTabChange,
   voice,
   paneMaximize = false,
-  readingTools = false,
+  features: featuresProp,
   popOut = false,
 }: {
   open: boolean;
@@ -139,8 +140,8 @@ export function ViewerHelp({
   voice?: ViewerHelpVoice;
   /** In a grid that can maximise a pane: list Enter / double-click / Esc. */
   paneMaximize?: boolean;
-  /** The free viewer's extra measure tools: list D (Bidirectional). */
-  readingTools?: boolean;
+  /** The surface's feature groups (lib/viewerFeatures.ts): the sheet lists what it offers. */
+  features?: Partial<ViewerFeatures>;
   /** Two or more monitors: list Ctrl/⌘+Alt+N (pop out to a new window). */
   popOut?: boolean;
 }) {
@@ -162,7 +163,8 @@ export function ViewerHelp({
   }, [customise]);
 
   if (!open) return null;
-  const groups = viewerShortcutGroups(overrides, undefined, { paneMaximize, readingTools, popOut });
+  const features = viewerFeatures(featuresProp);
+  const groups = viewerShortcutGroups(overrides, undefined, { paneMaximize, features, popOut });
   const pointer = viewerPointerHints(overrides);
   return (
     <div
@@ -232,8 +234,8 @@ export function ViewerHelp({
               </div>
             }
           >
-            {readingTools && <ScrollSettings />}
-            {readingTools && <PrivacySettings />}
+            {features.localStudies && <ScrollSettings />}
+            {features.localStudies && <PrivacySettings />}
             {/* The shared panel (also the desktop's Mouse & Keyboard) draws with the
                 theme tokens; this dialog is always dark, so it takes the reading
                 room's dark tokens (globals.css .modal-reading), as the free viewer's

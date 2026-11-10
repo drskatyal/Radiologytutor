@@ -18,6 +18,7 @@
 // Pure resolution: key in, intent out. The viewer maps intents onto the
 // imperative handle.
 
+import { viewerFeatures, type ViewerFeatures } from "./viewerFeatures";
 import { sliceStepForKey } from "./sliceScrollbar";
 import type { OrientationCommand } from "@flowrad/viewer-core";
 import {
@@ -76,23 +77,23 @@ export interface HotkeyOptions {
    */
   rotateKey?: boolean;
   /**
-   * D = Bidirectional. Only where the viewer offers the free viewer's extra
-   * measure tools (READING_MEASURE_TOOLS).
+   * The surface's feature groups (lib/viewerFeatures.ts). `tools`:
+   * D = Bidirectional (READING_MEASURE_TOOLS).
    */
-  readingTools?: boolean;
+  features?: Partial<ViewerFeatures>;
 }
 
 /** What the host viewer can do beyond the shared keys (shapes the help sheet). */
 export interface ShortcutSheetOptions {
   /** The grid can maximise a pane (the free viewer's layouts). */
   paneMaximize?: boolean;
-  /** The free viewer's extra measure tools (D = Bidirectional). */
-  readingTools?: boolean;
+  /** The surface's feature groups (lib/viewerFeatures.ts); rows follow them. */
+  features?: Partial<ViewerFeatures>;
   /** Two or more monitors: the pop-out to a new window is offered (and its key). */
   popOut?: boolean;
 }
 
-/** Commands that exist only where `readingTools` is on. */
+/** Commands that exist only where the `tools` group is on. */
 const READING_TOOL_COMMANDS = new Set(["tool.bidirectional", "tool.cobb", "tool.circle", "tool.freehand", "tool.magnify"]);
 
 /**
@@ -219,7 +220,7 @@ export function shortcutForTool(tool: string, overrides: BindingOverrides = getL
 /**
  * The desktop's tool letters the free viewer adds on the image (readingKeys in
  * @flowrad/viewer-core): fixed keys, not rebindable, and only where
- * `readingTools` is on (the student session owns C, N and P elsewhere).
+ * the `keys` group is on (the student session owns C, N and P elsewhere).
  */
 export const READING_TOOL_KEYS: Readonly<Record<string, string>> = {
   ArrowAnnotate: "Y",
@@ -233,8 +234,8 @@ export const READING_TOOL_KEYS: Readonly<Record<string, string>> = {
  * A tool's keys for its tooltip / menu row: the bound ones, then (free viewer)
  * the desktop letter. "M · P" for pan, "C" for Cobb angle; null when none.
  */
-export function shortcutForToolIn(tool: string, readingTools: boolean): string | null {
-  const keys = [shortcutForTool(tool), readingTools ? READING_TOOL_KEYS[tool] : undefined].filter(Boolean);
+export function shortcutForToolIn(tool: string, readingKeys: boolean): string | null {
+  const keys = [shortcutForTool(tool), readingKeys ? READING_TOOL_KEYS[tool] : undefined].filter(Boolean);
   return keys.length ? keys.join(" · ") : null;
 }
 
@@ -271,26 +272,27 @@ const GROUP_TITLES: Record<string, string> = {
 export function viewerShortcutGroups(
   overrides: BindingOverrides = getLiveBindings(),
   mac = isMac(),
-  { paneMaximize = false, readingTools = false, popOut = false }: ShortcutSheetOptions = {}
+  { paneMaximize = false, features: requested, popOut = false }: ShortcutSheetOptions = {}
 ): ShortcutGroup[] {
+  const f = viewerFeatures(requested);
   const eff = effectiveInputs(WEB_COMMANDS, overrides);
   const groups: ShortcutGroup[] = [];
   for (const c of WEB_ACTIONS) {
     const inputs = eff.get(c.id) ?? [];
     if (!inputs.length) continue;
-    if (!readingTools && READING_TOOL_COMMANDS.has(c.id)) continue;
+    if (!f.tools && READING_TOOL_COMMANDS.has(c.id)) continue;
     // The nine presets read as one row by default.
     if (c.id.startsWith("preset.") && c.id !== "preset.default" && !isCustomised(overrides, c.id)) {
       if (c.id !== "preset.1") continue;
       // The free viewer gives Shift+1…7 to layouts, as the desktop does.
-      push(groups, c.group, readingTools ? { keys: ["1…9"], does: "Window preset" } : { keys: ["Shift", "1…9"], does: "Window preset" });
+      push(groups, c.group, f.keys ? { keys: ["1…9"], does: "Window preset" } : { keys: ["Shift", "1…9"], does: "Window preset" });
       continue;
     }
     push(groups, c.group, { keys: inputs.map((s) => inputLabel(s, mac)), does: c.label });
   }
   push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "F11"], does: "Set an exact window (width / level)" });
-  if (readingTools) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
-  if (readingTools) {
+  if (f.export) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
+  if (f.keys) {
     // RadiAnt's reading keys, as on the desktop (@flowrad/viewer-core/readingKeys).
     const mod = mac ? "⌘" : "Ctrl";
     push(groups, "Display", { keys: [mod, "0"], does: "Fit to the pane" });
@@ -298,18 +300,24 @@ export function viewerShortcutGroups(
     push(groups, "Display", { keys: [mod, "1…4"], does: "Zoom 100 / 200 / 400 / 800 % (100 % = one image pixel per screen pixel)" });
     push(groups, "Display", { keys: [mod, "Arrows"], does: "Pan the image (a step a press)" });
     push(groups, "Display", { keys: ["F12"], does: "Show / hide annotations" });
-    push(groups, "Layout", { keys: [mod, "F12"], does: "Grid: reference lines on / off" });
-    push(groups, "Layout", { keys: ["F5"], does: "Grid: link scrolling (Shift+F5 window / level, Alt+F5 zoom and pan)" });
+    if (f.layouts) {
+      push(groups, "Layout", { keys: [mod, "F12"], does: "Grid: reference lines on / off" });
+      push(groups, "Layout", { keys: ["F5"], does: "Grid: link scrolling (Shift+F5 window / level, Alt+F5 zoom and pan)" });
+    }
     const alt = mac ? "⌥" : "Alt";
-    push(groups, "Layout", { keys: [alt, "A / C / S"], does: "Reformat this pane: axial / coronal / sagittal (again for the stack)" });
-    push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
-    push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
-    push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
-    push(groups, "Tools", { keys: ["C"], does: "Cobb angle" });
+    if (f.slabs) {
+      push(groups, "Layout", { keys: [alt, "A / C / S"], does: "Reformat this pane: axial / coronal / sagittal (again for the stack)" });
+    }
+    if (f.tools) {
+      push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
+      push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
+      push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
+      push(groups, "Tools", { keys: ["C"], does: "Cobb angle" });
+    }
     push(groups, "Tools", { keys: ["P"], does: "Pan (as M)" });
     push(groups, "Tools", { keys: ["Esc"], does: "Cancel the measurement being drawn, then back to scroll" });
     push(groups, "Rotate / flip", { keys: ["Q / Shift+Q"], does: "Rotate 90° (as R / Shift+R)" });
-    push(groups, "Layout", { keys: ["Shift", "1…7"], does: "Layout: 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3" });
+    if (f.layouts) push(groups, "Layout", { keys: ["Shift", "1…7"], does: "Layout: 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3" });
     push(groups, "Tools", { keys: [mod, "Shift", "Backspace"], does: "Clear all measurements (Ctrl+Z brings them back)" });
     push(groups, "Stack", { keys: ["Space"], does: "Play / pause cine (as K)" });
     push(groups, "Stack", { keys: ["Shift", "[ / ]"], does: "Cine slower / faster" });
@@ -318,20 +326,22 @@ export function viewerShortcutGroups(
     push(groups, "Rotate / flip", { keys: ["Shift", "Backspace"], does: "Reset rotation and flips (zoom and window kept)" });
     push(groups, "Stack", { keys: ["PageUp / PageDown"], does: "Jump 10 % of the images (also Shift+↑ / ↓)" });
     push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
-    push(groups, "Layout", { keys: [mod, "O"], does: "Open DICOM files" });
-    push(groups, "Layout", { keys: [mod, "Shift", "O"], does: "Open a folder" });
+    if (f.localStudies) {
+      push(groups, "Layout", { keys: [mod, "O"], does: "Open DICOM files" });
+      push(groups, "Layout", { keys: [mod, "Shift", "O"], does: "Open a folder" });
+    }
     push(groups, "Layout", { keys: ["F1"], does: "This sheet (as Shift+?)" });
     push(groups, "Layout", { keys: [mod, "Shift", "V"], does: "Voice commands on / off" });
     push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
     push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
   }
-  if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "L"], does: "Grid: link the panes at what each shows now (a prior)" });
-  if (readingTools) {
+  if (f.layouts) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "L"], does: "Grid: link the panes at what each shows now (a prior)" });
+  if (f.slabs && f.keys) {
     push(groups, "Display", { keys: ["T"], does: "Slab: thin → MIP → MinIP → AvgIP (reformats the stack's plane)" });
     push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "] / ["], does: "Thicker / thinner slab (2 mm steps)" });
   }
-  if (readingTools) push(groups, "Layout", { keys: [mac ? "⌥" : "Alt", "Shift", "Enter"], does: "Distraction-free reading: images only (Esc exits)" });
-  if (readingTools) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "F"], does: "PET / CT fusion (a study with a CT and a PET)" });
+  if (f.layouts) push(groups, "Layout", { keys: [mac ? "⌥" : "Alt", "Shift", "Enter"], does: "Distraction-free reading: images only (Esc exits)" });
+  if (f.layouts) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "F"], does: "PET / CT fusion (a study with a CT and a PET)" });
   push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });
   if (popOut) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", mac ? "⌥" : "Alt", "N"], does: "Pop the study out to a new window (for the other monitor)" });
   if (paneMaximize) push(groups, "Layout", { keys: ["Enter"], does: "Maximise / restore the outlined pane (or double-click it; Esc restores)" });
@@ -474,7 +484,7 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
     case "r":
       return options.rotateKey ? { type: "orient", command: event.shiftKey ? "rotate:-90" : "rotate:90" } : null;
     case "d":
-      return options.readingTools ? { type: "tool", tool: "Bidirectional" } : null;
+      return options.features?.tools ? { type: "tool", tool: "Bidirectional" } : null;
     case "h":
       return { type: "orient", command: "flip:h" };
     case "v":

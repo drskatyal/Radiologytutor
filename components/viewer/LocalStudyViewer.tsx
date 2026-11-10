@@ -20,6 +20,7 @@
 // nothing from a header is logged, and there is no analytics on this surface.
 // e2e/visual/free-viewer.perf.spec.ts enforces it on every PR.
 
+import { FREE_VIEWER_FEATURES } from "@/lib/viewerFeatures";
 import { useViewerBindings } from "./useViewerBindings";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
@@ -1910,7 +1911,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                     onActivate={() => setActivePane(0)}
                     defaultTool="StackScroll"
                     questionMarkHelp
-                    readingTools
+                    features={FREE_VIEWER_FEATURES}
                     popOutOffered={popOutOffered}
                     startPlane={planeRequest?.pane === 0 ? planeRequest.plane : null}
                     onStartPlaneDone={() => setPlaneRequest(null)}
@@ -1974,7 +1975,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
                           instanceId={`local-pane-${pane}`}
                           defaultTool="StackScroll"
                           questionMarkHelp
-                          readingTools
+                          features={FREE_VIEWER_FEATURES}
                           popOutOffered={popOutOffered}
                           startPlane={planeRequest?.pane === pane ? planeRequest.plane : null}
                           onStartPlaneDone={() => setPlaneRequest(null)}
