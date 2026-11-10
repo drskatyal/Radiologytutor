@@ -214,6 +214,18 @@ async function measureFirstImage(page: Page) {
   };
 }
 
+/** Until renderer + GPU memory stops falling (two samples 1 s apart within 4 MB), at most 30 s. */
+async function waitForRssSettled(page: Page, browser: Browser, maxMs = 30_000) {
+  const deadline = Date.now() + maxMs;
+  let prev = await rendererRssMb(browser);
+  while (prev != null && Date.now() < deadline) {
+    await page.waitForTimeout(1000);
+    const next = await rendererRssMb(browser);
+    if (next == null || Math.abs(next - prev) <= 4) return;
+    prev = next;
+  }
+}
+
 /**
  * Until the main thread has had no long task (> 50 ms) for `quietMs`, at most
  * `maxMs`: the page settled, as it is by the time a reader picks a folder.
@@ -452,7 +464,10 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   // wait above), the reader takes a moment to pick the next folder: reopen
   // once the main thread is quiet, not while the collector is still returning
   // the closed study (that overlap is what made this 402–567 ms on some runs
-  // and ~150 ms on a quiet page).
+  // and ~130–170 ms once settled). Much of that clean-up (freeing the decoded
+  // study, recycling workers) runs off the main thread, so wait for memory to
+  // stop falling as well.
+  await waitForRssSettled(page, browser);
   await waitForQuietMainThread(page);
   await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
   const reopen = await measureFirstImage(page);
