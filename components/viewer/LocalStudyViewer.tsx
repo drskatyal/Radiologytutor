@@ -105,7 +105,8 @@ import {
   rememberStudyHandles,
   studyHandlesReadable,
 } from "@/lib/studyHandleStore";
-import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy } from "@/lib/recentStudyStore";
+import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy, setRecentStudyKept } from "@/lib/recentStudyStore";
+import { formatBytes, keepStudy, KeepStudyError, keptStudyFiles, forgetKeptStudy, studyLibrarySupported } from "@/lib/studyLibrary";
 import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 import { SCALE_BAR_STORAGE_KEY } from "@flowrad/viewer-core/scaleBar";
 import { loadScrollPreferences } from "@/lib/scrollPreferencesStore";
@@ -312,6 +313,15 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   const [priorNotice, setPriorNotice] = useState<string | null>(null);
   const [priorOpening, setPriorOpening] = useState(false);
   const openGeneration = useRef(0);
+  // The study library (the desktop's archive): this open study's recent-list
+  // key, and whether a copy of its files is kept in this browser.
+  const [library, setLibrary] = useState<{ key: string; keptBytes?: number } | null>(null);
+  const [keeping, setKeeping] = useState<{ done: number; total: number } | null>(null);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
+  const [librarySupported, setLibrarySupported] = useState(false);
+  useEffect(() => {
+    if (reading) void studyLibrarySupported().then(setLibrarySupported);
+  }, [reading]);
   // Recent studies (Chromium): what was opened from a folder handle, newest first.
   const [recent, setRecent] = useState<RecentStudy[]>([]);
   const [recentOpening, setRecentOpening] = useState<string | null>(null);
@@ -762,6 +772,8 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         const generation = ++openGeneration.current;
         setPriorOffer(null);
         setPriorNotice(null);
+        setLibrary(null);
+        setLibraryNotice(null);
         // Only while "Remember studies I open" is on (Help › Customise › Privacy & storage).
         if (handlesNow.length > 0 && getRecentStudiesEnabled()) {
           void (async () => {
@@ -769,6 +781,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
             const recentEntry = recentStudyEntry(result.studies, Date.now(), salt ?? undefined);
             if (!recentEntry) return;
             await rememberRecentStudy(recentEntry, handlesNow);
+            if (generation === openGeneration.current) {
+              const kept = (await listRecentStudies()).find((e) => e.key === recentEntry.key)?.keptBytes;
+              if (generation === openGeneration.current) setLibrary({ key: recentEntry.key, keptBytes: kept });
+            }
             if (!reading || result.studies.length !== 1 || generation !== openGeneration.current) return;
             const prior = priorsAmong(await listRecentStudies(), recentEntry)[0];
             if (prior && generation === openGeneration.current) setPriorOffer({ handles: [...handlesNow], prior });
@@ -939,6 +955,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       setRecentOpening(key);
       setRecentNotice(null);
       try {
+        // Kept in this browser: open the copy (no folder, no permission needed).
+        if (recent.find((e) => e.key === key)?.keptBytes) {
+          const kept = await keptStudyFiles(key);
+          if (kept.length > 0) {
+            openingHandles.current = await recentStudyHandles(key);
+            restorePlace.current = null;
+            void ingest(kept);
+            return;
+          }
+        }
         const handles = await regainStudyHandles(await recentStudyHandles(key));
         if (handles.length === 0) {
           setRecentNotice("Reading that folder was not allowed. Choose it again to open it.");
@@ -951,7 +977,7 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
         setRecentOpening(null);
       }
     },
-    [recentOpening, openFromHandles]
+    [recentOpening, openFromHandles, recent, ingest]
   );
   /** "Compare with prior…": reopen this study with the prior (inside the click: the browser asks only if read access lapsed). */
   const comparePrior = useCallback(async () => {
@@ -983,6 +1009,31 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
       setPriorOpening(false);
     }
   }, [priorOffer, priorOpening, ingest]);
+  /** "Keep in this browser": copy the open study's files into the study library. */
+  const keepOpenStudy = useCallback(async () => {
+    const target = library;
+    const files = openedFiles;
+    if (!target || !files || keeping) return;
+    setLibraryNotice(null);
+    setKeeping({ done: 0, total: files.length });
+    try {
+      const bytes = await keepStudy(target.key, files, (done, total) => setKeeping({ done, total }));
+      await setRecentStudyKept(target.key, bytes);
+      setLibrary((cur) => (cur?.key === target.key ? { key: target.key, keptBytes: bytes } : cur));
+    } catch (error) {
+      setLibraryNotice(error instanceof KeepStudyError ? error.message : "The copy could not be kept.");
+    } finally {
+      setKeeping(null);
+    }
+  }, [library, openedFiles, keeping]);
+  const removeKeptCopy = useCallback(async () => {
+    const target = library;
+    if (!target) return;
+    await forgetKeptStudy(target.key);
+    await setRecentStudyKept(target.key, undefined);
+    setLibrary((cur) => (cur?.key === target.key ? { key: target.key } : cur));
+    setLibraryNotice("Copy removed from this browser.");
+  }, [library]);
   const forgetRecent = useCallback((key: string) => {
     setRecent((list) => list.filter((e) => e.key !== key));
     setRecentNotice(null);
@@ -1540,6 +1591,16 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
           onToggleLink={(what) =>
             (what === "scroll" ? setLinkScroll : what === "voi" ? setLinkVoi : what === "zoom" ? setLinkZoom : setRefLines)((on) => !on)
           }
+        />
+      )}
+      {reading && librarySupported && library && openedFiles && rememberRecent && (
+        <StudyLibraryControl
+          keptBytes={library.keptBytes}
+          totalBytes={openedFiles.reduce((n, f) => n + f.size, 0)}
+          keeping={keeping}
+          notice={libraryNotice}
+          onKeep={() => void keepOpenStudy()}
+          onRemove={() => void removeKeptCopy()}
         />
       )}
       {priorNotice && (
@@ -2724,6 +2785,60 @@ function SeriesList({
           }}
           onClose={() => setMenuAt(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/** "Keep in this browser" for the open study (the desktop's archive), or its kept copy. */
+function StudyLibraryControl({
+  keptBytes,
+  totalBytes,
+  keeping,
+  notice,
+  onKeep,
+  onRemove,
+}: {
+  keptBytes?: number;
+  totalBytes: number;
+  keeping: { done: number; total: number } | null;
+  notice: string | null;
+  onKeep: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div data-testid="study-library" className="flex flex-col gap-1.5 rounded-lg border border-white/10 p-2.5 text-xs text-white/70">
+      {keptBytes ? (
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 tabular-nums">
+            <HardDrive className="h-3.5 w-3.5 text-success" aria-hidden />
+            Kept in this browser · {formatBytes(keptBytes)}
+          </span>
+          <Button size="sm" variant="imaging" className="h-7 px-2 text-xs" onClick={onRemove}>
+            Remove copy
+          </Button>
+        </div>
+      ) : (
+        <>
+          <Button
+            size="sm"
+            variant="imaging"
+            className="h-8 justify-start text-xs"
+            leadingIcon={<HardDrive />}
+            loading={!!keeping}
+            onClick={onKeep}
+          >
+            {keeping ? `Keeping… ${Math.round((100 * keeping.done) / Math.max(1, keeping.total))} %` : `Keep in this browser (${formatBytes(totalBytes)})`}
+          </Button>
+          <span className="text-white/50">
+            A copy of these files stays in this browser only, so the study reopens from Recent studies without the folder or disc.
+          </span>
+        </>
+      )}
+      {notice && (
+        <span role="status" className="text-white/70">
+          {notice}
+        </span>
       )}
     </div>
   );

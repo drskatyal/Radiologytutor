@@ -40,6 +40,8 @@ export interface RecentStudy {
   openedAt: number;
   /** Salted one-way patient key (see the module header), when one patient's studies were opened. */
   patientKey?: string;
+  /** Bytes of a copy kept in this browser's study library (opt-in), when there is one. */
+  keptBytes?: number;
 }
 
 /** How many the list keeps (searchable, as the desktop's study history is). */
