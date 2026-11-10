@@ -3,20 +3,23 @@ import { expect, test, type Page } from "@playwright/test";
 // RadLearn's case viewer (/case/[id]?mode=view) on the shared ViewerFrame,
 // against the stand-in archive (e2e/support/mockArchive.mjs: Orthanc REST +
 // the bench DICOMweb origin, one 60-slice CT series in `case-e2e-archive`).
-// Pixel reads are gated on a session (lib/studyAccess), so each test signs in
-// through the demo route first, as a student would arrive.
+// Pixel reads are gated on a session (lib/studyAccess): the suite signs in once
+// (e2e/support/archiveSignIn.ts) and every test starts with that session.
 
 const SERIES = "1.2.826.0.1.3680043.8.498.20000000000000000000000001";
 
 async function open(page: Page, query = "") {
   await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
-  const signIn = await page.request.post("/api/auth/demo", { data: {} });
-  expect(signIn.ok(), "demo sign-in").toBeTruthy();
   await page.goto(`/case/case-e2e-archive?mode=view${query}`);
   await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
 }
 
 const slice = (page: Page) => page.getByRole("slider", { name: "Slice" }).first();
+
+/** A desktop with a second monitor (Window Management API), as a reviewer's desk has. */
+async function twoScreens(page: Page) {
+  await page.addInitScript(() => Object.defineProperty(window.screen, "isExtended", { get: () => true }));
+}
 
 test.describe("case viewer at 1440", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
@@ -49,13 +52,61 @@ test.describe("case viewer at 1440", () => {
     await expect(slice(page)).toHaveAttribute("aria-valuetext", "Slice 12 of 60");
     await expect(page.getByText(/W 1500\s+L [−-]600/).first()).toBeVisible();
     await page.getByRole("button", { name: "View link" }).click();
-    await expect(page.getByText("View link copied")).toBeVisible();
+    await expect(page.getByText("View link copied").first()).toBeVisible();
     const copied = new URL(await page.evaluate(() => navigator.clipboard.readText()));
     expect(copied.pathname).toBe("/case/case-e2e-archive");
     expect(copied.searchParams.get("series")).toBe(SERIES);
     expect(copied.searchParams.get("im")).toBe("12");
     expect(copied.searchParams.get("ww")).toBe("1500");
     expect(copied.searchParams.get("wc")).toBe("-600");
+  });
+});
+
+test.describe("case viewer at 1440, more", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("the toolbar carries the hanging layouts (the header picker's old job)", async ({ page }) => {
+    await open(page);
+    const layout = page.getByTestId("toolbar-layout");
+    await expect(layout).toHaveAccessibleName("Layout, Single");
+    await layout.click();
+    await page.getByRole("menuitemradio", { name: /Side by side/ }).click();
+    await expect(page.getByRole("slider", { name: "Slice" })).toHaveCount(2, { timeout: 30_000 });
+    await expect(layout).toHaveAccessibleName("Layout, Side by side");
+    await layout.click();
+    await page.getByRole("menuitemradio", { name: /Single/ }).click();
+    await expect(page.getByRole("slider", { name: "Slice" })).toHaveCount(1);
+  });
+
+  test("on a two-screen desktop the image sits right under the header, dark: no light pop-out strip", async ({ page }) => {
+    await twoScreens(page);
+    await open(page);
+    await expect(page.getByRole("button", { name: /Pop out to new window/ })).toHaveCount(0);
+    const header = (await page.locator("header").first().boundingBox())!;
+    const canvas = (await page.locator("canvas").first().boundingBox())!;
+    expect(canvas.y - (header.y + header.height)).toBeLessThan(4);
+    const bar = page.getByRole("toolbar", { name: "Viewer tools" });
+    expect(await bar.evaluate((row) => getComputedStyle(row.parentElement!.parentElement!).backgroundColor)).toBe("rgb(0, 0, 0)");
+  });
+
+  test("signed out: a sign-in prompt, back to this view, and no image requests", async ({ browser }) => {
+    // Not the suite's stored session: a visitor who never signed in.
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
+    const archive: number[] = [];
+    page.on("response", (res) => {
+      if (res.url().includes("/api/dicomweb")) archive.push(res.status());
+    });
+    await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+    await page.goto(`/case/case-e2e-archive?mode=view&series=${SERIES}&im=12`);
+    const prompt = page.getByTestId("case-sign-in");
+    await expect(prompt.getByRole("heading", { name: "Sign in to view this study" })).toBeVisible();
+    const href = await prompt.getByRole("link", { name: "Sign in" }).getAttribute("href");
+    expect(decodeURIComponent(href!.split("next=")[1]!)).toBe(`/case/case-e2e-archive?mode=view&series=${SERIES}&im=12`);
+    await expect(page.getByText("This series could not be displayed.")).toHaveCount(0);
+    await page.waitForTimeout(1500);
+    expect(archive, "no archive requests while signed out").toEqual([]);
+    await context.close();
   });
 });
 

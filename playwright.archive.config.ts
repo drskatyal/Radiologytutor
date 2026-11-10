@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 import os from "node:os";
 import path from "node:path";
+import { ARCHIVE_STORAGE_STATE } from "./e2e/support/archiveSignIn";
 
 // Archive-backed e2e (e2e/archive): RadLearn screens that read series from an
 // archive, e.g. the case viewer. Kept apart from the visual gate
@@ -20,6 +21,8 @@ const MOCK_ARCHIVE_DATA_DIR = path.join(os.tmpdir(), "flowrad-e2e-archive-data")
 
 export default defineConfig({
   testDir: "e2e/archive",
+  // One demo sign-in for the suite (the route is rate limited); see the setup.
+  globalSetup: "./e2e/support/archiveSignIn.ts",
   timeout: 60_000,
   expect: { timeout: 15_000 },
   retries: process.env.CI ? 1 : 0,
@@ -28,6 +31,7 @@ export default defineConfig({
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     baseURL: `http://127.0.0.1:${PORT}`,
+    storageState: ARCHIVE_STORAGE_STATE,
     // Sandboxes that ship their own Chromium (not the pinned build) set this.
     ...(process.env.PW_CHROMIUM_PATH
       ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH, args: ["--headless", "--no-sandbox"] } }

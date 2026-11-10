@@ -273,7 +273,7 @@ function StrokeMark({
     const p = penProgress(t, mark.durationMs);
     const drawn = partialStroke(full, p);
     const parts = uncertain ? dashStroke(drawn, 13, 9) : [drawn];
-    return (
+    const ring = (
       <g data-testid="sketch-ring" data-done={p >= 1 ? "true" : "false"}>
         {parts.map((part, index) => (
           <Ink
@@ -285,6 +285,15 @@ function StrokeMark({
             complete={p >= 1 || index < parts.length - 1}
           />
         ))}
+      </g>
+    );
+    // An authored ring IS the finding's marker on this path (FindingMarker
+    // steps aside while there is ink): same test hook, whichever draws it.
+    return uncertain ? (
+      ring
+    ) : (
+      <g data-testid="finding-marker" data-source="ring" data-visible="true">
+        {ring}
       </g>
     );
   }
@@ -402,6 +411,10 @@ function CardMark({
   const cardRef = useRef<HTMLDivElement>(null);
   const [seat, setSeat] = useState<Seat | null>(null);
   const [height, setHeight] = useState(0);
+  // No seat clears the pane's readouts at full size (a short pane: a phone's
+  // stacked compare): drop to the title and two lines, then to the title
+  // alone, seating again each time. 0 = full card.
+  const [squeeze, setSqueeze] = useState(0);
   const seed = useMemo(() => inkSeed(`${mark.id}-leader`), [mark.id]);
   const width = cardWidthFor(frame.width);
   const geo = ringRadiusPx(frame, { ...mark, kind: "circle" }, narrow);
@@ -423,7 +436,8 @@ function CardMark({
         return null;
       }
     })();
-    const widths = width >= 240 ? [width, 224, 196, 180] : [width];
+    // Narrow panes may take a narrower card too (it only gets taller).
+    const widths = width >= 240 ? [width, 224, 196, 180] : [width, Math.max(160, width - 40)];
     const place = placeCardFlexible({
       anchor,
       ringRadius: ringR,
@@ -434,9 +448,15 @@ function CardMark({
       grid,
       avoid: [...viewerChrome(f.width), ...(chromeBoxes?.() ?? [])],
     });
+    if (!Number.isFinite(place.cost) && squeeze < 2) {
+      // Smaller, then seat afresh (an old seat from a roomier pane must not stay).
+      setSqueeze(squeeze + 1);
+      setSeat(null);
+      return;
+    }
     const centre = f.unproject(place.x + place.width / 2, place.y + place.height / 2);
     if (centre) setSeat({ x_pct: centre.x_pct, y_pct: centre.y_pct, width: place.width, height: place.height });
-  }, [mark.anchor.x_pct, mark.anchor.y_pct, ringR, sampleImage, chromeBoxes, width]);
+  }, [mark.anchor.x_pct, mark.anchor.y_pct, ringR, sampleImage, chromeBoxes, width, squeeze]);
 
   // Track the card's real height (fonts, line clamps) so the leader always
   // lands on its edge.
@@ -451,6 +471,18 @@ function CardMark({
     return () => observer.disconnect();
   }, []);
 
+  // The pane grew (compare closed, rotated to landscape): try full size again.
+  const paneKey = `${Math.round(frame.width)}x${Math.round(frame.height)}`;
+  const lastPane = useRef(paneKey);
+  useEffect(() => {
+    if (lastPane.current === paneKey) return;
+    lastPane.current = paneKey;
+    if (squeeze > 0) {
+      setSqueeze(0);
+      setSeat(null);
+    }
+  }, [paneKey, squeeze]);
+
   // Seat when the leader is about to start, not at mount: by then the
   // viewer has painted this slice, so the black we sample is real.
   const due = elapsed(clock, mark) >= -60;
@@ -462,10 +494,10 @@ function CardMark({
   // pushes the card off the view or onto the ring, reseat after the camera
   // settles (not mid-gesture).
   const centre = seat ? projectPt(frame, seat.x_pct, seat.y_pct) : null;
-  const box: Box | null =
-    seat && centre
-      ? { x: centre.x - seat.width / 2, y: centre.y - (height || seat.height) / 2, width: seat.width, height: height || seat.height }
-      : null;
+  // The card never leaves its pane: clamp the seat to the viewport with a
+  // margin, and cap its height to what the pane can show.
+  const maxHeight = Math.max(48, frame.height - CARD_EDGE * 2);
+  const box: Box | null = seat && centre ? clampCard(centre, seat.width, Math.min(height || seat.height, maxHeight), frame) : null;
   const stale = Boolean(box && geo && cardNeedsReseat(box, geo.center, ringR, frame));
   const widthChanged = Boolean(seat && seat.width > width);
   useEffect(() => {
@@ -534,8 +566,12 @@ function CardMark({
           data-ink-card
           data-seated={placed ? "true" : "false"}
           className="rounded-xl bg-annotation px-3.5 pb-3 pt-2.5 text-left shadow-annotation"
+          data-compact={squeeze > 0 ? String(squeeze) : undefined}
           style={{
             animation: placed ? `ink-card-in 320ms cubic-bezier(0.22, 1, 0.36, 1) ${appearAt}ms both` : undefined,
+            // Dynamic: the pane's height. Overflow clips inside the card, never past the pane.
+            maxHeight,
+            overflow: "hidden",
           }}
         >
           <p
@@ -546,15 +582,34 @@ function CardMark({
           >
             {mark.certainty === "uncertain" ? "Uncertain · your tap" : TEMPLATE_LABEL[card.template]}
           </p>
-          <p className="mt-1 text-[15px] font-semibold leading-snug tracking-tightest text-white">{card.title}</p>
-          <CardBody template={card.template} lines={card.lines} />
+          <p className={cn("mt-1 text-[15px] font-semibold leading-snug tracking-tightest text-white", squeeze > 1 && "line-clamp-2")}>
+            {card.title}
+          </p>
+          {squeeze < 2 ? (
+            <CardBody template={card.template} lines={squeeze ? card.lines.slice(0, 1) : card.lines} compact={squeeze > 0} />
+          ) : null}
         </div>
       </div>
     </>
   );
 }
 
-function CardBody({ template, lines }: { template: DiagramTemplate; lines: readonly string[] }) {
+/** Pixels a card keeps from its pane's edges. */
+const CARD_EDGE = 8;
+
+/** A card box centred on `centre`, moved (not resized) to sit inside the frame. */
+export function clampCard(
+  centre: { x: number; y: number },
+  width: number,
+  height: number,
+  frame: { width: number; height: number }
+): Box {
+  const x = Math.min(Math.max(CARD_EDGE, centre.x - width / 2), Math.max(CARD_EDGE, frame.width - width - CARD_EDGE));
+  const y = Math.min(Math.max(CARD_EDGE, centre.y - height / 2), Math.max(CARD_EDGE, frame.height - height - CARD_EDGE));
+  return { x, y, width, height };
+}
+
+function CardBody({ template, lines, compact = false }: { template: DiagramTemplate; lines: readonly string[]; compact?: boolean }) {
   if (!lines.length) return null;
   if (template === "differential") {
     return (
@@ -579,5 +634,7 @@ function CardBody({ template, lines }: { template: DiagramTemplate; lines: reado
       </ol>
     );
   }
-  return <p className="mt-1.5 line-clamp-4 text-[13px] leading-[1.45] text-white/80">{lines[0]}</p>;
+  return (
+    <p className={cn("mt-1.5 text-[13px] leading-[1.45] text-white/80", compact ? "line-clamp-2" : "line-clamp-4")}>{lines[0]}</p>
+  );
 }
