@@ -564,7 +564,8 @@ test("MR multi-series JPEG 2000 as a ZIP: first image, series switch, lazy codec
   const first = await measureFirstImage(page);
   const parsed = await waitParsed(page);
   const rail = page.getByRole("complementary", { name: "Series" });
-  await expect(rail.locator("button[aria-pressed]")).toHaveCount(5);
+  // The five series of the list (not the list's own compact toggle, also a pressed-state button).
+  await expect(rail.getByRole("list", { name: "Series" }).locator("button[aria-pressed]")).toHaveCount(5);
   await page.screenshot({ path: path.join(OUT_DIR, "04-mr-zip.png") });
 
   // Switch series: a different series paints.

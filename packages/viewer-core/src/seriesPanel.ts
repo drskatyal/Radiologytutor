@@ -45,3 +45,25 @@ export function isSeriesPanelShortcut(
   const mod = mac ? !!e.metaKey && !e.ctrlKey : !!e.ctrlKey && !e.metaKey;
   return mod && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === "b" || e.code === "KeyB");
 }
+
+// Compact series list (the desktop's "Compact series list" setting): one line
+// per series instead of thumbnails, for studies with many series. Remembered
+// per device like the panel itself; off (thumbnails) by default.
+
+export const SERIES_LIST_COMPACT_STORAGE_KEY = "flowrad.seriesList.compact";
+
+export function readSeriesListCompact(store: KeyValueStore | null = storage()): boolean {
+  try {
+    return store?.getItem(SERIES_LIST_COMPACT_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeSeriesListCompact(compact: boolean, store: KeyValueStore | null = storage()): void {
+  try {
+    store?.setItem(SERIES_LIST_COMPACT_STORAGE_KEY, compact ? "1" : "0");
+  } catch {
+    /* not remembered; still toggles */
+  }
+}
