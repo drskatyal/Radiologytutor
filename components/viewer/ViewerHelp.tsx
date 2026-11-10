@@ -234,13 +234,19 @@ export function ViewerHelp({
           >
             {readingTools && <ScrollSettings />}
             {readingTools && <PrivacySettings />}
-            <BindingsPanel
-              table={WEB_COMMANDS}
-              overrides={overrides}
-              onChange={(next) => void saveViewerBindings(next)}
-              surface="web"
-              storedWhere={viewerBindingsSyncedToAccount() ? "in this browser and your account" : "in this browser"}
-            />
+            {/* The shared panel (also the desktop's Mouse & Keyboard) draws with the
+                theme tokens; this dialog is always dark, so it takes the reading
+                room's dark tokens (globals.css .modal-reading), as the free viewer's
+                other reading dialogs do. Without it the labels were dark on dark. */}
+            <div className="modal-reading" data-testid="bindings-on-dark">
+              <BindingsPanel
+                table={WEB_COMMANDS}
+                overrides={overrides}
+                onChange={(next) => void saveViewerBindings(next)}
+                surface="web"
+                storedWhere={viewerBindingsSyncedToAccount() ? "in this browser and your account" : "in this browser"}
+              />
+            </div>
           </Suspense>
         ) : (
         <>
