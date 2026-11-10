@@ -41,7 +41,6 @@ import { AgentOrb, type OrbState } from "./AgentOrb";
 import { useStudentSession, type SessionMode } from "./useStudentSession";
 import { HotkeysOverlay } from "./HotkeysOverlay";
 import { warmPrefetch } from "./prefetch";
-import { ImagingLayout } from "@/components/viewer/ImagingLayout";
 import { AnatomyPanel } from "./AnatomyPanel";
 import { NARROW_LAYOUT_MEDIA } from "@/lib/viewerLayout";
 import { ReportCoach } from "./ReportCoach";
@@ -428,19 +427,13 @@ export default function StudentSession({
             railOpen && "lg:mr-[380px]"
           )}
         >
-          <ImagingLayout
-            fill
-            series={rail}
-            seriesLoading={resolved.loading && rail.length === 0}
-            listedSeries={manifest?.series}
-            mainImageReady={s.ready}
-            activeIndex={activeSeriesIndex}
-            onSelectSeries={(index) => {
-              const uid = rail[index]?.seriesInstanceUID;
-              if (uid) onSeriesChange(uid);
-            }}
-            className="absolute inset-0"
-            fullscreenDock={
+          {/* The shared reading frame (in StudentViewer): series panel, full
+              screen and the toolbar come with it; the microphone stays
+              reachable in full screen through the teaching layer's dock. */}
+          <div className="absolute inset-0 flex min-h-0 flex-col">
+            {showViewer ? (
+            <StudentViewer
+          dock={
               <MicButton
                 state={s.micState}
                 onStart={s.onMicStart}
@@ -454,10 +447,7 @@ export default function StudentSession({
                       : "Open microphone"
                 }
               />
-            }
-          >
-            {showViewer ? (
-            <StudentViewer
+          }
           source={liveSource}
           series={rail}
           activeSeriesIndex={activeSeriesIndex}
@@ -517,7 +507,7 @@ export default function StudentSession({
                 </span>
               </div>
             )}
-          </ImagingLayout>
+          </div>
           {anatomyOpen && (
             <AnatomyPanel
               caseId={caseData.caseId}

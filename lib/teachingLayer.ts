@@ -228,6 +228,42 @@ export interface TeachingLayer {
   overlay?: (pane: TeachingPane) => ReactNode;
   /** A pane's image is up: the viewer a tour or the tutor drives. */
   onViewer?: (viewer: TeachingViewer, pane: TeachingPane) => void;
+  /**
+   * A session that already drives the viewer through its own handle refs
+   * (record / replay, the tutor's actions) names them here: the frame writes
+   * each pane's live handle into the returned ref, as it does into its own.
+   */
+  bindControls?: (paneIndex: number) => { current: TeachingControls | null } | null;
+  /** Pane 0's series changed in the viewer (a pick in the series panel, a tutor's set_series). */
+  onSeriesChange?: (seriesInstanceUID: string) => void;
+  /**
+   * A second pane beside the first, on this series (a compare landing: a
+   * prior, another series). Null closes it and the frame returns to one pane.
+   */
+  compare?: TeachingCompare | null;
+  /**
+   * A short click or tap on a pane's image (not a drag, not the toolbar), in
+   * client pixels. The layer maps it with its own overlay's box.
+   */
+  onPaneClick?: (pane: TeachingPane, point: { clientX: number; clientY: number }) => void;
+  /** Kept reachable while the stage is full screen (the session's microphone). */
+  dock?: ReactNode;
+}
+
+export interface TeachingCompare {
+  seriesInstanceUID: string;
+  /** Overlay label of the compare pane. Default "Compare". */
+  label?: string;
+  /** Overlay label of the first pane while comparing. Default "Current". */
+  primaryLabel?: string;
+}
+
+/** A pointer that moved less than this between down and up is a click, not a drag. */
+export const PANE_CLICK_SLOP_PX = 8;
+
+/** Whether a pointer down → up pair is a click (not a scroll, pan or window drag). */
+export function isPaneClick(down: { x: number; y: number } | null, up: { x: number; y: number }): boolean {
+  return !!down && Math.hypot(up.x - down.x, up.y - down.y) <= PANE_CLICK_SLOP_PX;
 }
 
 /** The reading groups for a frame: the free viewer's with no layer, else the layer's (default all off). */

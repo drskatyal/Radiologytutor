@@ -43,6 +43,36 @@ async function seedData() {
   };
   delete archiveCase.liveTeachingPack;
   await writeFile(join(MOCK_ARCHIVE_DATA_DIR, "case-e2e-archive.json"), JSON.stringify(archiveCase, null, 2));
+  // A teaching case on the same series: two authored findings (slice, window,
+  // marker) for the student session's tour (e2e/archive/student-session.spec.ts).
+  const finding = (order, sliceIndex, windowWidth, windowCenter, x, y) => ({
+    id: `f_e2e_${order}`,
+    order,
+    label: `E2E finding ${order}`,
+    description: `Synthetic finding ${order}.`,
+    teachingPoints: [],
+    state: "",
+    studyInstanceUID: STUDY_UID,
+    seriesInstanceUID: SERIES_UID,
+    sliceIndex,
+    windowWidth,
+    windowCenter,
+    marker: { x_pct: x, y_pct: y, shape: "circle" },
+  });
+  await writeFile(
+    join(MOCK_ARCHIVE_DATA_DIR, "case-e2e-teach.json"),
+    JSON.stringify(
+      {
+        ...archiveCase,
+        id: "case-e2e-teach",
+        caseId: "case-e2e-teach",
+        title: "E2E teaching CT",
+        findings: [finding(1, 14, 1500, -600, 0.3, 0.4), finding(2, 44, 400, 40, 0.62, 0.55)],
+      },
+      null,
+      2
+    )
+  );
   // The org owns the study: lib/studyAccess gates every pixel read on that.
   await writeFile(
     join(MOCK_ARCHIVE_DATA_DIR, "studies", "stu_e2e_archive.json"),
