@@ -8,7 +8,10 @@
 // shows nothing here (the mic button itself lights up).
 
 import { AlertTriangle, Mic, X } from "lucide-react";
-import { Button, IconButton, ProgressBar, cn } from "@/components/ui";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
+import { ProgressBar } from "@/components/ui/ProgressBar";
+import { cn } from "@/components/ui/cn";
 import type { VoiceProgress, VoiceState } from "./voiceSession";
 
 export interface VoiceStatusProps {

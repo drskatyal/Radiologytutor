@@ -180,11 +180,11 @@ npm --prefix desktop run tauri build      # .msi + .exe (Windows), .dmg + .app (
 ```
 
 Signed release builds, notarisation and auto-update manifests are produced by
-`.github/workflows/desktop-release.yml` on a `desktop-v*` tag, as a **draft**
-GitHub release. The file header lists the secrets it reads. Every secret is
+`.github/workflows/desktop-release.yml`, started by hand (Actions → Run
+workflow), as a **draft** GitHub release tagged `desktop-v<version>`. The file header lists the secrets it reads. Every secret is
 optional; without them the build is unsigned and has no working updater.
-`.github/workflows/desktop-ci.yml` runs on every PR that touches `desktop/`,
-`lib/` or `components/ui/`. It type-checks, runs the unit and Rust tests,
+`.github/workflows/desktop-ci.yml` runs only when started by hand (Actions
+minutes cost money; run the same checks locally before merging). It type-checks, runs the unit and Rust tests,
 builds the app, and opens every fixture in it under Xvfb.
 
 Optional build-time variable: `RADLEARN_SERVER_URL`, the default address

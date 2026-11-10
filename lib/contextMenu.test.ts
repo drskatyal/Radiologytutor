@@ -51,7 +51,7 @@ const find = (entries: readonly MenuEntry[], id: string): MenuEntry | undefined 
 test("image menu: every section of the spec is there on a CT with two monitors", () => {
   const ids = commandsOf(imageMenu(base()));
   for (const id of [
-    "tool:Length", "preset:ct-lung", "invert", "zoom:fit", "zoom:1", "zoom:2", "rotate:90", "rotate:-90", "rotate:180", "flip:h", "flip:v", "orient:reset", "reset",
+    "tool:Length", "preset:ct-lung", "window:custom", "invert", "zoom:fit", "zoom:1", "zoom:2", "rotate:90", "rotate:-90", "rotate:180", "flip:h", "flip:v", "orient:reset", "reset",
     "slab:mip", "slab:minip", "slab:avg", "slab-mm:10", "reformat:coronal", "mpr", "3d", "layout:2x2", "layout:2x3", "layout:3x3",
     "monitor:B", "link:scroll", "link:voi", "link:zoom", "refLines", "cine", "fps:30", "overlay", "annotations",
     "copyImage", "save:png", "save:jpeg", "video", "tags", "comparePrior",
@@ -112,4 +112,51 @@ test("image menu: 'Hide series panel' only where the app has a series panel", ()
   assert.ok(shown?.kind === "item" && shown.label === "Hide series panel");
   const hidden = find(imageMenu({ ...base(), seriesPanel: { shown: false } }), "seriesPanel");
   assert.ok(hidden?.kind === "item" && hidden.label === "Show series panel");
+});
+
+test("image menu: the free viewer's Export submenu offers video and the Export dialog", () => {
+  const ids = commandsOf(imageMenu(base({ can: { copyImage: true, saveImage: true, video: true, exportDialog: true } })));
+  for (const id of ["copyImage", "save:png", "save:jpeg", "video", "export"]) assert.ok(ids.includes(id), id);
+  const plain = commandsOf(imageMenu(base({ can: { copyImage: true, saveImage: true } })));
+  assert.ok(!plain.includes("export"), "teaching surfaces keep the pixel-only saves");
+});
+
+test("image menu: distraction-free reading is offered (checked when on) only where the app has it", () => {
+  const find = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "item" && e.id === "distractionFree");
+  const off = find(imageMenu(base({ distractionFree: false })));
+  assert.ok(off?.kind === "item" && !off.checked);
+  const on = find(imageMenu(base({ distractionFree: true })));
+  assert.ok(on?.kind === "item" && on.checked);
+  assert.equal(find(imageMenu(base({ distractionFree: null }))), undefined);
+  assert.equal(find(imageMenu(base({}))), undefined);
+});
+
+test("image menu: the scale bar is offered (checked when on) only where the viewer has it", () => {
+  const find = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "item" && e.id === "scaleBar");
+  const off = find(imageMenu(base({ scaleBar: false })));
+  assert.ok(off?.kind === "item" && !off.checked && off.label === "Scale bar");
+  const on = find(imageMenu(base({ scaleBar: true })));
+  assert.ok(on?.kind === "item" && on.checked);
+  assert.equal(find(imageMenu(base({ scaleBar: null }))), undefined);
+  assert.equal(find(imageMenu(base({}))), undefined, "the desktop keeps it in Settings");
+});
+
+test("image menu: PET / CT fusion sits under Reformat only where the study has the pair", () => {
+  assert.ok(commandsOf(imageMenu(base({ can: { fusion: true } }))).includes("fusion"));
+  assert.ok(!commandsOf(imageMenu(base({ can: { copyImage: true } }))).includes("fusion"));
+});
+
+test("image menu: Measurements… is offered where the app has the panel", () => {
+  assert.ok(commandsOf(imageMenu(base({ can: { measurements: true } }))).includes("measurements"));
+  assert.ok(!commandsOf(imageMenu(base({ can: {} }))).includes("measurements"));
+});
+
+test("image menu: 'Link at what each pane shows now' sits in the Link submenu where offered", () => {
+  const linkSub = (menu: ReturnType<typeof imageMenu>) => menu.find((e) => e.kind === "sub" && e.id === "links");
+  const sub = linkSub(imageMenu(base({ can: { linkAtCurrent: true } })));
+  assert.ok(sub?.kind === "sub");
+  assert.ok(sub.items().some((e) => e.kind === "item" && e.id === "linkAtCurrent"));
+  const plain = linkSub(imageMenu(base({ can: {} })));
+  assert.ok(plain?.kind === "sub" && !plain.items().some((e) => e.kind === "item" && e.id === "linkAtCurrent"));
+  assert.equal(linkSub(imageMenu(base({ can: { links: false } }))), undefined);
 });

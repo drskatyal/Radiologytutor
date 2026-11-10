@@ -56,3 +56,14 @@ test("the bundled series is a single-series rail anchored to the sentinel study"
     BUNDLED_CASE.kind === "wadouri" ? BUNDLED_CASE.frames : 0
   );
 });
+
+test("seriesForSource: the bundled sample is its 1-series case, a WADO-RS series is itself, local stacks none", async () => {
+  const { seriesForSource, BUNDLED_CASE, BUNDLED_CASE_SERIES } = await import("./viewerSource");
+  assert.deepEqual(seriesForSource(BUNDLED_CASE), BUNDLED_CASE_SERIES);
+  assert.deepEqual(seriesForSource({ kind: "wadouri", url: "/other.dcm", frames: 3 }), []);
+  assert.deepEqual(
+    seriesForSource({ kind: "wadors", wadoRsRoot: "/api/dicomweb", StudyInstanceUID: "1.2", SeriesInstanceUID: "1.2.3" }),
+    [{ seriesInstanceUID: "1.2.3", studyInstanceUID: "1.2", wadoRsRoot: "/api/dicomweb" }]
+  );
+  assert.deepEqual(seriesForSource({ kind: "imageIds", key: "k", imageIds: ["a"] }), []);
+});

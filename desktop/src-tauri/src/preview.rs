@@ -60,6 +60,8 @@ fn text(obj: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<String> {
 }
 
 /// Encode the first frame as a PNG, or None when this file is not a cheap case.
+/// Only the tests use it; the app calls `render_png_sized`.
+#[cfg(test)]
 pub fn render_png(path: &Path) -> Option<Vec<u8>> {
     render_png_sized(path, None)
 }
@@ -206,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)] // the 2×2 box spelled out, zero included
     fn downsample_box_averages_to_the_cap() {
         let gray: Vec<u8> = (0..16).map(|i| (i * 10) as u8).collect(); // 4×4
         let (out, r, c) = super::downsample(&gray, 4, 4, 2);

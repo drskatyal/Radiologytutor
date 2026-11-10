@@ -11,6 +11,7 @@ export function shapeForAnnotationTool(tool?: string): MarkerShape {
     case "ArrowAnnotate":
     case "Length":
     case "Angle":
+    case "CobbAngle":
     case "Bidirectional":
       return "arrow";
     default:

@@ -3,10 +3,13 @@ import { createRoot } from "react-dom/client";
 import { ToastProvider } from "./toast";
 import App from "./App";
 import { initProtocol, invoke, isTauri } from "./platform";
-import "./styles.css";
+import appCss from "./styles.css?inline";
 import { watchLongTasks } from "./perfWatch";
 import { installContextMenuGuard } from "./contextMenuGuard";
 
+// Cold-start breakdown (bench report `pageTiming.main`): this module body starts
+// running (its imports, the app included, are evaluated by now).
+(window as unknown as { __mainAt?: number }).__mainAt = performance.now();
 // Benchmark: when did our JS start, relative to process start?
 if (isTauri) {
   void invoke<number>("startup_elapsed_ms").then((ms) => {
@@ -55,30 +58,20 @@ function Root() {
   return <App />;
 }
 
-// The app stylesheet loads without holding the splash's first paint
-// (vite.config.ts nonBlockingAppCss); switch it on before React renders.
-function appStylesheet(): Promise<void> {
-  const link = document.querySelector<HTMLLinkElement>("link[data-app-css]");
-  if (!link) return Promise.resolve(); // dev server: Vite injects the CSS itself
-  return new Promise<void>((resolve) => {
-    const on = () => {
-      link.media = "all";
-      resolve();
-    };
-    if (link.sheet) on();
-    else {
-      link.addEventListener("load", on, { once: true });
-      link.addEventListener("error", on, { once: true });
-    }
-  });
-}
+// The app stylesheet ships inside this script (`?inline`) and is applied
+// before React renders: the page requests no stylesheet while it loads. A
+// stylesheet still loading held WebKit's first paint of the splash, even as
+// `media="print"` (CI macOS: the first paint came ~20 ms sooner after the
+// document was parsed once it was gone).
+const appStyle = document.createElement("style");
+appStyle.setAttribute("data-app-css", "");
+appStyle.textContent = appCss;
+document.head.appendChild(appStyle);
 
-void appStylesheet().then(() =>
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <ToastProvider>
-        <Root />
-      </ToastProvider>
-    </StrictMode>
-  )
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <ToastProvider>
+      <Root />
+    </ToastProvider>
+  </StrictMode>
 );

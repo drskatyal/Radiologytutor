@@ -41,6 +41,9 @@
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
 import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
+import { pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
+import { mmPerCssPixel, scaleBarFor } from "@flowrad/viewer-core/scaleBar";
+import { MEASUREMENT_TOOLS } from "@flowrad/viewer-core/measurementReport";
 import {
   useCallback,
   useEffect,
@@ -54,11 +57,15 @@ import {
 import { createPortal } from "react-dom";
 import { annotationEditing } from "@flowrad/viewer-core";
 import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import { RemoteReferenceLines, type RemotePlane } from "./viewer/RemoteReferenceLines";
+import type { XVec3 } from "@flowrad/viewer-core";
 import { imageMenu } from "@flowrad/viewer-core";
-import { shortcutForTool } from "../lib/viewerHotkeys";
+import { layoutForShape, READING_LAYOUTS } from "@flowrad/viewer-core";
+import { shortcutForPreset, shortcutForToolIn } from "../lib/viewerHotkeys";
 import dynamicImport from "next/dynamic";
 import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
 import { VoiceStatus } from "./viewer/voice/VoiceStatus";
+import type { ExportDicomFiles, ExportFrames, WebExportKind } from "./viewer/WebExportDialog";
 import type { VoiceAction, VoiceSink, VoiceSinkBox } from "@flowrad/viewer-core";
 import { adoptParkedVoice, parkVoice, stopParkedVoice } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
@@ -125,7 +132,7 @@ import {
 } from "../lib/viewerController";
 import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
 import {
-  CINE_FPS_OPTIONS,
+  stepCineFps,
   advanceCine,
   cineAvailable,
   cineFrameMs,
@@ -135,9 +142,10 @@ import {
   type CineWrap,
 } from "../lib/cinePlayer";
 import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
+import { viewerFeatures, type ViewerFeatures } from "../lib/viewerFeatures";
 import { isTextTarget, resolveViewerHotkey, resolveViewerInput, WEB_COMMANDS, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
 import { viewerFixedBindings } from "../lib/viewerMouseBindings";
-import { attachMouseCommands, inputIndex, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
+import { attachMouseCommands, inputIndex, isMac, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
 import { useViewerBindings } from "./viewer/useViewerBindings";
 import {
   ORIENTATION_COMMANDS,
@@ -195,20 +203,26 @@ import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/type
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
-  presetsForModality,
+  matchPreset,
+  viewerWindowPresets,
   type WindowPreset,
 } from "../lib/windowPresets";
-import { Spinner } from "@/components/ui";
+import { Button, Modal, Spinner } from "@/components/ui";
+import { WebTextBoxLayer, type TextBoxLayerHandle } from "./viewer/WebTextBoxLayer";
+import { BURNED_IN_WARNING } from "@flowrad/viewer-core/annotationPersistence";
 import { cn } from "@/components/ui/cn";
 import { MprLayout } from "./MprLayout";
 import {
+  ALL_TOOLS,
   MEASURE_TOOLS,
-  PRIMARY_TOOLS,
+  NAV_TOOLS,
+  READING_MEASURE_TOOLS,
   ViewerToolbar,
   toolLabel,
+  type ToolbarLayoutChoice,
 } from "./viewer/ViewerToolbar";
 import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
-import { ViewerHelp } from "./viewer/ViewerHelp";
+import { ViewerHelp, type ViewerHelpTab } from "./viewer/ViewerHelp";
 import { SURFACE_PRESETS, type CutAxis } from "@flowrad/viewer-core";
 import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
 import {
@@ -223,6 +237,15 @@ import {
   type MprRender,
   type MprSessionHandle,
   type PlaneSample,
+  type Slab,
+  type SlabMode,
+  acquisitionPlane,
+  MIP_SLAB_MM,
+  nextSlabMode,
+  SLAB_DEFAULT_MM,
+  SLAB_STEP_MM,
+  slabLabel,
+  stepSlabMm,
 } from "../lib/mpr";
 
 // Tools selectable on the LEFT mouse button live in viewer/ViewerToolbar.tsx.
@@ -247,6 +270,14 @@ function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrom
 
 /** The DICOM tags viewer loads on first use. */
 const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
+/** Oblique, slab and curved MPR (free viewer), loaded on first use. */
+const WebReconOverlay = dynamicImport(() => import("./viewer/recon/WebReconOverlay").then((m) => m.WebReconOverlay), { ssr: false });
+/** Export images, video or anonymised DICOM (free viewer, Ctrl/⌘+E), loaded on first use. */
+/** Every measurement as a list and as report text (free viewer), loaded on first use. */
+const MeasurementsPanel = dynamicImport(() => import("./viewer/MeasurementsPanel").then((m) => m.MeasurementsPanel), { ssr: false });
+const WebExportDialog = dynamicImport(() => import("./viewer/WebExportDialog").then((m) => m.WebExportDialog), { ssr: false });
+/** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
+const CustomWindowDialog = dynamicImport(() => import("./viewer/CustomWindowDialog").then((m) => m.CustomWindowDialog), { ssr: false });
 
 /** Tools in the right-click menu, in order. */
 const WEB_MENU_TOOLS = [
@@ -263,9 +294,27 @@ const WEB_MENU_TOOLS = [
   { id: "Eraser", label: "Eraser" },
 ];
 
+/** The free viewer's menu: the desktop's full measure set (`features.tools`). */
+const READING_MENU_TOOLS = [
+  ...WEB_MENU_TOOLS.slice(0, 6),
+  { id: "CobbAngle", label: "Cobb angle" },
+  { id: "Bidirectional", label: "Bidirectional" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "CircleROI", label: "Circle ROI" },
+  { id: "PlanarFreehandROI", label: "Freehand ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Magnify", label: "Magnifying glass" },
+  { id: "Eraser", label: "Eraser" },
+];
+
 const ANNOTATION_TOOL_NAMES = new Set(
-  PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
+  ALL_TOOLS.filter((t) => t.annotation).map((t) => t.name)
 );
+/** Left-button tools each surface offers (a bound key for another is ignored). */
+const TEACHING_TOOL_NAMES = new Set([...NAV_TOOLS, ...MEASURE_TOOLS].map((t) => t.name));
+const READING_TOOL_NAMES = new Set([...NAV_TOOLS, ...READING_MEASURE_TOOLS].map((t) => t.name));
 
 // Minimal structural type for the bits of a StackViewport we drive.
 interface DrivableViewport {
@@ -332,6 +381,12 @@ export interface CornerstoneControls {
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
   /** Current slice / VOI / camera / SOP — primes recordings and finding landings. */
+  /**
+   * The visible image plane: its frame of reference and the world (mm)
+   * corners of the canvas, for reference lines in other panes. Null while
+   * the stack is not drawn (MPR showing, nothing loaded).
+   */
+  viewPlane?: () => { frame: string; corners: [XVec3, XVec3, XVec3, XVec3] } | null;
   getStartState: () => {
     sliceIndex: number;
     ww?: number;
@@ -804,8 +859,24 @@ export default function CornerstoneViewer({
   defaultTool = "WindowLevel",
   onViewModeChange,
   questionMarkHelp = false,
+  features: featuresProp,
+  exportFiles,
+  paneLinks,
+  distractionFree,
+  onFusion,
+  layoutChoice = null,
+  onComparePrior = null,
+  scaleBar = null,
   seriesPanel = null,
   onCycleLayout,
+  onLayout,
+  onSetLayout,
+  currentLayout,
+  onToggleMaximize,
+  popOutOffered = false,
+  startPlane = null,
+  onStartPlaneDone,
+  referencePlanes,
   toolbarHost,
   active = true,
   onActivate,
@@ -897,10 +968,70 @@ export default function CornerstoneViewer({
    * standalone viewer R / Shift+R rotate (R is the session's exam reveal).
    */
   questionMarkHelp?: boolean;
+  /**
+   * What this surface offers beyond the shared core, as named groups
+   * (lib/viewerFeatures.ts): `tools`, `layouts`, `export`, `slabs`,
+   * `localStudies`, `keys`. Omitted groups are off — RadLearn's teaching set.
+   * The free viewer passes FREE_VIEWER_FEATURES. `tools` is read once, when
+   * the viewport is built (it decides which Cornerstone tools register).
+   */
+  features?: Partial<ViewerFeatures>;
+  /**
+   * The files behind this pane's series and study, for the Export dialog's
+   * anonymised DICOM copy (free viewer). Called when the dialog opens.
+   */
+  exportFiles?: () => Promise<ExportDicomFiles | null>;
+  /**
+   * Free viewer grid: the panes' links (scroll by position, W/L, zoom, reference
+   * lines) and "link at what each pane shows now" (Ctrl/⌘+Shift+L), offered in
+   * the right-click menu. Null for a single pane.
+   */
+  paneLinks?: {
+    scroll: boolean;
+    voi: boolean;
+    zoom: boolean;
+    lines: boolean;
+    toggle: (what: "scroll" | "voi" | "zoom" | "lines") => void;
+    linkAtCurrent: () => void;
+  } | null;
+  /** Free viewer: distraction-free reading (images only), offered in the right-click menu. */
+  distractionFree?: { on: boolean; toggle: () => void } | null;
+  /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
+  onFusion?: (() => void) | null;
+  /** A hanging-layout picker on the toolbar (pages without a series-panel picker). */
+  layoutChoice?: ToolbarLayoutChoice | null;
+  /** The image menu's "Compare with prior…" (free viewer: a prior of this patient among the recent studies). */
+  onComparePrior?: (() => void) | null;
+  /** The scale bar (free viewer, as the desktop's setting): on / off, shared by every pane. Null: not offered. */
+  scaleBar?: { on: boolean; toggle: () => void } | null;
   /** The caller's series panel, offered in the right-click menu as Hide / Show. */
   seriesPanel?: { shown: boolean; toggle: () => void } | null;
   /** G cycles the caller's hanging layout. Omit where there is no grid. */
   onCycleLayout?: () => void;
+  /**
+   * Free viewer grid: Shift+1…7 picks the desktop's nth layout. Returns its
+   * label, or null when this study has too few series for it.
+   */
+  onLayout?: ((n: number) => string | null) | null;
+  /**
+   * In a grid of panes: double-click maximises this pane / restores the grid
+   * (instead of fitting the image), as on the desktop viewer.
+   */
+  onToggleMaximize?: () => void;
+  /** Two or more monitors: the page offers pop-out (Ctrl/⌘+Alt+N); the help lists it. */
+  popOutOffered?: boolean;
+  /**
+   * Show this series reformatted (a thumbnail's "Quick coronal / sagittal", as
+   * on the desktop): applied once the series is ready, then `onStartPlaneDone`.
+   */
+  startPlane?: MprPlane | null;
+  onStartPlaneDone?: () => void;
+  /** A named layout ("layout two" / "four" / "six" by voice): rows × columns. */
+  onSetLayout?: (rows: number, cols: number) => void;
+  /** Free viewer grid: the layout on screen, for the right-click Layout submenu (as on the desktop). */
+  currentLayout?: { rows: number; cols: number } | null;
+  /** Other panes' image planes: drawn as reference lines where they cut this image (same frame only). */
+  referencePlanes?: readonly RemotePlane[];
   /**
    * Hanging layouts: the shared toolbar slot under the grid. When set, this
    * pane portals its toolbar there while it is the active pane and renders
@@ -919,6 +1050,9 @@ export default function CornerstoneViewer({
   const docked = chrome === "dock";
   const edge = chrome === "edge";
   const defaultToolRef = useRef(defaultTool);
+  const f = viewerFeatures(featuresProp);
+  const featuresRef = useRef(f);
+  featuresRef.current = f;
   defaultToolRef.current = defaultTool;
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
@@ -938,6 +1072,9 @@ export default function CornerstoneViewer({
     (to: number | ((current: number, count: number) => number), silent?: boolean) => void
   >(() => {});
   const nudgeZoomRef = useRef<(factor: number) => void>(() => {});
+  // RadiAnt zoom levels (Ctrl/⌘+0…4) and Ctrl/⌘+arrow pan; false when the pane has no camera to set (MPR, not loaded).
+  const zoomToRef = useRef<(scale: number | "fit") => boolean>(() => false);
+  const panByRef = useRef<(dx: number, dy: number) => boolean>(() => false);
   // Live viewport + the most recent rAF tween cancel fn (so we never overlap).
   const viewportRef = useRef<DrivableViewport | null>(null);
   const cancelTweenRef = useRef<() => void>(() => {});
@@ -1026,6 +1163,9 @@ export default function CornerstoneViewer({
     imageId?: string;
     meta?: OverlayMeta;
     zoom?: number;
+    /** Millimetres per CSS pixel on a calibrated stack image (the scale bar), and the pane's width. */
+    mmPerPx?: number;
+    paneWidth?: number;
   } | null>(null);
   // Corner overlay density, remembered per browser. Hydrated after mount so
   // server and first client render agree.
@@ -1049,6 +1189,25 @@ export default function CornerstoneViewer({
     });
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [customWindowOpen, setCustomWindowOpen] = useState(false);
+  /** The Export dialog (free viewer), and the kind it opens on. */
+  // The stack and files are read once, when it opens: the export steps
+  // through the slices, and must restore the one the reader was on.
+  const [measurementsOpen, setMeasurementsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState<{
+    kind: WebExportKind;
+    frames: ExportFrames | null;
+    dicom: ExportDicomFiles | null;
+  } | null>(null);
+  // Text boxes (free viewer, saved in this browser) and the annotated-PNG save.
+  const [textBoxTool, setTextBoxTool] = useState(false);
+  const textBoxRef = useRef<TextBoxLayerHandle>(null);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => setStageEl(elementRef.current), []);
+  const [annotatedExport, setAnnotatedExport] = useState(false);
+  const [recon, setRecon] = useState<{ imageIds: string[]; title: string } | null>(null);
+  /** Which list the help sheet shows: keys, or the voice commands. */
+  const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
   // Mouse & keyboard bindings (local copy; the page shell syncs the account).
   const { overrides: viewerBindings } = useViewerBindings();
   // On-screen confirmation for key presses. Cleared after a beat.
@@ -1083,6 +1242,19 @@ export default function CornerstoneViewer({
   const [cut3d, setCut3d] = useState<{ axis: CutAxis; fraction: number } | null>(null);
   const mprRenderRef = useRef<MprRender>("mpr");
   mprRenderRef.current = mprRender;
+  // Slab on the MPR planes (MIP / MinIP / AvgIP at a thickness), as on the
+  // desktop: T cycles it, Ctrl/⌘+] and [ change the thickness. From the stack
+  // it reformats the acquisition plane in this viewport; cycling back to a
+  // thin slice returns to the stack.
+  const [slab, setSlabState] = useState<Slab>({ mode: "off", mm: SLAB_DEFAULT_MM });
+  const slabRef = useRef(slab);
+  slabRef.current = slab;
+  const slabFromStack = useRef(false);
+  useEffect(() => {
+    if (viewMode !== "stack") return;
+    slabFromStack.current = false;
+    setSlabState((s) => (s.mode === "off" ? s : { ...s, mode: "off" }));
+  }, [viewMode]);
   // The plane the reader last touched; arrow keys scroll that one.
   const activePlaneRef = useRef<MprPlane>("axial");
   const [cinePlaying, setCinePlaying] = useState(false);
@@ -1106,7 +1278,8 @@ export default function CornerstoneViewer({
   const coronalRef = useRef<HTMLDivElement>(null);
   const sagittalRef = useRef<HTMLDivElement>(null);
 
-  const presets = presetsForModality(modality);
+  // Number-key order, shared with the desktop viewer (key n = entry n).
+  const presets = viewerWindowPresets(modality);
 
   // `source` is often a fresh object with the same study/series (Teach rebuilds
   // the compare descriptor every render). Object identity must not tear the
@@ -1247,6 +1420,11 @@ export default function CornerstoneViewer({
           RectangleROITool,
           EllipticalROITool,
           ProbeTool,
+          CobbAngleTool,
+          BidirectionalTool,
+          CircleROITool,
+          PlanarFreehandROITool,
+          MagnifyTool,
           annotation,
           Enums: toolsEnums,
         } = tools;
@@ -1255,10 +1433,16 @@ export default function CornerstoneViewer({
         // Cornerstone3D v5 docs the tool group + viewport must be wired up
         // BEFORE the stack is loaded/rendered so the annotation interaction +
         // SVG layer are in place for the very first interaction.
+        // The free viewer's extra measure tools join only where it offers them
+        // (`features.tools`): teaching recordings are built around the others.
+        const readingExtras = featuresRef.current.tools
+          ? [CobbAngleTool, BidirectionalTool, CircleROITool, PlanarFreehandROITool, MagnifyTool]
+          : [];
         [
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
+          ...readingExtras,
         ].forEach((T) => {
           try {
             addTool(T);
@@ -1281,6 +1465,7 @@ export default function CornerstoneViewer({
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
+          ...readingExtras,
         ].forEach((T) =>
           // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
           tg.addTool(T.toolName, T === ArrowAnnotateTool ? annotationEditing.arrowAnnotateConfig : undefined)
@@ -1451,6 +1636,7 @@ export default function CornerstoneViewer({
                   rows?: number;
                   columns?: number;
                   imageOrientationPatient?: number[];
+                  rowPixelSpacing?: number | null;
                 }
               | undefined;
             return {
@@ -1462,6 +1648,7 @@ export default function CornerstoneViewer({
               rows: plane?.rows ?? null,
               columns: plane?.columns ?? null,
               imageOrientationPatient: plane?.imageOrientationPatient ?? null,
+              pixelSpacingMm: plane?.rowPixelSpacing && plane.rowPixelSpacing > 0 ? plane.rowPixelSpacing : null,
             };
           } catch {
             return undefined;
@@ -1479,6 +1666,8 @@ export default function CornerstoneViewer({
           prev.plane === next.plane &&
           prev.imageId === next.imageId &&
           prev.zoom === next.zoom &&
+          prev.mmPerPx === next.mmPerPx &&
+          prev.paneWidth === next.paneWidth &&
           (prev.meta != null) === (next.meta != null);
         const publishReadout = () => {
           if (mprHeld) {
@@ -1514,6 +1703,18 @@ export default function CornerstoneViewer({
             zoom = undefined;
           }
           const imageId = vp.getCurrentImageId?.() || vp.getImageIds()[vp.getCurrentImageIdIndex()];
+          const meta = overlayMetaFor(imageId);
+          // The scale bar's calibration: only where the header gives the pixel spacing.
+          let mmPerPx: number | undefined;
+          const host = elementRef.current;
+          if (meta?.pixelSpacingMm && host) {
+            try {
+              const mm = mmPerCssPixel((vp as unknown as { getCamera?: () => { parallelScale?: number } }).getCamera?.()?.parallelScale, host.clientHeight);
+              mmPerPx = mm == null ? undefined : Math.round(mm * 1e5) / 1e5;
+            } catch {
+              mmPerPx = undefined;
+            }
+          }
           const next = {
             slice,
             count,
@@ -1521,8 +1722,10 @@ export default function CornerstoneViewer({
             wc,
             plane: undefined,
             imageId,
-            meta: overlayMetaFor(imageId),
+            meta,
             zoom,
+            mmPerPx,
+            paneWidth: host?.clientWidth,
           };
           setReadout((prev) => (sameReadout(prev, next) ? prev : next));
           rememberPresentation();
@@ -1887,6 +2090,12 @@ export default function CornerstoneViewer({
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
         const THROTTLE = 50;
+        // Throttling keeps the LAST value too: a change that lands inside the
+        // window is sent once it closes (a quick zoom or the end of a drag
+        // must reach linked panes, pop-outs and recordings). Only for the
+        // reader's own changes, never a suppressed programmatic write.
+        let voiTrail = 0;
+        let camTrail = 0;
 
         // Identity + plane of the image under the camera, for the teacher sketch
         // layer's image-space anchors (SOP, frame, pixel grid, patient mm).
@@ -2064,7 +2273,19 @@ export default function CornerstoneViewer({
           // writes are suppressed and must not pin a mid-tween value.
           if (v && !suppressed() && !pinLocked) pinnedVoi = { ww: v.ww, wc: v.wc };
           const now = performance.now();
-          if (now - lastVoiEmit < THROTTLE) return;
+          if (now - lastVoiEmit < THROTTLE) {
+            if (!voiTrail && !suppressed()) {
+              voiTrail = window.setTimeout(() => {
+                voiTrail = 0;
+                const live = viewportRef.current;
+                const last = !disposed && live ? voiToWwWc(live.getProperties().voiRange) : null;
+                if (!last) return;
+                lastVoiEmit = performance.now();
+                emit({ type: "voi", ww: last.ww, wc: last.wc });
+              }, THROTTLE - (now - lastVoiEmit));
+            }
+            return;
+          }
           lastVoiEmit = now;
           if (v) emit({ type: "voi", ww: v.ww, wc: v.wc });
         };
@@ -2075,7 +2296,18 @@ export default function CornerstoneViewer({
           rememberPresentation();
           scheduleReadout();
           const now = performance.now();
-          if (now - lastCamEmit < THROTTLE) return;
+          if (now - lastCamEmit < THROTTLE) {
+            if (!camTrail && !suppressed()) {
+              camTrail = window.setTimeout(() => {
+                camTrail = 0;
+                const live = viewportRef.current;
+                if (disposed || !live) return;
+                lastCamEmit = performance.now();
+                emit({ type: "camera", zoom: live.getZoom(), pan: live.getPan() });
+              }, THROTTLE - (now - lastCamEmit));
+            }
+            return;
+          }
           lastCamEmit = now;
           emit({ type: "camera", zoom: vp.getZoom(), pan: vp.getPan() });
         };
@@ -2178,7 +2410,24 @@ export default function CornerstoneViewer({
         el.addEventListener(camEvt, emitCamera as EventListener);
         el.addEventListener(annCompleted, onAnnotationEvent as EventListener);
         el.addEventListener(annModified, onAnnotationEvent as EventListener);
+        // A closed freehand ROI computes its stats on a render after it is no
+        // longer the tool's active contour (annotationEditing.needsFreehandStats).
+        // That isn't the very next frame, so retry briefly until they land.
+        const onFreehandDone = (evt: Event) => {
+          const a = (evt as CustomEvent).detail?.annotation as (annotationEditing.AnnotationLike & { invalidated?: boolean }) | undefined;
+          if (!a || !annotationEditing.needsFreehandStats(a)) return;
+          const retry = (left: number) =>
+            window.setTimeout(() => {
+              if (!annotationEditing.needsFreehandStats(a)) return;
+              a.invalidated = true;
+              tools.utilities.triggerAnnotationRender(el);
+              if (left > 0) retry(left - 1);
+            }, 120);
+          retry(8);
+        };
+        core.eventTarget.addEventListener(annCompleted, onFreehandDone);
         detachListeners = () => {
+          core.eventTarget.removeEventListener(annCompleted, onFreehandDone);
           el.removeEventListener(stackEvt, emitSlice as EventListener);
           el.removeEventListener(voiEvt, emitVoi as EventListener);
           el.removeEventListener(camEvt, emitCamera as EventListener);
@@ -2423,6 +2672,7 @@ export default function CornerstoneViewer({
             const ok = await session.setRender(mprRenderRef.current);
             if (!ok) setMprRender("mpr");
           }
+          if (mprRenderRef.current !== "3d" && slabRef.current.mode !== "off") session.setSlab?.(slabRef.current);
           publishReadout();
           // The grid was visibility:hidden while the viewports attached.
           // Resize once it is shown so the canvases match the laid-out planes.
@@ -2821,6 +3071,55 @@ export default function CornerstoneViewer({
             /* a 0x0 pane has no camera to scale */
           }
         };
+        zoomToRef.current = (scale) => {
+          const vp = viewportRef.current as (DrivableViewport & {
+            getImageData?: () => { spacing?: number[] } | undefined;
+            setCamera?: (camera: { parallelScale: number }) => void;
+          }) | null;
+          if (!vp || mprHeld) return false;
+          try {
+            if (scale === "fit") {
+              vp.resetCamera();
+            } else {
+              const parallelScale = parallelScaleForPixelZoom(elementRef.current?.clientHeight ?? 0, vp.getImageData?.()?.spacing?.[1] ?? 1, scale);
+              if (parallelScale == null || !vp.setCamera) return false;
+              vp.setCamera({ parallelScale });
+            }
+            vp.render();
+            emitCamera();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        panByRef.current = (dx, dy) => {
+          // The view moves `dx, dy` screen pixels (the image the other way), at any zoom.
+          if (mprHeld || !viewportRef.current) return false;
+          const vp = viewportRef.current as unknown as {
+            canvasToWorld?: (p: [number, number]) => number[];
+            getCamera?: () => { focalPoint?: number[]; position?: number[] };
+            setCamera?: (camera: { focalPoint: number[]; position: number[] }) => void;
+            render: () => void;
+          };
+          if (!vp.canvasToWorld || !vp.getCamera || !vp.setCamera) return false;
+          try {
+            const a = vp.canvasToWorld([0, 0]);
+            const b = vp.canvasToWorld([dx, dy]);
+            const { focalPoint, position } = vp.getCamera();
+            if (!focalPoint || !position || a.length < 3 || b.length < 3) return false;
+            const d = [0, 1, 2].map((k) => b[k]! - a[k]!);
+            if (!d.every(Number.isFinite)) return false;
+            vp.setCamera({
+              focalPoint: [0, 1, 2].map((k) => focalPoint[k]! + d[k]!),
+              position: [0, 1, 2].map((k) => position[k]! + d[k]!),
+            });
+            vp.render();
+            emitCamera();
+            return true;
+          } catch {
+            return false;
+          }
+        };
 
         // --- Replay / teach guide: re-apply ONE recorded event --------------
         // Slice and series are chained so a fast script doesn't race the decoder.
@@ -3012,11 +3311,17 @@ export default function CornerstoneViewer({
             vp?.render();
             setActivePreset(FULL_DYNAMIC_ID);
             publishReadout();
+            // A preset is the reader's own window choice: report it (linked
+            // panes, pop-out windows, a recording) even though the write
+            // itself is programmatic and suppressed.
+            const own = vp ? voiToWwWc(vp.getProperties().voiRange) : null;
+            if (own) onEventRef.current?.({ type: "voi", ww: own.ww, wc: own.wc });
             return;
           }
           // Presets are often far apart — let adaptive logic snap bone↔lung.
           setWindow(p.ww, p.wc);
           setActivePreset(p.id);
+          onEventRef.current?.({ type: "voi", ww: p.ww, wc: p.wc });
         };
         applyPresetRef.current = applyPreset;
 
@@ -3312,6 +3617,20 @@ export default function CornerstoneViewer({
           restoreLayout: () => scheduleLayoutRestore(true),
           applyEvent,
           getStartState,
+          viewPlane: () => {
+            const vp = viewportRef.current as
+              | (typeof viewportRef.current & { canvas?: HTMLCanvasElement; getFrameOfReferenceUID?: () => string | undefined })
+              | null;
+            const frame = vp?.getFrameOfReferenceUID?.();
+            const canvas = vp?.canvas;
+            if (!vp || mprHeld || !frame || !canvas?.clientWidth) return null;
+            const w = canvas.clientWidth;
+            const h = canvas.clientHeight;
+            const toWorld = vp.canvasToWorld?.bind(vp);
+            if (!toWorld) return null;
+            const at = (x: number, y: number) => toWorld([x, y]) as XVec3;
+            return { frame, corners: [at(0, 0), at(w, 0), at(w, h), at(0, h)] };
+          },
           getMeasurements,
           // Getters so callers always read the LIVE series list + active series
           // (both change as the rail loads / the viewer switches series).
@@ -3457,6 +3776,13 @@ export default function CornerstoneViewer({
     };
   }, [mprRender, mprLive, flash]);
 
+  // The slab on the live planes (after the render effect above, which resets them).
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session || mprRender === "3d") return;
+    session.setSlab?.(slab);
+  }, [slab, mprLive, mprRender]);
+
   useEffect(() => {
     const session = mprSessionRef.current;
     if (!mprLive || !session || mprRender !== "3d") return;
@@ -3538,15 +3864,324 @@ export default function CornerstoneViewer({
   // would fight it. The host div is focusable, so tabbing or clicking into the
   // image gives the reader a reading-room keyboard — and makes the viewer
   // keyboard-operable at all, which it was not. See lib/viewerHotkeys.ts.
+  /** Set window dialog. Not on an 8-bit preview: windowing it would reveal nothing real. */
+  const openCustomWindow = () => {
+    if (!ready) return;
+    if (previewing && !mprLive) {
+      flash("Window unlocks when full-quality pixels load");
+      return;
+    }
+    setCustomWindowOpen(true);
+  };
+
+  /** Slab on (from the stack: the acquisition plane, reformatted in this viewport) or off. */
+  const setSlab = (next: { mode?: SlabMode; mm?: number }) => {
+    if (!ready || sliceCount < 3) return flash("A slab needs a stack of parallel slices");
+    const current = slabRef.current;
+    const target: Slab = { mode: next.mode ?? current.mode, mm: next.mm ?? current.mm };
+    if (target.mode === "off") {
+      setSlabState(target);
+      if (viewMode === "mpr" && slabFromStack.current) {
+        slabFromStack.current = false;
+        setViewMode("stack");
+      }
+      return flash("Thin slice");
+    }
+    if (mprRender === "3d") setMprRender("mpr");
+    if (viewMode === "stack") {
+      slabFromStack.current = true;
+      setMprFocus(acquisitionPlane(readout?.meta?.imageOrientationPatient) ?? "axial");
+      setViewMode("mpr");
+    }
+    setSlabState(target);
+    flash(slabLabel(target));
+  };
+  const cycleSlab = () => setSlab({ mode: nextSlabMode(slabRef.current.mode) });
+  const stepSlab = (deltaMm: number) => {
+    const current = slabRef.current;
+    setSlab({ mode: current.mode === "off" ? "mip" : current.mode, mm: stepSlabMm(current.mm, deltaMm) });
+  };
+
+  const openExport = (kind: WebExportKind) => {
+    if (!ready || mprLive || viewMode !== "stack") return flash("Export works on the stack view");
+    if (previewing) return flash("Export unlocks when full-quality pixels load");
+    const frames = exportFrames();
+    void (exportFiles?.() ?? Promise.resolve(null))
+      .catch(() => null)
+      .then((dicom) => setExportOpen({ kind, frames, dicom }));
+  };
+  /** The pane's stack for the Export dialog: step, wait for the draw, capture. */
+  const exportFrames = (): ExportFrames | null => {
+    const vp = viewportRef.current as unknown as {
+      getImageIds?: () => string[];
+      getCurrentImageIdIndex?: () => number;
+      setImageIdIndex?: (i: number) => Promise<unknown>;
+      getProperties?: () => { voiRange?: { lower: number; upper: number } };
+    } | null;
+    const element = elementRef.current;
+    const ids = vp?.getImageIds?.() ?? [];
+    if (!vp || !element || !ids.length) return null;
+    const meta = readout?.meta;
+    const seriesNumber = meta?.seriesNumber != null && meta.seriesNumber !== "" ? Number(meta.seriesNumber) : undefined;
+    const rendered = () =>
+      new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          element.removeEventListener("CORNERSTONE_IMAGE_RENDERED", finish);
+          // One more frame so the annotation SVG has caught up with the image.
+          requestAnimationFrame(() => resolve());
+        };
+        element.addEventListener("CORNERSTONE_IMAGE_RENDERED", finish);
+        window.setTimeout(finish, 1500);
+      });
+    return {
+      count: ids.length,
+      current: vp.getCurrentImageIdIndex?.() ?? 0,
+      modality: modality || meta?.modality || undefined,
+      seriesNumber: Number.isFinite(seriesNumber) ? seriesNumber : undefined,
+      show: async (index) => {
+        if (vp.getCurrentImageIdIndex?.() === index) return;
+        const wait = rendered();
+        await vp.setImageIdIndex?.(index);
+        await wait;
+      },
+      capture: async ({ annotations, overlay }) => {
+        const { anonymousLines, withOverlayText } = await import("../lib/viewerExport");
+        const canvas = element.querySelector("canvas");
+        if (!canvas) throw new Error("Nothing is rendered in this viewport yet.");
+        const base = (annotations ? await textBoxRef.current?.composite() : null) ?? canvas;
+        const index = vp.getCurrentImageIdIndex?.() ?? 0;
+        const voi = voiToWwWc(vp.getProperties?.().voiRange);
+        const lines =
+          overlay === "anonymous"
+            ? anonymousLines({ modality: modality || meta?.modality, seriesNumber: meta?.seriesNumber, index, count: ids.length, ww: voi?.ww, wc: voi?.wc })
+            : [];
+        return withOverlayText(base, lines, element.getBoundingClientRect().width);
+      },
+    };
+  };
+
+  /**
+   * The toolbar's plane picker: the acquired stack, one plane reformatted
+   * from the series' volume and enlarged in this viewport, or ("all") the
+   * three-pane MPR.
+   */
+  const showPlane = (plane: MprPlane | "acquired" | "all") => {
+    if (plane === "acquired") {
+      setViewMode("stack");
+      return;
+    }
+    setMprRender((mode) => (mode === "3d" ? "mpr" : mode));
+    setMprFocus(plane === "all" ? null : plane);
+    if (viewMode !== "mpr") setViewMode("mpr");
+  };
+  // A requested start plane (thumbnail menu): once the stack is ready, reformat to it.
+  useEffect(() => {
+    if (!startPlane || !ready) return;
+    if (sliceCount >= 3) {
+      showPlane(startPlane);
+      flash(`${startPlane[0]!.toUpperCase()}${startPlane.slice(1)} reformat`);
+    } else flash("Reformats need a stack of parallel slices");
+    onStartPlaneDone?.();
+    // Once per request; showPlane reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startPlane, ready, sliceCount]);
+  /** Alt+A / C / S and right-click › Reformat, as on the desktop: the same key again returns to the stack. */
+  const reformatPane = (plane: MprPlane) => {
+    if (!ready || sliceCount < 3) return flash("Reformats need a stack of parallel slices");
+    const name = plane[0]!.toUpperCase() + plane.slice(1);
+    if (viewMode === "mpr" && mprFocus === plane && mprRender !== "3d") {
+      showPlane("acquired");
+      return flash("Stack");
+    }
+    showPlane(plane);
+    flash(`${name} reformat · Alt+${name[0]} again for the stack`);
+  };
+  /** Ctrl/⌘+Shift+Backspace: every measurement in the study, in one undo step. */
+  const clearMeasurements = () => {
+    if (!editCtx) return flash("Measurements clear once the image has loaded");
+    const list = annotationEditing.allAnnotations(editCtx).filter((a) => MEASUREMENT_TOOLS.has(a.metadata?.toolName ?? ""));
+    if (!list.length) return flash("No measurements to clear");
+    const n = annotationEditing.remove(editCtx, list);
+    flash(`${n} measurement${n === 1 ? "" : "s"} cleared · Ctrl+Z to undo`);
+  };
+
+  /** RadiAnt's reading keys, as on the desktop (zoom levels, pan, F12, F5). */
+  const runReadingKey = (action: ReadingKeyAction): void => {
+    switch (action.type) {
+      case "zoomTo":
+        if (!zoomToRef.current(action.scale)) return flash(mprShowing ? "Zoom levels are for the stack" : "Zoom once the image has loaded");
+        return flash(zoomLevelLabel(action.scale));
+      case "pan":
+        if (!panByRef.current(action.dx, action.dy)) return flash(mprShowing ? "Pan with the middle button in MPR" : "Pan once the image has loaded");
+        return;
+      case "annotations":
+        return runWebMenuCommand("annotations");
+      case "referenceLines":
+        return paneLinks ? runWebMenuCommand("refLines") : flash("Reference lines need two or more panes");
+      case "link":
+        return paneLinks ? runWebMenuCommand(`link:${action.what}`) : flash("Linking needs two or more panes");
+      case "reformat":
+        return reformatPane(action.plane);
+      case "eraser":
+        return runViewerAction({ type: "tool", tool: "Eraser" });
+      case "help":
+        return runViewerAction({ type: "help" });
+      case "voice":
+        if (!canVoice) return flash("Voice commands aren't available in this browser");
+        return void toggleVoice();
+      case "zoomBy":
+        if (mprShowing) return flash("Zoom with the right button in MPR");
+        return runViewerAction({ type: "zoom", factor: action.factor });
+      case "clearMeasurements":
+        return clearMeasurements();
+      case "tool":
+        return runViewerAction({ type: "tool", tool: action.tool });
+      case "rotate":
+        return applyOrientation(action.dir > 0 ? "rotate:90" : "rotate:-90");
+      case "layout": {
+        if (!onLayout) return flash("Layouts are in the free viewer's grid");
+        const label = onLayout(action.n);
+        return flash(label ? `Layout: ${label}` : "That layout needs more series in this study");
+      }
+      case "slicePage":
+        return runViewerAction({ type: "slice", delta: action.dir * pageStep(sliceCount) });
+      case "cine":
+      case "cineFps":
+      case "series":
+        return runViewerAction(action);
+      case "mpr": {
+        // Ctrl/⌘+M, as on the desktop: the three-plane MPR, or back to the stack.
+        if (!ready || sliceCount < 3) return flash("MPR needs a stack of parallel slices");
+        if (viewMode === "mpr" && mprRender !== "3d" && mprFocus == null) {
+          showPlane("acquired");
+          return flash("Stack");
+        }
+        showPlane("all");
+        return flash("MPR");
+      }
+      case "volume3d": {
+        // Ctrl/⌘+Shift+M: 3D volume rendering, or back to the stack.
+        if (!ready || sliceCount < 3) return flash("3D needs a stack of parallel slices");
+        if (viewMode === "mpr" && mprRender === "3d") {
+          showPlane("acquired");
+          return flash("Stack");
+        }
+        setMprRender("3d");
+        if (viewMode !== "mpr") setViewMode("mpr");
+        return flash("3D");
+      }
+      case "orientReset":
+        return applyOrientation("orient:reset");
+      case "overlay": {
+        // Ctrl/⌘+Shift+F12: overlay text on / off (O still cycles full → basic → off).
+        const next: OverlayDensity = overlay === "off" ? "full" : "off";
+        setOverlay(next);
+        try {
+          window.localStorage.setItem(OVERLAY_STORAGE_KEY, next);
+        } catch {
+          /* storage blocked — still toggles for this session */
+        }
+        return flash(next === "off" ? "Overlay off" : "Overlay on");
+      }
+    }
+  };
+
   const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (isTextTarget(event.target)) return;
+    // RadiAnt's keys (free viewer): Ctrl/⌘+0…4 zoom levels, Ctrl/⌘+arrows pan,
+    // F12 annotations, Ctrl/⌘+F12 reference lines, F5 / Shift+F5 / Alt+F5 links.
+    // Only while the image has focus, so F5 can't reload away an opened study.
+    if (f.keys) {
+      const reading = resolveReadingKey(event);
+      if (reading) {
+        event.preventDefault();
+        runReadingKey(reading);
+        return;
+      }
+    }
+    // Ctrl/⌘+F11: set an exact window, as on the desktop (RadiAnt's key).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "F11") {
+      event.preventDefault();
+      openCustomWindow();
+      return;
+    }
+    // Ctrl/⌘+Shift+F: PET / CT fusion, as on the desktop.
+    if (onFusion && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      onFusion();
+      return;
+    }
+    // Slab, as on the desktop: T cycles Thin → MIP → MinIP → AvgIP;
+    // Ctrl/⌘+] and [ make it thicker / thinner.
+    if (f.slabs && f.keys && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
+      event.preventDefault();
+      cycleSlab();
+      return;
+    }
+    if (f.slabs && (event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "]" || event.key === "[")) {
+      event.preventDefault();
+      stepSlab(event.key === "]" ? SLAB_STEP_MM : -SLAB_STEP_MM);
+      return;
+    }
+    // Ctrl/⌘+Shift+L: link the panes at what each shows now (registers a prior), as on the desktop.
+    if (paneLinks && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      paneLinks.linkAtCurrent();
+      flash("Linked at what each pane shows now");
+      return;
+    }
+    // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
+    if (f.export && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
+      event.preventDefault();
+      openExport("image");
+      return;
+    }
     if (event.key === "Escape" && helpOpen) {
       event.preventDefault();
       event.stopPropagation();
       setHelpOpen(false);
       return;
     }
-    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp });
+    // Esc, as on the desktop (free viewer): 1) a measurement being drawn is
+    // cancelled; 2) a tool other than the default goes back to it; 3) only
+    // then does Esc pass on (distraction-free, full screen leave on it).
+    if (f.keys && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      const element = elementRef.current;
+      const tools = editCtx?.tools as unknown as {
+        cancelActiveManipulations?: (el: HTMLDivElement) => string | undefined;
+        annotation?: { state?: { removeAnnotation?: (uid: string) => void } };
+      } | undefined;
+      let cancelled = false;
+      try {
+        // Cornerstone's cancel finishes the shape; a cancel should drop it
+        // (never finished, so no undo step), as the reader expects.
+        const uid = element ? tools?.cancelActiveManipulations?.(element) : undefined;
+        if (uid) {
+          tools?.annotation?.state?.removeAnnotation?.(uid);
+          viewportRef.current?.render();
+          cancelled = true;
+        }
+      } catch {
+        /* nothing being drawn */
+      }
+      if (cancelled) {
+        event.preventDefault();
+        event.stopPropagation();
+        return flash("Measurement cancelled");
+      }
+      const home = defaultToolRef.current || "WindowLevel";
+      if (activeTool !== home) {
+        event.preventDefault();
+        event.stopPropagation();
+        setTextBoxTool(false);
+        setLeftToolRef.current(home);
+        return flash(toolLabel(home));
+      }
+    }
+    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, features: f });
     if (!action) return;
     event.preventDefault();
     if (action.type === "help") event.stopPropagation();
@@ -3558,6 +4193,8 @@ export default function CornerstoneViewer({
     switch (action.type) {
       case "tool":
         if (!ready) return;
+        // A key bound to a tool this surface doesn't offer does nothing.
+        if (action.tool !== "Eraser" && action.tool !== "Crosshairs" && !(f.tools ? READING_TOOL_NAMES : TEACHING_TOOL_NAMES).has(action.tool)) return;
         if (
           ANNOTATION_TOOL_NAMES.has(action.tool) &&
           (!annotationsEnabled || mprShowing)
@@ -3565,6 +4202,7 @@ export default function CornerstoneViewer({
           flash(mprShowing ? "Measurements stay on the stack" : "No pixel spacing — can't measure");
           return;
         }
+        setTextBoxTool(false);
         setLeftToolRef.current(action.tool);
         flash(toolLabel(action.tool));
         return;
@@ -3606,10 +4244,8 @@ export default function CornerstoneViewer({
         return;
       case "cineFps": {
         if (!cineOffered) return;
-        const options = CINE_FPS_OPTIONS as readonly number[];
-        const at = Math.max(0, options.indexOf(cineFps));
-        const next = options[Math.min(options.length - 1, Math.max(0, at + action.delta))]!;
-        setCineFps(clampCineFps(next));
+        const next = stepCineFps(cineFps, action.delta > 0 ? 1 : -1);
+        setCineFps(next);
         flash(`Cine ${next} fps`);
         return;
       }
@@ -3645,6 +4281,8 @@ export default function CornerstoneViewer({
         if (onCycleLayout) onCycleLayout();
         return;
       case "help":
+        // While voice is listening, `?` opens what can be said.
+        if (!helpOpen) setHelpTab(voiceStateRef.current === "listening" ? "voice" : "keys");
         setHelpOpen((open) => !open);
         return;
       case "orient":
@@ -3731,33 +4369,81 @@ export default function CornerstoneViewer({
   const [annotationsHidden, setAnnotationsHidden] = useState(false);
   const webMenuShortcut = (command: string): string | undefined => {
     const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
-    if (head === "tool") return shortcutForTool(arg)?.split(" · ")[0] ?? undefined;
-    if (head === "preset") {
-      if (arg === "auto") return "Shift+0";
-      const i = presets.findIndex((p) => p.id === arg);
-      return i >= 0 && i < 9 ? `Shift+${i + 1}` : undefined;
+    if (f.keys && (head === "3d" || head === "reformat")) {
+      const mac = isMac();
+      if (head === "3d") return `${mac ? "⌘" : "Ctrl"}+Shift+M`;
+      const letter = { axial: "A", coronal: "C", sagittal: "S" }[arg as "axial" | "coronal" | "sagittal"];
+      if (letter) return `${mac ? "⌥" : "Alt"}+${letter}`;
     }
+    if (head === "tool") return shortcutForToolIn(arg, f.keys)?.split(" · ")[0] ?? undefined;
+    if (head === "preset") {
+      if (arg === "auto") return shortcutForPreset(0) ?? undefined;
+      const i = presets.findIndex((p) => p.id === arg);
+      return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
+    }
+    if (f.keys && f.layouts && head === "layout") {
+      const m = /^(\d)x(\d)$/.exec(arg);
+      const at = m ? READING_LAYOUTS.findIndex((l) => l.rows === Number(m[1]) && l.cols === Number(m[2])) : -1;
+      if (at >= 0) return `Shift+${at + 1}`;
+    }
+    if (f.keys && command === "orient:reset") return "Shift+Backspace";
     const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
     if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
     if (command === "seriesPanel") return "Ctrl+B";
-    return ({ invert: "I", reset: "0", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
+    if (f.keys) {
+      const reading: Record<string, string> = {
+        "zoom:fit": "Ctrl+0",
+        "zoom:1": "Ctrl+1",
+        "zoom:2": "Ctrl+2",
+        annotations: "F12",
+        "reformat:axial": "Alt+A",
+        "reformat:coronal": "Alt+C",
+        "reformat:sagittal": "Alt+S",
+        ...(paneLinks ? { "link:scroll": "F5", "link:voi": "Shift+F5", "link:zoom": "Alt+F5", refLines: "Ctrl+F12" } : {}),
+      };
+      if (reading[command]) return reading[command];
+    }
+    if (command === "window:custom") return "Ctrl+F11";
+    if (command === "export" && f.export) return "Ctrl+E";
+    if (command === "linkAtCurrent" && paneLinks) return "Ctrl+Shift+L";
+    if (command === "distractionFree") return "Alt+Shift+Enter";
+    if (command === "fusion" && onFusion) return "Ctrl+Shift+F";
+    return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
   };
   const webImageMenu = () =>
     imageMenu({
       modality,
-      tools: WEB_MENU_TOOLS,
+      tools: f.tools ? READING_MENU_TOOLS : WEB_MENU_TOOLS,
       activeTool,
       presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
       inverted,
-      links: { scroll: false, voi: false, zoom: false },
-      referenceLines: false,
+      links: paneLinks ? { scroll: paneLinks.scroll, voi: paneLinks.voi, zoom: paneLinks.zoom } : { scroll: false, voi: false, zoom: false },
+      referenceLines: !!paneLinks?.lines,
       overlay: overlay !== "off",
       annotations: !annotationsHidden,
+      distractionFree: distractionFree ? distractionFree.on : null,
+      scaleBar: scaleBar ? scaleBar.on : null,
       cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
-      slab: null,
-      layout: null,
+      slab: f.slabs && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
+      layout: f.layouts && onSetLayout && currentLayout ? currentLayout : null,
       seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
-      can: { mpr: ready && sliceCount >= 3, copyImage: true, saveImage: true, tags: true, links: false },
+      can: {
+        mpr: ready && sliceCount >= 3,
+        reformat: f.slabs && ready && sliceCount >= 3,
+        // 3D volume rendering from the menu, as on the desktop (also Ctrl/⌘+Shift+M and the toolbar's 3D).
+        threeD: f.slabs && ready && sliceCount >= 3,
+        copyImage: true,
+        saveImage: true,
+        tags: true,
+        links: !!paneLinks,
+        linkAtCurrent: !!paneLinks,
+        video: f.export && sliceCount >= 2,
+        exportDialog: f.export,
+        customLayout: f.layouts,
+        measurements: f.tools,
+        fusion: !!onFusion,
+        comparePrior: !!onComparePrior,
+      },
       shortcut: webMenuShortcut,
     });
   const viewportCanvas = () => elementRef.current?.querySelector("canvas") ?? null;
@@ -3789,17 +4475,36 @@ export default function CornerstoneViewer({
       case "overlay":
       case "mpr":
         return runViewerAction({ type: head } as ViewerHotkeyAction);
-      case "zoom":
-        if (arg === "fit") vp?.resetCamera?.();
-        else vp?.setZoom?.(Number(arg));
+      case "zoom": {
+        // "Actual size (1:1)" is one image pixel per screen pixel, as on the desktop.
+        const scale = arg === "fit" ? "fit" : Number(arg);
+        if (scale !== "fit" && !(scale > 0)) return;
+        if (zoomToRef.current(scale)) return;
+        if (scale === "fit") vp?.resetCamera?.();
         return vp?.render?.();
+      }
       case "rotate":
       case "flip":
       case "orient":
         if (isOrientationCommand(command)) applyOrientation(command);
         return;
+      case "reformat":
+        if (arg === "axial" || arg === "coronal" || arg === "sagittal") return reformatPane(arg);
+        return;
+      case "3d":
+        return runReadingKey({ type: "volume3d" });
+      case "layout": {
+        const m = /^(\d)x(\d)$/.exec(arg);
+        if (!m || !onSetLayout) return;
+        const rows = Number(m[1]);
+        const cols = Number(m[2]);
+        onSetLayout(rows, cols);
+        return flash(`Layout: ${layoutForShape(rows, cols)?.label ?? `${rows} × ${cols}`}`);
+      }
       case "seriesPanel":
         return seriesPanel?.toggle();
+      case "window":
+        return arg === "custom" ? openCustomWindow() : undefined;
       case "fps":
         return setCineFps(clampCineFps(Number(arg)));
       case "annotations": {
@@ -3845,6 +4550,38 @@ export default function CornerstoneViewer({
         );
         return;
       }
+      case "video":
+        return openExport("video");
+      case "export":
+        return openExport("image");
+      case "measurements":
+        return editCtx ? setMeasurementsOpen(true) : flash("Measurements open once the image has loaded");
+      case "link": {
+        if (!paneLinks || (arg !== "scroll" && arg !== "voi" && arg !== "zoom")) return;
+        const on = !paneLinks[arg];
+        paneLinks.toggle(arg);
+        return flash(`${arg === "scroll" ? "Scroll" : arg === "voi" ? "Window / level" : "Zoom and pan"} link ${on ? "on" : "off"}`);
+      }
+      case "refLines":
+        if (!paneLinks) return;
+        paneLinks.toggle("lines");
+        return flash(`Reference lines ${paneLinks.lines ? "off" : "on"}`);
+      case "linkAtCurrent":
+        if (!paneLinks) return;
+        paneLinks.linkAtCurrent();
+        return flash("Linked at what each pane shows now");
+      case "slab":
+        return setSlab({ mode: arg as SlabMode });
+      case "slab-mm":
+        return setSlab({ mode: slabRef.current.mode === "off" ? "mip" : slabRef.current.mode, mm: Number(arg) });
+      case "distractionFree":
+        return distractionFree?.toggle();
+      case "fusion":
+        return onFusion?.();
+      case "comparePrior":
+        return onComparePrior?.();
+      case "scaleBar":
+        return scaleBar?.toggle();
       case "tags": {
         const id = vp?.getCurrentImageId?.();
         if (id) setTagsImageId(id);
@@ -3887,6 +4624,10 @@ export default function CornerstoneViewer({
       case "volume3d":
         return runViewerAction({ type: "mpr" });
       case "layout":
+        if (onSetLayout) {
+          onSetLayout(a.rows, a.cols);
+          return flash(layoutForShape(a.rows, a.cols)?.label ?? `${a.rows} × ${a.cols}`);
+        }
         return runViewerAction({ type: "layout" });
       case "preset": {
         const want = a.name === "abdomen" ? /abdom|soft/i : new RegExp(a.name, "i");
@@ -3895,8 +4636,11 @@ export default function CornerstoneViewer({
         return runViewerAction({ type: "preset", ordinal: at + 1 });
       }
       case "slab":
+        if (!f.slabs) return flash("Slabs are in the free viewer and the desktop app");
+        return setSlab({ mode: a.mode });
       case "slabThickness":
-        return flash("Slabs are in the desktop viewer");
+        if (!f.slabs) return flash("Slabs are in the free viewer and the desktop app");
+        return stepSlab(a.deltaMm);
       case "stop":
         voiceSessionRef.current?.stop();
         return;
@@ -3914,9 +4658,12 @@ export default function CornerstoneViewer({
       flash(`“${heard}”`);
       voiceActionRef.current(action);
     },
-    onUnrecognized: (heard) => flash(`“${heard}” ?`),
+    onUnrecognized: (heard) => flash(`“${heard}” is not a command · ${questionMarkHelp ? "? lists them" : "the voice list shows them"}`),
     onProgress: setVoiceProgress,
     onState: (state, detail) => {
+      if (state === "listening" && voiceStateRef.current !== "listening") {
+        flash(questionMarkHelp ? "Voice on · press ? for what to say" : "Voice on · the voice list shows what to say");
+      }
       voiceStateRef.current = state;
       setVoice({ state });
       if (state === "error") setVoiceError(detail ?? null);
@@ -4052,32 +4799,53 @@ export default function CornerstoneViewer({
       activeTool={activeTool}
       annotationsEnabled={annotationsEnabled}
       measurementsEnabled={!mprLive}
+      measureTools={f.tools ? READING_MEASURE_TOOLS : MEASURE_TOOLS}
+      readingKeys={f.keys}
       inverted={inverted}
       activePreset={activePreset}
       presets={presets}
       viewMode={viewMode}
-      mprRender={mprRender}
+      mprRender={mprRender === "3d" ? "3d" : slab.mode !== "off" ? "mip" : "mpr"}
       onMprRender={(mode) => {
-        setMprRender(mode);
+        // MIP is the slab (15 mm unless one is already set); MPR is a thin slice.
+        if (mode === "mip") {
+          slabFromStack.current = false;
+          setSlabState((s) => ({ mode: "mip", mm: s.mode === "off" ? MIP_SLAB_MM : s.mm }));
+          setMprRender("mpr");
+        } else {
+          if (mode === "mpr") setSlabState((s) => (s.mode === "off" ? s : { ...s, mode: "off" }));
+          setMprRender(mode);
+        }
         if (viewMode !== "mpr") setViewMode("mpr");
       }}
       plane={viewMode === "stack" ? "acquired" : mprFocus ?? "all"}
-      onPlane={(plane) => {
-        if (plane === "acquired") {
-          setViewMode("stack");
-          return;
-        }
-        // One plane reformatted from the series' volume, enlarged in this
-        // viewport; "all" is the three-pane MPR.
-        setMprRender((mode) => (mode === "3d" ? "mpr" : mode));
-        setMprFocus(plane === "all" ? null : plane);
-        if (viewMode !== "mpr") setViewMode("mpr");
-      }}
+      onPlane={showPlane}
       cineOffered={cineOffered}
       cinePlaying={cinePlaying}
       cineFps={cineFps}
       overlay={overlay}
-      onSelectTool={(name) => setLeftToolRef.current(name)}
+      onSelectTool={(name) => {
+        setTextBoxTool(false);
+        setLeftToolRef.current(name);
+      }}
+      textBox={f.tools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
+      onSaveAnnotated={f.export ? () => setAnnotatedExport(true) : undefined}
+      onExport={f.export ? () => openExport("image") : undefined}
+      onMeasurements={f.tools && editCtx ? () => setMeasurementsOpen(true) : undefined}
+      onFusion={onFusion ?? undefined}
+      layoutChoice={layoutChoice}
+      onRecon={
+        f.slabs
+          ? () => {
+              const ids: string[] = (viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? [];
+              if (ids.length < 3) return flash("Oblique and curved MPR need a stack of parallel slices");
+              void import("@cornerstonejs/core").then((core) => {
+                const s = core.metaData.get("generalSeriesModule", ids[0]) as { seriesDescription?: string; modality?: string } | undefined;
+                setRecon({ imageIds: ids.slice(), title: s?.seriesDescription || `${s?.modality ?? ""} series`.trim() });
+              });
+            }
+          : undefined
+      }
       onPreset={(preset) => {
         applyPresetRef.current(preset);
         flash(
@@ -4092,10 +4860,22 @@ export default function CornerstoneViewer({
       onClear={() => clearRef.current()}
       onViewMode={setViewMode}
       previewLocked={previewing && !mprLive}
+      onCustomWindow={openCustomWindow}
       onCineToggle={() => setCinePlaying((playing) => !playing)}
       onCineFps={(fps) => setCineFps(clampCineFps(fps))}
       onOverlay={cycleOverlay}
-      onHelp={() => setHelpOpen((open) => !open)}
+      onHelp={() => {
+        if (!helpOpen || helpTab !== "keys") {
+          setHelpTab("keys");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
+      onVoiceHelp={() => {
+        if (!helpOpen || helpTab !== "voice") {
+          setHelpTab("voice");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
       voice={
         canVoice
           ? {
@@ -4205,7 +4985,7 @@ export default function CornerstoneViewer({
           inverted,
           presetLabel:
             activePreset && activePreset !== FULL_DYNAMIC_ID
-              ? WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? null
+              ? (presets.find((p) => p.id === activePreset) ?? WINDOW_PRESETS.find((p) => p.id === activePreset))?.label ?? null
               : null,
           cineFps: cinePlaying ? cineFps : null,
         }
@@ -4232,6 +5012,9 @@ export default function CornerstoneViewer({
         "min-w-0 max-w-full",
         className
       )}
+      // Overlays (tutor ink, cards) find their canvas and the chrome to keep
+      // clear of from here: the pane, not the whole page.
+      data-viewer-root
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
     >
@@ -4272,7 +5055,8 @@ export default function CornerstoneViewer({
           onDoubleClick={() => {
             // Annotation tools use double-click to edit; leave it to them.
             if (ANNOTATION_TOOL_NAMES.has(activeTool)) return;
-            fitRef.current();
+            if (onToggleMaximize) onToggleMaximize();
+            else fitRef.current();
           }}
           // Focusable so the reading-room keys (lib/viewerHotkeys.ts) can be
           // scoped to the image instead of fighting the session's global keys,
@@ -4299,8 +5083,110 @@ export default function CornerstoneViewer({
             menuShortcut={(id) => (id === "ann:delete" ? "Del" : undefined)}
           />
         )}
+        {!mprLive && referencePlanes && referencePlanes.length > 0 && (
+          <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
+        )}
+        {recon && <WebReconOverlay imageIds={recon.imageIds} title={recon.title} onExit={() => setRecon(null)} />}
+        {f.tools && !mprLive && viewMode === "stack" && (
+          <WebTextBoxLayer ref={textBoxRef} element={stageEl} active={textBoxTool} hidden={annotationsHidden} />
+        )}
+        {annotatedExport && (
+          <Modal
+            open
+            onClose={() => setAnnotatedExport(false)}
+            title="Save the image with annotations"
+            description={BURNED_IN_WARNING}
+            size="sm"
+            tone="reading"
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setAnnotatedExport(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    setAnnotatedExport(false);
+                    void textBoxRef.current?.composite().then((canvas) =>
+                      canvas?.toBlob((blob) => {
+                        if (!blob) return;
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        // A name without patient details.
+                        a.download = `${(modality || "image").toLowerCase()}-annotated-${Date.now().toString(36)}.png`;
+                        a.click();
+                        window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+                        flash("Saved with annotations");
+                      }, "image/png")
+                    );
+                  }}
+                >
+                  Save PNG
+                </Button>
+              </>
+            }
+          >
+            <p>
+              The PNG holds the image as shown, its measurements and text boxes. No overlay text or patient
+              details are added. It is saved to this device only.
+            </p>
+          </Modal>
+        )}
+        {measurementsOpen && editCtx && (
+          <MeasurementsPanel
+            open
+            ctx={editCtx}
+            imageIds={(viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? []}
+            onJump={(index) => {
+              const vp = viewportRef.current as unknown as { setImageIdIndex?: (i: number) => unknown } | null;
+              void vp?.setImageIdIndex?.(index);
+            }}
+            onClose={() => {
+              setMeasurementsOpen(false);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            onDone={flash}
+          />
+        )}
+        {exportOpen && (
+          <WebExportDialog
+            open
+            initial={{ kind: exportOpen.kind }}
+            frames={exportOpen.frames}
+            dicom={exportOpen.dicom}
+            onClose={() => {
+              setExportOpen(null);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            onDone={flash}
+          />
+        )}
+        {customWindowOpen && (
+          <CustomWindowDialog
+            open
+            onClose={() => {
+              setCustomWindowOpen(false);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            initial={{ ww: readout?.ww, wc: readout?.wc }}
+            unit={modality === "CT" ? "HU" : undefined}
+            tone={f.keys ? "reading" : "app"}
+            onApply={(ww, wc) => {
+              // The same path as a preset: the window is the reader's own
+              // choice, so linked panes, pop-outs and recordings hear it.
+              const id = matchPreset(ww, wc);
+              applyPresetRef.current({ id: id ?? "custom", label: presets.find((p) => p.id === id)?.label ?? "Window", ww, wc, modalities: ["*"] });
+              flash(`Window   ${windowLine(ww, wc) ?? ""}`.trim());
+            }}
+          />
+        )}
         {tagsImageId && (
-          <DicomTagsDialog open onClose={() => setTagsImageId(null)} imageId={tagsImageId} description={modality ? `${modality} · current image` : undefined} />
+          <DicomTagsDialog
+            open
+            onClose={() => setTagsImageId(null)}
+            imageId={tagsImageId}
+            description={modality ? `${modality} · current image` : undefined}
+            tone={f.keys ? "reading" : "app"}
+          />
         )}
         {sliceScrollbar}
         {(viewMode === "mpr" || mprLive) && (
@@ -4313,7 +5199,8 @@ export default function CornerstoneViewer({
             loading={mprLoading}
             notice={mprNotice}
             framed={docked && !sharedBar && mprLive}
-            render={mprRender}
+            render={mprRender === "3d" ? "3d" : slab.mode !== "off" ? "mip" : "mpr"}
+            slabLabel={mprRender === "3d" ? null : slabLabel(slab) || null}
             volume3dRef={volume3dRef}
             volume3dControls={
               <>
@@ -4384,6 +5271,7 @@ export default function CornerstoneViewer({
             markers={markers}
             scrollbar={scrollbarVisible}
             label={readoutLabel}
+            scaleBar={scaleBar?.on ? scaleBarFor(readout.mmPerPx, readout.paneWidth ?? 0) : null}
           />
         )}
 
@@ -4431,7 +5319,17 @@ export default function CornerstoneViewer({
           </p>
         )}
         <ViewerHud text={hud} />
-        <ViewerHelp open={helpOpen} onClose={closeHelp} overrides={viewerBindings} />
+        <ViewerHelp
+          open={helpOpen}
+          onClose={closeHelp}
+          overrides={viewerBindings}
+          tab={helpTab}
+          onTabChange={setHelpTab}
+          paneMaximize={!!onToggleMaximize}
+          features={f}
+          popOut={popOutOffered}
+          voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
+        />
         <VoiceStatus
           className="absolute right-3 top-3 z-30"
           state={voice.state}

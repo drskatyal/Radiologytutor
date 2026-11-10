@@ -248,6 +248,7 @@ export function hpStudyFromLocal(study: LocalStudy): HpStudy {
   return {
     uid: study.studyInstanceUID,
     date: study.studyDate,
+    patientId: study.patientKey,
     series: study.series.map((series) => {
       const first = series.instances[0];
       const zs = series.instances.map((i) => i.imagePositionPatient?.[2]).filter((z): z is number => Number.isFinite(z));
@@ -270,4 +271,33 @@ export function primarySeriesIndexByProtocol(study: LocalStudy): number {
   const uid = plan?.cells[0];
   const i = uid ? study.series.findIndex((s) => s.seriesInstanceUID === uid) : -1;
   return i < 0 ? 0 : i;
+}
+
+/** Where the current-vs-prior protocol hangs a local drop: study / series indices of `studies`. */
+export interface LocalComparePlan {
+  current: { study: number; series: number };
+  prior: { study: number; series: number };
+  /** "Current 2024-03-12 vs prior 2023-01-05". */
+  label: string;
+  /** Prior position = current position + this (mm), superior ends aligned. */
+  priorOffsetMm: number;
+}
+
+/**
+ * The desktop's current-vs-prior hanging for studies opened together in the
+ * web viewer: the newest study's primary series beside the most similar series
+ * of an earlier study of the same patient, or null (one study, another
+ * patient, the same date, or no comparable series).
+ */
+export function localComparePlan(studies: readonly LocalStudy[]): LocalComparePlan | null {
+  const plan = comparePlan(studies.map(hpStudyFromLocal));
+  if (!plan?.compare) return null;
+  const find = (studyUid: string, seriesUid: string) => {
+    const study = studies.findIndex((s) => s.studyInstanceUID === studyUid);
+    const series = study < 0 ? -1 : studies[study]!.series.findIndex((s) => s.seriesInstanceUID === seriesUid);
+    return study < 0 || series < 0 ? null : { study, series };
+  };
+  const current = find(plan.compare.currentStudy, plan.compare.currentSeries);
+  const prior = find(plan.compare.priorStudy, plan.compare.priorSeries);
+  return current && prior ? { current, prior, label: plan.label, priorOffsetMm: plan.compare.priorOffsetMm } : null;
 }

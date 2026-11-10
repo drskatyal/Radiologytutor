@@ -3,7 +3,7 @@
 // thread, in the header-parsing Web Worker (localHeaderWorker.ts), and in
 // node tests. The parser itself (`dicom-parser`) is injected.
 
-import { hasDicomMagic, type LocalInstanceHeader } from "./localStudy";
+import { hasDicomMagic, patientKeyOf, type LocalInstanceHeader } from "./localStudy";
 
 /**
  * Header bytes read per file. Enough for the identity + geometry tags on every
@@ -34,6 +34,8 @@ export const TAG = {
   seriesDescription: "x0008103e",
   studyDescription: "x00081030",
   studyDate: "x00080020",
+  /** Read only to make LocalInstanceHeader.patientKey (one-way); the ID is not kept. */
+  patientId: "x00100020",
   numberOfFrames: "x00280008",
   rows: "x00280010",
   columns: "x00280011",
@@ -108,6 +110,7 @@ export function parseLocalHeader(
     seriesDescription: text(TAG.seriesDescription),
     studyDescription: text(TAG.studyDescription),
     studyDate: text(TAG.studyDate),
+    patientKey: patientKeyOf(dataSet.string(TAG.patientId)),
     numberOfFrames: int(TAG.numberOfFrames),
     rows: u16(TAG.rows),
     columns: u16(TAG.columns),

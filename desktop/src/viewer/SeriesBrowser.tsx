@@ -24,6 +24,12 @@ import { isTauri, previewUrlFor } from "../platform";
 import { beginSeriesPointer } from "./seriesDrag";
 
 const THUMB = 112;
+/**
+ * The label / slice-count chips on a thumbnail: a lifted backing with a
+ * hairline edge, so the chip reads the same on a black axial background
+ * (where black/70 vanished) as on a bright coronal one.
+ */
+const THUMB_CHIP = "rounded bg-elevated/85 px-1 text-[10px] text-white tabular-nums ring-1 ring-inset ring-strong/70";
 /** Series cards in the commit that mounts the browser; the rest follow in transitions of MORE_CARDS. */
 const FIRST_CARDS = 16;
 const MORE_CARDS = 32;
@@ -289,7 +295,7 @@ function SeriesBrowserImpl({ studies: studiesNow, onScreen, activeSeriesUid, gro
                   >
                     <div className="relative">
                       <Thumbnail series={series} deferred={thumbDeferred} />
-                      <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[10px] font-semibold text-white tabular-nums">
+                      <span className={cn("absolute left-1 top-1 font-semibold", THUMB_CHIP)}>
                         {series.modality}
                         {series.number != null ? ` ${series.number}` : ""}
                       </span>
@@ -298,7 +304,7 @@ function SeriesBrowserImpl({ studies: studiesNow, onScreen, activeSeriesUid, gro
                           {cells.join(",")}
                         </span>
                       )}
-                      <span className="absolute bottom-1 right-1 flex items-center gap-0.5 rounded bg-black/70 px-1 text-[10px] text-white tabular-nums">
+                      <span className={cn("absolute bottom-1 right-1 flex items-center gap-0.5", THUMB_CHIP)} data-slice-count>
                         {series.multiframe ? (
                           <Film className="h-3 w-3" aria-hidden />
                         ) : series.volumetric ? (

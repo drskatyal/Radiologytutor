@@ -249,6 +249,18 @@ if (want("border")) {
   await settle();
   const [c0, c1] = [await outline(0), await outline(1)];
   check("border: clicking another viewport moves the border", !c0.active && c1.active && c1.width === "3px", `${JSON.stringify(c0)} ${JSON.stringify(c1)}`);
+  // Every series card's slice-count chip has the same visible backing (not black on a black axial).
+  const chips = await page.locator('nav[aria-label="Series"] [data-slice-count]').evaluateAll((els) =>
+    els.map((e) => {
+      const s = getComputedStyle(e);
+      return `${s.backgroundColor} | ${s.boxShadow}`;
+    })
+  );
+  check(
+    "thumbnails: every slice-count chip has the same lifted backing and hairline edge",
+    chips.length >= 2 && new Set(chips).size === 1 && !/rgba?\(0, 0, 0/.test(chips[0].split(" | ")[0]) && !/^none$/.test(chips[0].split(" | ")[1]),
+    `${chips.length} chips: ${[...new Set(chips)].join(" ; ")}`
+  );
   await shot("border");
 }
 
@@ -288,6 +300,27 @@ if (want("dnd")) {
   const after0 = await seriesText(0);
   const active0 = await cell(0).evaluate((el) => el.hasAttribute("data-active-viewport"));
   check("dnd: drop shows the series in that viewport and selects it", after0 !== before0 && active0, `${before0} → ${after0} (cell 1: ${before1})`);
+
+  // Where a series opens: an axial on image 1, a coronal acquisition on its middle image.
+  const dropOn = async (images, target) => {
+    for (let i = 0; i < n; i += 1) {
+      if (!((await cards.nth(i).innerText()).match(/\d+/g) ?? []).includes(String(images))) continue;
+      const from = await cards.nth(i).boundingBox();
+      const to = await box(target);
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
+      await page.mouse.up();
+      await settle(1200);
+      return true;
+    }
+    return false;
+  };
+  const axialIn = (await dropOn(300, 0)) ? await imageNo(0) : null;
+  const coronalIn = (await dropOn(47, 1)) ? await imageNo(1) : null;
+  check("dnd: an axial series opens on image 1", axialIn?.at === 1 && axialIn?.of === 300, JSON.stringify(axialIn));
+  check("dnd: a coronal series opens on its middle image (floor(n/2) + 1)", coronalIn?.of === 47 && coronalIn?.at === Math.floor(47 / 2) + 1, JSON.stringify(coronalIn));
+  await shot("coronal-opens-mid");
 }
 
 // ── keyboard navigation ─────────────────────────────────────────────────
@@ -347,6 +380,21 @@ if (want("keys")) {
   check("keys: voice commands are full phrases (“bone window”)", /“bone window”/.test(boneRow) && !/“bone”/.test(boneRow), boneRow);
   check("keys: the sheet says how to switch voice on (mic / key, a toggle)", /mic button/.test(trigger) && /Shift\+V/.test(trigger) && /toggle, not push-to-talk/.test(trigger), trigger);
   await shot("cheat-sheet");
+  // The list is cut mid-row at the bottom: a fade says there is more, and goes at the end.
+  const sheetScroll = sheet.getByTestId("shortcuts-scroll");
+  const fadeAt = () => sheetScroll.evaluate((el) => ({ above: el.dataset.moreAbove === "true", below: el.dataset.moreBelow === "true" }));
+  const fade0 = await fadeAt().catch(() => null);
+  await sheetScroll.evaluate((el) => {
+    const s = el.firstElementChild;
+    s.scrollTop = s.scrollHeight;
+  }).catch(() => undefined);
+  await settle(200);
+  const fade1 = await fadeAt().catch(() => null);
+  check(
+    "keys: the sheet's list fades at the bottom while there is more, at the top once scrolled",
+    !!fade0 && !!fade1 && fade0.below && !fade0.above && fade1.above && !fade1.below,
+    `${JSON.stringify(fade0)} → ${JSON.stringify(fade1)}`
+  );
   await page.keyboard.press("Escape");
   await settle();
   // Settings lists the same commands.
@@ -500,6 +548,16 @@ if (want("bindings")) {
   await sheet.waitFor({ timeout: 3000 }).catch(() => undefined);
   const sheetText = (await sheet.innerText().catch(() => "")) + (await sheet.getAttribute("aria-describedby").then((id) => (id ? page.locator(`#${id}`).innerText() : "")).catch(() => ""));
   check("bindings (after reload): the F1 sheet shows F13, Mouse button 6 and Right drag = zoom", /F13/.test(sheetText) && /Mouse button 6/.test(sheetText) && /Right drag = zoom/.test(sheetText), sheetText.slice(0, 200));
+  // Each mouse action once, with all its inputs; W/L lost right drag, so the sheet says so.
+  const mouseLine = sheetText.match(/Mouse: [^\n]*/)?.[0] ?? "";
+  check(
+    "bindings (after reload): the F1 mouse line lists zoom once with both drags and says window/level is not bound",
+    /(^|· )Right drag or Ctrl\+Right drag = zoom( ·|$)/.test(mouseLine) && (mouseLine.match(/drag[^·]* = zoom( ·|$)/g) ?? []).length === 1 && /(^|· )window\/level: not bound( ·|$)/.test(mouseLine),
+    mouseLine
+  );
+  // The sheet fades / springs in (Modal: overlay 160 ms, panel ~320 ms). It is
+  // opaque (bg-elevated); a shot taken mid-animation shows the image through it.
+  await settle(500);
   await shot("bindings-sheet");
   await closeDialogs();
 
@@ -607,6 +665,29 @@ if (want("annotate")) {
   check("annotate: double-click opens an inline label field on the image", opened && dialogs === 0);
   if (opened) {
     await input.fill("Lesion");
+    // The field and its hint sit clear of the arrow as drawn (its SVG line), inside the viewport.
+    const ed = await page.getByTestId("annotation-label-editor").boundingBox();
+    const vb = await box(0);
+    const arrow = await cell(0).evaluate((el) => {
+      const l = el.querySelector(".svg-layer line");
+      if (!l) return null;
+      const r = l.ownerSVGElement.getBoundingClientRect();
+      const at = (x, y) => [r.left + Number(l.getAttribute(x)), r.top + Number(l.getAttribute(y))];
+      return [at("x1", "y1"), at("x2", "y2")];
+    });
+    const crosses = (r, p, q) => {
+      for (let i = 0; i <= 50; i += 1) {
+        const x = p[0] + ((q[0] - p[0]) * i) / 50;
+        const y = p[1] + ((q[1] - p[1]) * i) / 50;
+        if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) return true;
+      }
+      return false;
+    };
+    check(
+      "annotate: the label field is clear of the arrow and inside the viewport",
+      !!ed && !!arrow && !crosses(ed, ...arrow) && ed.x >= vb.x && ed.y >= vb.y && ed.x + ed.width <= vb.x + vb.width && ed.y + ed.height <= vb.y + vb.height,
+      JSON.stringify({ editor: ed, arrow })
+    );
     await shot("label-edit");
     await input.press("Enter");
     await settle(300);
@@ -1146,7 +1227,17 @@ if (want("contextmenu")) {
   const seriesMenu = page.getByRole("menu", { name: "Series" });
   const thumbOk = await seriesMenu.waitFor({ timeout: 3000 }).then(() => true, () => false);
   const thumbItems = thumbOk ? (await seriesMenu.getByRole("menuitemradio").allInnerTexts()).map((t) => t.split("\n")[0]) : [];
-  check("contextmenu: a thumbnail has open / new pane / quick reformat / info / hide", ["Open in active pane", "Open in a new layout pane", "Series info…", "Hide series"].every((w) => thumbItems.includes(w)), thumbItems.join(" | "));
+  check("contextmenu: a thumbnail has open / new pane / info / hide", ["Open in active pane", "Open in a new layout pane", "Series info…", "Hide series"].every((w) => thumbItems.includes(w)), thumbItems.join(" | "));
+  // Quick coronal / sagittal are offered only in the app (Tauri: the native
+  // volume) and only for a volumetric series (App.tsx thumbMenuFor). This
+  // harness is a browser, so the real condition here is: not offered.
+  const inApp = await page.evaluate(() => "__TAURI_INTERNALS__" in window);
+  const reformatItems = thumbItems.filter((t) => /^Quick (coronal|sagittal)$/.test(t));
+  check(
+    `contextmenu: quick reformat on a thumbnail follows the app condition (${inApp ? "in the app: offered" : "browser harness: not offered"})`,
+    thumbOk && (inApp ? reformatItems.length === 2 : reformatItems.length === 0),
+    thumbItems.join(" | ")
+  );
   await shot("context-menu-thumbnail");
   if (thumbOk) await seriesMenu.getByRole("menuitemradio", { name: "Series info…" }).click();
   const infoOk = await page.getByTestId("dicom-tags").waitFor({ timeout: 5000 }).then(() => true, () => false);

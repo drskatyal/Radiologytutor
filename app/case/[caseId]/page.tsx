@@ -89,6 +89,9 @@ export default async function CasePage({
         sharedLink={false}
         namedStudy={studyUidsForCase(caseData).length > 0}
         openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
+        // Pixels are served to signed-in members only (lib/studyAccess): a
+        // signed-out visitor gets a sign-in prompt, not a row of 401s.
+        signedIn={!!session}
       />
       </>
     );

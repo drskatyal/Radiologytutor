@@ -451,7 +451,11 @@ async function benchColdStart(binary) {
     // The page's share, from its navigation start: what arrived when, and
     // what the first paint waited for.
     const pt = report.pageTiming;
-    if (pt) console.error(`  page: html ${pt.html} · css ${pt.css} · entry js ${pt.js} · parsed ${pt.interactive} · DOMContentLoaded ${pt.dcl} · load ${pt.load} · first paint ${pt.fcp} ms`);
+    if (pt) console.error(`  page: html ${pt.html} · css ${pt.css} · entry js ${pt.js} · parsed ${pt.interactive} · entry script running ${pt.main ?? "?"} · DOMContentLoaded ${pt.dcl} · load ${pt.load} · first paint ${pt.fcp} ms`);
+    // Rust's side of the page load (ms from process start): the page and its
+    // entry script handed to the webview, against the webview's load start.
+    const at = (label) => (report.trace ?? []).find(([l]) => l === label)?.[1];
+    if (at("page html served") != null) console.error(`  rust: page html served ${r0(at("page html served"))} · page load started ${r0(at("page load started"))} · entry script served ${r0(at("entry script served"))} · page first paint ${r0(report.firstPaintMs)} ms`);
   }
   // Where the time goes before the page's first paint: Rust + Tauri's build
   // (windowBuiltMs: the app is built; the window itself is created when the

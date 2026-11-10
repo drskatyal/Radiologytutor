@@ -61,15 +61,36 @@ export async function clearStudyHandles(): Promise<void> {
   await run("readwrite", (store) => store.delete(KEY));
 }
 
+type Permissioned = Handle & {
+  queryPermission?: (o: { mode: "read" }) => Promise<PermissionState>;
+  requestPermission?: (o: { mode: "read" }) => Promise<PermissionState>;
+};
+
 /**
- * Ask (inside a click) to read the remembered handles again. Returns them when
+ * Can every remembered handle be read right now, with no prompt? The reader
+ * chose this study before the reload, so when the browser still grants read
+ * access the viewer reopens it straight away. Never asks (no prompt, no
+ * click needed): `queryPermission` only.
+ */
+export async function studyHandlesReadable(handles: readonly Handle[]): Promise<boolean> {
+  if (handles.length === 0) return false;
+  for (const handle of handles as Permissioned[]) {
+    try {
+      if (typeof handle.queryPermission !== "function") return false;
+      if ((await handle.queryPermission({ mode: "read" })) !== "granted") return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Ask (inside a click) to read the remembered handles again. The browser's
+ * own prompt shows only where it requires one (access lapsed). Returns them when
  * every one is readable, else an empty list.
  */
 export async function regainStudyHandles(handles: readonly Handle[]): Promise<Handle[]> {
-  type Permissioned = Handle & {
-    queryPermission?: (o: { mode: "read" }) => Promise<PermissionState>;
-    requestPermission?: (o: { mode: "read" }) => Promise<PermissionState>;
-  };
   for (const handle of handles as Permissioned[]) {
     try {
       let state = (await handle.queryPermission?.({ mode: "read" })) ?? "denied";

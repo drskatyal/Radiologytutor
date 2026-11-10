@@ -2,47 +2,12 @@
 // (generated from the recognizer's own table, so it cannot drift from what is
 // recognised), how voice is switched on, and when the loading card shows.
 
-import { VOICE_COMMANDS, type VoiceAction } from "@flowrad/viewer-core";
+import { stopPhrase } from "@flowrad/viewer-core";
 import type { VoiceProgress, VoiceState } from "@flowrad/viewer-core";
 
-export type VoiceGroup = "Navigate" | "Tools" | "View" | "Layout" | "Window presets" | "MPR and 3D" | "Voice";
-
-const GROUP_OF: Record<VoiceAction["type"], VoiceGroup> = {
-  series: "Navigate",
-  slice: "Navigate",
-  page: "Navigate",
-  tool: "Tools",
-  zoom: "View",
-  reset: "View",
-  invert: "View",
-  layout: "Layout",
-  preset: "Window presets",
-  mpr: "MPR and 3D",
-  volume3d: "MPR and 3D",
-  slab: "MPR and 3D",
-  slabThickness: "MPR and 3D",
-  stop: "Voice",
-};
-
-export const VOICE_GROUP_ORDER: readonly VoiceGroup[] = ["Navigate", "Tools", "View", "Layout", "Window presets", "MPR and 3D", "Voice"];
-
-export interface VoiceCommandRow {
-  group: VoiceGroup;
-  label: string;
-  /** What to say: the first phrase is the main one, the rest are alternatives. */
-  phrases: readonly string[];
-}
-
-/** Every voice command, grouped, in the recognizer table's order within each group. */
-export function voiceCommandRows(): VoiceCommandRow[] {
-  const rows = VOICE_COMMANDS.map((c) => ({ group: GROUP_OF[c.action.type], label: c.label, phrases: c.phrases }));
-  return VOICE_GROUP_ORDER.flatMap((g) => rows.filter((r) => r.group === g));
-}
-
-/** The phrase that switches voice off, from the table. */
-export function stopPhrase(): string {
-  return VOICE_COMMANDS.find((c) => c.action.type === "stop")?.phrases[0] ?? "stop listening";
-}
+// The grouped command list lives in the viewer core, shared with the web
+// viewer's Voice commands sheet.
+export { VOICE_GROUP_ORDER, stopPhrase, voiceCommandRows, type VoiceCommandRow, type VoiceGroup } from "@flowrad/viewer-core";
 
 /**
  * How voice is switched on: the toolbar mic, or its key (`keys`, from the

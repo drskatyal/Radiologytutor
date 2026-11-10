@@ -595,7 +595,7 @@ mod tests {
     fn paid_features_need_an_unexpired_paid_licence() {
         let cfg = RemoteConfig { paid_features: vec!["cloudSync".into()], ..Default::default() };
         let now = "2026-11-02T00:00:00Z";
-        assert_eq!(resolve_entitlement(Some(&cfg), None, now, "remote").features["cloudSync"], false);
+        assert!(!resolve_entitlement(Some(&cfg), None, now, "remote").features["cloudSync"]);
         let paid = Licence { tier: "paid".into(), expires_at: Some("2027-01-01T00:00:00Z".into()), licensee: Some("Clinic".into()) };
         let e = resolve_entitlement(Some(&cfg), Some(&paid), now, "remote");
         assert_eq!((e.tier.as_str(), e.features["cloudSync"]), ("paid", true));

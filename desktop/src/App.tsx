@@ -11,7 +11,6 @@ import { useToast } from "./toast";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import type { OrientationCommand, SliceStats, WindowPreset } from "@flowrad/viewer-core";
-import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { useSeriesPanel } from "@/components/viewer/useSeriesPanel";
 import type { ExportKind } from "./components/ExportDialog";
 import {
@@ -129,13 +128,16 @@ function named<T>(load: () => Promise<Record<string, unknown>>, key: string): T 
 // series renders (lazyView.tsx: that was a chunk waterfall before the first image).
 const Toolbar = preloadable(() => import("./components/Toolbar").then((m) => m.Toolbar));
 const SeriesBrowser = preloadable(() => import("./viewer/SeriesBrowser").then((m) => m.SeriesBrowser));
+// The series panel frame: it brings Radix Tooltip + floating-ui (its collapse button
+// has a tooltip), which the start screen never shows.
+const CollapsiblePanel = preloadable(() => import("@/components/ui/CollapsiblePanel").then((m) => m.CollapsiblePanel));
 const StackViewport = preloadable(() => import("./viewer/StackViewport").then((m) => m.StackViewport));
 // Phase 2 (FLOWRAD_NATIVE=1): monochrome single-frame series are drawn by the
 // native renderer; everything else stays on the JS viewer (per series).
 const NativeStackViewport = preloadable(() => import("./native/NativeStackViewport").then((m) => m.default));
 /** Start fetching the study view's chunks (idempotent; failures retry on render). */
 function preloadStudyView(): Promise<unknown> {
-  return Promise.all([Toolbar, SeriesBrowser, StackViewport, NativeStackViewport].map((v) => v.preload().catch(() => undefined)));
+  return Promise.all([Toolbar, CollapsiblePanel, SeriesBrowser, StackViewport, NativeStackViewport].map((v) => v.preload().catch(() => undefined)));
 }
 const Native3DView = named<typeof import("./viewer/Native3DView").Native3DView>(() => import("./viewer/Native3DView"), "Native3DView");
 const NativePlaneView = named<typeof import("./viewer/NativePlaneView").NativePlaneView>(() => import("./viewer/NativePlaneView"), "NativePlaneView");
@@ -1259,6 +1261,8 @@ export default function App() {
                   dcl: r1(nav.domContentLoadedEventEnd),
                   load: r1(nav.loadEventStart),
                   fcp: r1(fcp),
+                  // The entry module (main.tsx) running: its imports evaluated.
+                  main: r1((window as unknown as { __mainAt?: number }).__mainAt),
                 }
               : null;
             await benchReport({
@@ -2065,6 +2069,8 @@ export default function App() {
         return arg === "axial" || arg === "coronal" || arg === "sagittal" ? { type: "reformat", plane: arg } : null;
       case "mpr":
         return { type: "mpr" };
+      case "window":
+        return arg === "custom" ? { type: "customWindow" } : null;
       case "3d":
         return { type: "volume3d" };
       case "layout": {

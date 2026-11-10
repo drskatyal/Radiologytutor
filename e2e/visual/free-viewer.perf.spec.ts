@@ -51,13 +51,26 @@ const FRAME_P95_SOFTWARE_GPU_BUDGET_MS = 34;
 const SCROLL_STEPS = 240;
 /** Fresh-browser launches for the cold first-image gate. */
 const COLD_RUNS = 3;
+/** Reopen / close cycles for the reopen first-image gate (median). */
+const REOPEN_RUNS = 3;
 /**
  * Close study must give the memory back. Renderer + GPU resident memory has
- * to return to the level measured on the dropzone before the drop (engine,
- * workers and GL context already warm), within this slack for allocator and
- * JIT noise — a 263 MB study left behind would miss it by ~5×.
+ * to return near the level measured on the dropzone before the drop. The
+ * first study opened in a tab leaves a one-time warm-up behind (viewer code
+ * JIT-compiled, GL programs and worker heaps grown): measured 64–72 MB on
+ * this runner (idle 605–633 MB, flat after close), so the old 64 MB slack
+ * failed about one run in three with nothing leaked (cache, files and
+ * metadata all 0). This slack covers the warm-up; a 263 MB study left behind
+ * still misses it by ~2×.
  */
-const CLOSE_RSS_TOLERANCE_MB = 64;
+const CLOSE_RSS_TOLERANCE_MB = 128;
+/**
+ * The leak gate proper: after a second open and close, memory must come back
+ * to the first close's level within this slack. Warm-up is paid once; a leak
+ * grows every cycle (a 263 MB study left behind would miss it by ~5×).
+ * Measured: second close 4–7 MB above the first, after ~15 s.
+ */
+const RECLOSE_RSS_TOLERANCE_MB = 48;
 const CLOSE_SETTLE_MS = 30_000;
 /** viewerRuntime.ts imageCacheBytes for a 2 GB device (deviceMemory ≤ 2). */
 const DEVICE_BUDGET_2GB_MB = 256;
@@ -201,6 +214,49 @@ async function measureFirstImage(page: Page) {
     firstImageMs: Math.round(m.firstPixel! - m.received!),
     firstHeaderMs: m.firstRegistered != null ? Math.round(m.firstRegistered - m.received!) : null,
   };
+}
+
+/** Until renderer + GPU memory stops falling (two samples 1 s apart within 4 MB), at most 30 s. */
+async function waitForRssSettled(page: Page, browser: Browser, maxMs = 30_000) {
+  const deadline = Date.now() + maxMs;
+  let prev = await rendererRssMb(browser);
+  while (prev != null && Date.now() < deadline) {
+    await page.waitForTimeout(1000);
+    const next = await rendererRssMb(browser);
+    if (next == null || Math.abs(next - prev) <= 4) return;
+    prev = next;
+  }
+}
+
+/**
+ * Until the main thread has had no long task (> 50 ms) for `quietMs`, at most
+ * `maxMs`: the page settled, as it is by the time a reader picks a folder.
+ */
+async function waitForQuietMainThread(page: Page, quietMs = 1000, maxMs = 5000) {
+  await page.evaluate(
+    ({ quietMs, maxMs }) =>
+      new Promise<void>((resolve) => {
+        const start = performance.now();
+        let last = start;
+        const observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) last = Math.max(last, entry.startTime + entry.duration);
+        });
+        try {
+          observer.observe({ type: "longtask", buffered: false });
+        } catch {
+          /* no Long Tasks API: the time limit alone */
+        }
+        const tick = () => {
+          const now = performance.now();
+          if (now - last >= quietMs || now - start >= maxMs) {
+            observer.disconnect();
+            resolve();
+          } else setTimeout(tick, 100);
+        };
+        setTimeout(tick, 100);
+      }),
+    { quietMs, maxMs }
+  );
 }
 
 async function waitParsed(page: Page) {
@@ -406,12 +462,36 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
   const heapClosed = await jsHeapMb(cdp);
 
   // Reopen after close: the recycled decode/header workers must serve the
-  // next study as fast as the first one.
-  await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
-  const reopen = await measureFirstImage(page);
-  await waitParsed(page);
-  await page.getByRole("button", { name: "Close study" }).first().click();
-  await expect(page.getByTestId("local-dropzone")).toBeVisible();
+  // next study as fast as the first one. As before the first drop (the idle
+  // wait above), the reader takes a moment to pick the next folder: reopen
+  // once the main thread is quiet, not while the collector is still returning
+  // the closed study (that overlap is what made this 402–567 ms on some runs
+  // and ~130–170 ms once settled). Much of that clean-up (freeing the decoded
+  // study, recycling workers) runs off the main thread, so wait for memory to
+  // stop falling as well.
+  // One reopen on this 4-core software-GPU runner can still land at ~420 ms
+  // after a settled page (others 130–170 ms), so, as the cold first-image gate
+  // does, gate the median of REOPEN_RUNS reopen / close cycles.
+  const reopenMs: number[] = [];
+  for (let i = 0; i < REOPEN_RUNS; i += 1) {
+    await waitForRssSettled(page, browser);
+    await waitForQuietMainThread(page);
+    await page.locator("input[type=file][webkitdirectory]").setInputFiles(CT_DIR!);
+    reopenMs.push((await measureFirstImage(page)).firstImageMs);
+    await waitParsed(page);
+    await page.getByRole("button", { name: "Close study" }).first().click();
+    await expect(page.getByTestId("local-dropzone")).toBeVisible();
+  }
+  const reopen = { firstImageMs: [...reopenMs].sort((a, b) => a - b)[Math.floor(reopenMs.length / 2)]! };
+  // After the reopen cycles: back to the first close's level (a leak would grow here).
+  let rssReclosed = await rendererRssMb(browser);
+  if (rssClosed != null) {
+    const deadline = Date.now() + CLOSE_SETTLE_MS;
+    while (rssReclosed != null && rssReclosed > rssClosed + RECLOSE_RSS_TOLERANCE_MB && Date.now() < deadline) {
+      await page.waitForTimeout(500);
+      rssReclosed = await rendererRssMb(browser);
+    }
+  }
   const wasm = privacy.wasmFetched();
   const violations = privacy.violations();
 
@@ -432,8 +512,10 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
       rendererRssIdleMb: rssIdle,
       rendererRssOpenMb: rssOpen,
       rendererRssClosedMb: rssClosed,
+      rendererRssReclosedMb: rssReclosed,
     },
     reopenFirstImageMs: reopen.firstImageMs,
+    reopenRunsMs: reopenMs,
     wasmFetched: wasm,
     requestsAfterDrop: privacy.requestCount(),
     privacyViolations: violations,
@@ -457,7 +539,13 @@ test("CT 520 slices as a folder: first image, scroll, memory, privacy", async ({
       `renderer + GPU memory returns to the pre-open baseline (${rssIdle} MB + ${CLOSE_RSS_TOLERANCE_MB} MB) within ${CLOSE_SETTLE_MS / 1000} s of Close study`
     ).toBeLessThanOrEqual(rssIdle + CLOSE_RSS_TOLERANCE_MB);
   }
-  expect(reopen.firstImageMs, "first image when reopening after Close study").toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
+  if (rssClosed != null && rssReclosed != null) {
+    expect(
+      rssReclosed,
+      `renderer + GPU memory after a second open and close stays at the first close's level (${rssClosed} MB + ${RECLOSE_RSS_TOLERANCE_MB} MB): nothing leaks per study`
+    ).toBeLessThanOrEqual(rssClosed + RECLOSE_RSS_TOLERANCE_MB);
+  }
+  expect(reopen.firstImageMs, `first image when reopening after Close study (median of ${REOPEN_RUNS}: ${reopenMs.join(", ")} ms)`).toBeLessThanOrEqual(FIRST_IMAGE_BUDGET_MS);
 });
 
 test("memory cap: a 2 GB device scrolls all 520 slices with decoded + raw under its budget, then frees on close", async ({ browser }) => {
@@ -564,7 +652,8 @@ test("MR multi-series JPEG 2000 as a ZIP: first image, series switch, lazy codec
   const first = await measureFirstImage(page);
   const parsed = await waitParsed(page);
   const rail = page.getByRole("complementary", { name: "Series" });
-  await expect(rail.locator("button[aria-pressed]")).toHaveCount(5);
+  // The five series of the list (not the list's own compact toggle, also a pressed-state button).
+  await expect(rail.getByRole("list", { name: "Series" }).locator("button[aria-pressed]")).toHaveCount(5);
   await page.screenshot({ path: path.join(OUT_DIR, "04-mr-zip.png") });
 
   // Switch series: a different series paints.

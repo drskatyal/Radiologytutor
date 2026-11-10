@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HANGING_LAYOUTS,
+  READING_LAYOUTS,
+  layoutForShape,
   hangSeries,
   layoutById,
   layoutsForSeriesCount,
@@ -24,6 +26,27 @@ test("a one-series case is not offered a 2×2", () => {
   );
   assert.equal(layoutsForSeriesCount(3).length, HANGING_LAYOUTS.length);
   assert.deepEqual(layoutsForSeriesCount(0).map((l) => l.id), ["1x1"]);
+});
+
+test("the free viewer offers the desktop's seven layouts, a big grid only with series to fill it", () => {
+  const ids = (n: number) => layoutsForSeriesCount(n, READING_LAYOUTS).map((l) => l.id);
+  assert.deepEqual(
+    READING_LAYOUTS.map((l) => [l.rows, l.cols]),
+    [[1, 1], [1, 2], [2, 1], [2, 2], [1, 3], [2, 3], [3, 3]],
+    "the desktop's Shift+1…7 order"
+  );
+  assert.deepEqual(ids(1), ["1x1", "1x2", "2x1"]);
+  assert.deepEqual(ids(2), ["1x1", "1x2", "2x1", "2x2", "1x3"]);
+  assert.deepEqual(ids(5), ["1x1", "1x2", "2x1", "2x2", "1x3"]);
+  assert.deepEqual(ids(6), ["1x1", "1x2", "2x1", "2x2", "1x3", "2x3"]);
+  assert.deepEqual(ids(12), READING_LAYOUTS.map((l) => l.id));
+  // The case viewer keeps its four.
+  assert.deepEqual(layoutsForSeriesCount(12).map((l) => l.id), ["1x1", "1x2", "2x1", "2x2"]);
+  assert.equal(nextLayout("2x2", 9, READING_LAYOUTS), "1x3");
+  assert.equal(nextLayout("3x3", 9, READING_LAYOUTS), "1x1");
+  assert.equal(paneCount(layoutById("3x3")), 9);
+  assert.equal(layoutForShape(2, 3)?.id, "2x3");
+  assert.equal(layoutForShape(3, 2), undefined);
 });
 
 test("G cycles within the offered layouts", () => {
@@ -60,4 +83,30 @@ test("arrow moves between panes and stops at the edge", () => {
   assert.equal(movePane(grid, 1, "down"), 3);
   assert.equal(movePane(grid, 3, "left"), 2);
   assert.equal(movePane(grid, 2, "up"), 0);
+});
+
+test("Shift+1…7 layouts: the desktop's order, only where the study has the series for it", async () => {
+  const { layoutForShortcut } = await import("@flowrad/viewer-core/hangingLayout");
+  assert.equal(layoutForShortcut(1, 1)?.id, "1x1");
+  assert.equal(layoutForShortcut(2, 1)?.id, "1x2", "one series: side by side is still offered");
+  assert.equal(layoutForShortcut(4, 1), null, "one series: no 2×2");
+  assert.equal(layoutForShortcut(4, 3)?.id, "2x2");
+  assert.equal(layoutForShortcut(7, 4), null, "3×3 needs more than four series");
+  assert.equal(layoutForShortcut(7, 9)?.id, "3x3");
+  assert.equal(layoutForShortcut(8, 9), null);
+});
+
+test("a new layout pane: the smallest offered layout with more panes, none past the largest", async () => {
+  const { layoutWithMorePanes, READING_LAYOUTS } = await import("@flowrad/viewer-core/hangingLayout");
+  const next = (id: string, series = 9) => layoutWithMorePanes(id as never, series, READING_LAYOUTS)?.id ?? null;
+  assert.equal(next("1x1"), "1x2");
+  assert.equal(next("1x2"), "1x3");
+  assert.equal(next("2x1"), "1x3");
+  assert.equal(next("1x3"), "2x2");
+  assert.equal(next("2x2"), "2x3");
+  assert.equal(next("2x3"), "3x3");
+  assert.equal(next("3x3"), null);
+  // What the study offers bounds it: one series offers up to two panes.
+  assert.equal(next("1x1", 1), "1x2");
+  assert.equal(next("1x2", 1), null);
 });

@@ -57,7 +57,12 @@ export function SketchOverlay({
     const root = rootRef.current;
     if (!root) return [];
     const origin = root.getBoundingClientRect();
-    const scope = root.closest("[data-imaging-layout]") ?? root.closest("[data-viewer-root]")?.parentElement ?? document.body;
+    // This pane only: the viewer root's parent (a grid pane holds the pane
+    // badge; a single pane the stage). Never the page — another pane's
+    // readouts are not this card's business.
+    const viewerRoot = root.closest("[data-viewer-root]");
+    const scope = root.closest("[data-imaging-layout]") ?? viewerRoot?.parentElement ?? viewerRoot;
+    if (!scope) return [];
     const boxes: Box[] = [];
     for (const el of Array.from(scope.querySelectorAll('[role="toolbar"], [role="slider"], .imaging-readout, [data-imaging-chrome]'))) {
       const r = el.getBoundingClientRect();

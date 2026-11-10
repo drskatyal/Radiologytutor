@@ -18,6 +18,11 @@ export const PREVIEW_LOCKED_TOOLS: ReadonlySet<string> = new Set([
   "RectangleROI",
   "Probe",
   "ArrowAnnotate",
+  // The free viewer's extra measure tools (READING_MEASURE_TOOLS).
+  "CobbAngle",
+  "Bidirectional",
+  "CircleROI",
+  "PlanarFreehandROI",
 ]);
 
 export interface PressLike {

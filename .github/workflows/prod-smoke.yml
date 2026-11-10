@@ -6,17 +6,10 @@
 # the chunk-recovery branch.
 name: prod-smoke
 
+# Runs only when started by hand (Actions → this workflow → Run workflow):
+# Actions minutes cost money, so nothing runs on push, PR or tag. Tests and
+# the build run locally before merge and are listed in the PR description.
 on:
-  push:
-    branches:
-      - claude/epic-noether-3nvcbf
-      - claude/viewer-chunk-recovery
-    # Pushes that change nothing Railway serves (desktop app, docs, desktop CI)
-    # get no smoke run: production keeps the previous build.
-    paths-ignore:
-      - "desktop/**"
-      - "docs/**"
-      - ".github/workflows/desktop-*.yml"
   workflow_dispatch:
     inputs:
       expect_commit:

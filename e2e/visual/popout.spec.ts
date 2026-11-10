@@ -13,9 +13,56 @@ test.skip(!DIR, "TEST_CT_DIR is not set (scripts/make-test-ct.py)");
 
 const slice = async (page: Page) => Number(await page.getByRole("slider", { name: "Slice" }).first().getAttribute("aria-valuenow"));
 
+test("pop out is hidden with one monitor", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+  await page.goto("/viewer/local");
+  const files = fs.readdirSync(DIR!).map((f) => path.join(DIR!, f));
+  await page.locator("input[type=file]:not([webkitdirectory])").setInputFiles(files);
+  await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Pop out to new window" })).toHaveCount(0);
+  // Nor its key: Ctrl+Alt+N opens nothing, and the help sheet doesn't list it.
+  await page.locator('[role="img"][aria-label^="DICOM viewer"]').first().focus();
+  let opened = false;
+  page.context().once("page", () => (opened = true));
+  await page.keyboard.press("Control+Alt+KeyN");
+  await page.waitForTimeout(1_000);
+  expect(opened).toBe(false);
+  await page.keyboard.press("Shift+?");
+  await expect(page.getByRole("dialog").getByText("Fit to the pane")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText(/Pop the study out/)).toHaveCount(0);
+});
+
+test("pop out: Ctrl+Alt+N opens the new window as the button does (the desktop's key), and help lists it", async ({ page, context }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.addInitScript(() => Object.defineProperty(window.screen, "isExtended", { value: true, configurable: true }));
+  await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+  await page.goto("/viewer/local");
+  const files = fs.readdirSync(DIR!).map((f) => path.join(DIR!, f));
+  await page.locator("input[type=file]:not([webkitdirectory])").setInputFiles(files);
+  await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(800);
+  const image = page.locator('[role="img"][aria-label^="DICOM viewer"]').first();
+  await image.focus();
+  await page.keyboard.press("Shift+?");
+  await expect(page.getByRole("dialog").getByText(/Pop the study out to a new window/)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await image.focus();
+  const popupWait = context.waitForEvent("page");
+  await page.keyboard.press("Control+Alt+KeyN");
+  const popup = await popupWait;
+  await expect(popup.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /Windows linked/ })).toBeVisible({ timeout: 10_000 });
+  await popup.close();
+});
+
 test("pop out: the series opens in a new window, scroll stays linked, and the link can be switched off", async ({ page, context }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 1000 });
+  // Two monitors (Window Management API): the pop-out control only shows with 2+.
+  await page.addInitScript(() => Object.defineProperty(window.screen, "isExtended", { value: true, configurable: true }));
   await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
   await page.goto("/viewer/local");
   const consent = page.getByRole("button", { name: "Continue" });

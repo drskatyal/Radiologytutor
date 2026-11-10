@@ -3,6 +3,7 @@
 //!   - the fragment shader (cell pixel → image pixel, native.rs SHADER);
 //!   - `Transform::to_cell` / `to_image` here (pick, ROI statistics);
 //!   - `desktop/src/native/transform.ts` (annotation / overlay drawing).
+//!
 //! Tests on both sides use the same numbers.
 //!
 //! Conventions: image pixel (col, row) with (0, 0) the top-left corner of the
@@ -128,8 +129,9 @@ impl Transform {
         }
     }
 
-    /// Image pixel → cell CSS px.
-    pub fn to_cell(&self, col: f32, row: f32) -> (f32, f32) {
+    /// Image pixel → cell CSS px. Only the tests use it; native.rs carries the inverse.
+    #[cfg(test)]
+    pub fn to_cell(self, col: f32, row: f32) -> (f32, f32) {
         let fx = (col - self.cols / 2.0) * self.scale * self.flip_x;
         let fy = (row - self.rows / 2.0) * self.scale * self.flip_y;
         // Clockwise rotation in screen coordinates (y down).
@@ -139,7 +141,7 @@ impl Transform {
     }
 
     /// Cell CSS px → image pixel (the shader's mapping).
-    pub fn to_image(&self, x: f32, y: f32) -> (f32, f32) {
+    pub fn to_image(self, x: f32, y: f32) -> (f32, f32) {
         let dx = x - self.center.0;
         let dy = y - self.center.1;
         let fx = self.cos * dx + self.sin * dy;

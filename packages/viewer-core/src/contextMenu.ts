@@ -11,6 +11,7 @@
  */
 
 import { ORIENTATION_COMMANDS } from "./viewOrientation";
+import { CINE_FPS_OPTIONS } from "./cinePlayer";
 
 export type MenuCommand = string;
 
@@ -65,8 +66,12 @@ export interface ImageMenuContext {
   layout?: { rows: number; cols: number } | null;
   /** The series panel beside the viewports: offered as "Hide / Show series panel" when the app has one. */
   seriesPanel?: { shown: boolean } | null;
+  /** Distraction-free reading (images only): offered, checked when on, where the app has it. */
+  distractionFree?: boolean | null;
+  /** The scale bar's state, when this viewer offers one (null / absent: no item). */
+  scaleBar?: boolean | null;
   /** Capabilities; `links` and `cineFps` default to on (a single-pane viewer turns links off). */
-  can: Partial<Record<"reformat" | "mpr" | "threeD" | "video" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "cineFps", boolean>>;
+  can: Partial<Record<"reformat" | "mpr" | "threeD" | "fusion" | "video" | "exportDialog" | "measurements" | "tags" | "comparePrior" | "copyImage" | "saveImage" | "customLayout" | "links" | "linkAtCurrent" | "cineFps", boolean>>;
   /** The key shown next to a command, if it has one. */
   shortcut: (id: MenuCommand) => string | undefined;
 }
@@ -92,7 +97,8 @@ export function tidy(entries: MenuEntry[]): MenuEntry[] {
 }
 
 export const SLAB_THICKNESS_MM = [2, 5, 10, 15, 20, 30] as const;
-export const CINE_FPS = [5, 10, 15, 20, 30, 60] as const;
+/** The Cine submenu's rates: the same list as the toolbar and the speed keys. */
+export const CINE_FPS = CINE_FPS_OPTIONS;
 
 /** Right-click on the image. */
 export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
@@ -115,6 +121,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
           ...(mr || !ctx.presets.length ? [item(ctx, "preset:auto", mr ? "MR auto (from the image)" : "Auto (from the image)")] : []),
           ...ctx.presets.map((p) => item(ctx, `preset:${p.id}`, p.label, { hint: `${p.ww} / ${p.wc}` })),
           ...(!mr && ctx.presets.length ? [item(ctx, "preset:auto", "Series default")] : []),
+          item(ctx, "window:custom", "Set window…"),
           sep,
           item(ctx, "invert", "Invert", { checked: !!ctx.inverted }),
         ]),
@@ -160,7 +167,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
       ],
     });
   }
-  if (ctx.can.reformat || ctx.can.mpr || ctx.can.threeD) {
+  if (ctx.can.reformat || ctx.can.mpr || ctx.can.threeD || ctx.can.fusion) {
     entries.push({
       kind: "sub",
       id: "reformat",
@@ -173,6 +180,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
           sep,
           ...(ctx.can.mpr ? [item(ctx, "mpr", "Open MPR")] : []),
           ...(ctx.can.threeD ? [item(ctx, "3d", "3D volume")] : []),
+          ...(ctx.can.fusion ? [item(ctx, "fusion", "PET / CT fusion")] : []),
         ]),
     });
   }
@@ -223,6 +231,7 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
         item(ctx, "link:scroll", "Scroll (position)", { checked: ctx.links.scroll }),
         item(ctx, "link:voi", "Window / level", { checked: ctx.links.voi }),
         item(ctx, "link:zoom", "Zoom and pan", { checked: ctx.links.zoom }),
+        ...(ctx.can.linkAtCurrent ? [sep, item(ctx, "linkAtCurrent", "Link at what each pane shows now")] : []),
       ],
     },
     item(ctx, "refLines", "Reference lines", { checked: ctx.referenceLines }),
@@ -247,9 +256,11 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
   entries.push(
     item(ctx, "overlay", "Image text (overlay)", { checked: ctx.overlay }),
     item(ctx, "annotations", "Annotations", { checked: ctx.annotations }),
+    ...(ctx.scaleBar != null ? [item(ctx, "scaleBar", "Scale bar", { checked: ctx.scaleBar })] : []),
+    ...(ctx.distractionFree != null ? [item(ctx, "distractionFree", "Distraction-free reading", { checked: ctx.distractionFree })] : []),
     sep
   );
-  if (ctx.can.copyImage || ctx.can.saveImage || ctx.can.video) {
+  if (ctx.can.copyImage || ctx.can.saveImage || ctx.can.video || ctx.can.exportDialog) {
     entries.push({
       kind: "sub",
       id: "export",
@@ -259,9 +270,11 @@ export function imageMenu(ctx: ImageMenuContext): MenuEntry[] {
           ...(ctx.can.copyImage ? [item(ctx, "copyImage", "Copy image")] : []),
           ...(ctx.can.saveImage ? [item(ctx, "save:png", "Save as PNG…", { hint: "anonymised" }), item(ctx, "save:jpeg", "Save as JPEG…", { hint: "anonymised" })] : []),
           ...(ctx.can.video ? [sep, item(ctx, "video", "Series as video…")] : []),
+          ...(ctx.can.exportDialog ? [sep, item(ctx, "export", "Export images, video or DICOM…")] : []),
         ]),
     });
   }
+  if (ctx.can.measurements) entries.push(item(ctx, "measurements", "Measurements…", { hint: "list · copy as text" }));
   if (ctx.can.tags) entries.push(item(ctx, "tags", "DICOM tags…"));
   if (ctx.can.comparePrior) entries.push(item(ctx, "comparePrior", "Compare with prior…"));
   return tidy(entries);

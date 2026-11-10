@@ -5,10 +5,9 @@ import { Disc3, Mouse, Usb } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Kbd } from "@/components/ui/Kbd";
-import { Field } from "@/components/ui/Field";
-import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
 import { Slider } from "@/components/ui/Slider";
+import { ScrollFade } from "@/components/ui/ScrollFade";
 import {
   ACCELERATION_WINDOW_MS,
   createWheelScrollState,
@@ -47,7 +46,7 @@ export function ShortcutsDialog({
   const groups = [...new Set(rows.map((r) => r.group))];
   return (
     <Modal open={open} onClose={onClose} title="Keyboard shortcuts" description={`${mouseSheetLine(overrides)} Change them in Settings › Mouse & Keyboard.`} size="xl">
-      <div className="flex max-h-[60vh] flex-col gap-6 overflow-y-auto pr-1">
+      <ScrollFade scrollClassName="flex max-h-[60vh] flex-col gap-6 pr-1" data-testid="shortcuts-scroll">
         <div className="grid grid-cols-1 gap-x-8 gap-y-5 md:grid-cols-2">
           {groups.map((group) => (
             <section key={group}>
@@ -81,79 +80,13 @@ export function ShortcutsDialog({
             <VoiceCommandList />
           </section>
         )}
-      </div>
+      </ScrollFade>
     </Modal>
   );
 }
 
-export function CustomWindowDialog({
-  open,
-  onClose,
-  initial,
-  onApply,
-}: {
-  open: boolean;
-  onClose: () => void;
-  initial: { ww?: number; wc?: number };
-  onApply: (ww: number, wc: number) => void;
-}) {
-  const [ww, setWw] = useState("");
-  const [wc, setWc] = useState("");
-  useEffect(() => {
-    if (open) {
-      setWw(initial.ww != null ? String(Math.round(initial.ww)) : "400");
-      setWc(initial.wc != null ? String(Math.round(initial.wc)) : "40");
-    }
-  }, [open, initial.ww, initial.wc]);
-  const w = Number(ww);
-  const c = Number(wc);
-  const valid = Number.isFinite(w) && w >= 1 && Number.isFinite(c);
-  const apply = () => {
-    if (!valid) return;
-    onApply(w, c);
-    onClose();
-  };
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Set window"
-      size="sm"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button onClick={apply} disabled={!valid}>
-            Apply
-          </Button>
-        </>
-      }
-    >
-      <form
-        className="grid grid-cols-2 gap-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          apply();
-        }}
-      >
-        <Field label="Width (WW)" error={!valid && ww !== "" ? "Width must be at least 1" : undefined}>
-          {(field) => (
-            <Input {...field} inputMode="decimal" value={ww} onChange={(e) => setWw(e.target.value)} autoFocus className="tabular-nums" />
-          )}
-        </Field>
-        <Field label="Level (WL)">
-          {(field) => (
-            <Input {...field} inputMode="decimal" value={wc} onChange={(e) => setWc(e.target.value)} className="tabular-nums" />
-          )}
-        </Field>
-        <button type="submit" className="sr-only">
-          Apply
-        </button>
-      </form>
-    </Modal>
-  );
-}
+// One Set window dialog for the desktop and the web viewer.
+export { CustomWindowDialog } from "@/components/viewer/CustomWindowDialog";
 
 export function DiscPickerDialog({
   open,
@@ -340,7 +273,7 @@ export function SettingsDialog({
   return (
     <>
     <Modal open={open} onClose={onClose} title="Settings" size="lg">
-      <div className="flex max-h-[65vh] flex-col divide-y divide-subtle overflow-y-auto pr-1">
+      <ScrollFade scrollClassName="flex max-h-[65vh] flex-col divide-y divide-subtle pr-1">
         <section className="pb-3">
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Display</h3>
           <Toggle label="Show DICOM overlay" description="Patient, study and image details in the viewport corners." checked={settings.showOverlay} onChange={(v) => onChange({ showOverlay: v })} />
@@ -470,12 +403,12 @@ export function SettingsDialog({
           </p>
           <p className="mt-1 font-medium text-warning">Not for diagnostic use.</p>
         </section>
-      </div>
+      </ScrollFade>
     </Modal>
     <Modal open={bindingsOpen} onClose={() => setBindingsOpen(false)} title="Mouse & Keyboard" description="Press the button or key you want to bind. Works with any mouse." size="xl">
       {bindingsOpen && (
         <Suspense fallback={<div className="flex justify-center py-10"><Spinner label="Loading bindings" /></div>}>
-          <div className="max-h-[65vh] overflow-y-auto pr-1">
+          <ScrollFade scrollClassName="max-h-[65vh] pr-1" data-testid="bindings-scroll">
             <BindingsPanel
               table={DESKTOP_COMMANDS}
               overrides={settings.bindings ?? {}}
@@ -492,7 +425,7 @@ export function SettingsDialog({
                 if (path) await writeExport(path, new TextEncoder().encode(text));
               }}
             />
-          </div>
+          </ScrollFade>
         </Suspense>
       )}
     </Modal>

@@ -252,7 +252,7 @@ impl ImageStore {
         self.generation.fetch_add(1, Ordering::SeqCst);
         let mut g = self.inner.lock();
         let mut by_age: Vec<(u64, PathBuf, usize)> = g.entries.iter().map(|(p, e)| (e.last_use, p.clone(), e.slice.bytes())).collect();
-        by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        by_age.sort_unstable_by_key(|e| std::cmp::Reverse(e.0));
         let mut kept = 0usize;
         let mut dropped = 0usize;
         for (i, (_, path, size)) in by_age.into_iter().enumerate() {

@@ -13,6 +13,7 @@ import {
   runSliced,
   runToCompletion,
   sliceNormal,
+  stackStartIndex,
   type LocalSeries,
   type LocalStudy,
   type RunSlicedOptions,
@@ -209,6 +210,21 @@ export function primarySeriesIndex(study: ViewerStudy): number {
     }
   });
   return best;
+}
+
+/**
+ * The image a series opens on the first time a viewport shows it: the middle
+ * of a coronal / sagittal acquisition, image 1 otherwise (viewer-core
+ * stackStartIndex). Both renderers (native and JS) use it.
+ */
+export function seriesStartIndex(s: Pick<ViewerSeries, "headers" | "modality" | "multiframe" | "frameRate">): number {
+  return stackStartIndex({
+    imageCount: s.headers.length,
+    imageOrientationPatient: s.headers[0]?.imageOrientationPatient,
+    modality: s.modality,
+    multiframe: s.multiframe,
+    frameRate: s.frameRate,
+  });
 }
 
 export function describeSeries(s: ViewerSeries): string {

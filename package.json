@@ -20,6 +20,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1112.0",
     "@aws-sdk/s3-request-presigner": "^3.1112.0",
+    "@cornerstonejs/calculate-suv": "^1.0.3",
     "@cornerstonejs/core": "^5.0.10",
     "@cornerstonejs/dicom-image-loader": "^5.0.10",
     "@cornerstonejs/metadata": "5.0.10",
@@ -45,6 +46,7 @@
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.21.0",
     "mongodb": "^6.21.0",
+    "mp4-muxer": "^5.2.2",
     "next": "^14.2.35",
     "perfect-freehand": "^1.2.2",
     "react": "^18.3.1",

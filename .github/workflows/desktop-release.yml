@@ -2,9 +2,9 @@
 # Linux (.AppImage + .deb), plus the signed updater manifest (latest.json),
 # attached to a DRAFT GitHub release. Nothing is published automatically.
 #
-# Trigger: push a tag `desktop-v0.2.0` (version must match
-# desktop/src-tauri/tauri.conf.json), run manually, or push the
-# `claude/desktop-release` branch.
+# Trigger: run manually only (Actions → desktop-release → Run workflow).
+# The draft release is tagged `desktop-v<version>` from
+# desktop/src-tauri/tauri.conf.json. Tags and branch pushes no longer start it.
 #
 # Secrets (all optional — without them the build is unsigned and has no
 # working auto-update, which is fine for a smoke build):
@@ -27,12 +27,10 @@
 # Variables: RADLEARN_SERVER_URL (default address for optional sign-in).
 name: desktop-release
 
+# Runs only when started by hand (Actions → this workflow → Run workflow):
+# Actions minutes cost money, so nothing runs on push, PR or tag. Tests and
+# the build run locally before merge and are listed in the PR description.
 on:
-  push:
-    tags: ["desktop-v*"]
-    # Pushing this branch cuts a DRAFT release too (tag created by the action),
-    # for contexts that can push branches but not tags or dispatch workflows.
-    branches: ["claude/desktop-release"]
   workflow_dispatch:
 
 permissions:

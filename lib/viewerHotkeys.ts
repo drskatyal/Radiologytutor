@@ -18,6 +18,7 @@
 // Pure resolution: key in, intent out. The viewer maps intents onto the
 // imperative handle.
 
+import { viewerFeatures, type ViewerFeatures } from "./viewerFeatures";
 import { sliceStepForKey } from "./sliceScrollbar";
 import type { OrientationCommand } from "@flowrad/viewer-core";
 import {
@@ -75,16 +76,25 @@ export interface HotkeyOptions {
    * exam-mode "reveal"; the standalone viewer turns it on (with `?`).
    */
   rotateKey?: boolean;
+  /**
+   * The surface's feature groups (lib/viewerFeatures.ts). `tools`:
+   * D = Bidirectional (READING_MEASURE_TOOLS).
+   */
+  features?: Partial<ViewerFeatures>;
 }
 
-/** Digit → left-button tool. The order a reading room reaches for them. */
-export const TOOL_DIGITS: Record<string, string> = {
-  "1": "StackScroll",
-  "2": "WindowLevel",
-  "3": "Zoom",
-  "4": "Pan",
-  "5": "Length",
-};
+/** What the host viewer can do beyond the shared keys (shapes the help sheet). */
+export interface ShortcutSheetOptions {
+  /** The grid can maximise a pane (the free viewer's layouts). */
+  paneMaximize?: boolean;
+  /** The surface's feature groups (lib/viewerFeatures.ts); rows follow them. */
+  features?: Partial<ViewerFeatures>;
+  /** Two or more monitors: the pop-out to a new window is offered (and its key). */
+  popOut?: boolean;
+}
+
+/** Commands that exist only where the `tools` group is on. */
+const READING_TOOL_COMMANDS = new Set(["tool.bidirectional", "tool.cobb", "tool.circle", "tool.freehand", "tool.magnify"]);
 
 /**
  * Letter → left-button tool, the mnemonic a PACS user already has. None of
@@ -123,14 +133,23 @@ const cmd = (id: string, label: string, group: string, defaults: string[], actio
 });
 
 const WEB_ACTIONS: WebCommand[] = [
-  cmd("tool.scroll", "Scroll", "Tools", ["1", "S"], { type: "tool", tool: "StackScroll" }),
-  cmd("tool.wl", "Window / level", "Tools", ["2", "W"], { type: "tool", tool: "WindowLevel" }),
-  cmd("tool.zoom", "Zoom", "Tools", ["3", "Z"], { type: "tool", tool: "Zoom" }),
-  cmd("tool.pan", "Pan", "Tools", ["4", "M"], { type: "tool", tool: "Pan" }),
-  cmd("tool.length", "Length", "Tools", ["5", "L"], { type: "tool", tool: "Length" }),
+  cmd("tool.scroll", "Scroll", "Tools", ["S"], { type: "tool", tool: "StackScroll" }),
+  cmd("tool.wl", "Window / level", "Tools", ["W"], { type: "tool", tool: "WindowLevel" }),
+  cmd("tool.zoom", "Zoom", "Tools", ["Z"], { type: "tool", tool: "Zoom" }),
+  cmd("tool.pan", "Pan", "Tools", ["M"], { type: "tool", tool: "Pan" }),
+  cmd("tool.length", "Length", "Tools", ["L"], { type: "tool", tool: "Length" }),
   cmd("tool.angle", "Angle", "Tools", ["A"], { type: "tool", tool: "Angle" }),
   cmd("tool.ellipse", "Ellipse ROI", "Tools", ["E"], { type: "tool", tool: "EllipticalROI" }),
   cmd("tool.rect", "Rectangle ROI", "Tools", ["B"], { type: "tool", tool: "RectangleROI" }),
+  // The free viewer's extra measure tools (READING_MEASURE_TOOLS). Only
+  // Bidirectional has a default key (D, as on the desktop): the desktop's C
+  // and N belong to the student session here. The rest can be bound in
+  // Settings › Mouse & Keyboard.
+  cmd("tool.bidirectional", "Bidirectional", "Tools", ["D"], { type: "tool", tool: "Bidirectional" }),
+  cmd("tool.cobb", "Cobb angle", "Tools", [], { type: "tool", tool: "CobbAngle" }),
+  cmd("tool.circle", "Circle ROI", "Tools", [], { type: "tool", tool: "CircleROI" }),
+  cmd("tool.freehand", "Freehand ROI", "Tools", [], { type: "tool", tool: "PlanarFreehandROI" }),
+  cmd("tool.magnify", "Magnifying glass", "Tools", [], { type: "tool", tool: "Magnify" }),
   cmd("slice.prev", "Previous image", "Stack", ["ArrowUp", "ArrowLeft"], { type: "slice", delta: -1 }),
   cmd("slice.next", "Next image", "Stack", ["ArrowDown", "ArrowRight"], { type: "slice", delta: 1 }),
   cmd("slice.first", "First image", "Stack", ["Home"], { type: "sliceAbsolute", where: "first" }),
@@ -140,12 +159,14 @@ const WEB_ACTIONS: WebCommand[] = [
   cmd("cine", "Play / pause cine", "Stack", ["K"], { type: "cine" }),
   cmd("cine.slower", "Cine slower", "Stack", [","], { type: "cineFps", delta: -1 }),
   cmd("cine.faster", "Cine faster", "Stack", ["."], { type: "cineFps", delta: 1 }),
-  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => cmd(`preset.${n}`, `Window preset ${n}`, "Display", [`Shift+${n}`], { type: "preset", ordinal: n })),
-  cmd("preset.default", "Series default window", "Display", ["Shift+0"], { type: "preset", ordinal: 0 }),
+  // Number keys are window presets, as on the desktop viewer (key n = the
+  // preset menu's entry n; Shift+n still works for older muscle memory).
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => cmd(`preset.${n}`, `Window preset ${n}`, "Display", [`${n}`, `Shift+${n}`], { type: "preset", ordinal: n })),
+  cmd("preset.default", "Series default window", "Display", ["0", "Shift+0"], { type: "preset", ordinal: 0 }),
   cmd("invert", "Invert", "Display", ["I"], { type: "invert" }),
   cmd("zoom.in", "Zoom in", "Display", ["=", "Shift+="], { type: "zoom", factor: 1.25 }),
   cmd("zoom.out", "Zoom out", "Display", ["-"], { type: "zoom", factor: 1 / 1.25 }),
-  cmd("reset", "Reset view", "Display", ["0"], { type: "reset" }),
+  cmd("reset", "Reset view", "Display", ["Backspace"], { type: "reset" }),
   cmd("overlay", "Overlay: full → basic → off", "Display", ["O"], { type: "overlay" }),
   cmd("rotate.cw", "Rotate 90° clockwise", "Rotate / flip", ["R"], { type: "orient", command: "rotate:90" }),
   cmd("rotate.ccw", "Rotate 90° anticlockwise", "Rotate / flip", ["Shift+R"], { type: "orient", command: "rotate:-90" }),
@@ -196,6 +217,39 @@ export function shortcutForTool(tool: string, overrides: BindingOverrides = getL
   return keys.length ? keys.join(" · ") : null;
 }
 
+/**
+ * The desktop's tool letters the free viewer adds on the image (readingKeys in
+ * @flowrad/viewer-core): fixed keys, not rebindable, and only where
+ * the `keys` group is on (the student session owns C, N and P elsewhere).
+ */
+export const READING_TOOL_KEYS: Readonly<Record<string, string>> = {
+  ArrowAnnotate: "Y",
+  PlanarFreehandROI: "N",
+  CobbAngle: "C",
+  Pan: "P",
+  Eraser: "Shift+E",
+};
+
+/**
+ * A tool's keys for its tooltip / menu row: the bound ones, then (free viewer)
+ * the desktop letter. "M · P" for pan, "C" for Cobb angle; null when none.
+ */
+export function shortcutForToolIn(tool: string, readingKeys: boolean): string | null {
+  const keys = [shortcutForTool(tool), readingKeys ? READING_TOOL_KEYS[tool] : undefined].filter(Boolean);
+  return keys.length ? keys.join(" · ") : null;
+}
+
+/**
+ * The first key bound to window preset `ordinal` (0 = series default): "1",
+ * "0", or a reader's own key. Shown on each row of the preset menu.
+ */
+export function shortcutForPreset(ordinal: number, overrides: BindingOverrides = getLiveBindings(), mac = isMac()): string | null {
+  if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal > 9) return null;
+  const id = ordinal === 0 ? "preset.default" : `preset.${ordinal}`;
+  const key = keysOf(effectiveInputs(WEB_COMMANDS, overrides).get(id) ?? [])[0];
+  return key ? inputLabel(key, mac) : null;
+}
+
 export interface ShortcutRow {
   keys: string[];
   does: string;
@@ -215,21 +269,82 @@ const GROUP_TITLES: Record<string, string> = {
 };
 
 /** The help sheet, from the effective bindings (keys, extra mouse buttons and tilt). */
-export function viewerShortcutGroups(overrides: BindingOverrides = getLiveBindings(), mac = isMac()): ShortcutGroup[] {
+export function viewerShortcutGroups(
+  overrides: BindingOverrides = getLiveBindings(),
+  mac = isMac(),
+  { paneMaximize = false, features: requested, popOut = false }: ShortcutSheetOptions = {}
+): ShortcutGroup[] {
+  const f = viewerFeatures(requested);
   const eff = effectiveInputs(WEB_COMMANDS, overrides);
   const groups: ShortcutGroup[] = [];
   for (const c of WEB_ACTIONS) {
     const inputs = eff.get(c.id) ?? [];
     if (!inputs.length) continue;
+    if (!f.tools && READING_TOOL_COMMANDS.has(c.id)) continue;
     // The nine presets read as one row by default.
     if (c.id.startsWith("preset.") && c.id !== "preset.default" && !isCustomised(overrides, c.id)) {
       if (c.id !== "preset.1") continue;
-      push(groups, c.group, { keys: ["Shift", "1…9"], does: "Window preset" });
+      // The free viewer gives Shift+1…7 to layouts, as the desktop does.
+      push(groups, c.group, f.keys ? { keys: ["1…9"], does: "Window preset" } : { keys: ["Shift", "1…9"], does: "Window preset" });
       continue;
     }
     push(groups, c.group, { keys: inputs.map((s) => inputLabel(s, mac)), does: c.label });
   }
+  push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "F11"], does: "Set an exact window (width / level)" });
+  if (f.export) push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "E"], does: "Export images, video or anonymised DICOM" });
+  if (f.keys) {
+    // RadiAnt's reading keys, as on the desktop (@flowrad/viewer-core/readingKeys).
+    const mod = mac ? "⌘" : "Ctrl";
+    push(groups, "Display", { keys: [mod, "0"], does: "Fit to the pane" });
+    push(groups, "Display", { keys: [mod, "= / −"], does: "Zoom in / out a step (the image, not the page)" });
+    push(groups, "Display", { keys: [mod, "1…4"], does: "Zoom 100 / 200 / 400 / 800 % (100 % = one image pixel per screen pixel)" });
+    push(groups, "Display", { keys: [mod, "Arrows"], does: "Pan the image (a step a press)" });
+    push(groups, "Display", { keys: ["F12"], does: "Show / hide annotations" });
+    if (f.layouts) {
+      push(groups, "Layout", { keys: [mod, "F12"], does: "Grid: reference lines on / off" });
+      push(groups, "Layout", { keys: ["F5"], does: "Grid: link scrolling (Shift+F5 window / level, Alt+F5 zoom and pan)" });
+    }
+    const alt = mac ? "⌥" : "Alt";
+    if (f.slabs) {
+      push(groups, "Layout", { keys: [alt, "A / C / S"], does: "Reformat this pane: axial / coronal / sagittal (again for the stack)" });
+    }
+    if (f.tools) {
+      push(groups, "Tools", { keys: ["Shift", "E"], does: "Eraser: click an annotation to delete it" });
+      push(groups, "Tools", { keys: ["Y"], does: "Arrow with label" });
+      push(groups, "Tools", { keys: ["N"], does: "Freehand ROI" });
+      push(groups, "Tools", { keys: ["C"], does: "Cobb angle" });
+    }
+    push(groups, "Tools", { keys: ["P"], does: "Pan (as M)" });
+    push(groups, "Tools", { keys: ["Esc"], does: "Cancel the measurement being drawn, then back to scroll" });
+    push(groups, "Rotate / flip", { keys: ["Q / Shift+Q"], does: "Rotate 90° (as R / Shift+R)" });
+    if (f.layouts) push(groups, "Layout", { keys: ["Shift", "1…7"], does: "Layout: 1×1 · 1×2 · 2×1 · 2×2 · 1×3 · 2×3 · 3×3" });
+    push(groups, "Tools", { keys: [mod, "Shift", "Backspace"], does: "Clear all measurements (Ctrl+Z brings them back)" });
+    push(groups, "Stack", { keys: ["Space"], does: "Play / pause cine (as K)" });
+    push(groups, "Stack", { keys: ["Shift", "[ / ]"], does: "Cine slower / faster" });
+    push(groups, "Stack", { keys: ["[ / ]"], does: "Previous / next series" });
+    push(groups, "Display", { keys: [mod, "Shift", "F12"], does: "Overlay text on / off" });
+    push(groups, "Rotate / flip", { keys: ["Shift", "Backspace"], does: "Reset rotation and flips (zoom and window kept)" });
+    push(groups, "Stack", { keys: ["PageUp / PageDown"], does: "Jump 10 % of the images (also Shift+↑ / ↓)" });
+    push(groups, "Layout", { keys: ["F"], does: "Full screen (Esc leaves)" });
+    if (f.localStudies) {
+      push(groups, "Layout", { keys: [mod, "O"], does: "Open DICOM files" });
+      push(groups, "Layout", { keys: [mod, "Shift", "O"], does: "Open a folder" });
+    }
+    push(groups, "Layout", { keys: ["F1"], does: "This sheet (as Shift+?)" });
+    push(groups, "Layout", { keys: [mod, "Shift", "V"], does: "Voice commands on / off" });
+    push(groups, "Layout", { keys: [mod, "M"], does: "MPR: three planes (again for the stack)" });
+    push(groups, "Layout", { keys: [mod, "Shift", "M"], does: "3D volume rendering (again for the stack)" });
+  }
+  if (f.layouts) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "L"], does: "Grid: link the panes at what each shows now (a prior)" });
+  if (f.slabs && f.keys) {
+    push(groups, "Display", { keys: ["T"], does: "Slab: thin → MIP → MinIP → AvgIP (reformats the stack's plane)" });
+    push(groups, "Display", { keys: [mac ? "⌘" : "Ctrl", "] / ["], does: "Thicker / thinner slab (2 mm steps)" });
+  }
+  if (f.layouts) push(groups, "Layout", { keys: [mac ? "⌥" : "Alt", "Shift", "Enter"], does: "Distraction-free reading: images only (Esc exits)" });
+  if (f.layouts) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "Shift", "F"], does: "PET / CT fusion (a study with a CT and a PET)" });
   push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", "B"], does: `Show / hide the series panel${mac ? "" : " (⌘B on a Mac)"}` });
+  if (popOut) push(groups, "Layout", { keys: [mac ? "⌘" : "Ctrl", mac ? "⌥" : "Alt", "N"], does: "Pop the study out to a new window (for the other monitor)" });
+  if (paneMaximize) push(groups, "Layout", { keys: ["Enter"], does: "Maximise / restore the outlined pane (or double-click it; Esc restores)" });
   return groups;
 }
 
@@ -322,18 +437,15 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
   if (event.key === "Home") return { type: "sliceAbsolute", where: "first" };
   if (event.key === "End") return { type: "sliceAbsolute", where: "last" };
 
-  // Shift + digit is a window preset; a bare digit is a tool. Shift+0 is the
-  // series' own window ("full dynamic"), ordinal 0.
-  if (/^[0-9]$/.test(event.key) && event.shiftKey) {
+  // A digit (with or without Shift) is a window preset, as on the desktop
+  // viewer; 0 is the series' own window ("full dynamic"), ordinal 0.
+  if (/^[0-9]$/.test(event.key)) {
     return { type: "preset", ordinal: Number(event.key) };
   }
   // Shift+digit arrives as the shifted glyph on many layouts (! " # …).
   const shifted = "!@#$%^&*(".indexOf(event.key);
   if (shifted >= 0) return { type: "preset", ordinal: shifted + 1 };
   if (event.key === ")") return { type: "preset", ordinal: 0 };
-
-  const tool = TOOL_DIGITS[event.key];
-  if (tool) return { type: "tool", tool };
 
   if (event.key === "?") return options.questionMarkHelp ? { type: "help" } : null;
 
@@ -348,7 +460,7 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
     case "-":
     case "_":
       return { type: "zoom", factor: 1 / 1.25 };
-    case "0":
+    case "Backspace":
       return { type: "reset" };
     case ",":
     case "<":
@@ -371,6 +483,8 @@ function defaultViewerHotkey(event: HotkeyEventLike, sliceCount: number, options
       return { type: "layout" };
     case "r":
       return options.rotateKey ? { type: "orient", command: event.shiftKey ? "rotate:-90" : "rotate:90" } : null;
+    case "d":
+      return options.features?.tools ? { type: "tool", tool: "Bidirectional" } : null;
     case "h":
       return { type: "orient", command: "flip:h" };
     case "v":

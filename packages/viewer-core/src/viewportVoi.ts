@@ -29,15 +29,33 @@ export function finiteVoi(ww: number, wc: number): Voi | null {
   return { ww, wc };
 }
 
+/**
+ * Window width / level ↔ Cornerstone's VOI range, by the DICOM linear function
+ * (PS3.3 C.11.2.1.2), exactly as Cornerstone converts a file's own Window
+ * Center / Width (utilities.windowLevel.toLowHighRange / toWindowLevel):
+ *
+ *   lower = wc − 0.5 − (ww − 1) / 2,  upper = wc − 0.5 + (ww − 1) / 2
+ *   ww = upper − lower + 1,           wc = (lower + upper + 1) / 2
+ *
+ * A symmetric range (wc ± ww/2) read the file's W 400 / L 40 back as W 399 /
+ * L 39.5 while a preset of 400 / 40 read 400 / 40: the same window, two
+ * readouts. Now both read what the file or the reader set.
+ */
 export function wwWcToVoi(ww: number, wc: number): VoiRange {
-  return { lower: wc - ww / 2, upper: wc + ww / 2 };
+  const lower = wc - 0.5 - (ww - 1) / 2;
+  const upper = wc - 0.5 + (ww - 1) / 2;
+  // Width 1 is a threshold (lower = upper): keep a sliver of range so the
+  // LUT has a direction.
+  return upper > lower ? { lower, upper } : { lower, upper: lower + 1e-3 };
 }
 
 export function voiToWwWc(voi?: VoiRange | null): Voi | null {
   if (!voi || !Number.isFinite(voi.lower) || !Number.isFinite(voi.upper)) return null;
-  const ww = voi.upper - voi.lower;
-  const wc = (voi.upper + voi.lower) / 2;
-  if (!Number.isFinite(ww) || ww <= 0 || !Number.isFinite(wc)) return null;
+  const span = voi.upper - voi.lower;
+  if (!Number.isFinite(span) || span <= 0) return null;
+  const ww = span + 1;
+  const wc = (voi.lower + voi.upper + 1) / 2;
+  if (!Number.isFinite(wc)) return null;
   return { ww, wc };
 }
 
