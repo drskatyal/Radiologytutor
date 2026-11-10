@@ -7,7 +7,8 @@ import path from "node:path";
 // it reopens from Recent studies after its folder is gone (a disc ejected, a
 // USB stick pulled); Forget removes the copy. Synthetic CT slices in OPFS,
 // returned by a stubbed folder picker; the handles store's values stay in
-// page memory, as in recent-studies.spec.ts.
+// page memory, as in recent-studies.spec.ts. Help › Customise lists the kept
+// studies and removes them all, as the desktop's archive Clear.
 
 const DIR = process.env.TEST_CT_DIR;
 const recent = (page: Page) => page.getByTestId("recent-studies");
@@ -73,6 +74,22 @@ test("study library: keep a copy, reopen it after the folder is gone, forget rem
   await expect(library).toBeVisible({ timeout: 10_000 });
   await library.getByRole("button", { name: /^Keep in this browser \(\d+ (KB|MB)\)$/ }).click();
   await expect(library).toContainText(/Kept in this browser · \d+ (KB|MB)/, { timeout: 30_000 });
+  expect(await keptCount(page)).toBe(1);
+
+  // Help › Customise › Privacy & storage lists it, and Remove all deletes every copy.
+  await page.locator('[role="img"][aria-label^="DICOM viewer"]').first().click({ position: { x: 30, y: 30 } });
+  await page.keyboard.press("Shift+?");
+  await page.getByRole("dialog", { name: /Viewer shortcuts/ }).getByRole("button", { name: "Customise" }).click();
+  const kept = page.getByTestId("kept-studies");
+  await expect(kept).toContainText(/1 study · \d+ (KB|MB) in this browser/, { timeout: 15_000 });
+  await kept.getByRole("button", { name: "Remove all" }).click();
+  await expect(page.getByText("Kept copies removed.")).toBeVisible();
+  await expect(kept).toContainText("None.");
+  await expect.poll(() => keptCount(page)).toBe(0);
+  await page.getByRole("button", { name: "Close shortcuts" }).click();
+  // The open study's control offers Keep again; keep it for the rest of the test.
+  await library.getByRole("button", { name: /^Keep in this browser/ }).click();
+  await expect(library).toContainText(/Kept in this browser · /, { timeout: 30_000 });
   expect(await keptCount(page)).toBe(1);
 
   // The folder goes away (a disc ejected); the study still reopens from Recent studies.
