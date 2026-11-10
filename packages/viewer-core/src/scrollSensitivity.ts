@@ -199,3 +199,34 @@ export function tuneStackScrollTool(tool: unknown): void {
     for (let i = 0; i < count; i += 1) originalWheel(forged);
   };
 }
+
+// ── Remembered preferences (the web viewer; the desktop keeps them in Settings) ──
+
+export const SCROLL_PREFERENCES_STORAGE_KEY = "flowrad.viewer.scroll";
+
+/**
+ * Stored text → preferences, clamped as setScrollPreferences clamps (1–10
+ * slices per notch, 1–60 px per slice or automatic). Anything unreadable
+ * falls back to the defaults, field by field.
+ */
+export function parseScrollPreferences(raw: string | null | undefined): ScrollPreferences {
+  let data: Partial<Record<keyof ScrollPreferences, unknown>> = {};
+  try {
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object") data = parsed as typeof data;
+  } catch {
+    /* defaults */
+  }
+  const notch = Number(data.slicesPerNotch);
+  const drag = data.dragPixelsPerSlice;
+  return {
+    slicesPerNotch: Number.isFinite(notch) ? Math.min(10, Math.max(1, Math.round(notch))) : DEFAULT_SCROLL_PREFERENCES.slicesPerNotch,
+    dragPixelsPerSlice:
+      typeof drag === "number" && Number.isFinite(drag) && drag > 0 ? Math.min(60, Math.max(1, Math.round(drag))) : null,
+    acceleration: data.acceleration === true,
+  };
+}
+
+export function serializeScrollPreferences(p: ScrollPreferences): string {
+  return JSON.stringify({ slicesPerNotch: p.slicesPerNotch, dragPixelsPerSlice: p.dragPixelsPerSlice, acceleration: p.acceleration });
+}

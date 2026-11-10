@@ -108,6 +108,7 @@ import {
 import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy } from "@/lib/recentStudyStore";
 import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 import { SCALE_BAR_STORAGE_KEY } from "@flowrad/viewer-core/scaleBar";
+import { loadScrollPreferences } from "@/lib/scrollPreferencesStore";
 import { readSeriesListCompact, writeSeriesListCompact } from "@flowrad/viewer-core/seriesPanel";
 import { RecentStudies } from "./RecentStudies";
 
@@ -521,6 +522,10 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
     () => (reading ? { on: focusMode, toggle: toggleFocusMode } : null),
     [reading, focusMode, toggleFocusMode]
   );
+  // Settings › Scrolling (Help › Customise), remembered in this browser: applied before the first wheel.
+  useEffect(() => {
+    if (reading) loadScrollPreferences();
+  }, [reading]);
   // The scale bar (the desktop's setting, on the image menu here): one choice
   // for every pane, remembered in this browser. Off by default, as on the desktop.
   const [scaleBarOn, setScaleBarOn] = useState(false);

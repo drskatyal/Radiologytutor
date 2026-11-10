@@ -33,6 +33,8 @@ export type { TabsProps, TabItem } from "./Tabs";
 export { EmptyState } from "./EmptyState";
 export { Slider } from "./Slider";
 export type { SliderProps } from "./Slider";
+export { Switch } from "./Switch";
+export type { SwitchProps } from "./Switch";
 export type { EmptyStateProps } from "./EmptyState";
 export { PageContainer, SectionHeading } from "./Page";
 export type { PageContainerProps, SectionHeadingProps } from "./Page";
