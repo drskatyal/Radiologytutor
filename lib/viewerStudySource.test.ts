@@ -99,3 +99,13 @@ test("cloud: incomplete descriptors are skipped, not crashed on", () => {
   const src = cloudStudySource([cs("", "x"), cs("9.1", "")]);
   assert.equal(src.studies.length, 0);
 });
+
+test("cloud: a label names a single study (the case title), never several", async () => {
+  const { cloudStudySource } = await import("./viewerStudySource");
+  const one = [{ seriesInstanceUID: "1.1", studyInstanceUID: "9.1", wadoRsRoot: "/api/dicomweb" }];
+  assert.equal(cloudStudySource(one, { label: "  Chest CT  " }).studies[0]!.description, "Chest CT");
+  assert.equal(cloudStudySource(one).studies[0]!.description, undefined);
+  const two = [...one, { seriesInstanceUID: "2.1", studyInstanceUID: "9.2", wadoRsRoot: "/api/dicomweb" }];
+  const studies = cloudStudySource(two, { label: "Chest CT" }).studies;
+  assert.deepEqual(studies.map((s) => s.description), [undefined, undefined]);
+});

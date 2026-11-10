@@ -22,8 +22,10 @@
 
 import { FREE_VIEWER_FEATURES } from "@/lib/viewerFeatures";
 import { frameFeatures, teachingViewer, type TeachingLayer, type TeachingPane } from "@/lib/teachingLayer";
+import type { OpenSlice } from "@/lib/viewerLoad";
 import { useViewerBindings } from "./useViewerBindings";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import { ImagingStageContext, type ImagingStage } from "@/components/viewer/stageContext";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
@@ -244,7 +246,29 @@ type DirectoryPickerWindow = Window & {
  * `cloud` opens archive series straight into the reading room — panes load
  * through lib/dicomCdn / lib/progressiveStack — for RadLearn surfaces.
  */
-export type ViewerFrameSource = { kind: "local" } | { kind: "cloud"; series: readonly CaseSeries[] };
+/** Where an archive case opens. Every field is optional; read once at mount. */
+export interface FrameInitialView {
+  /** The series pane 0 opens on (a view link). Applied once it is listed. */
+  seriesInstanceUID?: string;
+  layout?: HangingLayoutId;
+  /** Opening slice for pane 0, per series (a view link's image, the teacher's warmed landing). */
+  openSlice?: (seriesInstanceUID: string) => OpenSlice | null;
+  /** Opening window for pane 0, per series (a view link's W/L). */
+  window?: (seriesInstanceUID: string) => { ww: number; wc: number } | null;
+}
+
+export interface FrameState {
+  layout: HangingLayoutId;
+  /** The pane the toolbar and keys follow. */
+  activePane: number;
+  /** That pane's series. */
+  seriesInstanceUID: string | null;
+}
+
+export type ViewerFrameSource =
+  | { kind: "local" }
+  /** `label` names the study in the series panel (a case title). */
+  | { kind: "cloud"; series: readonly CaseSeries[]; label?: string };
 
 const LOCAL_SOURCE: ViewerFrameSource = { kind: "local" };
 
@@ -274,12 +298,26 @@ export function ViewerFrame({
   tone = "page",
   source: frameSource = LOCAL_SOURCE,
   teaching = null,
+  initial = null,
+  onFrameState,
 }: {
   tone?: LocalViewerTone;
   source?: ViewerFrameSource;
   /** Teaching on top of the reader. None = the FlowRad free viewer. */
   teaching?: TeachingLayer | null;
+  /** Where an archive case opens (a view link, the teacher's landing). Read once. */
+  initial?: FrameInitialView | null;
+  /** Layout, focused pane and its series, whenever they change (view links, share). */
+  onFrameState?: (state: FrameState) => void;
 }) {
+  const initialRef = useRef(initial);
+  const onFrameStateRef = useRef(onFrameState);
+  onFrameStateRef.current = onFrameState;
+  const cloud = frameSource.kind === "cloud";
+  const cloudRef = useRef(cloud);
+  cloudRef.current = cloud;
+  /** The archive series on screen in pane 0 (kept across a rail refresh). */
+  const cloudShownUid = useRef<string | null>(null);
   const features = frameFeatures(teaching, FREE_VIEWER_FEATURES);
   const defaultTool = teaching?.defaultTool ?? "StackScroll";
   // Read through a ref so a layer rebuilt each render never re-fires onViewer.
@@ -294,15 +332,36 @@ export function ViewerFrame({
   // stay open: closing the study re-hangs the case's series.
   // Keyed on content, not object identity: a page may rebuild the descriptor.
   const cloudSeries = frameSource.kind === "cloud" ? frameSource.series : null;
-  const cloudStudies = useMemo(() => (cloudSeries ? cloudStudySource(cloudSeries).studies : null), [cloudSeries]);
+  const cloudLabel = frameSource.kind === "cloud" ? frameSource.label : undefined;
+  const cloudStudies = useMemo(
+    () => (cloudSeries ? cloudStudySource(cloudSeries, { label: cloudLabel }).studies : null),
+    [cloudSeries, cloudLabel]
+  );
+  // The rail can resolve after first paint (series hints, then the archive's
+  // list): every new list re-opens the study, keeping the series on screen.
+  const initialSeriesApplied = useRef(false);
   useEffect(() => {
-    if (!cloudStudies || phase.state !== "idle") return;
+    if (!cloudStudies) return;
     if (cloudStudies.length === 0) {
       setPhase({ state: "empty", inspected: 0, warnings: ["This case names no series the archive could list."] });
       return;
     }
+    const locate = (uid: string | null | undefined) => {
+      if (!uid) return null;
+      for (let si = 0; si < cloudStudies.length; si += 1) {
+        const i = cloudStudies[si]!.series.findIndex((item) => item.seriesInstanceUID === uid);
+        if (i >= 0) return { study: si, series: i };
+      }
+      return null;
+    };
+    // A linked series may only exist once the archive has listed the study.
+    const wanted = initialSeriesApplied.current ? null : locate(initialRef.current?.seriesInstanceUID);
+    const kept = wanted ?? locate(cloudShownUid.current);
+    if (wanted) initialSeriesApplied.current = true;
+    setActiveStudy(kept?.study ?? 0);
+    setActiveSeries(kept?.series ?? 0);
     setPhase({ state: "open", result: cloudOpenResult(cloudStudies), pinned: null });
-  }, [cloudStudies, phase.state]);
+  }, [cloudStudies]);
   // Series panel (reading room): collapsible to a rail, remembered per device.
   const seriesPanel = useSeriesPanel();
   const [modKey, setModKey] = useState("Ctrl");
@@ -317,7 +376,7 @@ export function ViewerFrame({
   // viewer (activeStudy / activeSeries, the paint-first pipeline); panes 1–8
   // each show their own series, from any study of the drop. One toolbar
   // under the grid follows the focused pane.
-  const [layoutId, setLayoutId] = useState<HangingLayoutId>("1x1");
+  const [layoutId, setLayoutId] = useState<HangingLayoutId>(() => initial?.layout ?? "1x1");
   /** The pane filling the grid (double-click or Enter; Esc restores), or null. */
   const [maximized, setMaximized] = useState<number | null>(null);
   const [extraPanes, setExtraPanes] = useState<PaneSeries[]>([]);
@@ -554,13 +613,33 @@ export function ViewerFrame({
     setExpanded(true);
   }, [expanded]);
 
+  // RadLearn screens (a teaching layer) keep the toolbar's Full screen button,
+  // as ImagingLayout gave them: the frame's stage is shared through the same
+  // context, and a toolbar that claims it hides the series bar's own button.
+  // The free viewer keeps its toolbar as it is (it fits 1440 exactly).
+  const [stageClaims, setStageClaims] = useState(0);
+  const claimStage = useCallback(() => {
+    setStageClaims((n) => n + 1);
+    return () => setStageClaims((n) => Math.max(0, n - 1));
+  }, []);
+  const stage = useMemo<ImagingStage>(
+    () => ({ expanded, toggle: () => void toggleExpanded(), claim: claimStage }),
+    [expanded, toggleExpanded, claimStage]
+  );
+  const withStage = (node: ReactNode) =>
+    teaching ? <ImagingStageContext.Provider value={stage}>{node}</ImagingStageContext.Provider> : node;
+
   // F: full screen, as on the desktop (the same as the stage's Fullscreen
   // button; Esc or F again leaves). Not while typing or in a dialog.
   useEffect(() => {
     if (!reading) return;
     const onKey = (e: KeyboardEvent) => {
+      // Esc leaves full screen whichever kind it is: the CSS fallback (iPhone
+      // Safari has no element fullscreen) never sees the browser's own Esc,
+      // and leaving twice is a no-op (toggleExpanded / the sync above).
+      const esc = e.key === "Escape" && expanded && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
       // Not `defaultPrevented`: Cornerstone prevents every key on the viewport.
-      if (e.repeat || !isFullScreenKey(e)) return;
+      if (e.repeat || (!esc && !isFullScreenKey(e))) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('[role="dialog"],[role="menu"]'))) return;
       e.preventDefault();
@@ -568,7 +647,7 @@ export function ViewerFrame({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [reading, toggleExpanded]);
+  }, [reading, toggleExpanded, expanded]);
 
   // The stage changes shape: fit the image to it once the layout settles.
   useEffect(() => {
@@ -709,6 +788,9 @@ export function ViewerFrame({
 
   const ingest = useCallback(
     async (files: File[]) => {
+      // An archive case is not a drop target: files from this computer never
+      // mix into it (drop, paste, watched folders all end here).
+      if (cloudRef.current) return;
       mark(FILES_RECEIVED_MARK);
       abortRef.current?.abort();
       void release();
@@ -1156,10 +1238,10 @@ export function ViewerFrame({
   const result = phase.state === "open" ? phase.result : null;
   // The one seam between the frame and where pixels come from.
   const studySource = useMemo<StudySourceAdapter | null>(() => {
-    if (cloudSeries) return cloudStudySource(cloudSeries);
+    if (cloudSeries) return cloudStudySource(cloudSeries, { label: cloudLabel });
     if (!result) return null;
     return localStudySource({ studies: result.studies, imageIdsByFile: result.imageIdsByFile, seriesFiles: localSeriesFiles });
-  }, [cloudSeries, result]);
+  }, [cloudSeries, cloudLabel, result]);
 
   // ── Hanging layout ──
   const flat = useMemo(() => (result ? flattenSeries(result.studies) : []), [result]);
@@ -1168,6 +1250,10 @@ export function ViewerFrame({
   const multi = !!result && panesNow > 1;
   multiRef.current = multi;
   const offeredLayouts = layoutsForSeriesCount(flat.length, READING_LAYOUTS);
+  // An archive case with a single series: no series to pick and no layout to
+  // offer, so no series panel (the RadLearn case viewer never showed a rail
+  // for one series). A drop of local files always keeps its panel.
+  const nothingToPick = cloud && flat.length <= 1;
   // Re-hang when the layout or the study changes; keeps what is already hung.
   const mainPaneRef = useRef<PaneSeries>({ study: 0, series: 0 });
   mainPaneRef.current = { study: activeStudy, series: activeSeries };
@@ -1500,6 +1586,7 @@ export function ViewerFrame({
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
+  cloudShownUid.current = series?.seriesInstanceUID ?? null;
   /** PET / CT fusion: the study's CT and PET volumes (the active one when it is either). */
   const fusionPair = useMemo(() => {
     if (!study || !result) return null;
@@ -1589,6 +1676,21 @@ export function ViewerFrame({
   }, [pinned, pinnedIsActive, series, studySource]);
 
   const viewerKey = source?.kind === "imageIds" ? source.key : source?.kind === "wadors" ? source.SeriesInstanceUID : "none";
+  // Report layout / focus / series to the page (an archive case's view link).
+  const focusedTarget = activePane === 0 ? null : extraPanes[activePane - 1];
+  const focusedUid =
+    activePane === 0
+      ? (series?.seriesInstanceUID ?? null)
+      : focusedTarget
+        ? (result?.studies[focusedTarget.study]?.series[focusedTarget.series]?.seriesInstanceUID ?? null)
+        : null;
+  useEffect(() => {
+    onFrameStateRef.current?.({ layout: layoutId, activePane, seriesInstanceUID: focusedUid });
+  }, [layoutId, activePane, focusedUid]);
+  const mainUid = series?.seriesInstanceUID ?? null;
+  const mainOpenSlice = cloud && mainUid ? (initialRef.current?.openSlice?.(mainUid) ?? null) : null;
+  const mainWindow = cloud && mainUid ? (initialRef.current?.window?.(mainUid) ?? null) : null;
+
   const teachingPane = (index: number, seriesInstanceUID: string | null): TeachingPane => ({
     index,
     seriesInstanceUID,
@@ -1729,7 +1831,8 @@ export function ViewerFrame({
       ) : phase.state === "reading" ? (
         <ReadingProgress progress={phase.progress} dark={reading} />
       ) : null}
-      <div className={cn("mt-auto flex flex-col gap-2 border-t pt-3", reading ? "border-white/10" : "border-subtle")}>
+      {/* Files from this computer: none of it applies to an archive case. */}
+      {!cloud && <div className={cn("mt-auto flex flex-col gap-2 border-t pt-3", reading ? "border-white/10" : "border-subtle")}>
         {result && !signupDismissed && !teaching && <SignupPrompt dark={reading} onDismiss={dismissSignup} />}
         {privacyLine}
         <div className="flex flex-wrap gap-2">
@@ -1741,7 +1844,7 @@ export function ViewerFrame({
           </Button>
         </div>
         {folderWatch.supported && <WatchFoldersEntry supported fresh={folderWatch.fresh} dark={reading} onOpen={openWatch} />}
-      </div>
+      </div>}
     </div>
   );
 
@@ -1771,7 +1874,7 @@ export function ViewerFrame({
     );
   }
 
-  return (
+  return withStage(
     <div ref={rootRef} className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
       {seriesInfoFor && result?.studies[seriesInfoFor.study]?.series[seriesInfoFor.series] && (() => {
         const info = result.studies[seriesInfoFor.study]!.series[seriesInfoFor.series]!;
@@ -1838,7 +1941,7 @@ export function ViewerFrame({
           }}
           onDrop={reading ? onDrop : undefined}
         >
-          {reading ? (
+          {nothingToPick ? null : reading ? (
             <CollapsiblePanel
               label="Series"
               collapsed={seriesPanel.collapsed}
@@ -1917,10 +2020,13 @@ export function ViewerFrame({
                 )}
               </div>
             )}
-            {/* Phone bar: which series, the drawer, fullscreen. Desktop has the side panel. */}
+            {/* Phone bar: which series, the drawer, fullscreen. Desktop has the side panel.
+                An archive case with one series and the toolbar's own fullscreen has
+                nothing to put here. */}
             <div
               className={cn(
                 "mb-2 flex items-center gap-2 lg:hidden",
+                nothingToPick && stageClaims > 0 && "hidden",
                 (expanded || reading) && "mb-0 bg-imaging px-2 py-1 text-white",
                 expanded && "lg:flex"
               )}
@@ -1948,15 +2054,17 @@ export function ViewerFrame({
                     ? `Reading ${formatCount(phase.progress.read)} of ${formatCount(phase.progress.total)} files…`
                     : ""}
               </span>
-              <IconButton
-                aria-label={expanded ? "Exit fullscreen" : "Fullscreen"}
-                title={expanded ? "Exit fullscreen (F or Esc)" : "Fullscreen (F)"}
-                size="sm"
-                onClick={() => void toggleExpanded()}
-                className={expanded || reading ? "text-white hover:bg-white/10" : undefined}
-              >
-                {expanded ? <Minimize2 /> : <Maximize2 />}
-              </IconButton>
+              {stageClaims > 0 ? null : (
+                <IconButton
+                  aria-label={expanded ? "Exit fullscreen" : "Fullscreen"}
+                  title={expanded ? "Exit fullscreen (F or Esc)" : "Fullscreen (F)"}
+                  size="sm"
+                  onClick={() => void toggleExpanded()}
+                  className={expanded || reading ? "text-white hover:bg-white/10" : undefined}
+                >
+                  {expanded ? <Minimize2 /> : <Maximize2 />}
+                </IconButton>
+              )}
             </div>
             <div className={cn((expanded || reading || multi) && "flex min-h-0 flex-1 flex-col")}>
               {/* One tree in every layout, so the main viewer never remounts when
@@ -2015,6 +2123,8 @@ export function ViewerFrame({
                       const count = study?.series.length ?? 0;
                       if (count > 1) pickSeries((activeSeries + delta + count) % count);
                     }}
+                    openSlice={mainOpenSlice}
+                    initialWindow={mainWindow}
                     imageOverlay={teaching?.overlay?.(teachingPane(0, series?.seriesInstanceUID ?? null))}
                     onReady={(controls) => {
                       setFirstImageUp(true);

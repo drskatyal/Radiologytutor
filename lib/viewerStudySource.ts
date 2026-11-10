@@ -76,9 +76,10 @@ export function localStudySource(input: LocalSourceInput): StudySourceAdapter {
 /**
  * Archive series through /api/dicomweb. Series are grouped into studies in
  * the order they arrive (a case lists its current study first), each study's
- * series kept in the given order.
+ * series kept in the given order. `label` names a single study (the case's
+ * title) for the series panel.
  */
-export function cloudStudySource(series: readonly CaseSeries[]): StudySourceAdapter {
+export function cloudStudySource(series: readonly CaseSeries[], options: { label?: string } = {}): StudySourceAdapter {
   const studies: LocalStudy[] = [];
   const byUid = new Map<string, CaseSeries>();
   for (const item of series) {
@@ -101,6 +102,9 @@ export function cloudStudySource(series: readonly CaseSeries[]): StudySourceAdap
     });
     study.imageCount += count;
   }
+  // An archive series carries no study description; the case names it (one study only).
+  const label = options.label?.trim();
+  if (label && studies.length === 1) studies[0]!.description = label;
   const original = (s: LocalSeries) => byUid.get(s.seriesInstanceUID) ?? null;
   return {
     kind: "cloud",

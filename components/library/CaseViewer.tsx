@@ -1,67 +1,35 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Columns2, Columns3, GraduationCap, Grid2x2, Grid3x3, Link2, Rows2, Square } from "lucide-react";
-import { Badge, Button, Skeleton, Tooltip, useToast } from "@/components/ui";
-import { cn } from "@/components/ui/cn";
-import type { CornerstoneControls } from "@/components/CornerstoneViewer";
-import { ImagingLayout } from "@/components/viewer/ImagingLayout";
+import { GraduationCap, Link2 } from "lucide-react";
+import { Badge, Button, Tooltip, useToast } from "@/components/ui";
+import { ViewerFrame, type FrameInitialView, type FrameState } from "@/components/viewer/ViewerFrame";
 import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import { caseTeachHref } from "@/lib/caseShare";
-import {
-  hangSeries,
-  layoutById,
-  layoutsForSeriesCount,
-  nextLayout,
-  paneCount,
-  type HangingLayoutId,
-} from "@/lib/hangingLayout";
+import type { TeachingLayer, TeachingViewer } from "@/lib/teachingLayer";
 import { parseViewLink, viewLinkQuery, viewLinkUrl, type ViewLinkState } from "@/lib/viewLink";
-import { caseSeriesToSource, type CaseSeries, type ViewerSource } from "@/lib/viewerSource";
+import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import type { OpenSlice } from "@/lib/viewerLoad";
 import { ShareLinkControls } from "./ShareLinkControls";
 
-const CornerstoneViewer = dynamic(() => import("@/components/CornerstoneViewer"), {
-  ssr: false,
-  loading: () => <Skeleton className="h-full w-full rounded-none bg-[#0b0b0b]" />,
-});
-
-const LAYOUT_ICONS: Record<HangingLayoutId, typeof Square> = {
-  "1x1": Square,
-  "1x2": Columns2,
-  "2x1": Rows2,
-  "2x2": Grid2x2,
-  // The free viewer's larger grids; the case viewer doesn't offer them.
-  "1x3": Columns3,
-  "2x3": Grid3x3,
-  "3x3": Grid3x3,
-};
-
-/** Grid template per layout. Static strings so Tailwind keeps them. */
-const GRID_CLASS: Record<HangingLayoutId, string> = {
-  "1x1": "grid-cols-1 grid-rows-1",
-  "1x2": "grid-cols-2 grid-rows-1 max-sm:grid-cols-1 max-sm:grid-rows-2",
-  "2x1": "grid-cols-1 grid-rows-2",
-  "2x2": "grid-cols-2 grid-rows-2",
-  "1x3": "grid-cols-3 grid-rows-1",
-  "2x3": "grid-cols-3 grid-rows-2",
-  "3x3": "grid-cols-3 grid-rows-3",
-};
+/** The layouts a view link can carry (lib/viewLink). */
+const LINKABLE_LAYOUTS = new Set(["1x1", "1x2", "2x1", "2x2"]);
 
 /**
  * DICOM viewer without the attending: the standalone reading surface behind
- * the case library and share links. Scroll, window, measure, cine, MPR, a
- * series rail, hanging layouts, and a link that reopens the exact view.
- * Teach is a separate link, and only when this open is not a share URL.
+ * the case library and share links. The shared reading frame
+ * (components/viewer/ViewerFrame.tsx) over the case's archive series — the
+ * same series panel, hanging layouts, panes and toolbar as the FlowRad free
+ * viewer — with RadLearn's teaching tool set (a teaching layer with no
+ * overlay yet), and a link that reopens the exact view. Teach is a separate
+ * link, and only when this open is not a share URL.
  */
 export function CaseViewer({
   caseId,
   title,
   modality,
-  source,
   series,
   showTeach,
   showShare,
@@ -79,7 +47,8 @@ export function CaseViewer({
   caseId: string;
   title: string;
   modality: string;
-  source: ViewerSource;
+  /** Kept for the page's prewarm contract; the frame builds each pane's source from `series`. */
+  source?: ViewerSource;
   series: CaseSeries[];
   showTeach: boolean;
   showShare: boolean;
@@ -97,77 +66,47 @@ export function CaseViewer({
   const rail = resolved.series.length > 0 ? resolved.series : series;
   const showSampleNote = resolved.settled && !resolved.imagingLive;
 
-  const linkedSeriesIndex = link.seriesInstanceUID
-    ? Math.max(0, rail.findIndex((s) => s.seriesInstanceUID === link.seriesInstanceUID))
-    : 0;
-  const [layoutId, setLayoutId] = useState<HangingLayoutId>(link.layout ?? "1x1");
-  const layout = layoutById(layoutId);
-  const [panes, setPanes] = useState<number[]>(() =>
-    hangSeries(layoutById(link.layout ?? "1x1"), Math.max(1, rail.length), [], linkedSeriesIndex)
-  );
-  const [activePane, setActivePane] = useState(0);
-  const [barHost, setBarHost] = useState<HTMLDivElement | null>(null);
-  const controlsRef = useRef<Array<MutableRefObject<CornerstoneControls | null>>>([]);
-  for (let i = controlsRef.current.length; i < 4; i += 1) {
-    controlsRef.current.push({ current: null });
-  }
-
-  // Re-hang when the layout or the rail length changes. Keeps what is hung.
-  const railCount = rail.length;
-  useEffect(() => {
-    setPanes((prev) => {
-      const next = hangSeries(layout, Math.max(1, railCount), prev, prev[0] ?? linkedSeriesIndex);
-      return next.length === prev.length && next.every((v, i) => v === prev[i]) ? prev : next;
-    });
-    setActivePane((p) => Math.min(p, paneCount(layout) - 1));
-  }, [layout, railCount, linkedSeriesIndex]);
-
-  // The rail resolves after first paint; a linked series may only now exist.
-  const linkedAppliedRef = useRef(false);
-  useEffect(() => {
-    if (linkedAppliedRef.current || !link.seriesInstanceUID) return;
-    const at = rail.findIndex((s) => s.seriesInstanceUID === link.seriesInstanceUID);
-    if (at < 0) return;
-    linkedAppliedRef.current = true;
-    setPanes((prev) => (prev[0] === at ? prev : [at, ...prev.slice(1)]));
-  }, [rail, link.seriesInstanceUID]);
-
-  // A pane that changes size keeps its camera (the teach path relies on
-  // that), so a layout switch would crop. Refit every pane once it settles.
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      for (const ref of controlsRef.current) {
-        if (ref.current?.ready) ref.current.fit?.();
-      }
-    }, 150);
-    return () => window.clearTimeout(timer);
-  }, [layoutId]);
-
-  const offered = layoutsForSeriesCount(rail.length);
-  const activeSeriesIndex = Math.min(panes[activePane] ?? 0, Math.max(0, rail.length - 1));
-
-  const cycleLayout = useCallback(() => {
-    setLayoutId((current) => nextLayout(current, rail.length));
-  }, [rail.length]);
-
-  const selectSeries = useCallback(
-    (index: number) => {
-      setPanes((prev) => prev.map((value, i) => (i === activePane ? index : value)));
+  // Where the case opens: the link's series / image / window / layout, else
+  // the teacher's warmed landing on the first series.
+  const firstUid = series[0]?.seriesInstanceUID ?? null;
+  const [initial] = useState<FrameInitialView>(() => ({
+    seriesInstanceUID: link.seriesInstanceUID,
+    layout: link.layout,
+    openSlice: (uid) => {
+      if (link.image != null && uid === (link.seriesInstanceUID ?? firstUid)) return { sliceIndex: link.image - 1 };
+      return uid === firstUid ? openSlice : null;
     },
-    [activePane]
+    window: (uid) =>
+      link.ww != null && link.wc != null && uid === (link.seriesInstanceUID ?? firstUid) ? { ww: link.ww, wc: link.wc } : null,
+  }));
+
+  // Per-pane viewers and the frame's layout / focus, for the view link.
+  const viewers = useRef(new Map<number, TeachingViewer>());
+  const frame = useRef<FrameState>({ layout: link.layout ?? "1x1", activePane: 0, seriesInstanceUID: link.seriesInstanceUID ?? firstUid });
+  const onFrameState = useCallback((state: FrameState) => {
+    frame.current = state;
+  }, []);
+  const teaching = useMemo<TeachingLayer>(
+    () => ({
+      onViewer: (viewer, pane) => {
+        viewers.current.set(pane.index, viewer);
+        if (pane.index === 0) setReady(true);
+      },
+    }),
+    []
   );
 
   const viewState = useCallback((): ViewLinkState => {
-    const controls = controlsRef.current[activePane]?.current;
-    const start = controls?.ready ? controls.getStartState() : null;
+    const { layout, activePane, seriesInstanceUID } = frame.current;
+    const view = viewers.current.get(activePane)?.view() ?? null;
     return {
-      seriesInstanceUID: rail[activeSeriesIndex]?.seriesInstanceUID,
-      image: start ? start.sliceIndex + 1 : undefined,
-      ww: start?.ww,
-      wc: start?.wc,
-      layout: layoutId,
+      seriesInstanceUID: view?.seriesInstanceUID ?? seriesInstanceUID ?? undefined,
+      image: view ? view.sliceIndex + 1 : undefined,
+      ww: view?.windowWidth,
+      wc: view?.windowCenter,
+      layout: LINKABLE_LAYOUTS.has(layout) ? (layout as ViewLinkState["layout"]) : undefined,
     };
-  }, [activePane, activeSeriesIndex, layoutId, rail]);
+  }, []);
 
   const copyViewLink = useCallback(async () => {
     const url = viewLinkUrl(
@@ -189,8 +128,7 @@ export function CaseViewer({
     }
   }, [sharedLink, toast, viewState]);
 
-  const paneCountNow = paneCount(layout);
-  const multi = paneCountNow > 1;
+  const frameSource = useMemo(() => ({ kind: "cloud" as const, series: rail, label: title }), [rail, title]);
 
   return (
     <div className="flex h-dvh min-h-0 flex-col bg-canvas">
@@ -221,36 +159,6 @@ export function CaseViewer({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {offered.length > 1 ? (
-            <div
-              role="radiogroup"
-              aria-label="Hanging layout"
-              className="hidden items-center rounded-lg border border-subtle bg-canvas p-0.5 sm:inline-flex"
-            >
-              {offered.map((option) => {
-                const Icon = LAYOUT_ICONS[option.id];
-                const on = option.id === layoutId;
-                return (
-                  <Tooltip key={option.id} label={option.label} shortcut={["G"]} side="bottom">
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={on}
-                      aria-label={`${option.label} layout`}
-                      onClick={() => setLayoutId(option.id)}
-                      className={cn(
-                        "inline-flex h-8 w-8 items-center justify-center rounded-md transition-[transform,background-color,color] duration-75 active:scale-[0.92]",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-                        on ? "bg-elevated text-primary shadow-sm" : "text-muted hover:text-primary"
-                      )}
-                    >
-                      <Icon className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                );
-              })}
-            </div>
-          ) : null}
           <Tooltip label="Copy a link to this exact view" side="bottom">
             <Button
               size="sm"
@@ -285,84 +193,14 @@ export function CaseViewer({
       {/* "Imaging pane", not "DICOM viewer": the viewport inside carries that
           label, and two identically-named landmarks make a screen reader
           announce the same thing twice. */}
-      <div className="relative min-h-0 flex-1 bg-imaging" role="region" aria-label="Imaging pane">
-        <ImagingLayout
-          fill
-          series={rail}
-          activeIndex={activeSeriesIndex}
-          onSelectSeries={selectSeries}
-          mainImageReady={ready}
-          className="absolute inset-0"
-        >
-          <div className="flex h-full min-h-0 flex-col">
-            <div
-              className={cn(
-                "grid min-h-0 flex-1",
-                multi && "gap-px bg-[#1F1F1F]",
-                GRID_CLASS[layout.id]
-              )}
-            >
-              {panes.slice(0, paneCountNow).map((seriesIndex, pane) => {
-                const paneSeries = rail[Math.min(seriesIndex, Math.max(0, rail.length - 1))];
-                const paneSource = paneSeries ? caseSeriesToSource(paneSeries) : source;
-                const isActive = pane === activePane;
-                return (
-                  <div key={pane} className="relative min-h-0 min-w-0 bg-imaging">
-                    <CornerstoneViewer
-                      source={paneSource}
-                      series={rail}
-                      activeSeriesIndex={Math.min(seriesIndex, Math.max(0, rail.length - 1))}
-                      onSeriesChange={(uid) => {
-                        const next = rail.findIndex((item) => item.seriesInstanceUID === uid);
-                        if (next < 0) return;
-                        setPanes((prev) => prev.map((v, i) => (i === pane ? next : v)));
-                      }}
-                      modality={modality}
-                      chrome="edge"
-                      toolbarHost={barHost}
-                      active={isActive}
-                      onActivate={() => setActivePane(pane)}
-                      defaultTool="StackScroll"
-                      questionMarkHelp
-                      onCycleLayout={rail.length > 0 ? cycleLayout : undefined}
-                      controls={controlsRef.current[pane]}
-                      openSlice={
-                        // Only while pane 0 still shows the linked series —
-                        // a re-mount on another series must open mid-stack.
-                        pane === 0 && link.image != null && seriesIndex === linkedSeriesIndex
-                          ? { sliceIndex: link.image - 1 }
-                          : pane === 0 && seriesIndex === 0
-                            ? openSlice
-                            : null
-                      }
-                      initialWindow={
-                        pane === 0 && link.ww != null && link.wc != null
-                          ? { ww: link.ww, wc: link.wc }
-                          : null
-                      }
-                      onReady={() => {
-                        if (pane === 0) setReady(true);
-                      }}
-                      instanceId={pane === 0 ? `view-${caseId}` : `view-${caseId}-p${pane}`}
-                      className="h-full w-full"
-                    />
-                    {multi ? (
-                      <span
-                        aria-hidden="true"
-                        className={cn(
-                          "pointer-events-none absolute inset-0 z-20 transition-shadow duration-100",
-                          isActive ? "shadow-[inset_0_0_0_1.5px_rgb(var(--accent))]" : ""
-                        )}
-                      />
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-            {/* One toolbar for the whole grid; it acts on the outlined pane. */}
-            <div ref={setBarHost} className="shrink-0" />
-          </div>
-        </ImagingLayout>
+      <div className="viewer-shell relative flex min-h-0 flex-1 flex-col bg-imaging" role="region" aria-label="Imaging pane">
+        <ViewerFrame
+          tone="reading"
+          source={frameSource}
+          teaching={teaching}
+          initial={initial}
+          onFrameState={onFrameState}
+        />
       </div>
     </div>
   );
