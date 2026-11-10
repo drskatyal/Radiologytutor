@@ -165,6 +165,26 @@ export function setRecentStudyKept(key: string, keptBytes: number | undefined): 
   });
 }
 
+/** Event the page hears when every kept copy was removed (the open study's control updates). */
+export const KEPT_STUDIES_CLEARED_EVENT = "flowrad:kept-studies-cleared";
+
+/** Remove every kept copy (the desktop's archive "Clear"); the recent list stays. */
+export function removeAllKeptStudies(): Promise<void> {
+  return serial(async () => {
+    await clearKeptStudies();
+    const all = await readAll();
+    await tx("readwrite", (studies) => {
+      for (const e of all) {
+        if (!e.keptBytes) continue;
+        const next: RecentStudy = { ...e };
+        delete next.keptBytes;
+        studies.put(next);
+      }
+    });
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(KEPT_STUDIES_CLEARED_EVENT));
+  });
+}
+
 export function forgetRecentStudy(key: string): Promise<void> {
   void forgetKeptStudy(key);
   return serial(async () => {

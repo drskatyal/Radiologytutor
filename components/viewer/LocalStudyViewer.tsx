@@ -105,7 +105,7 @@ import {
   rememberStudyHandles,
   studyHandlesReadable,
 } from "@/lib/studyHandleStore";
-import { clearRecentStudies, forgetRecentStudy, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy, setRecentStudyKept } from "@/lib/recentStudyStore";
+import { clearRecentStudies, forgetRecentStudy, KEPT_STUDIES_CLEARED_EVENT, listRecentStudies, recentStudyHandles, recentStudySalt, rememberRecentStudy, setRecentStudyKept } from "@/lib/recentStudyStore";
 import { formatBytes, keepStudy, KeepStudyError, keptStudyFiles, forgetKeptStudy, studyLibrarySupported } from "@/lib/studyLibrary";
 import { priorsAmong, recentStudyEntry, type RecentStudy } from "@flowrad/viewer-core/recentStudies";
 import { SCALE_BAR_STORAGE_KEY } from "@flowrad/viewer-core/scaleBar";
@@ -322,6 +322,12 @@ export function LocalStudyViewer({ tone = "page" }: { tone?: LocalViewerTone }) 
   useEffect(() => {
     if (reading) void studyLibrarySupported().then(setLibrarySupported);
   }, [reading]);
+  // Help › Customise › Remove all: the open study is no longer kept.
+  useEffect(() => {
+    const onCleared = () => setLibrary((cur) => (cur ? { key: cur.key } : cur));
+    window.addEventListener(KEPT_STUDIES_CLEARED_EVENT, onCleared);
+    return () => window.removeEventListener(KEPT_STUDIES_CLEARED_EVENT, onCleared);
+  }, []);
   // Recent studies (Chromium): what was opened from a folder handle, newest first.
   const [recent, setRecent] = useState<RecentStudy[]>([]);
   const [recentOpening, setRecentOpening] = useState<string | null>(null);
