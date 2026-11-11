@@ -23,6 +23,7 @@ import {
 } from "./compileMedia";
 import { markerNearTime, segmentMidMs, sliceNearTime, sliceTrack } from "./captureSession";
 import { generate, parseJsonLoose, userParts, type GeminiPart } from "./gemini";
+import type { GeminiRequestMetadata } from "./geminiMetadata";
 import { findingsFromCompiledTake, materializeLiveTeachingPack } from "./liveTeachingPack";
 import { STRUCTURE_FINDING_SYSTEM, STRUCTURE_SESSION_SYSTEM } from "./teachingPrompt";
 import { guideForFindingTrack } from "./teachingGuide";
@@ -86,7 +87,7 @@ export interface CompileGenerateOpts {
   timeoutMs?: number;
 }
 
-export type CompileGenerate = (opts: CompileGenerateOpts) => Promise<{ text: string }>;
+export type CompileGenerate = (opts: CompileGenerateOpts) => Promise<{ text: string; modelMetadata?: GeminiRequestMetadata }>;
 
 export function viewportVideoPart(video: CompileVideo): GeminiPart {
   return {
@@ -311,6 +312,7 @@ export async function compileStructuredSession(
   const rawFindings = Array.isArray(parsed.findings) ? parsed.findings : [];
   const findings = orderCompiledFindings(materializeFindings(rawFindings, durationMs, input.track));
   return {
+    modelMetadata: result.modelMetadata,
     transcript:
       typeof parsed.transcript === "string" && parsed.transcript.trim()
         ? parsed.transcript.trim()

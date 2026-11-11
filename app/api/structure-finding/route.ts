@@ -5,7 +5,7 @@
 // A dictated finding (typed transcript or recorded audio). Optional viewport
 // stills from a walk-through ride along so Flash can see the slice. The text
 // fields are the only output — markers still come from the viewer track.
-// JSON-only, low temperature, defensive parsing. Without stills the prompt
+// JSON-only, defensive parsing (3.6+ omits sampling). Without stills the prompt
 // matches the audio/transcript call.
 
 import { NextRequest, NextResponse } from "next/server";
@@ -60,6 +60,7 @@ export async function POST(req: NextRequest) {
 
     // Defensive normalisation.
     const finding: StructuredFinding = {
+      modelMetadata: result.modelMetadata,
       label: typeof parsed.label === "string" ? parsed.label : "Untitled finding",
       description: typeof parsed.description === "string" ? parsed.description : "",
       teachingPoints: Array.isArray(parsed.teachingPoints)

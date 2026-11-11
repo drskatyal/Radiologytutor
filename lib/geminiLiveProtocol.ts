@@ -1,5 +1,5 @@
 import { examinerPromptPack } from "./exam/prompt";
-import { stripDeprecatedSampling } from "./geminiPolicy";
+import { assertGeminiCapability, stripDeprecatedSampling } from "./geminiPolicy";
 /**
  * Gemini Live session contract for the learner.
  *
@@ -68,6 +68,7 @@ export function liveSessionKick(mode: LiveTeachMode): string {
 
 export function liveModelResource(model: string): string {
   const id = model.trim();
+  assertGeminiCapability(id, "live");
   return id.startsWith("models/") ? id : `models/${id}`;
 }
 

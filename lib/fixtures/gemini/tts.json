@@ -1,0 +1,33 @@
+{
+  "url": "https://generativelanguage.googleapis.com/v1beta/interactions",
+  "body": {
+    "model": "gemini-3.8-flash-tts",
+    "input": [
+      {
+        "type": "user_input",
+        "content": [
+          {
+            "type": "text",
+            "text": "Review the synthetic image.",
+            "annotations": [
+              {
+                "type": "speech_metadata",
+                "style": "Calm attending radiologist voice, measured pace, verbatim, with no preamble."
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "response_format": {
+      "type": "audio"
+    },
+    "generation_config": {
+      "speech_config": [
+        {
+          "voice": "Kore"
+        }
+      ]
+    }
+  }
+}

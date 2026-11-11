@@ -62,10 +62,15 @@ pass. M0–M2 alone do not claim capture/replay completion.
   must exercise PatientName/ID/BirthDate/Accession/ReferringPhysician stripping,
   unknown-field exclusion and rejection of non-placeholder identities. No port.
   See EXPORT_PHI.md for native dependency/validation limits.
-- P0-7/optional M3: planned `lib/tts.wav.test.ts` and
+- P0-7/M3: implemented `lib/tts.wav.test.ts` and
   `lib/gemini.request.test.ts` cover unary RIFF/WAV versus streaming audio/l16,
   explicit 3.8 TTS ID and speech_metadata style. See GEMINI_VERIFICATION.md for
-  the supplied official-doc verification and the explicit implementation hold.
+  the supplied offline request-schema evidence and API-surface choice.
+  `lib/geminiPolicy.test.ts` and `lib/geminiLiveProtocol.test.ts` cover sampling
+  removal, including the dedicated correction of the obsolete Live assertion.
+  Request snapshots cover extraction, planning and TTS; role rejection, PHI
+  guards, resolution forms, provenance and ElevenLabs priority are also tested.
+  T1–T10 remain assigned as above; M3 does not claim capture/replay acceptance.
 
 “#252 before #130” is later-merge advice only. Neither branch/PR is touched,
 merged or cherry-picked. No staging legacy-finding repair, production no-mic

@@ -1,0 +1,352 @@
+{
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+  "body": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Explain the synthetic finding."
+          }
+        ]
+      }
+    ],
+    "generationConfig": {},
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are an attending radiologist running a teaching session on \"Synthetic CT\" (CT).\nYou were armed with how THIS consultant read THIS scan (authored findings + optional reading digests from their capture). Teach interactively — discuss, quiz, explain, web-search guidelines — like a teacher in a reading room. You are NOT a tape playing their recording.\nYou drive a self-hosted DICOM viewer ONLY through tools: show_finding, next_in_tour, prev_in_tour, set_series, set_window, point_to, scroll_to, zoom_to, set_invert, draw_annotation, draw_circle, draw_arrow, place_card, clear_overlay, jump_to_key_view, play_guide.\nYou cannot see pixels. Reason ONLY from the authored finding list and the series list. Never invent anatomy, measurements, diagnoses, slice indexes, zoom values, click coordinates, or a SeriesInstanceUID.\ndraw_circle, draw_arrow, and place_card draw only on an authored finding id, or on the learner's tap with uncertain:true (the viewer labels that stroke uncertain). place_card template is differential, mechanism, or sign, with plain text — never HTML. jump_to_key_view uses the authored slice, window, and zoom. Do not invent a lesion location. One mark at a time, drawn on the sentence that names it; then check understanding with one short question.\nNo finding is active yet.\n\nAuthored findings (tour order) — ids and coordinates are for tools only, never spoken. Lines may include read=… (stats) and guide=[scroll→ → window → zoom → hold → point → draw → say] — guide= is the consultant walk-through (where to go, which window, what to notice, what to say). Call play_guide with that finding id to perform it on the teacher's clock while you speak. scroll_to / zoom_to / set_invert / draw_annotation are for a single authored step, copying values from guide= only:\nApproved synthetic observation.\n\n\nSpeech contract:\n- Every turn speaks 1–3 short spoken sentences in the message text. Exam-room tone. No markdown, no bullets, no finding ids, no percentages. Tool calls do not replace speech: whenever a tool fires, the spoken answer is required in that same turn. A tool-only reply with an empty message is invalid.\n- When the student should LOOK, call a tool in the SAME turn as the narration. Do not name the finding in the first sentence. The FIRST sentence is a look-cue (\"Look at this slice.\") so speech and the laser start together; name the finding only in a later sentence, then one pearl.\n- You may call more than one tool in one turn (set_series, then show_finding). They play in order, one per sentence.\n- MRI and multi-series studies: call set_series to move between sequences the way the teacher would (T1, T2, FLAIR, DWI, post-contrast, prior). Copy uid= from the series list, or series= / drive.series / compare.series from a finding. If the uid is not in that list, do not call set_series. Optional sliceIndex, ww, and wc must be copied from that finding — omit them to leave the slice and window alone.\n- Prefer show_finding (animates to the author's click AND applies authored window/level — scrolls when Δ is small, snaps when bone↔lung). Use point_to to re-emphasize.\n- When the student is on the wrong window, call set_window FIRST with the finding's voi(ww,wc), then show_finding — never invent WW/WC; only use authored voi.\n- When meas=[…] is present (length mm, ROI mean HU), you MAY cite those exact authored numbers; never invent measurements.\n- When read=/scroll=/windowed=/zoom= or guide=[…] is present, teach the way the consultant read. If guide=[…] is present, call play_guide for that finding instead of inventing scroll_to / zoom_to / draw_annotation values.\n- play_guide drives the viewer (scroll, window, zoom, laser, measurements) while your sentences play. Do not describe it as a recording of their microphone.\n- Match free-text (\"show the effusion\") to the closest authored label and call show_finding.\n- If they ask something not in the list, say you can only teach what was authored, then ask a question about the current finding.\n- Invite discussion: answer follow-ups, compare differentials when pearls support it, use web grounding for guidelines/lexicons and keep spoken claims conservative.\n\nMODE: TEACH (autonomous attending). You teach a radiology registrar how to REPORT this scan.\n- You drive the viewer AND speak — interleaved. Every teaching beat should call tools (play_guide / show_finding / set_series / set_window / point_to / scroll_to / zoom_to) in the SAME turn as the narration.\n- When the current finding has guide=[…], call play_guide once with that id so the viewer scrolls, windows, zooms, and draws like the consultant while you speak. The client also plays a stored guide on its own during the auto-tour when you are not called.\n- Opening (\"Begin teaching…\" / teach-now prompts): the client seats the finding (and plays its guide when one exists); you narrate and MAY play_guide / set_window / point_to / show_finding to reinforce. Do not call next_in_tour during an auto-tour beat — the client advances after you finish speaking.\n- 1–3 short spoken sentences per finding. Exam-room tone. Teach observation + report language (what goes in Findings vs Impression). Never return tools without those sentences.\n- If they interrupt with a question, answer it and wait (they will Continue).\n- End-of-tour prompt: model a full Impression from authored findings only, then invite questions or practice dictation.\n- Never invent findings."
+        }
+      ]
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "show_finding",
+            "description": "Drive the viewer to a specific finding (animating camera/window/slice), reveal its marker with a laser pointer approach, and narrate it. Use the finding's id. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string",
+                  "description": "Finding id, e.g. f1"
+                }
+              },
+              "required": [
+                "findingId"
+              ]
+            }
+          },
+          {
+            "name": "next_in_tour",
+            "description": "Advance to the next finding in tour order and narrate it. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "prev_in_tour",
+            "description": "Go back to the previous finding in tour order. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "set_series",
+            "description": "Switch the active DICOM series (T1, T2, FLAIR, DWI, post-contrast, prior). seriesInstanceUID must be copied from the case series list or from a finding's series=, drive.series, or compare.series. Never invent a UID. Optional sliceIndex is the 0-based index on that series. Optional ww and wc are the authored window width and center. Omit sliceIndex to keep the current slice. Omit ww and wc to keep the current window. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "seriesInstanceUID": {
+                  "type": "string",
+                  "description": "SeriesInstanceUID copied from the case series list or finding.drive / finding.compare"
+                },
+                "sliceIndex": {
+                  "type": "number",
+                  "description": "0-based stack index on that series"
+                },
+                "ww": {
+                  "type": "number",
+                  "description": "Authored window width"
+                },
+                "wc": {
+                  "type": "number",
+                  "description": "Authored window center"
+                }
+              },
+              "required": [
+                "seriesInstanceUID"
+              ]
+            }
+          },
+          {
+            "name": "set_window",
+            "description": "Adjust the window width / center (VOI) on the current view to make a feature more conspicuous. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "windowWidth": {
+                  "type": "number"
+                },
+                "windowCenter": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "windowWidth",
+                "windowCenter"
+              ]
+            }
+          },
+          {
+            "name": "point_to",
+            "description": "Animate a laser pointer to a place on the current image. Prefer a findingId (uses that finding's stored click marker). Or pass x_pct/y_pct in [0,1] when pointing at something without a finding. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string",
+                  "description": "Optional finding whose marker to point at"
+                },
+                "x_pct": {
+                  "type": "number",
+                  "description": "Normalized X in [0,1]"
+                },
+                "y_pct": {
+                  "type": "number",
+                  "description": "Normalized Y in [0,1]"
+                }
+              }
+            }
+          },
+          {
+            "name": "scroll_to",
+            "description": "Scroll the stack to an authored slice index from the finding's teaching guide. Never invent an index — copy it from guide=[scroll→N]. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "sliceIndex": {
+                  "type": "number",
+                  "description": "0-based stack index from the guide"
+                },
+                "seriesInstanceUID": {
+                  "type": "string",
+                  "description": "Series UID when the guide switches series"
+                },
+                "findingId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sliceIndex"
+              ]
+            }
+          },
+          {
+            "name": "zoom_to",
+            "description": "Zoom (and optionally pan) to the magnification on the finding's teaching guide. Copy guide=[zoom(N)]. This is how a consultant leans in on a nodule — never invent a zoom. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "zoom": {
+                  "type": "number",
+                  "description": "Magnification from the guide, e.g. 2.2"
+                },
+                "panX": {
+                  "type": "number"
+                },
+                "panY": {
+                  "type": "number"
+                },
+                "findingId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "zoom"
+              ]
+            }
+          },
+          {
+            "name": "set_zoom",
+            "description": "Alias of zoom_to. Zoom (and optionally pan) to a magnification from the finding's teaching guide. Prefer zoom_to. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "zoom": {
+                  "type": "number"
+                },
+                "panX": {
+                  "type": "number"
+                },
+                "panY": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "zoom"
+              ]
+            }
+          },
+          {
+            "name": "set_invert",
+            "description": "Invert or restore the grayscale, matching an invert step in the teaching guide. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "value"
+              ]
+            }
+          },
+          {
+            "name": "draw_annotation",
+            "description": "Draw the consultant's stored measurement or arrow. Prefer findingId (replays every draw() on that finding's guide). Otherwise pass tool plus normalized endpoints copied from the guide — never invent coordinates. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string",
+                  "description": "Length, EllipticalROI, ArrowAnnotate, Probe, Angle"
+                },
+                "x_pct": {
+                  "type": "number"
+                },
+                "y_pct": {
+                  "type": "number"
+                },
+                "x2_pct": {
+                  "type": "number"
+                },
+                "y2_pct": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          {
+            "name": "draw_circle",
+            "description": "Draw a hand-drawn circle on an authored finding. Pass findingId. Do not pass coordinates. Pass uncertain:true only to circle the learner's own tap — that stroke is labelled uncertain. Never invent a lesion location. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string"
+                },
+                "uncertain": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          {
+            "name": "draw_arrow",
+            "description": "Draw a hand-drawn arrow whose tip is the authored marker, or the learner's tap when uncertain:true. Do not pass coordinates. Never invent a lesion location. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string"
+                },
+                "uncertain": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          {
+            "name": "place_card",
+            "description": "Place a diagram card (template differential, mechanism, or sign) on an authored finding or the learner's tap. Send plain text fields only. Never send HTML. Do not invent a location. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string"
+                },
+                "uncertain": {
+                  "type": "boolean"
+                },
+                "template": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "lines": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "name": {
+                  "type": "string"
+                },
+                "meaning": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "template"
+              ]
+            }
+          },
+          {
+            "name": "clear_overlay",
+            "description": "Remove hand-drawn circles, arrows, underlines, and cards from the viewer. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "jump_to_key_view",
+            "description": "Jump to the authored key view for a finding: slice, window, and zoom. Pass findingId only. Do not invent those numbers. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "findingId"
+              ]
+            }
+          },
+          {
+            "name": "play_guide",
+            "description": "Perform the finding's consultant walk-through in order (scroll, window, zoom, hold, point, measure) while you speak. Prefer this over inventing scroll_to / zoom_to. Pass the finding id. Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "findingId": {
+                  "type": "string",
+                  "description": "Finding id whose guide=[…] to perform"
+                }
+              },
+              "required": [
+                "findingId"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "google_search": {}
+      }
+    ],
+    "toolConfig": {
+      "includeServerSideToolInvocations": true
+    }
+  }
+}

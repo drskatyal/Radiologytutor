@@ -518,6 +518,8 @@ export interface CaseData {
 
 /** Strict shape returned by the Gemini authoring call (text fields only). */
 export interface StructuredFinding {
+  /** Observed by the adapter, never accepted from generated JSON. */
+  modelMetadata?: import("./geminiMetadata").GeminiRequestMetadata;
   label: string;
   description: string;
   teachingPoints: string[];
@@ -560,6 +562,7 @@ export interface StructuredSessionFinding extends StructuredFinding {
 
 /** Full continuous-session structure response. */
 export interface StructuredSession {
+  modelMetadata?: import("./geminiMetadata").GeminiRequestMetadata;
   transcript: string;
   findings: StructuredSessionFinding[];
   /**

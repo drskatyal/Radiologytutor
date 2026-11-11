@@ -1,0 +1,49 @@
+✔ compile request sends stills and audio through the shared Flash parts (2.747357ms)
+✔ audio-only compile keeps the session prompt and still hides pointer coordinates (0.276059ms)
+✔ finding prompt is unchanged unless viewport stills are attached (0.157425ms)
+✔ compile anchors markers and slices from the track clock and rebuilds the teach script (5.422199ms)
+✔ long viewer recordings use agentic video and skip the still strip (0.384091ms)
+✔ compile ignores model coordinates when the take has no viewer track (0.516215ms)
+✔ compile partitions missing times and still lands them on the track (1.307258ms)
+✔ a long viewport recording uses agentic video and drops dense stills (1.131799ms)
+✔ a short clip keeps stills even if a file uri was passed (0.496708ms)
+✔ compile reorders findings by clinical importance and still uses the log (1.12149ms)
+✔ compile refuses a body with neither audio nor transcript (0.649638ms)
+[gemini] gemini-3.8-flash-tts -> 400: {"error":"synthetic unsupported request"}
+▶ M3 Gemini REST requests (mocked; NOT VERIFIED LIVE)
+  ✔ extraction snapshot selects Flash, object resolution, and propagates observed provenance (22.508504ms)
+  ✔ plan snapshot selects Flash and returns all actions plus request provenance (2.982112ms)
+  ✔ TTS snapshot uses Interactions speech_metadata and preserves unary WAV (1.491878ms)
+  ✔ TTS raw L16 response is wrapped; only the last model-output audio is selected (0.970476ms)
+  ✔ configured compatible models and voice are sent exactly, never substituted (2.946177ms)
+  ✔ media-resolution switch converts both internal forms without mutating input (2.001452ms)
+  ✔ metadata hash is stable for identical effective requests and changes with the request (1.511363ms)
+  ✔ unsupported text, TTS and Live roles throw typed errors before transport (0.975686ms)
+  ✔ provider refusal is typed and does not trigger a model or API-surface fallback (1.059851ms)
+  ✔ TTS missing audio fails explicitly and PHI is blocked before either transport (1.024291ms)
+  ✔ ElevenLabs remains primary for enrolled discussion voice (0.847835ms)
+  ✔ 3.8 request builders never pass deprecated sampling or put style in text (0.179695ms)
+✔ M3 Gemini REST requests (mocked; NOT VERIFIED LIVE) (40.171015ms)
+✔ live setup targets audio, search, and non-blocking tools without thinking (2.352717ms)
+✔ live setup drops viewport video even if a caller attaches it (0.306798ms)
+✔ mint constraints lock the model and audio and omit thinking (0.12959ms)
+✔ ephemeral socket url carries the token and not an API key (0.183593ms)
+✔ teach and examiner instructions forbid scroll-started teaching (0.330234ms)
+✔ server messages yield audio, captions, tools, and search sources (0.393519ms)
+✔ context update replaces the instruction and sends the full tool list (0.374938ms)
+✔ tool responses keep the call id and downsample to 16 kHz (0.229546ms)
+✔ sampling deprecation covers 3.6+, future majors and documented 3.5 Flash Lite (1.347554ms)
+✔ older models retain their explicit sampling settings (0.192244ms)
+✔ unary RIFF/WAV is byte-for-byte preserved, even with an L16 MIME label (0.793563ms)
+✔ raw audio/l16 receives exactly one mono PCM16 WAV header and preserves samples (0.94992ms)
+✔ valid ancillary WAV chunks are retained (0.157684ms)
+✔ malformed RIFF is rejected instead of wrapped as raw PCM (0.533509ms)
+✔ unsupported encoding, truncated samples and invalid rate/channels fail closed (0.251939ms)
+ℹ tests 38
+ℹ suites 1
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 319.928819

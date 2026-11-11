@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deprecatedGeminiSampling, stripDeprecatedSampling } from "./geminiPolicy.ts";
+import { deprecatedGeminiSampling, stripDeprecatedSampling } from "./geminiPolicy";
 
 test("sampling deprecation covers 3.6+, future majors and documented 3.5 Flash Lite", () => {
   for (const model of ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.8-live", "gemini-3.8-flash-tts", "models/gemini-4-flash", "gemini-3.10-flash", "gemini-3.5-flash-lite"]) {

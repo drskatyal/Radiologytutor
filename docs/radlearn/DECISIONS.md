@@ -6,9 +6,9 @@
   Railway is legacy: it still auto-deploys the integration branch `claude/epic-noether-3nvcbf`
   (`railway.json`, `flowrad-learn / production`), so that branch must never be pushed from this build.
   This build never deploys anywhere; any Cloud Run deployment is a GCP Admin decision outside this branch.
-- **Branch push approved by Sanyam:** "Yes, push the RadLearn build branch once the no-Actions check passes."
-  Only `codex/radlearn-strategy-build` is pushed, each time after the strategy §0.1 pre-push gate passes,
-  followed by an API check that zero Actions runs were triggered.
+- **Historical branch push approval (orchestrator only under current instructions):** "Yes, push the RadLearn build branch once the no-Actions check passes."
+  The build agent never pushes. The orchestrator owns any later push after its
+  own no-Actions gate. Current M3 instructions prohibit agent pushes and all PRs.
 - **No grandfathering stands (decision 1 confirmed):** published cases need re-approval of their current
   finding versions before tutor or exam grounding uses them.
 - **PRs are held:** no PR (not even draft) is opened from this branch until Radlearn confirms the Railway
@@ -43,3 +43,14 @@ All Gemini calls in validation are mocked; **live contract not verified**.
 - Required capture/replay/geometry work remains mapped to M4/M5/M7/M8/M9. No work
   on those milestones, production cardinality, staging legacy data, or the held
   PR branches was started.
+
+## M3 authorization and resolved TTS hold
+
+The current M3 request explicitly authorizes adapter/TTS implementation and
+`.env.example` updates, with no deployment, PR or push. The earlier optional-slice
+deferral above is historical: the offline speech-generation REST example now
+resolves the schema. Use Interactions for TTS, retain generateContent for text,
+and default to gemini-3.8-flash-tts. See GEMINI_VERIFICATION.md. GCP Cloud Run /
+GCP Admin remains the only future deployment target, controlled separately by
+the orchestrator. No grandfathering and deterministic server exam scoring stand.
+NOT VERIFIED LIVE.

@@ -33,3 +33,26 @@ field. No #130/#252 code was ported or cherry-picked.
 Exact commands, per-step commits, failures/skips and final read-only gate output
 are maintained in /workspace/radlearn-build-status.md. Milestone and final raw
 logs are in docs/radlearn/evidence/. The orchestrator owns the push/deployment gate.
+
+## M3 — adapter alignment and TTS migration
+
+M3 is implemented locally using the orchestrator's offline Google docs. TTS
+defaults to gemini-3.8-flash-tts on unary Interactions with speech_metadata style.
+The text adapter retains generateContent; Live retains its separate model.
+Sampling fields are removed for 3.6+ and 3.5 Flash Lite, media resolution has an
+explicit object/string switch, and unsupported roles fail with typed errors.
+WAV bytes are preserved; raw L16 receives one WAV header. ElevenLabs priority
+and the existing explicit attending-guide Gemini route remain intact.
+
+Validation: 1,156 unit tests passed, 0 failed, 2 existing skips; build passed;
+tsc reports 279 existing diagnostics, no additions (line offsets and union
+display order normalized). Archive browser suite: 11 passed. RadLearn: 3 passed.
+The first tsc run found 10 new test import-extension errors; those were fixed
+and the baseline comparison rerun. M3 tests and request snapshots are listed in
+ACCEPTANCE_MAPPING.md. No T1–T10 capture/replay work was moved into M3.
+
+The prior TTS-schema deferral is resolved; GEMINI_VERIFICATION.md explains the
+API choice and remaining mediaProcessing/mediaResolution verification limits.
+All provider calls use mocked responses: **NOT VERIFIED LIVE — live contract
+not verified**. No new dependency, remote data, deployment, push, PR or M4+ work.
+GCP Admin owns any future Cloud Run deployment; the orchestrator owns pushes.

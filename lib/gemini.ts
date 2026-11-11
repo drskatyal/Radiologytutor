@@ -1,4 +1,9 @@
 import { assertNoPhi } from "./phiGuard";
+import { assertGeminiCapability, stripDeprecatedSampling } from "./geminiPolicy";
+import { hashContent } from "./findingContent";
+import type { GeminiRequestMetadata } from "./geminiMetadata";
+import { ttsAudioToWav, TtsAudioError } from "./tts.wav";
+export { GeminiCapabilityError } from "./geminiPolicy";
 // ============================================================================
 // lib/gemini.ts
 //
@@ -23,11 +28,24 @@ import {
 import { sanitizeSeriesActions } from "./setSeries";
 
 /** Orchestration / STT / tools. Gemini 3.8 Flash (stable). Override with GEMINI_MODEL. */
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+export const GEMINI_MODEL_DEFAULT = "gemini-3.8-flash";
+export const GEMINI_TTS_MODEL_DEFAULT = "gemini-3.8-flash-tts";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 /** Viewer action alias — canonical definition lives in lib/harness/tools. */
 export type TeachingViewerAction = HarnessViewerAction;
+
+export type MediaResolutionLevel = "MEDIA_RESOLUTION_LOW" | "MEDIA_RESOLUTION_MEDIUM" | "MEDIA_RESOLUTION_HIGH";
+export class GeminiConfigurationError extends Error {
+  readonly code = "GEMINI_INVALID_CONFIGURATION";
+  constructor(message: string) { super(message); this.name = "GeminiConfigurationError"; }
+}
+export class GeminiApiError extends Error {
+  readonly code = "GEMINI_API_ERROR";
+  constructor(public readonly model: string, public readonly status: number) {
+    super(`Gemini API error ${status}`); this.name = "GeminiApiError";
+  }
+}
 
 export interface GeminiPart {
   text?: string;
@@ -41,7 +59,7 @@ export interface GeminiPart {
    */
   mediaProcessing?: "AGENTIC" | "STATIC";
   /** DICOM viewport video stays low unless overlay text must be read. */
-  mediaResolution?: "MEDIA_RESOLUTION_LOW" | "MEDIA_RESOLUTION_MEDIUM" | "MEDIA_RESOLUTION_HIGH";
+  mediaResolution?: MediaResolutionLevel | { level: MediaResolutionLevel };
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -86,7 +104,8 @@ async function callGemini(
   model: string,
   key: string,
   body: unknown,
-  timeoutMs = REQUEST_TIMEOUT_MS
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  apiSurface: GeminiRequestMetadata["apiSurface"] = "generateContent"
 ): Promise<Response> {
   assertNoPhi(body);
   let lastStatus = 0;
@@ -94,7 +113,7 @@ async function callGemini(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
+      const res = await fetch(apiSurface === "interactions" ? `${API_BASE}/interactions` : `${API_BASE}/models/${model}:generateContent`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -109,12 +128,12 @@ async function callGemini(
       const detail = await res.text().catch(() => "");
       if (!isRetryable(res.status) || attempt === MAX_ATTEMPTS) {
         console.error(`[gemini] ${model} -> ${res.status}: ${detail.slice(0, 500)}`);
-        throw new Error(`Gemini API error ${res.status}`);
+        throw new GeminiApiError(model, res.status);
       }
       console.warn(`[gemini] ${model} -> ${res.status}, retrying (${attempt}/${MAX_ATTEMPTS})`);
     } catch (err) {
       const aborted = err instanceof Error && err.name === "AbortError";
-      if (!aborted && err instanceof Error && err.message.startsWith("Gemini API error")) {
+      if (err instanceof GeminiApiError) {
         throw err;
       }
       if (attempt === MAX_ATTEMPTS) {
@@ -130,7 +149,7 @@ async function callGemini(
     }
     await sleep(backoffMs(attempt));
   }
-  throw new Error(`Gemini API error ${lastStatus || 500}`);
+  throw new GeminiApiError(model, lastStatus || 500);
 }
 
 /** Build a user content part list from optional stills, audio, and text. */
@@ -202,6 +221,7 @@ export interface GeminiResult {
   functionCalls: { name: string; args: Record<string, unknown> }[];
   /** Deduped web sources from grounding metadata (empty when not grounded). */
   sources: GroundingSource[];
+  modelMetadata: GeminiRequestMetadata;
 }
 
 function requireKey(): string {
@@ -219,11 +239,20 @@ export function geminiConfigured(): boolean {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
-  const key = requireKey();
+/** Normalize only at the transport boundary; internal callers may use either form. */
+export function buildGenerateRequest(opts: GenerateOptions, model: string, form = process.env.GEMINI_MEDIA_RESOLUTION_FORM || "object"): Record<string, unknown> {
+  assertGeminiCapability(model, "text");
+  if (form !== "object" && form !== "string") throw new GeminiConfigurationError("GEMINI_MEDIA_RESOLUTION_FORM must be object or string.");
+  const contents = opts.contents.map(content => ({ ...content, parts: content.parts.map(part => {
+    const mime = part.inlineData?.mimeType ?? part.fileData?.mimeType;
+    if (!part.mediaResolution && !/^(?:image|video)\//.test(mime ?? "")) return { ...part };
+    const level = typeof part.mediaResolution === "object" ? part.mediaResolution.level : part.mediaResolution ?? "MEDIA_RESOLUTION_LOW";
+    if (!["MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_MEDIUM", "MEDIA_RESOLUTION_HIGH"].includes(level)) throw new GeminiConfigurationError("Unsupported media resolution level.");
+    return { ...part, mediaResolution: form === "object" ? { level } : level };
+  }) }));
 
   const body: Record<string, unknown> = {
-    contents: opts.contents,
+    contents,
     generationConfig: {
       temperature: opts.temperature ?? 0.2,
       ...(opts.jsonOnly ? { responseMimeType: "application/json" } : {}),
@@ -253,7 +282,26 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
     body.toolConfig = { includeServerSideToolInvocations: true };
   }
 
-  const res = await callGemini(MODEL, key, body, opts.timeoutMs);
+  stripDeprecatedSampling(model, body.generationConfig as Record<string, unknown>);
+  return body;
+}
+
+function recordRequest(model: string, apiSurface: GeminiRequestMetadata["apiSurface"], body: unknown, responseModelVersion: unknown): GeminiRequestMetadata {
+  const metadata: GeminiRequestMetadata = {
+    requestedModel: model,
+    responseModelVersion: typeof responseModelVersion === "string" ? responseModelVersion : null,
+    apiSurface,
+    configHash: hashContent({ model, apiSurface, body }),
+  };
+  // Audit only configuration identity: no prompt, media, credential or clinical text.
+  console.info("[gemini.request]", JSON.stringify(metadata));
+  return metadata;
+}
+
+export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
+  const model = process.env.GEMINI_MODEL?.trim() || GEMINI_MODEL_DEFAULT;
+  const body = buildGenerateRequest(opts, model);
+  const res = await callGemini(model, requireKey(), body, opts.timeoutMs);
   const data = await res.json();
   const candidate = data?.candidates?.[0];
   const parts: GeminiPart[] = candidate?.content?.parts ?? [];
@@ -267,7 +315,7 @@ export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
     .filter((p) => p.functionCall)
     .map((p) => ({ name: p.functionCall!.name, args: p.functionCall!.args ?? {} }));
 
-  return { text, functionCalls, sources: extractSources(candidate) };
+  return { text, functionCalls, sources: extractSources(candidate), modelMetadata: recordRequest(model, "generateContent", body, data?.modelVersion) };
 }
 
 /**
@@ -342,6 +390,7 @@ export async function transcribeAudio(
 }
 
 export interface NarrationTranscript {
+  modelMetadata?: GeminiRequestMetadata;
   transcript: string;
   segments: Array<{ tStartMs?: number; tEndMs?: number; text?: string }>;
 }
@@ -382,7 +431,7 @@ export async function transcribeNarrationTake(
   const parsed = parseJsonLoose<Partial<NarrationTranscript>>(result.text);
   const transcript = typeof parsed.transcript === "string" ? parsed.transcript.trim() : "";
   const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
-  return { transcript, segments };
+  return { transcript, segments, modelMetadata: result.modelMetadata };
 }
 
 /** @deprecated Use TeachingViewerAction (harness). Kept as comment anchor. */
@@ -422,6 +471,8 @@ export interface TeachingPlanInput {
 }
 
 export interface TeachingPlanResult {
+  /** Absent for the neutral exam response, which makes no model request. */
+  modelMetadata?: GeminiRequestMetadata;
   /** The spoken/written answer (TTS-safe: no markdown, no spoken IDs). */
   answer: string;
   /** First viewer action (back-compat). Prefer `actions` for interleave. */
@@ -508,6 +559,7 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     action: actions[0] ?? { type: "none" },
     actions,
     sources: result.sources,
+    modelMetadata: result.modelMetadata,
   };
 }
 
@@ -517,80 +569,42 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
 // Used ONLY for live tutor answers, never for recorded lesson narration.
 // ============================================================================
 
-const TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
-/** Warm, clear default voice. Override with GEMINI_TTS_VOICE. */
-const TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
-/** Gemini TTS returns 16-bit signed PCM, mono, at this sample rate. */
-const TTS_SAMPLE_RATE = 24000;
-
 export interface SynthesizedSpeech {
-  /** WAV-wrapped audio bytes ready to stream to an <audio> element. */
+  /** Complete WAV, preserved from unary output or wrapped from raw audio/l16. */
   audio: Buffer;
   mimeType: "audio/wav";
+  modelMetadata: GeminiRequestMetadata;
 }
 
-/**
- * Director note for teach-guide beats. Gemini TTS treats a short leading
- * instruction as style, then reads the line. We do not play the teacher's mic.
- */
-export const ATTENDING_TTS_DIRECTION =
-  "Say the following in a calm attending radiologist voice, measured pace, verbatim, with no preamble:";
+/** Delivery direction is metadata, never prepended to the spoken text. */
+export const ATTENDING_TTS_DIRECTION = "Calm attending radiologist voice, measured pace, verbatim, with no preamble.";
 
-export async function synthesizeSpeech(
-  text: string,
-  opts?: { persona?: "attending" }
-): Promise<SynthesizedSpeech> {
-  const key = requireKey();
-  const spoken =
-    opts?.persona === "attending" ? `${ATTENDING_TTS_DIRECTION}\n${text}` : text;
-
-  const body = {
-    contents: [{ role: "user", parts: [{ text: spoken }] }],
-    generationConfig: {
-      responseModalities: ["AUDIO"],
-      speechConfig: {
-        voiceConfig: { prebuiltVoiceConfig: { voiceName: TTS_VOICE } },
-      },
-    },
+export function buildTtsRequest(text: string, model: string, voice: string, opts?: { persona?: "attending" }) {
+  assertGeminiCapability(model, "tts");
+  return {
+    model,
+    input: [{ type: "user_input", content: [{
+      type: "text", text,
+      annotations: [{ type: "speech_metadata", style: opts?.persona === "attending" ? ATTENDING_TTS_DIRECTION : "Clear, natural delivery, verbatim, with no preamble." }],
+    }] }],
+    response_format: { type: "audio" },
+    generation_config: { speech_config: [{ voice }] },
   };
-
-  const res = await callGemini(TTS_MODEL, key, body);
-  const data = await res.json();
-  const parts: GeminiPart[] = data?.candidates?.[0]?.content?.parts ?? [];
-  const inline = parts.find((p) => p.inlineData)?.inlineData;
-  if (!inline?.data) {
-    throw new Error("Gemini TTS returned no audio.");
-  }
-
-  const pcm = Buffer.from(inline.data, "base64");
-  // mimeType is like "audio/L16;codec=pcm;rate=24000"; honour an explicit rate.
-  const rateMatch = /rate=(\d+)/.exec(inline.mimeType ?? "");
-  const sampleRate = rateMatch ? Number(rateMatch[1]) : TTS_SAMPLE_RATE;
-
-  return { audio: pcmToWav(pcm, sampleRate), mimeType: "audio/wav" };
 }
 
-/** Prepend a 44-byte WAV header to raw 16-bit mono PCM. */
-function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
-  const blockAlign = (numChannels * bitsPerSample) / 8;
-  const header = Buffer.alloc(44);
-
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16); // PCM fmt chunk size
-  header.writeUInt16LE(1, 20); // audio format = PCM
-  header.writeUInt16LE(numChannels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitsPerSample, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(pcm.length, 40);
-
-  return Buffer.concat([header, pcm]);
+export async function synthesizeSpeech(text: string, opts?: { persona?: "attending" }): Promise<SynthesizedSpeech> {
+  const model = process.env.GEMINI_TTS_MODEL?.trim() || GEMINI_TTS_MODEL_DEFAULT;
+  const body = buildTtsRequest(text, model, process.env.GEMINI_TTS_VOICE?.trim() || "Kore", opts);
+  const res = await callGemini(model, requireKey(), body, undefined, "interactions");
+  const data = await res.json();
+  const modelMetadata = recordRequest(model, "interactions", body, data?.model_version ?? data?.modelVersion);
+  // REST response shape documented in speech-generation#single-speaker. The
+  // SDK's output_audio convenience accessor is not the REST response contract.
+  const audioParts: Array<{ data?: string; mime_type?: string }> = (Array.isArray(data?.steps) ? data.steps : [])
+    .filter((step: { type?: string }) => step?.type === "model_output")
+    .flatMap((step: { content?: unknown[] }) => Array.isArray(step.content) ? step.content : [])
+    .filter((part: { type?: string }) => part?.type === "audio");
+  const audio = audioParts[audioParts.length - 1];
+  if (typeof audio?.data !== "string" || !audio.data) throw new TtsAudioError("Gemini TTS returned no audio.");
+  return { audio: ttsAudioToWav(Buffer.from(audio.data, "base64"), audio.mime_type), mimeType: "audio/wav", modelMetadata };
 }
