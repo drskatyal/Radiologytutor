@@ -43,7 +43,11 @@ test("live setup targets audio, search, and non-blocking tools without thinking"
       thinkingConfig: { thinkingLevel: "low" },
       proactive_audio: false,
       enable_affective_dialog: true,
-      generationConfig: { thinking_level: "minimal", temperature: 0.4 },
+      temperature: 0.4,
+      top_p: 0.9,
+      top_k: 20,
+      generation_config: { temperature: 0.4, top_p: 0.9, top_k: 20 },
+      generationConfig: { thinking_level: "minimal", temperature: 0.4, topP: 0.9, topK: 20 },
     },
   });
   const setup = message.setup;
@@ -65,8 +69,11 @@ test("live setup targets audio, search, and non-blocking tools without thinking"
   assert.equal(encoded.includes("google_search"), false);
   assert.match(encoded, /inputAudioTranscription/);
   assert.match(encoded, /outputAudioTranscription/);
-  const generation = setup.generationConfig as { temperature?: number };
-  assert.equal(generation.temperature, 0.4);
+  // M3 correction: 3.6+ deprecates sampling, including 3.8 Live. The old
+  // assertion preserved temperature=0.4 and encoded an obsolete contract.
+  for (const field of ["temperature", "top_p", "top_k", "topP", "topK"]) {
+    assert.equal(encoded.includes(`"${field}"`), false);
+  }
 });
 
 test("live setup drops viewport video even if a caller attaches it", () => {

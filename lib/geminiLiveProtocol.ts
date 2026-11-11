@@ -1,4 +1,5 @@
 import { examinerPromptPack } from "./exam/prompt";
+import { stripDeprecatedSampling } from "./geminiPolicy";
 /**
  * Gemini Live session contract for the learner.
  *
@@ -140,6 +141,14 @@ export function buildLiveSetup(input: {
 }): { setup: Record<string, unknown> } {
   const extra = stripLiveMedia({ ...(input.mode === "examiner" ? {} : input.extra ?? {}) }) as Record<string, unknown>;
   stripThinking(extra);
+  stripDeprecatedSampling(input.model, extra);
+  // Accept either caller spelling but never forward deprecated sampling fields.
+  for (const key of ["generationConfig", "generation_config"]) {
+    if (extra[key] && typeof extra[key] === "object") {
+      extra[key] = { ...(extra[key] as Record<string, unknown>) };
+      stripDeprecatedSampling(input.model, extra[key] as Record<string, unknown>);
+    }
+  }
   const generation =
     extra.generationConfig && typeof extra.generationConfig === "object"
       ? { ...(extra.generationConfig as Record<string, unknown>) }
