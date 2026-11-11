@@ -111,6 +111,9 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   await expect(marker).toHaveAttribute("data-number", "1");
   await expect(marker).toHaveAttribute("data-label", "Enhancing lesion");
   await expect(page.getByTestId("teacher-stroke")).toHaveCount(3);
+  // Review fix: the Teaching sequence lists the marker, not "No findings yet".
+  await expect(page.getByTestId("sequence-pending")).toContainText("Enhancing lesion");
+  await expect(page.getByText("No findings yet")).toHaveCount(0);
 
   // Q: a text note anchored on the image.
   await page.keyboard.press("q");
@@ -243,4 +246,134 @@ test("replay draws the teacher's ink back in time with the take", async ({ page 
   await shot(page, "studio-sketch-replay");
   await expect(page.getByTestId("teacher-marker")).toHaveCount(1, { timeout: 5000 });
   await expect(page.getByTestId("teacher-stroke").first()).toHaveAttribute("data-done", "true");
+});
+
+// ---------------------------------------------------------------------------
+// The same Studio on a real, de-identified CT: LIDC-IDRI chest CT (TCIA,
+// CC BY 3.0) served by scripts/serve_local_ct.py. The left apical nodule the
+// LIDC readers segmented is on stack index 6 at (0.680, 0.494). Skipped when
+// that archive is not running. A fresh draft case is created on the series so
+// the published demo case is never touched, and the take is not finished, so
+// nothing is saved.
+// ---------------------------------------------------------------------------
+
+const LIDC_STUDY = "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159";
+const LIDC_SERIES = "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463";
+const NODULE = { slice: 6, x: 0.68, y: 0.494 };
+
+/** Screen point for an image fraction on the fitted, square 512² CT. */
+async function imagePoint(page: Page, x: number, y: number) {
+  const box = await stageBox(page);
+  const side = Math.min(box.width, box.height);
+  const left = box.x + (box.width - side) / 2;
+  const top = box.y + (box.height - side) / 2;
+  return { x: left + side * x, y: top + side * y };
+}
+
+test("Studio on a de-identified CT: the marker is listed in the Teaching sequence and the nav has no stray badge", async ({ page }) => {
+  const archive = await page.request.get("http://127.0.0.1:8042/studies/study-lidc").catch(() => null);
+  test.skip(!archive?.ok(), "LIDC archive (scripts/serve_local_ct.py) is not running");
+
+  await page.setViewportSize({ width: 1440, height: 1300 });
+  await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+  expect((await page.request.post("/api/auth/demo", { data: { role: "author" } })).ok()).toBeTruthy();
+  const made = await page.request.post("/api/admin/cases", {
+    data: {
+      title: "Studio CT e2e — LIDC chest CT",
+      modality: "CT",
+      patientId: "pat_lidc_nodule",
+      studies: [{ studyInstanceUID: LIDC_STUDY, modality: "CT", caseSeriesInstanceUIDs: [LIDC_SERIES], seriesInstanceUIDs: [LIDC_SERIES] }],
+    },
+  });
+  expect(made.ok()).toBeTruthy();
+  const caseId = ((await made.json()) as { case: { caseId: string } }).case.caseId;
+
+  await page.goto(`/studio/cases/${caseId}/record`);
+  await expect(page.getByTestId("sketch-palette")).toBeVisible({ timeout: 120_000 });
+  const startButton = page.getByRole("button", { name: "Start recording" }).first();
+  await expect(startButton).toBeEnabled({ timeout: 120_000 });
+  await expect(page.getByText("No findings yet")).toBeVisible();
+
+  // Seat the nodule slice from the stack scrollbar (Im 7 of 65), on lung windows.
+  await showStage(page);
+  const slider = page.getByRole("slider", { name: "Slice" });
+  await expect(slider).toHaveAttribute("aria-valuemax", "65", { timeout: 60_000 });
+  const track = (await slider.boundingBox())!;
+  await page.mouse.click(track.x + track.width / 2, track.y + track.height * ((NODULE.slice + 0.5) / 65));
+  // The thumb's grab height can land the click a slice off; step to it.
+  const want = NODULE.slice + 1;
+  const centre = await imagePoint(page, 0.5, 0.5);
+  for (let i = 0; i < 12; i++) {
+    const now = Number(await slider.getAttribute("aria-valuenow"));
+    if (now === want) break;
+    await page.mouse.move(centre.x, centre.y);
+    await page.mouse.wheel(0, now > want ? -100 : 100);
+    await page.waitForTimeout(250);
+  }
+  await expect(slider).toHaveAttribute("aria-valuenow", String(want));
+  // Lung window from the preset menu, by name (preset order varies by modality).
+  await page.getByRole("button", { name: /^Window presets/ }).click();
+  await page
+    .getByRole("menuitemradio", { name: /^Lung/ })
+    .or(page.getByRole("menuitem", { name: /^Lung/ }))
+    .first()
+    .click();
+  await expect(page.getByRole("button", { name: "Window presets, Lung" })).toBeVisible();
+
+  await startButton.click();
+  await expect(page.getByRole("button", { name: "Finish recording" })).toBeVisible();
+
+  // Ring the nodule, point at it, then M drops marker #1 on it.
+  await page.keyboard.press("o");
+  const a = await imagePoint(page, NODULE.x - 0.035, NODULE.y - 0.035);
+  const b = await imagePoint(page, NODULE.x + 0.035, NODULE.y + 0.035);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.press("a");
+  const tail = await imagePoint(page, NODULE.x + 0.16, NODULE.y + 0.13);
+  const tip = await imagePoint(page, NODULE.x + 0.045, NODULE.y + 0.04);
+  await page.mouse.move(tail.x, tail.y);
+  await page.mouse.down();
+  await page.mouse.move(tip.x, tip.y, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.press("v");
+  const at = await imagePoint(page, NODULE.x, NODULE.y);
+  await page.mouse.move(at.x, at.y);
+  await page.keyboard.press("m");
+  const popover = page.getByTestId("marker-label-popover");
+  await expect(popover).toBeVisible();
+  await popover.getByRole("textbox").fill("Left apical nodule");
+
+  // The Teaching sequence lists the marker as soon as it is dropped.
+  const pending = page.getByTestId("sequence-pending");
+  await expect(pending).toContainText("Finding 1");
+  await expect(page.getByText("No findings yet")).toHaveCount(0);
+  await shot(page, "studio-ct-marker-label");
+  await popover.getByRole("textbox").press("Enter");
+  await expect(page.getByTestId("teacher-marker")).toHaveAttribute("data-label", "Left apical nodule");
+  await expect(pending).toContainText("Left apical nodule");
+  await expect(pending).toContainText(`Im ${NODULE.slice + 1}`);
+  await expect(page.getByTestId("sequence-pending-count")).toHaveText("1 marked in this take");
+  await expect(page.getByText("0/0 ready")).toHaveCount(0);
+
+  // The marker is anchored on the nodule's slice and point.
+  const items = await page.evaluate((key) => JSON.parse(sessionStorage.getItem(key) ?? "[]"), `flowrad:studio-sketch:${caseId}`);
+  const mark = (items as Array<{ kind: string; image: { sliceIndex: number }; points: Array<{ x_pct: number; y_pct: number }> }>).find(
+    (item) => item.kind === "marker"
+  );
+  expect(mark?.image.sliceIndex).toBe(NODULE.slice);
+  expect(Math.abs((mark?.points[0]?.x_pct ?? 0) - NODULE.x)).toBeLessThan(0.02);
+  expect(Math.abs((mark?.points[0]?.y_pct ?? 0) - NODULE.y)).toBeLessThan(0.02);
+  await shot(page, "studio-ct-recording");
+
+  // Scrolled under the floating nav: the stepper must not peek out around it.
+  await expect(page.getByTestId("nav-scrim")).toBeAttached();
+  const scrim = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="nav-scrim"]') as HTMLElement | null;
+    return el ? getComputedStyle(el).backgroundImage : "";
+  });
+  expect(scrim).toContain("gradient");
+  if (shots) await page.screenshot({ path: `${shots}/studio-ct-nav.png`, clip: { x: 0, y: 0, width: 1440, height: 140 } });
 });

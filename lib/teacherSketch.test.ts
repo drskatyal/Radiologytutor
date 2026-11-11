@@ -35,6 +35,7 @@ import {
   teacherMarkerInWindow,
   undoSketch,
   withSketchAnnotations,
+  pendingSketchMarkers,
 } from "./teacherSketch.ts";
 import { resolveStudioHotkey, STUDENT_SESSION_KEYS, STUDIO_MARKER_KEY, STUDIO_TOOL_KEYS } from "./studioHotkeys.ts";
 import { resolveViewerHotkey } from "./viewerHotkeys.ts";
@@ -420,4 +421,23 @@ test("Studio sketch keys never reuse a student-session key, and Alt+X stays with
   // preset menu's fourth entry), as on the desktop. Pan stays on the toolbar.
   assert.equal(resolveStudioHotkey({ key: "4" }), null);
   assert.deepEqual(resolveViewerHotkey({ key: "4" }), { type: "preset", ordinal: 4 });
+});
+
+test("a marker in the live take is listed as pending until a saved finding carries it", () => {
+  const items = [marker("m2", 2, 0.3, 0.4, 8), marker("m1", 1), { ...marker("m3", 3), kind: "pen" as const }];
+  items[1] = { ...items[1]!, text: "Enhancing lesion" };
+  // Nothing saved yet: both markers are pending, numbered in order, pens ignored.
+  const pending = pendingSketchMarkers(items, []);
+  assert.deepEqual(
+    pending.map((p) => [p.number, p.label, p.sliceIndex]),
+    [
+      [1, "Enhancing lesion", 6],
+      [2, "Finding 2", 8],
+    ]
+  );
+  // The compile lands finding 1 on marker 1's slice and point: no longer pending.
+  const landed = pendingSketchMarkers(items, [{ sliceIndex: 6, marker: { x_pct: 0.62, y_pct: 0.37 } }]);
+  assert.deepEqual(landed.map((p) => p.id), ["m2"]);
+  // Same point on another slice is a different mark.
+  assert.equal(pendingSketchMarkers(items, [{ sliceIndex: 5, marker: { x_pct: 0.62, y_pct: 0.37 } }]).length, 2);
 });

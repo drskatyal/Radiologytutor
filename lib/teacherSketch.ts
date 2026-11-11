@@ -209,6 +209,51 @@ export function defaultMarkerLabel(number: number): string {
   return `Finding ${number}`;
 }
 
+/** A numbered marker in the live take that is not a saved finding yet. */
+export interface PendingSketchMarker {
+  id: string;
+  number: number;
+  label: string;
+  /** 0-based stack index the marker sits on. */
+  sliceIndex: number;
+}
+
+/**
+ * Markers the teacher dropped that no saved finding carries yet. A marker
+ * becomes a finding when the take is finished and processed (the compile
+ * lands the finding on the marker's slice and point), so a finding on the
+ * same slice within half a percent of the image is the same mark. The
+ * Teaching sequence lists the rest as pending so it never reads "No findings
+ * yet" while a numbered marker is on the image.
+ */
+export function pendingSketchMarkers(
+  items: readonly TeacherSketchItem[],
+  findings: readonly { sliceIndex?: number; marker?: { x_pct: number; y_pct: number } | null }[]
+): PendingSketchMarker[] {
+  const out: PendingSketchMarker[] = [];
+  for (const item of items) {
+    if (item.kind !== "marker") continue;
+    const at = item.points[0];
+    if (!at) continue;
+    const saved = findings.some(
+      (f) =>
+        f.marker &&
+        f.sliceIndex === item.image.sliceIndex &&
+        Math.abs(f.marker.x_pct - at.x_pct) <= 0.005 &&
+        Math.abs(f.marker.y_pct - at.y_pct) <= 0.005
+    );
+    if (saved) continue;
+    const number = item.number ?? out.length + 1;
+    out.push({
+      id: item.id,
+      number,
+      label: item.text?.trim() || defaultMarkerLabel(number),
+      sliceIndex: item.image.sliceIndex,
+    });
+  }
+  return out.sort((a, b) => a.number - b.number);
+}
+
 // ---------------------------------------------------------------------------
 // Timeline (progressive replay)
 // ---------------------------------------------------------------------------
