@@ -236,6 +236,10 @@ export function FindingCard({
               <h3 className="truncate text-sm font-semibold text-primary">
                 {finding.label || "Untitled finding"}
               </h3>
+              <Badge variant={finding.status === "approved" ? "success" : "warning"}>
+                {finding.status === "approved" ? `Approved v${finding.currentVersion}` : "Needs review"}
+              </Badge>
+              {finding.anchorStatus !== "resolved" && <Badge variant="neutral">Incomplete image anchor</Badge>}
               {hasFlow && (
                 <Badge variant="info" title={`${finding.keyframes!.length} keyframes`}>
                   <LayersIcon />

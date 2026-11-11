@@ -1,0 +1,52 @@
+2026-11-11T21:12:49.624Z pw:webserver HTTP GET: http://127.0.0.1:3199/health
+2026-11-11T21:12:49.628Z pw:webserver Error while checking if http://127.0.0.1:3199/health is available: connect ECONNREFUSED 127.0.0.1:3199
+2026-11-11T21:12:49.629Z pw:webserver Starting WebServer process node --import tsx e2e/support/mockArchive.mjs...
+2026-11-11T21:12:49.633Z pw:webserver Process started
+2026-11-11T21:12:49.633Z pw:webserver Waiting for availability...
+2026-11-11T21:12:49.633Z pw:webserver HTTP GET: http://127.0.0.1:3199/health
+2026-11-11T21:12:49.635Z pw:webserver Error while checking if http://127.0.0.1:3199/health is available: connect ECONNREFUSED 127.0.0.1:3199
+2026-11-11T21:12:49.635Z pw:webserver Waiting 100ms
+2026-11-11T21:12:49.735Z pw:webserver HTTP GET: http://127.0.0.1:3199/health
+2026-11-11T21:12:49.736Z pw:webserver Error while checking if http://127.0.0.1:3199/health is available: connect ECONNREFUSED 127.0.0.1:3199
+2026-11-11T21:12:49.736Z pw:webserver Waiting 250ms
+[WebServer] mock archive on http://127.0.0.1:3199 (data /workspace/radlearn-build/.radlearn-tmp/radlearn-data, first SOP 1.2.826.0.1.3680043.8.498.30000000000000000000000000)
+2026-11-11T21:12:49.987Z pw:webserver HTTP GET: http://127.0.0.1:3199/health
+2026-11-11T21:12:49.990Z pw:webserver HTTP Status: 200
+2026-11-11T21:12:49.991Z pw:webserver WebServer available
+2026-11-11T21:12:49.991Z pw:webserver HTTP GET: http://127.0.0.1:3102/viewer/local
+2026-11-11T21:12:49.992Z pw:webserver Error while checking if http://127.0.0.1:3102/viewer/local is available: connect ECONNREFUSED 127.0.0.1:3102
+2026-11-11T21:12:49.992Z pw:webserver Starting WebServer process npx next start -p 3102...
+2026-11-11T21:12:49.995Z pw:webserver Process started
+2026-11-11T21:12:49.995Z pw:webserver Waiting for availability...
+2026-11-11T21:12:49.995Z pw:webserver HTTP GET: http://127.0.0.1:3102/viewer/local
+2026-11-11T21:12:49.996Z pw:webserver Error while checking if http://127.0.0.1:3102/viewer/local is available: connect ECONNREFUSED 127.0.0.1:3102
+2026-11-11T21:12:49.996Z pw:webserver Waiting 100ms
+2026-11-11T21:12:50.095Z pw:webserver HTTP GET: http://127.0.0.1:3102/viewer/local
+2026-11-11T21:12:50.096Z pw:webserver Error while checking if http://127.0.0.1:3102/viewer/local is available: connect ECONNREFUSED 127.0.0.1:3102
+2026-11-11T21:12:50.096Z pw:webserver Waiting 250ms
+[WebServer]   ▲ Next.js 14.2.35
+[WebServer]   - Local:        http://localhost:3102
+[WebServer]
+[WebServer]  ✓ Starting...
+2026-11-11T21:12:50.347Z pw:webserver HTTP GET: http://127.0.0.1:3102/viewer/local
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+[WebServer]  ✓ Ready in 213ms
+[WebServer]  ⚠ metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "http://localhost:3102". See https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase
+2026-11-11T21:12:50.853Z pw:webserver HTTP Status: 200
+2026-11-11T21:12:50.853Z pw:webserver WebServer available
+
+Running 3 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 approval.spec.ts:7:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (1.6s)
+  ✓  2 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (2.0s)
+  ✓  3 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (1.2s)
+2026-11-11T21:12:56.612Z pw:webserver Terminating the WebServer
+2026-11-11T21:12:56.613Z pw:webserver Terminated the WebServer
+2026-11-11T21:12:56.613Z pw:webserver Terminating the WebServer
+2026-11-11T21:12:56.614Z pw:webserver Terminated the WebServer
+
+  3 passed (7.0s)

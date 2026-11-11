@@ -30,7 +30,22 @@ const SLICES = 60;
 const STUDY_ID = "e2e-study";
 const SERIES_ID = "e2e-series";
 
-async function seedData() {
+async function seedData(dicomweb) {
+  const { inventoryFromMetadata } = await import("../../lib/findingInventory.ts");
+  const { migrateFindings, prepareFinding, appendVersion, approveVersion } = await import("../../lib/findingVersions.ts");
+  const approveFixture = async data => {
+    let next = migrateFindings({ ...data, createdAt: "2026-01-01", updatedAt: "2026-01-01", status: "published" });
+    for (const f of [...next.findings]) {
+      const patch = { frameNumber: 1, sopInstanceUID: f.sopInstanceUID || sopFor(f.sliceIndex), phiReview: { pixels: true, audio: true, screen: true } };
+      const anchor = { studyUID: f.studyInstanceUID, seriesUID: f.seriesInstanceUID, sopUID: patch.sopInstanceUID, frame: 1, view: {} };
+      const metadata = await (await fetch(`${dicomweb.origin}/dicomweb/studies/${anchor.studyUID}/series/${anchor.seriesUID}/metadata`)).json();
+      const inventory = inventoryFromMetadata(anchor, metadata);
+      next = appendVersion(next, f.id, prepareFinding(f, patch, inventory), 1, "synthetic-fixture-author");
+      const v = next.findingVersions.find(v => v.findingId === f.id && v.version === 2);
+      next = approveVersion(next, f.id, 2, v.contentHash, { id: "synthetic-fixture-author", membershipRole: "author" }, inventory);
+    }
+    return next;
+  };
   await rm(MOCK_ARCHIVE_DATA_DIR, { recursive: true, force: true });
   await mkdir(MOCK_ARCHIVE_DATA_DIR, { recursive: true });
   await cp(join(ROOT, "seed"), MOCK_ARCHIVE_DATA_DIR, { recursive: true });
@@ -69,20 +84,20 @@ async function seedData() {
   await writeFile(
     join(MOCK_ARCHIVE_DATA_DIR, "case-e2e-teach.json"),
     JSON.stringify(
-      {
+      await approveFixture({
         ...archiveCase,
         id: "case-e2e-teach",
         caseId: "case-e2e-teach",
         title: "E2E teaching CT",
         findings: [finding(1, 14, 1500, -600, 0.3, 0.4), finding(2, 44, 400, 40, 0.62, 0.55)],
-      },
+      }),
       null,
       2
     )
   );
   if (process.env.RADLEARN_SYNTHETIC === "1") {
     const files = syntheticStudy();
-    await writeFile(join(MOCK_ARCHIVE_DATA_DIR, "case-synthetic-teach.json"), files.get("case.json"));
+    await writeFile(join(MOCK_ARCHIVE_DATA_DIR, "case-synthetic-teach.json"), JSON.stringify(await approveFixture(JSON.parse(files.get("case.json").toString()))));
     await writeFile(join(MOCK_ARCHIVE_DATA_DIR, "studies", "stu_synthetic.json"), JSON.stringify({
       id: "stu_synthetic", orgId: "org_demo", patientId: "synthetic-patient",
       studyInstanceUID: SYNTHETIC_STUDY, modality: "CT", description: "Synthetic study",
@@ -117,8 +132,8 @@ function json(res, body, status = 200) {
 }
 
 async function main() {
-  await seedData();
   const dicomweb = await startMockDicomweb({ synthetic: process.env.RADLEARN_SYNTHETIC === "1", slices: SLICES, rows: 256, columns: 256, latencyMs: 0, metadataBuildMs: 0 });
+  await seedData(dicomweb);
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");

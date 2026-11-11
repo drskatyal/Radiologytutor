@@ -929,6 +929,8 @@ export function liveModeFromSession(mode: string): LiveMode {
  * here — the viewer log is the only source of slice, window, series, and pointer.
  */
 export interface CompiledTakeDraft {
+  markerId?: string;
+  segmentId?: string;
   label: string;
   description?: string;
   teachingPoints?: string[];
@@ -1035,6 +1037,8 @@ export function findingsFromCompiledTake(input: {
         : {}),
       ...(measurements.length ? { measurements } : {}),
       captureSessionId: input.captureSessionId,
+      markerId: draft.markerId,
+      segmentId: draft.segmentId ?? `interval:${tStartMs}:${tEndMs}`,
       tStartMs,
       tEndMs,
       ...(draft.landmark?.trim() ? { landmark: draft.landmark.trim() } : {}),

@@ -1,3 +1,6 @@
+import { migrateFindings, prepareFinding, appendVersion, approveVersion, approvedFinding, snapshot, type Approver } from "./findingVersions";
+import { anchorFromFinding, FindingConflict, hashContent, findingContent } from "./findingContent";
+import { readFindingInventory } from "./findingInventory";
 import type { ExamAttempt, ExamKey } from "./exam/types";
 // ============================================================================
 // lib/cases.ts
@@ -146,6 +149,7 @@ interface Collection<T extends { id: string }> {
   get(id: string): Promise<T | null>;
   put(record: T): Promise<T>;
   remove(id: string): Promise<boolean>;
+  mutate(id: string, change: (record: T | null) => T): Promise<T>;
 }
 
 /** In-memory evaluation of a `Filter`, shared by the JSON store. */
@@ -316,11 +320,31 @@ class JsonCollection<T extends { id: string }> implements Collection<T> {
     }
   }
 
-  async put(record: T): Promise<T> {
+  private async locked<R>(id: string, run: () => Promise<R>): Promise<R> {
     await this.ready();
-    await fs.writeFile(this.file(record.id), JSON.stringify(record, null, 2), "utf-8");
-    return record;
+    const lock = `${this.file(id)}.lock`;
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      try { await fs.mkdir(lock); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() > deadline) throw new Error("Store is busy; retry the operation");
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+    try { return await run(); } finally { await fs.rmdir(lock); }
   }
+  async mutate(id: string, change: (record: T | null) => T): Promise<T> {
+    return this.locked(id, async () => {
+      const next = change(await this.get(id));
+      const temp = `${this.file(id)}.${crypto.randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(temp, JSON.stringify(next, null, 2), "utf-8");
+        await fs.rename(temp, this.file(id));
+      } finally { await fs.unlink(temp).catch(() => undefined); }
+      return next;
+    });
+  }
+  async put(record: T): Promise<T> { return this.mutate(record.id, () => record); }
 
   async remove(id: string): Promise<boolean> {
     await this.ready();
@@ -443,17 +467,25 @@ class MongoCollection<T extends { id: string }> implements Collection<T> {
     return doc ? this.fromDoc(doc as MongoDoc<T>) : null;
   }
 
-  async put(record: T): Promise<T> {
+  async mutate(id: string, change: (record: T | null) => T): Promise<T> {
     const coll = await this.coll();
-    const { id, ...rest } = record;
-    // Upsert by _id so create and update share one code path (like writeFile).
-    await coll.replaceOne(
-      { _id: id } as never,
-      { _id: id, ...(rest as Omit<T, "id">) } as never,
-      { upsert: true }
-    );
-    return record;
+    for (let retry = 0; retry < 20; retry++) {
+      const doc = await coll.findOne({ _id: id } as never);
+      const revision = (doc as unknown as { __revision?: number } | null)?.__revision;
+      const next = change(doc ? this.fromDoc(doc as MongoDoc<T>) : null);
+      const { id: ignored, ...rest } = next;
+      const replacement = { ...rest, _id: id, __revision: (revision ?? 0) + 1 };
+      if (!doc) {
+        try { await coll.insertOne(replacement as never); return next; }
+        catch (error) { if ((error as { code?: number }).code === 11000) continue; throw error; }
+      }
+      const result = await coll.replaceOne({ _id: id, __revision: revision ?? { $exists: false } } as never, replacement as never);
+      if (result.matchedCount === 1) return next;
+    }
+    throw new Error("Store is busy; retry the operation");
   }
+
+  async put(record: T): Promise<T> { return this.mutate(record.id, () => record); }
 
   async remove(id: string): Promise<boolean> {
     const coll = await this.coll();
@@ -518,7 +550,7 @@ function toStored(c: Case): CaseStored {
 function normalizeCase(raw: CaseData & Partial<Case>): Case {
   const now = new Date().toISOString();
   const findings = (raw.findings ?? []).slice().sort((a, b) => a.order - b.order);
-  return {
+  return migrateFindings({
     ...raw,
     findings,
     orgId: raw.orgId ?? DEFAULT_ORG_ID,
@@ -526,7 +558,7 @@ function normalizeCase(raw: CaseData & Partial<Case>): Case {
     studyRefs: raw.studyRefs,
     createdAt: raw.createdAt ?? now,
     updatedAt: raw.updatedAt ?? now,
-  };
+  });
 }
 
 function nowIso(): string {
@@ -593,7 +625,10 @@ export async function getCase(caseId: string): Promise<CaseData | null> {
 export async function saveCase(data: CaseData): Promise<void> {
   const full = normalizeCase({ ...(data as Case) });
   full.updatedAt = nowIso();
-  await casesStore.put(toStored(full));
+  await casesStore.mutate(full.caseId, raw => {
+    if (raw?.findingVersions?.length) throw new FindingConflict("Use the versioned finding API to update an existing case");
+    return toStored(migrateFindings({ ...full, findingVersions: [], findingApprovals: [], findingRevalidations: [] }));
+  });
 }
 
 /** Create a new (empty) case, or return the existing one if it already exists. */
@@ -797,8 +832,7 @@ export async function updateCaseForOrg(
   if (updated.status === "published" && current.status !== "published") {
     await assertCasePublishable(updated);
   }
-  await casesStore.put(toStored(updated));
-  return updated;
+  return mutateCase(orgId, caseId, latest => ({ ...latest, ...nextPatch, caseId, orgId, updatedAt: nowIso() }));
 }
 
 /**
@@ -991,15 +1025,15 @@ export async function createFinding(
   caseId: string,
   finding: Finding
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
-  const f: Finding = { ...finding };
-  if (f.order == null) f.order = data.findings.length + 1;
-  data.findings.push(f);
-  data.findings.sort((a, b) => a.order - b.order);
-  data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
-  return data;
+  const prepared = await prepareWithInventory(finding, {});
+  return mutateCase(orgId, caseId, data => {
+    if (data.findings.some(f => f.id === finding.id)) throw new FindingConflict("Finding already exists");
+    const f = { ...prepared, order: finding.order || data.findings.length + 1, currentVersion: 1, status: "needs_review" as const, approvedVersion: undefined };
+    data.findings.push(f);
+    data.findingVersions!.push(snapshot(f, 1, "author", nowIso()));
+    data.updatedAt = nowIso();
+    return data;
+  });
 }
 
 /**
@@ -1012,8 +1046,7 @@ export async function commitLiveTeachingPack(
   caseId: string,
   input: CompiledTakeCommit
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   const sessions = data.captureSessions ? [...data.captureSessions] : [];
   const session = sessions.find((item) => item.id === input.captureSessionId);
   if (!session?.track) throw new Error("Recording not found for this case.");
@@ -1028,7 +1061,14 @@ export async function commitLiveTeachingPack(
   if (!findings.length) throw new Error("No findings to store.");
   if (transcript) session.transcript = transcript;
   data.captureSessions = sessions;
-  data.findings = findings;
+  for (const f of findings) {
+    // Stable take/marker or segment identity: retries never overwrite expert edits.
+    if (data.findings.some(old => old.captureSessionId === f.captureSessionId && (old.markerId ? old.markerId === f.markerId : old.segmentId === f.segmentId))) continue;
+    f.id = `lt_${f.captureSessionId}_${hashContent(f.markerId ?? f.segmentId).slice(0, 16)}`;
+    f.currentVersion = 1; f.status = "needs_review"; f.anchorStatus = "legacy_index";
+    data.findings.push(f);
+    data.findingVersions!.push(snapshot(f, 1, "compile", nowIso()));
+  }
   const ranked = input.findings
     .filter((draft) => draft.label.trim())
     .map((draft, index) => ({
@@ -1064,8 +1104,8 @@ export async function commitLiveTeachingPack(
     studySeriesUIDs: (data.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? []),
   });
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 /** Persist a continuous-capture demonstration (parent track + transcript). */
@@ -1074,16 +1114,15 @@ export async function appendCaptureSession(
   caseId: string,
   session: CaptureSession
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   const list = data.captureSessions ? [...data.captureSessions] : [];
   const idx = list.findIndex((s) => s.id === session.id);
   if (idx >= 0) list[idx] = session;
   else list.push(session);
   data.captureSessions = list;
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 /** Patch one finding's fields. Returns the updated case. */
@@ -1094,14 +1133,9 @@ export async function updateFindingScoped(
   patch: Partial<Finding>
 ): Promise<Case> {
   const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
-  const idx = data.findings.findIndex((f) => f.id === findingId);
-  if (idx === -1) throw new Error(`Finding not found: ${findingId}`);
-  data.findings[idx] = { ...data.findings[idx], ...patch, id: findingId };
-  data.findings.sort((a, b) => a.order - b.order);
-  data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
-  return data;
+  const current = data?.findings.find(f => f.id === findingId);
+  if (!current) throw new FindingConflict("Finding not found", 404);
+  return createVersion(orgId, caseId, findingId, patch, { expectedVersion: current.currentVersion!, userId: "author" });
 }
 
 /** Delete one finding. Returns the updated case. */
@@ -1110,12 +1144,11 @@ export async function deleteFindingScoped(
   caseId: string,
   findingId: string
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   data.findings = data.findings.filter((f) => f.id !== findingId);
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 /** Reorder findings; `orderedIds` is the new sequence (sets order to index+1). */
@@ -1124,8 +1157,7 @@ export async function reorderFindingsScoped(
   caseId: string,
   orderedIds: string[]
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   const rank = new Map(orderedIds.map((id, i) => [id, i + 1]));
   for (const f of data.findings) {
     const r = rank.get(f.id);
@@ -1133,8 +1165,8 @@ export async function reorderFindingsScoped(
   }
   data.findings.sort((a, b) => a.order - b.order);
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 // ============================================================================
@@ -2442,4 +2474,55 @@ export async function readExamAttempt(orgId: string, userId: string, id: string)
 }
 export async function findActiveExam(orgId: string, userId: string, caseId?: string): Promise<ExamAttempt | null> {
   return (await examSessions.find({ orgId, userId, caseId, status: "active" }))[0] ?? null;
+}
+
+/** Atomic case transition shared by finding versions and other case mutations. */
+export async function mutateCase(orgId: string, caseId: string, change: (data: Case) => Case): Promise<Case> {
+  return normalizeCase(await casesStore.mutate(caseId, raw => {
+    if (!raw || (raw.orgId ?? DEFAULT_ORG_ID) !== orgId) throw new Error("Case not found");
+    return toStored(change(normalizeCase(raw)));
+  }));
+}
+
+async function prepareWithInventory(current: Finding, patch: Partial<Finding>): Promise<Finding> {
+  const merged = prepareFinding(current, patch);
+  const anchor = anchorFromFinding(merged);
+  const inventory = anchor ? await readFindingInventory(anchor).catch(() => undefined) : undefined;
+  return prepareFinding(current, patch, inventory);
+}
+export async function createVersion(orgId: string, caseId: string, findingId: string, patch: Partial<Finding>, options: { expectedVersion: number; userId: string }): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  const current = data?.findings.find(f => f.id === findingId);
+  if (!current) throw new FindingConflict("Finding not found", 404);
+  const prepared = await prepareWithInventory(current, patch);
+  return mutateCase(orgId, caseId, latest => appendVersion(latest, findingId, prepared, options.expectedVersion, options.userId));
+}
+export async function approve(orgId: string, caseId: string, findingId: string, version: number, contentHash: string, user: Approver): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  const anchor = data?.findingVersions?.find(v => v.findingId === findingId && v.version === version)?.anchor;
+  const inventory = anchor ? await readFindingInventory(anchor).catch(() => undefined) : undefined;
+  return mutateCase(orgId, caseId, latest => approveVersion(latest, findingId, version, contentHash, user, inventory));
+}
+export async function approvedCurrent(orgId: string, caseId: string): Promise<Finding[]> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data || data.status !== "published") return [];
+  const inventories = new Map<string, ReturnType<typeof readFindingInventory>>();
+  return (await Promise.all(data.findings.map(async f => {
+    const anchor = anchorFromFinding(f);
+    if (!anchor || f.currentVersion !== f.approvedVersion) return null;
+    const key = `${anchor.studyUID}/${anchor.seriesUID}`;
+    if (!inventories.has(key)) inventories.set(key, readFindingInventory(anchor));
+    const inventory = await inventories.get(key)!.catch(() => undefined);
+    return approvedFinding(data, f, inventory);
+  }))).filter((f): f is Finding => f !== null);
+}
+/** Tutor projection contains only per-version approved content, never old case-level prose. */
+export async function groundedCase(data: Case): Promise<Case> {
+  const findings = await approvedCurrent(data.orgId, data.caseId);
+  return {
+    caseId: data.caseId, orgId: data.orgId, status: data.status, title: "Imaging case", modality: data.modality,
+    pacsbinBaseUrl: data.pacsbinBaseUrl, studyRefs: data.studyRefs, findings,
+    createdAt: data.createdAt, updatedAt: data.updatedAt,
+    liveTeachingPack: materializeLiveTeachingPack({ caseId: data.caseId, modality: data.modality, findings, studySeriesUIDs: (data.studyRefs ?? []).flatMap(r => r.seriesInstanceUIDs ?? []) }),
+  };
 }

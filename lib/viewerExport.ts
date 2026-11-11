@@ -1,3 +1,4 @@
+import { assertNoPhi } from "./phiGuard";
 // ============================================================================
 // lib/viewerExport.ts
 //
@@ -23,6 +24,7 @@ export type ExportOverlay = "none" | "anonymous";
 export function anonymousLines(
   parts: { modality?: string | null; seriesNumber?: number | string | null; index: number; count: number; ww?: number; wc?: number }
 ): string[] {
+  assertNoPhi(parts);
   const series = [parts.modality, parts.seriesNumber != null && parts.seriesNumber !== "" ? `Se ${parts.seriesNumber}` : ""]
     .filter(Boolean)
     .join(" · ");
@@ -32,6 +34,7 @@ export function anonymousLines(
 
 /** Copy `source` into a new canvas and draw `lines` in the top-left corner. */
 export function withOverlayText(source: HTMLCanvasElement, lines: readonly string[], cssWidth: number): HTMLCanvasElement {
+  assertNoPhi(lines);
   const out = document.createElement("canvas");
   out.width = source.width;
   out.height = source.height;

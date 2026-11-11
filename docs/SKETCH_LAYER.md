@@ -119,3 +119,12 @@ The series is public on the Imaging Data Commons (`idc-index`, collection
 
 Unchanged: `scripts/anatomy_asset_pipeline.py` (marching cubes, smoothing,
 decimation, tissue maps) and `scripts/compress_anatomy_glb.mjs` (meshopt).
+
+## RadLearn versioned approval (M2)
+
+Image identity is Study/Series/SOP Instance UID plus a one-based frame. Archive
+indices are display hints only, even when the stack is reordered. Index-only
+legacy findings have `anchorStatus: "legacy_index"` and require an expert rebind
+before approval or exact replay. A missing named instance is unresolved: never
+repair it by selecting a nearby slice. Anatomical stack sorting and render
+acknowledgement remain later milestones; no historical indices are migrated.

@@ -1,6 +1,6 @@
 import { hasActiveExam } from "@/lib/exam/access";
 import { activeOrgId, getSession } from "@/lib/auth";
-import { getCaseForOrg } from "@/lib/cases";
+import { getCaseForOrg, approvedCurrent, groundedCase } from "@/lib/cases";
 import { canAccessOrgResource } from "@/lib/authRoles";
 // POST /api/cases/[caseId]/live-teaching-pack
 // Commit a compiled take. Prose and clinical importance come from the body.
@@ -29,6 +29,8 @@ function drafts(raw: unknown): CompiledTakeDraft[] {
       : [];
     out.push({
       label,
+      ...(typeof row.markerId === "string" ? { markerId: row.markerId } : {}),
+      ...(typeof row.segmentId === "string" ? { segmentId: row.segmentId } : {}),
       description: typeof row.description === "string" ? row.description : "",
       teachingPoints: Array.isArray(row.teachingPoints)
         ? row.teachingPoints.filter((point): point is string => typeof point === "string")
@@ -83,5 +85,5 @@ export async function GET(_req: NextRequest, { params }: { params: { caseId: str
   const data = await getCaseForOrg(orgId, params.caseId);
   const session = await getSession();
   if (!data || (data.status !== "published" && !canAccessOrgResource({ membershipRole: session?.user.membershipRole, platformRole: session?.user.platformRole, need: "author" }))) return NextResponse.json({ error: "Case not found" }, { status: 404 });
-  return NextResponse.json(data.liveTeachingPack ?? null);
+  return NextResponse.json((await groundedCase(data)).liveTeachingPack ?? null);
 }

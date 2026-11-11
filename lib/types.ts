@@ -332,7 +332,37 @@ export interface RecordedTrack {
   voice?: "notes";
 }
 
+export interface FindingAnchorSnapshot {
+  studyUID: string; seriesUID: string; sopUID: string; frame: number;
+  imagePoint?: { x: number; y: number };
+  view: { ww?: number; wc?: number; zoom?: number; pan?: [number, number]; rotation?: number; invert?: boolean; flipH?: boolean; flipV?: boolean };
+}
+export interface SeriesInventory {
+  studyUID: string; seriesUID: string; orderingAlgorithmVersion: string;
+  instances: Array<{ sopUID: string; frames: number; geometryHash?: string }>;
+}
+export interface FindingVersion {
+  findingId: string; version: number; contentHash: string; content: FindingContent;
+  anchor?: FindingAnchorSnapshot; evidence: Array<{ tStart: number; tEnd: number; journalSeq: number[]; estimated?: boolean }>;
+  createdBy: string; createdAt: string; parentVersion: number | null;
+}
+export interface FindingApproval {
+  findingId: string; version: number; contentHash: string; approvedBy: string; approvedAt: string; revokedAt?: string;
+}
+export type FindingContent = Omit<Finding, "id" | "order" | "sliceIndex" | "status" | "currentVersion" | "approvedVersion" | "anchorStatus">;
+
 export interface Finding {
+  status?: "draft" | "needs_review" | "approved" | "superseded";
+  currentVersion?: number;
+  approvedVersion?: number;
+  anchorStatus?: "resolved" | "unresolved" | "legacy_index";
+  anchor?: FindingAnchorSnapshot;
+  annotations?: unknown[];
+  evidence?: FindingVersion["evidence"];
+  phiReview?: { pixels: boolean; audio: boolean; screen: boolean };
+  provenance?: { instanceSetFingerprint: string; orderingAlgorithmVersion: string; modelId: string; promptVersion: string };
+  markerId?: string;
+  segmentId?: string;
   /** Exact frame (one-based) and image-pixel point, when explicitly recorded. */
   frameNumber?: number;
   imagePoint?: { x: number; y: number };
@@ -412,6 +442,10 @@ export interface Finding {
 }
 
 export interface CaseData {
+  findingVersions?: FindingVersion[];
+  findingApprovals?: FindingApproval[];
+  findingRevalidations?: Array<{ findingId: string; version: number; contentHash: string; inventoryOrderHash: string; checkedAt: string; reason: "order_revalidated" }>;
+
   caseId: string;
   title: string;
   modality: string;

@@ -1,6 +1,6 @@
 import { hasActiveExam } from "@/lib/exam/access";
 import { activeOrgId, getSession } from "@/lib/auth";
-import { getCaseForOrg } from "@/lib/cases";
+import { getCaseForOrg, approvedCurrent, groundedCase } from "@/lib/cases";
 import { canAccessOrgResource } from "@/lib/authRoles";
 // POST /api/cases/[caseId]/findings -> append a finding
 // Body: a full Finding (id optional — generated if missing)
@@ -42,6 +42,10 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       sopInstanceUIDs: body.sopInstanceUIDs,
       sopInstanceUID: body.sopInstanceUID,
       sliceIndex: body.sliceIndex,
+      frameNumber: body.frameNumber,
+      imagePoint: body.imagePoint,
+      anchor: body.anchor,
+      phiReview: body.phiReview,
       landmark: body.landmark?.trim() || undefined,
       windowWidth: body.windowWidth,
       windowCenter: body.windowCenter,
@@ -67,5 +71,5 @@ export async function GET(_req: NextRequest, { params }: { params: { caseId: str
   const data = await getCaseForOrg(orgId, params.caseId);
   const session = await getSession();
   if (!data || (data.status !== "published" && !canAccessOrgResource({ membershipRole: session?.user.membershipRole, platformRole: session?.user.platformRole, need: "author" }))) return NextResponse.json({ error: "Case not found" }, { status: 404 });
-  return NextResponse.json(data.findings);
+  return NextResponse.json(await approvedCurrent(orgId, params.caseId));
 }

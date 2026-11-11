@@ -1,7 +1,9 @@
+import { assertNoPhi } from "../phiGuard";
 import { generate, geminiConfigured, parseJsonLoose, type GenerateOptions } from "../gemini";
 import type { ExamClaim } from "./types";
 
 export function answerStructureRequest(text: string): GenerateOptions {
+  assertNoPhi(text);
   return {
     systemInstruction: 'Structure the supplied learner text only. Return JSON {"claims":[{"text":"verbatim clause","negated":false}]}. Do not add facts, diagnoses, suggestions or a score.',
     jsonOnly: true,
@@ -14,6 +16,7 @@ export function literalClaims(text: string): ExamClaim[] {
 }
 /** Injectable at the model boundary. The model never receives a case or rubric. */
 export async function structureAnswer(text: string, model?: (request: GenerateOptions) => Promise<{ text: string }>): Promise<ExamClaim[]> {
+  assertNoPhi(text);
   const invoke = model ?? (geminiConfigured() ? generate : undefined);
   if (!invoke) return literalClaims(text);
   const result = await invoke(answerStructureRequest(text));

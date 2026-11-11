@@ -1,3 +1,4 @@
+import { assertNoPhi } from "./phiGuard";
 // ============================================================================
 // lib/gemini.ts
 //
@@ -87,6 +88,7 @@ async function callGemini(
   body: unknown,
   timeoutMs = REQUEST_TIMEOUT_MS
 ): Promise<Response> {
+  assertNoPhi(body);
   let lastStatus = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();

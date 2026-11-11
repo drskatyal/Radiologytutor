@@ -5,7 +5,7 @@ import { startExam } from "@/lib/exam/service";
 import { redirect, notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
-import { getAuthor, getCaseForOrg, listCaseShares } from "@/lib/cases";
+import { getAuthor, getCaseForOrg, groundedCase, listCaseShares } from "@/lib/cases";
 import { lastTeacherSlice, seriesHintFromCase } from "@/lib/viewerLoad";
 import {
   BUNDLED_CASE,
@@ -39,7 +39,7 @@ export default async function CasePage({
   searchParams?: { course?: string; mode?: string };
 }) {
   const orgId = await activeOrgId();
-  const caseData = await getCaseForOrg(orgId, params.caseId);
+  let caseData = await getCaseForOrg(orgId, params.caseId);
   if (!caseData) notFound();
 
   const openMode = caseOpenMode(searchParams?.mode);
@@ -105,6 +105,8 @@ export default async function CasePage({
       </>
     );
   }
+
+  caseData = await groundedCase(caseData);
 
   // Series UIDs already on the case. Descriptions and counts arrive in the
   // client from /api/cases/:id/series so HTML does not wait on every series.

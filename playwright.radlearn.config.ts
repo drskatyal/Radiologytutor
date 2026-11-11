@@ -11,6 +11,6 @@ export default defineConfig({
   webServer: (Array.isArray(archive.webServer) ? archive.webServer : []).map(server => ({
     ...server,
     reuseExistingServer: false,
-    env: { ...server.env, RADLEARN_SYNTHETIC: "1", MOCK_ARCHIVE_DATA_DIR: dataDir, DATA_DIR: dataDir },
+    env: { ...server.env, BETTER_AUTH_URL: "http://127.0.0.1:3102", RADLEARN_SYNTHETIC: "1", MOCK_ARCHIVE_DATA_DIR: dataDir, DATA_DIR: dataDir },
   })),
 });

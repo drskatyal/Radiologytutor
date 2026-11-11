@@ -39,7 +39,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `node e2e/support/mockArchive.mjs`,
+      command: `node --import tsx e2e/support/mockArchive.mjs`,
       url: `http://127.0.0.1:${MOCK_ARCHIVE_PORT}/health`,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,

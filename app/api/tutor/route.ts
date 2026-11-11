@@ -17,7 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
-import { getCaseForOrg } from "@/lib/cases";
+import { getCaseForOrg, groundedCase } from "@/lib/cases";
 import { formatFindingsContextFromCase, formatSeriesCatalog } from "@/lib/teachingPrompt";
 import {
   authoredSeriesAllowlist,
@@ -64,7 +64,8 @@ export async function POST(req: NextRequest) {
       ? String(body.currentFindingId)
       : undefined;
 
-    const data = await getCaseForOrg(orgId, caseId);
+    const stored = await getCaseForOrg(orgId, caseId);
+    const data = stored ? await groundedCase(stored) : null;
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
 
     if (data.status !== "published") {

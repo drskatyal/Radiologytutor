@@ -9,7 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, generate, parseJsonLoose } from "@/lib/gemini";
-import { getCaseForOrg } from "@/lib/cases";
+import { getCaseForOrg, groundedCase } from "@/lib/cases";
 import {
   GRADE_REPORT_SYSTEM,
   buildReportRubric,
@@ -30,7 +30,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const caseId = String(body.caseId ?? "");
     const report = String(body.report ?? "").trim();
-    const data = await getCaseForOrg(orgId, caseId);
+    const stored = await getCaseForOrg(orgId, caseId);
+    const data = stored ? await groundedCase(stored) : null;
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
 
     if (
