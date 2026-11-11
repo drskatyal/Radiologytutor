@@ -1,8 +1,27 @@
 # Strategy §7 defaults
 
+## Deployment target and branch push (Sanyam, 11 Nov 2026)
+
+- **Google Cloud (Cloud Run, owned by GCP Admin) is the only intended deploy target for RadLearn.**
+  Railway is legacy: it still auto-deploys the integration branch `claude/epic-noether-3nvcbf`
+  (`railway.json`, `flowrad-learn / production`), so that branch must never be pushed from this build.
+  This build never deploys anywhere; any Cloud Run deployment is a GCP Admin decision outside this branch.
+- **Branch push approved by Sanyam:** "Yes, push the RadLearn build branch once the no-Actions check passes."
+  Only `codex/radlearn-strategy-build` is pushed, each time after the strategy §0.1 pre-push gate passes,
+  followed by an API check that zero Actions runs were triggered.
+- **No grandfathering stands (decision 1 confirmed):** published cases need re-approval of their current
+  finding versions before tutor or exam grounding uses them.
+- **PRs are held:** no PR (not even draft) is opened from this branch until Radlearn confirms the Railway
+  GitHub integration and PR previews are fully disconnected. Pushes go to `codex/radlearn-strategy-build` only.
+- Read-only evidence on 11 Nov 2026 (GitHub API): all 264 repository deployments are
+  `flowrad-learn / production` by `railway-app[bot]`; none is on a PR head SHA (15 most recent PRs, including
+  open drafts #252/#130, have zero deployments, statuses or check runs); only one environment exists; no repo
+  webhooks. No Railway PR-preview activity was observed.
+
+
 1. Existing published cases retain browse access but lose tutor and exam grounding until their current finding versions are re-approved. No grandfathering migration.
 2. TTS shutdown work remains draft work for M3, outside this M0–M2 task. No hotfix or deployment.
-3. Railway PR environments remain unconfirmed. No PR is opened; no push is authorized for this clone.
+3. Hosting and pushes: see "Deployment target and branch push" below. (Original default: no PR until Railway PR environments were confirmed off.)
 4. Exam models may structure learner free text only. Scoring is deterministic on the server against a pinned private rubric.
 
 All Gemini calls in validation are mocked; **live contract not verified**.
