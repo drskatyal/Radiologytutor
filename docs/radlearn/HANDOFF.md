@@ -56,3 +56,27 @@ API choice and remaining mediaProcessing/mediaResolution verification limits.
 All provider calls use mocked responses: **NOT VERIFIED LIVE — live contract
 not verified**. No new dependency, remote data, deployment, push, PR or M4+ work.
 GCP Admin owns any future Cloud Run deployment; the orchestrator owns pushes.
+
+## C1 — trusted Worker public host
+
+Implemented one shared origin helper with server-only
+`X-FlowRad-Proxy-Secret` / `TRUSTED_PROXY_SECRET` authentication and native Web
+Crypto constant-time MAC verification over fixed-length secret digests. All
+server request-derived SEO, viewer metadata and redirects use the helper;
+unauthenticated/invalid hosts fall back to BETTER_AUTH_URL. Better Auth remains
+pinned to that configured origin. See TRUSTED_HOST.md for the audit and Worker
+header-overwrite requirements. No Worker, cloud or secret configuration changed.
+
+Final validation: 1,168 unit tests passed, 0 failed, 2 existing skips; build
+passed; tsc retains 279 baseline diagnostics with zero additions. Archive: final
+full rerun 11 passed; an earlier final-build run had 10 passed / 1 viewer-readiness
+timeout, retained in evidence. RadLearn: 7 passed, including four new C1 specs
+within trusted-host.spec.ts. Existing upload budget assertions are unchanged;
+their calls now await asynchronous middleware.
+
+DECISIONS.md records the supplied Healthcare DICOMweb endpoint, ADC identity and
+production backend, and Sanyam's 23:09 London merge approval. PRs/merges remain
+held pending orchestrator confirmation that Railway integration and previews are
+disconnected. No push, PR, merge, deployment, workflow edit, live model call or
+remote-data access occurred. All Gemini transport is mocked: live contract not
+verified. The orchestrator owns cutover and any later push/merge gate.

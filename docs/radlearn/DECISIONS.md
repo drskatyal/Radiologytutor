@@ -54,3 +54,43 @@ and default to gemini-3.8-flash-tts. See GEMINI_VERIFICATION.md. GCP Cloud Run /
 GCP Admin remains the only future deployment target, controlled separately by
 the orchestrator. No grandfathering and deterministic server exam scoring stand.
 NOT VERIFIED LIVE.
+
+## C1 — Worker host trust and cutover holds (11 November 2026)
+
+`learn.flowrad.ai` will be a Cloudflare Worker in front of the Cloud Run
+`run.app` origin. The app trusts `X-Forwarded-Host` only when
+`X-FlowRad-Proxy-Secret` authenticates against server-only `TRUSTED_PROXY_SECRET`
+using native Web Crypto HMAC verification. The Worker must overwrite both
+headers from its own configuration (never copy a client-provided secret or host).
+Forwarded values must be a single valid ASCII DNS hostname, with no scheme,
+port, path, list, whitespace or injection. Trusted Worker origins use HTTPS;
+`Host`, `Forwarded`, `X-Forwarded-Proto` and `NEXT_PUBLIC_APP_URL` cannot select a
+public origin. Missing/wrong secrets, an unset server secret, invalid hostnames
+and verification failures fall back to `BETTER_AUTH_URL`. See TRUSTED_HOST.md.
+No Worker, Cloud Run or secret configuration was changed in this local step.
+
+The real production Healthcare DICOMweb base is:
+
+```text
+https://healthcare.googleapis.com/v1/projects/radlearn-app/locations/europe-west2/datasets/radlearn/dicomStores/radlearn-dicom/dicomWeb
+```
+
+It uses standard `/studies`, `/series`, `/instances` and `/metadata` DICOMweb
+resources, with server-side ADC as
+`radlearn-app@radlearn-app.iam.gserviceaccount.com`. The app proxies requests and
+returns 401 without a session. Production runs `DICOMWEB_BACKEND=healthcare`.
+These facts were supplied by the orchestrator, not checked against production
+in this step; no remote DICOM data or credentials were accessed.
+
+Sanyam approved merging in the Codex Manager chat at **23:09 London on
+11 November 2026**, in his own words:
+
+> Yes, merge once Railway is disconnected and local tests, the build and Playwright pass, with no GitHub Actions.
+
+PRs and merges nevertheless remain **HELD** until the orchestrator confirms
+Railway's GitHub integration **and** PR previews are fully disconnected. After
+that confirmation, merge only after local unit tests, build and Playwright pass,
+workflows stay manual-only, commits carry `[skip ci]`, and zero Actions runs are
+verified after every push and merge. The current build agent still performs no
+push, PR or merge. Never #130/#252/#109. GCP Cloud Run / GCP Admin is the only
+deploy target; no grandfathering remains in force.

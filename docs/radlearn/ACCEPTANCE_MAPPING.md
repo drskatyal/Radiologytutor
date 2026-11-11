@@ -75,3 +75,13 @@ pass. M0–M2 alone do not claim capture/replay completion.
 “#252 before #130” is later-merge advice only. Neither branch/PR is touched,
 merged or cherry-picked. No staging legacy-finding repair, production no-mic
 cardinality change, Claude-session interaction, or demo-403 alteration occurs.
+
+## C1 cutover acceptance
+
+`lib/trustedHost.test.ts` covers authenticated forwarded host selection, missing
+/wrong/unset secrets, strict hostname validation, constant-time native crypto
+verification failure, configured-origin fallback, secret absence from console
+and output, SEO origins and upstream-port-safe redirects.
+`e2e/radlearn/trusted-host.spec.ts` exercises real local robots/sitemap routes,
+landing/layout/viewer metadata and middleware with a synthetic Worker header.
+C1 does not implement or reassign T1–T10 or deferred capture/replay milestones.

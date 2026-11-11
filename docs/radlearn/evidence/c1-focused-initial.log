@@ -1,0 +1,91 @@
+✔ learn.flowrad.ai allows public discovery and restricts private routes for every crawler (1.570961ms)
+✔ app.viewer.flowrad.ai allows public discovery and restricts private routes for every crawler (0.238294ms)
+✔ learn sitemap contains only verified public marketing/legal pages (0.296723ms)
+✔ viewer sitemap has only the canonical viewer (0.13167ms)
+✔ localhost:3000 does not advertise public URLs (0.155484ms)
+✔ example.com does not advertise public URLs (0.080344ms)
+✔ learn.flowrad.ai.evil.test does not advertise public URLs (0.082491ms)
+✔ null does not advertise public URLs (0.064248ms)
+✔ metadata uses the recognized request host (0.163926ms)
+▶ C1 authenticated public origin
+  ✔ valid Worker secret selects the forwarded hostname, always over HTTPS (12.835532ms)
+  ✔ missing, wrong, prefix, suffix and different-length secrets cannot select a host (4.849503ms)
+  ✔ unset or empty TRUSTED_PROXY_SECRET never trusts a supplied secret (0.308782ms)
+  ✔ a signed request without a forwarded host still uses BETTER_AUTH_URL, not Host (0.760935ms)
+  ✔ invalid signed hostnames fail closed: no schemes, ports, paths, lists or injection (4.151607ms)
+  ✔ hostname validation accepts ordinary DNS labels and ASCII IDNs (0.321772ms)
+  ✔ fallback keeps the configured origin and ignores NEXT_PUBLIC_APP_URL (0.3314ms)
+  ✔ native crypto verification failure does not grant trust (4.909899ms)
+  ✔ secret is absent from console, metadata, robots, sitemap, responses and errors (10.484514ms)
+  ✔ robots, sitemap and metadata select the authenticated origin or configured fallback (1.312769ms)
+  ✔ unrecognized trusted domains retain the deny-all SEO policy (1.698979ms)
+  ✖ middleware redirects use authenticated origin, never the run.app URL (3.983246ms)
+✖ C1 authenticated public origin (48.484367ms)
+✔ viewer host root redirects temporarily and preserves the original URL (1.577724ms)
+✔ viewer host /viewer does not redirect (0.195107ms)
+✔ viewer host /viewer/local does not redirect (0.172525ms)
+✔ viewer host /foo does not redirect (2.71069ms)
+✔ learn.flowrad.ai root does not redirect (0.156816ms)
+✔ localhost:3000 root does not redirect (0.068929ms)
+✔ flowrad.ai root does not redirect (0.064603ms)
+✔ example.com root does not redirect (0.055019ms)
+✔ app.viewer.flowrad.ai.example.com root does not redirect (0.08612ms)
+✔ null root does not redirect (0.111351ms)
+✔ query string is preserved (0.127688ms)
+✔ app.viewer.flowrad.ai:443 matches (0.077929ms)
+✔ APP.VIEWER.FLOWRAD.AI matches (0.072806ms)
+✔ learn.flowrad.ai viewer permanently redirects with query intact (0.174899ms)
+✔ LEARN.FLOWRAD.AI:443 viewer permanently redirects with query intact (0.04291ms)
+✔ learn redirect leaves learn.flowrad.ai / unchanged (0.054129ms)
+✔ learn redirect leaves learn.flowrad.ai /viewer/local unchanged (0.027253ms)
+✔ learn redirect leaves learn.flowrad.ai /viewer/ unchanged (0.023684ms)
+✔ learn redirect leaves app.viewer.flowrad.ai / unchanged (0.023727ms)
+✔ learn redirect leaves app.viewer.flowrad.ai /viewer unchanged (0.030722ms)
+✔ learn redirect leaves app.viewer.flowrad.ai /viewer/local unchanged (0.022513ms)
+✔ learn redirect leaves app.viewer.flowrad.ai /viewer/ unchanged (0.024166ms)
+✔ learn redirect leaves localhost:3000 / unchanged (0.031945ms)
+✔ learn redirect leaves localhost:3000 /viewer unchanged (0.024009ms)
+✔ learn redirect leaves localhost:3000 /viewer/local unchanged (0.024921ms)
+✔ learn redirect leaves localhost:3000 /viewer/ unchanged (0.038974ms)
+✔ learn redirect leaves example.com / unchanged (0.023968ms)
+✔ learn redirect leaves example.com /viewer unchanged (0.022964ms)
+✔ learn redirect leaves example.com /viewer/local unchanged (0.024442ms)
+✔ learn redirect leaves example.com /viewer/ unchanged (0.0218ms)
+✔ learn redirect leaves learn.flowrad.ai.example.com / unchanged (0.021195ms)
+✔ learn redirect leaves learn.flowrad.ai.example.com /viewer unchanged (0.021334ms)
+✔ learn redirect leaves learn.flowrad.ai.example.com /viewer/local unchanged (0.028391ms)
+✔ learn redirect leaves learn.flowrad.ai.example.com /viewer/ unchanged (0.020927ms)
+✔ learn redirect leaves null / unchanged (0.028585ms)
+✔ learn redirect leaves null /viewer unchanged (0.022578ms)
+✔ learn redirect leaves null /viewer/local unchanged (0.04219ms)
+✔ learn redirect leaves null /viewer/ unchanged (0.024245ms)
+ℹ tests 59
+ℹ suites 1
+ℹ pass 58
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 346.252525
+
+✖ failing tests:
+
+test at lib/trustedHost.test.ts:2:8598
+✖ middleware redirects use authenticated origin, never the run.app URL (3.983246ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + 'https://app.viewer.flowrad.ai:8080/viewer?x=1&x=2'
+  - 'https://app.viewer.flowrad.ai/viewer?x=1&x=2'
+
+      at <anonymous> (/workspace/radlearn-build/lib/trustedHost.test.ts:114:12)
+      at async configured (/workspace/radlearn-build/lib/trustedHost.test.ts:17:9)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'https://app.viewer.flowrad.ai:8080/viewer?x=1&x=2',
+    expected: 'https://app.viewer.flowrad.ai/viewer?x=1&x=2',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

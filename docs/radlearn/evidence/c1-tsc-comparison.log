@@ -1,0 +1,5 @@
+Baseline diagnostic count: 279
+C1 diagnostic count: 279
+New diagnostics: 0
+Removed diagnostics: 0
+Comparison normalizes line/column offsets and TS union-member display order only.
