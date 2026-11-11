@@ -270,12 +270,23 @@ async function imagePoint(page: Page, x: number, y: number) {
   return { x: left + side * x, y: top + side * y };
 }
 
-test("Studio on a de-identified CT: the marker is listed in the Teaching sequence and the nav has no stray badge", async ({ page }) => {
+test("Studio on a de-identified CT: marker → pending row → finish → saved finding on the nodule", async ({ page }) => {
   const archive = await page.request.get("http://127.0.0.1:8042/studies/study-lidc").catch(() => null);
+  // CI without the archive skips; set REQUIRE_LIDC_ARCHIVE=1 to make a missing
+  // archive a failure instead (the review run wants this test to really run).
+  if (!archive?.ok() && process.env.REQUIRE_LIDC_ARCHIVE === "1") {
+    throw new Error("REQUIRE_LIDC_ARCHIVE=1 but the LIDC archive is not on 127.0.0.1:8042 (scripts/serve_local_ct.py)");
+  }
   test.skip(!archive?.ok(), "LIDC archive (scripts/serve_local_ct.py) is not running");
 
   await page.setViewportSize({ width: 1440, height: 1300 });
   await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+  // A teacher with no microphone: the take saves from gestures + typed notes,
+  // the path that needs no AI compile, so this runs without a Gemini key.
+  await page.addInitScript(() => {
+    const devices = navigator.mediaDevices;
+    if (devices) devices.getUserMedia = () => Promise.reject(new DOMException("No microphone", "NotFoundError"));
+  });
   expect((await page.request.post("/api/auth/demo", { data: { role: "author" } })).ok()).toBeTruthy();
   const made = await page.request.post("/api/admin/cases", {
     data: {
@@ -322,6 +333,9 @@ test("Studio on a de-identified CT: the marker is listed in the Teaching sequenc
 
   await startButton.click();
   await expect(page.getByRole("button", { name: "Finish recording" })).toBeVisible();
+  // Review: "Nothing captured" showed for the whole take, beside the marker.
+  await page.waitForTimeout(600);
+  await expect(page.getByText(/Nothing captured/)).toHaveCount(0);
 
   // Ring the nodule, point at it, then M drops marker #1 on it.
   await page.keyboard.press("o");
@@ -357,6 +371,9 @@ test("Studio on a de-identified CT: the marker is listed in the Teaching sequenc
   await expect(pending).toContainText(`Im ${NODULE.slice + 1}`);
   await expect(page.getByTestId("sequence-pending-count")).toHaveText("1 marked in this take");
   await expect(page.getByText("0/0 ready")).toHaveCount(0);
+  // Review & publish says how the marker becomes a finding, not "Capture at least one".
+  await expect(page.getByText("Finish the take and save to turn marker 1 into a finding.")).toBeVisible();
+  await expect(page.getByText("Capture at least one finding.")).toHaveCount(0);
 
   // The marker is anchored on the nodule's slice and point.
   const items = await page.evaluate((key) => JSON.parse(sessionStorage.getItem(key) ?? "[]"), `flowrad:studio-sketch:${caseId}`);
@@ -376,4 +393,40 @@ test("Studio on a de-identified CT: the marker is listed in the Teaching sequenc
   });
   expect(scrim).toContain("gradient");
   if (shots) await page.screenshot({ path: `${shots}/studio-ct-nav.png`, clip: { x: 0, y: 0, width: 1440, height: 140 } });
+
+  // Scroll on past the nodule before finishing: the finding must land on the
+  // marker's slice, not wherever the stack was when the take ended.
+  for (let i = 0; i < 5; i++) {
+    await page.mouse.move(centre.x, centre.y);
+    await page.mouse.wheel(0, 100);
+    await page.waitForTimeout(150);
+  }
+  expect(Number(await slider.getAttribute("aria-valuenow"))).toBeGreaterThan(want);
+  await expect(page.getByText(/Nothing captured/)).toHaveCount(0);
+
+  // Finish → the take is processed into a notes draft labelled from the marker.
+  await page.getByRole("button", { name: "Finish recording" }).click();
+  const save = page.getByRole("button", { name: "Save 1 finding to sequence" });
+  await expect(save).toBeEnabled({ timeout: 30_000 });
+  await expect
+    .poll(() => page.evaluate(() => [...document.querySelectorAll("input, textarea")].map((el) => (el as HTMLInputElement).value)))
+    .toContain("Left apical nodule");
+  await expect(page.getByText(/Nothing captured/)).toHaveCount(0);
+  await save.click();
+
+  // Saved: one finding on the nodule's slice and point; the pending row is gone.
+  await expect(page.getByTestId("sequence-pending")).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByText("Left apical nodule").first()).toBeVisible();
+  await expect(page.getByText(`Slice ${NODULE.slice + 1}`).first()).toBeVisible();
+  const saved = await page.request.get(`/api/cases/${caseId}`);
+  expect(saved.ok()).toBeTruthy();
+  const body = (await saved.json()) as { findings?: Array<{ label: string; sliceIndex?: number; marker?: { x_pct: number; y_pct: number } }>; case?: { findings?: unknown } };
+  const findings = (body.findings ?? (body.case as { findings?: typeof body.findings } | undefined)?.findings ?? []) as NonNullable<typeof body.findings>;
+  expect(findings).toHaveLength(1);
+  expect(findings[0]?.label).toBe("Left apical nodule");
+  expect(findings[0]?.sliceIndex).toBe(NODULE.slice);
+  expect(Math.abs((findings[0]?.marker?.x_pct ?? 0) - NODULE.x)).toBeLessThan(0.02);
+  expect(Math.abs((findings[0]?.marker?.y_pct ?? 0) - NODULE.y)).toBeLessThan(0.02);
+  await showStage(page);
+  await shot(page, "studio-ct-saved");
 });

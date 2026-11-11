@@ -1513,7 +1513,9 @@ export function RecordingStudio({
             <p className="mt-1 text-xs text-muted">
               {readiness.ready
                 ? `${approvedCount} of ${findings.length} findings approved. Only approved current versions can ground teaching or exams.`
-                : readiness.blockers[0]}
+                : findings.length === 0 && pendingMarkers.length > 0
+                  ? `Finish the take and save to turn ${pendingMarkers.length === 1 ? "marker 1" : `${pendingMarkers.length} markers`} into ${pendingMarkers.length === 1 ? "a finding" : "findings"}.`
+                  : readiness.blockers[0]}
             </p>
             <Button
               className="mt-3 w-full"
