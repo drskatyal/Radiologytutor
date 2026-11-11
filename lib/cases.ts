@@ -1,3 +1,4 @@
+import type { ExamAttempt, ExamKey } from "./exam/types";
 // ============================================================================
 // lib/cases.ts
 //
@@ -232,7 +233,9 @@ type CollectionName =
   | "assessments"
   | "attempts"
   | "caseShares"
-  | "userPrefs";
+  | "userPrefs"
+  | "examSessions"
+  | "examKeys";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -2424,4 +2427,19 @@ export async function saveUserBindings(
   };
   await userPrefsStore.put(next);
   return next;
+}
+
+// Exam documents share the JSON/Mongo seam. Key documents are never route payloads.
+const examSessions = collection<ExamAttempt>("examSessions");
+const examKeys = collection<ExamKey>("examKeys");
+export async function writeExamKey(key: ExamKey): Promise<void> { await examKeys.put(key); }
+export async function readExamKey(orgId: string, id: string): Promise<ExamKey | null> {
+  const key = await examKeys.get(id); return key?.orgId === orgId ? key : null;
+}
+export async function writeExamAttempt(attempt: ExamAttempt): Promise<void> { await examSessions.put(attempt); }
+export async function readExamAttempt(orgId: string, userId: string, id: string): Promise<ExamAttempt | null> {
+  const row = await examSessions.get(id); return row?.orgId === orgId && row.userId === userId ? row : null;
+}
+export async function findActiveExam(orgId: string, userId: string, caseId?: string): Promise<ExamAttempt | null> {
+  return (await examSessions.find({ orgId, userId, caseId, status: "active" }))[0] ?? null;
 }

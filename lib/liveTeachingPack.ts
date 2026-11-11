@@ -1,3 +1,4 @@
+import { examinerPromptPack } from "./exam/prompt";
 /**
  * What Gemini Live teaches from.
  *
@@ -635,7 +636,8 @@ function speakablePack(pack: LiveTeachingPack, mode: LiveMode, focusFindingId?: 
  * series here — that list is not part of the spoken system instruction.
  * A context update must send this whole list; a partial list would drop tools.
  */
-export function livePackTools(allowedSeries: readonly string[]): LiveToolDeclaration[] {
+export function livePackTools(allowedSeries: readonly string[], mode: LiveMode = "teach_me"): LiveToolDeclaration[] {
+  if (mode === "examiner") return examinerPromptPack().tools;
   const list = allowedSeries.length ? allowedSeries.join(", ") : "(none)";
   return LIVE_PACK_TOOLS.map((tool) => {
     if (tool.name !== "set_series") return tool;
@@ -655,16 +657,9 @@ export function livePackInstruction(
   caseTitle?: string,
   focusFindingId?: string
 ): string {
+  if (mode === "examiner") return examinerPromptPack().instruction;
   const title = caseTitle?.trim() || pack.caseId;
-  const modeBlock =
-    mode === "examiner"
-      ? `ACTIVE MODE: Examiner.
-- Evaluate. Ask one question, then wait.
-- Hint ladder, one rung at a time: where to look, then the location, then a mimic, then the name.
-- Do not speak the diagnosis, the finding label, or the pearl until they name it, exhaust the ladder, or ask to be taught.
-- You may call show_finding or set_series so they can look. Do not lecture the case.
-- The diagnosis is withheld from this prompt on purpose. Teach it only after they ask.`
-      : `ACTIVE MODE: Teach me the case.
+  const modeBlock = `ACTIVE MODE: Teach me the case.
 - You are the attending. Teach every finding in findingOrder (clinical importance, most urgent first).
 - Every turn that tells them where to look MUST call ${LOOK_TOOLS} in the same turn.
 - Call show_finding first. Then pass only the series, slice, window, and marker from that tool result into set_series, scroll_to, set_window, point_to, zoom_to, or draw_annotation.

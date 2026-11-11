@@ -1,4 +1,8 @@
-import { notFound } from "next/navigation";
+import { ExamSession } from "@/components/exam/ExamSession";
+import { isExamMode, learnerCaseProjection } from "@/lib/exam/projection";
+import { hasActiveExam } from "@/lib/exam/access";
+import { startExam } from "@/lib/exam/service";
+import { redirect, notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { getAuthor, getCaseForOrg, listCaseShares } from "@/lib/cases";
@@ -39,8 +43,7 @@ export default async function CasePage({
   if (!caseData) notFound();
 
   const openMode = caseOpenMode(searchParams?.mode);
-  const needsAuthorCheck = openMode === "view" || caseData.status !== "published";
-  const session = needsAuthorCheck ? await getSession() : null;
+  const session = await getSession();
   const canAuthor = session
     ? canAccessOrgResource({
         platformRole: session.user.platformRole,
@@ -51,6 +54,12 @@ export default async function CasePage({
 
   // Drafts: authors/admins only. Published cases are open for learning.
   if (caseData.status !== "published" && !canAuthor) notFound();
+
+  if (isExamMode(searchParams?.mode) || await hasActiveExam(params.caseId)) {
+    if (!session) redirect(`/sign-in?next=${encodeURIComponent(`/case/${params.caseId}?mode=exam`)}`);
+    const attempt = await startExam(orgId, session.user.id, params.caseId);
+    return <ExamSession caseData={learnerCaseProjection(caseData)} attemptId={attempt.id} />;
+  }
 
   // Viewer-only. The tutor mounts only for teach / exam. Series hints are the
   // same fast path as teach: HTML does not wait on the archive.
@@ -73,10 +82,10 @@ export default async function CasePage({
       <>
       {/* Engine chunks + the opening frame start now, in parallel with the
           viewer's own code-split download. See lib/viewerWarmup.ts. */}
-      <ViewerPrewarm
+      {session && <ViewerPrewarm
         series={series[0] ?? null}
         openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
-      />
+      />}
       <CaseViewer
         caseId={caseData.caseId}
         title={caseData.title}
@@ -121,10 +130,10 @@ export default async function CasePage({
 
   return (
     <>
-      <ViewerPrewarm
+      {session && <ViewerPrewarm
         series={series[0] ?? null}
         openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
-      />
+      />}
       <RecordCaseOpen courseId={courseId} caseId={params.caseId} />
       <StudentSession
         caseData={caseData}
@@ -134,7 +143,7 @@ export default async function CasePage({
         imagingResolved={imagingResolved}
         tutorVoice={tutorVoice}
         courseId={courseId}
-        initialIntent={studentIntentFromQuery(searchParams?.mode) ?? "teach"}
+        initialIntent="teach"
       />
     </>
   );

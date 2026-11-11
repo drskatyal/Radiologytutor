@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
 //
 // Body:  { caseId, mode, messages: {role,text}[], question?, currentFindingId? }
@@ -35,6 +36,7 @@ interface InMessage {
 }
 
 export async function POST(req: NextRequest) {
+  if (await hasActiveExam()) return NextResponse.json({ error: "Use the examination answer endpoint" }, { status: 403 });
   if (!geminiConfigured()) {
     return NextResponse.json(
       { error: "The AI tutor is unavailable — GEMINI_API_KEY is not set." },

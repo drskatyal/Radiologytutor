@@ -1,3 +1,4 @@
+import { examinerPromptPack } from "./exam/prompt";
 /**
  * Gemini Live session contract for the learner.
  *
@@ -132,11 +133,12 @@ export function liveFunctionDeclarations(
  */
 export function buildLiveSetup(input: {
   model: string;
+  mode?: LiveTeachMode;
   systemInstruction: string;
   tools?: readonly LiveToolDeclaration[];
   extra?: Record<string, unknown>;
 }): { setup: Record<string, unknown> } {
-  const extra = stripLiveMedia({ ...(input.extra ?? {}) }) as Record<string, unknown>;
+  const extra = stripLiveMedia({ ...(input.mode === "examiner" ? {} : input.extra ?? {}) }) as Record<string, unknown>;
   stripThinking(extra);
   const generation =
     extra.generationConfig && typeof extra.generationConfig === "object"
@@ -150,8 +152,8 @@ export function buildLiveSetup(input: {
     ...extra,
     model: liveModelResource(input.model),
     responseModalities: ["AUDIO"],
-    systemInstruction: { parts: [{ text: input.systemInstruction }] },
-    tools: [{ functionDeclarations: liveFunctionDeclarations(input.tools) }],
+    systemInstruction: { parts: [{ text: input.mode === "examiner" ? examinerPromptPack().instruction : input.systemInstruction }] },
+    tools: [{ functionDeclarations: liveFunctionDeclarations(input.mode === "examiner" ? [] : input.tools) }],
     inputAudioTranscription: {},
     outputAudioTranscription: {},
   };

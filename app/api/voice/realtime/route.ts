@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/voice/realtime — mint a Gemini Live ephemeral token.
 // GET  /api/voice/realtime — capability info (model, ws URL).
 //
@@ -27,6 +28,7 @@ export async function POST() {
     return jsonAuthError(err) ?? NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (await hasActiveExam()) return NextResponse.json({ error: "Live voice is unavailable during examination" }, { status: 403 });
   const info = getRealtimeVoiceInfo();
   if (!info.available) {
     return NextResponse.json(

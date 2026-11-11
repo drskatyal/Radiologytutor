@@ -1,0 +1,22 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExamAttempt, ExamKey } from "./types";
+process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "exam-store-"));
+process.env.MONGODB_URI = "";
+test("attempt ownership is tenant scoped and its rubric stays pinned after a new key version", async () => {
+  const store = await import("../cases");
+  const key: ExamKey = { id: "key-v1", orgId: "exam-org", caseId: "case", rubricVersion: "v1", items: [{ id: "a", phrases: ["synthetic opacity"], tolerancePixels: 3 }] };
+  await store.writeExamKey(key);
+  const attempt: ExamAttempt = { id: "attempt", orgId: "exam-org", userId: "learner", caseId: "case", keyId: key.id, rubricVersion: key.rubricVersion, createdAt: "2026-01-01T00:00:00Z", status: "active", answers: [] };
+  await store.writeExamAttempt(attempt);
+  await store.writeExamKey({ ...key, id: "key-v2", rubricVersion: "v2", items: [] });
+  const pinned = await store.readExamAttempt("exam-org", "learner", "attempt");
+  assert.equal(pinned?.rubricVersion, "v1");
+  assert.deepEqual(await store.readExamKey("exam-org", pinned!.keyId), key);
+  assert.equal(await store.readExamAttempt("other-org", "learner", "attempt"), null);
+  assert.equal(await store.readExamAttempt("exam-org", "other-learner", "attempt"), null);
+  assert.equal(await store.readExamKey("other-org", key.id), null);
+});

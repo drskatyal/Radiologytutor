@@ -1,3 +1,7 @@
+import { hasActiveExam } from "@/lib/exam/access";
+import { activeOrgId, getSession } from "@/lib/auth";
+import { getCaseForOrg } from "@/lib/cases";
+import { canAccessOrgResource } from "@/lib/authRoles";
 // POST /api/cases/[caseId]/live-teaching-pack
 // Commit a compiled take. Prose and clinical importance come from the body.
 // Viewer anchors are rebuilt from the capture session already stored on the case.
@@ -71,4 +75,13 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
     const status = /not found|no findings/i.test(message) ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
   }
+}
+
+export async function GET(_req: NextRequest, { params }: { params: { caseId: string } }) {
+  if (await hasActiveExam(params.caseId)) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
+  const orgId = await activeOrgId();
+  const data = await getCaseForOrg(orgId, params.caseId);
+  const session = await getSession();
+  if (!data || (data.status !== "published" && !canAccessOrgResource({ membershipRole: session?.user.membershipRole, platformRole: session?.user.platformRole, need: "author" }))) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+  return NextResponse.json(data.liveTeachingPack ?? null);
 }

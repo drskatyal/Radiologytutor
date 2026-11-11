@@ -333,6 +333,9 @@ export interface RecordedTrack {
 }
 
 export interface Finding {
+  /** Exact frame (one-based) and image-pixel point, when explicitly recorded. */
+  frameNumber?: number;
+  imagePoint?: { x: number; y: number };
   id: string;
   label: string;
   description: string;

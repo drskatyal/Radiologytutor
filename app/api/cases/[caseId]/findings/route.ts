@@ -1,3 +1,7 @@
+import { hasActiveExam } from "@/lib/exam/access";
+import { activeOrgId, getSession } from "@/lib/auth";
+import { getCaseForOrg } from "@/lib/cases";
+import { canAccessOrgResource } from "@/lib/authRoles";
 // POST /api/cases/[caseId]/findings -> append a finding
 // Body: a full Finding (id optional — generated if missing)
 
@@ -55,4 +59,13 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+export async function GET(_req: NextRequest, { params }: { params: { caseId: string } }) {
+  if (await hasActiveExam(params.caseId)) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
+  const orgId = await activeOrgId();
+  const data = await getCaseForOrg(orgId, params.caseId);
+  const session = await getSession();
+  if (!data || (data.status !== "published" && !canAccessOrgResource({ membershipRole: session?.user.membershipRole, platformRole: session?.user.platformRole, need: "author" }))) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+  return NextResponse.json(data.findings);
 }

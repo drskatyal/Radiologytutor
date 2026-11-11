@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // GET /api/cases/[caseId]/prefetch -> the prefetch manifest for a case.
 //
 // Returns series order and finding focus only. Instance SOP lists stay empty
@@ -34,6 +35,7 @@ export async function GET(_req: NextRequest, { params }: { params: { caseId: str
     }
   }
 
+  if (await hasActiveExam(params.caseId)) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
   const manifest = await buildPrefetchManifest(params.caseId, orgId);
   if (!manifest) {
     return NextResponse.json({ error: "Case not found" }, { status: 404 });

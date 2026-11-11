@@ -1,3 +1,6 @@
+import { findActiveExam } from "@/lib/cases";
+import { isExamMode } from "@/lib/exam/projection";
+import { startExam, submitExamAnswer } from "@/lib/exam/service";
 // POST /api/grade-report
 // Body: { caseId, report: string }
 // Reply: ReportGrade — rubric is always present, even when Gemini is off.
@@ -41,10 +44,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Case not found" }, { status: 404 });
     }
 
+    const active = await findActiveExam(orgId, user.id, caseId);
+    if (active || isExamMode(body.mode)) {
+      const attempt = active ?? await startExam(orgId, user.id, caseId);
+      if (!report) return NextResponse.json({ error: "Report required" }, { status: 400 });
+      return NextResponse.json({ mode: "exam", ...await submitExamAnswer(orgId, user.id, attempt.id, { kind: "report", text: report }, body.close === true) });
+    }
     const rubric = buildReportRubric(data.findings);
     if (!report) {
       const empty = localReportGrade("", rubric);
       return NextResponse.json({
+        mode: "practice",
         ...empty,
         bands: empty.bands.map((band, index) =>
           index === 0 ? { ...band, comment: "Dictate findings before grading." } : band
@@ -56,6 +66,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error: "The AI grader is unavailable — GEMINI_API_KEY is not set.",
+          mode: "practice",
           fallback: true,
           grade: localReportGrade(report, rubric),
         },
@@ -85,6 +96,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error: "The grader is unavailable right now.",
+          mode: "practice",
           fallback: true,
           grade: localReportGrade(report, rubric),
         },
@@ -93,7 +105,7 @@ export async function POST(req: NextRequest) {
     }
 
     const parsed = parseJsonLoose<Partial<ReportGrade>>(result.text);
-    return NextResponse.json(normalizeReportGrade(parsed, rubric, report));
+    return NextResponse.json({ mode: "practice", ...normalizeReportGrade(parsed, rubric, report) });
   } catch (err) {
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;

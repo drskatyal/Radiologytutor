@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/tour-check-in
 // Body: finding text the student already has (gold, notes, say lines).
 // Reply: { source: "model" | "fallback" | "none", checkIn: TourCheckIn | null }
@@ -55,6 +56,7 @@ function sourceFromBody(body: Record<string, unknown>): CheckInSource | null {
 export async function POST(req: NextRequest) {
   try {
     await requireSession();
+    if (await hasActiveExam()) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
     const body = (await req.json()) as Record<string, unknown>;
     const source = sourceFromBody(body);
     if (!source) {

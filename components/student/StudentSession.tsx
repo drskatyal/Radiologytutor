@@ -80,10 +80,10 @@ export default function StudentSession({
   /** When opened from a course curriculum — mark complete at end of Teach tour. */
   courseId?: string | null;
   /** Test-as-student handoff. Examiner opens the viva; Teach me stays guided. */
-  initialIntent?: "teach" | "exam";
+  initialIntent?: "teach";
 }) {
   // Teach is the product: autonomous attending. Exam = viva.
-  const [mode, setMode] = useState<SessionMode>(initialIntent === "exam" ? "viva" : "guided");
+  const [mode, setMode] = useState<SessionMode>("guided");
   const [panel, setPanel] = useState<PanelTab>("ask");
   // Closed until measured. Opening both this drawer and the series rail on a
   // phone covers the image completely.
@@ -130,13 +130,12 @@ export default function StudentSession({
 
   const setIntent = useCallback((next: Intent) => {
     if (next === "exam") {
-      setMode("viva");
-      setPanel("ask");
+      window.location.assign(`/case/${encodeURIComponent(caseData.caseId)}?mode=exam`);
       return;
     }
     setMode("guided");
     setPanel("ask");
-  }, []);
+  }, [caseData.caseId]);
 
   // When switching into Teach after mount, kick the autonomous tour.
   const prevIntent = useRef(intent);

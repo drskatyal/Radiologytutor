@@ -114,6 +114,8 @@ export function ensureIndexes(): Promise<void> {
       try {
         const db = await getDb();
         await Promise.all([
+          db.collection("examSessions").createIndex({ orgId: 1, userId: 1, caseId: 1, status: 1 }),
+          db.collection("examKeys").createIndex({ orgId: 1, caseId: 1 }),
           // Cases: list-by-org, and list-by-org filtered by publication status.
           db.collection("cases").createIndex({ orgId: 1 }),
           db.collection("cases").createIndex({ orgId: 1, status: 1 }),

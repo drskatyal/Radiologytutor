@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // Public catalog API — the filterable case library (CLAUDE.md §2).
 //
 //   GET /api/catalog?system=&difficulty=&modality=&specialty=&author=&q=&sort=
@@ -40,6 +41,7 @@ function asSort(v: string | null): CatalogFilter["sort"] {
 }
 
 export async function GET(req: NextRequest) {
+  if (await hasActiveExam()) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
   const ORG = await activeOrgId();
   const sp = req.nextUrl.searchParams;
   const filter: CatalogFilter = {

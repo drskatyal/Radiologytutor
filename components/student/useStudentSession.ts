@@ -1763,7 +1763,7 @@ export function useStudentSession(
     liveContextKey.current = `${liveMode}:${focusId ?? ""}`;
     await session.start({
       systemInstruction: livePackInstruction(pack, liveMode, caseData.title, focusId),
-      tools: livePackTools(pack.authoredSeriesInstanceUIDs),
+      tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current),
       openingText: kickRef.current,
     });
   }, [appendLiveTranscript, caseData.title, pauseTour, runLiveCall, toast]);
@@ -1780,7 +1780,7 @@ export function useStudentSession(
     session.sendContextUpdate(
       buildLiveContextUpdate({
         systemInstruction: livePackInstruction(pack, liveModeRef.current, caseData.title, focusId),
-        tools: livePackTools(pack.authoredSeriesInstanceUIDs),
+        tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current),
       })
     );
   }, [liveStatus, activeIndex, mode, orderedFindings, caseData.title]);
