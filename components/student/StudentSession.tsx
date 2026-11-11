@@ -25,7 +25,7 @@ import { cn } from "@/components/ui/cn";
 import type { CaseData } from "@/lib/types";
 import type { CaseSeries, ViewerSource } from "@/lib/viewerSource";
 import { caseSeriesToSource } from "@/lib/viewerSource";
-import { lastTeacherSlice } from "@/lib/viewerLoad";
+import { firstTeacherSlice } from "@/lib/viewerLoad";
 import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import type { PrefetchManifest } from "@/lib/prefetch";
 import {
@@ -102,7 +102,7 @@ export default function StudentSession({
     [rail, source]
   );
   const openSlice = useMemo(
-    () => lastTeacherSlice(caseData.findings, rail[0]?.seriesInstanceUID) ?? null,
+    () => firstTeacherSlice(caseData.findings, rail[0]?.seriesInstanceUID) ?? null,
     [caseData.findings, rail]
   );
   const s = useStudentSession(caseData, mode, rail, { courseId });

@@ -110,6 +110,33 @@ test.describe("case viewer at 1440, more", () => {
   });
 });
 
+test.describe("case viewer, Nov 11 review", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("a reader opens on the case's first finding, not its last", async ({ page }) => {
+    // case-e2e-teach: finding 1 at slice 14, finding 2 at slice 44.
+    await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+    await page.goto("/case/case-e2e-teach?mode=view");
+    await expect(page.getByRole("slider", { name: "Slice" }).first()).toHaveAttribute("aria-valuetext", "Slice 15 of 60", { timeout: 30_000 });
+  });
+
+  test("signed out on a case with findings: nothing protected is fetched (no prewarm, no CDN manifest)", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
+    const protectedRequests: string[] = [];
+    page.on("request", (req) => {
+      const url = req.url();
+      if (url.includes("/api/dicomweb") || url.includes("/api/dicom-cdn")) protectedRequests.push(new URL(url).pathname);
+    });
+    await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+    await page.goto("/case/case-e2e-teach?mode=view");
+    await expect(page.getByTestId("case-sign-in")).toBeVisible();
+    await page.waitForTimeout(2000);
+    expect(protectedRequests).toEqual([]);
+    await context.close();
+  });
+});
+
 test.describe("case viewer on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 

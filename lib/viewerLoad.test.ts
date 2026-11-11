@@ -113,3 +113,18 @@ test("merging the rail keeps the open series in place and prefers a positive cou
   assert.equal(merged[0]?.description, "Active");
   assert.equal(merged[1]?.instanceCount, undefined);
 });
+
+test("firstTeacherSlice opens a reader on the first finding, not the last (the LIDC chest case's slice 64 is upper abdomen)", async () => {
+  const { firstTeacherSlice, lastTeacherSlice } = await import("./viewerLoad");
+  const S = "1.2.3";
+  const findings = [
+    { order: 3, seriesInstanceUID: S, sliceIndex: 64 },
+    { order: 1, seriesInstanceUID: S, sliceIndex: 34, sopInstanceUID: "9.9.1" },
+    { order: 2, seriesInstanceUID: S, sliceIndex: 6 },
+    { order: 0, seriesInstanceUID: "other", sliceIndex: 1 },
+  ];
+  assert.deepEqual(firstTeacherSlice(findings, S), { sopInstanceUID: "9.9.1", sliceIndex: 34 });
+  assert.equal(lastTeacherSlice(findings, S)?.sliceIndex, 64, "authors still resume where they left off");
+  assert.equal(firstTeacherSlice(findings, "missing"), undefined);
+  assert.equal(firstTeacherSlice([], S), undefined);
+});

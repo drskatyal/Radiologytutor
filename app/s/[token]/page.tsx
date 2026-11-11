@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { CaseViewer } from "@/components/library/CaseViewer";
 import { getCaseForOrg, resolveShareAccess } from "@/lib/cases";
 import { isShareToken, studyUidsForCase, viewerChrome } from "@/lib/caseShare";
-import { lastTeacherSlice, seriesHintFromCase } from "@/lib/viewerLoad";
+import { firstTeacherSlice, seriesHintFromCase } from "@/lib/viewerLoad";
 import { ViewerPrewarm } from "@/components/viewer/ViewerPrewarm";
 import { BUNDLED_CASE, caseSeriesToSource } from "@/lib/viewerSource";
 
@@ -51,7 +51,7 @@ export default async function SharedCasePage({ params }: { params: { token: stri
     sharedLink: true,
   });
 
-  const openSlice = lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null;
+  const openSlice = firstTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null;
   return (
     <>
     {/* Same early start as /case/[id]?mode=view: engine chunks + the opening
