@@ -50,8 +50,10 @@ pass. M0–M2 alone do not claim capture/replay completion.
   through callers; tightening a numeric parser alone is insufficient.
 - P0-8/M9: `lib/gemini.ts` already returns the full validated `actions` list and
   keeps `action` as a compatibility first-action alias on this integration base.
-  Planned `lib/gemini.actions.test.ts` and `lib/tutor/queue.test.ts` must prove all
-  actions survive and are executed sequentially with matching acknowledgements.
+  Existing `lib/gemini.test.ts` ("tools with an empty message get a drive-first
+  authored line") already asserts all three returned actions survive and runs in
+  every npm test suite. Planned `lib/tutor/queue.test.ts` must prove sequential
+  execution with matching acknowledgements.
   The review's blanket claim that this function returns only actions[0] does not
   match this base. Caller execution and acknowledgement remain M9 work.
 - Export/M2 addendum: `lib/exportPhi.test.ts` and native `export_policy.rs` tests cover web/desktop metadata and

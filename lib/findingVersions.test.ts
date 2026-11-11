@@ -98,6 +98,26 @@ test("compile commit is additive and idempotent across an expert edit", async ()
   assert.equal(data.findings.length, 2);
   assert.equal(data.findings.find(f => f.id === compiled.id)?.label, "Expert version");
   assert.equal(data.findingVersions!.filter(v => v.findingId === compiled.id).length, 2);
+  await store.deleteFindingScoped("versions-org", id, compiled.id);
+  data = await store.commitLiveTeachingPack("versions-org", id, input);
+  assert.equal(data.findings.length, 1, "retry cannot resurrect an expert-deleted draft");
 });
 
 test("Mongo finding CAS integration", { skip: "NOT EXECUTED: no local mongod is installed; no remote Mongo permitted" }, () => {});
+
+test("delete and restore continues immutable version history without reusing version 1", async () => {
+  const store = await import("./cases");
+  const id = "restore-history";
+  await store.saveCase(base(id));
+  let data = await store.createFinding("versions-org", id, f("restore"), "first-author");
+  const v1 = data.findingVersions![0];
+  await store.deleteFindingScoped("versions-org", id, "restore");
+  data = await store.createFinding("versions-org", id, { ...f("restore"), label: "Restored" }, "restoring-author");
+  assert.equal(data.findings[0].currentVersion, 2);
+  assert.equal(data.findings[0].approvedVersion, undefined);
+  assert.equal(data.findings[0].status, "needs_review");
+  assert.equal(data.findingVersions![1].parentVersion, 1);
+  assert.equal(data.findingVersions![1].createdBy, "restoring-author");
+  assert.equal(data.findingVersions![0].contentHash, v1.contentHash);
+  assert.equal(data.findingVersions![0].createdBy, "first-author");
+});

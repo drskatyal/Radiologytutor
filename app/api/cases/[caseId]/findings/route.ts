@@ -6,7 +6,7 @@ import { canAccessOrgResource } from "@/lib/authRoles";
 // Body: a full Finding (id optional — generated if missing)
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg, requireSession } from "@/lib/auth";
 import { createFinding } from "@/lib/cases";
 import type { Finding } from "@/lib/types";
 
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       tStartMs: body.tStartMs,
       tEndMs: body.tEndMs,
     };
-    const updated = await createFinding(orgId, params.caseId, finding);
+    const updated = await createFinding(orgId, params.caseId, finding, (await requireSession()).id);
     return NextResponse.json(updated);
   } catch (err) {
     const denied = jsonAuthError(err);

@@ -17,7 +17,7 @@ export async function PATCH(
     const patch = (await req.json()) as Partial<Finding>;
     const expectedVersion = (patch as Partial<Finding> & { expectedVersion?: number }).expectedVersion;
     const updated = expectedVersion === undefined
-      ? await updateFindingScoped(orgId, params.caseId, params.findingId, patch)
+      ? await updateFindingScoped(orgId, params.caseId, params.findingId, patch, (await requireSession()).id)
       : await createVersion(orgId, params.caseId, params.findingId, patch, { expectedVersion, userId: (await requireSession()).id });
     return NextResponse.json(updated);
   } catch (err) {

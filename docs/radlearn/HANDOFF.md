@@ -1,24 +1,35 @@
-# Historical stop (resolved by orchestrator)
+# RadLearn local handoff
 
-The orchestrator relocated Git metadata to `/workspace/radlearn-build-gitdir`; staging now works. The notes below preserve the earlier stop and are not current status.
+M0, M1 and M2 are implemented and locally committed, followed by the mandatory
+review acceptance, examiner isolation and export addenda. The earlier Git metadata
+permission block was resolved by the orchestrator; all implementation commits
+are on codex/radlearn-strategy-build with [skip ci] messages. No push, PR, merge,
+workflow edit, remote script, live model call or deployment occurred.
 
-# Stopped during M0: read-only Git metadata
+The final version-history audit also fixes restore-after-delete numbering,
+compile retries after an expert deletion, authenticated author attribution on
+finding writes, and stale badge state after a confirmed inventory mismatch.
 
-No commits were created. HEAD remains `03f1df5d80af716df54be2a724ff3695be4ca1c9` on `codex/radlearn-strategy-build`.
+Final root validation: 1,137 unit tests pass, zero fail, two documented skips;
+production build passes; tsc retains exactly 279 baseline diagnostics. Final
+browser checks: archive 11 pass, RadLearn 3 pass, export 1 pass. One archive
+viewer-readiness timeout occurred while two browser configs ran concurrently;
+a sequential full archive rerun passed 11/11. Both outputs are retained. Native
+policy: 2 pass. Full native integration, desktop-only tsc and local Mongo remain
+unverified for the dependency/server reasons in BASELINE.md and EXPORT_PHI.md.
 
-The runtime mounts `.git` read-only. The first staging attempt failed:
+All imaging fixtures are synthetic. JSON storage, local author sign-up, approval,
+exam isolation, viewer pixels and browser exports are real. Gemini transport and
+font responses are mocked: **live contract not verified / NOT VERIFIED LIVE**.
 
-```text
-$ git add docs/radlearn/BASELINE.md docs/radlearn/DECISIONS.md docs/radlearn/evidence
-fatal: Unable to create '/workspace/radlearn-build/.git/index.lock': Read-only file system
-```
+The four strategy defaults remain binding in DECISIONS.md. Optional M3 TTS and
+M9 parser changes were evaluated and deferred there with concrete reasons.
+The full action-list behavior already has a passing existing regression test.
+Future capture/replay requirements are mapped, not claimed implemented, in
+ACCEPTANCE_MAPPING.md. GEMINI_VERIFICATION.md records the supplied official-doc
+claims, including the time-sensitive TTS deadline and unverified mediaProcessing
+field. No #130/#252 code was ported or cherry-picked.
 
-Implementation stopped. M0 is incomplete; M1 and M2 were not started. No push, PR, deployment, GitHub Actions run or `.github` modification occurred. The working tree cannot be made committed and clean under these permissions. Uncommitted source and evidence are preserved for resumption after the orchestrator makes this clone's Git metadata writable.
-
-The new synthetic fixture files and test harness have not met acceptance. The M0 unit run has one new test-file failure: the current tsx CommonJS transformation rejects top-level await in `scripts/make-synthetic-study.mjs` when loaded by `lib/synthetic.test.ts`. No existing test was edited. This needs a local loader-compatible entry point when implementation resumes. RadLearn Playwright was not executed before the stop. The original archive Playwright baseline passed all 11 tests.
-
-The first M0 standalone TypeScript attempt overlapped Next's regeneration of `.next/types` and reported 96 missing generated files; do not treat that attempt as a source regression. Final evidence is recorded separately after the build finishes.
-
-See `/workspace/radlearn-build-status.md` for exact commands, outputs, final validation counts and pre-push gate evidence. The gate is blocked: `git fetch origin` cannot open `.git/FETCH_HEAD` for writing. The local integration ref still equals the pinned SHA; its current remote tip was not verified. All four workflows are manual-only and the `.github` diffs are empty. Actions permissions are readable and enabled, with `allowed_actions: all` and `sha_pinning_required: false`.
-
-The four strategy §7 defaults are in `DECISIONS.md`. No live Gemini calls were made: **live contract not verified**.
+Exact commands, per-step commits, failures/skips and final read-only gate output
+are maintained in /workspace/radlearn-build-status.md. Milestone and final raw
+logs are in docs/radlearn/evidence/. The orchestrator owns the push/deployment gate.

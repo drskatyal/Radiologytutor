@@ -1,7 +1,7 @@
 import { assertNoPhi, assertReviewedMedia } from "./phiGuard";
 import { migrateFindings, prepareFinding, appendVersion, approveVersion, approvedFinding, snapshot, type Approver } from "./findingVersions";
 import { anchorFromFinding, FindingConflict, hashContent, findingContent } from "./findingContent";
-import { readFindingInventory } from "./findingInventory";
+import { readFindingInventory, resolveFindingAnchor } from "./findingInventory";
 import type { ExamAttempt, ExamKey } from "./exam/types";
 // ============================================================================
 // lib/cases.ts
@@ -1028,21 +1028,23 @@ export async function resolveShareAccess(token: string): Promise<{
 export async function createFinding(
   orgId: string,
   caseId: string,
-  finding: Finding
+  finding: Finding,
+  userId = "legacy-author"
 ): Promise<Case> {
   const prepared = await prepareWithInventory(finding, {});
   return mutateCase(orgId, caseId, data => {
     if (data.findings.some(f => f.id === finding.id)) throw new FindingConflict("Finding already exists");
-    const f = { ...prepared, order: finding.order || data.findings.length + 1, currentVersion: 1, status: "needs_review" as const, approvedVersion: undefined };
+    const version = Math.max(0, ...data.findingVersions!.filter(v => v.findingId === finding.id).map(v => v.version)) + 1;
+    const f = { ...prepared, order: finding.order || data.findings.length + 1, currentVersion: version, status: "needs_review" as const, approvedVersion: undefined };
     data.findings.push(f);
-    data.findingVersions!.push(snapshot(f, 1, "author", nowIso()));
+    data.findingVersions!.push(snapshot(f, version, userId, nowIso()));
     data.updatedAt = nowIso();
     return data;
   });
 }
 
 /**
- * Replace the case's findings and dossier with one compiled take.
+ * Append new draft identities from a compiled take without replacing expert versions.
  * The track already stored on the capture session is the only source of
  * viewer anchors. Draft text is label, description, points, times, and rank.
  */
@@ -1068,7 +1070,9 @@ export async function commitLiveTeachingPack(
   data.captureSessions = sessions;
   for (const f of findings) {
     // Stable take/marker or segment identity: retries never overwrite expert edits.
-    if (data.findings.some(old => old.captureSessionId === f.captureSessionId && (old.markerId ? old.markerId === f.markerId : old.segmentId === f.segmentId))) continue;
+    const draftKey = f.markerId ?? f.segmentId;
+    if (data.findingVersions!.some(v => v.content.captureSessionId === f.captureSessionId &&
+      (v.content.markerId ?? v.content.segmentId ?? `interval:${v.content.tStartMs ?? 0}:${v.content.tEndMs ?? 0}`) === draftKey)) continue;
     f.id = `lt_${f.captureSessionId}_${hashContent(f.markerId ?? f.segmentId).slice(0, 16)}`;
     f.currentVersion = 1; f.status = "needs_review"; f.anchorStatus = "legacy_index";
     data.findings.push(f);
@@ -1135,12 +1139,13 @@ export async function updateFindingScoped(
   orgId: string,
   caseId: string,
   findingId: string,
-  patch: Partial<Finding>
+  patch: Partial<Finding>,
+  userId = "legacy-author"
 ): Promise<Case> {
   const data = await getCaseForOrg(orgId, caseId);
   const current = data?.findings.find(f => f.id === findingId);
   if (!current) throw new FindingConflict("Finding not found", 404);
-  return createVersion(orgId, caseId, findingId, patch, { expectedVersion: current.currentVersion!, userId: "author" });
+  return createVersion(orgId, caseId, findingId, patch, { expectedVersion: current.currentVersion!, userId });
 }
 
 /** Delete one finding. Returns the updated case. */
@@ -2528,7 +2533,16 @@ export async function approvedCurrent(orgId: string, caseId: string): Promise<Fi
       const f = latest.findings.find(row => row.id === check.findingId && row.currentVersion === check.version);
       if (!f) continue;
       const approved = approvedFinding(latest, f, check.inventory);
-      if (!approved) continue;
+      if (!approved) {
+        // A verified inventory/content mismatch stales approval. An archive outage
+        // with no inventory withholds retrieval without pretending content changed.
+        if (check.inventory) {
+          f.status = "needs_review";
+          delete f.approvedVersion;
+          f.anchorStatus = resolveFindingAnchor(anchorFromFinding(f), check.inventory);
+        }
+        continue;
+      }
       eligible.push(approved);
       const v = latest.findingVersions!.find(v => v.findingId === f.id && v.version === f.currentVersion)!;
       const inventoryOrderHash = hashContent(check.inventory!.instances.map(i => i.sopUID));

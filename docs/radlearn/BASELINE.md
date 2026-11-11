@@ -24,3 +24,14 @@ Archive requests and pixels are synthetic and served on localhost. The real app,
 ## M0 completion after Git relocation
 
 The synthetic generator now supports the tsx loader without top-level await. Unit suite: 1094 passed, 0 failed, 1 skipped. Archive Playwright: 11 passed; RadLearn synthetic viewer: 1 passed. Offline-font production build passed. Standalone TypeScript: 279 existing diagnostics, no new lines against baseline. Evidence: `evidence/m0-complete-*.log`.
+
+## Additional validation limits found during the export addendum
+
+The root compiler remains at 279 baseline diagnostics after generated Next types
+exist, with no new diagnostic lines. Desktop-only validation was also attempted:
+`npx tsc --noEmit -p desktop/tsconfig.json` cannot start because `vite/client` types
+are absent; `cargo test --offline --manifest-path desktop/src-tauri/Cargo.toml
+anonymize` cannot resolve the uncached `dicom-dictionary-std` crate. No packages
+or crates were downloaded. These checks are not claimed as passes. The standalone
+Rust export-policy tests pass with rustc, its tag set is checked against the web
+allowlist in npm test, and the real browser export spec passes with synthetic CT.

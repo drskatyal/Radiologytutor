@@ -50,6 +50,10 @@ test("T1/T9 pure archive reorder preserves exact SOP/frame and records revalidat
     assert.equal((await store.getCaseForOrg(data.orgId, data.caseId))!.findingRevalidations!.length, 2);
     responseRows = rows.filter((r: Record<string, {Value: string[]}>) => r["00080018"].Value[0] !== f.sopInstanceUID);
     assert.deepEqual(await store.approvedCurrent(data.orgId, data.caseId), []);
+    const stale = (await store.getCaseForOrg(data.orgId, data.caseId))!.findings[0];
+    assert.equal(stale.status, "needs_review");
+    assert.equal(stale.approvedVersion, undefined);
+    assert.equal(stale.anchorStatus, "unresolved");
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
