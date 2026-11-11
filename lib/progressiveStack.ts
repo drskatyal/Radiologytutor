@@ -1,8 +1,10 @@
 // Progressive WADO-RS stack load.
 //
 // First pixel does not wait for every instance's metadata, and it does not
-// wait for any other series. Order of imageIds is the series metadata array
-// order (the historical Cornerstone stack order) so sliceIndex stays put.
+// wait for any other series. The finished stack is in anatomical order
+// (lib/stackOrder: along the slice normal, the way InstanceNumber runs), not
+// the archive's array order — Orthanc returns its own internal order, which
+// put the LIDC chest CT's slices chest, kidney, chest… on every scroll.
 //
 // 1. Resolve the opening instance on its own: the teacher SOP, or a QIDO
 //    offset for the stored slice / the middle of the series, then that one
@@ -32,6 +34,7 @@ import { JsonArrayScanner } from "./jsonArrayStream";
 import { fetchJsonShared } from "./sharedJsonFetch";
 import { runBounded } from "./seriesFill";
 import { stackOpenIndex } from "./stackIndex";
+import { orderStackDatasets } from "./stackOrder";
 import {
   ACTIVE_PREFETCH_RADIUS,
   dicomTagString,
@@ -422,28 +425,39 @@ export function startProgressiveWadorsLoad(input: {
 
     const imageIds: string[] = [];
     const sops: string[] = [];
-    for (const dataset of datasets) {
+    const ordered: unknown[] = [];
+    for (const dataset of orderStackDatasets(datasets)) {
       const imageId = imageIdFor(root, study, dataset, series);
       const sop = dicomTagString(dataset, SOP_TAG);
       if (!imageId || !sop) continue;
       imageIds.push(imageId);
       sops.push(sop);
+      ordered.push(dataset);
     }
     if (imageIds.length === 0) throw new Error("Series metadata was empty");
 
     // The frame already on screen wins. Without this, a stale archive count
     // (we asked QIDO for offset knownCount/2) would land the finished stack
-    // on realCount/2 and the image would jump under the reader.
-    let openIndex = resolveOpenIndex(imageIds.length, sops, {
-      ...hint,
-      ...(opened.sop ? { sopInstanceUID: opened.sop } : {}),
-    });
+    // on realCount/2 and the image would jump under the reader. Except for
+    // an index-only hint: the opening frame came from the archive's order
+    // (a QIDO offset), and the authored index means the anatomical stack.
+    // With no hint at all, the opening frame was the archive's middle — an
+    // arbitrary image once the stack is sorted — so open the true middle.
+    const indexOnlyHint = hint?.sliceIndex != null && !hint?.sopInstanceUID;
+    const noHint = hint?.sliceIndex == null && !hint?.sopInstanceUID;
+    let openIndex = noHint
+      ? stackOpenIndex(imageIds.length)
+      : resolveOpenIndex(
+          imageIds.length,
+          sops,
+          indexOnlyHint ? hint : { ...hint, ...(opened.sop ? { sopInstanceUID: opened.sop } : {}) }
+        );
     if (sliceHint == null && !earlySop && !openingSettled) {
       openIndex = stackOpenIndex(imageIds.length);
     }
     const openingId = imageIds[openIndex];
     if (openingId) {
-      registerMetadata(openingId, datasets[openIndex]);
+      registerMetadata(openingId, ordered[openIndex]);
       emit(openingId);
     }
     return { imageIds, openIndex, source: "dicomweb" as const };

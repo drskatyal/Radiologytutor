@@ -48,7 +48,8 @@ function meta(i: number, extra: Record<string, unknown> = {}) {
 }
 
 function archive(count: number, opts: { compressedAt?: number; metaExtra?: Record<string, unknown> } = {}): ArchiveReader {
-  // Deliberately NOT InstanceNumber order: the bundle must keep archive order.
+  // Deliberately NOT InstanceNumber order: the bundle must put it in stack order
+  // (InstanceNumber here — no positions), as the WADO-RS path does.
   const order = Array.from({ length: count }, (_, i) => (i * 7) % count);
   return {
     async seriesMetadata() {
@@ -86,7 +87,7 @@ async function decodeHtj2k(bytes: Uint8Array): Promise<Int16Array> {
   }
 }
 
-test("a series converts to lossless HTJ2K + previews, in archive order, index last", async () => {
+test("a series converts to lossless HTJ2K + previews, in stack order, index last", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dicomcdn-"));
   try {
     const store = openBundleStore({ kind: "local", dir });
@@ -94,8 +95,10 @@ test("a series converts to lossless HTJ2K + previews, in archive order, index la
     const { index, stats } = await buildSeriesBundle(store, STUDY, SERIES, { archive: src });
     assert.ok(isUsableIndex(index));
     assert.equal(stats.frames, 40);
-    const order = (await src.seriesMetadata(STUDY, SERIES)).map((m: any) => m["00080018"].Value[0]);
-    assert.deepEqual(index.sops, order, "stack order is the archive's metadata order");
+    const raw = (await src.seriesMetadata(STUDY, SERIES)).map((m: any) => m["00080018"].Value[0]);
+    const order = Array.from({ length: 40 }, (_, i) => `${SERIES}.${i + 1}`);
+    assert.notDeepEqual(raw, order, "the archive serves a non-stack order");
+    assert.deepEqual(index.sops, order, "the bundle is in stack order, not the archive's");
     assert.equal(index.previews.chunks.length, 2); // 32 + 8
     assert.equal(index.frames.transferSyntaxUID, TS_HTJ2K_LOSSLESS_RPCL);
     assert.deepEqual(index.window, { center: 40, width: 400 });

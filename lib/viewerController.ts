@@ -98,6 +98,11 @@ export async function playKeyframes(
 export interface CornerstoneViewerState {
   /** Absolute 0-based stack index. Takes precedence over sliceFraction. */
   sliceIndex?: number;
+  /**
+   * The instance to show. Wins over sliceIndex when the stack holds it: an
+   * index means a position in one particular ordering, the SOP the image.
+   */
+  sopInstanceUID?: string;
   /** Slice to show, as a fraction [0,1] of the stack (resolved to an index by
    *  the viewer, which knows the actual image count). Absent = keep current. */
   sliceFraction?: number;

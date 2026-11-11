@@ -8,6 +8,7 @@
 // call; it does not autoplay. Examiner withholds the diagnosis. Teach me the
 // case speaks and drives the viewer from authored anchors, including set_series.
 
+import { withSopAnchoredSlices } from "@/lib/viewerLoad";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRecorder } from "@/components/useRecorder";
 import { useToast, type MicState } from "@/components/ui";
@@ -279,19 +280,47 @@ export function useStudentSession(
   const turnsRef = useRef<ChatTurn[]>([]);
   turnsRef.current = turns;
 
-  const teachingPack = useMemo(() => resolveLiveTeachingPack(caseData), [caseData]);
+  // Findings anchored by SOP take their slice from the stack the viewer holds
+  // (lib/stackOrder sorts archive stacks): a stored index may come from an
+  // older order, the SOP is the image. Re-read as the view settles (the full
+  // stack lands after the opening frame), and only when an index moves.
+  const [sopSlices, setSopSlices] = useState<ReadonlyMap<string, number>>(() => new Map());
+  useEffect(() => {
+    const c = controls.current;
+    if (!ready || !c?.indexOfSop) return;
+    const sops = caseData.findings.map((f) => f.sopInstanceUID?.trim()).filter((s): s is string => !!s);
+    if (!sops.length) return;
+    const read = () => {
+      const next = new Map<string, number>();
+      for (const sop of sops) {
+        const index = c.indexOfSop!(sop);
+        if (index >= 0) next.set(sop, index);
+      }
+      setSopSlices((prev) =>
+        prev.size === next.size && [...next].every(([sop, index]) => prev.get(sop) === index) ? prev : next
+      );
+    };
+    read();
+    return c.subscribeView?.(() => read());
+  }, [ready, caseData]);
+  const anchoredCase = useMemo(() => {
+    const findings = withSopAnchoredSlices(caseData.findings, (sop) => sopSlices.get(sop) ?? -1);
+    return findings === caseData.findings ? caseData : { ...caseData, findings: [...findings] };
+  }, [caseData, sopSlices]);
+
+  const teachingPack = useMemo(() => resolveLiveTeachingPack(anchoredCase), [anchoredCase]);
   const teachingPackRef = useRef(teachingPack);
   teachingPackRef.current = teachingPack;
   const orderedFindings = useMemo(() => {
-    const byId = new Map(caseData.findings.map((finding) => [finding.id, finding]));
+    const byId = new Map(anchoredCase.findings.map((finding) => [finding.id, finding]));
     const ranked = teachingPack.findingOrder
       .map((id) => byId.get(id))
       .filter((finding): finding is Finding => Boolean(finding));
-    const rest = caseData.findings
+    const rest = anchoredCase.findings
       .filter((finding) => !teachingPack.findingOrder.includes(finding.id))
       .sort((a, b) => a.order - b.order);
     return [...ranked, ...rest];
-  }, [caseData, teachingPack]);
+  }, [anchoredCase, teachingPack]);
   const activeIndexRef = useRef(-1);
   activeIndexRef.current = activeIndex;
   const orderedFindingsRef = useRef(orderedFindings);

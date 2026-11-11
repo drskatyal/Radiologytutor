@@ -26,6 +26,10 @@ const PORT = Number(process.env.MOCK_ARCHIVE_PORT ?? 3199);
 export const MOCK_ARCHIVE_DATA_DIR = process.env.MOCK_ARCHIVE_DATA_DIR ?? join(tmpdir(), "flowrad-e2e-archive-data");
 const SLICES = 60;
 const STUDY_ID = "e2e-study";
+// Index (0 = most cranial, InstanceNumber 1) of each instance in the order the
+// staging archive returned the LIDC series, limited to this mock's slices.
+const LIDC = JSON.parse(await readFile(join(ROOT, "lib", "fixtures", "lidcStackGeometry.json"), "utf8"));
+const ARCHIVE_ORDER = LIDC.archiveOrder.map((r) => r.instanceNumber - 1).filter((i) => i < SLICES);
 const SERIES_ID = "e2e-series";
 
 async function seedData() {
@@ -132,6 +136,21 @@ async function main() {
           MainDicomTags: { SeriesInstanceUID: SERIES_UID, Modality: "CT", SeriesDescription: "BENCH SERIES", SeriesNumber: "1" },
           Instances: Array.from({ length: SLICES }, (_, i) => `e2e-instance-${i}`),
         });
+      }
+      // The archive's own order, as Orthanc returns it: not anatomy. The
+      // permutation is the de-identified LIDC chest CT's on staging
+      // (lib/fixtures/lidcStackGeometry.json), cut to this series' slices,
+      // for the series metadata and for paged QIDO alike.
+      const listing = /^\/dicom-web\/studies\/[^/]+\/series\/[^/]+\/(metadata|instances)$/.exec(path);
+      if (listing) {
+        const all = await (await fetch(`${dicomweb.origin}/dicomweb/${path.slice("/dicom-web/".length)}${listing[1] === "instances" ? `?limit=${SLICES}` : ""}`, { headers: { accept: "application/dicom+json" } })).json();
+        const shuffled = ARCHIVE_ORDER.map((i) => all[i]).filter(Boolean);
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const limit = Number(url.searchParams.get("limit") ?? shuffled.length);
+        const body = listing[1] === "instances" ? shuffled.slice(offset, offset + limit) : shuffled;
+        res.writeHead(200, { "content-type": "application/dicom+json" });
+        res.end(JSON.stringify(body));
+        return;
       }
       if (path.startsWith("/dicom-web/")) {
         const upstream = await fetch(`${dicomweb.origin}/dicomweb/${path.slice("/dicom-web/".length)}${url.search}`, {
