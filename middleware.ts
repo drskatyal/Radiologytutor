@@ -26,6 +26,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { shareCookieOptions, tokenFromSharePath, SHARE_COOKIE } from "@/lib/caseShare";
 import { learnViewerRedirect, viewerHostRedirect } from "@/lib/viewerHostRedirect";
+import { trustedPublicOrigin } from "@/lib/trustedHost";
 
 export const config = {
   matcher: [
@@ -129,13 +130,17 @@ function budgetFor(pathname: string): Budget {
   return BUDGETS[pathname] ?? DEFAULT_BUDGET;
 }
 
-export function middleware(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Public entry points must never enter the API budget/rate-limit logic.
   if (pathname === "/" || pathname === "/viewer") {
-    const host = req.headers.get("host");
-    const redirect = viewerHostRedirect(host, req.nextUrl) ?? learnViewerRedirect(host, req.nextUrl);
+    const publicUrl = new URL(await trustedPublicOrigin(req.headers));
+    const requestUrl = req.nextUrl.clone();
+    requestUrl.protocol = publicUrl.protocol;
+    requestUrl.host = publicUrl.host;
+    requestUrl.port = publicUrl.port;
+    const redirect = viewerHostRedirect(publicUrl.hostname, requestUrl) ?? learnViewerRedirect(publicUrl.hostname, requestUrl);
     return redirect
       ? NextResponse.redirect(redirect.url, redirect.status)
       : NextResponse.next();

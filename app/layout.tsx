@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { learnMetadataForHost } from "@/lib/hostSeo";
+import { seoForRequest } from "@/lib/hostSeo";
 import type { Metadata, Viewport } from "next";
 import { Manrope, Shantell_Sans } from "next/font/google";
 import { AppShell } from "@/components/AppShell";
@@ -28,9 +28,9 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export function generateMetadata(): Metadata {
+export async function generateMetadata(): Promise<Metadata> {
   return {
-    ...learnMetadataForHost(headers().get("host")),
+    ...(await seoForRequest(headers())).metadata,
     // Listed in full: once `icons` is set, Next 14 stops emitting the file-based
     // app/icon.svg link, so the SVG favicon is named here alongside the .ico
     // (16/32/48) and the apple touch icon.

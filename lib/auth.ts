@@ -10,6 +10,7 @@
 // additionally lets "Continue as demo" work even when the memory adapter is empty.
 
 import { elevatedDemoAvailable } from "./demoEntry";
+import { configuredPublicOrigin } from "./trustedHost";
 import { createHmac, timingSafeEqual } from "crypto";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "better-auth/adapters/mongodb";
@@ -43,10 +44,8 @@ import type { Membership, MembershipRole, PlatformRole, User } from "@/lib/types
 const DEMO_COOKIE = "flowrad_demo";
 const DEMO_MAX_AGE_SEC = 60 * 60 * 24 * 14;
 
-const APP_URL =
-  process.env.BETTER_AUTH_URL?.trim() ||
-  process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-  "http://localhost:3000";
+// Authentication stays pinned to operator configuration, never request headers.
+const APP_URL = configuredPublicOrigin();
 
 /**
  * Session/demo-cookie signing key.

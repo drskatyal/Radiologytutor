@@ -1,4 +1,5 @@
 import type { Metadata, MetadataRoute } from "next";
+import { trustedPublicOrigin, type RequestHeaders } from "./trustedHost";
 
 export const LEARN_ORIGIN = "https://learn.flowrad.ai";
 export const VIEWER_ORIGIN = "https://app.viewer.flowrad.ai";
@@ -28,11 +29,11 @@ export const PRIVATE_PATHS = [
   "/course/", "/playlist/", "/certificate/", "/cornerstone", "/viewer/local",
 ];
 
-export function robotsForHost(host: string | null): MetadataRoute.Robots {
-  const origin = publicOrigin(host);
+export function robotsForHost(host: string | null, resolvedOrigin?: string): MetadataRoute.Robots {
+  const origin = publicOrigin(host) && (resolvedOrigin ?? publicOrigin(host));
   if (!origin) return { rules: { userAgent: "*", disallow: "/" } };
   const disallow = [...PRIVATE_PATHS];
-  if (origin === VIEWER_ORIGIN) disallow.push("/privacy", "/terms");
+  if (normalizeHost(host) === "app.viewer.flowrad.ai") disallow.push("/privacy", "/terms");
   return {
     rules: ["*", ...AI_SEARCH_CRAWLERS].map((userAgent) => ({
       userAgent, allow: "/", disallow: [...disallow],
@@ -41,17 +42,17 @@ export function robotsForHost(host: string | null): MetadataRoute.Robots {
   };
 }
 
-export function sitemapForHost(host: string | null): MetadataRoute.Sitemap {
-  const origin = publicOrigin(host);
+export function sitemapForHost(host: string | null, resolvedOrigin?: string): MetadataRoute.Sitemap {
+  const origin = publicOrigin(host) && (resolvedOrigin ?? publicOrigin(host));
   if (!origin) return [];
   // /library serves an organisation's case locker, not a marketing page.
-  const paths = origin === LEARN_ORIGIN ? ["/", "/privacy", "/terms"] : ["/viewer"];
+  const paths = normalizeHost(host) === "learn.flowrad.ai" ? ["/", "/privacy", "/terms"] : ["/viewer"];
   return paths.map((path) => ({ url: `${origin}${path}` }));
 }
 
-export function learnMetadataForHost(host: string | null): Metadata {
+export function learnMetadataForHost(host: string | null, resolvedOrigin?: string): Metadata {
   const title = normalizeHost(host) === "learn.flowrad.ai" ? "RadLearn by FlowRad" : "RadLearn";
-  const origin = publicOrigin(host);
+  const origin = resolvedOrigin ?? publicOrigin(host);
   const description = "Teach radiology on the DICOM study. Record a case once. Registrars replay it with an AI tutor that drives scroll, window, and zoom.";
   return {
     title, description,
@@ -60,5 +61,16 @@ export function learnMetadataForHost(host: string | null): Metadata {
       title, description, type: "website",
       ...(origin ? { images: [`${origin}/opengraph-image`] } : {}),
     },
+  };
+}
+
+/** Request entry point; pure host formatters above do not authenticate headers. */
+export async function seoForRequest(headers: RequestHeaders) {
+  const origin = await trustedPublicOrigin(headers);
+  const host = new URL(origin).hostname;
+  return {
+    metadata: learnMetadataForHost(host, origin),
+    robots: robotsForHost(host, origin),
+    sitemap: sitemapForHost(host, origin),
   };
 }

@@ -1,13 +1,13 @@
 import { headers } from "next/headers";
-import { learnMetadataForHost } from "@/lib/hostSeo";
+import { seoForRequest } from "@/lib/hostSeo";
 import { demoAuthEnabled, getSession } from "@/lib/auth";
 import { Landing } from "@/components/marketing/Landing";
 import { LANDING_FAQ } from "@/components/marketing/faq";
 
 export const dynamic = "force-dynamic";
 
-export function generateMetadata() {
-  return learnMetadataForHost(headers().get("host"));
+export async function generateMetadata() {
+  return (await seoForRequest(headers())).metadata;
 }
 
 function canTeach(session: Awaited<ReturnType<typeof getSession>>): boolean {

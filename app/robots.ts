@@ -1,9 +1,9 @@
 import type { MetadataRoute } from "next";
 import { headers } from "next/headers";
-import { robotsForHost } from "@/lib/hostSeo";
+import { seoForRequest } from "@/lib/hostSeo";
 
 export const dynamic = "force-dynamic";
 
-export default function robots(): MetadataRoute.Robots {
-  return robotsForHost(headers().get("host"));
+export default async function robots(): Promise<MetadataRoute.Robots> {
+  return (await seoForRequest(headers())).robots;
 }

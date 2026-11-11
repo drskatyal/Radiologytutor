@@ -6,34 +6,40 @@
 // it. No account and no paywall to view; signing up (free) is only offered for
 // what needs one — saving, sharing, teaching, the AI tutor and priors.
 //
-// Static on purpose: no session, no data fetching, so the shell is served from
-// cache and the first drop pays only for the engine chunks (prewarmed while
+// No session or study data fetching. Metadata resolves the authenticated public
+// origin; the first drop pays only for the engine chunks (prewarmed while
 // the dropzone is showing). The bundle budget for this route is enforced by
 // scripts/viewer-bundle-budget.mjs; the latency budgets by
 // e2e/visual/free-viewer.perf.spec.ts.
 
 import type { Metadata } from "next";
+import { headers } from "next/headers";
+import { trustedPublicOrigin } from "@/lib/trustedHost";
 import { ViewerShell } from "@/components/viewer/ViewerShell";
 
-export const metadata: Metadata = {
-  title: "FlowRad Viewer · Free DICOM viewer in your browser",
-  description:
-    "Open a DICOM folder, ZIP or CD in your browser and read it instantly. Free, no sign-in. Your images never leave your computer. For education and research. Not for diagnostic use.",
-  alternates: { canonical: "https://app.viewer.flowrad.ai/viewer" },
-  openGraph: {
-    url: "https://app.viewer.flowrad.ai/viewer",
-    images: ["https://app.viewer.flowrad.ai/opengraph-image"],
-    title: "FlowRad Viewer — free DICOM viewer",
-    description: "Drop a study and read it instantly. Your images never leave your computer.",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "FlowRad Viewer — free DICOM viewer",
-    description: "Open a DICOM folder, ZIP or CD. Free, no sign-in. Your images never leave your computer.",
-    images: ["https://app.viewer.flowrad.ai/opengraph-image"],
-  },
-  icons: { icon: "/owlscan.svg" },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const origin = await trustedPublicOrigin(headers());
+  return {
+    title: "FlowRad Viewer · Free DICOM viewer in your browser",
+    description:
+      "Open a DICOM folder, ZIP or CD in your browser and read it instantly. Free, no sign-in. Your images never leave your computer. For education and research. Not for diagnostic use.",
+    metadataBase: new URL(origin),
+    alternates: { canonical: `${origin}/viewer` },
+    openGraph: {
+      url: `${origin}/viewer`,
+      images: [`${origin}/opengraph-image`],
+      title: "FlowRad Viewer — free DICOM viewer",
+      description: "Drop a study and read it instantly. Your images never leave your computer.",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: "FlowRad Viewer — free DICOM viewer",
+      description: "Open a DICOM folder, ZIP or CD. Free, no sign-in. Your images never leave your computer.",
+      images: [`${origin}/opengraph-image`],
+    },
+    icons: { icon: "/owlscan.svg" },
+  };
+}
 
 export default function FreeViewerPage() {
   return (
