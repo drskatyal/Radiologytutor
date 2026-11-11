@@ -70,6 +70,7 @@ import {
   type SketchExportFormat,
 } from "@/components/author/sketch/SketchToolPalette";
 import { useTeacherSketch } from "@/components/author/sketch/useTeacherSketch";
+import { pendingSketchMarkers } from "@/lib/teacherSketch";
 import { resolveStudioHotkey } from "@/lib/studioHotkeys";
 import { isTextTarget } from "@/lib/viewerHotkeys";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
@@ -233,6 +234,8 @@ export function RecordingStudio({
   // A take starts from what is already drawn: snapshot it as the take's first
   // sketch op so replay and the compile see the same ink the teacher saw.
   const { snapshot: sketchSnapshot, endReplay: endSketchReplay, items: sketchItems } = sketch;
+  // Markers on the image that no saved finding carries yet (lib/teacherSketch).
+  const pendingMarkers = useMemo(() => pendingSketchMarkers(sketchItems, findings), [sketchItems, findings]);
   const sketchItemsRef = useRef(sketchItems);
   sketchItemsRef.current = sketchItems;
   useEffect(() => {
@@ -1294,6 +1297,7 @@ export function RecordingStudio({
         <div className="flex min-w-0 flex-col gap-4">
           <SequenceBoard
             findings={findings}
+            pending={pendingMarkers}
             activeId={focusedFindingId}
             busy={rr.phase !== "idle"}
             onSelect={(f) => void focusFinding(f)}
