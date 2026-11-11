@@ -12,7 +12,6 @@ import { teachingSystemPrompt } from "./teachingPrompt";
 import {
   ensureSpokenAnswer,
   examHintLevel,
-  seatExamReveal,
   type SpokenFindingSource,
 } from "./tutorSpeech";
 import {
@@ -177,7 +176,7 @@ export interface FunctionDeclaration {
   parameters: Record<string, unknown>;
 }
 
-interface GenerateOptions {
+export interface GenerateOptions {
   contents: GeminiContent[];
   systemInstruction?: string;
   temperature?: number;
@@ -446,6 +445,8 @@ function toAction(call?: {
  * text + optional viewer action out. No audio here (that was call 1).
  */
 export async function runTeachingPlan(input: TeachingPlanInput): Promise<TeachingPlanResult> {
+  // Examinations use the isolated text-structuring path, never a rubric-bearing tutor request.
+  if (input.mode === "viva" || input.mode === "socratic") return { answer: "Describe what you see on this series.", action: { type: "none" }, actions: [], sources: [] };
   const contents: GeminiContent[] = input.history.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.text }],
@@ -483,11 +484,7 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
     .map((call) => toAction(call))
     .filter((a) => a.type !== "none");
 
-  // Reveal without a seat leaves the slice still and Located unchanged.
-  const seated =
-    input.mode === "socratic" || input.mode === "viva"
-      ? seatExamReveal(called, hintLevel, input.currentFindingId ?? hinted?.id)
-      : called;
+  const seated = called;
   const actions = input.seriesAllowlist
     ? sanitizeSeriesActions(seated, new Set(input.seriesAllowlist))
     : seated;

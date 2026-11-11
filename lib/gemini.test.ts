@@ -140,194 +140,30 @@ describe("runTeachingPlan spoken answer", { concurrency: 1 }, () => {
     );
   });
 
-  test("an empty socratic reply to a partial answer does not dump the label", async () => {
-    const prevKey = process.env.GEMINI_API_KEY;
-    const prevFetch = globalThis.fetch;
-    let systemInstruction = "";
-    process.env.GEMINI_API_KEY = "test-key";
-    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        systemInstruction?: { parts?: { text?: string }[] };
-      };
-      systemInstruction = body.systemInstruction?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [{ functionCall: { name: "show_finding", args: { findingId: "f_ptx" } } }],
-              },
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    }) as typeof fetch;
-    try {
-      const result = await runTeachingPlan({
-        question: "There is a line at the right apex. I think it is consolidation.",
-        history: [],
-        caseTitle: "LIDC nodule search",
-        modality: "CT",
-        mode: "socratic",
-        findingsContext: "id=f_ptx",
-        currentFindingId: "f_ptx",
-        findings: [finding],
-      });
-      assert.match(result.answer, /^(Look|See|Watch|Follow)\b/);
-      assert.match(result.answer, /What do you see\?/);
-      assert.doesNotMatch(result.answer, /pneumothorax/i);
-      assert.doesNotMatch(result.answer, /pleural line/i);
-      assert.doesNotMatch(result.answer, /skin fold/i);
-      assert.match(systemInstruction, /this turn is level 0/i);
-      assert.match(systemInstruction, /same finding/i);
-    } finally {
-      globalThis.fetch = prevFetch;
-      if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
-      else process.env.GEMINI_API_KEY = prevKey;
-    }
-  });
-
-  test("later empty turns climb location then mimic, and don't-know reveals", async () => {
-    const prevKey = process.env.GEMINI_API_KEY;
-    const prevFetch = globalThis.fetch;
-    let systemInstruction = "";
-    let parts: unknown[] = [];
-    process.env.GEMINI_API_KEY = "test-key";
-    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        systemInstruction?: { parts?: { text?: string }[] };
-      };
-      systemInstruction = body.systemInstruction?.parts?.map((part) => part.text ?? "").join("\n") ?? "";
-      return new Response(
-        JSON.stringify({ candidates: [{ content: { parts } }] }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    }) as typeof fetch;
-    const plan = {
-      caseTitle: "LIDC nodule search",
-      modality: "CT",
-      mode: "socratic" as const,
-      findingsContext: "id=f_ptx",
-      currentFindingId: "f_ptx",
-      findings: [finding],
-    };
-    try {
-      parts = [{ functionCall: { name: "show_finding", args: { findingId: "f_ptx" } } }];
-      const second = await runTeachingPlan({
-        ...plan,
-        question: "still not sure",
-        history: [{ role: "user", text: "There is a line at the right apex. I think it is consolidation." }],
-      });
-      assert.match(systemInstruction, /this turn is level 1/i);
-      assert.match(systemInstruction, /location line/i);
-      assert.match(second.answer, /pleural line|apex/i);
-      assert.doesNotMatch(second.answer, /pneumothorax/i);
-      assert.doesNotMatch(second.answer, /skin fold/i);
-
-      const third = await runTeachingPlan({
-        ...plan,
-        question: "still not sure",
-        history: [
-          { role: "user", text: "There is a line at the right apex. I think it is consolidation." },
-          { role: "assistant", text: "Look at this slice. Visceral pleural line at the apex." },
-          { role: "user", text: "The place is right, but I still call it consolidation." },
-        ],
-      });
-      assert.match(systemInstruction, /this turn is level 2/i);
-      assert.match(third.answer, /skin fold/i);
-      assert.doesNotMatch(third.answer, /pneumothorax/i);
-
-      parts = [{ text: "Look at this slice." }];
-      const reveal = await runTeachingPlan({
-        ...plan,
-        question: "I don't know. Please show me this finding and teach it.",
-        history: [
-          { role: "user", text: "is it a vessel?" },
-          { role: "assistant", text: "Follow the pointer. Begin at the carina." },
-        ],
-      });
-      assert.match(systemInstruction, /this turn is level 3/i);
-      assert.match(reveal.answer, /Right apical pneumothorax/);
-      assert.match(reveal.answer, /skin fold/i);
-      assert.equal(reveal.actions[0]?.type, "show_finding");
-      assert.equal(reveal.actions[0] && "findingId" in reveal.actions[0] ? reveal.actions[0].findingId : "", "f_ptx");
-
-      const lidc = {
-        id: "f_lidc",
-        label: "Peripheral nodule",
-        description:
-          "Round opacity in the periphery of the right upper lobe. Begin at the carina and scroll inferiorly through both lungs.",
-        teachingPoints: [
-          "Lung window — start mid-chest",
-          "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
-          "If it vanishes on the next slice it is a vessel, not a nodule.",
-        ],
-        order: 1,
-      };
-      parts = [
-        {
-          text: "Follow the pointer. Begin at the carina and scroll inferiorly through both lungs.",
-        },
-        { functionCall: { name: "point_to", args: { findingId: "f_search" } } },
-      ];
-      const lidcSecond = await runTeachingPlan({
-        caseTitle: "LIDC nodule search",
-        modality: "CT",
-        mode: "socratic",
-        findingsContext: "id=f_lidc",
-        currentFindingId: "f_lidc",
-        findings: [
-          {
-            id: "f_search",
-            label: "Lung window — start mid-chest",
-            description:
-              "Set a narrow lung window. Begin at the carina and scroll inferiorly through both lungs.",
-            teachingPoints: [
-              "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
-            ],
-            order: 0,
-          },
-          lidc,
-        ],
-        question: "still not sure",
-        history: [
-          { role: "user", text: "is it a vessel?", findingId: "f_lidc" },
-          { role: "assistant", text: "Follow the pointer. What do you see?", findingId: "f_lidc" },
-        ],
-      });
-      assert.match(systemInstruction, /this turn is level 1/i);
-      assert.match(lidcSecond.answer, /periphery|right upper lobe/i);
-      assert.doesNotMatch(lidcSecond.answer, /\bcarina\b/i);
-      assert.doesNotMatch(lidcSecond.answer, /\bscroll\b/i);
-
-      parts = [
-        {
-          text: "Look at this slice. Lung window — start mid-chest. Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
-        },
-      ];
-      const lidcReveal = await runTeachingPlan({
-        caseTitle: "LIDC nodule search",
-        modality: "CT",
-        mode: "socratic",
-        findingsContext: "id=f_lidc",
-        currentFindingId: "f_lidc",
-        findings: [lidc],
-        question: "I don't know. Please show me this finding and teach it.",
-        history: [{ role: "user", text: "is it a vessel?", findingId: "f_lidc" }],
-      });
-      assert.match(systemInstruction, /this turn is level 3/i);
-      assert.match(lidcReveal.answer, /Peripheral nodule/);
-      assert.match(lidcReveal.answer, /vessel, not a nodule/i);
-      assert.doesNotMatch(lidcReveal.answer, /Lung window — start mid-chest/i);
-      assert.doesNotMatch(lidcReveal.answer, /search pattern/i);
-      assert.equal(lidcReveal.actions[0]?.type, "show_finding");
-    } finally {
-      globalThis.fetch = prevFetch;
-      if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
-      else process.env.GEMINI_API_KEY = prevKey;
-    }
-  });
+  // Strategy §4 M1 supersedes the old hint/reveal ladder: answers must never
+  // reach the exam model, including after repeated hints or a give-up request.
+  for (const mode of ["socratic", "viva"] as const) {
+    test(`${mode} never sends teaching context or reveals on hints/give-up`, async () => {
+      const previous = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = (async () => { calls++; throw new Error("Exam must not call the teaching model"); }) as typeof fetch;
+      try {
+        for (const question of ["What is this?", "still not sure", "give me a hint", "I don't know; show and teach the finding"]) {
+          const result = await runTeachingPlan({
+            question, mode, caseTitle: "CANARY_TITLE", modality: "CT",
+            findingsContext: "CANARY_RUBRIC", findings: [finding], currentFindingId: finding.id,
+            history: [{ role: "assistant", text: "CANARY_PRIOR_ANSWER" }],
+          });
+          assert.equal(result.answer, "Describe what you see on this series.");
+          assert.doesNotMatch(JSON.stringify(result), /CANARY|pneumothorax|pleural|skin fold/i);
+          assert.deepEqual(result.actions, []);
+          assert.deepEqual(result.action, { type: "none" });
+          assert.deepEqual(result.sources, []);
+        }
+        assert.equal(calls, 0);
+      } finally { globalThis.fetch = previous; }
+    });
+  }
 
   test("a spoken answer from the model is kept", async () => {
     await withGemini([{ text: "Look at this slice. The pleural line is continuous." }], async () => {
