@@ -1493,7 +1493,10 @@ export function RecordingStudio({
             <p className="mt-1 text-xs text-muted">
               {readiness.ready
                 ? `${readiness.examReady} exam-ready finding${readiness.examReady === 1 ? "" : "s"}. Students only see this after you publish.`
-                : readiness.blockers[0]}
+                : findings.length === 0 && pendingMarkers.length > 0
+                  ? // Markers in the take are not findings yet; say what turns them into one.
+                    `Finish the take and save to turn ${pendingMarkers.length === 1 ? "marker 1" : `${pendingMarkers.length} markers`} into ${pendingMarkers.length === 1 ? "a finding" : "findings"}.`
+                  : readiness.blockers[0]}
             </p>
             <Button
               className="mt-3 w-full"

@@ -54,6 +54,7 @@ import {
   formatRecordedSave,
   settledDisplay,
 } from "@/lib/teachingGuide";
+import { teacherMarkerInWindow } from "@/lib/teacherSketch";
 import type { useRecordReplay } from "@/components/record/useRecordReplay";
 import type { MutableRefObject } from "react";
 
@@ -154,6 +155,12 @@ export function ContinuousCapture({
   // the Alt+X hotkey call rr.stopRecording() without going through stop(), so
   // the button state is derived from the recorder and this flag adopts the take.
   const speakSession = useRef(false);
+  // True once this session has seen the recorder actually running. The
+  // recorder resets its frames and playback before it awaits the microphone,
+  // which re-renders with `recording` still false; without this guard that
+  // render read as "the take ended empty", showed "Nothing captured" for the
+  // whole take and dropped the session, so finishing never processed it.
+  const sessionRecorded = useRef(false);
   const held = useRef<{
     track: RecordedTrack;
     audio: { base64: string; mimeType: string };
@@ -170,6 +177,7 @@ export function ContinuousCapture({
     onReview?.(null);
     onProgress?.(null);
     speakSession.current = true;
+    sessionRecorded.current = false;
     onPhaseChange?.("recording");
     try {
       const started = await rr.startRecording();
@@ -192,17 +200,20 @@ export function ContinuousCapture({
   }
 
   function openNotesDraft(track: RecordedTrack) {
+    // The teacher's own numbered marker (M) is authored: it beats a cursor
+    // sample for the point, the slice and the label, as in the compile.
+    const landing = teacherMarkerInWindow(track, 0, Math.max(track.durationMs, 1));
     const marker =
-      markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
+      landing?.marker ?? markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
     setProposals([
       {
-        label: "",
+        label: landing?.label ?? "",
         description: "",
         teachingPoints: [],
         tStartMs: 0,
         tEndMs: Math.max(track.durationMs, 1),
         suggestedMarker: marker,
-        suggestedSliceIndex: settledDisplay(track).sliceIndex,
+        suggestedSliceIndex: landing?.sliceIndex ?? settledDisplay(track).sliceIndex,
       },
     ]);
     setNotice("");
@@ -419,11 +430,13 @@ export function ContinuousCapture({
 
   useEffect(() => {
     if (adoptExternalTakes && recording) speakSession.current = true;
+    if (recording && speakSession.current) sessionRecorded.current = true;
   }, [adoptExternalTakes, recording]);
 
   useEffect(() => {
-    if (recording || !speakSession.current) return;
+    if (recording || !speakSession.current || !sessionRecorded.current) return;
     speakSession.current = false;
+    sessionRecorded.current = false;
     const playback = rr.playback;
     const captured = rr.track
       ? {
@@ -466,7 +479,11 @@ export function ContinuousCapture({
     if (!draft) return;
     setSaving(true);
     try {
+      // Land on the teacher's marker when the take has one: its point, its
+      // slice and its SOP, not wherever the stack was when the take ended.
+      const landing = teacherMarkerInWindow(parentTrack, draft.tStartMs, draft.tEndMs);
       const marker =
+        landing?.marker ??
         draft.suggestedMarker ??
         markerFromTrack(parentTrack) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
       const { finding, receipt } = commitSpeakOnceWithoutMic<Partial<Finding>>(
@@ -486,12 +503,14 @@ export function ContinuousCapture({
       const seriesUID =
         finding.seriesInstanceUID || seriesInstanceUID || controls.current?.activeSeriesUID;
       const sessionId = `cap_${Date.now().toString(36)}`;
+      const sliceIndex = landing?.sliceIndex ?? money.sliceIndex;
       const snap = {
-        sliceIndex: money.sliceIndex,
+        sliceIndex,
         ww: money.ww,
         wc: money.wc,
         sopInstanceUID:
-          money.sliceIndex === live?.sliceIndex ? live?.sopInstanceUID : undefined,
+          landing?.sopInstanceUID ??
+          (sliceIndex === live?.sliceIndex ? live?.sopInstanceUID : undefined),
       };
       const stored = withDisplaySnapshot(
         {
