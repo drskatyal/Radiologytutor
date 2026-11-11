@@ -6,7 +6,7 @@
 // pointer, locked to your narration audio. This proves the whole mechanic end
 // to end with zero backend.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/AppShell";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
 import { BUNDLED_CASE } from "@/lib/viewerSource";
@@ -19,6 +19,11 @@ export default function RecordDemoPage() {
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
+  // Microphone support is a browser fact: the server renders as if there is
+  // none. Read it only after mount, or the first client render disagrees with
+  // the server HTML (React #418 on every load).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const rr = useRecordReplay({ controls, overlay, ready });
 
@@ -39,7 +44,7 @@ export default function RecordDemoPage() {
         description="Hold Alt+X to record a narrated walk-through on the bundled sample, release to stop, then replay the exact retrace. An internal sandbox for the record/replay mechanic."
         actions={
           <div className="flex items-center gap-2">
-            {!rr.supported && <Badge variant="warning">Mic unavailable — events still record</Badge>}
+            {mounted && !rr.supported && <Badge variant="warning">Mic unavailable — events still record</Badge>}
             {rr.phase === "recording" && (
               <Badge variant="danger" dot>
                 Recording

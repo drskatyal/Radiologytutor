@@ -78,6 +78,27 @@ export function dicomTagNumber(dataset: unknown, tag: string): number | undefine
  * Last authored landing on `seriesInstanceUID` (highest finding order).
  * That is the slice the teacher left, when one was stored.
  */
+/**
+ * Where a learner-facing viewer opens: the slice of the case's FIRST finding
+ * (lowest order) on this series — the start of the teaching story. The last
+ * finding is where an author left off (lastTeacherSlice); opening a reader
+ * there dropped the LIDC chest case onto its final, upper-abdomen slice.
+ */
+export function firstTeacherSlice(
+  findings: readonly {
+    order?: number;
+    seriesInstanceUID?: string;
+    sliceIndex?: number;
+    sopInstanceUID?: string;
+  }[],
+  seriesInstanceUID: string | undefined
+): OpenSlice | undefined {
+  const usable = findings.filter((f) => f.seriesInstanceUID === seriesInstanceUID);
+  if (!usable.length) return undefined;
+  const first = usable.reduce((a, b) => ((b.order ?? 0) < (a.order ?? 0) ? b : a));
+  return lastTeacherSlice([{ ...first, order: 0 }], seriesInstanceUID);
+}
+
 export function lastTeacherSlice(
   findings: readonly {
     order?: number;

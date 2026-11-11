@@ -6,7 +6,7 @@ import { redirect, notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { getAuthor, getCaseForOrg, groundedCase, listCaseShares } from "@/lib/cases";
-import { lastTeacherSlice, seriesHintFromCase } from "@/lib/viewerLoad";
+import { firstTeacherSlice, seriesHintFromCase } from "@/lib/viewerLoad";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
@@ -82,10 +82,14 @@ export default async function CasePage({
       <>
       {/* Engine chunks + the opening frame start now, in parallel with the
           viewer's own code-split download. See lib/viewerWarmup.ts. */}
-      {session && <ViewerPrewarm
-        series={series[0] ?? null}
-        openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
-      />}
+      {/* Archive reads need a session (lib/studyAccess): a signed-out visitor
+          gets the sign-in prompt, so warm nothing that would only 401. */}
+      {session ? (
+        <ViewerPrewarm
+          series={series[0] ?? null}
+          openSlice={firstTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
+        />
+      ) : null}
       <CaseViewer
         caseId={caseData.caseId}
         title={caseData.title}
@@ -97,7 +101,7 @@ export default async function CasePage({
         sharePath={share ? sharePath(share.id) : null}
         sharedLink={false}
         namedStudy={studyUidsForCase(caseData).length > 0}
-        openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
+        openSlice={firstTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
         // Pixels are served to signed-in members only (lib/studyAccess): a
         // signed-out visitor gets a sign-in prompt, not a row of 401s.
         signedIn={!!session}
@@ -134,7 +138,7 @@ export default async function CasePage({
     <>
       {session && <ViewerPrewarm
         series={series[0] ?? null}
-        openSlice={lastTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
+        openSlice={firstTeacherSlice(caseData.findings, series[0]?.seriesInstanceUID) ?? null}
       />}
       <RecordCaseOpen courseId={courseId} caseId={params.caseId} />
       <StudentSession
