@@ -1,3 +1,4 @@
+import { assertNoPhi } from "./phiGuard";
 import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "./orthanc";
 import { hashContent } from "./findingContent";
 import type { FindingAnchorSnapshot, SeriesInventory } from "./types";
@@ -11,6 +12,7 @@ export async function readFindingInventory(anchor: FindingAnchorSnapshot): Promi
   return inventoryFromMetadata(anchor, await response.json());
 }
 export function inventoryFromMetadata(anchor: FindingAnchorSnapshot, raw: unknown): SeriesInventory {
+  assertNoPhi(raw);
   if (!Array.isArray(raw)) throw new Error("Invalid image inventory");
   const instances = raw.map((row: Record<string, { Value?: unknown[] }>) => {
     if (first(row, "0020000D") !== anchor.studyUID || first(row, "0020000E") !== anchor.seriesUID) throw new Error("Image inventory identity mismatch");

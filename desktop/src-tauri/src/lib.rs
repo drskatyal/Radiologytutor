@@ -10,6 +10,7 @@
 //! (sign-in required, off by default).
 
 mod anonymize;
+mod export_policy;
 mod documents;
 mod header;
 mod image_store;

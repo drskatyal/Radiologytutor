@@ -1,3 +1,4 @@
+import { safeExportLabels } from "./exportText";
 import { assertNoPhi } from "./phiGuard";
 // ============================================================================
 // lib/viewerExport.ts
@@ -24,8 +25,8 @@ export type ExportOverlay = "none" | "anonymous";
 export function anonymousLines(
   parts: { modality?: string | null; seriesNumber?: number | string | null; index: number; count: number; ww?: number; wc?: number }
 ): string[] {
-  assertNoPhi(parts);
-  const series = [parts.modality, parts.seriesNumber != null && parts.seriesNumber !== "" ? `Se ${parts.seriesNumber}` : ""]
+  const labels = safeExportLabels(parts);
+  const series = [labels.modality, labels.seriesNumber != null ? `Se ${labels.seriesNumber}` : ""]
     .filter(Boolean)
     .join(" · ");
   const window = parts.ww != null && Number.isFinite(parts.ww) ? ` · W ${Math.round(parts.ww)} L ${Math.round(parts.wc ?? 0)}` : "";
@@ -232,6 +233,7 @@ export function buildMjpegAvi(frames: readonly Uint8Array[], width: number, heig
  * a timestamp. Series descriptions are free text and are left out on purpose.
  */
 export function exportBaseName(parts: { modality?: string; seriesNumber?: number }, now = new Date()): string {
+  parts = safeExportLabels(parts);
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   return [parts.modality || "image", parts.seriesNumber != null ? `se${parts.seriesNumber}` : "", stamp].filter(Boolean).join("_");

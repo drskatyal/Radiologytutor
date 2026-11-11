@@ -17,6 +17,7 @@ test("synthetic metadata passes; dirty metadata and named identity families fail
 test("media review covers pixels, audio and screen independently", () => {
   for (const field of ["pixels", "audio", "screen"]) assert.throws(() => assertReviewedMedia({ pixels: true, audio: true, screen: true, [field]: false }), PhiError);
   assert.doesNotThrow(() => assertReviewedMedia({ pixels: true, audio: true, screen: true }));
+  for (const value of ["false", "true", 1, null]) assert.throws(() => assertReviewedMedia({ pixels: value, audio: true, screen: true } as never), PhiError);
 });
 test("spoken/text identifiers cannot reach the exam structuring model or export overlays", async () => {
   let calls = 0;

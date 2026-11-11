@@ -11,7 +11,7 @@ import { useToast } from "../toast";
 import { cn } from "@/components/ui/cn";
 import { invoke, isTauri, listen, pickFolder, pickSavePath, writeExport } from "../platform";
 import type { ViewerSeries, ViewerStudy } from "../types";
-import { formatDicomDate, formatPersonName } from "../study";
+import { anonymousLines } from "../../../lib/viewerExport";
 import type { ViewportHandle } from "../viewer/handles";
 import {
   canvasBytes,
@@ -45,18 +45,7 @@ const KINDS: { id: Kind; label: string; hint: string; icon: typeof FileImage }[]
 ];
 
 function frameText(series: ViewerSeries, study: ViewerStudy | null, index: number, ww?: number, wc?: number): FrameText {
-  const p = study?.patient;
-  return {
-    anonymous: [
-      [series.modality, series.number != null ? `Se ${series.number}` : "", series.description].filter(Boolean).join(" · "),
-      `Im ${index + 1} / ${series.imageCount}${ww != null ? ` · W ${Math.round(ww)} L ${Math.round(wc ?? 0)}` : ""}`,
-    ],
-    identifying: [
-      formatPersonName(p?.name),
-      [p?.id, p?.sex, formatDicomDate(p?.birthDate)].filter(Boolean).join(" · "),
-      [study?.description, formatDicomDate(study?.date), study?.institution].filter(Boolean).join(" · "),
-    ].filter(Boolean),
-  };
+  return { anonymous: anonymousLines({ modality: series.modality, seriesNumber: series.number, index, count: series.imageCount, ww, wc }), identifying: [] };
 }
 
 export function ExportDialog({ open, onClose, handle, series, study, initial }: Props) {
@@ -271,19 +260,13 @@ export function ExportDialog({ open, onClose, handle, series, study, initial }: 
               <select value={overlay} onChange={(e) => setOverlay(e.target.value as OverlayMode)} className="h-9 rounded-lg border border-strong bg-elevated px-2 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
                 <option value="anonymous">Anonymous (series, image, window)</option>
                 <option value="none">None</option>
-                <option value="full">Full overlay, with patient details</option>
               </select>
             </label>
             <label className="col-span-2 flex items-center gap-2 text-secondary">
               <input type="checkbox" checked={annotations} onChange={(e) => setAnnotations(e.target.checked)} className="h-4 w-4 accent-[rgb(var(--accent))]" />
               Include measurements and annotations
             </label>
-            {overlay === "full" && (
-              <p className="col-span-2 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2 text-xs text-warning">
-                <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-                The file will contain the patient&apos;s name, ID and date of birth.
-              </p>
-            )}
+
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4 text-sm">

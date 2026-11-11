@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::tags;
-use dicom_object::{open_file, DefaultDicomObject};
+use dicom_object::{open_file, DefaultDicomObject, InMemDicomObject};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
@@ -214,6 +214,7 @@ pub fn anonymize_object(obj: &mut DefaultDicomObject, options: &AnonymizeOptions
 pub fn anonymize_to_bytes(path: &Path, options: &AnonymizeOptions, uids: &mut UidMap) -> Result<Vec<u8>, String> {
     let mut obj = open_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
     anonymize_object(&mut obj, options, uids);
+    enforce_export_policy(&mut obj)?;
     let mut out = Vec::new();
     obj.write_all(&mut out).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(out)
@@ -264,6 +265,7 @@ pub async fn export_anonymized_dicom(
                 *count += 1;
                 let file = dir.join(format!("IM{:05}.dcm", *count));
                 anonymize_object(&mut obj, &options, &mut uids);
+                enforce_export_policy(&mut obj)?;
                 obj.write_to_file(&file).map_err(|e| e.to_string())
             })();
             match result {
@@ -346,4 +348,26 @@ mod uid_tests {
         let mut b = UidMap::new();
         assert_ne!(x1, b.remap("1.2.840.113619.2.55.3"));
     }
+}
+
+/// Restrict exports to imaging metadata; validate nested datasets without guessing
+/// how to rewrite an unsupported sequence. Such an export fails closed.
+fn enforce_export_policy(obj: &mut DefaultDicomObject) -> Result<(), String> {
+    let excluded: Vec<Tag> = obj.tags().filter(|t| !crate::export_policy::allowed(t.group(), t.element())).collect();
+    for tag in excluded { obj.remove_element(tag); }
+    fn check(obj: &InMemDicomObject) -> Result<(), String> {
+        for tag in obj.tags() {
+            if !crate::export_policy::allowed(tag.group(), tag.element()) {
+                return Err("Unsupported nested export metadata; PHI review required".into());
+            }
+            let element = obj.element(tag).map_err(|_| "Unreadable export metadata".to_string())?;
+            if tag == Tag(0x0010, 0x0010) || tag == Tag(0x0010, 0x0020) {
+                let value = element.to_str().map_err(|_| "Unreadable identity field".to_string())?;
+                if !crate::export_policy::placeholder(&value) { return Err("PHI review required: identity replacement is not a placeholder".into()); }
+            }
+            if let Some(items) = element.items() { for item in items { check(item)?; } }
+        }
+        Ok(())
+    }
+    check(obj)
 }

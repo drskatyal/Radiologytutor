@@ -5,8 +5,8 @@ export class PhiError extends Error {
   readonly status = 422;
   constructor() { super("PHI review required: remove patient identifiers before continuing."); }
 }
-const identityKeys = /^(?:x?00100010|x?00100020|x?00100030|x?00080050|x?00080090|patientname|patientid|patientbirthdate|accession(?:number)?|referringphysician(?:name)?)$/i;
-const placeholder = /^(?:|SYNTHETIC\^TEST|SYN-\d+|ANONYMOUS|ANONYMI[ZS]ED|REDACTED)$/i;
+const identityKeys = /^(?:x?00100010|x?00100020|x?00100030|x?00080050|x?00080090|patientname|patientid|patientbirthdate|birthdate|accession(?:number)?|referringphysician(?:name)?)$/i;
+const placeholder = /^(?:|SYNTHETIC\^TEST|SYN-\d+|ANON|ANONYMOUS|ANONYMI[ZS]ED|REDACTED)$/i;
 function values(value: unknown): string[] {
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.flatMap(values);
@@ -16,7 +16,7 @@ function values(value: unknown): string[] {
 export function assertNoPhi(input: unknown): void {
   function visit(value: unknown): void {
     if (typeof value === "string") {
-      if (/\b(?!SYNTHETIC\^TEST\b)[A-Z][A-Z'-]+\^[A-Z][A-Z'-]+\b/.test(value) ||
+      if (/\b(?!SYNTHETIC\^TEST\b)[A-Z][A-Z'-]+\^[A-Z][A-Z'-]+\b/i.test(value) ||
           /\b(?:patient\s*(?:name|id|birth\s*date)|accession(?:\s*number)?|referring\s*physician)\s*[:=]\s*(?!SYNTHETIC|SYN-|ANONYMOUS|REDACTED)\S/i.test(value)) throw new PhiError();
     } else if (Array.isArray(value)) value.forEach(visit);
     else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) {
@@ -27,7 +27,7 @@ export function assertNoPhi(input: unknown): void {
   visit(input);
 }
 export function assertReviewedMedia(review: { pixels?: boolean; audio?: boolean; screen?: boolean } | undefined): void {
-  if (!review?.pixels || !review.audio || !review.screen) throw new PhiError();
+  if (review?.pixels !== true || review.audio !== true || review.screen !== true) throw new PhiError();
 }
 /** Export metadata is built from a fixed allowlist; identity never crosses this seam. */
 export function exportSafeMetadata(input: Record<string, unknown>): Record<string, unknown> {

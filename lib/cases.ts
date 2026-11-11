@@ -1,3 +1,4 @@
+import { assertNoPhi, assertReviewedMedia } from "./phiGuard";
 import { migrateFindings, prepareFinding, appendVersion, approveVersion, approvedFinding, snapshot, type Approver } from "./findingVersions";
 import { anchorFromFinding, FindingConflict, hashContent, findingContent } from "./findingContent";
 import { readFindingInventory } from "./findingInventory";
@@ -845,6 +846,10 @@ export async function updateCaseForOrg(
  * must be created as drafts.
  */
 export async function assertCasePublishable(c: Case): Promise<void> {
+  for (const finding of c.findings) {
+    assertNoPhi(findingContent(finding));
+    assertReviewedMedia(finding.phiReview);
+  }
   const refs = c.studyRefs ?? [];
   if (refs.length === 0) {
     throw new Error(

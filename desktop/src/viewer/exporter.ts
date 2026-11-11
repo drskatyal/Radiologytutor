@@ -1,10 +1,11 @@
+import { safeExportLabels, safeExportLines } from "../../../lib/exportText";
 // Export what is on screen: a still (PNG / JPEG), a series as an image
 // sequence, or a cine as video (MP4 via WebCodecs, else Motion-JPEG AVI).
 //
 // Anonymous by default. The pixels come from the viewport canvas, which never
 // holds patient text (Cornerstone draws only pixels there); the corner overlay
 // is redrawn here from what the user chose: nothing, an anonymous line
-// (modality · series · image · W/L) or — explicitly — the full overlay.
+// (modality · series · image · W/L). Identifying overlays cannot be exported.
 // Burned-in annotations inside the pixel data are a separate risk that no
 // header scrub can remove; the dialog says so.
 
@@ -47,6 +48,7 @@ async function svgLayerImage(element: HTMLElement): Promise<HTMLImageElement | n
 
 /** Composite pixels + (optional) annotations + (optional) text into a new canvas. */
 export async function captureViewport(element: HTMLElement, options: CaptureOptions): Promise<HTMLCanvasElement> {
+  const lines = safeExportLines(options.text);
   const source = element.querySelector("canvas");
   if (!source) throw new Error("Nothing is rendered in this viewport yet.");
   const { width, height } = element.getBoundingClientRect();
@@ -63,7 +65,7 @@ export async function captureViewport(element: HTMLElement, options: CaptureOpti
     if (svg) ctx.drawImage(svg, 0, 0, out.width, out.height);
   }
   if (options.overlay !== "none") {
-    const lines = options.overlay === "full" ? [...options.text.identifying, ...options.text.anonymous] : options.text.anonymous;
+    // "full" is accepted only as a legacy preference; it grants no identity access.
     const size = Math.round(12 * scale);
     ctx.font = `${size}px Inter, -apple-system, "Segoe UI", system-ui, sans-serif`;
     ctx.textBaseline = "top";
@@ -252,6 +254,7 @@ export function buildMjpegAvi(frames: readonly Uint8Array[], width: number, heig
  * a timestamp. Series descriptions are free text and are left out on purpose.
  */
 export function exportBaseName(parts: { modality?: string; seriesNumber?: number }, now = new Date()): string {
+  parts = safeExportLabels(parts);
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   return [parts.modality || "image", parts.seriesNumber != null ? `se${parts.seriesNumber}` : "", stamp].filter(Boolean).join("_");

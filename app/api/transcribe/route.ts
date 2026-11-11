@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/transcribe  — CALL 1 of the student voice Q&A flow (CLAUDE.md §2).
 //
 // Body:  { audio: { base64: string; mime?: string } }
@@ -15,6 +16,7 @@ import { jsonAuthError, requireSession } from "@/lib/auth";
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (await hasActiveExam()) return NextResponse.json({ error: "Audio answers require a reviewed transcript during examination" }, { status: 403 });
   if (!geminiConfigured()) {
     return NextResponse.json(
       { error: "Voice transcription is unavailable — GEMINI_API_KEY is not set." },

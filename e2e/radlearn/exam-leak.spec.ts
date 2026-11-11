@@ -30,7 +30,7 @@ test("exam HTML, RSC, JSON, socket frames and initial viewport contain no findin
   for (const suffix of ["findings", "live-teaching-pack", "prefetch"]) {
     expect((await api.get(`/api/cases/case-synthetic-teach/${suffix}`)).status).toBe(403);
   }
-  for (const path of ["/api/tutor", "/api/voice/realtime", "/api/voice/search", "/api/tour-check-in"]) {
+  for (const path of ["/api/tutor", "/api/voice/realtime", "/api/voice/search", "/api/transcribe", "/api/transcribe-narration", "/api/tour-check-in"]) {
     expect((await api.post(path, { caseId: "case-synthetic-teach" })).status).toBe(403);
   }
   const grade = await api.post("/api/grade-report", { caseId: "case-synthetic-teach", report: "My observations", mode: "practice" });

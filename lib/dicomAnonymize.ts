@@ -1,3 +1,6 @@
+import { parseDicom, type DataSet } from "dicom-parser";
+import { assertNoPhi } from "./phiGuard";
+import { EXPORT_DICOM_TAGS } from "./exportDicomTags";
 // ============================================================================
 // lib/dicomAnonymize.ts (ported from FlowRad Viewer lib/cloud/anonymize.ts)
 //
@@ -205,7 +208,9 @@ interface Rewritten {
 
 export function anonymizeInstance(input: Uint8Array, options: AnonymizeOptions): AnonymizeResult {
   try {
-    return rewritePart10(input, options);
+    const result = rewritePart10(input, options);
+    assertDicomExportSafe(result.bytes);
+    return result;
   } catch (e) {
     if (e instanceof AnonymizeError) throw e;
     throw new AnonymizeError(e instanceof Error ? e.message : "Could not rewrite DICOM");
@@ -251,7 +256,7 @@ function rewritePart10(input: Uint8Array, options: AnonymizeOptions): AnonymizeR
   const body = rewriteStream(dataset, 0, dataset.length, dataCtx, false);
 
   return {
-    bytes: concat([input.subarray(0, 132), withGroupLength(meta.bytes), body.bytes]),
+    bytes: concat([new Uint8Array(128), input.subarray(128, 132), withGroupLength(meta.bytes), body.bytes]),
     removed,
     remapped,
   };
@@ -335,6 +340,14 @@ function rewriteStream(
       continue;
     }
 
+    if (!EXPORT_DICOM_TAGS.has(tag)) {
+      if (el.length === UNDEF) {
+        if (!isSequence(src, tag, el, limit)) throw new AnonymizeError("Unsupported export metadata");
+        off = consumeSequence(src, el.valueOff, limit, innerCtx, true).endOffset;
+      } else off = bounded(el.valueOff, el.length, limit, tag);
+      ctx.removed.push(tag);
+      continue;
+    }
     const replaced = rewriteUid(src, tag, el, ctx);
     if (replaced) {
       parts.push(replaced);
@@ -598,4 +611,18 @@ function concat(parts: Uint8Array[]): Uint8Array {
     o += p.length;
   }
   return out;
+}
+
+/** Independent recursive postcondition: no named identity may survive a rewrite. */
+export function assertDicomExportSafe(bytes: Uint8Array): void {
+  const visit = (data: DataSet) => {
+    for (const [tag, element] of Object.entries(data.elements)) {
+      const hex = tag.slice(1).toUpperCase();
+      if (/^(00100010|00100020|00100030|00080050|00080090)$/.test(hex)) assertNoPhi({ [hex]: data.string(tag) ?? "" });
+      if (!PIXEL_TAGS.has(hex) && !isGroupLength(hex) && !EXPORT_DICOM_TAGS.has(hex) && !((STRIP_TAGS.has(hex) || DATE_TAGS.has(hex)) && element.length === 0)) throw new AnonymizeError("Unsupported metadata survived export allowlist");
+      if (["PN", "LO", "SH", "LT", "ST", "UT", "CS", "AE"].includes(element.vr ?? "")) assertNoPhi(data.string(tag) ?? "");
+      if (element.items) for (const item of element.items) if (item.dataSet) visit(item.dataSet);
+    }
+  };
+  visit(parseDicom(bytes));
 }

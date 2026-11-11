@@ -54,11 +54,12 @@ pass. M0–M2 alone do not claim capture/replay completion.
   actions survive and are executed sequentially with matching acknowledgements.
   The review's blanket claim that this function returns only actions[0] does not
   match this base. Caller execution and acknowledgement remain M9 work.
-- Export/M2 addendum: `lib/exportPhi.test.ts` tests web/desktop metadata and
+- Export/M2 addendum: `lib/exportPhi.test.ts` and native `export_policy.rs` tests cover web/desktop metadata and
   overlay allowlists plus DICOM identity stripping and fail-closed validation.
   PR #130 sketch export is absent. Future test `lib/sketchExport.phi.test.ts`
   must exercise PatientName/ID/BirthDate/Accession/ReferringPhysician stripping,
   unknown-field exclusion and rejection of non-placeholder identities. No port.
+  See EXPORT_PHI.md for native dependency/validation limits.
 - P0-7/optional M3: planned `lib/tts.wav.test.ts` and
   `lib/gemini.request.test.ts` cover unary RIFF/WAV versus streaming audio/l16,
   explicit 3.8 TTS ID and speech_metadata style. See GEMINI_VERIFICATION.md for
