@@ -2,8 +2,10 @@ import { retainImageGeometry } from "./anchors/geometryCache";
 // Progressive WADO-RS stack load.
 //
 // First pixel does not wait for every instance's metadata, and it does not
-// wait for any other series. Order of imageIds is the series metadata array
-// order (the historical Cornerstone stack order) so sliceIndex stays put.
+// wait for any other series. The finished stack is in anatomical order
+// (lib/stackOrder: along the slice normal, the way InstanceNumber runs), not
+// the archive's array order — Orthanc returns its own internal order, which
+// put the LIDC chest CT's slices chest, kidney, chest… on every scroll.
 //
 // 1. Resolve the opening instance on its own: the teacher SOP, or a QIDO
 //    offset for the stored slice / the middle of the series, then that one
@@ -33,6 +35,7 @@ import { JsonArrayScanner } from "./jsonArrayStream";
 import { fetchJsonShared } from "./sharedJsonFetch";
 import { runBounded } from "./seriesFill";
 import { stackOpenIndex } from "./stackIndex";
+import { orderStackDatasets } from "./stackOrder";
 import {
   ACTIVE_PREFETCH_RADIUS,
   dicomTagString,
@@ -428,7 +431,7 @@ export function startProgressiveWadorsLoad(input: {
     if (tail) take(scanner.push(tail));
 
     const imageIds: string[] = [];
-    for (const dataset of datasets) {
+    for (const dataset of orderStackDatasets(datasets)) {
       const count = dicomTagNumber(dataset, "00280008") ?? 1;
       if (!Number.isSafeInteger(count) || count < 1) throw new Error("Invalid multiframe identity");
       for (let frame = 1; frame <= count; frame++) {
@@ -439,8 +442,17 @@ export function startProgressiveWadorsLoad(input: {
       }
     }
     if (imageIds.length === 0) throw new Error("Series metadata was empty");
-    // Resolve the actual early SOP/frame in the final order, never reuse its archive offset.
-    const openIndex = resolveImageOpenIndex(imageIds, hint, openedImageId);
+    // A SOP hint stays on the image already painted (its identity, not the
+    // archive offset). An index-only hint was fetched at that offset in the
+    // archive's own order, so the finished anatomical stack opens on the
+    // authored index instead. With no hint, the early frame was the archive
+    // middle — an arbitrary image once the stack is sorted — so open the
+    // true middle.
+    const indexOnlyHint = hint?.sliceIndex != null && !hint.sopInstanceUID?.trim();
+    const sopHint = Boolean(hint?.sopInstanceUID?.trim());
+    const openIndex = !indexOnlyHint && !sopHint
+      ? stackOpenIndex(imageIds.length)
+      : resolveImageOpenIndex(imageIds, hint, indexOnlyHint ? undefined : openedImageId);
     emit(imageIds[openIndex]);
     return { imageIds, openIndex, source: "dicomweb" as const };
   })().catch((err) => {

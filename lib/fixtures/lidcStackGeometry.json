@@ -1,0 +1,598 @@
+{
+ "note": "Geometry of the de-identified LIDC-IDRI chest CT (CAP 5.0 B30s, 65 images) in the order the RadLearn staging archive returned it (read 2026-11-11 via /api/dicomweb series metadata). InstanceNumber, ImagePositionPatient and SliceLocation only: no names, IDs or UIDs.",
+ "orientation": [
+  1,
+  0,
+  0,
+  0,
+  1,
+  0
+ ],
+ "archiveOrder": [
+  {
+   "instanceNumber": 54,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -344
+   ],
+   "sliceLocation": 344
+  },
+  {
+   "instanceNumber": 16,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -154
+   ],
+   "sliceLocation": 154
+  },
+  {
+   "instanceNumber": 9,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -119
+   ],
+   "sliceLocation": 119
+  },
+  {
+   "instanceNumber": 52,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -334
+   ],
+   "sliceLocation": 334
+  },
+  {
+   "instanceNumber": 25,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -199
+   ],
+   "sliceLocation": 199
+  },
+  {
+   "instanceNumber": 15,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -149
+   ],
+   "sliceLocation": 149
+  },
+  {
+   "instanceNumber": 60,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -374
+   ],
+   "sliceLocation": 374
+  },
+  {
+   "instanceNumber": 30,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -224
+   ],
+   "sliceLocation": 224
+  },
+  {
+   "instanceNumber": 40,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -274
+   ],
+   "sliceLocation": 274
+  },
+  {
+   "instanceNumber": 49,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -319
+   ],
+   "sliceLocation": 319
+  },
+  {
+   "instanceNumber": 17,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -159
+   ],
+   "sliceLocation": 159
+  },
+  {
+   "instanceNumber": 27,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -209
+   ],
+   "sliceLocation": 209
+  },
+  {
+   "instanceNumber": 42,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -284
+   ],
+   "sliceLocation": 284
+  },
+  {
+   "instanceNumber": 56,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -354
+   ],
+   "sliceLocation": 354
+  },
+  {
+   "instanceNumber": 20,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -174
+   ],
+   "sliceLocation": 174
+  },
+  {
+   "instanceNumber": 7,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -109
+   ],
+   "sliceLocation": 109
+  },
+  {
+   "instanceNumber": 32,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -234
+   ],
+   "sliceLocation": 234
+  },
+  {
+   "instanceNumber": 58,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -364
+   ],
+   "sliceLocation": 364
+  },
+  {
+   "instanceNumber": 55,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -349
+   ],
+   "sliceLocation": 349
+  },
+  {
+   "instanceNumber": 33,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -239
+   ],
+   "sliceLocation": 239
+  },
+  {
+   "instanceNumber": 3,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -89
+   ],
+   "sliceLocation": 89
+  },
+  {
+   "instanceNumber": 64,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -394
+   ],
+   "sliceLocation": 394
+  },
+  {
+   "instanceNumber": 39,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -269
+   ],
+   "sliceLocation": 269
+  },
+  {
+   "instanceNumber": 12,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -134
+   ],
+   "sliceLocation": 134
+  },
+  {
+   "instanceNumber": 37,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -259
+   ],
+   "sliceLocation": 259
+  },
+  {
+   "instanceNumber": 65,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -399
+   ],
+   "sliceLocation": 399
+  },
+  {
+   "instanceNumber": 28,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -214
+   ],
+   "sliceLocation": 214
+  },
+  {
+   "instanceNumber": 22,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -184
+   ],
+   "sliceLocation": 184
+  },
+  {
+   "instanceNumber": 29,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -219
+   ],
+   "sliceLocation": 219
+  },
+  {
+   "instanceNumber": 43,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -289
+   ],
+   "sliceLocation": 289
+  },
+  {
+   "instanceNumber": 11,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -129
+   ],
+   "sliceLocation": 129
+  },
+  {
+   "instanceNumber": 24,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -194
+   ],
+   "sliceLocation": 194
+  },
+  {
+   "instanceNumber": 53,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -339
+   ],
+   "sliceLocation": 339
+  },
+  {
+   "instanceNumber": 23,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -189
+   ],
+   "sliceLocation": 189
+  },
+  {
+   "instanceNumber": 62,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -384
+   ],
+   "sliceLocation": 384
+  },
+  {
+   "instanceNumber": 21,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -179
+   ],
+   "sliceLocation": 179
+  },
+  {
+   "instanceNumber": 47,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -309
+   ],
+   "sliceLocation": 309
+  },
+  {
+   "instanceNumber": 1,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -79
+   ],
+   "sliceLocation": 79
+  },
+  {
+   "instanceNumber": 18,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -164
+   ],
+   "sliceLocation": 164
+  },
+  {
+   "instanceNumber": 48,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -314
+   ],
+   "sliceLocation": 314
+  },
+  {
+   "instanceNumber": 51,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -329
+   ],
+   "sliceLocation": 329
+  },
+  {
+   "instanceNumber": 46,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -304
+   ],
+   "sliceLocation": 304
+  },
+  {
+   "instanceNumber": 14,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -144
+   ],
+   "sliceLocation": 144
+  },
+  {
+   "instanceNumber": 38,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -264
+   ],
+   "sliceLocation": 264
+  },
+  {
+   "instanceNumber": 36,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -254
+   ],
+   "sliceLocation": 254
+  },
+  {
+   "instanceNumber": 8,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -114
+   ],
+   "sliceLocation": 114
+  },
+  {
+   "instanceNumber": 19,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -169
+   ],
+   "sliceLocation": 169
+  },
+  {
+   "instanceNumber": 6,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -104
+   ],
+   "sliceLocation": 104
+  },
+  {
+   "instanceNumber": 5,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -99
+   ],
+   "sliceLocation": 99
+  },
+  {
+   "instanceNumber": 63,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -389
+   ],
+   "sliceLocation": 389
+  },
+  {
+   "instanceNumber": 44,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -294
+   ],
+   "sliceLocation": 294
+  },
+  {
+   "instanceNumber": 41,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -279
+   ],
+   "sliceLocation": 279
+  },
+  {
+   "instanceNumber": 50,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -324
+   ],
+   "sliceLocation": 324
+  },
+  {
+   "instanceNumber": 57,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -359
+   ],
+   "sliceLocation": 359
+  },
+  {
+   "instanceNumber": 10,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -124
+   ],
+   "sliceLocation": 124
+  },
+  {
+   "instanceNumber": 35,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -249
+   ],
+   "sliceLocation": 249
+  },
+  {
+   "instanceNumber": 2,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -84
+   ],
+   "sliceLocation": 84
+  },
+  {
+   "instanceNumber": 4,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -94
+   ],
+   "sliceLocation": 94
+  },
+  {
+   "instanceNumber": 34,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -244
+   ],
+   "sliceLocation": 244
+  },
+  {
+   "instanceNumber": 61,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -379
+   ],
+   "sliceLocation": 379
+  },
+  {
+   "instanceNumber": 31,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -229
+   ],
+   "sliceLocation": 229
+  },
+  {
+   "instanceNumber": 59,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -369
+   ],
+   "sliceLocation": 369
+  },
+  {
+   "instanceNumber": 26,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -204
+   ],
+   "sliceLocation": 204
+  },
+  {
+   "instanceNumber": 13,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -139
+   ],
+   "sliceLocation": 139
+  },
+  {
+   "instanceNumber": 45,
+   "position": [
+    -198.61328125,
+    -357.61328125,
+    -299
+   ],
+   "sliceLocation": 299
+  }
+ ]
+}

@@ -78,27 +78,6 @@ export function dicomTagNumber(dataset: unknown, tag: string): number | undefine
  * Last authored landing on `seriesInstanceUID` (highest finding order).
  * That is the slice the teacher left, when one was stored.
  */
-/**
- * Where a learner-facing viewer opens: the slice of the case's FIRST finding
- * (lowest order) on this series — the start of the teaching story. The last
- * finding is where an author left off (lastTeacherSlice); opening a reader
- * there dropped the LIDC chest case onto its final, upper-abdomen slice.
- */
-export function firstTeacherSlice(
-  findings: readonly {
-    order?: number;
-    seriesInstanceUID?: string;
-    sliceIndex?: number;
-    sopInstanceUID?: string;
-  }[],
-  seriesInstanceUID: string | undefined
-): OpenSlice | undefined {
-  const usable = findings.filter((f) => f.seriesInstanceUID === seriesInstanceUID);
-  if (!usable.length) return undefined;
-  const first = usable.reduce((a, b) => ((b.order ?? 0) < (a.order ?? 0) ? b : a));
-  return lastTeacherSlice([{ ...first, order: 0 }], seriesInstanceUID);
-}
-
 export function lastTeacherSlice(
   findings: readonly {
     order?: number;
@@ -258,4 +237,63 @@ export function resolveImageOpenIndex(imageIds: readonly string[], hint?: OpenSl
     return hits[0];
   }
   return resolveOpenIndex(imageIds.length, [], hint);
+}
+
+/**
+ * Index of an instance in a WADO-RS stack, by its SOP Instance UID, or -1
+ * (local `dicomfile:` stacks carry no UID in their ids). A finding anchored
+ * by SOP lands on its image wherever the stack's order puts it.
+ */
+export function stackIndexOfSop(imageIds: readonly string[], sopInstanceUID: string): number {
+  const needle = `/instances/${sopInstanceUID.trim()}/frames/`;
+  return sopInstanceUID.trim() ? imageIds.findIndex((id) => id.includes(needle)) : -1;
+}
+
+/**
+ * Findings with each SOP-anchored slice index taken from the stack the
+ * viewer actually holds (`indexOf` → -1 while that instance is unknown, and
+ * the stored index stands). Stored indices were captured in whatever order
+ * the stack had then; the SOP is the image. Same array when nothing moves.
+ */
+export function withSopAnchoredSlices<F extends { sopInstanceUID?: string; sliceIndex?: number }>(
+  findings: readonly F[],
+  indexOf: (sopInstanceUID: string) => number
+): readonly F[] {
+  let changed = false;
+  const next = findings.map((finding) => {
+    const sop = finding.sopInstanceUID?.trim();
+    if (!sop) return finding;
+    const index = indexOf(sop);
+    if (index < 0 || index === finding.sliceIndex) return finding;
+    changed = true;
+    return { ...finding, sliceIndex: index };
+  });
+  return changed ? next : findings;
+}
+
+/**
+ * Where a learner-facing viewer opens: the slice of the case's FIRST anchored
+ * finding (lowest order that has a slice index or a SOP) on this series — the
+ * start of the teaching story. A first finding with neither is skipped, not
+ * the end of the search. The last finding is where an author left off
+ * (lastTeacherSlice); opening a reader there dropped the LIDC chest case onto
+ * its final, upper-abdomen slice.
+ */
+export function firstTeacherSlice(
+  findings: readonly {
+    order?: number;
+    seriesInstanceUID?: string;
+    sliceIndex?: number;
+    sopInstanceUID?: string;
+  }[],
+  seriesInstanceUID: string | undefined
+): OpenSlice | undefined {
+  const anchored = findings.filter(
+    (f) =>
+      f.seriesInstanceUID === seriesInstanceUID &&
+      (Boolean(f.sopInstanceUID?.trim()) || (f.sliceIndex != null && Number.isFinite(f.sliceIndex)))
+  );
+  if (!anchored.length) return undefined;
+  const first = anchored.reduce((a, b) => ((b.order ?? 0) < (a.order ?? 0) ? b : a));
+  return lastTeacherSlice([{ ...first, order: 0 }], seriesInstanceUID);
 }

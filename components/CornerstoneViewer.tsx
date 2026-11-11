@@ -98,7 +98,7 @@ import {
 import { NEIGHBOR_PREFETCH_DELAY_MS, tuneStackScrollTool } from "../lib/scrollSensitivity";
 import { fillBudget, outwardOrder } from "../lib/seriesFill";
 import { stackOpenIndex } from "../lib/stackIndex";
-import type { OpenSlice } from "../lib/viewerLoad";
+import { stackIndexOfSop, type OpenSlice } from "../lib/viewerLoad";
 import {
   beginViewerNavigation,
   markViewerPixels,
@@ -441,6 +441,8 @@ export interface CornerstoneControls extends Partial<RenderConfirmedViewer> {
    * slice, and resize. Null while MPR owns the pane.
    */
   subscribeView?: (listener: (frame: SketchFrame | null) => void) => () => void;
+  /** Index of an instance (by SOP Instance UID) in the stack on screen, or -1. */
+  indexOfSop?: (sopInstanceUID: string) => number;
 }
 
 type CachedSlice = {
@@ -3329,12 +3331,15 @@ export default function CornerstoneViewer({
           // Slice change snaps (a new slice must be decoded) before the tween.
           // In MPR the index is the authored stack image. The focal point comes
           // from that image's plane, and only when the plane is present.
-          if (state.sliceIndex != null || state.sliceFraction != null) {
+          if (state.sliceIndex != null || state.sliceFraction != null || state.sopInstanceUID) {
             const ids = mprHeld?.imageIds ?? vp?.getImageIds() ?? [];
+            const bySop = state.sopInstanceUID ? stackIndexOfSop(ids, state.sopInstanceUID) : -1;
             const idx =
               ids.length === 0
                 ? 0
-                : state.sliceIndex != null
+                : bySop >= 0
+                  ? bySop
+                  : state.sliceIndex != null
                   ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
                   : Math.max(
                       0,
@@ -3697,6 +3702,7 @@ export default function CornerstoneViewer({
             ),
           captureViewportStream: () =>
             openViewportStream(mprSessionRef.current ? axialRef.current : elementRef.current),
+          indexOfSop: (sop) => stackIndexOfSop(viewportRef.current?.getImageIds() ?? [], sop),
           subscribeView: (listener) => {
             viewListeners.add(listener);
             const frame = readProjector();
