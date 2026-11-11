@@ -21,6 +21,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import { syntheticStudy, STUDY as SYNTHETIC_STUDY } from "../make-synthetic-study.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 export const STUDY_UID = "1.2.826.0.1.3680043.8.498.10000000000000000000000001";
@@ -127,6 +129,8 @@ export async function startMockDicomweb(options = {}) {
     // FIFO behind each other, the way frames share a learner's connection.
     bandwidthMbps: Number(options.bandwidthMbps ?? 0),
   };
+  const syntheticFiles = options.synthetic ? syntheticStudy() : null;
+  const synthetic = syntheticFiles ? JSON.parse(syntheticFiles.get("study.json").toString()) : null;
   let linkFreeAt = 0;
   /** Wait until `bytes` have crossed the shared link. */
   const throttle = async (bytes) => {
@@ -311,6 +315,35 @@ export async function startMockDicomweb(options = {}) {
     }
 
     await sleep(cfg.latencyMs);
+
+    if (synthetic && dicomweb.startsWith(`/studies/${SYNTHETIC_STUDY}/`)) {
+      const match = /^\/studies\/[^/]+\/series\/([^/]+)\/(metadata|instances)(?:\/([^/]+)(?:\/(metadata|frames\/(\d+)))?)?$/.exec(dicomweb);
+      if (!match) return void res.writeHead(404).end("unknown synthetic path");
+      const rows = synthetic.instances.filter(item => item.seriesUID === match[1]);
+      const instance = rows.find(item => item.sopUID === match[3]);
+      if (!rows.length || (match[3] && !instance)) return void res.writeHead(404).end("unknown synthetic identity");
+      if (match[5]) {
+        const file = instance.frameFiles[Number(match[5]) - 1];
+        if (!file) return void res.writeHead(404).end("unknown synthetic frame");
+        const body = Buffer.concat([
+          Buffer.from('--flowradsynthetic\r\nContent-Type: application/octet-stream\r\n\r\n'),
+          syntheticFiles.get(file), Buffer.from('\r\n--flowradsynthetic--'),
+        ]);
+        counters.frames++;
+        counters.bytes += body.length;
+        res.writeHead(200, { "content-type": 'multipart/related; type="application/octet-stream"; boundary=flowradsynthetic' });
+        return void res.end(body);
+      }
+      if (instance && !match[4]) {
+        res.writeHead(200, { "content-type": "application/dicom" });
+        return void res.end(part10(instance.sopUID, Buffer.concat(instance.frameFiles.map(file => syntheticFiles.get(file)))));
+      }
+      const metadata = instance ? [instance.metadata] : rows.map(item => item.metadata);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      const limit = Number(url.searchParams.get("limit") ?? metadata.length);
+      res.writeHead(200, { "content-type": "application/dicom+json" });
+      return void res.end(JSON.stringify(match[2] === "instances" && !instance ? metadata.slice(offset, offset + limit) : metadata));
+    }
 
     const frame = /^\/studies\/[^/]+\/series\/[^/]+\/instances\/([^/]+)\/frames\/\d+$/.exec(dicomweb);
     if (frame) {

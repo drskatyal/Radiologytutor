@@ -1,0 +1,288 @@
+error TS6053: File '/workspace/radlearn-build/.next/types/app/admin/layout.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/admin/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/authors/[authorId]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/authors/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/cases/[caseId]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/cases/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/courses/[courseId]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/courses/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/import/public-case/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/memberships/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/orthanc-status/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/patients/[patientId]/studies/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/patients/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/playlists/[playlistId]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/playlists/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/studies/[studyId]/series/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/admin/studies/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/assessments/question-view/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/assessments/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/attempts/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/audio/[id]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/audio/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/auth/[...all]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/auth/demo/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/capture-sessions/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/findings/[findingId]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/findings/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/live-teaching-pack/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/prefetch/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/reorder/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/series/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/[caseId]/share/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/cases/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/catalog/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/certificates/[id]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/certificates/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/desktop/config/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/desktop/update/rollback/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/desktop/update/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/dicom-cdn/files/[...path]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/dicom-cdn/manifest/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/dicomweb/[...path]/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/enrollments/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/gemini/files/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/grade-report/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/me/prefs/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/me/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/progress/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/reviews/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/structure-finding/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/structure-session/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/studio/profile/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/studio/voice/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/tour-check-in/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/transcribe-narration/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/transcribe/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/tts/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/tutor/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/upload/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/version/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/voice/realtime/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/voice/search/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/voice/status/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/api/wishlist/route.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/author/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/author/record/[caseId]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/authors/[id]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/case/[caseId]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/certificate/[id]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/cornerstone/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/course/[id]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/dashboard/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/dev/sketch/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/dev/teaching-layer/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/learning/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/library/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/playlist/[id]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/privacy/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/record/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/s/[token]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/sign-in/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/sign-up/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/cases/[caseId]/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/cases/[caseId]/record/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/cases/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/courses/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/layout.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/new/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/studio/profile/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/terms/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/upload/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/viewer/local/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'
+error TS6053: File '/workspace/radlearn-build/.next/types/app/viewer/page.ts' not found.
+  The file is in the program because:
+    Matched by include pattern '.next/types/**/*.ts' in '/workspace/radlearn-build/tsconfig.json'

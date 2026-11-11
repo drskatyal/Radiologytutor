@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { SERIES_UID, STUDY_UID, sopFor, startMockDicomweb } from "../../scripts/bench/mockDicomweb.mjs";
 
+import { syntheticStudy, STUDY as SYNTHETIC_STUDY, SERIES_A, SERIES_B } from "../../scripts/make-synthetic-study.mjs";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PORT = Number(process.env.MOCK_ARCHIVE_PORT ?? 3199);
 export const MOCK_ARCHIVE_DATA_DIR = process.env.MOCK_ARCHIVE_DATA_DIR ?? join(tmpdir(), "flowrad-e2e-archive-data");
@@ -78,6 +80,15 @@ async function seedData() {
       2
     )
   );
+  if (process.env.RADLEARN_SYNTHETIC === "1") {
+    const files = syntheticStudy();
+    await writeFile(join(MOCK_ARCHIVE_DATA_DIR, "case-synthetic-teach.json"), files.get("case.json"));
+    await writeFile(join(MOCK_ARCHIVE_DATA_DIR, "studies", "stu_synthetic.json"), JSON.stringify({
+      id: "stu_synthetic", orgId: "org_demo", patientId: "synthetic-patient",
+      studyInstanceUID: SYNTHETIC_STUDY, modality: "CT", description: "Synthetic study",
+      seriesInstanceUIDs: [SERIES_A, SERIES_B], createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    }));
+  }
   // The org owns the study: lib/studyAccess gates every pixel read on that.
   await writeFile(
     join(MOCK_ARCHIVE_DATA_DIR, "studies", "stu_e2e_archive.json"),
@@ -107,7 +118,7 @@ function json(res, body, status = 200) {
 
 async function main() {
   await seedData();
-  const dicomweb = await startMockDicomweb({ slices: SLICES, rows: 256, columns: 256, latencyMs: 0, metadataBuildMs: 0 });
+  const dicomweb = await startMockDicomweb({ synthetic: process.env.RADLEARN_SYNTHETIC === "1", slices: SLICES, rows: 256, columns: 256, latencyMs: 0, metadataBuildMs: 0 });
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -118,9 +129,22 @@ async function main() {
         let body = "";
         for await (const chunk of req) body += chunk;
         const { Level, Query } = JSON.parse(body || "{}");
+        if (process.env.RADLEARN_SYNTHETIC === "1") {
+          if (Level === "Study" && Query?.StudyInstanceUID === SYNTHETIC_STUDY) return json(res, ["synthetic-study"]);
+          if (Level === "Series" && [SERIES_A, SERIES_B].includes(Query?.SeriesInstanceUID)) return json(res, [Query.SeriesInstanceUID === SERIES_A ? "synthetic-a" : "synthetic-b"]);
+        }
         if (Level === "Study") return json(res, Query?.StudyInstanceUID === STUDY_UID ? [STUDY_ID] : []);
         if (Level === "Series") return json(res, Query?.SeriesInstanceUID === SERIES_UID ? [SERIES_ID] : []);
         return json(res, []);
+      }
+      if (process.env.RADLEARN_SYNTHETIC === "1") {
+        if (path === "/studies/synthetic-study") return json(res, { ID: "synthetic-study", Series: ["synthetic-a", "synthetic-b"], MainDicomTags: { StudyInstanceUID: SYNTHETIC_STUDY } });
+        if (path === "/series/synthetic-a" || path === "/series/synthetic-b") {
+          const a = path.endsWith("-a");
+          return json(res, { ID: a ? "synthetic-a" : "synthetic-b", ParentStudy: "synthetic-study",
+            MainDicomTags: { SeriesInstanceUID: a ? SERIES_A : SERIES_B, Modality: "CT", SeriesNumber: a ? "1" : "2", SeriesDescription: a ? "Synthetic single frames" : "Synthetic multiframe" },
+            Instances: a ? ["s-a-3", "s-a-1", "s-a-2", "s-a-4"] : ["s-b-1"] });
+        }
       }
       if (path === `/studies/${STUDY_ID}`) {
         return json(res, { ID: STUDY_ID, Series: [SERIES_ID], MainDicomTags: { StudyInstanceUID: STUDY_UID } });

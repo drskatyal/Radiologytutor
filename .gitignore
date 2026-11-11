@@ -55,3 +55,7 @@ public/voice/
 desktop/public/voice/
 brand/build/out/
 public/_static-manifest.json
+
+# RadLearn local validation stores and logs
+/.radlearn-tmp/
+/radlearn-*.log
