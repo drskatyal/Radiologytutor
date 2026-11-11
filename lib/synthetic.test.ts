@@ -32,3 +32,19 @@ test("synthetic archive preserves identity, order and distinct multiframe pixels
     assert.equal((await frame(5)).status, 404);
   } finally { await archive.close(); }
 });
+
+test("T1 archive and shuffled fixtures preserve SOP-bound bytes and differ in order", async () => {
+  const archives = await Promise.all(["archive", "shuffled"].map(syntheticOrder => startMockDicomweb({ synthetic: true, syntheticOrder, latencyMs: 0 })));
+  try {
+    const metadata = await Promise.all(archives.map(a => fetch(`${a.origin}/dicomweb/studies/${STUDY}/series/${SERIES_A}/metadata`).then(r => r.json())));
+    const uids = metadata.map(rows => rows.map((r: Record<string, { Value: string[] }>) => r["00080018"].Value[0]));
+    const shuffled = JSON.parse((await readFile("fixtures/synthetic/shuffled-order.json")).toString());
+    assert.notDeepEqual(uids[0], uids[1]);
+    assert.deepEqual(uids[1], shuffled.sopUIDs);
+    assert.deepEqual([...uids[0]].sort(), [...uids[1]].sort());
+    for (const sop of uids[0]) {
+      const bytes = await Promise.all(archives.map(a => fetch(`${a.origin}/dicomweb/studies/${STUDY}/series/${SERIES_A}/instances/${sop}/frames/1`).then(r => r.arrayBuffer())));
+      assert.deepEqual(Buffer.from(bytes[0]), Buffer.from(bytes[1]));
+    }
+  } finally { await Promise.all(archives.map(a => a.close())); }
+});

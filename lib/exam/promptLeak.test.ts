@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fixture from "../../fixtures/synthetic/case.json";
 import type { CaseData } from "../types";
 import { materializeLiveTeachingPack, livePackInstruction, livePackTools } from "../liveTeachingPack";
-import { buildLiveSetup } from "../geminiLiveProtocol";
+import { buildLiveSetup, buildLiveContextUpdate } from "../geminiLiveProtocol";
 import { runTeachingPlan } from "../gemini";
 import { examinerPromptPack } from "./prompt";
 import { answerStructureRequest, structureAnswer } from "./structureAnswer";
@@ -13,7 +13,7 @@ test("all examiner prompt/setup builders exclude the answer, tools and search", 
   const pack = materializeLiveTeachingPack({ caseId: data.caseId, modality: "CT", findings: data.findings, diagnosis: "CANARY_DIAGNOSIS", clinicalQuestion: "CANARY_STEM" });
   const prompt = livePackInstruction(pack, "examiner", "CANARY_TITLE", "CANARY_FOCUS");
   const setup = buildLiveSetup({ model: "gemini-3.8-live", mode: "examiner", systemInstruction: "CANARY_INJECT", tools: livePackTools([]), extra: { google_search: {}, contents: "CANARY_EXTRA" } });
-  for (const value of [examinerPromptPack(), prompt, setup, livePackTools([], "examiner"), answerStructureRequest("A round opacity is present.")]) {
+  for (const value of [examinerPromptPack(), prompt, setup, buildLiveContextUpdate({ mode: "examiner", systemInstruction: "CANARY_INJECT", tools: livePackTools([]) }), livePackTools([], "examiner"), answerStructureRequest("A round opacity is present.")]) {
     assert.doesNotMatch(JSON.stringify(value), /CANARY|show_finding|jump_to_key_view|play_guide|google_search|web_search/);
   }
 });

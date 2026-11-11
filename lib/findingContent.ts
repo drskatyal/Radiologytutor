@@ -11,9 +11,10 @@ export function canonicalJson(value: unknown): string {
 export const hashContent = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 /** Explicit immutable content allowlist. Never copy client approval/version bookkeeping. */
 export function findingContent(f: Finding): FindingContent {
-  const keys = ["label", "description", "teachingPoints", "state", "marker", "keyframes", "track", "teachingGuide", "durationMs", "studyInstanceUID", "seriesInstanceUID", "sopInstanceUID", "sopInstanceUIDs", "frameNumber", "imagePoint", "landmark", "windowWidth", "windowCenter", "measurements", "anchors", "annotations", "anchor", "evidence", "provenance", "phiReview", "reportGold", "reportMustMention", "captureSessionId", "markerId", "segmentId", "tStartMs", "tEndMs"] as const;
+  const keys = FINDING_CONTENT_KEYS;
   return structuredClone(Object.fromEntries(keys.filter(key => f[key] !== undefined).map(key => [key, f[key]]))) as FindingContent;
 }
+export const FINDING_CONTENT_KEYS = ["label", "description", "teachingPoints", "state", "marker", "keyframes", "track", "teachingGuide", "durationMs", "studyInstanceUID", "seriesInstanceUID", "sopInstanceUID", "sopInstanceUIDs", "frameNumber", "imagePoint", "landmark", "windowWidth", "windowCenter", "measurements", "anchors", "annotations", "anchor", "evidence", "provenance", "phiReview", "reportGold", "reportMustMention", "captureSessionId", "markerId", "segmentId", "tStartMs", "tEndMs"] as const;
 export function anchorFromFinding(f: Finding): FindingAnchorSnapshot | undefined {
   return f.anchor ?? (f.studyInstanceUID && f.seriesInstanceUID && f.sopInstanceUID && f.frameNumber ? {
     studyUID: f.studyInstanceUID, seriesUID: f.seriesInstanceUID, sopUID: f.sopInstanceUID, frame: f.frameNumber,

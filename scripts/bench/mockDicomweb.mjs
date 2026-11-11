@@ -320,6 +320,7 @@ export async function startMockDicomweb(options = {}) {
       const match = /^\/studies\/[^/]+\/series\/([^/]+)\/(metadata|instances)(?:\/([^/]+)(?:\/(metadata|frames\/(\d+)))?)?$/.exec(dicomweb);
       if (!match) return void res.writeHead(404).end("unknown synthetic path");
       const rows = synthetic.instances.filter(item => item.seriesUID === match[1]);
+      if (options.syntheticOrder === "shuffled") rows.reverse();
       const instance = rows.find(item => item.sopUID === match[3]);
       if (!rows.length || (match[3] && !instance)) return void res.writeHead(404).end("unknown synthetic identity");
       if (match[5]) {

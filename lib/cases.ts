@@ -2507,14 +2507,35 @@ export async function approvedCurrent(orgId: string, caseId: string): Promise<Fi
   const data = await getCaseForOrg(orgId, caseId);
   if (!data || data.status !== "published") return [];
   const inventories = new Map<string, ReturnType<typeof readFindingInventory>>();
-  return (await Promise.all(data.findings.map(async f => {
+  const checked = await Promise.all(data.findings.map(async f => {
     const anchor = anchorFromFinding(f);
     if (!anchor || f.currentVersion !== f.approvedVersion) return null;
     const key = `${anchor.studyUID}/${anchor.seriesUID}`;
     if (!inventories.has(key)) inventories.set(key, readFindingInventory(anchor));
     const inventory = await inventories.get(key)!.catch(() => undefined);
-    return approvedFinding(data, f, inventory);
-  }))).filter((f): f is Finding => f !== null);
+    return { findingId: f.id, version: f.currentVersion, inventory };
+  }));
+  const eligible: Finding[] = [];
+  await mutateCase(orgId, caseId, latest => {
+    eligible.length = 0; // Mongo may retry this transition after a CAS conflict.
+    for (const check of checked) {
+      if (!check) continue;
+      const f = latest.findings.find(row => row.id === check.findingId && row.currentVersion === check.version);
+      if (!f) continue;
+      const approved = approvedFinding(latest, f, check.inventory);
+      if (!approved) continue;
+      eligible.push(approved);
+      const v = latest.findingVersions!.find(v => v.findingId === f.id && v.version === f.currentVersion)!;
+      const inventoryOrderHash = hashContent(check.inventory!.instances.map(i => i.sopUID));
+      const prior = latest.findingRevalidations?.filter(r => r.findingId === f.id && r.version === f.currentVersion).at(-1);
+      if (prior?.inventoryOrderHash !== inventoryOrderHash) {
+        latest.findingRevalidations ??= [];
+        latest.findingRevalidations.push({ findingId: f.id, version: f.currentVersion!, contentHash: v.contentHash, inventoryOrderHash, checkedAt: nowIso(), reason: "order_revalidated" });
+      }
+    }
+    return latest;
+  });
+  return eligible;
 }
 /** Tutor projection contains only per-version approved content, never old case-level prose. */
 export async function groundedCase(data: Case): Promise<Case> {

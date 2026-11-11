@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/voice/search — session-gated web search for a Gemini Live tool call.
 // The Live model calls web_search; this route runs Google Search via Flash and
 // returns a short answer plus sources. The API key stays on the server.
@@ -10,6 +11,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  if (await hasActiveExam()) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
   try {
     await requireSession();
   } catch (err) {

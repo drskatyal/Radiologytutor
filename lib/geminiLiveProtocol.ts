@@ -185,13 +185,14 @@ export function buildLiveTextInput(text: string): string {
  * web_search are not dropped.
  */
 export function buildLiveContextUpdate(input: {
+  mode?: LiveTeachMode;
   systemInstruction: string;
   tools: readonly LiveToolDeclaration[];
 }): string {
   return JSON.stringify({
     contextUpdate: {
-      systemInstruction: { parts: [{ text: input.systemInstruction }] },
-      tools: { tools: [{ functionDeclarations: liveFunctionDeclarations(input.tools) }] },
+      systemInstruction: { parts: [{ text: input.mode === "examiner" ? examinerPromptPack().instruction : input.systemInstruction }] },
+      tools: { tools: [{ functionDeclarations: liveFunctionDeclarations(input.mode === "examiner" ? [] : input.tools) }] },
     },
   });
 }

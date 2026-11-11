@@ -1779,6 +1779,7 @@ export function useStudentSession(
     const pack = teachingPackRef.current;
     session.sendContextUpdate(
       buildLiveContextUpdate({
+        mode: liveModeRef.current,
         systemInstruction: livePackInstruction(pack, liveModeRef.current, caseData.title, focusId),
         tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current),
       })

@@ -1,5 +1,5 @@
 import type { Case, Finding, FindingVersion, SeriesInventory } from "./types";
-import { anchorFromFinding, FindingConflict, findingContent, hashContent } from "./findingContent";
+import { anchorFromFinding, FINDING_CONTENT_KEYS, FindingConflict, findingContent, hashContent } from "./findingContent";
 import { instanceSetFingerprint, resolveFindingAnchor } from "./findingInventory";
 import { assertNoPhi, assertReviewedMedia } from "./phiGuard";
 import { canAccessOrgResource } from "./authRoles";
@@ -29,7 +29,8 @@ export function migrateFindings(data: Case): Case {
   return next;
 }
 export function prepareFinding(current: Finding, patch: Partial<Finding>, inventory?: SeriesInventory): Finding {
-  const next = { ...current, ...findingContent(patch as Finding), id: current.id };
+  const contentPatch = Object.fromEntries(FINDING_CONTENT_KEYS.filter(key => key in patch).map(key => [key, patch[key]]));
+  const next: Finding = { ...current, ...contentPatch, id: current.id };
   // An explicit identity edit must not retain the previous canonical anchor.
   if (!("anchor" in patch) && ["studyInstanceUID", "seriesInstanceUID", "sopInstanceUID", "frameNumber", "imagePoint", "windowWidth", "windowCenter"].some(k => k in patch)) delete next.anchor;
   next.anchor = anchorFromFinding(next);
@@ -61,7 +62,7 @@ export function approveVersion(data: Case, findingId: string, version: number, c
   const f = next.findings.find(row => row.id === findingId);
   const v = next.findingVersions!.find(row => row.findingId === findingId && row.version === version);
   if (!f || !v) throw new FindingConflict("Finding version not found", 404);
-  if (f.currentVersion !== version || v.contentHash !== contentHash || hashContent(findingContent(f)) !== contentHash) throw new FindingConflict("Finding changed; reload before approving");
+  if (f.currentVersion !== version || v.contentHash !== contentHash || hashContent(v.content) !== contentHash || hashContent(findingContent(f)) !== contentHash) throw new FindingConflict("Finding changed; reload before approving");
   if (resolveFindingAnchor(v.anchor, inventory) !== "resolved") throw new FindingConflict("Complete, resolved Study/Series/SOP/frame identity required", 422);
   if (!inventory || v.content.provenance?.instanceSetFingerprint !== instanceSetFingerprint(inventory) || v.content.provenance.orderingAlgorithmVersion !== inventory.orderingAlgorithmVersion) throw new FindingConflict("Image inventory changed; create a new reviewed version");
   assertNoPhi(v.content);

@@ -52,6 +52,7 @@ export function syntheticStudy() {
   const instances = [make(SERIES_A, 2), make(SERIES_A, 0), make(SERIES_A, 1), make(SERIES_A, 3, 1, false), make(SERIES_B, 0, 4)];
   const manifest = { studyUID: STUDY, seriesUIDs: [SERIES_A, SERIES_B], instances };
   files.set('study.json', json(manifest));
+  files.set('shuffled-order.json', json({ seriesUID: SERIES_A, sopUIDs: [...instances.filter(i => i.seriesUID === SERIES_A)].reverse().map(i => i.sopUID) }));
   files.set('dirty-metadata.json', json({ ...instances[0].metadata,
     '00100010': tag('PN', { Alphabetic: 'DOE^JANE' }), '00080050': tag('SH', 'ACC12345') }));
   const sampleRate = 16000, seconds = 4;
