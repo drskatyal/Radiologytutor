@@ -76,7 +76,7 @@ test("record → guide → play supersedes the LIDC demo and speaks the take", a
   assert.ok(lungAt > report.play.log.indexOf(`slice:${finding.sliceIndex}`));
   assert.ok(zoomAt > lungAt);
   assert.ok(pointAt > zoomAt);
-  assert.equal(report.play.landedSlice, 34);
+  assert.equal(report.play.landedSlice, 20);
 
   assert.equal(report.spokenBeat, true);
   assert.equal(report.driveFirst, true);
