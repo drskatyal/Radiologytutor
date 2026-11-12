@@ -11,8 +11,8 @@ merge, deployment, new remote data, or implementation of the deferred milestones
 | T4 crash recovery | M4 `e2e/radlearn/capture-recovery.spec.ts` | Recovery resumes acknowledged media and journal chunks without loss or duplication. |
 | T5 mic failure | M4 `lib/journal/recorder.test.ts`, `e2e/radlearn/mic-retry.spec.ts` | Clean permission error; second start succeeds with a new session clock. |
 | T6 audio gap | M4 `lib/journal/recorder.test.ts`; M8 planned `e2e/radlearn/replay-clock.spec.ts` | Detect discontinuity and reproduce offsets within explicit tolerance. |
-| T7 three silent markers | M5 planned `lib/anchors/reconcile.test.ts`, `e2e/radlearn/markers.spec.ts` | Three retained markers produce three candidates without narration; no production cardinality change in M0–M2. |
-| T8 measurement round-trip | M5 planned `lib/anchors/geometry.test.ts`; M8 planned `e2e/radlearn/replay-geometry.spec.ts` | Pixel/patient coordinates round-trip; record PixelSpacing/ImagerPixelSpacing/uncalibrated provenance. |
+| T7 three silent markers | M5 `lib/anchors/reconcile.test.ts`, `e2e/radlearn/markers.spec.ts` | Three retained markers produce three candidates without narration; no production cardinality change in M0–M2. |
+| T8 measurement round-trip | M5 `lib/anchors/geometry.test.ts`; M8 planned `e2e/radlearn/replay-geometry.spec.ts` | Pixel/patient coordinates round-trip; record PixelSpacing/ImagerPixelSpacing/uncalibrated provenance. |
 | T9 invalidation | M2 `lib/findingAcceptance.test.ts`, `e2e/radlearn/approval.spec.ts` | Any version contentHash change invalidates approval. Text, marker/coordinates, measurement, view state, rubric, instance-set fingerprint, ordering algorithm, model and prompt versions are covered. Pure reorder with the same SOP/frame and instance set revalidates, preserves approval, and is logged. |
 | T10 delayed image load | M4 `lib/journal/match.test.ts`, `e2e/radlearn/render-ack.spec.ts`; M8 planned `e2e/radlearn/replay-delay.spec.ts` | Replay waits for the matching render acknowledgement, then resumes or times out; never continues unconfirmed. |
 
@@ -85,8 +85,9 @@ pass. M0–M2 alone do not claim capture/replay completion.
   T1–T10 remain assigned as above; M3 does not claim capture/replay acceptance.
 
 “#252 before #130” is later-merge advice only. Neither branch/PR is touched,
-merged or cherry-picked. No staging legacy-finding repair, production no-mic
-cardinality change, Claude-session interaction, or demo-403 alteration occurs.
+merged or cherry-picked. No staging legacy-finding repair, Claude-session interaction, or demo-403
+alteration occurs. M5 now implements the requested no-mic marker cardinality
+change locally; nothing is deployed.
 
 ## C1 cutover acceptance
 
@@ -157,3 +158,22 @@ through the later extraction, approval UI and replay milestones.
 
 See JOURNAL_CAPTURE.md for durability, timing limits, PHI review, model upload
 gates, and the exact acceptance boundaries. No M5+ implementation is implied.
+
+## M5 marker and geometry acceptance
+
+T7 and the M5 portion of T8 are implemented: shared resolver/reconciliation on
+preview, notes, segmented and server AI save paths; retained marker undo/removal;
+explicit group/omit records; calibrated original image pixels and patient mm
+with spacing provenance and per-frame positions. `lib/anchors/commit.test.ts`
+exercises local durable capture completion and server materialization, including
+retry identity and foreign-org rejection. `lib/anchors/singleEditor.test.ts`
+checks the older single-finding caller shares anchors and requires explicit
+multi-marker grouping before any media request. `lib/anchors/resolve.test.ts` checks
+preview/commit equality and fail-closed cases; `lib/journal/recorder.test.ts`
+checks persisted geometry/undo, and `lib/studioHotkeys.test.ts` protects typing.
+
+`e2e/radlearn/markers.spec.ts` checks three silent candidates, exact acknowledged
+SOP/frame jumps and three persisted notes findings using the real local viewer.
+No M6 extraction implementation or M7 approval surface is included; M8 still
+owns measurement replay, timeline synchronization and drift. See MARKER_ANCHORS.md
+and M5_VALIDATION.md for the contract, test results and remaining limits.

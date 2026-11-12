@@ -129,3 +129,13 @@ before approval or exact replay. A missing named instance is unresolved: never
 repair it by selecting a nearby slice. M4 records actual IMAGE_RENDERED snapshots
 and acknowledges full SOP/frame/view matches. Anatomical sorting is not introduced
 by M4; no historical indices are migrated. Timed exact journal replay remains M8.
+
+## RadLearn retained markers (M5)
+
+Author capture markers use the render-confirmed Study/Series/SOP/frame and
+original image pixels, independently of the legacy tutor's decorative ink.
+PixelSpacing or ImagerPixelSpacing provenance is retained with patient-mm
+geometry; absent/zero spacing is uncalibrated. One retained marker gives one
+draft unless the author explicitly groups or omits it. Preview and all save
+paths share `lib/anchors/resolve.ts`; cursor hints cannot become authoritative
+geometry. See [MARKER_ANCHORS.md](radlearn/MARKER_ANCHORS.md).
