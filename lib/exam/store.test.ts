@@ -20,3 +20,17 @@ test("attempt ownership is tenant scoped and its rubric stays pinned after a new
   assert.equal(await store.readExamAttempt("exam-org", "other-learner", "attempt"), null);
   assert.equal(await store.readExamKey("other-org", key.id), null);
 });
+
+test('M10 atomic attempt transitions preserve a concurrent winner and reject stale state', async () => {
+  const store = await import('../cases');
+  const { appendExamEvent, checkedRevision } = await import('./attempt');
+  const attempt: ExamAttempt = { id: 'concurrent-attempt', orgId: 'exam-org', userId: 'learner', caseId: 'case', keyId: 'key-v1', rubricVersion: 'v1', createdAt: 'synthetic', status: 'active', answers: [] };
+  await store.writeExamAttempt(attempt);
+  const change = (id: string) => store.mutateExamAttempt('exam-org', 'learner', attempt.id, latest => {
+    checkedRevision(latest, 0); return appendExamEvent(latest, { id, kind: 'hint', round: 0, at: 'synthetic', fingerprint: id });
+  });
+  const result = await Promise.allSettled([change('a'), change('b')]);
+  assert.equal(result.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal((await store.readExamAttempt('exam-org', 'learner', attempt.id))!.events!.length, 1);
+  await assert.rejects(() => store.mutateExamAttempt('other-org', 'learner', attempt.id, x => x), /not found/);
+});

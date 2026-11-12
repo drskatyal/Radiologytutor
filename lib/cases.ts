@@ -2494,6 +2494,12 @@ export async function writeExamAttempt(attempt: ExamAttempt): Promise<void> { aw
 export async function readExamAttempt(orgId: string, userId: string, id: string): Promise<ExamAttempt | null> {
   const row = await examSessions.get(id); return row?.orgId === orgId && row.userId === userId ? row : null;
 }
+export async function mutateExamAttempt(orgId: string, userId: string, id: string, change: (attempt: ExamAttempt) => ExamAttempt): Promise<ExamAttempt> {
+  return examSessions.mutate(id, row => {
+    if (!row || row.orgId !== orgId || row.userId !== userId) throw new Error("Attempt not found");
+    return change(row);
+  });
+}
 export async function findActiveExam(orgId: string, userId: string, caseId?: string): Promise<ExamAttempt | null> {
   return (await examSessions.find({ orgId, userId, caseId, status: "active" }))[0] ?? null;
 }

@@ -1,3 +1,4 @@
+import { examinerPromptPack } from "./exam/prompt";
 import { plannerCommand } from "./tutor/commands";
 import { approvedToolsPrompt, type ApprovedToolContext } from "./harness/approvedTools";
 import { assertNoPhi } from "./phiGuard";
@@ -593,20 +594,20 @@ export interface SynthesizedSpeech {
 /** Delivery direction is metadata, never prepended to the spoken text. */
 export const ATTENDING_TTS_DIRECTION = "Calm attending radiologist voice, measured pace, verbatim, with no preamble.";
 
-export function buildTtsRequest(text: string, model: string, voice: string, opts?: { persona?: "attending" }) {
+export function buildTtsRequest(text: string, model: string, voice: string, opts?: { persona?: "attending" | "examiner" }) {
   assertGeminiCapability(model, "tts");
   return {
     model,
     input: [{ type: "user_input", content: [{
       type: "text", text,
-      annotations: [{ type: "speech_metadata", style: opts?.persona === "attending" ? ATTENDING_TTS_DIRECTION : "Clear, natural delivery, verbatim, with no preamble." }],
+      annotations: [{ type: "speech_metadata", style: opts?.persona === "examiner" ? examinerPromptPack().voiceStyle : opts?.persona === "attending" ? ATTENDING_TTS_DIRECTION : "Clear, natural delivery, verbatim, with no preamble." }],
     }] }],
     response_format: { type: "audio" },
     generation_config: { speech_config: [{ voice }] },
   };
 }
 
-export async function synthesizeSpeech(text: string, opts?: { persona?: "attending" }): Promise<SynthesizedSpeech> {
+export async function synthesizeSpeech(text: string, opts?: { persona?: "attending" | "examiner" }): Promise<SynthesizedSpeech> {
   const model = process.env.GEMINI_TTS_MODEL?.trim() || GEMINI_TTS_MODEL_DEFAULT;
   const body = buildTtsRequest(text, model, process.env.GEMINI_TTS_VOICE?.trim() || "Kore", opts);
   const res = await callGemini(model, requireKey(), body, undefined, "interactions");

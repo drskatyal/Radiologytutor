@@ -4,13 +4,15 @@ export type ExamAnswer = { kind: "text" | "report"; text: string } | ({ kind: "p
 export type ExamClaim = { text: string; negated: boolean };
 export type ExamKey = {
   id: string; orgId: string; caseId: string; rubricVersion: string;
-  items: Array<{ id: string; phrases: string[]; point?: ExamPoint; tolerancePixels: number }>;
+  studyRefs?: Array<{ studyInstanceUID: string; seriesInstanceUIDs: string[] }>;
+  items: Array<{ id: string; phrases: string[]; point?: ExamPoint; label?: string; description?: string; teachingPoints?: string[]; approvedVersion?: number; contentHash?: string; tolerancePixels: number }>;
 };
-export type ExamScore = { rubricVersion: string; score: number; evidence: Array<{ item: number; correct: boolean }> };
+export type ExamScore = { rubricVersion: string; score: number; evidence: Array<{ item: number; correct: boolean; assisted?: boolean }>; assisted?: boolean; hintCount?: number; retryCount?: number };
 export type ExamAttempt = {
   id: string; orgId: string; userId: string; caseId: string; keyId: string; rubricVersion: string;
   status: "active" | "closed"; createdAt: string; closedAt?: string;
-  answers: Array<{ answer: ExamAnswer; score: ExamScore }>;
+  revision?: number; round?: number; events?: import("./attempt").ExamEvent[]; finalScore?: ExamScore;
+  answers: Array<{ answer: ExamAnswer; score: ExamScore; structuredClaims?: ExamClaim[]; assisted?: boolean; round?: number; at?: string }>;
 };
 export function attemptReceipt(attempt: ExamAttempt) {
   return { id: attempt.id, caseId: attempt.caseId, status: attempt.status,
