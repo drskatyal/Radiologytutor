@@ -1,0 +1,7 @@
+Compared docs/radlearn/evidence/final-tsc.log to p04-tsc.log.
+Normalized source line/column numbers and diagnostic union-member order only.
+Baseline diagnostics: 279
+Current diagnostics: 279
+Added diagnostic lines: 0
+Removed diagnostic lines: 0
+Standalone tsc exit: 2 (unchanged baseline; not claimed as a clean tsc pass).
