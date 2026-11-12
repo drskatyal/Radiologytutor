@@ -5,15 +5,15 @@ merge, deployment, new remote data, or implementation of the deferred milestones
 
 | Test | Milestone and implementation/test file | Acceptance |
 |---|---|---|
-| T1 order independence | M0 `lib/synthetic.test.ts`, shuffled synthetic archive fixture; M2 `lib/findingAcceptance.test.ts`; M7 planned `e2e/radlearn/anchor-order.spec.ts` | Archive and shuffled order resolve the approved finding to the same SOP and frame. UI navigation must do the same. |
-| T2 no silent fallback | M2 `lib/findingAcceptance.test.ts`; M7 planned `e2e/radlearn/anchor-incomplete.spec.ts` | Removing the SOP makes a finding index-only/incomplete and not approvable; an index never repairs identity. |
-| T3 missing instance | M2 `lib/findingAcceptance.test.ts`; M7/M8 planned `e2e/radlearn/replay-missing-instance.spec.ts` | Missing named SOP/frame is unresolved. Never substitute the nearest slice. |
+| T1 order independence | M0 `lib/synthetic.test.ts`, shuffled synthetic archive fixture; M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/anchor-order.spec.ts` | Archive and shuffled order resolve the approved finding to the same SOP and frame. UI navigation must do the same. |
+| T2 no silent fallback | M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/anchor-incomplete.spec.ts` | Removing the SOP makes a finding index-only/incomplete and not approvable; an index never repairs identity. |
+| T3 missing instance | M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/replay-missing-instance.spec.ts` (review Jump); M8 timed replay planned in that spec | Missing named SOP/frame is unresolved. Never substitute the nearest slice. |
 | T4 crash recovery | M4 `e2e/radlearn/capture-recovery.spec.ts` | Recovery resumes acknowledged media and journal chunks without loss or duplication. |
 | T5 mic failure | M4 `lib/journal/recorder.test.ts`, `e2e/radlearn/mic-retry.spec.ts` | Clean permission error; second start succeeds with a new session clock. |
 | T6 audio gap | M4 `lib/journal/recorder.test.ts`; M8 planned `e2e/radlearn/replay-clock.spec.ts` | Detect discontinuity and reproduce offsets within explicit tolerance. |
 | T7 three silent markers | M5 `lib/anchors/reconcile.test.ts`, `e2e/radlearn/markers.spec.ts` | Three retained markers produce three candidates without narration; no production cardinality change in M0–M2. |
 | T8 measurement round-trip | M5 `lib/anchors/geometry.test.ts`; M8 planned `e2e/radlearn/replay-geometry.spec.ts` | Pixel/patient coordinates round-trip; record PixelSpacing/ImagerPixelSpacing/uncalibrated provenance. |
-| T9 invalidation | M2 `lib/findingAcceptance.test.ts`, `e2e/radlearn/approval.spec.ts` | Any version contentHash change invalidates approval. Text, marker/coordinates, measurement, view state, rubric, instance-set fingerprint, ordering algorithm, model and prompt versions are covered. Pure reorder with the same SOP/frame and instance set revalidates, preserves approval, and is logged. |
+| T9 invalidation | M2 `lib/findingAcceptance.test.ts`; M7 `lib/review/server.test.ts`, extended `e2e/radlearn/approval.spec.ts` | Any version contentHash change invalidates approval. Text, marker/coordinates, measurement, view state, rubric, instance-set fingerprint, ordering algorithm, model and prompt versions are covered. Pure reorder with the same SOP/frame and instance set revalidates, preserves approval, and is logged. |
 | T10 delayed image load | M4 `lib/journal/match.test.ts`, `e2e/radlearn/render-ack.spec.ts`; M8 planned `e2e/radlearn/replay-delay.spec.ts` | Replay waits for the matching render acknowledgement, then resumes or times out; never continues unconfirmed. |
 
 Image identity is Study/Series/SOP Instance UID plus a one-based frame, never a
@@ -204,3 +204,30 @@ M7 approval navigation, M8 replay timing/geometry/drift, or the remaining M9
 queue work. See EXTRACTION.md and M6_VALIDATION.md for the implementation,
 real-versus-mocked boundary and local evidence. **live contract not verified**;
 **NO LIVE GCP CALL WAS MADE**.
+
+
+## M7 review acceptance
+
+Implemented T1/T2/T3 review navigation in the specs above and
+`e2e/radlearn/review-jump.spec.ts`: real single-frame and multiframe Jump, full
+view match, delayed actual render, shuffled metadata, missing SOP without index
+substitution, incomplete identity and explicit rendered rebind. Retained audio
+seeks to capture time minus stream offset. Annotation/measurement calibration
+badges are checked. `lib/review/client.test.ts` rejects mismatched or superseded
+acks and stale point capture; `lib/viewerSource.test.ts` keeps a pending render
+coordinator alive across series changes within the same archive rail.
+
+T9's UI extension in `approval.spec.ts` covers PHI-disabled approval, keyboard
+focus and activation, per-version approval, edit invalidation, history diff,
+approved-only retrieval, a concurrent-save conflict without losing local text,
+unsaved-tab navigation and mobile overflow. `lib/review/server.test.ts` verifies
+fresh inventory, logged reorder revalidation, hash/version checks, calibrated
+rebind, explicit uncertainty resolution audit, org/case isolation and version
+changes during metadata I/O. The extended M6 extraction spec now reviews and
+approves its actual retained-capture draft on the recording page.
+
+The one-series/one-take/one-finding path now reaches expert review and approval.
+Exact **timed replay**, T6's drift tolerance and T10's replay hold/resume remain
+M8 acceptance; M7's Jump acknowledgement does not claim their completion. No
+additional T4/T5/T7 or P0 implementation is moved into this milestone.
+See FINDING_REVIEW.md for behavior and M7_VALIDATION.md for executed evidence.
