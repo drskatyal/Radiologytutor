@@ -1,3 +1,4 @@
+import { loadApprovedToolContext } from "@/lib/harness/approvedToolContext";
 import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
 //
@@ -112,6 +113,7 @@ export async function POST(req: NextRequest) {
     // history excludes the current question. runTeachingPlan turns that into
     // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
     const result = await runTeachingPlan({
+      approvedTools: await loadApprovedToolContext(stored!, undefined, () => getCaseForOrg(orgId, caseId)),
       question,
       history,
       caseTitle: data.title,

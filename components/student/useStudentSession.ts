@@ -38,6 +38,8 @@ import {
   type CheckInBranch,
   type FindingCheckInState,
 } from "@/lib/tourCheckIn";
+import { emptyToolContext, isProtectedTool, type ApprovedToolAction, type ApprovedToolContext } from "@/lib/harness/approvedTools";
+import { executeApprovedTool } from "@/lib/harness/executeApprovedTool";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
 import { useSketchLayer } from "./useSketchLayer";
 import { GeminiLiveSession, type LiveToolResult } from "@/lib/geminiLiveSession";
@@ -272,6 +274,7 @@ export function useStudentSession(
   const liveAssistantTurn = useRef<string | null>(null);
   const kickRef = useRef("");
   const liveContextKey = useRef("");
+  const liveCatalogAbortRef = useRef<AbortController | null>(null);
   const liveModeRef = useRef(liveModeFromSession(mode));
   liveModeRef.current = liveModeFromSession(mode);
   // Mirror of `turns` so side-effecting handlers can read history without
@@ -280,6 +283,7 @@ export function useStudentSession(
   turnsRef.current = turns;
 
   const teachingPack = useMemo(() => resolveLiveTeachingPack(caseData), [caseData]);
+  const approvedToolsRef = useRef<ApprovedToolContext>(emptyToolContext());
   const teachingPackRef = useRef(teachingPack);
   teachingPackRef.current = teachingPack;
   const orderedFindings = useMemo(() => {
@@ -741,6 +745,21 @@ export function useStudentSession(
     [stopReplay, sketch.clearAuthored, sketch.replay]
   );
 
+  // Recheck approval after model latency and before every protected action. Browser counts
+  // and cached packs cannot authorize geometry; the server supplies canonical SOP/frame.
+  const runApprovedCall = useCallback(async (name: string, args: Record<string, unknown>): Promise<boolean> => {
+    if (isExamMode(modeRef.current) || !controls.current) return false;
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/approved-tools`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args }),
+      });
+      if (!response.ok) return false;
+      const { action } = await response.json() as { action: ApprovedToolAction };
+      if (isExamMode(modeRef.current) || !controls.current) return false;
+      return await executeApprovedTool(action, controls.current, (x, y) => pointLaser(x, y));
+    } catch { return false; }
+  }, [caseData.caseId, pointLaser]);
+
   // --- Execute a tutor viewer action ---------------------------------------
   const executeAction = useCallback(
     async (action: ViewerAction) => {
@@ -763,47 +782,19 @@ export function useStudentSession(
             controls.current?.setWindow(action.windowWidth, action.windowCenter);
           }
           break;
-        case "point_to": {
-          let x = action.x_pct;
-          let y = action.y_pct;
-          let land: Marker | undefined;
-          if (action.findingId) {
-            const f = orderedFindings.find((item) => item.id === action.findingId);
-            if (f?.marker) {
-              x = f.marker.x_pct;
-              y = f.marker.y_pct;
-              land = f.marker;
-              const idx = orderedFindings.indexOf(f);
-              if (idx >= 0 && idx !== activeIndexRef.current) {
-                await revealFinding(idx);
-                return;
-              }
-            }
-          }
-          if (x != null && y != null && Number.isFinite(x) && Number.isFinite(y)) {
-            await pointLaser(x, y, land);
-          }
-          break;
-        }
+        case "point_to":
+        case "draw_annotation":
         case "scroll_to": {
-          if (
-            action.seriesInstanceUID &&
-            (!seriesAllowRef.current.has(action.seriesInstanceUID) ||
-              !controls.current?.seriesUIDs.includes(action.seriesInstanceUID))
-          ) {
-            break;
-          }
-          if (
-            action.seriesInstanceUID &&
-            controls.current?.seriesUIDs.includes(action.seriesInstanceUID)
-          ) {
-            controls.current.showSeries(action.seriesInstanceUID);
-            await controls.current.settle();
-          }
-          await controls.current?.showState({ sliceIndex: action.sliceIndex }, 520);
+          const args = action.type === "draw_annotation" ? { annotationId: action.annotationId }
+            : { anchorId: action.anchorId };
+          if (!await runApprovedCall(action.type, args)) toast({ title: "Viewer action unavailable", description: "The target is no longer approved or its exact image is not loaded.", variant: "warning" });
           break;
         }
         case "set_series": {
+          if (action.sliceIndex !== undefined || action.anchorId !== undefined) {
+            if (!await runApprovedCall("set_series", { anchorId: action.anchorId, seriesInstanceUID: action.seriesInstanceUID, ...(action.ww !== undefined ? { ww: action.ww, wc: action.wc } : {}) })) toast({ title: "Viewer action unavailable", description: "The target is no longer approved or its exact image is not loaded.", variant: "warning" });
+            break;
+          }
           // Collapsed rail is presentation. This uses the loaded series list.
           const uid = action.seriesInstanceUID;
           if (!uid || !seriesAllowRef.current.has(uid)) break;
@@ -839,57 +830,6 @@ export function useStudentSession(
         case "set_invert":
           controls.current?.applyEvent({ t: 0, type: "invert", value: action.value });
           break;
-        case "draw_annotation": {
-          const target = action.findingId
-            ? orderedFindings.find((item) => item.id === action.findingId)
-            : orderedFindings[activeIndexRef.current];
-          const guide = target ? resolveTeachingGuide(target) : null;
-          const strokes =
-            guide?.beats.flatMap((b) => b.actions.filter((a) => a.type === "annotate")) ??
-            [];
-          if (strokes.length > 0) {
-            for (const stroke of strokes) {
-              const { type: _type, ...rest } = stroke;
-              controls.current?.applyEvent({ t: 0, type: "annotation", ...rest });
-            }
-            await controls.current?.settle();
-            if (controls.current && !controls.current.annotationApplied && target) {
-              const meas = measurementsFromGuide(resolveTeachingGuide(target)!);
-              if (meas.length) {
-                setMeasurements(meas);
-                setMeasurementsVisible(true);
-              }
-            }
-            break;
-          }
-          if (
-            action.x_pct != null &&
-            action.y_pct != null &&
-            Number.isFinite(action.x_pct) &&
-            Number.isFinite(action.y_pct)
-          ) {
-            const x2 = action.x2_pct ?? action.x_pct;
-            const y2 = action.y2_pct ?? action.y_pct;
-            const event = {
-              t: 0,
-              type: "annotation" as const,
-              shape: action.tool === "Length" || action.tool === "ArrowAnnotate" ? ("arrow" as const) : ("circle" as const),
-              from: [action.x_pct, action.y_pct] as [number, number],
-              to: [x2, y2] as [number, number],
-              tool: action.tool,
-              handles: [
-                [action.x_pct, action.y_pct],
-                [x2, y2],
-              ] as Array<[number, number]>,
-            };
-            controls.current?.applyEvent(event);
-            await controls.current?.settle();
-            if (controls.current && !controls.current.annotationApplied) {
-              overlay.current?.annotation(event);
-            }
-          }
-          break;
-        }
         case "play_guide": {
           const target =
             orderedFindings.find((item) => item.id === action.findingId) ??
@@ -966,7 +906,7 @@ export function useStudentSession(
           break;
       }
     },
-    [orderedFindings, revealFinding, pointLaser, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep, primeGuideLine, speakGuideSentences, sketch.applyAction]
+    [orderedFindings, revealFinding, pointLaser, runApprovedCall, toast, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep, primeGuideLine, speakGuideSentences, sketch.applyAction]
   );
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
@@ -1588,6 +1528,10 @@ export function useStudentSession(
         name: call.name,
         response,
       });
+      if (isProtectedTool(call.name, call.args)) {
+        const ok = await runApprovedCall(call.name, call.args);
+        return reply(ok ? { ok: true } : { ok: false, error: "Current approved target unavailable; no image or geometry substituted." });
+      }
       const currentId =
         activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : undefined;
       const decision = validateLiveToolCall(pack, call.name, call.args, currentId);
@@ -1674,21 +1618,6 @@ export function useStudentSession(
 
       if (decision.marks?.length) sketch.showMarks(decision.marks);
 
-      if (call.name === "draw_annotation" && decision.findingId) {
-        const target = orderedFindingsRef.current.find((item) => item.id === decision.findingId);
-        if (target) {
-          const meas = target.measurements ?? [];
-          setMeasurements(meas);
-          setMeasurementsVisible(meas.length > 0);
-          const guide = resolveTeachingGuide(target);
-          const strokes = guide?.beats.flatMap((beat) => beat.actions.filter((action) => action.type === "annotate")) ?? [];
-          for (const stroke of strokes) {
-            const { type: _type, ...rest } = stroke;
-            viewer.applyEvent({ t: 0, type: "annotation", ...rest });
-          }
-        }
-      }
-
       return reply({
         ok: true,
         findingId: decision.findingId,
@@ -1699,12 +1628,32 @@ export function useStudentSession(
         drive: decision.drive,
       });
     },
-    [pointLaser, revealFinding, sketch.clear, sketch.showMarks]
+    [pointLaser, revealFinding, runApprovedCall, sketch.clear, sketch.showMarks]
   );
 
   // --- Microphone opens Gemini Live. Hang up ends it. -----------------------
   const onMicStart = useCallback(async () => {
     if (liveRef.current || liveStatusRef.current !== "closed") return;
+    if (isExamMode(modeRef.current)) return;
+    const catalogAbort = new AbortController();
+    liveCatalogAbortRef.current = catalogAbort;
+    liveStatusRef.current = "connecting";
+    setLiveStatus("connecting");
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/approved-tools`, { cache: "no-store", signal: catalogAbort.signal });
+      if (!response.ok) throw new Error("Approved tools unavailable");
+      approvedToolsRef.current = await response.json();
+    } catch {
+      if (catalogAbort.signal.aborted) return;
+      liveStatusRef.current = "closed";
+      setLiveStatus("closed");
+      toast({ title: "Live session", description: "Approved viewer tools are unavailable. Try again.", variant: "warning" });
+      return;
+    } finally {
+      if (liveCatalogAbortRef.current === catalogAbort) liveCatalogAbortRef.current = null;
+    }
+    if (catalogAbort.signal.aborted) return;
+    if (isExamMode(modeRef.current)) { liveStatusRef.current = "closed"; setLiveStatus("closed"); return; }
     pauseTour();
     tourActiveRef.current = false;
     setTourActive(false);
@@ -1763,10 +1712,10 @@ export function useStudentSession(
     liveContextKey.current = `${liveMode}:${focusId ?? ""}`;
     await session.start({
       systemInstruction: livePackInstruction(pack, liveMode, caseData.title, focusId),
-      tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current),
+      tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current, approvedToolsRef.current),
       openingText: kickRef.current,
     });
-  }, [appendLiveTranscript, caseData.title, pauseTour, runLiveCall, toast]);
+  }, [appendLiveTranscript, caseData.caseId, caseData.title, pauseTour, runLiveCall, toast]);
 
   // Finding or mode change replaces the speakable instruction and the full tool list.
   useEffect(() => {
@@ -1781,12 +1730,20 @@ export function useStudentSession(
       buildLiveContextUpdate({
         mode: liveModeRef.current,
         systemInstruction: livePackInstruction(pack, liveModeRef.current, caseData.title, focusId),
-        tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current),
+        tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current, approvedToolsRef.current),
       })
     );
   }, [liveStatus, activeIndex, mode, orderedFindings, caseData.title]);
 
   const onMicStop = useCallback(async () => {
+    if (liveCatalogAbortRef.current) {
+      liveCatalogAbortRef.current.abort();
+      liveCatalogAbortRef.current = null;
+      liveStatusRef.current = "closed";
+      setLiveStatus("closed");
+      setPhase("idle");
+      return;
+    }
     if (liveRef.current || liveStatusRef.current !== "closed") {
       liveRef.current?.hangup();
       return;
@@ -2068,6 +2025,7 @@ export function useStudentSession(
       checkInAbortRef.current?.abort();
       checkInResolveRef.current?.(-1);
       checkInResolveRef.current = null;
+      liveCatalogAbortRef.current?.abort();
       liveRef.current?.hangup();
       stopSpeaking();
       replayRef.current?.cancel();

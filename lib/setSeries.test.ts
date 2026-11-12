@@ -79,8 +79,11 @@ test("harnessActionFromCall maps set_series and rejects an empty uid", () => {
     harnessActionFromCall({
       name: "set_series",
       args: { seriesInstanceUID: "1.2.840.t2", sliceIndex: 4, ww: 200, wc: 80 },
+    }, {
+      series: [{ studyUID: "study", seriesUID: "1.2.840.t2", frameCount: 5, frames: Array.from({ length: 5 }, (_, i) => ({ studyUID: "study", seriesUID: "1.2.840.t2", sopUID: `sop-${i}`, frame: 1 })) }],
+      anchors: [{ id: "approved-anchor", findingId: "f1", target: { studyUID: "study", seriesUID: "1.2.840.t2", sopUID: "sop-4", frame: 1 } }], annotations: [],
     }),
-    { type: "set_series", seriesInstanceUID: "1.2.840.t2", sliceIndex: 4, ww: 200, wc: 80 }
+    { type: "set_series", seriesInstanceUID: "1.2.840.t2", sliceIndex: 4, ww: 200, wc: 80, anchorId: "approved-anchor", findingId: "f1", target: { studyUID: "study", seriesUID: "1.2.840.t2", sopUID: "sop-4", frame: 1 } }
   );
   assert.deepEqual(harnessActionFromCall({ name: "set_series", args: {} }), { type: "none" });
 });

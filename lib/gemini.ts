@@ -1,3 +1,4 @@
+import { approvedToolsPrompt, type ApprovedToolContext } from "./harness/approvedTools";
 import { assertNoPhi } from "./phiGuard";
 import { assertGeminiCapability, stripDeprecatedSampling } from "./geminiPolicy";
 import { hashContent } from "./findingContent";
@@ -445,6 +446,8 @@ export interface TeachingTurn {
 }
 
 export interface TeachingPlanInput {
+  /** Server-built current approvals + actual DICOM frame inventory. Missing means protected tools are denied. */
+  approvedTools?: ApprovedToolContext;
   /** Spoken-text question (already transcribed) or typed question. */
   question: string;
   /** Prior chat turns for continuity (excluding the current question). */
@@ -489,8 +492,8 @@ const TEACHING_TOOLS: FunctionDeclaration[] = HARNESS_VIEWER_TOOLS;
 function toAction(call?: {
   name: string;
   args: Record<string, unknown>;
-}): TeachingViewerAction {
-  return harnessActionFromCall(call);
+}, context?: ApprovedToolContext): TeachingViewerAction {
+  return harnessActionFromCall(call, context);
 }
 
 /**
@@ -525,7 +528,7 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
   });
 
   const result = await generate({
-    systemInstruction: teachingSystemPrompt({ ...input, hintLevel }),
+    systemInstruction: `${teachingSystemPrompt({ ...input, hintLevel })}\n\n${approvedToolsPrompt(input.approvedTools)}`,
     temperature: 0.4,
     tools: TEACHING_TOOLS,
     // Web-grounded teaching: answers cite current radiology references.
@@ -534,7 +537,7 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
   });
 
   const called = result.functionCalls
-    .map((call) => toAction(call))
+    .map((call) => toAction(call, input.approvedTools))
     .filter((a) => a.type !== "none");
 
   const seated = called;

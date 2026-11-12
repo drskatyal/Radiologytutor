@@ -257,6 +257,9 @@ test("invented slice and series are rejected; show_finding returns the authored 
     sliceIndex: 8,
     ww: 1000,
     wc: 500,
+  }, undefined, undefined, {
+    series: [{ studyUID: "study", seriesUID: "1.2.dwi", frameCount: 9, frames: Array.from({ length: 9 }, (_, i) => ({ studyUID: "study", seriesUID: "1.2.dwi", sopUID: `sop-${i}`, frame: 1 })) }],
+    anchors: [{ id: "approved-anchor", findingId: "f-acute", target: { studyUID: "study", seriesUID: "1.2.dwi", sopUID: "sop-8", frame: 1 } }], annotations: [],
   });
   assert.equal(copied.ok, true);
   if (copied.ok) assert.equal(copied.sliceIndex, 8);

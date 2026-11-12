@@ -355,6 +355,10 @@ export interface CornerstoneControls {
   ready: boolean;
   /** Number of slices in the loaded series. */
   imageCount: number;
+  /** Current stack and displayed image for approved SOP/frame tool resolution. MPR fails closed. */
+  getToolImageIds?: () => readonly string[];
+  getToolImageId?: () => string | undefined;
+  projectToolPoint?: (x: number, y: number) => { x: number; y: number } | null;
   /** Animate the viewport to a target view over `durationMs` (default 700). */
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
   /**
@@ -3553,6 +3557,13 @@ export default function CornerstoneViewer({
           restoreLayout: () => scheduleLayoutRestore(true),
           applyEvent,
           getStartState,
+          getToolImageIds: () => mprHeld || mprSessionRef.current ? [] : viewportRef.current?.getImageIds() ?? [],
+          getToolImageId: () => mprHeld || mprSessionRef.current ? undefined : viewportRef.current?.getCurrentImageId?.(),
+          projectToolPoint: (x, y) => {
+            const frame = mprHeld ? null : readProjector();
+            const projected = frame?.project(x, y);
+            return frame && projected ? { x: projected.x / frame.width, y: projected.y / frame.height } : null;
+          },
           viewPlane: () => {
             const vp = viewportRef.current as
               | (typeof viewportRef.current & { canvas?: HTMLCanvasElement; getFrameOfReferenceUID?: () => string | undefined })

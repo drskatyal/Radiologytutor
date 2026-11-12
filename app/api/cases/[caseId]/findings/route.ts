@@ -50,6 +50,8 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       windowWidth: body.windowWidth,
       windowCenter: body.windowCenter,
       measurements: body.measurements,
+      // Named annotation geometry is versioned and requires expert approval before tool use.
+      annotations: Array.isArray(body.annotations) ? body.annotations : undefined,
       anchors: body.anchors,
       captureSessionId: body.captureSessionId,
       tStartMs: body.tStartMs,

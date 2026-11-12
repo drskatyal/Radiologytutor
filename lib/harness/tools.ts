@@ -6,6 +6,7 @@
  * See docs/HARNESS.md (Grok Bot parallel: tools on a persistent computer).
  */
 
+import { isProtectedTool, resolveApprovedTool, type ApprovedToolContext, type ApprovedToolAction } from "./approvedTools";
 import { parseSetSeriesArgs } from "../setSeries";
 
 /** Minimal tool schema (Gemini / OpenAPI-compatible). */
@@ -23,18 +24,21 @@ export type HarnessViewerAction =
   | { type: "set_window"; windowWidth: number; windowCenter: number }
   | {
       type: "point_to";
+      anchorId?: string; target?: ApprovedToolAction["target"]; point?: ApprovedToolAction["point"];
       findingId?: string;
       x_pct?: number;
       y_pct?: number;
     }
   | {
       type: "scroll_to";
+      anchorId?: string; target?: ApprovedToolAction["target"];
       sliceIndex: number;
       seriesInstanceUID?: string;
       findingId?: string;
     }
   | {
       type: "set_series";
+      anchorId?: string; target?: ApprovedToolAction["target"];
       /** Authored SeriesInstanceUID. Never a model-invented value. */
       seriesInstanceUID: string;
       sliceIndex?: number;
@@ -48,6 +52,7 @@ export type HarnessViewerAction =
   | { type: "set_invert"; value: boolean }
   | {
       type: "draw_annotation";
+      annotationId?: string; anchorId?: string; target?: ApprovedToolAction["target"]; annotation?: ApprovedToolAction["annotation"];
       findingId?: string;
       tool?: string;
       x_pct?: number;
@@ -101,7 +106,7 @@ const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
   {
     name: "set_series",
     description:
-      "Switch the active DICOM series (T1, T2, FLAIR, DWI, post-contrast, prior). seriesInstanceUID must be copied from the case series list or from a finding's series=, drive.series, or compare.series. Never invent a UID. Optional sliceIndex is the 0-based index on that series. Optional ww and wc are the authored window width and center. Omit sliceIndex to keep the current slice. Omit ww and wc to keep the current window.",
+      "Switch the active DICOM series (T1, T2, FLAIR, DWI, post-contrast, prior). seriesInstanceUID must be copied from the case series list or from a finding's series=, drive.series, or compare.series. Never invent a UID. Optional sliceIndex must come from the approved viewer catalog and resolve to an approved SOP/frame within the actual series frame count. Optional ww and wc are the authored window width and center. Omit sliceIndex to keep the current slice. Omit ww and wc to keep the current window.",
     parameters: {
       type: "object",
       properties: {
@@ -109,7 +114,7 @@ const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
           type: "string",
           description: "SeriesInstanceUID copied from the case series list or finding.drive / finding.compare",
         },
-        sliceIndex: { type: "number", description: "0-based stack index on that series" },
+        sliceIndex: { type: "number", description: "0-based index from the approved server catalog" },
         ww: { type: "number", description: "Authored window width" },
         wc: { type: "number", description: "Authored window center" },
       },
@@ -131,30 +136,16 @@ const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
   },
   {
     name: "point_to",
-    description:
-      "Animate a laser pointer to a place on the current image. Prefer a findingId (uses that finding's stored click marker). Or pass x_pct/y_pct in [0,1] when pointing at something without a finding.",
-    parameters: {
-      type: "object",
-      properties: {
-        findingId: { type: "string", description: "Optional finding whose marker to point at" },
-        x_pct: { type: "number", description: "Normalized X in [0,1]" },
-        y_pct: { type: "number", description: "Normalized Y in [0,1]" },
-      },
-    },
+    description: "Point to an approved anchor. Copy anchorId from the approved viewer catalog. Coordinates and findingId are not accepted.",
+    parameters: { type: "object", properties: { anchorId: { type: "string" } }, required: ["anchorId"] },
   },
   {
     name: "scroll_to",
-    description:
-      "Scroll the stack to an authored slice index from the finding's teaching guide. Never invent an index — copy it from guide=[scroll→N].",
-    parameters: {
-      type: "object",
-      properties: {
-        sliceIndex: { type: "number", description: "0-based stack index from the guide" },
-        seriesInstanceUID: { type: "string", description: "Series UID when the guide switches series" },
-        findingId: { type: "string" },
-      },
-      required: ["sliceIndex"],
-    },
+    description: "Navigate to an approved SOP/frame. Prefer anchorId from the approved viewer catalog. Alternatively copy sliceIndex and seriesInstanceUID from that catalog; indices are bounded to its actual frame count and approved frame set.",
+    parameters: { type: "object", properties: {
+      anchorId: { type: "string" }, sliceIndex: { type: "integer", minimum: 0 },
+      seriesInstanceUID: { type: "string" }, findingId: { type: "string" },
+    } },
   },
   {
     name: "zoom_to",
@@ -196,19 +187,8 @@ const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
   },
   {
     name: "draw_annotation",
-    description:
-      "Draw the consultant's stored measurement or arrow. Prefer findingId (replays every draw() on that finding's guide). Otherwise pass tool plus normalized endpoints copied from the guide — never invent coordinates.",
-    parameters: {
-      type: "object",
-      properties: {
-        findingId: { type: "string" },
-        tool: { type: "string", description: "Length, EllipticalROI, ArrowAnnotate, Probe, Angle" },
-        x_pct: { type: "number" },
-        y_pct: { type: "number" },
-        x2_pct: { type: "number" },
-        y2_pct: { type: "number" },
-      },
-    },
+    description: "Draw one approved annotation on its named SOP/frame. Copy annotationId from the approved viewer catalog. Never supply coordinates, tool geometry or findingId.",
+    parameters: { type: "object", properties: { annotationId: { type: "string" } }, required: ["annotationId"] },
   },
   {
     name: "draw_circle",
@@ -294,8 +274,9 @@ export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = HARNESS_VIEWER_TOO
 export function harnessActionFromCall(call?: {
   name: string;
   args: Record<string, unknown>;
-}): HarnessViewerAction {
-  if (!call) return { type: "none" };
+}, context?: ApprovedToolContext): HarnessViewerAction {
+  if (!call || !call.args || typeof call.args !== "object" || Array.isArray(call.args)) return { type: "none" };
+  if (isProtectedTool(call.name, call.args)) return resolveApprovedTool(call.name, call.args, context) ?? { type: "none" };
   switch (call.name) {
     case "show_finding":
       return { type: "show_finding", findingId: String(call.args.findingId ?? "") };
@@ -309,34 +290,6 @@ export function harnessActionFromCall(call?: {
         windowWidth: Number(call.args.windowWidth),
         windowCenter: Number(call.args.windowCenter),
       };
-    case "point_to": {
-      const findingId =
-        call.args.findingId != null ? String(call.args.findingId) : undefined;
-      const x = call.args.x_pct != null ? Number(call.args.x_pct) : undefined;
-      const y = call.args.y_pct != null ? Number(call.args.y_pct) : undefined;
-      return {
-        type: "point_to",
-        findingId,
-        x_pct: Number.isFinite(x) ? x : undefined,
-        y_pct: Number.isFinite(y) ? y : undefined,
-      };
-    }
-    case "scroll_to": {
-      const sliceIndex = Number(call.args.sliceIndex);
-      if (!Number.isFinite(sliceIndex)) return { type: "none" };
-      const series =
-        call.args.seriesInstanceUID != null
-          ? String(call.args.seriesInstanceUID)
-          : undefined;
-      const findingId =
-        call.args.findingId != null ? String(call.args.findingId) : undefined;
-      return {
-        type: "scroll_to",
-        sliceIndex: Math.round(sliceIndex),
-        seriesInstanceUID: series || undefined,
-        findingId,
-      };
-    }
     case "set_series":
       return parseSetSeriesArgs(call.args) ?? { type: "none" };
     case "zoom_to":
@@ -354,22 +307,6 @@ export function harnessActionFromCall(call?: {
     }
     case "set_invert":
       return { type: "set_invert", value: Boolean(call.args.value) };
-    case "draw_annotation": {
-      const num = (k: string) => {
-        const n = call.args[k] != null ? Number(call.args[k]) : undefined;
-        return n != null && Number.isFinite(n) ? n : undefined;
-      };
-      return {
-        type: "draw_annotation",
-        findingId:
-          call.args.findingId != null ? String(call.args.findingId) : undefined,
-        tool: call.args.tool != null ? String(call.args.tool) : undefined,
-        x_pct: num("x_pct"),
-        y_pct: num("y_pct"),
-        x2_pct: num("x2_pct"),
-        y2_pct: num("y2_pct"),
-      };
-    }
     case "play_guide": {
       const findingId = String(call.args.findingId ?? "").trim();
       if (!findingId) return { type: "none" };

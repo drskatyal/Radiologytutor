@@ -114,7 +114,7 @@ describe("runTeachingPlan spoken answer", { concurrency: 1 }, () => {
       [
         { functionCall: { name: "scroll_to", args: { sliceIndex: 8, findingId: "f_ptx" } } },
         { functionCall: { name: "set_window", args: { windowWidth: 1500, windowCenter: -600 } } },
-        { functionCall: { name: "point_to", args: { findingId: "f_ptx" } } },
+        { functionCall: { name: "point_to", args: { anchorId: "approved-ptx" } } },
       ],
       async () => {
         const result = await runTeachingPlan({
@@ -125,6 +125,10 @@ describe("runTeachingPlan spoken answer", { concurrency: 1 }, () => {
           mode: "guided",
           findingsContext: "id=f_ptx",
           currentFindingId: "f_ptx",
+          approvedTools: {
+            series: [{ studyUID: "study", seriesUID: "series", frameCount: 9, frames: Array.from({ length: 9 }, (_, i) => ({ studyUID: "study", seriesUID: "series", sopUID: `sop-${i}`, frame: 1 })) }],
+            anchors: [{ id: "approved-ptx", findingId: "f_ptx", target: { studyUID: "study", seriesUID: "series", sopUID: "sop-8", frame: 1 }, point: { x: 0.5, y: 0.5 } }], annotations: [],
+          },
           findings: [finding],
         });
         assert.equal(result.actions.length, 3);

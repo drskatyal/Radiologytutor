@@ -1,3 +1,5 @@
+import { HARNESS_VIEWER_TOOLS } from "./harness/tools";
+import { approvedToolsPrompt, isProtectedTool, resolveApprovedTool, type ApprovedToolContext, type ApprovedToolAction } from "./harness/approvedTools";
 import { examinerPromptPack } from "./exam/prompt";
 /**
  * What Gemini Live teaches from.
@@ -169,33 +171,8 @@ export const LIVE_PACK_TOOLS: LiveToolDeclaration[] = [
       required: ["windowWidth", "windowCenter"],
     },
   },
-  {
-    name: "point_to",
-    description:
-      "Point at an authored marker. Prefer findingId. Otherwise copy drive.marker x_pct and y_pct. Never invent a coordinate.",
-    parameters: {
-      type: "object",
-      properties: {
-        findingId: { type: "string" },
-        x_pct: { type: "number" },
-        y_pct: { type: "number" },
-      },
-    },
-  },
-  {
-    name: "scroll_to",
-    description:
-      "Scroll to an authored 0-based sliceIndex. Copy it from drive.sliceIndex. Pass seriesInstanceUID when the drive names one.",
-    parameters: {
-      type: "object",
-      properties: {
-        sliceIndex: { type: "number" },
-        seriesInstanceUID: { type: "string" },
-        findingId: { type: "string" },
-      },
-      required: ["sliceIndex"],
-    },
-  },
+  HARNESS_VIEWER_TOOLS.find(tool => tool.name === "point_to")!,
+  HARNESS_VIEWER_TOOLS.find(tool => tool.name === "scroll_to")!,
   {
     name: "zoom_to",
     description: "Lean in. Copy zoom from the finding act, or use a modest zoom on the authored marker. Do not invent a lesion location.",
@@ -210,21 +187,7 @@ export const LIVE_PACK_TOOLS: LiveToolDeclaration[] = [
       required: ["zoom"],
     },
   },
-  {
-    name: "draw_annotation",
-    description: "Draw the authored measurement for a finding. Pass findingId. Do not invent endpoints.",
-    parameters: {
-      type: "object",
-      properties: {
-        findingId: { type: "string" },
-        tool: { type: "string" },
-        x_pct: { type: "number" },
-        y_pct: { type: "number" },
-        x2_pct: { type: "number" },
-        y2_pct: { type: "number" },
-      },
-    },
-  },
+  HARNESS_VIEWER_TOOLS.find(tool => tool.name === "draw_annotation")!,
   {
     name: "next_finding",
     description: "Advance to the next id in findingOrder (clinical importance). Do not skip ahead unless the learner asks.",
@@ -636,14 +599,15 @@ function speakablePack(pack: LiveTeachingPack, mode: LiveMode, focusFindingId?: 
  * series here — that list is not part of the spoken system instruction.
  * A context update must send this whole list; a partial list would drop tools.
  */
-export function livePackTools(allowedSeries: readonly string[], mode: LiveMode = "teach_me"): LiveToolDeclaration[] {
+export function livePackTools(allowedSeries: readonly string[], mode: LiveMode = "teach_me", context?: ApprovedToolContext): LiveToolDeclaration[] {
   if (mode === "examiner") return examinerPromptPack().tools;
   const list = allowedSeries.length ? allowedSeries.join(", ") : "(none)";
   return LIVE_PACK_TOOLS.map((tool) => {
+    if (["point_to", "draw_annotation", "scroll_to"].includes(tool.name)) return { ...tool, description: `${tool.description}\n${approvedToolsPrompt(context)}` };
     if (tool.name !== "set_series") return tool;
     return {
       ...tool,
-      description: `${tool.description} allowedSeries: ${list}. Pass only those seriesInstanceUID values. sliceIndex, ww, and wc must be the numbers returned by show_finding for that series.`,
+      description: `${tool.description} allowedSeries: ${list}. Pass only those seriesInstanceUID values. For sliceIndex use only the approved viewer catalog. ww and wc must be authored. ${approvedToolsPrompt(context)}`,
     };
   });
 }
@@ -733,6 +697,7 @@ export type LiveToolDecision =
   | { ok: false; error: string; allowedSeries: string[] }
   | {
       ok: true;
+      approvedAction?: ApprovedToolAction;
       findingId?: string;
       seriesInstanceUID?: string;
       sliceIndex?: number;
@@ -760,12 +725,18 @@ export function validateLiveToolCall(
   name: string,
   args: Record<string, unknown>,
   currentFindingId?: string,
-  sketch?: { studentTap?: StudentTap | null }
+  sketch?: { studentTap?: StudentTap | null },
+  approvedTools?: ApprovedToolContext
 ): LiveToolDecision {
   const allowedSeries = pack.authoredSeriesInstanceUIDs;
   const fail = (error: string): LiveToolDecision => ({ ok: false, error, allowedSeries });
+  if (!args || typeof args !== "object" || Array.isArray(args)) return fail("Invalid tool arguments.");
   const findingById = (id: string) => pack.findings.find((item) => item.id === id);
   const hits = driveHits(pack);
+  if (isProtectedTool(name, args)) {
+    const action = resolveApprovedTool(name, args, approvedTools);
+    return action ? { ok: true, approvedAction: action, findingId: action.findingId, seriesInstanceUID: action.seriesInstanceUID, sliceIndex: action.sliceIndex } : fail("Tool requires a current approved ID and an in-range approved SOP/frame.");
+  }
 
   if (isSketchTool(name)) {
     const outcome = resolveSketchTool(pack, name, args, {
@@ -822,35 +793,24 @@ export function validateLiveToolCall(
     };
   }
 
-  if (name === "set_series" || name === "scroll_to") {
-    const requested = cleanText(args.seriesInstanceUID);
-    const seriesGate =
-      name === "set_series"
-        ? guardSetSeries(allowedSeries, args)
-        : requested
-          ? guardSetSeries(allowedSeries, { seriesInstanceUID: requested })
-          : { ok: true as const, seriesInstanceUID: undefined };
+  if (name === "set_series") {
+    const seriesGate = guardSetSeries(allowedSeries, args);
     if (!seriesGate.ok) return fail(seriesGate.error);
     const seriesInstanceUID = seriesGate.seriesInstanceUID;
-    const slice = finite(args.sliceIndex);
-    const ww = name === "set_series" ? finite(args.ww) : undefined;
-    const wc = name === "set_series" ? finite(args.wc) : undefined;
-    const onSeries = hits.filter((hit) => !seriesInstanceUID || hit.seriesInstanceUID === seriesInstanceUID);
-    if (slice != null && !onSeries.some((hit) => hit.sliceIndex === slice)) {
-      return fail("sliceIndex is not an authored slice on that series.");
-    }
+    const ww = finite(args.ww);
+    const wc = finite(args.wc);
+    const onSeries = hits.filter(hit => hit.seriesInstanceUID === seriesInstanceUID);
     if ((ww != null || wc != null) && !onSeries.some((hit) => near(hit.ww, ww, 1) && near(hit.wc, wc, 1))) {
       return fail("ww/wc is not an authored window on that series.");
     }
     const preferred =
       onSeries.find((hit) => hit.findingId === currentFindingId) ??
-      onSeries.find((hit) => slice == null || hit.sliceIndex === slice) ??
       onSeries[0];
     return {
       ok: true,
       findingId: preferred?.findingId,
       seriesInstanceUID,
-      sliceIndex: slice ?? preferred?.sliceIndex,
+      sliceIndex: undefined,
       ww: ww ?? preferred?.ww,
       wc: wc ?? preferred?.wc,
       drive: preferred ? findingById(preferred.findingId)?.drive : undefined,
@@ -863,19 +823,6 @@ export function validateLiveToolCall(
     const hit = hits.find((item) => near(item.ww, ww, 1) && near(item.wc, wc, 1));
     if (!hit || ww == null || wc == null) return fail("That window was not authored.");
     return { ok: true, findingId: hit.findingId, ww: hit.ww, wc: hit.wc, drive: findingById(hit.findingId)?.drive };
-  }
-
-  if (name === "point_to") {
-    const id = cleanText(args.findingId);
-    const item = id ? findingById(id) : currentFindingId ? findingById(currentFindingId) : undefined;
-    const marker = item?.drive.marker;
-    if (!marker) return fail("No authored marker to point at.");
-    const x = finite(args.x_pct);
-    const y = finite(args.y_pct);
-    if ((x != null || y != null) && (!near(x, marker.x_pct, 0.02) || !near(y, marker.y_pct, 0.02))) {
-      return fail("That point is not the authored marker.");
-    }
-    return { ok: true, findingId: item?.id, x_pct: marker.x_pct, y_pct: marker.y_pct, drive: item?.drive };
   }
 
   if (name === "zoom_to") {
@@ -894,13 +841,6 @@ export function validateLiveToolCall(
       panY: item?.drive.panY,
       drive: item?.drive,
     };
-  }
-
-  if (name === "draw_annotation") {
-    const id = cleanText(args.findingId) ?? currentFindingId;
-    const item = id ? findingById(id) : undefined;
-    if (!item?.drive.measurements?.length) return fail("That finding has no authored measurement.");
-    return { ok: true, findingId: item.id, drive: item.drive };
   }
 
   return fail("That tool is not part of the live teaching pack.");

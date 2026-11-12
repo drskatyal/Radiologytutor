@@ -3,13 +3,16 @@ import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "./orthanc";
 import { hashContent } from "./findingContent";
 import type { FindingAnchorSnapshot, SeriesInventory } from "./types";
 const first = (row: Record<string, { Value?: unknown[] }>, tag: string) => row[tag]?.Value?.[0];
-export async function readFindingInventory(anchor: FindingAnchorSnapshot): Promise<SeriesInventory> {
+export async function readFindingMetadata(anchor: FindingAnchorSnapshot): Promise<unknown> {
   if (!orthancConfigured()) throw new Error("Image inventory unavailable");
   const response = await fetch(`${dicomWebRoot()}/studies/${encodeURIComponent(anchor.studyUID)}/series/${encodeURIComponent(anchor.seriesUID)}/metadata`, {
     headers: { Authorization: await imagingAuthHeader(), Accept: "application/dicom+json" }, cache: "no-store", signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) throw new Error("Image inventory unavailable");
-  return inventoryFromMetadata(anchor, await response.json());
+  return response.json();
+}
+export async function readFindingInventory(anchor: FindingAnchorSnapshot): Promise<SeriesInventory> {
+  return inventoryFromMetadata(anchor, await readFindingMetadata(anchor));
 }
 export function inventoryFromMetadata(anchor: FindingAnchorSnapshot, raw: unknown): SeriesInventory {
   assertNoPhi(raw);

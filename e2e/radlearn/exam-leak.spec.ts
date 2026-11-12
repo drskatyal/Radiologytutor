@@ -27,10 +27,10 @@ test("exam HTML, RSC, JSON, socket frames and initial viewport contain no findin
   const safe = result.data;
   expect(safe.findingCount).toBe(2);
   expect(JSON.stringify(safe)).not.toMatch(/CANARY|sliceIndex|sopInstanceUID|marker|rubric|liveTeachingPack/);
-  for (const suffix of ["findings", "live-teaching-pack", "prefetch"]) {
+  for (const suffix of ["findings", "live-teaching-pack", "prefetch", "approved-tools"]) {
     expect((await api.get(`/api/cases/case-synthetic-teach/${suffix}`)).status).toBe(403);
   }
-  for (const path of ["/api/tutor", "/api/voice/realtime", "/api/voice/search", "/api/transcribe", "/api/transcribe-narration", "/api/tour-check-in"]) {
+  for (const path of ["/api/tutor", "/api/voice/realtime", "/api/voice/search", "/api/transcribe", "/api/transcribe-narration", "/api/tour-check-in", "/api/cases/case-synthetic-teach/approved-tools"]) {
     expect((await api.post(path, { caseId: "case-synthetic-teach" })).status).toBe(403);
   }
   const grade = await api.post("/api/grade-report", { caseId: "case-synthetic-teach", report: "My observations", mode: "practice" });

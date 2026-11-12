@@ -44,15 +44,26 @@ pass. M0–M2 alone do not claim capture/replay completion.
   old index when a SOP is absent and progressiveStack's archive-offset versus
   sorted-stack first-frame mismatch. M2's resolver fails closed; the viewer
   loading/replay integration is explicitly deferred.
-- P0-4/M9: planned `lib/harness/approvedTools.test.ts` rejects model-invented
-  point_to/draw_annotation coordinates and bounds scroll_to using the actual
-  series frame count. The fix needs approved anchor IDs and frame bounds carried
-  through callers; tightening a numeric parser alone is insufficient.
+- P0-4 pulled forward from M9: implemented `lib/harness/approvedTools.test.ts`,
+  caller updates in `lib/gemini.test.ts`, `lib/liveTeachingPack.test.ts`,
+  `lib/setSeries.test.ts`, and `e2e/radlearn/approved-tools.spec.ts`.
+  REST planning and Live requests use server-built current approval IDs and
+  actual DICOM metadata frame counts. point_to/draw_annotation accept only
+  anchorId/annotationId; even matching numeric coordinates are rejected.
+  scroll_to (and indexed set_series) must resolve inside the real frame range
+  AND the approved SOP/frame set. Both client paths revalidate through the
+  authenticated, org-scoped server endpoint before resolving the target against
+  the currently loaded stack. T1/T2/T3/T9 tool-boundary tests cover reorder,
+  missing/duplicate/partial identities, stale versions, edits during metadata
+  I/O, and reapproval with new IDs. Exam GET/POST isolation is also tested.
+  See APPROVED_TOOLS.md. This does not implement the rest of M9 or replace the
+  planned M4/M8 render acknowledgements and exact replay tests.
 - P0-8/M9: `lib/gemini.ts` already returns the full validated `actions` list and
   keeps `action` as a compatibility first-action alias on this integration base.
-  Existing `lib/gemini.test.ts` ("tools with an empty message get a drive-first
-  authored line") already asserts all three returned actions survive and runs in
-  every npm test suite. Planned `lib/tutor/queue.test.ts` must prove sequential
+  `lib/gemini.test.ts` ("tools with an empty message get a drive-first authored
+  line") still asserts all three returned actions survive, now with approved
+  IDs and actual frame inventory. The P0-4 tests also assert ordered retention
+  of all valid actions when invalid geometry/range calls are also present. Planned `lib/tutor/queue.test.ts` must prove sequential
   execution with matching acknowledgements.
   The review's blanket claim that this function returns only actions[0] does not
   match this base. Caller execution and acknowledgement remain M9 work.
