@@ -283,7 +283,20 @@ export function AppShell({
       <div className={cn("flex min-h-dvh flex-col bg-canvas", (readingRoom || freeViewer) && "bg-imaging")}>
         {!hideChrome && (
           <header className="pointer-events-none fixed inset-x-0 top-4 z-40 px-4">
-            <div className="pointer-events-auto mx-auto flex w-fit max-w-full items-center gap-2 rounded-2xl border border-subtle bg-surface/90 p-2 shadow-md backdrop-blur-md">
+            {/* Scrolled content fades out before it reaches the floating nav,
+                so nothing (a stepper check, a heading's first letter) peeks
+                out in the gap around the pill. Pointer-transparent. */}
+            <div
+              aria-hidden="true"
+              data-testid="nav-scrim"
+              className={cn(
+                "absolute inset-x-0 -top-4 h-28 bg-gradient-to-b via-70%",
+                readingRoom || freeViewer
+                  ? "from-imaging via-imaging to-transparent"
+                  : "from-canvas via-canvas to-transparent"
+              )}
+            />
+            <div className="pointer-events-auto relative mx-auto flex w-fit max-w-full items-center gap-2 rounded-2xl border border-subtle bg-surface/90 p-2 shadow-md backdrop-blur-md">
               <Link
                 href="/"
                 className="group flex items-center gap-2 rounded-lg px-2 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"

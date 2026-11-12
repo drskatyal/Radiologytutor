@@ -14,7 +14,15 @@ type Studio = {
   click(el: HTMLElement): Promise<void>;
   speakOnceButton(): HTMLButtonElement;
   transportStop(): HTMLButtonElement | undefined;
+  wait(ms: number): Promise<void>;
 };
+
+/**
+ * Milliseconds the fake recorder waits for the microphone. The real
+ * useRecordReplay resets frames and playback, then awaits the mic before its
+ * phase becomes "recording"; 0 keeps the older tests synchronous.
+ */
+let slowStartMs = 0;
 
 let studio: Studio;
 let releaseStudio: () => void = () => {};
@@ -117,6 +125,10 @@ before(async () => {
       onCursor() {},
       async startRecording() {
         if (phaseRef.current !== "idle") return false;
+        if (slowStartMs > 0) {
+          setFrames([]);
+          await new Promise((resolve) => setTimeout(resolve, slowStartMs));
+        }
         setMicCapture("unavailable");
         setPhase("recording");
         return true;
@@ -202,6 +214,11 @@ before(async () => {
       assert.ok(button instanceof window.HTMLButtonElement, "speak-once mic control");
       return button;
     },
+    async wait(ms: number) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+      });
+    },
     transportStop() {
       return [...container.querySelectorAll("button")].find(
         (el) => (el.textContent ?? "").replace(/\s+/g, " ").trim() === "Stop recording"
@@ -283,4 +300,31 @@ test("stopping speak-once on the mic returns the idle name and hides the stop ic
 
   assertSpeakOnceIdle(studio.container);
   assert.match(studio.container.textContent ?? "", /No microphone on this take/);
+});
+
+test("a take that waits for the microphone is not ended before it starts", async () => {
+  // Review: "Nothing captured — scroll the study, then finish." showed for the
+  // whole take, beside "1 marked in this take", and finishing the take never
+  // reached processing because the session had already been dropped.
+  slowStartMs = 40;
+  try {
+    await studio.mount();
+    await studio.click(studio.speakOnceButton());
+    await studio.wait(120);
+    const recording = studio.speakOnceButton();
+    assert.equal(recording.getAttribute("aria-label"), "Stop recording");
+    assert.doesNotMatch(studio.container.textContent ?? "", /Nothing captured/);
+
+    const transport = studio.transportStop();
+    assert.ok(transport, "studio transport Stop recording");
+    await studio.click(transport);
+    await studio.wait(20);
+
+    // The take was processed: a notes draft for a take with no microphone.
+    assertSpeakOnceIdle(studio.container);
+    assert.match(studio.container.textContent ?? "", /No microphone on this take/);
+    assert.doesNotMatch(studio.container.textContent ?? "", /Nothing captured/);
+  } finally {
+    slowStartMs = 0;
+  }
 });

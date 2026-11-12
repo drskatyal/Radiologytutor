@@ -209,7 +209,12 @@ export class TrackRecorder {
 
   private record(e: ViewerEvent): void {
     if (!this.recording) return;
-    const t = Math.round(performance.now() - this.t0);
+    let t = Math.round(performance.now() - this.t0);
+    // A sketch stroke is committed on pointer-up. Stamp it where the pen went
+    // down so replay draws it in sync with the words said while drawing.
+    if (e.type === "sketch" && e.op === "add" && (e.item.drawMs ?? 0) > 0) {
+      t = Math.max(0, t - Math.round(e.item.drawMs ?? 0));
+    }
     this.events.push({ ...e, t } as RecordedEvent);
   }
 

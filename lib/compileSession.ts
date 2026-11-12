@@ -14,6 +14,7 @@
  * frames plus the still strip.
  */
 
+import { teacherMarkerInWindow } from "./teacherSketch";
 import {
   AGENTIC_VIDEO_MIN_MS,
   compileVideoProcessing,
@@ -265,10 +266,16 @@ function materializeFindings(
       : [];
     const importance = Number(prose.clinicalImportance);
     const sub = track && usable ? sliceTrack(track, tStart, tEnd) : undefined;
+    // A numbered marker the teacher dropped while saying this is the landing.
+    // Unusable intervals stay unresolved: do not pin a marker onto invented time.
+    const pinned = track && usable ? teacherMarkerInWindow(track, tStart, tEnd) : null;
     const whatToNotice = textOf("whatToNotice") ?? (description || undefined);
     // Marker, slice, window, and series stay on the track. Model coordinates are dropped.
     return {
-      label: typeof f.label === "string" && f.label.trim() ? f.label.trim() : `Finding ${i + 1}`,
+      label:
+        typeof f.label === "string" && f.label.trim()
+          ? f.label.trim()
+          : pinned?.label?.trim() || `Finding ${i + 1}`,
       description,
       teachingPoints,
       whatToNotice,
@@ -282,8 +289,8 @@ function materializeFindings(
       tEndMs: tEnd,
       evidence: [{ tStart: suppliedStart, tEnd: suppliedEnd, journalSeq: [], ...(!usable ? { estimated: true } : {}) }],
       anchorStatus: "unresolved",
-      suggestedMarker: usable ? markerNearTime(track, mid) ?? undefined : undefined,
-      suggestedSliceIndex: usable ? sliceNearTime(track, mid) ?? undefined : undefined,
+      suggestedMarker: usable ? (pinned?.marker ?? markerNearTime(track, mid) ?? undefined) : undefined,
+      suggestedSliceIndex: usable ? (pinned?.sliceIndex ?? sliceNearTime(track, mid) ?? undefined) : undefined,
       teachingGuide: sub
         ? guideForFindingTrack(sub, { description: whatToNotice ?? description, teachingPoints })
         : undefined,

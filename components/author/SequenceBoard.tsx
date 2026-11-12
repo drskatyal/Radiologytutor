@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { displaySliceNumber } from "@/lib/findingDisplayState";
+import type { PendingSketchMarker } from "@/lib/teacherSketch";
 import type { Finding } from "@/lib/types";
 import {
   casePublishReadiness,
@@ -44,8 +45,14 @@ export function SequenceBoard({
   onPinCompare,
   onClearCompare,
   pinningId,
+  pending = [],
 }: {
   findings: Finding[];
+  /**
+   * Numbered markers dropped in the live take that are not findings yet.
+   * Listed so the board never reads "No findings yet" under a marker.
+   */
+  pending?: readonly PendingSketchMarker[];
   activeId?: string | null;
   busy?: boolean;
   onSelect: (finding: Finding) => void;
@@ -65,18 +72,57 @@ export function SequenceBoard({
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
           Teaching sequence
-          <span className="rounded-full bg-elevated px-2 py-0.5 text-xs tabular-nums text-muted">
-            {readiness.total} findings
-          </span>
+          {/* A "0 findings" chip beside a marker reads as nothing captured.
+              Show the count once a finding is saved. */}
+          {(readiness.total > 0 || pending.length === 0) && (
+            <span className="rounded-full bg-elevated px-2 py-0.5 text-xs tabular-nums text-muted">
+              {readiness.total} findings
+            </span>
+          )}
+          {pending.length > 0 && (
+            <span
+              className="rounded-full bg-ink/20 px-2 py-0.5 text-xs font-medium tabular-nums text-primary"
+              data-testid="sequence-pending-count"
+            >
+              {pending.length} marked in this take
+            </span>
+          )}
         </h2>
       </div>
 
-      {findings.length === 0 ? (
+      {pending.length > 0 && (
+        <ol className="mb-1.5 flex flex-col gap-1.5" aria-label="Markers in this take" data-testid="sequence-pending">
+          {pending.map((p) => (
+            <li
+              key={p.id}
+              className="flex items-start gap-2 rounded-lg border border-dashed border-ink/70 bg-ink/[0.06] px-2.5 py-2"
+            >
+              <span
+                className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ink text-xs font-semibold tabular-nums text-black"
+                aria-hidden="true"
+              >
+                {p.number}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-primary">
+                  <span className="sr-only">Marker {p.number}: </span>
+                  {p.label}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted">
+                  Im {displaySliceNumber(p.sliceIndex)} · becomes a finding when you finish the take
+                </span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {findings.length === 0 && pending.length === 0 ? (
         <EmptyState
           title="No findings yet"
           description="Click the lesion on the image, dictate or type, then save. The sequence is the script the examiner follows."
         />
-      ) : (
+      ) : findings.length === 0 ? null : (
         <ol className="flex flex-col gap-1.5">
           {findings.map((f, i) => {
             const gaps = findingGaps(f);
