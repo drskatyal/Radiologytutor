@@ -5,7 +5,7 @@ import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import type { Case, CaptureSession, Finding } from "@/lib/types";
 import type { RenderConfirmedViewer } from "@/lib/viewerController";
 import { matchesView } from "@/lib/journal/match";
-import { annotationSummary, versionDiff, type FindingReviewState } from "@/lib/review/model";
+import { annotationSummary, reviewRenderIdentity, versionDiff, type FindingReviewState } from "@/lib/review/model";
 import { captureReviewPoint, jumpToReview, reviewRequest } from "@/lib/review/client";
 const textOf = (f: Finding) => ({ label: f.label, description: f.description, teachingPoints: f.teachingPoints.join("\n") });
 const phiOf = (f: Finding) => f.phiReview ?? { pixels: false, audio: false, screen: false };
@@ -21,8 +21,11 @@ export function FindingReview({ caseId, review, viewer, ready, capture, onChange
   const [text, setText] = useState(() => textOf(f)), [phi, setPhi] = useState(() => phiOf(f));
   const [busy, setBusy] = useState(""), [error, setError] = useState(""), [notice, setNotice] = useState(""), [stale, setStale] = useState(false);
   const [jumpFailed, setJumpFailed] = useState(false);
-  const [rendered, setRendered] = useState(false), [rebindOpen, setRebindOpen] = useState(false), [resolution, setResolution] = useState("");
-  const renderedRef = useRef(false);
+  const [confirmedIdentity, setConfirmedIdentity] = useState<string | null>(null), [rebindOpen, setRebindOpen] = useState(false), [resolution, setResolution] = useState("");
+  const confirmedRef = useRef<string | null>(null);
+  const imageIdentity = reviewRenderIdentity(f), currentIdentity = useRef(imageIdentity); currentIdentity.current = imageIdentity;
+  const rendered = !!confirmedIdentity && confirmedIdentity === imageIdentity && review.anchorStatus === "resolved";
+  function confirm(identity: string | null) { confirmedRef.current = identity; setConfirmedIdentity(identity); }
   const dirty = JSON.stringify(text) !== JSON.stringify(original.current.text) || JSON.stringify(phi) !== JSON.stringify(original.current.phi);
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   useEffect(() => { onDirtyChange?.(f.id, dirty); return () => onDirtyChange?.(f.id, false); }, [f.id, dirty, onDirtyChange]);
@@ -34,15 +37,20 @@ export function FindingReview({ caseId, review, viewer, ready, capture, onChange
     if (base.current.version === review.version && base.current.hash === review.contentHash) return;
     if (dirtyRef.current) { setStale(true); return; }
     base.current = { version: review.version, hash: review.contentHash }; original.current = { text: textOf(f), phi: phiOf(f) }; setText(textOf(f)); setPhi(phiOf(f)); setStale(false);
-    setRendered(false); renderedRef.current = false;
   }, [review.version, review.contentHash, f]);
   useEffect(() => {
+    if (confirmedRef.current !== imageIdentity || review.anchorStatus !== "resolved") confirm(null);
+  }, [imageIdentity, review.anchorStatus]);
+  useEffect(() => {
     if (!ready || !viewer.current) return;
-    return viewer.current.onRendered?.(view => {
-      if (renderedRef.current && (!review.snapshot || !matchesView(view.snapshot, review.snapshot))) { renderedRef.current = false; setRendered(false); }
-    });
+    const check = (view: ReturnType<RenderConfirmedViewer["getRenderedView"]>) => {
+      if (confirmedRef.current && (!view || !review.snapshot || !matchesView(view.snapshot, review.snapshot))) confirm(null);
+    };
+    // A review refresh temporarily unsubscribes; recheck the actual view when it is ready again.
+    check(viewer.current.getRenderedView?.() ?? null);
+    return viewer.current.onRendered?.(check);
   }, [ready, viewer, review.snapshot]);
-  const reason = jumpFailed ? "Image not confirmed: jump again or rebind before approval." : stale ? "This version changed. Discard your edits and reload before approving." : dirty ? "Save your changes before approving this version." : review.reasons[0];
+  const reason = jumpFailed ? "Image not confirmed: jump again or rebind before approval." : stale ? "This version changed. Discard your edits and reload before approving." : dirty ? "Save your changes before approving this version." : !rendered ? "Jump to confirm the image first" : review.reasons[0];
   async function action(name: string, fn: () => Promise<void>) {
     setBusy(name); setError(""); setNotice("");
     try { await fn(); } catch (err) { if (name === "jump") setJumpFailed(true); setError(err instanceof Error ? err.message : "Review failed. Retry."); if ((err as { status?: number }).status === 409) setStale(true); }
@@ -57,7 +65,8 @@ export function FindingReview({ caseId, review, viewer, ready, capture, onChange
       });
       const next = data.findings.find(row => row.id === f.id)!;
       base.current = { version: next.currentVersion!, hash: data.findingVersions!.find(v => v.findingId === f.id && v.version === next.currentVersion)!.contentHash };
-      original.current = { text: textOf(next), phi: phiOf(next) }; setText(textOf(next)); setPhi(phiOf(next)); setStale(false); setJumpFailed(false); setRebindOpen(false); renderedRef.current = false; setRendered(false);
+      original.current = { text: textOf(next), phi: phiOf(next) }; setText(textOf(next)); setPhi(phiOf(next)); setStale(false); setJumpFailed(false); setRebindOpen(false);
+      if (confirmedRef.current !== reviewRenderIdentity(next)) confirm(null);
       onChanged(data); setNotice(`Saved v${next.currentVersion}. Needs review.`);
     });
   }
@@ -76,8 +85,10 @@ export function FindingReview({ caseId, review, viewer, ready, capture, onChange
       </div>
       <Button variant="secondary" size="sm" leadingIcon={<Crosshair className="h-4 w-4" />} disabled={!ready || !!busy || !review.snapshot || review.anchorStatus !== "resolved"}
         aria-describedby={`${id}-anchor`} onClick={() => void action("jump", async () => {
-          renderedRef.current = false; setRendered(false);
-          await jumpToReview(viewer.current, review); setJumpFailed(false); renderedRef.current = true; setRendered(true);
+          confirm(null);
+          await jumpToReview(viewer.current, review);
+          if (!imageIdentity || currentIdentity.current !== imageIdentity) throw new Error("This image changed. Jump again.");
+          setJumpFailed(false); confirm(imageIdentity);
         })}>{busy === "jump" ? "Waiting for render…" : "Jump"}</Button>
     </div>
     <div className="space-y-4 p-4">
@@ -113,7 +124,7 @@ export function FindingReview({ caseId, review, viewer, ready, capture, onChange
         <Button size="sm" disabled={!!busy || (!!f.extraction?.issues.length && resolution.trim().length < 8)} onClick={() => void save(true)}>Use current view and centre point</Button>
       </div>}
       <div className="space-y-2 border-t border-subtle pt-4">
-        <Button leadingIcon={<Check className="h-4 w-4" />} disabled={!!busy || dirty || stale || jumpFailed || !review.canApprove} aria-describedby={`${id}-approval-reason`} onClick={() => void action("approve", async () => {
+        <Button leadingIcon={<Check className="h-4 w-4" />} disabled={!!busy || dirty || stale || jumpFailed || !rendered || !review.canApprove} aria-describedby={`${id}-approval-reason`} onClick={() => void action("approve", async () => {
           const data = await reviewRequest<Case>(`/api/cases/${encodeURIComponent(caseId)}/findings/${encodeURIComponent(f.id)}/approve`, { version: base.current.version, contentHash: base.current.hash });
           onChanged(data); setNotice(`Approval recorded for v${review.version}.`);
         })}>{review.approved && !dirty && !stale ? "Approval current" : `Approve v${review.version}`}</Button>
