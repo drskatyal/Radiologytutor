@@ -2,7 +2,8 @@
 # Build (unless SKIP_BUILD=1) and deploy the Next.js app to Cloud Run.
 # The DICOM store, VPC, and Cloud NAT must already exist (deploy/gcp/setup.sh).
 # Required secret versions: GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI,
-# TRUSTED_PROXY_SECRET. Plain runtime settings must satisfy ENV_SCHEMA.md.
+# and radlearn-trusted-proxy-secret (runtime env TRUSTED_PROXY_SECRET).
+# Plain runtime settings must satisfy ENV_SCHEMA.md.
 # Cloud Run refuses to boot the JSON store: MONGODB_URI is mandatory.
 #
 # Env policy — do not hardcode a downgrade:
@@ -38,7 +39,11 @@ MAX_INSTANCES=${MAX_INSTANCES:-10}
 MONGODB_DB=${MONGODB_DB:-radlearn}
 IMAGE=${IMAGE:-"${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/app:latest"}
 
-for name in GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI TRUSTED_PROXY_SECRET; do
+# The Worker env name stays TRUSTED_PROXY_SECRET. Secret Manager already holds
+# that value as radlearn-trusted-proxy-secret; do not look up or create a
+# second secret under the env-var name.
+PROXY_SECRET_ID=radlearn-trusted-proxy-secret
+for name in GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI "${PROXY_SECRET_ID}"; do
   if ! gcloud secrets versions describe latest --secret="${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     echo "Missing secret version: ${name}. Add it before deploy (docs/GCP_CLOUD_RUN.md)." >&2
     exit 1
@@ -110,7 +115,7 @@ fi
 SECRETS="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 SECRETS+=",BETTER_AUTH_SECRET=BETTER_AUTH_SECRET:latest"
 SECRETS+=",MONGODB_URI=MONGODB_URI:latest"
-SECRETS+=",TRUSTED_PROXY_SECRET=TRUSTED_PROXY_SECRET:latest"
+SECRETS+=",TRUSTED_PROXY_SECRET=${PROXY_SECRET_ID}:latest"
 for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY DICOM_CDN_KEY; do
   if gcloud secrets versions describe latest --secret="${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     SECRETS+=",${name}=${name}:latest"

@@ -86,7 +86,7 @@ The browser does not hold a Google token for the DICOM store, and it does not re
 - **Cloud Run → DICOM store:** the runtime service account (`radlearn-app@radlearn-app.iam.gserviceaccount.com`) with `roles/healthcare.dicomEditor` **on that store**. That role includes `dicomWebRead` and `dicomWebWrite`. It is not `roles/healthcare.datasetAdmin`, and it is not `allUsers`.
 - **Token:** runtime ADC via google-auth-library in `lib/gcpAuth.ts`, using the attached service-account Compute client. No credential-file discovery or injected access-token override. Refresh is managed by the library.
 - **Cloud Run itself** is `--allow-unauthenticated` because Better Auth is the gate. The DICOM store has no public invoker.
-- **Secrets:** see [the C2 environment contract](radlearn/ENV_SCHEMA.md). Worker authentication also requires `TRUSTED_PROXY_SECRET`. Google OAuth and ElevenLabs are optional features; object storage uses ADC, with no HMAC secrets.
+- **Secrets:** see [the C2 environment contract](radlearn/ENV_SCHEMA.md). Worker authentication also requires runtime `TRUSTED_PROXY_SECRET`, bound from the existing secret `radlearn-trusted-proxy-secret`. Google OAuth and ElevenLabs are optional features; object storage uses ADC, with no HMAC secrets.
 
 ## Region, warmth, cache
 
@@ -234,7 +234,7 @@ docker compose -f docker-compose.orthanc.yml up -d
 1. Confirm project `radlearn-app` and region `europe-west2`. The values in `deploy/gcp/env.example` already match. Keep filled-in secrets in `deploy/gcp/env.local` and `terraform.tfvars`, not in git.
 2. Create the Atlas cluster on GCP in **`EUROPE_WEST_2`**, database user, database `radlearn`.
 3. Run `deploy/gcp/setup.sh`. Confirm the DICOM store IAM is the runtime service account, not the public. Copy the printed egress IP into the Atlas allowlist (that IP only).
-4. After separate authorization, Admin supplies the required secret names from ENV_SCHEMA.md, including `TRUSTED_PROXY_SECRET`, and any enabled provider/OAuth secrets.
+4. After separate authorization, Admin supplies the required secret names from ENV_SCHEMA.md. The runtime env `TRUSTED_PROXY_SECRET` is the existing secret `radlearn-trusted-proxy-secret` (do not create a second secret under the env name), plus any enabled provider/OAuth secrets.
 5. Before any candidate revision starts, Admin configures the complete ENV_SCHEMA.md set, including the public BETTER_AUTH_URL and confirmed shared bucket. Follow CLOUD_RUN.md; incomplete first-boot configuration fails immediately. OAuth redirects use `{BETTER_AUTH_URL}/api/auth/callback/google`.
 6. Re-import studies. The Fly volume does not move. `orthancStudyId` values already in Mongo are Orthanc hashes; on this backend the app looks up by StudyInstanceUID (`imagingStudyKey`). New uploads store the UID in that field.
 7. Smoke test as a student: open a case, scroll a series, ask the tutor a question. First frame should not wait on a cold start. A second open of the same frame should be fast (browser cache, or `X-Cache: HIT` with `X-Cache-Tier: object` if the bucket is configured).

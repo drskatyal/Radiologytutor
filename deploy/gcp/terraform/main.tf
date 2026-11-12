@@ -16,7 +16,7 @@ locals {
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "ELEVENLABS_API_KEY",
-    "TRUSTED_PROXY_SECRET",
+    "radlearn-trusted-proxy-secret",
     "DICOM_CDN_KEY",
   ]
   app_sa = google_service_account.app.email
