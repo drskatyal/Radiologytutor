@@ -1,0 +1,14 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+[WebServer]  ⚠ metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "http://localhost:3102". See https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase
+
+Running 3 tests using 1 worker
+
+(node:82) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:82) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 approval.spec.ts:7:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (1.8s)
+  ✓  2 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (1.4s)
+  ✓  3 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (658ms)
+
+  3 passed (8.0s)

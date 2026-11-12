@@ -20,6 +20,7 @@ import {
   BODY_SYSTEMS,
   DIFFICULTIES,
   type BodySystem,
+  type Case,
   type CaseStatus,
   type CaseStudyRef,
   type Difficulty,
@@ -84,6 +85,7 @@ interface PatchBody {
   learningObjectives?: string[];
   discussion?: string;
   references?: string[];
+  liveTeachingPack?: Case["liveTeachingPack"];
 }
 
 export async function PATCH(
@@ -112,6 +114,9 @@ export async function PATCH(
     if (body.system !== undefined) patch.system = asSystem(body.system);
     if (body.tags !== undefined) patch.tags = cleanTags(body.tags);
     if (body.authorId !== undefined) patch.authorId = body.authorId || undefined;
+    if (body.liveTeachingPack && typeof body.liveTeachingPack === "object") {
+      patch.liveTeachingPack = body.liveTeachingPack;
+    }
     // Exam-grade teaching details: apply only the keys present in the body so an
     // omitted field is untouched (present-but-blank clears it).
     Object.assign(patch, pickPresentDetails(body as Record<string, unknown>));

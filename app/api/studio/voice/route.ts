@@ -11,6 +11,7 @@ import {
 } from "@/lib/cases";
 import { elevenLabsCloneVoice, elevenLabsConfigured } from "@/lib/elevenlabs";
 import type { AuthorVoice } from "@/lib/types";
+import { trustedPublicOrigin } from "@/lib/trustedHost";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -94,12 +95,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const publicOrigin = await trustedPublicOrigin(req.headers);
     // Fetch remote sample URLs when provided (same-origin /audio or R2 public).
     for (const url of body.sampleAudioUrls ?? []) {
       try {
         const abs = url.startsWith("http")
           ? url
-          : new URL(url, process.env.BETTER_AUTH_URL || "http://127.0.0.1:3000")
+          : new URL(url, publicOrigin)
               .toString();
         const res = await fetch(abs);
         if (!res.ok) continue;
@@ -132,8 +134,8 @@ export async function POST(req: NextRequest) {
 
     try {
       const { voiceId } = await elevenLabsCloneVoice({
-        name: body.name?.trim() || `${author.name} (FlowRad tutor)`,
-        description: `FlowRad Learn teaching voice for ${author.name}`,
+        name: body.name?.trim() || `${author.name} (RadLearn tutor)`,
+        description: `RadLearn teaching voice for ${author.name}`,
         samples,
       });
       const ready: AuthorVoice = {

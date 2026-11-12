@@ -1,0 +1,17 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 7 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 approval.spec.ts:7:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (1.6s)
+  ✓  2 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (2.1s)
+  ✓  3 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (1.3s)
+  ✓  4 trusted-host.spec.ts:7:5 › Worker-authenticated robots and sitemap use the forwarded public origin (35ms)
+  ✓  5 trusted-host.spec.ts:17:5 › unsigned, wrong-secret and malformed-host requests use configured localhost SEO (64ms)
+  ✓  6 trusted-host.spec.ts:33:5 › landing, layout and viewer metadata use the authenticated or configured origin (72ms)
+  ✓  7 trusted-host.spec.ts:47:5 › middleware uses Worker host and never redirects back to the upstream origin (30ms)
+
+  7 passed (7.2s)

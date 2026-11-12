@@ -13,13 +13,12 @@ not a student-facing slideshow of the teacher’s mic.
 
 | Surface | What happens |
 |---------|----------------|
-| Viewer | AI drives slice / WW/WC / laser / caliper overlays via tools |
+| Viewer | AI drives slice / WW/WC / zoom / laser / calipers via tools, or plays the cleaned `teachingGuide` |
 | Voice | Tutor speaks (ElevenLabs clone of the teacher when enrolled, else Gemini TTS / Live) |
 | Chat | Discussion, questions, web-grounded answers |
 | Modes | Guided tour, socratic, free explore, reporting, viva |
 
-They do **not** watch a locked replay of the teacher’s Alt+X take. Author
-Studio may still replay a track for QA while editing.
+Teach mode follows the **cleaned guide** (scroll → window → zoom → point → draw) while TTS speaks the authored beats. That is not a locked replay of the teacher’s microphone. Author Studio may still exact-replay the dense track for capture QA. See `docs/TEACHING_GUIDE.md`.
 
 ## How the recording arms the AI
 
@@ -45,7 +44,8 @@ Studio may still replay a track for QA while editing.
 | `label` / `description` / `teachingPoints` | What to say and ask |
 | `windowWidth` / `windowCenter` / slice / SOP | Where to seat the eyes |
 | `measurements[]` | Exact mm / HU the tutor may cite |
-| `track` → `readingDigest` | Scroll habit, window changes, zoom range, pointing |
+| `track` → `readingDigest` | Compact stats (how long, slice range, zoom range) |
+| `track` → `teachingGuide` | Ordered script the learner session performs |
 | `Author.voice` | Sound like this teacher on live turns |
 
 ## Voice stack (live discussion)
@@ -56,15 +56,15 @@ Studio may still replay a track for QA while editing.
                          ┌────────────────────┴────────────────────┐
                          ▼                                         ▼
                   ElevenLabs clone                          Gemini Live
-                  (teacher voiceId)                         (latency fallback)
+                  (authored guide voice)                    (student microphone)
 ```
 
 | Concern | Choice | Env |
 |---------|--------|-----|
-| Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.7-flash`**) | `GEMINI_API_KEY` |
+| Orchestration / STT / tools | **Gemini Flash** (`GEMINI_MODEL`, default **`gemini-3.8-flash`**) | `GEMINI_API_KEY` |
 | Tutor voice | **ElevenLabs** clone when enrolled | `ELEVENLABS_API_KEY` |
 | TTS fallback | Gemini TTS | `GEMINI_TTS_*` |
-| High-latency discussion | **Gemini Live** ephemeral token (`POST /api/voice/realtime`) | same Gemini key |
+| Student session | **Gemini Live** `gemini-3.8-live` (`POST /api/voice/realtime`, then the constrained socket). Loaded from the LiveTeachingPack only. | `GEMINI_LIVE_MODEL` |
 | Soft budget | `VOICE_LATENCY_BUDGET_MS` (default 1200) | |
 
 Cloned / synthesized voice is correct here: the student is talking to an AI
@@ -72,8 +72,7 @@ teacher modeled on the consultant, not listening to a frozen recording.
 
 ## Author verification (Studio only)
 
-`lib/replay.ts` still exact-replays a track so the teacher can check that
-capture was faithful. That path is **author QA**, not the learner product.
+`startReplay` in `lib/replay.ts` still exact-replays a dense track so the teacher can check that capture was faithful. Learners use `playTeachingGuide` in the same module: the cleaned script, driven through `applyEvent` and VOI/camera tweens, spoken with TTS.
 
 ## Seams
 
@@ -83,11 +82,12 @@ capture was faithful. That path is **author QA**, not the learner product.
 | `lib/teachingPrompt.ts` | Findings + digests → system prompt |
 | `lib/voice.ts` / `elevenlabs.ts` | Live tutor speech |
 | `lib/voiceRealtime.ts` | Live WebSocket token mint |
-| `lib/replay.ts` | Author-side verify only |
+| `lib/teachingGuide.ts` | Track + narration → ordered teach script |
+| `lib/replay.ts` | `startReplay` (author QA) and `playTeachingGuide` (learner) |
 
 ## Still to deepen
 
 1. Optional ASR of the teacher’s mic into teaching pearls (when structured text is thin)
 2. Richer digests (search pattern: lung bases → apices, bone→soft tissue, …)
-3. Student Live duplex mic when TTS budget exceeded
+3. Student Live is the microphone session (`gemini-3.8-live`), not a TTS fallback
 4. Authored zoom/pan on static landings (today zoom lives mainly in track digests)

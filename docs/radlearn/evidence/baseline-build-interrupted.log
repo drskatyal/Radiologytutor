@@ -1,0 +1,12 @@
+
+> flowrad-learn@0.1.0 prebuild
+> node scripts/build-voice-worker.mjs
+
+build-voice-worker: wrote recognizer-worker.js (4.3 MB) for web and desktop
+
+> flowrad-learn@0.1.0 build
+> next build
+
+  ▲ Next.js 14.2.35
+
+   Creating an optimized production build ...

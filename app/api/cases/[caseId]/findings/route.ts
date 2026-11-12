@@ -1,8 +1,12 @@
+import { hasActiveExam } from "@/lib/exam/access";
+import { activeOrgId, getSession } from "@/lib/auth";
+import { getCaseForOrg, approvedCurrent, groundedCase } from "@/lib/cases";
+import { canAccessOrgResource } from "@/lib/authRoles";
 // POST /api/cases/[caseId]/findings -> append a finding
 // Body: a full Finding (id optional — generated if missing)
 
 import { NextRequest, NextResponse } from "next/server";
-import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { jsonAuthError, requireAuthorOrg, requireSession } from "@/lib/auth";
 import { createFinding } from "@/lib/cases";
 import type { Finding } from "@/lib/types";
 
@@ -29,6 +33,8 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       // Self-hosted record/replay: ordered event log + narration audio.
       track: body.track,
       durationMs: body.durationMs,
+      // Teach script from a recorded take or a no-mic click-annotate save.
+      teachingGuide: body.teachingGuide,
       order: body.order ?? 0,
       // Series/study anchors — drive student series switch + prefetch.
       studyInstanceUID: body.studyInstanceUID,
@@ -36,15 +42,22 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       sopInstanceUIDs: body.sopInstanceUIDs,
       sopInstanceUID: body.sopInstanceUID,
       sliceIndex: body.sliceIndex,
+      frameNumber: body.frameNumber,
+      imagePoint: body.imagePoint,
+      anchor: body.anchor,
+      phiReview: body.phiReview,
+      landmark: body.landmark?.trim() || undefined,
       windowWidth: body.windowWidth,
       windowCenter: body.windowCenter,
       measurements: body.measurements,
+      // Named annotation geometry is versioned and requires expert approval before tool use.
+      annotations: Array.isArray(body.annotations) ? body.annotations : undefined,
       anchors: body.anchors,
       captureSessionId: body.captureSessionId,
       tStartMs: body.tStartMs,
       tEndMs: body.tEndMs,
     };
-    const updated = await createFinding(orgId, params.caseId, finding);
+    const updated = await createFinding(orgId, params.caseId, finding, (await requireSession()).id);
     return NextResponse.json(updated);
   } catch (err) {
     const denied = jsonAuthError(err);
@@ -52,4 +65,13 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+export async function GET(_req: NextRequest, { params }: { params: { caseId: string } }) {
+  if (await hasActiveExam(params.caseId)) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
+  const orgId = await activeOrgId();
+  const data = await getCaseForOrg(orgId, params.caseId);
+  const session = await getSession();
+  if (!data || (data.status !== "published" && !canAccessOrgResource({ membershipRole: session?.user.membershipRole, platformRole: session?.user.platformRole, need: "author" }))) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+  return NextResponse.json(await approvedCurrent(orgId, params.caseId));
 }

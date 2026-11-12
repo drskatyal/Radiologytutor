@@ -1,3 +1,5 @@
+import { learnerCaseProjection } from "@/lib/exam/projection";
+import { hasActiveExam } from "@/lib/exam/access";
 // GET /api/cases/[caseId] -> single case (draft hidden unless author+)
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,5 +28,6 @@ export async function GET(_req: NextRequest, { params }: { params: { caseId: str
     }
   }
 
+  if (await hasActiveExam(params.caseId)) return NextResponse.json(learnerCaseProjection(data), { headers: { "Cache-Control": "private, no-store" } });
   return NextResponse.json(data);
 }

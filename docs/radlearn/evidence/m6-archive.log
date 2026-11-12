@@ -1,0 +1,23 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 11 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 case-viewer.spec.ts:27:7 › case viewer at 1440 › an archive case opens in the shared frame with the teaching tool set (1.6s)
+  ✓  2 case-viewer.spec.ts:49:7 › case viewer at 1440 › a view link opens on its image and window, and View link copies the view back (1.2s)
+  ✓  3 case-viewer.spec.ts:68:7 › case viewer at 1440, more › the toolbar carries the hanging layouts (the header picker's old job) (1.6s)
+  ✓  4 case-viewer.spec.ts:81:7 › case viewer at 1440, more › on a two-screen desktop the image sits right under the header, dark: no light pop-out strip (1.2s)
+  ✓  5 case-viewer.spec.ts:92:7 › case viewer at 1440, more › signed out: a sign-in prompt, back to this view, and no image requests (1.7s)
+  ✓  6 case-viewer.spec.ts:116:7 › case viewer on a phone › the image sits right under the case header, the toolbar pages to its end (1.2s)
+  ✓  7 student-session.spec.ts:21:5 › the session seats the first finding and the tour lands each one, with its overlay on the image (12.3s)
+  ✓  8 student-session.spec.ts:44:5 › compare opens a second pane beside the first with one toolbar, and closes back to one (5.9s)
+  ✓  9 student-session.spec.ts:55:5 › full screen keeps the microphone reachable (4.0s)
+  ✓  10 student-session.spec.ts:65:5 › on a two-screen desktop there is no light pop-out strip over the session's image (3.0s)
+  ✓  11 student-session.spec.ts:74:7 › phone compare › the finding card stays inside its stacked pane, clear of the readouts and the pane badge (6.1s)
+
+  Slow test file: student-session.spec.ts (31.3s)
+  Consider splitting slow test files to speed up parallel execution
+  11 passed (41.7s)

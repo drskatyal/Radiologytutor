@@ -8,32 +8,129 @@
 //   • exact record → replay (DENSE event re-application, via applyEvent).
 //
 // Two modes, one component:
-//   • Demo (default): the full PACS toolbar + status line. Used by /cornerstone,
-//     /record and the author capture surface.
-//   • Driven: pass `controls` (a ref) + `showToolbar={false}` and the caller
-//     drives the viewport via the imperative handle below.
+//   • Docked chrome (default): tools sit in a bar UNDER the image, grouped the
+//     way OHIF's primary toolbar is (navigate / measure / display). Used by
+//     /cornerstone, /record and the author capture surface. The bar is outside
+//     the square so it never covers anatomy and never sits under the annotate
+//     hit-layer.
+//   • Edge chrome: student and teach sessions, and the studio stage when the
+//     pane fills its parent. The image fills the pane and the same grouped bar
+//     sits along its bottom edge — still off the pixels — so a compare layout
+//     can give every pane matching chrome.
+// Both bars, and the preset / measurement menus, are imaging-dark (#181818,
+// #1F1F1F hairline, white labels). Paper surface tokens wash out against the
+// black viewport. Active tools use cobalt with white text.
+//   • Off: pass `showToolbar={false}` (or `chrome="off"`). The caller still
+//     drives the viewport via the imperative handle. A corner readout (slice,
+//     window/level) stays — that is viewport state, not a tool.
 //
-// Mouse: wheel = scroll, right-drag = zoom, middle-drag = pan. The LEFT button
-// runs whichever tool is picked in the toolbar (window/level by default).
+// Mouse (Settings › Mouse & Keyboard, docs/BINDINGS_DESIGN.md; RadiAnt preset):
+// wheel = scroll, right-drag = window/level, Ctrl+right-drag = zoom,
+// middle-drag = pan, Mouse 4 / 5 = previous / next series. The LEFT button runs
+// whichever tool is picked in the toolbar (window/level by default).
 //
 // RECORD/REPLAY: pass `onEvent` to receive an ordered stream of viewer state
-// changes (slice / voi / camera / invert) read straight off the viewport — we
-// never trust event-detail shapes. Camera/VOI are throttled (~50ms) but order
-// is preserved. `applyEvent` re-applies one recorded event (the replay path).
+// changes (slice / voi / camera / invert / annotation) read straight off the
+// viewport — we never trust event-detail shapes. Camera/VOI are throttled
+// (~50ms) but order is preserved. Length / ROI / Arrow / Probe / Angle
+// strokes emit an `annotation` event when the tool completes.
+// `applyEvent` re-applies one recorded event (the replay + teach-guide path).
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
+import { ReplayGeometryLayer } from "./record/ReplayGeometryLayer";
+import { projectReplayShapes } from "@/lib/replay/geometry";
+import type { ReplayShape, ProjectedReplayShape } from "@/lib/replay/types";
+import { imageGeometry } from "@/lib/anchors/geometryCache";
+import { matchesView } from "../lib/journal/match";
+import { RenderCoordinator, ViewRequestError } from "../lib/journal/renderAck";
+import { applyRecordedPan, displayedSnapshot, imagePointEvidence, validSnapshot } from "../lib/journal/viewer";
+import { approvedStackIndex } from "../lib/harness/approvedTools";
+import type { RenderConfirmedViewer } from "../lib/viewerController";
+import { safeErrorText } from "@flowrad/viewer-core/safeLog";
+import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
+import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
+import { pageStep, parallelScaleForPixelZoom, resolveReadingKey, zoomLevelLabel, type ReadingKeyAction } from "@flowrad/viewer-core/readingKeys";
+import { mmPerCssPixel, scaleBarFor } from "@flowrad/viewer-core/scaleBar";
+import { MEASUREMENT_TOOLS } from "@flowrad/viewer-core/measurementReport";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
+import { annotationEditing } from "@flowrad/viewer-core";
+import { AnnotationEditLayer } from "./viewer/AnnotationEditLayer";
+import { RemoteReferenceLines, type RemotePlane } from "./viewer/RemoteReferenceLines";
+import type { XVec3 } from "@flowrad/viewer-core";
+import { imageMenu } from "@flowrad/viewer-core";
+import { layoutForShape, READING_LAYOUTS } from "@flowrad/viewer-core";
+import { shortcutForPreset, shortcutForToolIn } from "../lib/viewerHotkeys";
+import dynamicImport from "next/dynamic";
+import type { VoiceProgress, VoiceState } from "./viewer/voice/voiceSession";
+import { VoiceStatus } from "./viewer/voice/VoiceStatus";
+import type { ExportDicomFiles, ExportFrames, WebExportKind } from "./viewer/WebExportDialog";
+import type { VoiceAction, VoiceSink, VoiceSinkBox } from "@flowrad/viewer-core";
+import { adoptParkedVoice, parkVoice, stopParkedVoice } from "@flowrad/viewer-core";
 import createImageIdsAndCacheMetaData from "../lib/createImageIdsAndCacheMetaData";
+import {
+  fillImageIndexes,
+  prefetchImageIndexes,
+  prefetchNeighborImageIds,
+  startProgressiveWadorsLoad,
+} from "../lib/progressiveStack";
+import {
+  createScrollDirectionState,
+  directionalPrefetchIndexes,
+  prefetchRadiusFor,
+  trackScrollDirection,
+} from "../lib/prefetchPlan";
+import {
+  coreInitConfig,
+  describeRuntime,
+  detectDeviceProfile,
+  imageCacheBytes,
+  retrievalPoolSizes,
+  webWorkerCount,
+} from "../lib/viewerRuntime";
+import { NEIGHBOR_PREFETCH_DELAY_MS, tuneStackScrollTool } from "../lib/scrollSensitivity";
+import { fillBudget, outwardOrder } from "../lib/seriesFill";
+import { stackOpenIndex } from "../lib/stackIndex";
+import { stackIndexOfSop, type OpenSlice } from "../lib/viewerLoad";
+import {
+  beginViewerNavigation,
+  markViewerPixels,
+  publishSeriesImageCount,
+} from "../lib/viewerSession";
+import {
+  markViewerFirstPixel,
+  markViewerFirstRendered,
+  markViewerFirstPreview,
+  markViewerFullQuality,
+  markViewerNavigation,
+  markViewerSeriesReady,
+} from "../lib/viewerTiming";
+import { importWithRetry, isChunkLoadError, reloadForChunkError } from "../lib/chunkRecovery";
+import {
+  QUALITY_EVENT,
+  imageSource,
+  installBundleLoader,
+  isPreviewImage,
+  isQualitySwap,
+  type CoreLike,
+  type DicomLoaderLike,
+  type QualityEventDetail,
+} from "../lib/dicomCdn/cornerstoneBridge";
+import { previewBlocksPress } from "../lib/dicomCdn/previewLock";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
+  viewerEngineKey,
   type CaseSeries,
   type ViewerSource,
 } from "../lib/viewerSource";
@@ -42,65 +139,191 @@ import {
   lerp,
   type CornerstoneViewerState,
 } from "../lib/viewerController";
-import { sopUidFromImageId } from "../lib/findingDisplayState";
+import { displaySliceNumber, sopUidFromImageId } from "../lib/findingDisplayState";
+import {
+  stepCineFps,
+  advanceCine,
+  cineAvailable,
+  cineFrameMs,
+  clampCineFps,
+  createCineState,
+  initialCineFps,
+  type CineWrap,
+} from "../lib/cinePlayer";
+import { clampIndex, indexFromPointer, thumbGeometry } from "../lib/sliceScrollbar";
+import { viewerFeatures, type ViewerFeatures } from "../lib/viewerFeatures";
+import { isTextTarget, resolveViewerHotkey, resolveViewerInput, WEB_COMMANDS, type ViewerHotkeyAction } from "../lib/viewerHotkeys";
+import { viewerFixedBindings } from "../lib/viewerMouseBindings";
+import { attachMouseCommands, inputIndex, isMac, normalizeSpec, subscribeLiveBindings } from "@flowrad/viewer-core/bindings";
+import { useViewerBindings } from "./viewer/useViewerBindings";
+import {
+  ORIENTATION_COMMANDS,
+  isOrientationCommand,
+  orientMarkers,
+  type OrientationCommand,
+} from "@flowrad/viewer-core";
+import {
+  OVERLAY_STORAGE_KEY,
+  nextOverlayDensity,
+  orientationLetters,
+  orientationMarkers,
+  overlayCorners,
+  parseOverlayDensity,
+  windowLine,
+  type OrientationMarkers,
+  type OverlayDensity,
+  type OverlayMeta,
+} from "../lib/dicomOverlay";
 import { voiTransitionMs } from "../lib/voiTransition";
 import {
+  finiteVoi,
+  resolveViewportVoi,
+  voiToWwWc,
+  voiWriteSteps,
+  wwWcToVoi,
+  type Voi,
+} from "../lib/viewportVoi";
+import {
+  SHARED_RENDERING_ENGINE_ID,
+  planViewportLayoutRestore,
+  presentationCameraUsable,
+  viewportEngineRegistry,
+  viewportIdFor,
+  toolGroupIdFor,
+  type ViewPresentation,
+} from "../lib/compareViewport";
+import type { SketchFrame, SketchFrameImage } from "../lib/sketchProjection";
+import {
   normalizeMeasurements,
+  statsFromAnnotation,
   type RawAnnotationLike,
 } from "../lib/findingMeasurements";
+import {
+  jpegStillFromGrayscale,
+  largestCanvas,
+  stillFromCanvas,
+  type GrayscaleFrame,
+} from "../lib/compileMedia";
+import {
+  annotationViewerEvent,
+  sameAnnotationStroke,
+} from "../lib/annotationCapture";
 import type { FindingMeasurement, RecordedEvent, ViewerEvent } from "../lib/types";
 import {
   WINDOW_PRESETS,
   FULL_DYNAMIC_ID,
-  presetsForModality,
+  matchPreset,
+  viewerWindowPresets,
   type WindowPreset,
 } from "../lib/windowPresets";
+import { Button, Modal, Spinner } from "@/components/ui";
+import { WebTextBoxLayer, type TextBoxLayerHandle } from "./viewer/WebTextBoxLayer";
+import { BURNED_IN_WARNING } from "@flowrad/viewer-core/annotationPersistence";
 import { cn } from "@/components/ui/cn";
+import { MprLayout } from "./MprLayout";
 import {
-  Activity,
-  ChevronDown,
-  Circle,
-  Contrast,
-  Crosshair,
-  Eraser,
-  Move,
-  MoveUpRight,
-  Ruler,
-  Settings2,
-  Square,
-  Layers as LayersIconL,
-  RotateCcw,
-  Triangle,
-  ZoomIn,
-  type LucideIcon,
-} from "lucide-react";
+  ALL_TOOLS,
+  MEASURE_TOOLS,
+  NAV_TOOLS,
+  READING_MEASURE_TOOLS,
+  ViewerToolbar,
+  toolLabel,
+  type ToolbarLayoutChoice,
+} from "./viewer/ViewerToolbar";
+import { ViewerHud, ViewportOverlay } from "./viewer/ViewportOverlay";
+import { ViewerHelp, type ViewerHelpTab } from "./viewer/ViewerHelp";
+import { SURFACE_PRESETS, type CutAxis } from "@flowrad/viewer-core";
+import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
+import {
+  assessMpr,
+  modalityForMpr,
+  mprLoadFailureMessage,
+  mprVolumeKey,
+  nextMprAction,
+  planesFromMetadata,
+  type MprMode,
+  type MprPlane,
+  type MprRender,
+  type MprSessionHandle,
+  type PlaneSample,
+  type Slab,
+  type SlabMode,
+  acquisitionPlane,
+  MIP_SLAB_MM,
+  nextSlabMode,
+  SLAB_DEFAULT_MM,
+  SLAB_STEP_MM,
+  slabLabel,
+  stepSlabMm,
+} from "../lib/mpr";
 
-// Tools selectable on the LEFT mouse button. Pan/Zoom/Scroll also keep their
-// wheel/middle/right bindings so the usual PACS mouse scheme still works.
+// Tools selectable on the LEFT mouse button live in viewer/ViewerToolbar.tsx.
+// Pan/Zoom/Scroll also keep their wheel/middle/right bindings so the usual
+// PACS mouse scheme still works.
 //
-// `annotation: true` marks the measurement/markup tools. These place annotations
-// in world space; only the real-world MEASUREMENT (mm vs px) needs per-image
-// PixelSpacing — the tools still DRAW correctly without it. So we keep them
-// ENABLED by default and only disable them when a study POSITIVELY has no pixel
-// spacing at all (e.g. the tiny synthetic multiframe MR we bundle as an offline
-// sample). Real DICOMweb / uploaded studies keep the tools live — at worst a
-// measurement falls back to pixels, which is far better than a dead control.
-const PRIMARY_TOOLS: { name: string; label: string; annotation?: boolean }[] = [
-  { name: "WindowLevel", label: "Window / Level" },
-  { name: "Pan", label: "Pan" },
-  { name: "Zoom", label: "Zoom" },
-  { name: "StackScroll", label: "Scroll" },
-  { name: "Length", label: "Length", annotation: true },
-  { name: "Angle", label: "Angle", annotation: true },
-  { name: "EllipticalROI", label: "Ellipse ROI", annotation: true },
-  { name: "RectangleROI", label: "Rectangle ROI", annotation: true },
-  { name: "Probe", label: "Probe", annotation: true },
-  { name: "ArrowAnnotate", label: "Arrow", annotation: true },
+// Measurement tools place annotations in world space; only the real-world
+// MEASUREMENT (mm vs px) needs per-image PixelSpacing — the tools still DRAW
+// correctly without it. So they stay ENABLED by default and are only disabled
+// when a study POSITIVELY has no pixel spacing at all (e.g. the tiny synthetic
+// multiframe MR we bundle as an offline sample).
+
+/** `dock` — square image, bar underneath (record / demo).
+ *  `edge` — image fills the pane, bar along its bottom edge (student).
+ *  `off` — no tools. A corner readout still shows slice and window/level. */
+export type ViewerChrome = "dock" | "edge" | "off";
+
+function resolveChrome(showToolbar: boolean, chrome?: ViewerChrome): ViewerChrome {
+  if (chrome) return chrome;
+  return showToolbar ? "dock" : "off";
+}
+
+/** The DICOM tags viewer loads on first use. */
+const DicomTagsDialog = dynamicImport(() => import("./viewer/DicomTagsDialog").then((m) => m.DicomTagsDialog), { ssr: false });
+/** Oblique, slab and curved MPR (free viewer), loaded on first use. */
+const WebReconOverlay = dynamicImport(() => import("./viewer/recon/WebReconOverlay").then((m) => m.WebReconOverlay), { ssr: false });
+/** Export images, video or anonymised DICOM (free viewer, Ctrl/⌘+E), loaded on first use. */
+/** Every measurement as a list and as report text (free viewer), loaded on first use. */
+const MeasurementsPanel = dynamicImport(() => import("./viewer/MeasurementsPanel").then((m) => m.MeasurementsPanel), { ssr: false });
+const WebExportDialog = dynamicImport(() => import("./viewer/WebExportDialog").then((m) => m.WebExportDialog), { ssr: false });
+/** Set an exact window (Ctrl/⌘+F11, Window menu, right-click), loaded on first use. */
+const CustomWindowDialog = dynamicImport(() => import("./viewer/CustomWindowDialog").then((m) => m.CustomWindowDialog), { ssr: false });
+
+/** Tools in the right-click menu, in order. */
+const WEB_MENU_TOOLS = [
+  { id: "StackScroll", label: "Scroll" },
+  { id: "WindowLevel", label: "Window / level" },
+  { id: "Zoom", label: "Zoom" },
+  { id: "Pan", label: "Pan" },
+  { id: "Length", label: "Length" },
+  { id: "Angle", label: "Angle" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Eraser", label: "Eraser" },
+];
+
+/** The free viewer's menu: the desktop's full measure set (`features.tools`). */
+const READING_MENU_TOOLS = [
+  ...WEB_MENU_TOOLS.slice(0, 6),
+  { id: "CobbAngle", label: "Cobb angle" },
+  { id: "Bidirectional", label: "Bidirectional" },
+  { id: "EllipticalROI", label: "Ellipse ROI" },
+  { id: "RectangleROI", label: "Rectangle ROI" },
+  { id: "CircleROI", label: "Circle ROI" },
+  { id: "PlanarFreehandROI", label: "Freehand ROI" },
+  { id: "Probe", label: "Pixel probe" },
+  { id: "ArrowAnnotate", label: "Arrow / text" },
+  { id: "Magnify", label: "Magnifying glass" },
+  { id: "Eraser", label: "Eraser" },
 ];
 
 const ANNOTATION_TOOL_NAMES = new Set(
-  PRIMARY_TOOLS.filter((t) => t.annotation).map((t) => t.name)
+  ALL_TOOLS.filter((t) => t.annotation).map((t) => t.name)
 );
+/** Left-button tools each surface offers (a bound key for another is ignored). */
+const TEACHING_TOOL_NAMES = new Set([...NAV_TOOLS, ...MEASURE_TOOLS].map((t) => t.name));
+const READING_TOOL_NAMES = new Set([...NAV_TOOLS, ...READING_MEASURE_TOOLS].map((t) => t.name));
 
 // Minimal structural type for the bits of a StackViewport we drive.
 interface DrivableViewport {
@@ -112,7 +335,12 @@ interface DrivableViewport {
   getCurrentImageIdIndex: () => number;
   getCurrentImageId?: () => string;
   setImageIdIndex: (i: number) => Promise<void> | void;
-  getProperties: () => { voiRange?: { lower: number; upper: number }; invert?: boolean };
+  getProperties: () => {
+    voiRange?: { lower: number; upper: number };
+    invert?: boolean;
+    /** False once setProperties has locked the window across slices. */
+    isComputedVOI?: boolean;
+  };
   setProperties: (p: { voiRange?: { lower: number; upper: number }; invert?: boolean }) => void;
   getZoom: () => number;
   setZoom: (z: number) => void;
@@ -120,6 +348,11 @@ interface DrivableViewport {
   setPan: (p: [number, number]) => void;
   worldToCanvas?: (p: [number, number, number]) => [number, number];
   canvasToWorld?: (p: [number, number]) => [number, number, number];
+  getFrameOfReferenceUID?: () => string;
+  getCamera?: () => { viewPlaneNormal?: number[]; viewUp?: number[]; flipHorizontal?: boolean; flipVertical?: boolean };
+  setCamera?: (camera: Record<string, unknown>) => void;
+  getViewPresentation?: () => { rotation?: number };
+  setViewPresentation?: (presentation: Record<string, unknown>) => void;
   element?: HTMLDivElement;
 }
 
@@ -129,27 +362,54 @@ interface DrivableViewport {
  *   • applyEvent          — exact re-application of ONE recorded event (replay).
  * Plus the record-side reads (getStartState) and toggles (setInvert).
  */
-export interface CornerstoneControls {
+export interface CornerstoneControls extends Partial<RenderConfirmedViewer> {
   /** Whether the viewer has loaded its series and is drivable. */
   ready: boolean;
   /** Number of slices in the loaded series. */
   imageCount: number;
+  /** Current stack and displayed image for approved SOP/frame tool resolution. MPR fails closed. */
+  getToolImageIds?: () => readonly string[];
+  getToolImageId?: () => string | undefined;
+  projectToolPoint?: (x: number, y: number) => { x: number; y: number } | null;
   /** Animate the viewport to a target view over `durationMs` (default 700). */
   showState: (state: CornerstoneViewerState, durationMs?: number) => Promise<void>;
-  /** Adjust window width/center (VOI). Duration auto-adapts unless overridden. */
-  setWindow: (windowWidth: number, windowCenter: number, durationMs?: number) => void;
+  /**
+   * Adjust window width/center (VOI). Duration auto-adapts unless overridden.
+   * Resolves when the tween (or snap) finishes so a teach script can chain moves.
+   */
+  setWindow: (
+    windowWidth: number,
+    windowCenter: number,
+    durationMs?: number
+  ) => Promise<void>;
   /** Set inversion explicitly (record/replay + toolbar). */
   setInvert: (value: boolean) => void;
   /** Reset camera + VOI to the series defaults (fit). */
   reset: () => void;
+  /** Fit the image to the pane; keeps the window. (Hanging-layout reflow.) */
+  fit?: () => void;
+  /**
+   * Resize onto the current pane and repaint. Used when compare closes so the
+   * primary buffer matches the single-pane layout without dropping the teach
+   * window.
+   */
+  restoreLayout: () => void;
   /** Re-apply ONE recorded event verbatim (the replay path — snaps, no tween). */
   applyEvent: (e: RecordedEvent) => void;
-  /** Current slice / VOI / SOP — primes recordings and finding landings. */
+  /** Current slice / VOI / camera / SOP — primes recordings and finding landings. */
+  /**
+   * The visible image plane: its frame of reference and the world (mm)
+   * corners of the canvas, for reference lines in other panes. Null while
+   * the stack is not drawn (MPR showing, nothing loaded).
+   */
+  viewPlane?: () => { frame: string; corners: [XVec3, XVec3, XVec3, XVec3] } | null;
   getStartState: () => {
     sliceIndex: number;
     ww?: number;
     wc?: number;
     sopInstanceUID?: string;
+    zoom?: number;
+    pan?: [number, number];
   };
   /**
    * Snapshot of Length / Ellipse / Probe annotations currently on the
@@ -162,14 +422,97 @@ export interface CornerstoneControls {
   activeSeriesUID?: string;
   /** Load a different series into the viewport (by UID). Programmatic = replay. */
   showSeries: (seriesInstanceUID: string) => void;
+  /** Remove tool annotations (between findings). Does not emit record events. */
+  clearAnnotations: () => void;
+  /** Resolves when a programmatic slice or series switch has settled. */
+  settle: () => Promise<void>;
+  /** True when the last annotation applyEvent landed on the viewport. */
+  readonly annotationApplied: boolean;
+  /**
+   * One JPEG of the imaging surface for author compile. Read-only: it does not
+   * resize the engine, reset the camera, or touch the compare layout. Returns
+   * null when the bitmap is blank and the cached pixels cannot be windowed.
+   */
+  captureViewportStill?: () => { mimeType: string; base64: string } | null;
+  /**
+   * MediaStream of the Cornerstone canvas inside this viewport. Never the
+   * page, the sidebar, or another panel. Null when the canvas cannot stream.
+   */
+  captureViewportStream?: () => MediaStream | null;
+  /**
+   * Image-fraction → canvas pixels for the sketch layer. Fires on camera,
+   * slice, and resize. Null while MPR owns the pane.
+   */
+  subscribeView?: (listener: (frame: SketchFrame | null) => void) => () => void;
+  /** Index of an instance (by SOP Instance UID) in the stack on screen, or -1. */
+  indexOfSop?: (sopInstanceUID: string) => number;
 }
 
-function voiToWwWc(voi?: { lower: number; upper: number }): { ww: number; wc: number } | null {
-  if (!voi) return null;
-  return { ww: voi.upper - voi.lower, wc: (voi.upper + voi.lower) / 2 };
+type CachedSlice = {
+  color?: boolean;
+  columns?: number;
+  rows?: number;
+  width?: number;
+  height?: number;
+  slope?: number;
+  intercept?: number;
+  invert?: boolean;
+  isPreScaled?: boolean;
+  photometricInterpretation?: string;
+  getPixelData?: () => ArrayLike<number>;
+};
+
+/**
+ * Prefer the painted canvas (it includes the current zoom). If that bitmap is
+ * blank — WebGL often clears the drawing buffer — window the cached slice
+ * instead. Neither path resizes the engine or resets the camera.
+ */
+function grabViewportStill(
+  host: HTMLElement | null,
+  vp: DrivableViewport | null
+): { mimeType: string; base64: string } | null {
+  const canvas = host ? largestCanvas(Array.from(host.querySelectorAll("canvas"))) : null;
+  if (canvas) {
+    const shot = stillFromCanvas(canvas);
+    if (shot.ok) return { mimeType: shot.mimeType, base64: shot.base64 };
+  }
+  if (!vp) return null;
+  const image = (
+    vp as DrivableViewport & { getCornerstoneImage?: () => CachedSlice | undefined }
+  ).getCornerstoneImage?.();
+  if (!image || image.color || typeof image.getPixelData !== "function") return null;
+  const samples = image.getPixelData();
+  const columns = image.columns || image.width || 0;
+  const rows = image.rows || image.height || 0;
+  if (!samples || columns < 2 || rows < 2 || samples.length < columns * rows) return null;
+  const voi = voiToWwWc(vp.getProperties().voiRange);
+  if (!voi || !(voi.ww > 1)) return null;
+  const preScaled = Boolean(image.isPreScaled);
+  const monochrome1 = image.photometricInterpretation === "MONOCHROME1";
+  const invert = Boolean(vp.getProperties().invert) !== Boolean(image.invert) !== monochrome1;
+  const frame: GrayscaleFrame = {
+    columns,
+    rows,
+    samples,
+    slope: preScaled ? 1 : Number(image.slope ?? 1) || 1,
+    intercept: preScaled ? 0 : Number(image.intercept ?? 0) || 0,
+    ww: voi.ww,
+    wc: voi.wc,
+    invert,
+  };
+  return jpegStillFromGrayscale(frame);
 }
-function wwWcToVoi(ww: number, wc: number): { lower: number; upper: number } {
-  return { lower: wc - ww / 2, upper: wc + ww / 2 };
+
+/** Viewport canvas only. WebGL may still yield blank frames if the buffer is cleared. */
+function openViewportStream(host: HTMLElement | null, fps = 12): MediaStream | null {
+  const canvas = host ? largestCanvas(Array.from(host.querySelectorAll("canvas"))) : null;
+  if (!canvas || typeof canvas.captureStream !== "function") return null;
+  try {
+    const stream = canvas.captureStream(fps);
+    return stream.getVideoTracks().length ? stream : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -239,6 +582,8 @@ function imageSupportsAnnotation(
 }
 
 async function buildImageIds(source: ViewerSource): Promise<string[]> {
+  // Local files arrive already resolved: the ids ARE the stack, in order.
+  if (source.kind === "imageIds") return [...source.imageIds];
   if (source.kind === "wadouri") {
     // frame index is 1-based in the wadouri imageId (loader subtracts 1).
     return Array.from(
@@ -249,6 +594,271 @@ async function buildImageIds(source: ViewerSource): Promise<string[]> {
   return createImageIdsAndCacheMetaData(source);
 }
 
+/** One Cornerstone core/tools/loader init per page; see the init effect. */
+let engineInit: Promise<void> | null = null;
+
+type EngineModules = {
+  core: typeof import("@cornerstonejs/core");
+  loader: typeof import("@cornerstonejs/dicom-image-loader");
+  tools: typeof import("@cornerstonejs/tools");
+  deviceProfile: ReturnType<typeof detectDeviceProfile>;
+};
+let engineReady: Promise<EngineModules> | null = null;
+
+/** Viewer status lines for failures (shown on the imaging stage). */
+export const VIEWER_UPDATING = "Updating viewer, reloading…";
+export const VIEWER_LOAD_FAILED = "The viewer could not load. Check your connection, then reload the page.";
+const VIEWER_SERIES_FAILED = "This series could not be displayed.";
+
+/**
+ * Load and initialise the imaging engine once per page: Cornerstone core,
+ * tools, the DICOM loader and its decode-worker pool, the cache ceiling and
+ * request pools. Every pane awaits this; a page that is ABOUT to show a viewer
+ * (the free viewer's dropzone) calls `prewarmViewerEngine` on idle so the
+ * first drop finds the workers already booted.
+ */
+export function ensureViewerEngine(): Promise<EngineModules> {
+  engineReady ??= (async () => {
+    // Each chunk retried twice with backoff (lib/chunkRecovery.ts): a
+    // dropped request or a deploy mid-session must not cost the study.
+    const core = await importWithRetry(() => import("@cornerstonejs/core"));
+    const loader = await importWithRetry(() => import("@cornerstonejs/dicom-image-loader"));
+    const tools = await importWithRetry(() => import("@cornerstonejs/tools"));
+    // Engine knobs live in lib/viewerRuntime.ts: how many decode workers,
+    // how much decoded-pixel cache, how many frame requests may be in
+    // flight, and whether this is a phone (which drops Cornerstone's
+    // WebGL context pool from 7 to 1). They are device-dependent and the
+    // benchmark harness measures the same functions.
+    const deviceProfile = detectDeviceProfile();
+    // Once per page, not once per pane. `dicomImageLoader.init()` runs
+    // `registerLoaders()`, which PURGES the image cache and the wadors
+    // metadata store — so a second pane mounting (a hanging layout, or
+    // student compare) silently wiped the first pane's metadata.
+    engineInit ??= (async () => {
+      await core.init(coreInitConfig(deviceProfile) as Parameters<typeof core.init>[0]);
+      await tools.init();
+      await loader.init({ maxWebWorkers: webWorkerCount(deviceProfile) });
+    })();
+    try {
+      await engineInit;
+    } catch (err) {
+      engineInit = null;
+      throw err;
+    }
+    const workers = webWorkerCount(deviceProfile);
+    // Converted-bundle delivery (HTJ2K + previews via CDN) behind the same
+    // wadors imageIds. Falls through to DICOMweb per image. Idempotent.
+    installBundleLoader(
+      core as unknown as CoreLike,
+      loader as unknown as DicomLoaderLike,
+      { decodeWorkers: workers }
+    );
+    // Cornerstone defaults to 3 GB of decoded pixels, which is a tab kill
+    // on a 4 GB laptop or a phone. The cache evicts LRU, so a lower
+    // ceiling costs re-decodes, never correctness.
+    try {
+      core.cache.setMaxCacheSize(imageCacheBytes(deviceProfile));
+    } catch {
+      /* older core without a settable ceiling — keep the library default */
+    }
+    const retrieval = (
+      core as {
+        imageRetrievalPoolManager?: { maxNumRequests?: Record<string, number> };
+      }
+    ).imageRetrievalPoolManager;
+    const pool = retrieval?.maxNumRequests;
+    if (pool) Object.assign(pool, retrievalPoolSizes(deviceProfile));
+    console.info("[radlearn] viewer runtime", describeRuntime(deviceProfile));
+    return { core, loader, tools, deviceProfile };
+  })();
+  engineReady.catch(() => {
+    engineReady = null;
+  });
+  return engineReady;
+}
+
+let contextWarm: Promise<void> | null = null;
+
+/**
+ * Fire-and-forget engine warm for idle callbacks: `ensureViewerEngine`, then
+ * the shared rendering engine and its first WebGL context. vtk.js creates GL
+ * contexts lazily on the first render, and that creation is the single
+ * largest cost between "files dropped" and "first pixel" (~50 ms on a GPU,
+ * ~250 ms in software GL). One hidden 64 px stack viewport renders once and is
+ * disabled again, so the user's viewport finds the context already built.
+ * Skipped when a viewer is already mounted.
+ */
+export function prewarmViewerEngine(stage?: { width: number; height: number }): void {
+  if (!contextWarm) markEngineWarm("flowrad:viewer:engine-warm-start");
+  contextWarm ??= ensureViewerEngine()
+    .then(async ({ core, loader }) => {
+      markEngineWarm("flowrad:viewer:engine-ready");
+      sharedCore = core as unknown as EngineHost;
+      if (viewportEngineRegistry.size > 0) return;
+      const engine = await obtainSharedEngine(core as unknown as EngineHost);
+      const element = document.createElement("div");
+      // DOM API, not JSX: a throwaway off-screen host, never painted. Sized
+      // like the stage the first study will open in (the caller's hint, else
+      // the window), so the pool context's GL drawing buffer is allocated at
+      // its real size now: a size change on the first drop reallocates it,
+      // ~70 ms of main thread in software GL.
+      const width = Math.max(64, Math.round(stage?.width ?? window.innerWidth));
+      const height = Math.max(64, Math.round(stage?.height ?? window.innerHeight));
+      element.style.cssText = `position:fixed;left:-${width + 100}px;top:0;width:${width}px;height:${height}px;pointer-events:none;`;
+      element.setAttribute("aria-hidden", "true");
+      document.body.appendChild(element);
+      const viewportId = "flowrad-context-warm";
+      const wadouri = (loader.default ?? loader).wadouri as unknown as {
+        fileManager: { add(file: File): string; remove(index: number): void };
+      };
+      const warmIds: string[] = [];
+      const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      try {
+        engine.enableElement({ viewportId, type: core.Enums.ViewportType.STACK, element });
+        const vp = engine.getViewport(viewportId) as
+          | { render?: () => void; setStack?: (ids: string[], index?: number) => Promise<unknown> }
+          | undefined;
+        // Render a real Part 10 file through the SAME path a dropped study
+        // takes (wadouri file loader → NATURALIZED metadata → rescale → float
+        // texture → shaders). Everything paid once per page is paid here, in
+        // idle time: vtk's norm16 capability probe (a throwaway WebGL context,
+        // ~0.45 s in software GL), the float-texture extensions on the pool
+        // context (~0.4 s), texture formats and shader programs. A synthetic
+        // image from createAndCacheLocalImage never reached vtk's texture
+        // path, so it warmed none of this. The files are 16×16 gradients
+        // built in memory (syntheticDicom.ts): no patient, no network.
+        for (const kind of ["ct", "mr"] as const) {
+          if (!vp?.setStack) break;
+          const bytes = syntheticDicomBytes({ kind });
+          const file = new File([bytes.buffer as ArrayBuffer], `flowrad-warm-${kind}.dcm`, {
+            type: "application/dicom",
+          });
+          const id = wadouri.fileManager.add(file);
+          warmIds.push(id);
+          await vp.setStack([id], 0);
+          vp.render?.();
+          await frame();
+        }
+      } finally {
+        try {
+          engine.disableElement(viewportId);
+        } catch {
+          /* engine torn down meanwhile */
+        }
+        element.remove();
+        // Gone without a trace: decoded frames, parsed metadata, file handles.
+        if (warmIds.length > 0) await releaseLocalImages(warmIds, { recycleWorkers: false }).catch(() => undefined);
+        markEngineWarm("flowrad:viewer:engine-warm");
+      }
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * Warm again after a study closed: Close recycles the decode workers, so the
+ * next drop would boot them (and re-prime the pool context) on its critical
+ * path. No-op while a viewer is mounted or a warm is still running.
+ */
+export function rewarmViewerEngine(stage?: { width: number; height: number }): void {
+  if (viewportEngineRegistry.size > 0) return;
+  const running = contextWarm;
+  if (!running) {
+    prewarmViewerEngine(stage);
+    return;
+  }
+  void running.then(() => {
+    if (contextWarm !== running || viewportEngineRegistry.size > 0) return;
+    contextWarm = null;
+    prewarmViewerEngine(stage);
+  });
+}
+
+/** User Timing marks for the prewarm (timings only; read by the perf gate). */
+function markEngineWarm(name: string): void {
+  try {
+    performance.mark(name);
+  } catch {
+    /* best-effort */
+  }
+}
+
+type SharedEngine = {
+  enableElement: (entry: {
+    viewportId: string;
+    type: unknown;
+    element: HTMLDivElement;
+  }) => void;
+  disableElement: (viewportId: string) => void;
+  getViewport: (viewportId: string) => unknown;
+  resize: (immediate?: boolean, keepCamera?: boolean) => void;
+  destroy: () => void;
+  hasBeenDestroyed?: boolean;
+};
+
+type EngineHost = {
+  getRenderingEngine: (id: string) => SharedEngine | undefined;
+  RenderingEngine: new (id: string) => unknown;
+};
+
+let sharedCore: EngineHost | null = null;
+let engineCreate: Promise<void> | null = null;
+
+function liveSharedEngine(core: EngineHost): SharedEngine | null {
+  const existing = core.getRenderingEngine(SHARED_RENDERING_ENGINE_ID);
+  if (existing && !existing.hasBeenDestroyed) return existing;
+  return null;
+}
+
+async function obtainSharedEngine(core: EngineHost): Promise<SharedEngine> {
+  const found = liveSharedEngine(core);
+  if (found) return found;
+  if (!engineCreate) {
+    engineCreate = Promise.resolve()
+      .then(() => {
+        if (!liveSharedEngine(core)) new core.RenderingEngine(SHARED_RENDERING_ENGINE_ID);
+      })
+      .finally(() => {
+        engineCreate = null;
+      });
+  }
+  await engineCreate;
+  const engine = liveSharedEngine(core);
+  if (!engine) throw new Error("RadLearn rendering engine was not created");
+  return engine;
+}
+
+/**
+ * Pages that hold the engine warm between studies (the free viewer: drop,
+ * close, drop again). While any hold is live the last viewport's unmount
+ * disables its element instead of destroying the engine, so the next study
+ * skips rebuilding the WebGL context pool, its extensions and shaders
+ * (~0.5 s). The warmed engine is part of the page's idle baseline — it exists
+ * before the first drop — so keeping it does not hold any study's memory.
+ */
+let engineHolds = 0;
+
+/** Keep the shared engine across studies; call the returned release on unmount. */
+export function holdViewerEngine(): () => void {
+  engineHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    engineHolds -= 1;
+    if (engineHolds === 0 && sharedCore) destroySharedEngineIfIdle(liveSharedEngine(sharedCore));
+  };
+}
+
+function destroySharedEngineIfIdle(engine: SharedEngine | null | undefined) {
+  if (!engine || engine.hasBeenDestroyed) return;
+  if (viewportEngineRegistry.size > 0 || engineHolds > 0) return;
+  try {
+    engine.destroy();
+  } catch {
+    /* already gone */
+  }
+}
+
 export default function CornerstoneViewer({
   source = BUNDLED_CASE,
   series,
@@ -256,12 +866,47 @@ export default function CornerstoneViewer({
   onSeriesChange,
   controls,
   showToolbar = true,
+  chrome: chromeProp,
   modality,
   onReady,
   onEvent,
   className,
   instanceId = "primary",
+  imageOverlay,
+  openSlice = null,
+  defaultTool = "WindowLevel",
+  onViewModeChange,
+  questionMarkHelp = false,
+  features: featuresProp,
+  exportFiles,
+  paneLinks,
+  distractionFree,
+  onFusion,
+  layoutChoice = null,
+  onComparePrior = null,
+  scaleBar = null,
+  seriesPanel = null,
+  onCycleLayout,
+  onLayout,
+  onSetLayout,
+  currentLayout,
+  onToggleMaximize,
+  popOutOffered = false,
+  startPlane = null,
+  onStartPlaneDone,
+  referencePlanes,
+  toolbarHost,
+  active = true,
+  onActivate,
+  initialWindow = null,
+  paneLabel,
+  onChunkLoadError,
+  onSeriesStep,
+  voiceOn = false,
+  onVoiceChange,
 }: {
+  /** "Current" / "Prior" in compare: the first line of the top-left overlay. */
+  paneLabel?: string;
   source?: ViewerSource;
   /**
    * Multi-series case rail. When provided, the viewport loads
@@ -275,12 +920,38 @@ export default function CornerstoneViewer({
   onSeriesChange?: (seriesInstanceUID: string) => void;
   /** Pass a ref to receive the imperative drive handle (student/record session). */
   controls?: MutableRefObject<CornerstoneControls | null>;
-  /** Hide the demo toolbar/status line (driven/student mode). */
+  /** Hide the demo toolbar/status line (driven/student mode). Ignored when
+   *  `chrome` is set. */
   showToolbar?: boolean;
+  /**
+   * Where tool chrome sits. `dock` — bar under a square image. `edge` — bar
+   * along the bottom of a pane that fills its parent (student). `off` — no
+   * tools. Defaults from `showToolbar`.
+   */
+  chrome?: ViewerChrome;
   /** Modality (e.g. "CT") — picks the relevant Window/Level presets. */
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /**
+   * "Next / previous series" (voice) for hosts that own the series list
+   * themselves (the free viewer). Without it, the `series` prop is stepped.
+   */
+  onSeriesStep?: (delta: number) => void;
+  /**
+   * Voice commands were on in the viewer this one replaces (another series):
+   * switch them back on once this one is ready. Paired with `onVoiceChange`,
+   * which reports the reader turning voice on or off (not an unmount).
+   */
+  voiceOn?: boolean;
+  onVoiceChange?: (on: boolean) => void;
+  /**
+   * The viewer's code could not be fetched even after retries (a deploy
+   * swapped the build under this tab, or the network dropped it). The host
+   * saves the reader's place and reloads (lib/chunkRecovery.ts). Without a
+   * handler the viewer reloads the page itself.
+   */
+  onChunkLoadError?: (error: unknown) => void;
   /** Record hook: ordered viewer state changes (slice/voi/camera/invert). */
   onEvent?: (e: ViewerEvent) => void;
   /** Wrapper class (the viewer fills it; imaging surface stays pure black). */
@@ -290,7 +961,119 @@ export default function CornerstoneViewer({
    * layout). Must be stable for the life of the mount. Default "primary".
    */
   instanceId?: string;
+  /**
+   * Drawn on top of the pixels and under the toolbar (replay laser, annotate
+   * hit layer, REC HUD). Keeps those controls on the image when the stage
+   * goes fullscreen and the image is no longer a square.
+   */
+  imageOverlay?: ReactNode;
+  /**
+   * Slice to show first. The last teacher landing on this series, when the
+   * case stored one. Otherwise the stack opens at the middle.
+   */
+  openSlice?: OpenSlice | null;
+  /**
+   * Tool that owns left-drag and one-finger drag on mount.
+   * Reading rooms pass `StackScroll`. Studio record keeps `WindowLevel`.
+   */
+  defaultTool?: string;
+  /** Stack markers and lasers are in image fractions. Callers hide them in MPR. */
+  onViewModeChange?: (mode: MprMode) => void;
+  /**
+   * `?` opens the viewer's shortcut sheet. Leave off inside the student
+   * session, which owns `?` on `window`; the standalone viewer turns it on.
+   * The toolbar's keyboard button always opens it. The same flag gives the
+   * standalone viewer R / Shift+R rotate (R is the session's exam reveal).
+   */
+  questionMarkHelp?: boolean;
+  /**
+   * What this surface offers beyond the shared core, as named groups
+   * (lib/viewerFeatures.ts): `tools`, `layouts`, `export`, `slabs`,
+   * `localStudies`, `keys`. Omitted groups are off — RadLearn's teaching set.
+   * The free viewer passes FREE_VIEWER_FEATURES. `tools` is read once, when
+   * the viewport is built (it decides which Cornerstone tools register).
+   */
+  features?: Partial<ViewerFeatures>;
+  /**
+   * The files behind this pane's series and study, for the Export dialog's
+   * anonymised DICOM copy (free viewer). Called when the dialog opens.
+   */
+  exportFiles?: () => Promise<ExportDicomFiles | null>;
+  /**
+   * Free viewer grid: the panes' links (scroll by position, W/L, zoom, reference
+   * lines) and "link at what each pane shows now" (Ctrl/⌘+Shift+L), offered in
+   * the right-click menu. Null for a single pane.
+   */
+  paneLinks?: {
+    scroll: boolean;
+    voi: boolean;
+    zoom: boolean;
+    lines: boolean;
+    toggle: (what: "scroll" | "voi" | "zoom" | "lines") => void;
+    linkAtCurrent: () => void;
+  } | null;
+  /** Free viewer: distraction-free reading (images only), offered in the right-click menu. */
+  distractionFree?: { on: boolean; toggle: () => void } | null;
+  /** Free viewer, a study with a CT and a PET volume: open PET / CT fusion (Ctrl/⌘+Shift+F). */
+  onFusion?: (() => void) | null;
+  /** A hanging-layout picker on the toolbar (pages without a series-panel picker). */
+  layoutChoice?: ToolbarLayoutChoice | null;
+  /** The image menu's "Compare with prior…" (free viewer: a prior of this patient among the recent studies). */
+  onComparePrior?: (() => void) | null;
+  /** The scale bar (free viewer, as the desktop's setting): on / off, shared by every pane. Null: not offered. */
+  scaleBar?: { on: boolean; toggle: () => void } | null;
+  /** The caller's series panel, offered in the right-click menu as Hide / Show. */
+  seriesPanel?: { shown: boolean; toggle: () => void } | null;
+  /** G cycles the caller's hanging layout. Omit where there is no grid. */
+  onCycleLayout?: () => void;
+  /**
+   * Free viewer grid: Shift+1…7 picks the desktop's nth layout. Returns its
+   * label, or null when this study has too few series for it.
+   */
+  onLayout?: ((n: number) => string | null) | null;
+  /**
+   * In a grid of panes: double-click maximises this pane / restores the grid
+   * (instead of fitting the image), as on the desktop viewer.
+   */
+  onToggleMaximize?: () => void;
+  /** Two or more monitors: the page offers pop-out (Ctrl/⌘+Alt+N); the help lists it. */
+  popOutOffered?: boolean;
+  /**
+   * Show this series reformatted (a thumbnail's "Quick coronal / sagittal", as
+   * on the desktop): applied once the series is ready, then `onStartPlaneDone`.
+   */
+  startPlane?: MprPlane | null;
+  onStartPlaneDone?: () => void;
+  /** A named layout ("layout two" / "four" / "six" by voice): rows × columns. */
+  onSetLayout?: (rows: number, cols: number) => void;
+  /** Free viewer grid: the layout on screen, for the right-click Layout submenu (as on the desktop). */
+  currentLayout?: { rows: number; cols: number } | null;
+  /** Other panes' image planes: drawn as reference lines where they cut this image (same frame only). */
+  referencePlanes?: readonly RemotePlane[];
+  /**
+   * Hanging layouts: the shared toolbar slot under the grid. When set, this
+   * pane portals its toolbar there while it is the active pane and renders
+   * none of its own, so a 2×2 has one bar that follows focus (OHIF's model;
+   * docs/UI_AUDIT.md backlog #7).
+   */
+  toolbarHost?: HTMLElement | null;
+  /** False for a non-focused pane in a grid. */
+  active?: boolean;
+  /** Pointer down or focus inside this pane. */
+  onActivate?: () => void;
+  /** Window to open on (a view link). Applied once, after the first pixel. */
+  initialWindow?: { ww: number; wc: number } | null;
 }) {
+  const chrome = resolveChrome(showToolbar, chromeProp);
+  const docked = chrome === "dock";
+  const edge = chrome === "edge";
+  const defaultToolRef = useRef(defaultTool);
+  const f = viewerFeatures(featuresProp);
+  const featuresRef = useRef(f);
+  featuresRef.current = f;
+  defaultToolRef.current = defaultTool;
+  const journalLayoutRef = useRef("single");
+  journalLayoutRef.current = currentLayout ? `${currentLayout.rows}x${currentLayout.cols}` : "single";
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   // Stable handles the toolbar uses after init.
@@ -299,6 +1082,19 @@ export default function CornerstoneViewer({
   const clearRef = useRef<() => void>(() => {});
   const invertRef = useRef<(value?: boolean) => void>(() => {});
   const applyPresetRef = useRef<(p: WindowPreset | null) => void>(() => {});
+  // Slice scrollbar, keyboard and cine all drive the stack through one fn.
+  // The target is a function of the LIVE index and count read off the
+  // viewport, not of React state — the corner readout is throttled to 80 ms
+  // and a held arrow key or a 30 fps cine would compute from a stale slice.
+  // `silent` suppresses the record stream: a cine sweep is a view aid, not a
+  // teaching beat, and 15 slice events a second would swamp a recording.
+  const setSliceRef = useRef<
+    (to: number | ((current: number, count: number) => number), silent?: boolean) => void
+  >(() => {});
+  const nudgeZoomRef = useRef<(factor: number) => void>(() => {});
+  // RadiAnt zoom levels (Ctrl/⌘+0…4) and Ctrl/⌘+arrow pan; false when the pane has no camera to set (MPR, not loaded).
+  const zoomToRef = useRef<(scale: number | "fit") => boolean>(() => false);
+  const panByRef = useRef<(dx: number, dy: number) => boolean>(() => false);
   // Live viewport + the most recent rAF tween cancel fn (so we never overlap).
   const viewportRef = useRef<DrivableViewport | null>(null);
   const cancelTweenRef = useRef<() => void>(() => {});
@@ -326,49 +1122,259 @@ export default function CornerstoneViewer({
     series && series.length > 0
       ? caseSeriesToSource(series[Math.max(0, Math.min(series.length - 1, activeSeriesIndex))])
       : source;
+  // Instances the archive reported for a series, when the rail carries it.
+  // `startProgressiveWadorsLoad` turns a known count into ONE 1-row QIDO at
+  // the middle offset instead of paging the whole SOP list to find a midpoint.
+  const instanceCountFor = (seriesInstanceUID: string): number | undefined =>
+    seriesRef.current?.find((s) => s.seriesInstanceUID === seriesInstanceUID)?.instanceCount;
 
+  const [replayShapes, setReplayShapes] = useState<ProjectedReplayShape[]>([]);
   const [status, setStatus] = useState("Initializing viewer…");
-  const [activeTool, setActiveTool] = useState("WindowLevel");
+  // A failure is shown as a calm sentence, never an exception message on the
+  // black stage. Code that would not load (ChunkLoadError after retries) is
+  // handed to the host once, which saves the reader's place and reloads.
+  const onChunkLoadErrorRef = useRef(onChunkLoadError);
+  onChunkLoadErrorRef.current = onChunkLoadError;
+  const chunkFailureHandled = useRef(false);
+  const failureStatus = (err: unknown): string => {
+    if (!isChunkLoadError(err)) return VIEWER_SERIES_FAILED;
+    if (chunkFailureHandled.current) return VIEWER_UPDATING;
+    chunkFailureHandled.current = true;
+    const handler = onChunkLoadErrorRef.current;
+    if (handler) {
+      handler(err);
+      return VIEWER_UPDATING;
+    }
+    return reloadForChunkError() ? VIEWER_UPDATING : VIEWER_LOAD_FAILED;
+  };
+  const [activeTool, setActiveTool] = useState(defaultTool || "WindowLevel");
+  /** Annotation select / delete / erase / label (AnnotationEditLayer). */
+  const [editCtx, setEditCtx] = useState<annotationEditing.EditingContext | null>(null);
+  const activeToolRef = useRef(activeTool);
+  activeToolRef.current = activeTool;
+  /**
+   * The slice on screen is an 8-bit preview from a converted bundle
+   * (lib/dicomCdn). Window/level and measurement wait for the full frame.
+   */
+  const [previewing, setPreviewing] = useState(false);
+  const previewingRef = useRef(false);
+  const pressGuardRef = useRef<HTMLDivElement>(null);
+  /** Live mouse-binding subscription of the current tool group (Settings › Mouse & Keyboard). */
+  const bindingsUnsubRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => bindingsUnsubRef.current?.(), []);
   const [ready, setReady] = useState(false);
+  /** True once any frame has been drawn. The loading chip moves off the anatomy. */
+  const [painted, setPainted] = useState(false);
+  /** Full active stack is still registering after a series change. */
+  const [stacking, setStacking] = useState(false);
+  const openSliceRef = useRef(openSlice);
+  openSliceRef.current = openSlice;
   const [inverted, setInverted] = useState(false);
+  // Rotate / flip: edge letters read off the camera after each turn (null =
+  // unrotated, the header's own letters). See applyOrientationRef.
+  const [turnedMarkers, setTurnedMarkers] = useState<OrientationMarkers | null>(null);
   const [activePreset, setActivePreset] = useState<string | null>(null);
-  const [presetOpen, setPresetOpen] = useState(false);
+  const [readout, setReadout] = useState<{
+    slice: number;
+    count: number;
+    ww?: number;
+    wc?: number;
+    plane?: string;
+    /** Image the metadata below was read from (equality check only). */
+    imageId?: string;
+    meta?: OverlayMeta;
+    zoom?: number;
+    /** Millimetres per CSS pixel on a calibrated stack image (the scale bar), and the pane's width. */
+    mmPerPx?: number;
+    paneWidth?: number;
+  } | null>(null);
+  // Corner overlay density, remembered per browser. Hydrated after mount so
+  // server and first client render agree.
+  const [overlay, setOverlay] = useState<OverlayDensity>("full");
+  useEffect(() => {
+    try {
+      setOverlay(parseOverlayDensity(window.localStorage.getItem(OVERLAY_STORAGE_KEY)));
+    } catch {
+      /* storage blocked — keep the default */
+    }
+  }, []);
+  const cycleOverlay = useCallback(() => {
+    setOverlay((current) => {
+      const next = nextOverlayDensity(current);
+      try {
+        window.localStorage.setItem(OVERLAY_STORAGE_KEY, next);
+      } catch {
+        /* storage blocked — still toggles for this session */
+      }
+      return next;
+    });
+  }, []);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [customWindowOpen, setCustomWindowOpen] = useState(false);
+  /** The Export dialog (free viewer), and the kind it opens on. */
+  // The stack and files are read once, when it opens: the export steps
+  // through the slices, and must restore the one the reader was on.
+  const [measurementsOpen, setMeasurementsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState<{
+    kind: WebExportKind;
+    frames: ExportFrames | null;
+    dicom: ExportDicomFiles | null;
+  } | null>(null);
+  // Text boxes (free viewer, saved in this browser) and the annotated-PNG save.
+  const [textBoxTool, setTextBoxTool] = useState(false);
+  const textBoxRef = useRef<TextBoxLayerHandle>(null);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => setStageEl(elementRef.current), []);
+  const [annotatedExport, setAnnotatedExport] = useState(false);
+  const [recon, setRecon] = useState<{ imageIds: string[]; title: string } | null>(null);
+  /** Which list the help sheet shows: keys, or the voice commands. */
+  const [helpTab, setHelpTab] = useState<ViewerHelpTab>("keys");
+  // Mouse & keyboard bindings (local copy; the page shell syncs the account).
+  const { overrides: viewerBindings } = useViewerBindings();
+  // On-screen confirmation for key presses. Cleared after a beat.
+  const [hud, setHud] = useState<string | null>(null);
+  const hudTimerRef = useRef(0);
+  const flash = useCallback((text: string) => {
+    window.clearTimeout(hudTimerRef.current);
+    setHud(text);
+    hudTimerRef.current = window.setTimeout(() => setHud(null), 1100);
+  }, []);
+  useEffect(() => () => window.clearTimeout(hudTimerRef.current), []);
+  const fitRef = useRef<() => void>(() => {});
+  const initialWindowRef = useRef(initialWindow);
+  initialWindowRef.current = initialWindow;
+  const readoutTimerRef = useRef(0);
   // Whether the annotation tools are enabled. Default ENABLED — we only flip to
   // disabled once we POSITIVELY confirm a study has no pixel spacing (e.g. the
   // bundled sample). This avoids the false-negative that killed the tools on
   // real wadors/uploaded studies before their plane metadata had resolved.
   const [annotationsEnabled, setAnnotationsEnabled] = useState(true);
+  const [viewMode, setViewMode] = useState<MprMode>("stack");
+  // Thin MPR, MIP slab or 3D once the volume is up (lib/mprSession.ts).
+  const [mprRender, setMprRender] = useState<MprRender>("mpr");
+  // The plane enlarged to fill the MPR layout (double-click / the plane
+  // switch), or null for the three-pane grid. Back to the grid on Stack.
+  const [mprFocus, setMprFocus] = useState<MprPlane | null>(null);
+  useEffect(() => {
+    if (viewMode === "stack") setMprFocus(null);
+  }, [viewMode]);
+  // 3D look and cut plane (shared viewer-core helpers, same as FlowRad Viewer desktop).
+  const [surface3d, setSurface3d] = useState<number | null>(null);
+  const [cut3d, setCut3d] = useState<{ axis: CutAxis; fraction: number } | null>(null);
+  const mprRenderRef = useRef<MprRender>("mpr");
+  mprRenderRef.current = mprRender;
+  // Slab on the MPR planes (MIP / MinIP / AvgIP at a thickness), as on the
+  // desktop: T cycles it, Ctrl/⌘+] and [ change the thickness. From the stack
+  // it reformats the acquisition plane in this viewport; cycling back to a
+  // thin slice returns to the stack.
+  const [slab, setSlabState] = useState<Slab>({ mode: "off", mm: SLAB_DEFAULT_MM });
+  const slabRef = useRef(slab);
+  slabRef.current = slab;
+  const slabFromStack = useRef(false);
+  useEffect(() => {
+    if (viewMode !== "stack") return;
+    slabFromStack.current = false;
+    setSlabState((s) => (s.mode === "off" ? s : { ...s, mode: "off" }));
+  }, [viewMode]);
+  // The plane the reader last touched; arrow keys scroll that one.
+  const activePlaneRef = useRef<MprPlane>("axial");
+  const [cinePlaying, setCinePlaying] = useState(false);
+  const [cineFps, setCineFps] = useState(initialCineFps(null));
+  const cineWrap: CineWrap = "loop";
+  const cineStateRef = useRef(createCineState(1));
+  const scrollTrackRef = useRef<HTMLDivElement>(null);
+  const [mprLive, setMprLive] = useState(false);
+  const [mprLoading, setMprLoading] = useState(false);
+  const [mprNotice, setMprNotice] = useState<string | null>(null);
   const destroyToolGroupRef = useRef<(id: string) => void>(() => {});
+  const viewModeRef = useRef<MprMode>("stack");
+  viewModeRef.current = viewMode;
+  const modalityRef = useRef(modality);
+  modalityRef.current = modality;
+  const mprSessionRef = useRef<MprSessionHandle | null>(null);
+  const enterMprRef = useRef<() => Promise<void>>(async () => {});
+  const exitMprRef = useRef<() => Promise<void>>(async () => {});
+  const axialRef = useRef<HTMLDivElement>(null);
+  const volume3dRef = useRef<HTMLDivElement>(null);
+  const coronalRef = useRef<HTMLDivElement>(null);
+  const sagittalRef = useRef<HTMLDivElement>(null);
 
-  const presets = presetsForModality(modality);
+  // Number-key order, shared with the desktop viewer (key n = entry n).
+  const presets = viewerWindowPresets(modality);
+
+  // `source` is often a fresh object with the same study/series (Teach rebuilds
+  // the compare descriptor every render). Object identity must not tear the
+  // engine down — that reloads the stack at the mid-slice default and strands
+  // a secondary landing. Series changes on an existing rail go through
+  // switchSeries, which does not change this key.
+  const sourceKey = viewerEngineKey(source, series);
 
   useEffect(() => {
     let disposed = false;
-    let renderingEngine: { destroy: () => void } | null = null;
+    let prefetchTimer = 0;
+    let disposeFill: () => void = () => {};
     let detachListeners: () => void = () => {};
-    const toolGroupId = `flowrad-tg-${instanceId}`;
+    let detachQuality: () => void = () => {};
+    let resizeObserver: ResizeObserver | null = null;
+    let restoreRaf = 0;
+    const viewListeners = new Set<(frame: SketchFrame | null) => void>();
+    let viewRaf = 0;
+    const viewportId = viewportIdFor(instanceId);
+    const toolGroupId = toolGroupIdFor(instanceId);
+    // One engine for every pane. A second RenderingEngine allocates another
+    // WebGL context pool; opening compare then loses the primary context and
+    // the canvas clears to black when the split closes.
+    const renderingEngineId = SHARED_RENDERING_ENGINE_ID;
+    const loadAbort = { current: new AbortController() };
+    // Cornerstone rejects in-flight decodes when strict mode tears the
+    // viewport down, and a frame requested before its metadata is registered
+    // throws inside the loader pool. Those are not teaching failures. Swallow
+    // them so the dev overlay does not sit on the image.
+    const onLoaderRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason as { name?: string; message?: string } | undefined;
+      const message = String(reason?.message ?? "");
+      if (reason?.name === "AbortError" || message.includes("samplesPerPixel")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("unhandledrejection", onLoaderRejection, true);
+    const seriesUidOf = (src: ViewerSource) =>
+      src.kind === "wadors" ? src.SeriesInstanceUID : "wadouri";
 
     (async () => {
       if (started.current || !elementRef.current) return;
       started.current = true;
+      viewportEngineRegistry.acquire(instanceId);
+      beginViewerNavigation(instanceId);
+      let activeNav = markViewerNavigation(seriesUidOf(initialSource));
+      let activeSeriesUid = seriesUidOf(initialSource);
+      setStatus("Opening slice…");
+      setReady(false);
+      setPainted(false);
+      setStacking(true);
+      setReadout(null);
+      const earlyJob =
+        initialSource.kind === "wadors"
+          ? startProgressiveWadorsLoad({
+              wadoRsRoot: initialSource.wadoRsRoot,
+              studyInstanceUID: initialSource.StudyInstanceUID,
+              seriesInstanceUID: initialSource.SeriesInstanceUID,
+              open: openSliceRef.current,
+              instanceCount: instanceCountFor(initialSource.SeriesInstanceUID),
+              signal: loadAbort.current.signal,
+            })
+          : null;
 
       try {
-        const core = await import("@cornerstonejs/core");
-        const loader = await import("@cornerstonejs/dicom-image-loader");
-        const tools = await import("@cornerstonejs/tools");
+        const { core, tools, deviceProfile } = await ensureViewerEngine();
+        sharedCore = core as unknown as EngineHost;
 
-        await core.init();
-        await tools.init();
-        await loader.init({ maxWebWorkers: 4 });
-
-        setStatus("Loading series…");
-        const imageIds = await buildImageIds(initialSource);
-        if (disposed || !elementRef.current) return;
-
-        const renderingEngineId = `flowrad-engine-${instanceId}`;
-        const viewportId = `FLOWRAD_STACK_${instanceId}`;
-        const engine = new core.RenderingEngine(renderingEngineId);
-        renderingEngine = engine;
+        const engine = await obtainSharedEngine(core as unknown as EngineHost);
+        if (disposed || !elementRef.current) {
+          destroySharedEngineIfIdle(engine);
+          return;
+        }
 
         engine.enableElement({
           viewportId,
@@ -377,6 +1383,50 @@ export default function CornerstoneViewer({
         });
 
         const viewport = engine.getViewport(viewportId) as unknown as DrivableViewport;
+        viewportRef.current = viewport;
+
+        // Preview vs full quality of the slice on screen, plus the two open
+        // timings (lib/viewerTiming.ts). Reset per navigation.
+        let qualityNav = "";
+        let previewMarked = false;
+        let fullMarked = false;
+        const noteQuality = (preview: boolean, source: "bundle" | "dicomweb") => {
+          if (previewingRef.current !== preview) {
+            previewingRef.current = preview;
+            setPreviewing(preview);
+          }
+          if (qualityNav !== activeNav) {
+            qualityNav = activeNav;
+            previewMarked = false;
+            fullMarked = false;
+          }
+          if (preview && !previewMarked) {
+            previewMarked = true;
+            markViewerFirstPreview(activeNav, activeSeriesUid);
+          } else if (!preview && !fullMarked) {
+            fullMarked = true;
+            markViewerFullQuality(activeNav, activeSeriesUid, source);
+          }
+        };
+        const onQuality = (evt: Event) => {
+          const detail = (evt as CustomEvent<QualityEventDetail>).detail;
+          if (detail) noteQuality(detail.preview, "bundle");
+        };
+        const onStackImage = (evt: Event) => {
+          const image = (evt as CustomEvent<{ image?: unknown }>).detail?.image;
+          if (image) noteQuality(isPreviewImage(image), imageSource(image));
+        };
+        // Attached before the first setStack so the opening preview, and an
+        // opening swap that lands before the stack finishes, are both seen.
+        const qualityEl = elementRef.current;
+        const stackNewImage = core.Enums.Events.STACK_NEW_IMAGE;
+        qualityEl.addEventListener(stackNewImage, onStackImage);
+        qualityEl.addEventListener(QUALITY_EVENT, onQuality);
+        detachQuality = () => {
+          qualityEl.removeEventListener(stackNewImage, onStackImage);
+          qualityEl.removeEventListener(QUALITY_EVENT, onQuality);
+        };
+
 
         const {
           addTool,
@@ -391,6 +1441,11 @@ export default function CornerstoneViewer({
           RectangleROITool,
           EllipticalROITool,
           ProbeTool,
+          CobbAngleTool,
+          BidirectionalTool,
+          CircleROITool,
+          PlanarFreehandROITool,
+          MagnifyTool,
           annotation,
           Enums: toolsEnums,
         } = tools;
@@ -399,10 +1454,16 @@ export default function CornerstoneViewer({
         // Cornerstone3D v5 docs the tool group + viewport must be wired up
         // BEFORE the stack is loaded/rendered so the annotation interaction +
         // SVG layer are in place for the very first interaction.
+        // The free viewer's extra measure tools join only where it offers them
+        // (`features.tools`): teaching recordings are built around the others.
+        const readingExtras = featuresRef.current.tools
+          ? [CobbAngleTool, BidirectionalTool, CircleROITool, PlanarFreehandROITool, MagnifyTool]
+          : [];
         [
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
+          ...readingExtras,
         ].forEach((T) => {
           try {
             addTool(T);
@@ -425,21 +1486,38 @@ export default function CornerstoneViewer({
           WindowLevelTool, PanTool, ZoomTool, StackScrollTool,
           LengthTool, AngleTool, ArrowAnnotateTool,
           RectangleROITool, EllipticalROITool, ProbeTool,
-        ].forEach((T) => tg.addTool(T.toolName));
+          ...readingExtras,
+        ].forEach((T) =>
+          // Arrows draw without a prompt; labels are edited inline (AnnotationEditLayer).
+          tg.addTool(T.toolName, T === ArrowAnnotateTool ? annotationEditing.arrowAnnotateConfig : undefined)
+        );
         tg.addViewport(viewportId, renderingEngineId);
+        if (elementRef.current) setEditCtx({ core, tools, element: elementRef.current, toolGroupId });
 
         const { MouseBindings } = toolsEnums;
-        // Fixed bindings: wheel = scroll, right = zoom, middle = pan. These are
-        // permanent and never move to/from the left button.
-        tg.setToolActive(StackScrollTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Wheel }],
-        });
-        tg.setToolActive(ZoomTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Secondary }],
-        });
-        tg.setToolActive(PanTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Auxiliary }],
-        });
+        // Fixed bindings from the reader's mouse bindings (default: wheel =
+        // scroll, right-drag = window/level, Ctrl+right-drag = zoom, middle =
+        // pan) plus pinch = zoom. They never move with the left-button tool and
+        // are re-applied live when Settings › Mouse & Keyboard changes.
+        // One-finger drag follows the selected tool (same as the left button),
+        // modelled in lib/toolBindings.ts.
+        const touchPrimary = { numTouchPoints: 1 };
+        const touchPinch = { numTouchPoints: 2 };
+        const fixedFor = (name: string) => {
+          const list = viewerFixedBindings(toolsEnums, name);
+          return name === ZoomTool.toolName ? [...list, touchPinch] : list;
+        };
+        const appliedFixed = new Map<string, unknown[]>();
+        const applyFixed = () => {
+          for (const name of [StackScrollTool.toolName, ZoomTool.toolName, PanTool.toolName, WindowLevelTool.toolName]) {
+            const old = appliedFixed.get(name);
+            if (old?.length) tg.setToolPassive(name, { removeAllBindings: old as never });
+            const next = fixedFor(name);
+            const bindings = name === leftTool ? [{ mouseButton: MouseBindings.Primary }, touchPrimary, ...next] : next;
+            if (bindings.length) tg.setToolActive(name, { bindings });
+            appliedFixed.set(name, next);
+          }
+        };
 
         // Left (Primary) button: whichever tool is picked in the toolbar.
         //
@@ -455,24 +1533,58 @@ export default function CornerstoneViewer({
         // looked fine only because they also have wheel/right/middle bindings.
         //
         // Fix: track the current left-button tool and, on switch, explicitly
-        // remove ONLY the Primary binding from the outgoing tool before giving
-        // it to the incoming one — so exactly one tool ever owns the left button.
+        // remove ONLY the Primary and one-finger bindings from the outgoing
+        // tool before giving them to the incoming one. Wheel, right-drag,
+        // pinch, and middle-drag stay put.
         // (The same algorithm is modelled + unit-tested in lib/toolBindings.ts.)
         let leftTool: string | null = null;
         const setLeftTool = (name: string) => {
-          const primary = { mouseButton: MouseBindings.Primary };
-          if (leftTool && leftTool !== name) {
-            // Drop only the Primary binding from the outgoing tool. Pan/Zoom/
-            // Scroll keep their permanent wheel/right/middle bindings (and stay
-            // active); WindowLevel/annotation tools become passive.
-            tg.setToolPassive(leftTool, { removeAllBindings: [primary] });
+          // Crosshairs exist only on the MPR planes. The stack keeps its own
+          // left tool so leaving MPR puts it back.
+          if (name === "Crosshairs") {
+            if (!mprSessionRef.current) return;
+            mprSessionRef.current.setLeftTool(name);
+            setActiveTool(name);
+            return;
           }
-          tg.setToolActive(name, { bindings: [primary] });
+          const primary = { mouseButton: MouseBindings.Primary };
+          if (name === "Eraser") {
+            // No Cornerstone tool on the left button: the edit layer erases.
+            if (leftTool && leftTool !== name) {
+              tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
+              const keep = appliedFixed.get(leftTool);
+              if (keep?.length) tg.setToolActive(leftTool, { bindings: keep as never });
+            }
+            leftTool = name;
+            setActiveTool(name);
+            return;
+          }
+          if (leftTool && leftTool !== name && leftTool !== "Eraser") {
+            // Drop only Primary and one-finger from the outgoing tool; a tool
+            // with a fixed mouse binding (right-drag W/L, middle pan, wheel)
+            // stays active on it, annotation tools become passive.
+            tg.setToolPassive(leftTool, { removeAllBindings: [primary, touchPrimary] });
+            const keep = appliedFixed.get(leftTool);
+            if (keep?.length) tg.setToolActive(leftTool, { bindings: keep as never });
+          }
+          tg.setToolActive(name, { bindings: [primary, touchPrimary] });
           leftTool = name;
+          mprSessionRef.current?.setLeftTool(name);
           setActiveTool(name);
         };
-        setLeftTool("WindowLevel");
+        applyFixed();
+        bindingsUnsubRef.current?.();
+        bindingsUnsubRef.current = subscribeLiveBindings(applyFixed);
+        const requested = defaultToolRef.current;
+        setLeftTool(requested && requested.length > 0 ? requested : "WindowLevel");
         setLeftToolRef.current = setLeftTool;
+        // One slice per detent, and a longer drag per slice. The library
+        // otherwise steps on every wheel event and uses a 2px drag floor.
+        tuneStackScrollTool(
+          (tg as { getToolInstance?: (name: string) => unknown }).getToolInstance?.(
+            StackScrollTool.toolName
+          )
+        );
 
         // Load a stack into the viewport + (re)run the annotation-tool gate.
         // Reused for the initial series AND every series switch (no remount).
@@ -486,9 +1598,185 @@ export default function CornerstoneViewer({
         // spacing as proof the study is annotatable. If the active left tool is
         // an annotation tool we're disabling, fall back to Window/Level so we
         // never leave a dead tool selected.
-        const loadStack = async (ids: string[]): Promise<void> => {
-          await viewport.setStack(ids, Math.floor(ids.length / 2));
-          viewport.render();
+        // Corner readout (slice, W/L). Throttled so a window drag doesn't
+        // re-render the chrome on every pointer move — the canvas itself is
+        // untouched by this state.
+        let lastReadoutAt = 0;
+        // Last finite teach camera + window. Layout restore falls back to this
+        // when the live camera was measured against a 0×0 pane.
+        let lastGood: ViewPresentation | null = null;
+        let lastRestoreW = -1;
+        let lastRestoreH = -1;
+        const rememberPresentation = () => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || host.clientWidth < 2 || host.clientHeight < 2) return;
+          let zoom: number | undefined;
+          let pan: [number, number] | undefined;
+          try {
+            zoom = vp.getZoom();
+            pan = vp.getPan();
+          } catch {
+            return;
+          }
+          const voi = voiToWwWc(vp.getProperties().voiRange);
+          const next: ViewPresentation = {
+            sliceIndex: vp.getCurrentImageIdIndex(),
+            zoom,
+            pan,
+            ww: voi?.ww,
+            wc: voi?.wc,
+          };
+          if (presentationCameraUsable(next) || (voi != null && voi.ww > 0)) {
+            lastGood = next;
+          }
+        };
+        // Stack snapshot while its viewport is disabled for MPR (one less
+        // WebGL context). Null in stack mode.
+        let mprHeld: {
+          imageIds: string[];
+          index: number;
+          zoom: number;
+          pan: [number, number];
+          invert: boolean;
+          fit: boolean;
+        } | null = null;
+        let heldVoi: Voi | null = null;
+        // Corner-overlay metadata. An allow-list read (lib/dicomOverlay.ts):
+        // series and geometry fields only, never a patient module.
+        const overlayMetaFor = (imageId: string | undefined): OverlayMeta | undefined => {
+          if (!imageId) return undefined;
+          try {
+            const seriesModule = core.metaData.get("generalSeriesModule", imageId) as
+              | { modality?: string; seriesDescription?: string; seriesNumber?: number | string }
+              | undefined;
+            const plane = core.metaData.get("imagePlaneModule", imageId) as
+              | {
+                  sliceThickness?: number;
+                  sliceLocation?: number;
+                  rows?: number;
+                  columns?: number;
+                  imageOrientationPatient?: number[];
+                  rowPixelSpacing?: number | null;
+                }
+              | undefined;
+            return {
+              modality: seriesModule?.modality ?? null,
+              seriesDescription: seriesModule?.seriesDescription ?? null,
+              seriesNumber: seriesModule?.seriesNumber ?? null,
+              sliceThickness: plane?.sliceThickness ?? null,
+              sliceLocation: plane?.sliceLocation ?? null,
+              rows: plane?.rows ?? null,
+              columns: plane?.columns ?? null,
+              imageOrientationPatient: plane?.imageOrientationPatient ?? null,
+              pixelSpacingMm: plane?.rowPixelSpacing && plane.rowPixelSpacing > 0 ? plane.rowPixelSpacing : null,
+            };
+          } catch {
+            return undefined;
+          }
+        };
+        const sameReadout = (
+          prev: typeof readout,
+          next: NonNullable<typeof readout>
+        ): boolean =>
+          !!prev &&
+          prev.slice === next.slice &&
+          prev.count === next.count &&
+          prev.ww === next.ww &&
+          prev.wc === next.wc &&
+          prev.plane === next.plane &&
+          prev.imageId === next.imageId &&
+          prev.zoom === next.zoom &&
+          prev.mmPerPx === next.mmPerPx &&
+          prev.paneWidth === next.paneWidth &&
+          (prev.meta != null) === (next.meta != null);
+        const publishReadout = () => {
+          if (mprHeld) {
+            const ww = heldVoi ? Math.round(heldVoi.ww) : undefined;
+            const wc = heldVoi ? Math.round(heldVoi.wc) : undefined;
+            const slice = displaySliceNumber(mprHeld.index);
+            const count = mprHeld.imageIds.length;
+            const imageId = mprHeld.imageIds[mprHeld.index];
+            const next = {
+              slice,
+              count,
+              ww,
+              wc,
+              plane: "Axial",
+              imageId,
+              meta: overlayMetaFor(imageId),
+            };
+            setReadout((prev) => (sameReadout(prev, next) ? prev : next));
+            return;
+          }
+          const vp = viewportRef.current;
+          if (!vp) return;
+          const v = voiToWwWc(vp.getProperties().voiRange);
+          const count = vp.getImageIds().length;
+          const slice = displaySliceNumber(vp.getCurrentImageIdIndex());
+          const ww = v ? Math.round(v.ww) : undefined;
+          const wc = v ? Math.round(v.wc) : undefined;
+          let zoom: number | undefined;
+          try {
+            const z = vp.getZoom();
+            zoom = Number.isFinite(z) && z > 0 ? Math.round(z * 100) / 100 : undefined;
+          } catch {
+            zoom = undefined;
+          }
+          const imageId = vp.getCurrentImageId?.() || vp.getImageIds()[vp.getCurrentImageIdIndex()];
+          const meta = overlayMetaFor(imageId);
+          // The scale bar's calibration: only where the header gives the pixel spacing.
+          let mmPerPx: number | undefined;
+          const host = elementRef.current;
+          if (meta?.pixelSpacingMm && host) {
+            try {
+              const mm = mmPerCssPixel((vp as unknown as { getCamera?: () => { parallelScale?: number } }).getCamera?.()?.parallelScale, host.clientHeight);
+              mmPerPx = mm == null ? undefined : Math.round(mm * 1e5) / 1e5;
+            } catch {
+              mmPerPx = undefined;
+            }
+          }
+          const next = {
+            slice,
+            count,
+            ww,
+            wc,
+            plane: undefined,
+            imageId,
+            meta,
+            zoom,
+            mmPerPx,
+            paneWidth: host?.clientWidth,
+          };
+          setReadout((prev) => (sameReadout(prev, next) ? prev : next));
+          rememberPresentation();
+        };
+        const scheduleReadout = () => {
+          const now = performance.now();
+          const elapsed = now - lastReadoutAt;
+          if (elapsed >= 80) {
+            lastReadoutAt = now;
+            publishReadout();
+            return;
+          }
+          window.clearTimeout(readoutTimerRef.current);
+          readoutTimerRef.current = window.setTimeout(() => {
+            lastReadoutAt = performance.now();
+            publishReadout();
+          }, 80 - elapsed);
+        };
+
+        const loadStack = async (ids: string[], index?: number): Promise<void> => {
+          // Null while MPR has suspended the stack. Do not paint onto the
+          // disabled viewport; the volume session owns those image ids.
+          const vp = viewportRef.current;
+          if (!vp) return;
+          const openAt =
+            index == null
+              ? stackOpenIndex(ids.length)
+              : Math.max(0, Math.min(ids.length - 1, Math.round(index)));
+          await vp.setStack(ids, openAt);
+          vp.render();
 
           const sampleIds = ids.slice(0, Math.min(ids.length, 4));
           const evaluateAnnotatable = () => {
@@ -497,7 +1785,10 @@ export default function CornerstoneViewer({
             );
             setAnnotationsEnabled(annotatable);
             if (!annotatable && leftTool && ANNOTATION_TOOL_NAMES.has(leftTool)) {
-              setLeftTool("WindowLevel");
+              const fallback = defaultToolRef.current;
+              setLeftTool(
+                fallback && !ANNOTATION_TOOL_NAMES.has(fallback) ? fallback : "WindowLevel"
+              );
             }
           };
           evaluateAnnotatable();
@@ -517,8 +1808,209 @@ export default function CornerstoneViewer({
           );
         };
 
-        await loadStack(imageIds);
+        const stackIdsRef: { current: string[] } = { current: [] };
+        let prefetchCenter = -1;
+        const travel = createScrollDirectionState();
+        // Two prefetch rules (lib/prefetchPlan.ts), because a reader does two
+        // different things:
+        //
+        //   MOVING  — a handful of slices in the direction of travel, issued
+        //     on every slice change at `prefetch` priority. Without this, a
+        //     held wheel never lets the pause timer fire and every slice is a
+        //     cold round trip; the bench measures 49 → 11 ms/slice at 40 ms RTT.
+        //   STOPPED — the wide symmetric window, once, after the scroll
+        //     settles. Radius now scales with the series: a 30-slice MR is
+        //     warmed whole, a 1200-slice CTA stays a window.
+        const prefetchTravel = (index: number) => {
+          const ids = stackIdsRef.current;
+          if (disposed || ids.length === 0) return;
+          const direction = trackScrollDirection(travel, index);
+          prefetchImageIndexes(ids, directionalPrefetchIndexes(ids.length, index, direction));
+        };
+        const prefetchAround = (index: number) => {
+          prefetchTravel(index);
+          window.clearTimeout(prefetchTimer);
+          prefetchTimer = window.setTimeout(() => {
+            if (disposed || stackIdsRef.current.length === 0 || index === prefetchCenter) return;
+            prefetchCenter = index;
+            prefetchNeighborImageIds(
+              stackIdsRef.current,
+              index,
+              prefetchRadiusFor(stackIdsRef.current.length)
+            );
+          }, NEIGHBOR_PREFETCH_DELAY_MS);
+        };
+        // Whole-series background fill (lib/seriesFill.ts): once per series,
+        // outward from the opening slice, at prefetch priority, bounded by the
+        // decoded cache. Never re-centred by clearing the queue — a cleared
+        // request leaves its image load object pending in Cornerstone's cache
+        // forever, and that slice would never paint.
+        const filledSeries = new Set<string>();
+        // Stops every series' fill when this viewer goes (Close study, a new
+        // drop, navigation): a closed study must not keep reading and decoding.
+        const fillAbort = new AbortController();
+        disposeFill = () => fillAbort.abort();
+        const startSeriesFill = (seriesUID: string, center: number) => {
+          const ids = stackIdsRef.current;
+          if (disposed || ids.length < 2 || filledSeries.has(seriesUID)) return;
+          filledSeries.add(seriesUID);
+          let bytesPerSlice = 512 * 512 * 2;
+          try {
+            const px = core.metaData.get("imagePixelModule", ids[center] ?? ids[0] ?? "") as
+              | { rows?: number; columns?: number; bitsAllocated?: number; samplesPerPixel?: number }
+              | undefined;
+            if (px?.rows && px?.columns) {
+              bytesPerSlice =
+                px.rows * px.columns * Math.max(1, (px.bitsAllocated ?? 16) / 8) * (px.samplesPerPixel ?? 1);
+            }
+          } catch {
+            /* keep the 512² estimate */
+          }
+          // The cache's CURRENT cap, not the device default: a local study
+          // lowers it so decoded + raw files fit (localMemoryBudget.ts), and a
+          // fill sized past the cap only reads files it will evict.
+          let cacheCap = imageCacheBytes(deviceProfile);
+          try {
+            const current = core.cache.getMaxCacheSize();
+            if (Number.isFinite(current) && current > 0) cacheCap = Math.min(cacheCap, current);
+          } catch {
+            /* older core: keep the device budget */
+          }
+          const budget = fillBudget(ids.length, bytesPerSlice, cacheCap);
+          fillImageIndexes(ids, outwardOrder(ids.length, center, budget), { signal: fillAbort.signal });
+        };
+        let pixelMarked = false;
+        // Mark first pixel only after setStack resolves. IMAGE_RENDERED also
+        // fires for an empty enable/resize, and treating that as paint hid
+        // the center status and left a black viewport labeled "Loading stack…".
+        const noteFirstPixel = (seriesUID: string) => {
+          if (pixelMarked || disposed) return;
+          const vp = viewportRef.current;
+          const imageId = vp?.getCurrentImageId?.() ?? "";
+          if (vp?.getCurrentImageId && !imageId) return;
+          pixelMarked = true;
+          markViewerFirstPixel(activeNav, seriesUID);
+          // `first-pixel` is when the stack resolved and a render was asked
+          // for; the frame itself is drawn on a later animation frame (and in
+          // software GL that draw can take hundreds of ms). IMAGE_RENDERED
+          // fires once it is actually on the canvas: that is what a reader sees.
+          const renderedNav = activeNav;
+          const renderedEl = elementRef.current;
+          const onRendered = () => {
+            renderedEl?.removeEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered as EventListener);
+            markViewerFirstRendered(renderedNav);
+          };
+          renderedEl?.addEventListener(core.Enums.Events.IMAGE_RENDERED, onRendered as EventListener);
+          markViewerPixels(instanceId);
+          setPainted(true);
+          setStatus((prev) => (prev.startsWith("Error") ? prev : "Loading stack…"));
+        };
+        const finishStack = (seriesUID: string, ids: string[], openIndex: number) => {
+          stackIdsRef.current = ids;
+          // A cardiac loop authored at 30 fps should play at 30, not at our
+          // default. CineRate (0018,0040) when the series carries one.
+          try {
+            const cine = core.metaData.get("cineModule", ids[openIndex] ?? ids[0] ?? "") as
+              | { cineRate?: unknown }
+              | undefined;
+            const rate = Number(cine?.cineRate);
+            setCineFps(initialCineFps(Number.isFinite(rate) && rate > 0 ? rate : null));
+          } catch {
+            /* no cine module on this series — keep the default rate */
+          }
+          prefetchCenter = -1;
+          publishSeriesImageCount(seriesUID, ids.length);
+          markViewerSeriesReady(activeNav, seriesUID, ids.length);
+          prefetchAround(openIndex);
+          // The ±10 neighbours queue first; the fill follows them.
+          window.setTimeout(() => startSeriesFill(seriesUID, openIndex), NEIGHBOR_PREFETCH_DELAY_MS);
+          setStacking(false);
+          setStatus(`${ids.length} image${ids.length === 1 ? "" : "s"} loaded`);
+        };
+        const loadPrepared = async (
+          job: ReturnType<typeof startProgressiveWadorsLoad>,
+          seriesUID: string,
+          signal: AbortSignal
+        ): Promise<string[] | null> => {
+          const box: { full: { imageIds: string[]; openIndex: number } | null } = { full: null };
+          const fullReady = job.full.then((value) => {
+            box.full = value;
+            return value;
+          });
+          void fullReady.catch(() => undefined);
+          const openingId = await job.opening;
+          if (disposed || signal.aborted) {
+            job.releaseMetadata();
+            return null;
+          }
+          try {
+            if (box.full) {
+              await loadStack(box.full.imageIds, box.full.openIndex);
+              if (disposed || signal.aborted) return null;
+              noteFirstPixel(seriesUID);
+              finishStack(seriesUID, box.full.imageIds, box.full.openIndex);
+              return box.full.imageIds;
+            }
+            await loadStack([openingId], 0);
+            if (disposed || signal.aborted) return null;
+            noteFirstPixel(seriesUID);
+          } finally {
+            // setStack has requested the opening frame. The series metadata
+            // document is allowed to start now, and not before.
+            job.releaseMetadata();
+          }
+          const full = await fullReady;
+          if (disposed || signal.aborted) return null;
+          await loadStack(full.imageIds, full.openIndex);
+          if (disposed || signal.aborted) return null;
+          finishStack(seriesUID, full.imageIds, full.openIndex);
+          return full.imageIds;
+        };
+
+        let imageIds: string[] = [];
+        if (initialSource.kind === "wadors") {
+          const job =
+            earlyJob ??
+            startProgressiveWadorsLoad({
+              wadoRsRoot: initialSource.wadoRsRoot,
+              studyInstanceUID: initialSource.StudyInstanceUID,
+              seriesInstanceUID: initialSource.SeriesInstanceUID,
+              open: openSliceRef.current,
+              instanceCount: instanceCountFor(initialSource.SeriesInstanceUID),
+              signal: loadAbort.current.signal,
+            });
+          const ids = await loadPrepared(
+            job,
+            initialSource.SeriesInstanceUID,
+            loadAbort.current.signal
+          );
+          if (!ids || disposed || !elementRef.current) return;
+          imageIds = ids;
+        } else if (initialSource.kind === "imageIds" && initialSource.full) {
+          // Progressive local open: paint what is parsed, then swap to the
+          // ordered stack in place once every header is in.
+          const seriesUID = seriesUidOf(initialSource);
+          await loadStack([...initialSource.imageIds], 0);
+          if (disposed || !elementRef.current) return;
+          noteFirstPixel(seriesUID);
+          const full = await initialSource.full.catch(() => null);
+          if (disposed || !elementRef.current) return;
+          imageIds = full && full.imageIds.length > 0 ? full.imageIds : [...initialSource.imageIds];
+          const openAt = full ? full.openIndex : 0;
+          await loadStack(imageIds, openAt);
+          if (disposed || !elementRef.current) return;
+          finishStack(seriesUID, imageIds, openAt);
+        } else {
+          imageIds = await buildImageIds(initialSource);
+          if (disposed || !elementRef.current) return;
+          const openAt = stackOpenIndex(imageIds.length);
+          await loadStack(imageIds, openAt);
+          if (disposed || !elementRef.current) return;
+          noteFirstPixel(seriesUidOf(initialSource));
+          finishStack(seriesUidOf(initialSource), imageIds, openAt);
+        }
         viewportRef.current = viewport;
+        publishReadout();
         // Record which series is loaded so switches no-op on the active one.
         loadedSeriesIndexRef.current = seriesRef.current ? activeSeriesIndex : -1;
 
@@ -526,31 +2018,331 @@ export default function CornerstoneViewer({
         // We read CURRENT values off the viewport in the handler (never trust
         // the event-detail shape across Cornerstone versions). Camera/VOI are
         // throttled ~50ms; order is preserved (latest value wins per window).
-        const emit = (e: ViewerEvent) => onEventRef.current?.(e);
+        // Programmatic applyEvent / setWindow bumps suppressDepth so a replay
+        // or teach script does not echo back into a recording.
+        const renders = new RenderCoordinator();
+        let renderSeq = 0;
+        let requestEpoch = 0;
+        let replayGeometry: ReplayShape[] = [];
+        let refreshReplayGeometry = () => {};
+        const onImageRendered = (event: Event) => {
+          const detail = (event as CustomEvent).detail;
+          if (disposed || detail?.viewportId !== viewportId || mprHeld || mprSessionRef.current) return;
+          const snapshot = displayedSnapshot(viewport, viewportId, journalLayoutRef.current, ++renderSeq);
+          if (!snapshot) return;
+          el.dataset.viewerSnapshot = JSON.stringify(snapshot);
+          renders.publish({ snapshot, at: performance.now(), displayIndex: viewport.getCurrentImageIdIndex() });
+          refreshReplayGeometry();
+        };
+        let suppressDepth = 0;
+        const beginSuppress = () => {
+          suppressDepth += 1;
+        };
+        const endSuppress = () => {
+          suppressDepth = Math.max(0, suppressDepth - 1);
+        };
+        const suppressed = () => suppressDepth > 0;
+        const emit = (e: ViewerEvent) => {
+          if (suppressed()) return;
+          onEventRef.current?.(e);
+        };
+        let pending: Promise<void> = Promise.resolve();
+        const chain = (fn: () => Promise<void> | void) => {
+          pending = pending.then(() => fn()).then(
+            () => undefined,
+            () => undefined
+          );
+        };
+        let annotationApplied = false;
+        let settleWindow: (() => void) | null = null;
+        // Last window a teach beat, preset, or the user asked for. A slice
+        // load applies the DICOM window (W 400 / L 40 on this chest CT) unless
+        // we put this back after the image is on screen.
+        let pinnedVoi: Voi | null = null;
+        let layoutGen = 0;
+
+        const writeVoi = (ww: number, wc: number): boolean => {
+          const wanted = finiteVoi(ww, wc);
+          if (!wanted) return false;
+          const vp = viewportRef.current;
+          let wrote = false;
+          if (vp) {
+            const props = vp.getProperties();
+            const steps = voiWriteSteps(props.voiRange, wanted.ww, wanted.wc, {
+              locked: props.isComputedVOI === false,
+            });
+            if (steps.length > 0) {
+              beginSuppress();
+              try {
+                for (const voiRange of steps) vp.setProperties({ voiRange });
+                vp.render();
+              } catch {
+                return false;
+              } finally {
+                endSuppress();
+              }
+            }
+            const live = voiToWwWc(vp.getProperties().voiRange);
+            wrote =
+              live != null &&
+              Math.abs(live.ww - wanted.ww) <= 1 &&
+              Math.abs(live.wc - wanted.wc) <= 1;
+          }
+          if (mprSessionRef.current) {
+            mprSessionRef.current.setVoi(wanted.ww, wanted.wc);
+            heldVoi = wanted;
+            wrote = true;
+          } else if (mprHeld) {
+            heldVoi = wanted;
+            wrote = true;
+          }
+          publishReadout();
+          return wrote;
+        };
+
+        const pinVoi = (ww: number, wc: number) => {
+          const next = finiteVoi(ww, wc);
+          if (!next) return;
+          pinnedVoi = next;
+          if (mprHeld) heldVoi = next;
+        };
+
+        const applyPinnedVoi = () => {
+          const wanted = pinnedVoi;
+          if (!wanted) return;
+          if (writeVoi(wanted.ww, wanted.wc)) return;
+          // The actor is missing mid slice-swap. Retry once it is back.
+          requestAnimationFrame(() => {
+            if (pinnedVoi === wanted) writeVoi(wanted.ww, wanted.wc);
+          });
+        };
+
+        const releasePinnedVoi = () => {
+          pinnedVoi = null;
+          layoutGen += 1;
+        };
 
         let lastCamEmit = 0;
         let lastVoiEmit = 0;
         const THROTTLE = 50;
+        // Throttling keeps the LAST value too: a change that lands inside the
+        // window is sent once it closes (a quick zoom or the end of a drag
+        // must reach linked panes, pop-outs and recordings). Only for the
+        // reader's own changes, never a suppressed programmatic write.
+        let voiTrail = 0;
+        let camTrail = 0;
+
+        // Identity + plane of the image under the camera, for the teacher sketch
+        // layer's image-space anchors (SOP, frame, pixel grid, patient mm).
+        // Series/study/SOP-common modules only — never a patient module.
+        const readFrameImage = (
+          vp: DrivableViewport,
+          sliceIndex: number,
+          dims: number[] | undefined
+        ): SketchFrameImage | undefined => {
+          try {
+            const ids = vp.getImageIds();
+            const imageId =
+              (typeof vp.getCurrentImageId === "function" ? vp.getCurrentImageId() : undefined) || ids[sliceIndex];
+            if (!imageId) return undefined;
+            const meta = (type: string) => core.metaData.get(type, imageId) as Record<string, unknown> | undefined;
+            const series = meta("generalSeriesModule");
+            const sop = meta("sopCommonModule");
+            const plane = meta("imagePlaneModule");
+            const multi = meta("multiframeModule");
+            const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+            // The rail's offline-sample ids are placeholders, not DICOM UIDs.
+            const dicomUid = (v: unknown) => (typeof v === "string" && /^[0-9.]+$/.test(v) ? v : undefined);
+            const rail = seriesRef.current?.[loadedSeriesIndexRef.current];
+            const vec = (v: unknown, n: number) => {
+              const arr = v ? Array.from(v as ArrayLike<number>).map(Number) : [];
+              return arr.length >= n && arr.slice(0, n).every(Number.isFinite) ? arr.slice(0, n) : null;
+            };
+            const frameMatch = /\/frames\/(\d+)|[?&]frame=(\d+)/.exec(imageId);
+            const frame = frameMatch ? Number(frameMatch[1] ?? frameMatch[2]) : undefined;
+            const frames = Number(multi?.numberOfFrames ?? multi?.NumberOfFrames);
+            const columns = Number(plane?.columns) || dims?.[0] || undefined;
+            const rows = Number(plane?.rows) || dims?.[1] || undefined;
+            const ipp = vec(plane?.imagePositionPatient, 3);
+            const iop = vec(plane?.imageOrientationPatient, 6);
+            const rowCos = vec(plane?.rowCosines, 3) ?? iop?.slice(0, 3) ?? null;
+            const colCos = vec(plane?.columnCosines, 3) ?? iop?.slice(3, 6) ?? null;
+            const rowSpacing = Number(plane?.rowPixelSpacing);
+            const colSpacing = Number(plane?.columnPixelSpacing);
+            const image: SketchFrameImage = {
+              sliceIndex,
+              studyInstanceUID:
+                str(series?.studyInstanceUID) ?? str(meta("generalStudyModule")?.studyInstanceUID) ?? dicomUid(rail?.studyInstanceUID),
+              seriesInstanceUID: str(series?.seriesInstanceUID) ?? dicomUid(rail?.seriesInstanceUID),
+              sopInstanceUID: str(sop?.sopInstanceUID) ?? sopUidFromImageId(imageId),
+              sopClassUID: str(sop?.sopClassUID),
+              frameOfReferenceUID: str(plane?.frameOfReferenceUID),
+              ...(frame && (frame > 1 || frames > 1) ? { frameNumber: frame } : {}),
+              ...(columns && rows ? { columns, rows } : {}),
+            };
+            if (ipp && rowCos && colCos && columns && rows && plane?.usingDefaultValues !== true) {
+              image.plane = {
+                imagePositionPatient: ipp as [number, number, number],
+                rowCosines: rowCos as [number, number, number],
+                columnCosines: colCos as [number, number, number],
+                pixelSpacing: [rowSpacing > 0 ? rowSpacing : 1, colSpacing > 0 ? colSpacing : rowSpacing > 0 ? rowSpacing : 1],
+                columns,
+                rows,
+              };
+            }
+            return image;
+          } catch {
+            return undefined;
+          }
+        };
+
+        const readProjector = (): SketchFrame | null => {
+          if (mprSessionRef.current) return null;
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host) return null;
+          const canvas = host.querySelector("canvas");
+          const width = canvas?.clientWidth || host.clientWidth || 0;
+          const height = canvas?.clientHeight || host.clientHeight || 0;
+          if (width < 2 || height < 2) return null;
+          let sliceIndex = 0;
+          try {
+            sliceIndex = vp.getCurrentImageIdIndex();
+          } catch {
+            sliceIndex = 0;
+          }
+          const imageData = (
+            vp as DrivableViewport & {
+              getImageData?: () => {
+                dimensions?: number[];
+                imageData?: {
+                  indexToWorld?: (ijk: number[], out?: number[]) => number[] | undefined;
+                  worldToIndex?: (world: number[], out?: number[]) => number[] | undefined;
+                };
+              };
+            }
+          ).getImageData?.();
+          const dims = imageData?.dimensions;
+          const vtk = imageData?.imageData;
+          const asPoint = (value: unknown): number[] | null => {
+            if (!value || typeof value !== "object") return null;
+            const arr = Array.from(value as ArrayLike<number>);
+            if (arr.length < 2 || arr.some((n) => !Number.isFinite(n))) return null;
+            return arr;
+          };
+          const project = (xPct: number, yPct: number) => {
+            if (!dims || dims[0] < 2 || dims[1] < 2 || typeof vtk?.indexToWorld !== "function" || typeof vp.worldToCanvas !== "function") {
+              return null;
+            }
+            try {
+              const out = [0, 0, 0];
+              const returned = vtk.indexToWorld([xPct * (dims[0] - 1), yPct * (dims[1] - 1), 0], out);
+              const world = asPoint(returned) ?? asPoint(out);
+              if (!world || world.length < 3) return null;
+              const [cx, cy] = vp.worldToCanvas(world as [number, number, number]);
+              if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+              return { x: cx, y: cy };
+            } catch {
+              return null;
+            }
+          };
+          const unproject = (x: number, y: number) => {
+            if (!dims || dims[0] < 2 || dims[1] < 2 || typeof vtk?.worldToIndex !== "function" || typeof vp.canvasToWorld !== "function") {
+              return null;
+            }
+            try {
+              const world = vp.canvasToWorld([x, y]);
+              const out = [0, 0, 0];
+              const returned = vtk.worldToIndex(world, out);
+              const ijk = asPoint(returned) ?? asPoint(out);
+              if (!ijk) return null;
+              const x_pct = ijk[0]! / (dims[0] - 1);
+              const y_pct = ijk[1]! / (dims[1] - 1);
+              if (!Number.isFinite(x_pct) || !Number.isFinite(y_pct)) return null;
+              return { x_pct, y_pct };
+            } catch {
+              return null;
+            }
+          };
+          return { sliceIndex, width, height, project, unproject, image: readFrameImage(vp, sliceIndex, dims) };
+        };
+        const publishView = () => {
+          if (viewRaf) return;
+          viewRaf = requestAnimationFrame(() => {
+            viewRaf = 0;
+            if (viewListeners.size === 0) return;
+            const frame = readProjector();
+            for (const listener of viewListeners) listener(frame);
+          });
+        };
+        // While a stack is being put back, the image's own window fires
+        // VOI_MODIFIED. That is not a user drag and must not replace the
+        // window the user set on the MPR planes.
+        let pinLocked = false;
 
         const emitSlice = () => {
+          // Overlays (tutor ink, laser) follow the slice, swap or not.
+          publishView();
+          // The bridge swapped a preview for its full frame in place. Same
+          // slice, same camera — not a navigation, so nothing to record.
+          if (isQualitySwap()) return;
           const vp = viewportRef.current;
           if (!vp) return;
-          emit({ type: "slice", index: vp.getCurrentImageIdIndex() });
+          rememberPresentation();
+          const index = vp.getCurrentImageIdIndex();
+          emit({ type: "slice", index });
+          prefetchAround(index);
+          scheduleReadout();
+          // STACK_NEW_IMAGE runs after Cornerstone writes the image window,
+          // and a per-image default can write again before this stack yields.
+          // Reapply on a microtask so the teach window is the last writer.
+          if (pinnedVoi) queueMicrotask(applyPinnedVoi);
         };
         const emitVoi = () => {
           const vp = viewportRef.current;
           if (!vp) return;
-          const now = performance.now();
-          if (now - lastVoiEmit < THROTTLE) return;
-          lastVoiEmit = now;
+          rememberPresentation();
+          scheduleReadout();
           const v = voiToWwWc(vp.getProperties().voiRange);
+          // A drag on the window tool replaces the teach window. Programmatic
+          // writes are suppressed and must not pin a mid-tween value.
+          if (v && !suppressed() && !pinLocked) pinnedVoi = { ww: v.ww, wc: v.wc };
+          const now = performance.now();
+          if (now - lastVoiEmit < THROTTLE) {
+            if (!voiTrail && !suppressed()) {
+              voiTrail = window.setTimeout(() => {
+                voiTrail = 0;
+                const live = viewportRef.current;
+                const last = !disposed && live ? voiToWwWc(live.getProperties().voiRange) : null;
+                if (!last) return;
+                lastVoiEmit = performance.now();
+                emit({ type: "voi", ww: last.ww, wc: last.wc });
+              }, THROTTLE - (now - lastVoiEmit));
+            }
+            return;
+          }
+          lastVoiEmit = now;
           if (v) emit({ type: "voi", ww: v.ww, wc: v.wc });
         };
         const emitCamera = () => {
+          publishView();
           const vp = viewportRef.current;
           if (!vp) return;
+          rememberPresentation();
+          scheduleReadout();
           const now = performance.now();
-          if (now - lastCamEmit < THROTTLE) return;
+          if (now - lastCamEmit < THROTTLE) {
+            if (!camTrail && !suppressed()) {
+              camTrail = window.setTimeout(() => {
+                camTrail = 0;
+                const live = viewportRef.current;
+                if (disposed || !live) return;
+                lastCamEmit = performance.now();
+                emit({ type: "camera", zoom: live.getZoom(), pan: live.getPan() });
+              }, THROTTLE - (now - lastCamEmit));
+            }
+            return;
+          }
           lastCamEmit = now;
           emit({ type: "camera", zoom: vp.getZoom(), pan: vp.getPan() });
         };
@@ -560,13 +2352,147 @@ export default function CornerstoneViewer({
         const stackEvt = csEvents.STACK_NEW_IMAGE;
         const voiEvt = csEvents.VOI_MODIFIED;
         const camEvt = csEvents.CAMERA_MODIFIED;
+        // Length / ROI / Arrow / Probe / Angle → one annotation event per stroke.
+        // COMPLETED and the trailing MODIFIED are debounced and de-duplicated.
+        const annTimers = new Map<string, number>();
+        let lastStroke: Extract<ViewerEvent, { type: "annotation" }> | null = null;
+        const normalizedHandles = (raw: RawAnnotationLike): Array<[number, number]> => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || typeof vp.worldToCanvas !== "function") return [];
+          const points = raw.data?.handles?.points ?? [];
+          const canvas = host.querySelector("canvas");
+          const w = canvas?.clientWidth || host.clientWidth || 1;
+          const h = canvas?.clientHeight || host.clientHeight || 1;
+          const out: Array<[number, number]> = [];
+          for (const pt of points) {
+            if (!Array.isArray(pt) || pt.length < 2) continue;
+            try {
+              const [cx, cy] = vp.worldToCanvas(pt as [number, number, number]);
+              if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+              out.push([
+                Math.min(1, Math.max(0, cx / w)),
+                Math.min(1, Math.max(0, cy / h)),
+              ]);
+            } catch {
+              /* point not on this camera */
+            }
+          }
+          return out;
+        };
+        const emitAnnotationFrom = (raw: RawAnnotationLike | undefined) => {
+          if (!raw || suppressed()) return;
+          const tool = raw.metadata?.toolName;
+          if (tool && !ANNOTATION_TOOL_NAMES.has(tool)) return;
+          const handles = normalizedHandles(raw);
+          const stats = statsFromAnnotation(raw);
+          const event = annotationViewerEvent({
+            tool,
+            handles,
+            sliceIndex: viewportRef.current?.getCurrentImageIdIndex(),
+            annotationUID: raw.annotationUID,
+            label: stats.label,
+            lengthMm: stats.lengthMm,
+            meanHu: stats.meanHu,
+            maxHu: stats.maxHu,
+            minHu: stats.minHu,
+            stdHu: stats.stdHu,
+            areaMm2: stats.areaMm2,
+            unit: stats.unit,
+          });
+          if (!event) return;
+          const vp = viewportRef.current;
+          const latest = renders.current?.snapshot;
+          const currentId = vp?.getCurrentImageId?.();
+          // A debounced tool callback must still name the displayed image; never
+          // project an old stroke through a newer slice or camera.
+          if (vp && latest && currentId && raw.metadata?.referencedImageId === currentId && !mprHeld && !mprSessionRef.current) {
+            const current = displayedSnapshot(vp, viewportId, journalLayoutRef.current, latest.renderSeq);
+            const data = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[]; imageData?: { worldToIndex: (world: number[], out: number[]) => number[] | void } } }).getImageData?.();
+            const dims = data?.dimensions;
+            if (current && matchesView(current, latest) && data?.imageData && dims && dims.length >= 2) {
+              const points = (raw.data?.handles?.points ?? []).map(world => {
+                const out = [0, 0, 0];
+                const index = data.imageData!.worldToIndex(world, out) ?? out;
+                return { x: index[0], y: index[1] };
+              });
+              const evidence = points.map(p => imagePointEvidence(latest, { x: p.x / (dims[0] - 1), y: p.y / (dims[1] - 1) }, dims));
+              if (evidence.length && evidence.every(Boolean)) event.imageEvidence = { ...evidence[0]!, imagePoints: points, geometry: imageGeometry(currentId) };
+            }
+          }
+          if (lastStroke && sameAnnotationStroke(lastStroke, event)) return;
+          lastStroke = event;
+          emit(event);
+        };
+        const onAnnotationEvent = (evt: Event) => {
+          if (suppressed()) return;
+          const detail = (evt as CustomEvent).detail as
+            | { annotation?: RawAnnotationLike }
+            | RawAnnotationLike
+            | undefined;
+          const raw =
+            detail &&
+            typeof detail === "object" &&
+            "annotation" in detail &&
+            detail.annotation
+              ? detail.annotation
+              : (detail as RawAnnotationLike | undefined);
+          const uid = raw?.annotationUID || raw?.metadata?.toolName || "ann";
+          const prev = annTimers.get(uid);
+          if (prev) window.clearTimeout(prev);
+          annTimers.set(
+            uid,
+            window.setTimeout(() => {
+              annTimers.delete(uid);
+              emitAnnotationFrom(raw);
+            }, 80)
+          );
+        };
+        const toolEventNames = toolsEnums.Events as {
+          ANNOTATION_COMPLETED?: string;
+          ANNOTATION_MODIFIED?: string;
+        };
+        const annCompleted =
+          toolEventNames?.ANNOTATION_COMPLETED ||
+          "CORNERSTONE_TOOLS_ANNOTATION_COMPLETED";
+        const annModified =
+          toolEventNames?.ANNOTATION_MODIFIED ||
+          "CORNERSTONE_TOOLS_ANNOTATION_MODIFIED";
+
+        el.addEventListener(core.Enums.Events.IMAGE_RENDERED, onImageRendered);
         el.addEventListener(stackEvt, emitSlice as EventListener);
         el.addEventListener(voiEvt, emitVoi as EventListener);
         el.addEventListener(camEvt, emitCamera as EventListener);
+        el.addEventListener(annCompleted, onAnnotationEvent as EventListener);
+        el.addEventListener(annModified, onAnnotationEvent as EventListener);
+        // A closed freehand ROI computes its stats on a render after it is no
+        // longer the tool's active contour (annotationEditing.needsFreehandStats).
+        // That isn't the very next frame, so retry briefly until they land.
+        const onFreehandDone = (evt: Event) => {
+          const a = (evt as CustomEvent).detail?.annotation as (annotationEditing.AnnotationLike & { invalidated?: boolean }) | undefined;
+          if (!a || !annotationEditing.needsFreehandStats(a)) return;
+          const retry = (left: number) =>
+            window.setTimeout(() => {
+              if (!annotationEditing.needsFreehandStats(a)) return;
+              a.invalidated = true;
+              tools.utilities.triggerAnnotationRender(el);
+              if (left > 0) retry(left - 1);
+            }, 120);
+          retry(8);
+        };
+        core.eventTarget.addEventListener(annCompleted, onFreehandDone);
         detachListeners = () => {
+          requestEpoch++;
+          renders.cancel();
+          el.removeEventListener(core.Enums.Events.IMAGE_RENDERED, onImageRendered);
+          core.eventTarget.removeEventListener(annCompleted, onFreehandDone);
           el.removeEventListener(stackEvt, emitSlice as EventListener);
           el.removeEventListener(voiEvt, emitVoi as EventListener);
           el.removeEventListener(camEvt, emitCamera as EventListener);
+          el.removeEventListener(annCompleted, onAnnotationEvent as EventListener);
+          el.removeEventListener(annModified, onAnnotationEvent as EventListener);
+          annTimers.forEach((id) => window.clearTimeout(id));
+          annTimers.clear();
         };
 
         // --- Multi-series switching (no remount) ----------------------------
@@ -576,6 +2502,330 @@ export default function CornerstoneViewer({
         // only a USER switch emits a `series` record event (a programmatic one
         // would echo into the recording). Switches are serialized so a fast
         // clicker never interleaves stacks.
+        const readMeta = (type: string, imageId: string) => core.metaData.get(type, imageId);
+        const assessIds = (ids: string[]) => {
+          const { planes, dicomModality } = planesFromMetadata(readMeta, ids);
+          const seriesModality =
+            seriesRef.current?.[loadedSeriesIndexRef.current]?.modality;
+          return assessMpr(planes, {
+            modality: modalityForMpr(dicomModality, seriesModality, modalityRef.current),
+          });
+        };
+        // WADO-RS registers plane metadata up front, so this is a no-op and
+        // does not touch stack time-to-first-pixel. wadouri only parses a
+        // frame once it has been fetched; reconstruction needs every slice's
+        // position, so those missing frames are read here, on entering MPR.
+        const warmPlaneMetadata = async (ids: string[]) => {
+          const missing = ids.filter((id) => {
+            try {
+              return !core.metaData.get("imagePlaneModule", id);
+            } catch {
+              return true;
+            }
+          });
+          if (!missing.length) return;
+          let cursor = 0;
+          const width = Math.min(4, missing.length);
+          await Promise.all(
+            Array.from({ length: width }, async () => {
+              while (cursor < missing.length) {
+                const id = missing[cursor++];
+                try {
+                  await core.imageLoader.loadAndCacheImage(id, {
+                    priority: -5,
+                    requestType: "prefetch",
+                  });
+                } catch {
+                  /* assessment explains a slice we still cannot place */
+                }
+              }
+            })
+          );
+        };
+        const currentIds = () =>
+          mprHeld?.imageIds?.length
+            ? mprHeld.imageIds
+            : viewportRef.current?.getImageIds() ?? [];
+
+        const suspendStack = () => {
+          const vp = viewportRef.current;
+          if (!vp || mprHeld) return;
+          let zoom = 1;
+          let pan: [number, number] = [0, 0];
+          try {
+            zoom = vp.getZoom();
+            pan = vp.getPan();
+          } catch {
+            /* keep the fit camera */
+          }
+          const voi = voiToWwWc(vp.getProperties().voiRange);
+          mprHeld = {
+            imageIds: vp.getImageIds().slice(),
+            index: vp.getCurrentImageIdIndex(),
+            zoom,
+            pan,
+            invert: Boolean(vp.getProperties().invert),
+            fit: false,
+          };
+          if (!heldVoi && voi) heldVoi = pinnedVoi ?? voi;
+          try {
+            tg.removeViewports(renderingEngineId, viewportId);
+          } catch {
+            /* already detached */
+          }
+          try {
+            engine.disableElement(viewportId);
+          } catch {
+            /* already disabled */
+          }
+          // disableElement stops rendering but leaves the stack's canvas (and
+          // its backing store) in the DOM, hidden behind the MPR planes — a
+          // full-size blank viewport the GPU kept around. resumeStack's
+          // enableElement rebuilds it.
+          elementRef.current?.querySelectorAll(".viewport-element").forEach((node) => node.remove());
+          viewportRef.current = null;
+        };
+
+        const resumeStack = async () => {
+          const snap = mprHeld;
+          if (!snap || !elementRef.current) return;
+          mprHeld = null;
+          engine.enableElement({
+            viewportId,
+            type: core.Enums.ViewportType.STACK,
+            element: elementRef.current,
+          });
+          const vp = engine.getViewport(viewportId) as unknown as DrivableViewport;
+          tg.addViewport(viewportId, renderingEngineId);
+          viewportRef.current = vp;
+          const index = Math.max(0, Math.min(snap.imageIds.length - 1, snap.index));
+          const window = pinnedVoi ?? heldVoi;
+          if (window) pinVoi(window.ww, window.wc);
+          // setStack writes the DICOM window and emits VOI_MODIFIED before
+          // this await returns. Hold the pin across that, then write it last.
+          pinLocked = true;
+          try {
+            await vp.setStack(snap.imageIds, index);
+            applyPinnedVoi();
+          } finally {
+            requestAnimationFrame(() => {
+              applyPinnedVoi();
+              pinLocked = false;
+            });
+          }
+          if (snap.fit) vp.resetCamera();
+          else {
+            if (Number.isFinite(snap.zoom)) vp.setZoom(snap.zoom);
+            if (snap.pan) vp.setPan(snap.pan);
+          }
+          vp.setProperties({ invert: snap.invert });
+          vp.render();
+          setInverted(snap.invert);
+          publishReadout();
+        };
+
+        let mprEpoch = 0;
+        const destroyMprSession = () => {
+          const session = mprSessionRef.current;
+          mprSessionRef.current = null;
+          session?.destroy();
+        };
+
+        const mountMpr = async () => {
+          const token = ++mprEpoch;
+          const ids = currentIds();
+          if (!ids.length || disposed || viewModeRef.current !== "mpr") return;
+          await warmPlaneMetadata(ids);
+          if (token !== mprEpoch || disposed || viewModeRef.current !== "mpr") return;
+          const verdict = assessIds(ids);
+          if (!verdict.ok) {
+            setMprNotice(verdict.message);
+            setMprLive(false);
+            setMprLoading(false);
+            return;
+          }
+          const axial = axialRef.current;
+          const coronal = coronalRef.current;
+          const sagittal = sagittalRef.current;
+          if (!axial || !coronal || !sagittal) return;
+          setMprNotice(null);
+          setMprLoading(true);
+          const index =
+            viewportRef.current?.getCurrentImageIdIndex() ??
+            mprHeld?.index ??
+            stackOpenIndex(ids.length);
+          const imageId = ids[Math.max(0, Math.min(ids.length - 1, index))];
+          const { mountMprSession } = await import("../lib/mprSession");
+          if (token !== mprEpoch || disposed || viewModeRef.current !== "mpr") {
+            if (!disposed) setMprLoading(false);
+            return;
+          }
+          let session: MprSessionHandle | null = null;
+          try {
+            suspendStack();
+            session = await mountMprSession({
+              renderingEngineId,
+              instanceId,
+              elements: { axial, coronal, sagittal, volume3d: volume3dRef.current },
+              modality: modalityRef.current ?? null,
+              imageIds: mprHeld?.imageIds ?? ids,
+              initialImageId: imageId,
+              voi: pinnedVoi ?? heldVoi,
+              invert: mprHeld?.invert,
+              leftTool: leftTool ?? "WindowLevel",
+              onAxialImage: (nextId) => {
+                if (!mprHeld || suppressed()) return;
+                const idx = mprHeld.imageIds.indexOf(nextId);
+                if (idx < 0 || idx === mprHeld.index) return;
+                mprHeld.index = idx;
+                mprHeld.fit = false;
+                emit({ type: "slice", index: idx });
+                scheduleReadout();
+              },
+              onVoi: (ww, wc) => {
+                if (!mprHeld || suppressed()) return;
+                heldVoi = { ww, wc };
+                pinnedVoi = { ww, wc };
+                scheduleReadout();
+                const now = performance.now();
+                if (now - lastVoiEmit < THROTTLE) return;
+                lastVoiEmit = now;
+                emit({ type: "voi", ww, wc });
+              },
+              readPlane: (id) => {
+                try {
+                  const plane = core.metaData.get("imagePlaneModule", id);
+                  return plane && typeof plane === "object" ? (plane as PlaneSample) : null;
+                } catch {
+                  return null;
+                }
+              },
+            });
+          } catch (err) {
+            console.error("CornerstoneViewer MPR", safeErrorText(err));
+            session?.destroy();
+            if (mprHeld) await resumeStack();
+            if (!disposed) {
+              setMprNotice(mprLoadFailureMessage());
+              setMprLive(false);
+              setMprLoading(false);
+            }
+            return;
+          }
+          if (token !== mprEpoch || disposed || viewModeRef.current !== "mpr") {
+            session.destroy();
+            if (mprHeld) await resumeStack();
+            if (!disposed) setMprLoading(false);
+            return;
+          }
+          mprSessionRef.current = session;
+          setMprLive(true);
+          setMprLoading(false);
+          // MPR's left button is the linked crosshair unless the reader had
+          // window/level, pan or zoom picked (the session made the same call).
+          setActiveTool(
+            leftTool && ["WindowLevel", "Pan", "Zoom"].includes(leftTool) ? leftTool : "Crosshairs"
+          );
+          if (mprRenderRef.current !== "mpr") {
+            const ok = await session.setRender(mprRenderRef.current);
+            if (!ok) setMprRender("mpr");
+          }
+          if (mprRenderRef.current !== "3d" && slabRef.current.mode !== "off") session.setSlab?.(slabRef.current);
+          publishReadout();
+          // The grid was visibility:hidden while the viewports attached.
+          // Resize once it is shown so the canvases match the laid-out planes.
+          requestAnimationFrame(() => session.resize());
+        };
+
+        const syncMpr = async () => {
+          if (disposed || viewModeRef.current !== "mpr") return;
+          const ids = currentIds();
+          await warmPlaneMetadata(ids);
+          if (disposed || viewModeRef.current !== "mpr") return;
+          const verdict = assessIds(ids);
+          const session = mprSessionRef.current;
+          const action = nextMprAction({
+            mode: "mpr",
+            session: Boolean(session),
+            canReconstruct: verdict.ok,
+            volumeKey: verdict.ok ? mprVolumeKey(ids) : null,
+            loadedKey: session?.volumeKey ?? null,
+          });
+          if (action === "fallback") {
+            mprEpoch += 1;
+            destroyMprSession();
+            setMprLive(false);
+            setMprLoading(false);
+            setMprNotice(verdict.ok ? mprLoadFailureMessage() : verdict.message);
+            if (mprHeld) await resumeStack();
+            return;
+          }
+          if (action === "replace" && session) {
+            setMprNotice(null);
+            const index = mprHeld?.index ?? stackOpenIndex(ids.length);
+            const imageId = ids[Math.max(0, Math.min(ids.length - 1, index))];
+            try {
+              await session.replace(ids, imageId, pinnedVoi ?? heldVoi);
+              publishReadout();
+            } catch (err) {
+              console.error("CornerstoneViewer MPR series", safeErrorText(err));
+              mprEpoch += 1;
+              destroyMprSession();
+              setMprLive(false);
+              setMprNotice(mprLoadFailureMessage());
+              if (mprHeld) await resumeStack();
+            }
+            return;
+          }
+          if (action === "mount") await mountMpr();
+        };
+
+        enterMprRef.current = async () => {
+          if (mprSessionRef.current) return;
+          await mountMpr();
+        };
+        exitMprRef.current = async () => {
+          mprEpoch += 1;
+          destroyMprSession();
+          if (!disposed) {
+            setMprLive(false);
+            setMprRender("mpr");
+            if (leftTool) setActiveTool(leftTool);
+            setMprLoading(false);
+            if (viewModeRef.current === "stack") setMprNotice(null);
+          }
+          if (mprHeld && elementRef.current?.isConnected) {
+            try {
+              await resumeStack();
+              // The stack canvas is measured while it is still hidden. Resize
+              // again after it is shown so the image fills the pane instead of
+              // keeping an MPR cell's aspect ratio.
+              const fit = () => {
+                const host = elementRef.current;
+                if (!host) return;
+                host.querySelectorAll("canvas").forEach((node) => {
+                  const canvas = node as HTMLCanvasElement;
+                  canvas.style.aspectRatio = "auto";
+                  canvas.style.width = "100%";
+                  canvas.style.height = "100%";
+                });
+                try {
+                  engine.resize(true, true);
+                } catch {
+                  /* engine already destroyed */
+                }
+                viewportRef.current?.render();
+              };
+              requestAnimationFrame(() => {
+                fit();
+                requestAnimationFrame(fit);
+              });
+            } catch (err) {
+              console.error("CornerstoneViewer MPR resume", safeErrorText(err));
+            }
+          }
+        };
+
         let switchSeq = 0;
         const switchSeries = async (index: number, emitEvent = true): Promise<void> => {
           const list = seriesRef.current;
@@ -590,76 +2840,412 @@ export default function CornerstoneViewer({
           // Keep the navigator highlight in sync for BOTH user + replay switches.
           onSeriesChangeRef.current?.(target.seriesInstanceUID);
           cancelTweenRef.current();
+          // Drop the previous series' in-flight metadata. Neighbor prefetch
+          // stays off until this series' full imageId list is registered.
           try {
-            const ids = await buildImageIds(caseSeriesToSource(target));
-            // A newer switch superseded us, or we've been torn down — bail.
-            if (token !== switchSeq || disposed) return;
-            await loadStack(ids);
+            loadAbort.current.abort();
           } catch (err) {
-            console.error("CornerstoneViewer switchSeries error", err);
+            if ((err as Error)?.name !== "AbortError") throw err;
+          }
+          const controller = new AbortController();
+          loadAbort.current = controller;
+          stackIdsRef.current = [];
+          prefetchCenter = -1;
+          window.clearTimeout(prefetchTimer);
+          pixelMarked = false;
+          setStacking(true);
+          setStatus("Opening slice…");
+          const src = caseSeriesToSource(target);
+          const seriesUID = seriesUidOf(src);
+          activeNav = markViewerNavigation(seriesUID);
+          activeSeriesUid = seriesUID;
+          beginViewerNavigation(instanceId);
+          try {
+            let ids: string[] | null = null;
+            if (src.kind === "wadors") {
+              // Mid-stack of the selected series. Other series stay metadata-only
+              // until this click; a teacher landing applies only on first open.
+              const job = startProgressiveWadorsLoad({
+                wadoRsRoot: src.wadoRsRoot,
+                studyInstanceUID: src.StudyInstanceUID,
+                seriesInstanceUID: src.SeriesInstanceUID,
+                open: null,
+                instanceCount: target.instanceCount,
+                signal: controller.signal,
+              });
+              ids = await loadPrepared(job, seriesUID, controller.signal);
+              if (!ids || token !== switchSeq || disposed) return;
+            } else {
+              ids = await buildImageIds(src);
+              if (token !== switchSeq || disposed || controller.signal.aborted) return;
+              const openAt = stackOpenIndex(ids.length);
+              await loadStack(ids, openAt);
+              if (token !== switchSeq || disposed || controller.signal.aborted) return;
+              noteFirstPixel(seriesUID);
+              finishStack(seriesUID, ids, openAt);
+            }
+            if (!ids) return;
+            // MPR is on: the new series' image ids drive the volume. A teacher
+            // landing is not applied on a rail switch (open: null above).
+            if (viewModeRef.current === "mpr") {
+              if (mprHeld) {
+                mprHeld.imageIds = ids.slice();
+                mprHeld.index = stackOpenIndex(ids.length);
+                mprHeld.fit = true;
+              }
+              await syncMpr();
+              if (mprSessionRef.current) return;
+            }
+            applyPinnedVoi();
+          } catch (err) {
+            if (disposed || controller.signal.aborted || (err as Error)?.name === "AbortError") {
+              return;
+            }
+            console.error("CornerstoneViewer switchSeries error", safeErrorText(err));
+            setStatus(failureStatus(err));
           }
         };
         switchSeriesRef.current = switchSeries;
 
         resetRef.current = () => {
           cancelTweenRef.current();
-          viewport.resetCamera();
-          viewport.resetProperties?.();
-          viewport.render();
-          setInverted(viewport.getProperties().invert ?? false);
+          releasePinnedVoi();
+          heldVoi = null;
+          if (mprSessionRef.current) {
+            mprSessionRef.current.resetView();
+            if (mprHeld) {
+              mprHeld.zoom = 1;
+              mprHeld.pan = [0, 0];
+              mprHeld.fit = true;
+              mprHeld.invert = false;
+            }
+            setInverted(false);
+            setActivePreset(null);
+            publishReadout();
+            return;
+          }
+          const vp = viewportRef.current;
+          if (!vp) return;
+          const host = elementRef.current;
+          // Fit against the pane's current size. A stale half-width buffer
+          // (left over from compare) makes resetCamera miss the anatomy.
+          if (host && host.clientWidth >= 2 && host.clientHeight >= 2) {
+            try {
+              engine.resize(true, false);
+            } catch {
+              /* resetCamera below still runs */
+            }
+          }
+          vp.resetCamera();
+          vp.resetProperties?.();
+          // Reset view includes rotation and flips (as on the desktop).
+          const turnable = vp as unknown as {
+            setViewPresentation?: (p: Record<string, unknown>) => void;
+            setCamera?: (c: Record<string, unknown>) => void;
+          };
+          turnable.setViewPresentation?.({ rotation: 0 });
+          turnable.setCamera?.({ flipHorizontal: false, flipVertical: false });
+          setTurnedMarkers(null);
+          vp.render();
+          setInverted(vp.getProperties().invert ?? false);
           setActivePreset(null);
+          rememberPresentation();
         };
-        clearRef.current = () => {
-          annotation.state.removeAllAnnotations();
-          viewport.render();
+        // Double-click: fit the image to the pane without touching the window.
+        fitRef.current = () => {
+          cancelTweenRef.current();
+          if (mprSessionRef.current) {
+            mprSessionRef.current.resetView();
+            return;
+          }
+          const vp = viewportRef.current;
+          if (!vp) return;
+          try {
+            vp.resetCamera();
+            vp.render();
+            emitCamera();
+          } catch {
+            /* a 0x0 pane has no camera to fit */
+          }
+        };
+        const clearAnnotations = () => {
+          beginSuppress();
+          try {
+            annotation.state.removeAllAnnotations();
+            viewportRef.current?.render();
+            mprSessionRef.current?.restoreCrosshairs();
+          } catch {
+            /* tool state already gone */
+          }
+          window.setTimeout(() => endSuppress(), 50);
+        };
+        clearRef.current = clearAnnotations;
+
+        // Place a recorded stroke back onto the viewport (teach guide / applyEvent).
+        // Returns false when world mapping isn't available — the caller draws
+        // the overlay stroke instead.
+        const placeNative = (
+          e: Extract<RecordedEvent, { type: "annotation" }>
+        ): boolean => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (!vp || !host || typeof vp.canvasToWorld !== "function") return false;
+          const handles = (e.handles?.length ? e.handles : [e.from, e.to]).filter(
+            (p) =>
+              Array.isArray(p) &&
+              p.length >= 2 &&
+              Number.isFinite(p[0]) &&
+              Number.isFinite(p[1])
+          );
+          if (!handles.length) return false;
+          const canvas = host.querySelector("canvas");
+          const w = canvas?.clientWidth || host.clientWidth || 1;
+          const h = canvas?.clientHeight || host.clientHeight || 1;
+          let worlds: [number, number, number][];
+          try {
+            worlds = handles.map(([x, y]) => vp.canvasToWorld!([x * w, y * h]));
+          } catch {
+            return false;
+          }
+          if (worlds.some((p) => !p || p.some((n) => !Number.isFinite(n)))) return false;
+          const toolName = e.tool || (e.shape === "arrow" ? "ArrowAnnotate" : "Length");
+          const imageId =
+            typeof vp.getCurrentImageId === "function" ? vp.getCurrentImageId() : undefined;
+          const camera = vp.getCamera?.();
+          const ann = {
+            annotationUID: `guide-${e.annotationUID || "stroke"}-${Date.now().toString(36)}`,
+            highlighted: false,
+            invalidated: true,
+            isLocked: true,
+            isVisible: true,
+            metadata: {
+              toolName,
+              referencedImageId: imageId,
+              FrameOfReferenceUID: vp.getFrameOfReferenceUID?.(),
+              viewPlaneNormal: camera?.viewPlaneNormal,
+              viewUp: camera?.viewUp,
+            },
+            data: {
+              handles: {
+                points: worlds,
+                activeHandleIndex: null,
+                textBox: {
+                  hasMoved: false,
+                  worldPosition: worlds[worlds.length - 1],
+                  worldBoundingBox: {
+                    topLeft: worlds[0],
+                    topRight: worlds[0],
+                    bottomLeft: worlds[0],
+                    bottomRight: worlds[0],
+                  },
+                },
+              },
+              label: e.label || "",
+              cachedStats: imageId
+                ? {
+                    [`imageId:${imageId}`]: {
+                      length: e.lengthMm,
+                      mean: e.meanHu,
+                      max: e.maxHu,
+                      min: e.minHu,
+                      stdDev: e.stdHu,
+                      area: e.areaMm2,
+                      unit: e.unit,
+                      modalityUnit: e.unit,
+                    },
+                  }
+                : {},
+            },
+          };
+          try {
+            annotation.state.addAnnotation(
+              ann as unknown as Parameters<typeof annotation.state.addAnnotation>[0],
+              host
+            );
+            const trigger = (
+              tools as {
+                utilities?: {
+                  triggerAnnotationRenderForViewportIds?: (ids: string[]) => void;
+                };
+              }
+            ).utilities?.triggerAnnotationRenderForViewportIds;
+            trigger?.([viewportId]);
+            vp.render();
+            return true;
+          } catch (err) {
+            console.warn("CornerstoneViewer applyEvent annotation", safeErrorText(err));
+            return false;
+          }
         };
         invertRef.current = (value?: boolean) => {
-          const cur = viewport.getProperties().invert ?? false;
+          const vp = viewportRef.current;
+          const cur = vp?.getProperties().invert ?? mprHeld?.invert ?? false;
           const next = value ?? !cur;
-          viewport.setProperties({ invert: next });
-          viewport.render();
+          if (vp) {
+            vp.setProperties({ invert: next });
+            vp.render();
+          }
+          if (mprHeld) mprHeld.invert = next;
+          mprSessionRef.current?.setInvert(next);
           setInverted(next);
           // A user-driven toggle is part of the record stream; a programmatic
           // set (replay) is not (it would echo back into the recording).
           if (value === undefined) emit({ type: "invert", value: next });
         };
 
-        // --- Replay: re-apply ONE recorded event verbatim (snaps, no tween) -
-        const applyEvent = (e: RecordedEvent) => {
+        // --- Slice scrollbar / keyboard / cine ------------------------------
+        // One entry point for every non-mouse way to change slice. MPR owns
+        // its own planes, so these no-op while a volume is on screen.
+        setSliceRef.current = (to, silent) => {
           const vp = viewportRef.current;
-          if (!vp) return;
-          cancelTweenRef.current();
-          switch (e.type) {
-            case "slice": {
-              const ids = vp.getImageIds();
-              const idx = Math.max(0, Math.min(ids.length - 1, e.index));
-              if (idx !== vp.getCurrentImageIdIndex()) void vp.setImageIdIndex(idx);
-              break;
+          if (!vp || mprHeld) return;
+          const ids = vp.getImageIds();
+          if (ids.length === 0) return;
+          const current = vp.getCurrentImageIdIndex();
+          const wanted = clampIndex(
+            typeof to === "function" ? to(current, ids.length) : to,
+            ids.length
+          );
+          if (wanted === current) return;
+          if (silent) beginSuppress();
+          chain(async () => {
+            try {
+              await vp.setImageIdIndex(wanted);
+              vp.render();
+              applyPinnedVoi();
+            } finally {
+              if (silent) endSuppress();
             }
-            case "voi":
-              vp.setProperties({ voiRange: wwWcToVoi(e.ww, e.wc) });
-              break;
-            case "camera":
-              vp.setZoom(e.zoom);
-              vp.setPan(e.pan);
-              break;
-            case "invert":
-              vp.setProperties({ invert: e.value });
-              setInverted(e.value);
-              break;
-            case "series": {
-              // Replay: switch to the recorded series WITHOUT emitting (this is
-              // a programmatic drive). loadStack will render once decoded.
-              const list = seriesRef.current;
-              const idx = list?.findIndex(
-                (s) => s.seriesInstanceUID === e.seriesInstanceUID
-              );
-              if (list && idx != null && idx >= 0) void switchSeries(idx, false);
-              return; // render happens inside loadStack after the new stack loads
-            }
-            // cursor/annotation are overlay-only — not viewer state.
+          });
+        };
+        nudgeZoomRef.current = (factor: number) => {
+          const vp = viewportRef.current;
+          if (!vp || mprHeld || !Number.isFinite(factor) || factor <= 0) return;
+          try {
+            vp.setZoom(vp.getZoom() * factor);
+            vp.render();
+            emitCamera();
+          } catch {
+            /* a 0x0 pane has no camera to scale */
           }
-          vp.render();
+        };
+        zoomToRef.current = (scale) => {
+          const vp = viewportRef.current as (DrivableViewport & {
+            getImageData?: () => { spacing?: number[] } | undefined;
+            setCamera?: (camera: { parallelScale: number }) => void;
+          }) | null;
+          if (!vp || mprHeld) return false;
+          try {
+            if (scale === "fit") {
+              vp.resetCamera();
+            } else {
+              const parallelScale = parallelScaleForPixelZoom(elementRef.current?.clientHeight ?? 0, vp.getImageData?.()?.spacing?.[1] ?? 1, scale);
+              if (parallelScale == null || !vp.setCamera) return false;
+              vp.setCamera({ parallelScale });
+            }
+            vp.render();
+            emitCamera();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        panByRef.current = (dx, dy) => {
+          // The view moves `dx, dy` screen pixels (the image the other way), at any zoom.
+          if (mprHeld || !viewportRef.current) return false;
+          const vp = viewportRef.current as unknown as {
+            canvasToWorld?: (p: [number, number]) => number[];
+            getCamera?: () => { focalPoint?: number[]; position?: number[] };
+            setCamera?: (camera: { focalPoint: number[]; position: number[] }) => void;
+            render: () => void;
+          };
+          if (!vp.canvasToWorld || !vp.getCamera || !vp.setCamera) return false;
+          try {
+            const a = vp.canvasToWorld([0, 0]);
+            const b = vp.canvasToWorld([dx, dy]);
+            const { focalPoint, position } = vp.getCamera();
+            if (!focalPoint || !position || a.length < 3 || b.length < 3) return false;
+            const d = [0, 1, 2].map((k) => b[k]! - a[k]!);
+            if (!d.every(Number.isFinite)) return false;
+            vp.setCamera({
+              focalPoint: [0, 1, 2].map((k) => focalPoint[k]! + d[k]!),
+              position: [0, 1, 2].map((k) => position[k]! + d[k]!),
+            });
+            vp.render();
+            emitCamera();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
+        // --- Replay / teach guide: re-apply ONE recorded event --------------
+        // Slice and series are chained so a fast script doesn't race the decoder.
+        // Annotation strokes are placed back on the viewport (native tool).
+        const applyEvent = (e: RecordedEvent) => {
+          if (!viewportRef.current && !mprHeld) return;
+          cancelTweenRef.current();
+          beginSuppress();
+          chain(async () => {
+            const live = viewportRef.current;
+            if (!live && !mprHeld) return;
+            switch (e.type) {
+              case "slice": {
+                const ids = mprHeld?.imageIds ?? live?.getImageIds() ?? [];
+                const idx = Math.max(0, Math.min(Math.max(ids.length - 1, 0), e.index));
+                if (live && !mprHeld && idx !== live.getCurrentImageIdIndex()) {
+                  await live.setImageIdIndex(idx);
+                }
+                if (mprHeld) {
+                  mprHeld.index = idx;
+                  mprHeld.fit = false;
+                  const imageId = ids[idx];
+                  if (imageId) mprSessionRef.current?.jumpToImageId(imageId);
+                  scheduleReadout();
+                }
+                live?.render();
+                applyPinnedVoi();
+                break;
+              }
+              case "voi":
+                pinVoi(e.ww, e.wc);
+                writeVoi(e.ww, e.wc);
+                break;
+              case "camera":
+                if (mprHeld) {
+                  mprHeld.zoom = e.zoom;
+                  mprHeld.pan = e.pan;
+                  mprHeld.fit = false;
+                }
+                if (live && !mprHeld) {
+                  live.setZoom(e.zoom);
+                  live.setPan(e.pan);
+                  live.render();
+                }
+                break;
+              case "invert":
+                if (mprHeld) mprHeld.invert = e.value;
+                live?.setProperties({ invert: e.value });
+                live?.render();
+                mprSessionRef.current?.setInvert(e.value);
+                setInverted(e.value);
+                break;
+              case "series": {
+                const list = seriesRef.current;
+                const idx = list?.findIndex(
+                  (s) => s.seriesInstanceUID === e.seriesInstanceUID
+                );
+                if (list && idx != null && idx >= 0) await switchSeries(idx, false);
+                break;
+              }
+              case "annotation":
+                annotationApplied = placeNative(e);
+                break;
+              default:
+                break;
+            }
+          });
+          void pending.then(() => endSuppress());
         };
 
         const getStartState = (): {
@@ -667,7 +3253,21 @@ export default function CornerstoneViewer({
           ww?: number;
           wc?: number;
           sopInstanceUID?: string;
+          zoom?: number;
+          pan?: [number, number];
         } => {
+          if (mprHeld) {
+            const idx = mprHeld.index;
+            const imageId = mprHeld.imageIds[idx];
+            const voi = heldVoi ?? pinnedVoi;
+            return {
+              sliceIndex: idx,
+              ww: voi?.ww,
+              wc: voi?.wc,
+              sopInstanceUID: sopUidFromImageId(imageId),
+              ...(mprHeld.fit ? {} : { zoom: mprHeld.zoom, pan: mprHeld.pan }),
+            };
+          }
           const vp = viewportRef.current;
           if (!vp) return { sliceIndex: 0 };
           const v = voiToWwWc(vp.getProperties().voiRange);
@@ -678,33 +3278,84 @@ export default function CornerstoneViewer({
               ? vp.getCurrentImageId()
               : ids[idx];
           const sop = sopUidFromImageId(imageId);
+          const zoom = vp.getZoom();
+          const pan = vp.getPan();
           return {
             sliceIndex: idx,
             ww: v?.ww,
             wc: v?.wc,
             sopInstanceUID: sop,
+            ...(Number.isFinite(zoom) ? { zoom } : {}),
+            ...(pan ? { pan } : {}),
           };
         };
 
         // --- Smooth (interpolated) driving for the guided tour --------------
         // Adaptive: small ΔWW/WC scrolls like a radiologist; large preset jumps snap.
-        const setWindow = (ww: number, wc: number, durationMs?: number): void => {
+        const setWindow = (
+          ww: number,
+          wc: number,
+          durationMs?: number
+        ): Promise<void> => {
+          pinVoi(ww, wc);
           const vp = viewportRef.current;
-          if (!vp) return;
-          const from = voiToWwWc(vp.getProperties().voiRange) ?? { ww, wc };
-          const ms =
-            durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
+          const session = mprSessionRef.current;
+          if (!vp && !session) return Promise.resolve();
+          settleWindow?.();
+          settleWindow = null;
+          const from =
+            (vp ? voiToWwWc(vp.getProperties().voiRange) : null) ??
+            heldVoi ??
+            pinnedVoi ??
+            { ww, wc };
+          const ms = durationMs ?? voiTransitionMs(from.ww, from.wc, ww, wc);
           cancelTweenRef.current();
-          if (ms <= 0) {
-            vp.setProperties({ voiRange: wwWcToVoi(ww, wc) });
-            vp.render();
-            return;
-          }
-          cancelTweenRef.current = tween(ms, (e) => {
-            vp.setProperties({
-              voiRange: wwWcToVoi(lerp(from.ww, ww, e), lerp(from.wc, wc, e)),
+          cancelTweenRef.current = () => {};
+          const stillPinned = () =>
+            pinnedVoi != null && pinnedVoi.ww === ww && pinnedVoi.wc === wc;
+          // In-flight slice loads finish after a capped settle and write the
+          // DICOM window. Apply again when that chain drains.
+          const commit = () => {
+            writeVoi(ww, wc);
+            void pending.then(() => {
+              if (stillPinned()) applyPinnedVoi();
             });
-            vp.render();
+          };
+          if (ms <= 0) {
+            commit();
+            return Promise.resolve();
+          }
+          beginSuppress();
+          return new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+              if (settled) return;
+              settled = true;
+              if (settleWindow === done) settleWindow = null;
+              if (stillPinned()) commit();
+              endSuppress();
+              resolve();
+            };
+            settleWindow = done;
+            const cancelRaf = tween(
+              ms,
+              (eased) => {
+                const nextWw = lerp(from.ww, ww, eased);
+                const nextWc = lerp(from.wc, wc, eased);
+                const range = wwWcToVoi(nextWw, nextWc);
+                if (vp) {
+                  vp.setProperties({ voiRange: range });
+                  vp.render();
+                }
+                mprSessionRef.current?.setVoi(nextWw, nextWc);
+                if (mprHeld) heldVoi = { ww: nextWw, wc: nextWc };
+              },
+              done
+            );
+            cancelTweenRef.current = () => {
+              cancelRaf();
+              done();
+            };
           });
         };
 
@@ -713,14 +3364,22 @@ export default function CornerstoneViewer({
             // Full dynamic: reset to the series' own VOI.
             const vp = viewportRef.current;
             cancelTweenRef.current();
+            releasePinnedVoi();
             vp?.resetProperties?.();
             vp?.render();
             setActivePreset(FULL_DYNAMIC_ID);
+            publishReadout();
+            // A preset is the reader's own window choice: report it (linked
+            // panes, pop-out windows, a recording) even though the write
+            // itself is programmatic and suppressed.
+            const own = vp ? voiToWwWc(vp.getProperties().voiRange) : null;
+            if (own) onEventRef.current?.({ type: "voi", ww: own.ww, wc: own.wc });
             return;
           }
           // Presets are often far apart — let adaptive logic snap bone↔lung.
           setWindow(p.ww, p.wc);
           setActivePreset(p.id);
+          onEventRef.current?.({ type: "voi", ww: p.ww, wc: p.wc });
         };
         applyPresetRef.current = applyPreset;
 
@@ -729,25 +3388,73 @@ export default function CornerstoneViewer({
           durationMs = 700
         ): Promise<void> => {
           const vp = viewportRef.current;
-          if (!vp) return;
+          if (!vp && !mprHeld) return;
           cancelTweenRef.current();
+          if (
+            state.windowWidth != null &&
+            state.windowCenter != null &&
+            Number.isFinite(state.windowWidth) &&
+            Number.isFinite(state.windowCenter)
+          ) {
+            pinVoi(state.windowWidth, state.windowCenter);
+          }
 
           // Slice change snaps (a new slice must be decoded) before the tween.
-          if (state.sliceIndex != null || state.sliceFraction != null) {
-            const ids = vp.getImageIds();
+          // In MPR the index is the authored stack image. The focal point comes
+          // from that image's plane, and only when the plane is present.
+          if (state.sliceIndex != null || state.sliceFraction != null || state.sopInstanceUID) {
+            const ids = mprHeld?.imageIds ?? vp?.getImageIds() ?? [];
+            const bySop = state.sopInstanceUID ? stackIndexOfSop(ids, state.sopInstanceUID) : -1;
             const idx =
-              state.sliceIndex != null
-                ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
-                : Math.max(
-                    0,
-                    Math.min(
-                      ids.length - 1,
-                      Math.round((state.sliceFraction as number) * (ids.length - 1))
-                    )
-                  );
-            if (idx !== vp.getCurrentImageIdIndex()) {
-              await vp.setImageIdIndex(idx);
+              ids.length === 0
+                ? 0
+                : bySop >= 0
+                  ? bySop
+                  : state.sliceIndex != null
+                  ? Math.max(0, Math.min(ids.length - 1, Math.round(state.sliceIndex)))
+                  : Math.max(
+                      0,
+                      Math.min(
+                        ids.length - 1,
+                        Math.round((state.sliceFraction as number) * (ids.length - 1))
+                      )
+                    );
+            if (vp && idx !== vp.getCurrentImageIdIndex()) {
+              try {
+                await vp.setImageIdIndex(idx);
+              } catch (err) {
+                if ((err as Error)?.name === "AbortError") return;
+                throw err;
+              }
+              // The new image brings its DICOM window. The pin (this state's
+              // window, or the teach window already on screen) has to win
+              // before the camera tween samples VOI.
+              applyPinnedVoi();
             }
+            if (mprHeld && ids.length) {
+              const previous = mprHeld.index;
+              mprHeld.index = idx;
+              mprHeld.fit = false;
+              const imageId = ids[idx];
+              if (imageId) mprSessionRef.current?.jumpToImageId(imageId);
+              if (previous !== idx && !suppressed()) emit({ type: "slice", index: idx });
+              scheduleReadout();
+            }
+          }
+
+          if (!vp) {
+            if (state.zoom != null && mprHeld) {
+              mprHeld.zoom = state.zoom;
+              mprHeld.fit = false;
+            }
+            if (state.pan && mprHeld) {
+              mprHeld.pan = state.pan;
+              mprHeld.fit = false;
+            }
+            const toWw = state.windowWidth ?? heldVoi?.ww ?? pinnedVoi?.ww;
+            const toWc = state.windowCenter ?? heldVoi?.wc ?? pinnedVoi?.wc;
+            if (toWw != null && toWc != null) return setWindow(toWw, toWc);
+            return;
           }
 
           const fromVoi = voiToWwWc(vp.getProperties().voiRange);
@@ -817,7 +3524,7 @@ export default function CornerstoneViewer({
           const list =
             all.length > 0
               ? all
-              : (["Length", "EllipticalROI", "RectangleROI", "Probe"] as const).flatMap(
+              : (["Length", "EllipticalROI", "RectangleROI", "Probe", "ArrowAnnotate", "Angle"] as const).flatMap(
                   (toolName) => {
                     try {
                       return (annotation.state.getAnnotations(toolName, el) ??
@@ -850,15 +3557,207 @@ export default function CornerstoneViewer({
           return normalizeMeasurements(mapped);
         };
 
+        let restoring = false;
+        let pendingForce = false;
+        const applyLayoutRestore = (force: boolean) => {
+          const vp = viewportRef.current;
+          const host = elementRef.current;
+          if (mprSessionRef.current) {
+            mprSessionRef.current.resize();
+          }
+          if (!vp || !host || restoring) return;
+          const width = host.clientWidth;
+          const height = host.clientHeight;
+          if (width < 2 || height < 2) return;
+          let live: ViewPresentation;
+          try {
+            const voi = voiToWwWc(vp.getProperties().voiRange);
+            live = {
+              sliceIndex: vp.getCurrentImageIdIndex(),
+              zoom: vp.getZoom(),
+              pan: vp.getPan(),
+              ww: voi?.ww,
+              wc: voi?.wc,
+            };
+          } catch {
+            return;
+          }
+          const sizeUnchanged =
+            Math.abs(width - lastRestoreW) < 2 && Math.abs(height - lastRestoreH) < 2;
+          if (!force && sizeUnchanged && presentationCameraUsable(live)) return;
+          const plan = planViewportLayoutRestore({
+            width,
+            height,
+            live,
+            lastGood,
+          });
+          const gen = ++layoutGen;
+          restoring = true;
+          try {
+            try {
+              engine.resize(true, plan.keepCamera);
+            } catch (err) {
+              console.warn("CornerstoneViewer layout restore", safeErrorText(err));
+            }
+            const paint = () => {
+              if (gen !== layoutGen) return;
+              const current = viewportRef.current;
+              if (!current) return;
+              if (!plan.keepCamera) {
+                try {
+                  current.resetCamera();
+                } catch {
+                  /* resize already fitted */
+                }
+                if (plan.reapply) {
+                  try {
+                    current.setZoom(plan.reapply.zoom);
+                    current.setPan(plan.reapply.pan);
+                  } catch {
+                    /* the fit camera still shows the slice */
+                  }
+                }
+              }
+              // Read the pin now, not the VOI captured when this resize was
+              // scheduled. A teach beat may have set lung windows since, and
+              // resize/resetCamera must not leave the DICOM default behind.
+              // Kept when the camera is kept — compare close included.
+              const snapshot =
+                plan.ww != null && plan.wc != null ? { ww: plan.ww, wc: plan.wc } : null;
+              const wanted = resolveViewportVoi({
+                requested: pinnedVoi,
+                live: snapshot,
+              });
+              if (wanted) writeVoi(wanted.ww, wanted.wc);
+              current.render();
+              lastRestoreW = width;
+              lastRestoreH = height;
+              rememberPresentation();
+              publishView();
+            };
+            if (!plan.keepCamera && plan.sliceIndex !== vp.getCurrentImageIdIndex()) {
+              Promise.resolve(vp.setImageIdIndex(plan.sliceIndex)).finally(paint);
+            } else {
+              paint();
+            }
+          } finally {
+            restoring = false;
+          }
+        };
+        const scheduleLayoutRestore = (force: boolean) => {
+          pendingForce = pendingForce || force;
+          if (restoreRaf) return;
+          let attempts = 0;
+          const tick = () => {
+            const host = elementRef.current;
+            if (!host) {
+              restoreRaf = 0;
+              return;
+            }
+            if ((host.clientWidth < 2 || host.clientHeight < 2) && attempts < 8) {
+              attempts += 1;
+              restoreRaf = requestAnimationFrame(tick);
+              return;
+            }
+            restoreRaf = 0;
+            const forced = pendingForce;
+            pendingForce = false;
+            applyLayoutRestore(forced);
+          };
+          restoreRaf = requestAnimationFrame(tick);
+        };
+
+        const showReplayGeometry = (shapes: ReplayShape[]) => {
+          replayGeometry = shapes;
+          if (!shapes.length) { setReplayShapes([]); return; }
+          const frame = readProjector(), current = renders.current?.snapshot;
+          const vp = viewportRef.current;
+          const dimensions = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[] } } | null)?.getImageData?.()?.dimensions;
+          if (!frame || !current || !dimensions) throw new Error("Recorded annotation projection is unavailable.");
+          setReplayShapes(projectReplayShapes(shapes, current, dimensions, frame.project));
+        };
+        refreshReplayGeometry = () => {
+          // A subsequent user view never leaves a stale overlay on another image.
+          if (replayGeometry.length) { try { showReplayGeometry(replayGeometry); } catch { setReplayShapes([]); } }
+        };
         const handle: CornerstoneControls = {
+          cancelView: () => { requestEpoch++; renders.cancel(); },
+          showReplayGeometry,
+          onRendered: listener => renders.subscribe(listener),
+          getRenderedView: () => renders.current,
+          requestView: command => {
+            const epoch = ++requestEpoch;
+            return renders.request(command, async signal => {
+              const target = command.snapshot;
+              if (!validSnapshot(target)) throw new ViewRequestError("missing_identity", "A complete recorded image identity is required");
+              if (target.viewportId !== viewportId || target.layout !== journalLayoutRef.current || mprHeld || mprSessionRef.current) throw new ViewRequestError("unavailable", "The recorded viewport layout is unavailable");
+              await pending;
+              if (disposed || signal.aborted || epoch !== requestEpoch) throw new ViewRequestError("cancelled", "View request superseded");
+              const list = seriesRef.current;
+              if (handle.activeSeriesUID !== target.seriesUID) {
+                const index = list?.findIndex(item => item.seriesInstanceUID === target.seriesUID) ?? -1;
+                if (index < 0) throw new ViewRequestError("missing_identity", "Recorded series not found");
+                await switchSeries(index, false);
+              }
+              if (disposed || signal.aborted || epoch !== requestEpoch) throw new ViewRequestError("cancelled", "View request superseded");
+              const vp = viewportRef.current;
+              const index = vp ? approvedStackIndex(target, vp.getImageIds()) : null;
+              if (!vp || index === null) throw new ViewRequestError("missing_identity", "Recorded SOP/frame not found");
+              await vp.setImageIdIndex(index);
+              if (disposed || signal.aborted || epoch !== requestEpoch) throw new ViewRequestError("cancelled", "View request superseded");
+              cancelTweenRef.current();
+              writeVoi(target.voi.ww, target.voi.wc);
+              vp.setProperties({ invert: target.invert });
+              vp.setViewPresentation?.({ rotation: target.camera.rotation });
+              vp.setCamera?.({ flipHorizontal: target.camera.flipH, flipVertical: target.camera.flipV, viewPlaneNormal: target.orientation.normal, viewUp: target.orientation.up });
+              vp.setZoom(target.camera.zoom);
+              applyRecordedPan(vp, target.camera.pan);
+              vp.render();
+            });
+          },
+          captureImagePoint: (x, y) => {
+            const latest = renders.current?.snapshot ?? null;
+            const vp = viewportRef.current;
+            if (!vp || mprHeld || mprSessionRef.current || !latest || approvedStackIndex(latest, [vp.getCurrentImageId?.() ?? ""]) !== 0) return null;
+            const now = displayedSnapshot(vp, viewportId, journalLayoutRef.current, latest.renderSeq);
+            if (!now || !matchesView(now, latest)) return null;
+            const frame = readProjector();
+            const point = frame?.unproject(x * frame.width, y * frame.height);
+            const dimensions = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[] } }).getImageData?.()?.dimensions;
+            const evidence = imagePointEvidence(latest, point ? { x: point.x_pct, y: point.y_pct } : null, dimensions);
+            return evidence ? { ...evidence, geometry: imageGeometry(vp.getCurrentImageId?.() ?? "") } : null;
+          },
+          fit: () => fitRef.current(),
           ready: true,
           imageCount: imageIds.length,
           showState: showStateFn,
           setWindow,
           setInvert: (v: boolean) => invertRef.current(v),
           reset: () => resetRef.current(),
+          restoreLayout: () => scheduleLayoutRestore(true),
           applyEvent,
           getStartState,
+          getToolImageIds: () => mprHeld || mprSessionRef.current ? [] : viewportRef.current?.getImageIds() ?? [],
+          getToolImageId: () => mprHeld || mprSessionRef.current ? undefined : viewportRef.current?.getCurrentImageId?.(),
+          projectToolPoint: (x, y) => {
+            const frame = mprHeld ? null : readProjector();
+            const projected = frame?.project(x, y);
+            return frame && projected ? { x: projected.x / frame.width, y: projected.y / frame.height } : null;
+          },
+          viewPlane: () => {
+            const vp = viewportRef.current as
+              | (typeof viewportRef.current & { canvas?: HTMLCanvasElement; getFrameOfReferenceUID?: () => string | undefined })
+              | null;
+            const frame = vp?.getFrameOfReferenceUID?.();
+            const canvas = vp?.canvas;
+            if (!vp || mprHeld || !frame || !canvas?.clientWidth) return null;
+            const w = canvas.clientWidth;
+            const h = canvas.clientHeight;
+            const toWorld = vp.canvasToWorld?.bind(vp);
+            if (!toWorld) return null;
+            const at = (x: number, y: number) => toWorld([x, y]) as XVec3;
+            return { frame, corners: [at(0, 0), at(w, 0), at(w, h), at(0, h)] };
+          },
           getMeasurements,
           // Getters so callers always read the LIVE series list + active series
           // (both change as the rail loads / the viewer switches series).
@@ -871,40 +3770,1142 @@ export default function CornerstoneViewer({
           showSeries: (uid: string) => {
             const list = seriesRef.current;
             const idx = list?.findIndex((s) => s.seriesInstanceUID === uid);
-            if (list && idx != null && idx >= 0) void switchSeriesRef.current(idx, false);
+            if (list && idx != null && idx >= 0) {
+              beginSuppress();
+              chain(() => switchSeries(idx, false));
+              void pending.then(() => endSuppress());
+            }
+          },
+          clearAnnotations,
+          settle: () => pending,
+          get annotationApplied() {
+            return annotationApplied;
+          },
+          captureViewportStill: () =>
+            grabViewportStill(
+              mprSessionRef.current ? axialRef.current : elementRef.current,
+              viewportRef.current
+            ),
+          captureViewportStream: () =>
+            openViewportStream(mprSessionRef.current ? axialRef.current : elementRef.current),
+          indexOfSop: (sop) => stackIndexOfSop(viewportRef.current?.getImageIds() ?? [], sop),
+          subscribeView: (listener) => {
+            viewListeners.add(listener);
+            const frame = readProjector();
+            listener(frame);
+            return () => viewListeners.delete(listener);
           },
         };
+        publishView();
         if (controls) controls.current = handle;
         onReady?.(handle);
+        viewport.render(); // Seed the journal from a real render after the listener is installed.
+        // A view link names a window. Apply it once the stack is drivable;
+        // the caller's own setWindow (teach) still wins afterwards.
+        const linkedWindow = initialWindowRef.current;
+        if (linkedWindow && linkedWindow.ww > 0) {
+          void setWindow(linkedWindow.ww, linkedWindow.wc, 0);
+        }
+
+        if (elementRef.current && typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => scheduleLayoutRestore(false));
+          resizeObserver.observe(elementRef.current);
+        }
 
         setReady(true);
         setStatus(`${imageIds.length} images loaded`);
       } catch (err) {
-        console.error("CornerstoneViewer error", err);
-        setStatus(`Error: ${(err as Error).message}`);
+        if (disposed || (err as Error)?.name === "AbortError") return;
+        console.error("CornerstoneViewer error", safeErrorText(err));
+        setStacking(false);
+        setStatus(failureStatus(err));
       }
     })();
 
     return () => {
       disposed = true;
+      window.removeEventListener("unhandledrejection", onLoaderRejection, true);
+      // abort() throws into this cleanup under React strict mode and Next
+      // turns that into an error toast on top of the study. The load checks
+      // `disposed` and drops the result.
       cancelTweenRef.current();
+      mprSessionRef.current?.destroy();
+      mprSessionRef.current = null;
+      enterMprRef.current = async () => {};
+      exitMprRef.current = async () => {};
+      window.clearTimeout(readoutTimerRef.current);
+      window.clearTimeout(prefetchTimer);
+      disposeFill();
+      if (restoreRaf) cancelAnimationFrame(restoreRaf);
+      if (viewRaf) cancelAnimationFrame(viewRaf);
+      viewListeners.clear();
+      resizeObserver?.disconnect();
       detachListeners();
+      detachQuality();
       viewportRef.current = null;
+      // The live mouse-binding subscription closes over this run's tool group
+      // and the whole setup scope (viewport, stack, engine handles): drop it
+      // with the engine, not only on unmount — the free viewer keeps this
+      // component mounted after "Close study", so it held a closed study's
+      // engine objects alive (+40 MB renderer RSS after close).
+      bindingsUnsubRef.current?.();
+      bindingsUnsubRef.current = null;
+      setEditCtx(null);
       loadedSeriesIndexRef.current = -1;
       // Allow the effect to FULLY re-initialize on a source change (the engine
       // is torn down here). Without this reset a new source would destroy the
       // engine and the re-run would early-return, leaving a blank viewport.
       started.current = false;
       if (controls) controls.current = null;
-      try {
-        renderingEngine?.destroy();
-      } catch {
-        /* ignore */
-      }
+      // Drop this pane's tool group before the viewport so a shared engine
+      // is not destroyed out from under the primary pane.
       destroyToolGroupRef.current(toolGroupId);
+      const plan = viewportEngineRegistry.release(instanceId);
+      const engine = sharedCore?.getRenderingEngine(SHARED_RENDERING_ENGINE_ID);
+      if (!engine || engine.hasBeenDestroyed) return;
+      try {
+        if (plan.destroyEngine && engineHolds === 0) engine.destroy();
+        else if ((plan.destroyEngine || plan.disableViewport) && engine.getViewport(viewportId)) {
+          engine.disableElement(viewportId);
+        }
+      } catch {
+        /* already gone */
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  }, [sourceKey]);
+
+  // MPR mounts only after the toggle. Stack stays the default and is what
+  // teach scripts drive; a volume replaces it for the session, then comes back.
+  // Do not exit from this effect's cleanup: strict mode re-runs the effect
+  // while the first mount is still in flight, and that exit would resume the
+  // stack under the volume that the second mount just created.
+  useEffect(() => {
+    if (!ready) return;
+    if (viewMode !== "mpr") {
+      void exitMprRef.current();
+      return;
+    }
+    void enterMprRef.current();
+  }, [viewMode, ready]);
+
+  // MIP / 3D on the live volume. 3D needs a WebGL2 volume pipeline; when it
+  // cannot start, fall back to thin MPR and say why.
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session) return;
+    let cancelled = false;
+    void session.setRender(mprRender).then((ok) => {
+      if (cancelled || ok) return;
+      setMprRender("mpr");
+      flash("3D isn't available on this device");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mprRender, mprLive, flash]);
+
+  // The slab on the live planes (after the render effect above, which resets them).
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session || mprRender === "3d") return;
+    session.setSlab?.(slab);
+  }, [slab, mprLive, mprRender]);
+
+  useEffect(() => {
+    const session = mprSessionRef.current;
+    if (!mprLive || !session || mprRender !== "3d") return;
+    const ct = (modality ?? "").toUpperCase() === "CT";
+    session.setVolumeLook?.(ct ? "CT-Bone" : "MR-Default", surface3d);
+    session.setCutPlane?.(cut3d, (p) => vtkPlane.newInstance({ origin: p.origin, normal: p.normal }));
+  }, [surface3d, cut3d, mprRender, mprLive, modality]);
+
+  // --- Cine ----------------------------------------------------------------
+  // A cardiac loop, a dynamic contrast series and a fluoro run are unreadable
+  // one frame at a time, and "spin the wheel fast" is not an answer
+  // (docs/UI_AUDIT.md backlog #10). Timing lives in lib/cinePlayer.ts; the
+  // viewport is advanced silently so a recording is not swamped.
+  const sliceCount = readout?.count ?? 0;
+  const cineOffered = cineAvailable(sliceCount) && !mprLive && viewMode !== "mpr";
+  useEffect(() => {
+    if (!cinePlaying) return;
+    if (!cineOffered) {
+      setCinePlaying(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setSliceRef.current(
+        (current, count) => advanceCine(cineStateRef.current, current, count, cineWrap).index,
+        true
+      );
+    }, cineFrameMs(cineFps));
+    return () => window.clearInterval(timer);
+  }, [cinePlaying, cineOffered, cineFps, cineWrap]);
+
+  // Touching the stack stops the loop, the way a reading room expects.
+  useEffect(() => {
+    if (!cinePlaying) return;
+    const host = elementRef.current;
+    if (!host) return;
+    const stop = () => setCinePlaying(false);
+    host.addEventListener("pointerdown", stop);
+    host.addEventListener("wheel", stop, { passive: true });
+    return () => {
+      host.removeEventListener("pointerdown", stop);
+      host.removeEventListener("wheel", stop);
+    };
+  }, [cinePlaying]);
+
+  // A series switch or an MPR entry invalidates the loop's frame count.
+  useEffect(() => {
+    setCinePlaying(false);
+  }, [activeSeriesIndex, sourceKey, viewMode]);
+
+  // --- Preview lock ---------------------------------------------------------
+  // While the slice is an 8-bit preview (lib/dicomCdn/previewLock.ts), a
+  // left-button / one-finger press with Window/Level or a measurement tool is
+  // swallowed in the CAPTURE phase on the frame, before Cornerstone's own
+  // mousedown/touchstart listeners on the canvas element see it. Wheel,
+  // right-drag zoom, middle-drag pan and pinch are untouched.
+  useEffect(() => {
+    const host = pressGuardRef.current;
+    if (!host) return;
+    const guard = (event: MouseEvent | TouchEvent) => {
+      const press =
+        event.type === "touchstart"
+          ? { type: event.type, touchCount: (event as TouchEvent).touches.length }
+          : { type: event.type, button: (event as MouseEvent).button };
+      if (!previewBlocksPress(previewingRef.current, activeToolRef.current, press)) return;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    host.addEventListener("mousedown", guard, true);
+    host.addEventListener("touchstart", guard, { capture: true, passive: false });
+    return () => {
+      host.removeEventListener("mousedown", guard, true);
+      host.removeEventListener("touchstart", guard, { capture: true });
+    };
+  }, []);
+
+  // --- Keyboard ------------------------------------------------------------
+  // Bound to the VIEWPORT, not the window: the student session already owns a
+  // set of global keys (Space, C/N/P/R/T/F, `[`) and a second global listener
+  // would fight it. The host div is focusable, so tabbing or clicking into the
+  // image gives the reader a reading-room keyboard — and makes the viewer
+  // keyboard-operable at all, which it was not. See lib/viewerHotkeys.ts.
+  /** Set window dialog. Not on an 8-bit preview: windowing it would reveal nothing real. */
+  const openCustomWindow = () => {
+    if (!ready) return;
+    if (previewing && !mprLive) {
+      flash("Window unlocks when full-quality pixels load");
+      return;
+    }
+    setCustomWindowOpen(true);
+  };
+
+  /** Slab on (from the stack: the acquisition plane, reformatted in this viewport) or off. */
+  const setSlab = (next: { mode?: SlabMode; mm?: number }) => {
+    if (!ready || sliceCount < 3) return flash("A slab needs a stack of parallel slices");
+    const current = slabRef.current;
+    const target: Slab = { mode: next.mode ?? current.mode, mm: next.mm ?? current.mm };
+    if (target.mode === "off") {
+      setSlabState(target);
+      if (viewMode === "mpr" && slabFromStack.current) {
+        slabFromStack.current = false;
+        setViewMode("stack");
+      }
+      return flash("Thin slice");
+    }
+    if (mprRender === "3d") setMprRender("mpr");
+    if (viewMode === "stack") {
+      slabFromStack.current = true;
+      setMprFocus(acquisitionPlane(readout?.meta?.imageOrientationPatient) ?? "axial");
+      setViewMode("mpr");
+    }
+    setSlabState(target);
+    flash(slabLabel(target));
+  };
+  const cycleSlab = () => setSlab({ mode: nextSlabMode(slabRef.current.mode) });
+  const stepSlab = (deltaMm: number) => {
+    const current = slabRef.current;
+    setSlab({ mode: current.mode === "off" ? "mip" : current.mode, mm: stepSlabMm(current.mm, deltaMm) });
+  };
+
+  const openExport = (kind: WebExportKind) => {
+    if (!ready || mprLive || viewMode !== "stack") return flash("Export works on the stack view");
+    if (previewing) return flash("Export unlocks when full-quality pixels load");
+    const frames = exportFrames();
+    void (exportFiles?.() ?? Promise.resolve(null))
+      .catch(() => null)
+      .then((dicom) => setExportOpen({ kind, frames, dicom }));
+  };
+  /** The pane's stack for the Export dialog: step, wait for the draw, capture. */
+  const exportFrames = (): ExportFrames | null => {
+    const vp = viewportRef.current as unknown as {
+      getImageIds?: () => string[];
+      getCurrentImageIdIndex?: () => number;
+      setImageIdIndex?: (i: number) => Promise<unknown>;
+      getProperties?: () => { voiRange?: { lower: number; upper: number } };
+    } | null;
+    const element = elementRef.current;
+    const ids = vp?.getImageIds?.() ?? [];
+    if (!vp || !element || !ids.length) return null;
+    const meta = readout?.meta;
+    const seriesNumber = meta?.seriesNumber != null && meta.seriesNumber !== "" ? Number(meta.seriesNumber) : undefined;
+    const rendered = () =>
+      new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          element.removeEventListener("CORNERSTONE_IMAGE_RENDERED", finish);
+          // One more frame so the annotation SVG has caught up with the image.
+          requestAnimationFrame(() => resolve());
+        };
+        element.addEventListener("CORNERSTONE_IMAGE_RENDERED", finish);
+        window.setTimeout(finish, 1500);
+      });
+    return {
+      count: ids.length,
+      current: vp.getCurrentImageIdIndex?.() ?? 0,
+      modality: modality || meta?.modality || undefined,
+      seriesNumber: Number.isFinite(seriesNumber) ? seriesNumber : undefined,
+      show: async (index) => {
+        if (vp.getCurrentImageIdIndex?.() === index) return;
+        const wait = rendered();
+        await vp.setImageIdIndex?.(index);
+        await wait;
+      },
+      capture: async ({ annotations, overlay }) => {
+        const { anonymousLines, withOverlayText } = await import("../lib/viewerExport");
+        const canvas = element.querySelector("canvas");
+        if (!canvas) throw new Error("Nothing is rendered in this viewport yet.");
+        const base = (annotations ? await textBoxRef.current?.composite() : null) ?? canvas;
+        const index = vp.getCurrentImageIdIndex?.() ?? 0;
+        const voi = voiToWwWc(vp.getProperties?.().voiRange);
+        const lines =
+          overlay === "anonymous"
+            ? anonymousLines({ modality: modality || meta?.modality, seriesNumber: meta?.seriesNumber, index, count: ids.length, ww: voi?.ww, wc: voi?.wc })
+            : [];
+        return withOverlayText(base, lines, element.getBoundingClientRect().width);
+      },
+    };
+  };
+
+  /**
+   * The toolbar's plane picker: the acquired stack, one plane reformatted
+   * from the series' volume and enlarged in this viewport, or ("all") the
+   * three-pane MPR.
+   */
+  const showPlane = (plane: MprPlane | "acquired" | "all") => {
+    if (plane === "acquired") {
+      setViewMode("stack");
+      return;
+    }
+    setMprRender((mode) => (mode === "3d" ? "mpr" : mode));
+    setMprFocus(plane === "all" ? null : plane);
+    if (viewMode !== "mpr") setViewMode("mpr");
+  };
+  // A requested start plane (thumbnail menu): once the stack is ready, reformat to it.
+  useEffect(() => {
+    if (!startPlane || !ready) return;
+    if (sliceCount >= 3) {
+      showPlane(startPlane);
+      flash(`${startPlane[0]!.toUpperCase()}${startPlane.slice(1)} reformat`);
+    } else flash("Reformats need a stack of parallel slices");
+    onStartPlaneDone?.();
+    // Once per request; showPlane reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startPlane, ready, sliceCount]);
+  /** Alt+A / C / S and right-click › Reformat, as on the desktop: the same key again returns to the stack. */
+  const reformatPane = (plane: MprPlane) => {
+    if (!ready || sliceCount < 3) return flash("Reformats need a stack of parallel slices");
+    const name = plane[0]!.toUpperCase() + plane.slice(1);
+    if (viewMode === "mpr" && mprFocus === plane && mprRender !== "3d") {
+      showPlane("acquired");
+      return flash("Stack");
+    }
+    showPlane(plane);
+    flash(`${name} reformat · Alt+${name[0]} again for the stack`);
+  };
+  /** Ctrl/⌘+Shift+Backspace: every measurement in the study, in one undo step. */
+  const clearMeasurements = () => {
+    if (!editCtx) return flash("Measurements clear once the image has loaded");
+    const list = annotationEditing.allAnnotations(editCtx).filter((a) => MEASUREMENT_TOOLS.has(a.metadata?.toolName ?? ""));
+    if (!list.length) return flash("No measurements to clear");
+    const n = annotationEditing.remove(editCtx, list);
+    flash(`${n} measurement${n === 1 ? "" : "s"} cleared · Ctrl+Z to undo`);
+  };
+
+  /** RadiAnt's reading keys, as on the desktop (zoom levels, pan, F12, F5). */
+  const runReadingKey = (action: ReadingKeyAction): void => {
+    switch (action.type) {
+      case "zoomTo":
+        if (!zoomToRef.current(action.scale)) return flash(mprShowing ? "Zoom levels are for the stack" : "Zoom once the image has loaded");
+        return flash(zoomLevelLabel(action.scale));
+      case "pan":
+        if (!panByRef.current(action.dx, action.dy)) return flash(mprShowing ? "Pan with the middle button in MPR" : "Pan once the image has loaded");
+        return;
+      case "annotations":
+        return runWebMenuCommand("annotations");
+      case "referenceLines":
+        return paneLinks ? runWebMenuCommand("refLines") : flash("Reference lines need two or more panes");
+      case "link":
+        return paneLinks ? runWebMenuCommand(`link:${action.what}`) : flash("Linking needs two or more panes");
+      case "reformat":
+        return reformatPane(action.plane);
+      case "eraser":
+        return runViewerAction({ type: "tool", tool: "Eraser" });
+      case "help":
+        return runViewerAction({ type: "help" });
+      case "voice":
+        if (!canVoice) return flash("Voice commands aren't available in this browser");
+        return void toggleVoice();
+      case "zoomBy":
+        if (mprShowing) return flash("Zoom with the right button in MPR");
+        return runViewerAction({ type: "zoom", factor: action.factor });
+      case "clearMeasurements":
+        return clearMeasurements();
+      case "tool":
+        return runViewerAction({ type: "tool", tool: action.tool });
+      case "rotate":
+        return applyOrientation(action.dir > 0 ? "rotate:90" : "rotate:-90");
+      case "layout": {
+        if (!onLayout) return flash("Layouts are in the free viewer's grid");
+        const label = onLayout(action.n);
+        return flash(label ? `Layout: ${label}` : "That layout needs more series in this study");
+      }
+      case "slicePage":
+        return runViewerAction({ type: "slice", delta: action.dir * pageStep(sliceCount) });
+      case "cine":
+      case "cineFps":
+      case "series":
+        return runViewerAction(action);
+      case "mpr": {
+        // Ctrl/⌘+M, as on the desktop: the three-plane MPR, or back to the stack.
+        if (!ready || sliceCount < 3) return flash("MPR needs a stack of parallel slices");
+        if (viewMode === "mpr" && mprRender !== "3d" && mprFocus == null) {
+          showPlane("acquired");
+          return flash("Stack");
+        }
+        showPlane("all");
+        return flash("MPR");
+      }
+      case "volume3d": {
+        // Ctrl/⌘+Shift+M: 3D volume rendering, or back to the stack.
+        if (!ready || sliceCount < 3) return flash("3D needs a stack of parallel slices");
+        if (viewMode === "mpr" && mprRender === "3d") {
+          showPlane("acquired");
+          return flash("Stack");
+        }
+        setMprRender("3d");
+        if (viewMode !== "mpr") setViewMode("mpr");
+        return flash("3D");
+      }
+      case "orientReset":
+        return applyOrientation("orient:reset");
+      case "overlay": {
+        // Ctrl/⌘+Shift+F12: overlay text on / off (O still cycles full → basic → off).
+        const next: OverlayDensity = overlay === "off" ? "full" : "off";
+        setOverlay(next);
+        try {
+          window.localStorage.setItem(OVERLAY_STORAGE_KEY, next);
+        } catch {
+          /* storage blocked — still toggles for this session */
+        }
+        return flash(next === "off" ? "Overlay off" : "Overlay on");
+      }
+    }
+  };
+
+  const onViewerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (isTextTarget(event.target)) return;
+    // RadiAnt's keys (free viewer): Ctrl/⌘+0…4 zoom levels, Ctrl/⌘+arrows pan,
+    // F12 annotations, Ctrl/⌘+F12 reference lines, F5 / Shift+F5 / Alt+F5 links.
+    // Only while the image has focus, so F5 can't reload away an opened study.
+    if (f.keys) {
+      const reading = resolveReadingKey(event);
+      if (reading) {
+        event.preventDefault();
+        runReadingKey(reading);
+        return;
+      }
+    }
+    // Ctrl/⌘+F11: set an exact window, as on the desktop (RadiAnt's key).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "F11") {
+      event.preventDefault();
+      openCustomWindow();
+      return;
+    }
+    // Ctrl/⌘+Shift+F: PET / CT fusion, as on the desktop.
+    if (onFusion && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      onFusion();
+      return;
+    }
+    // Slab, as on the desktop: T cycles Thin → MIP → MinIP → AvgIP;
+    // Ctrl/⌘+] and [ make it thicker / thinner.
+    if (f.slabs && f.keys && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") {
+      event.preventDefault();
+      cycleSlab();
+      return;
+    }
+    if (f.slabs && (event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "]" || event.key === "[")) {
+      event.preventDefault();
+      stepSlab(event.key === "]" ? SLAB_STEP_MM : -SLAB_STEP_MM);
+      return;
+    }
+    // Ctrl/⌘+Shift+L: link the panes at what each shows now (registers a prior), as on the desktop.
+    if (paneLinks && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      paneLinks.linkAtCurrent();
+      flash("Linked at what each pane shows now");
+      return;
+    }
+    // Ctrl/⌘+E: export images, video or DICOM, as on the desktop.
+    if (f.export && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e") {
+      event.preventDefault();
+      openExport("image");
+      return;
+    }
+    if (event.key === "Escape" && helpOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      setHelpOpen(false);
+      return;
+    }
+    // Esc, as on the desktop (free viewer): 1) a measurement being drawn is
+    // cancelled; 2) a tool other than the default goes back to it; 3) only
+    // then does Esc pass on (distraction-free, full screen leave on it).
+    if (f.keys && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      const element = elementRef.current;
+      const tools = editCtx?.tools as unknown as {
+        cancelActiveManipulations?: (el: HTMLDivElement) => string | undefined;
+        annotation?: { state?: { removeAnnotation?: (uid: string) => void } };
+      } | undefined;
+      let cancelled = false;
+      try {
+        // Cornerstone's cancel finishes the shape; a cancel should drop it
+        // (never finished, so no undo step), as the reader expects.
+        const uid = element ? tools?.cancelActiveManipulations?.(element) : undefined;
+        if (uid) {
+          tools?.annotation?.state?.removeAnnotation?.(uid);
+          viewportRef.current?.render();
+          cancelled = true;
+        }
+      } catch {
+        /* nothing being drawn */
+      }
+      if (cancelled) {
+        event.preventDefault();
+        event.stopPropagation();
+        return flash("Measurement cancelled");
+      }
+      const home = defaultToolRef.current || "WindowLevel";
+      if (activeTool !== home) {
+        event.preventDefault();
+        event.stopPropagation();
+        setTextBoxTool(false);
+        setLeftToolRef.current(home);
+        return flash(toolLabel(home));
+      }
+    }
+    const action = resolveViewerHotkey(event, sliceCount, { questionMarkHelp, rotateKey: questionMarkHelp, features: f });
+    if (!action) return;
+    event.preventDefault();
+    if (action.type === "help") event.stopPropagation();
+    runViewerAction(action);
+  };
+
+  /** One viewer action, from a key or a voice command. */
+  const runViewerAction = (action: ViewerHotkeyAction) => {
+    switch (action.type) {
+      case "tool":
+        if (!ready) return;
+        // A key bound to a tool this surface doesn't offer does nothing.
+        if (action.tool !== "Eraser" && action.tool !== "Crosshairs" && !(f.tools ? READING_TOOL_NAMES : TEACHING_TOOL_NAMES).has(action.tool)) return;
+        if (
+          ANNOTATION_TOOL_NAMES.has(action.tool) &&
+          (!annotationsEnabled || mprShowing)
+        ) {
+          flash(mprShowing ? "Measurements stay on the stack" : "No pixel spacing — can't measure");
+          return;
+        }
+        setTextBoxTool(false);
+        setLeftToolRef.current(action.tool);
+        flash(toolLabel(action.tool));
+        return;
+      case "slice":
+        setCinePlaying(false);
+        if (mprShowing) {
+          // MPR: the plane the reader last touched (axial until then).
+          mprSessionRef.current?.scrollPlane(activePlaneRef.current, action.delta);
+          return;
+        }
+        setSliceRef.current((current) => current + action.delta);
+        return;
+      case "sliceAbsolute":
+        if (mprShowing) return;
+        setCinePlaying(false);
+        setSliceRef.current((_current, count) =>
+          action.where === "first" ? 0 : Math.max(0, count - 1)
+        );
+        flash(action.where === "first" ? "First image" : "Last image");
+        return;
+      case "zoom":
+        nudgeZoomRef.current(action.factor);
+        return;
+      case "invert":
+        invertRef.current();
+        flash(inverted ? "Invert off" : "Invert on");
+        return;
+      case "reset":
+        resetRef.current();
+        flash("View reset");
+        return;
+      case "cine":
+        if (!cineOffered) {
+          flash("Cine needs a longer series");
+          return;
+        }
+        flash(cinePlaying ? "Cine paused" : `Cine ${cineFps} fps`);
+        setCinePlaying((playing) => !playing);
+        return;
+      case "cineFps": {
+        if (!cineOffered) return;
+        const next = stepCineFps(cineFps, action.delta > 0 ? 1 : -1);
+        setCineFps(next);
+        flash(`Cine ${next} fps`);
+        return;
+      }
+      case "preset": {
+        // An 8-bit preview has no real window to set (lib/dicomCdn).
+        if (previewingRef.current) {
+          flash("Presets unlock when full quality loads");
+          return;
+        }
+        if (action.ordinal === 0) {
+          applyPresetRef.current(null);
+          flash("Series default window");
+          return;
+        }
+        const preset = presets[action.ordinal - 1];
+        if (!preset) return;
+        applyPresetRef.current(preset);
+        flash(`${preset.label}   ${windowLine(preset.ww, preset.wc) ?? ""}`.trim());
+        return;
+      }
+      case "overlay": {
+        const next = nextOverlayDensity(overlay);
+        cycleOverlay();
+        flash(next === "full" ? "Overlay: full" : next === "basic" ? "Overlay: basic" : "Overlay off");
+        return;
+      }
+      case "mpr":
+        if (!ready) return;
+        setViewMode((mode) => (mode === "mpr" ? "stack" : "mpr"));
+        flash(viewMode === "mpr" ? "Stack" : "MPR");
+        return;
+      case "layout":
+        if (onCycleLayout) onCycleLayout();
+        return;
+      case "help":
+        // While voice is listening, `?` opens what can be said.
+        if (!helpOpen) setHelpTab(voiceStateRef.current === "listening" ? "voice" : "keys");
+        setHelpOpen((open) => !open);
+        return;
+      case "orient":
+        applyOrientation(action.command);
+        return;
+      case "series":
+        voiceActionRef.current({ type: "series", delta: action.delta });
+        return;
+    }
+  };
+
+  // Mouse buttons (middle, back / forward, any extra button of a gaming or
+  // programmable mouse) and wheel tilt bound to commands in Settings › Mouse
+  // & Keyboard. Scoped to this viewer; browser defaults (back / forward
+  // navigation) are suppressed only for bound inputs.
+  const runViewerActionRef = useRef(runViewerAction);
+  runViewerActionRef.current = runViewerAction;
+  useEffect(() => {
+    const host = elementRef.current;
+    if (!host) return;
+    const index = inputIndex(WEB_COMMANDS, viewerBindings);
+    return attachMouseCommands(host, {
+      within: () => true,
+      isBound: (spec) => index.has(normalizeSpec(spec)),
+      run: (spec) => {
+        const action = resolveViewerInput(spec, viewerBindings);
+        if (!action) return false;
+        runViewerActionRef.current(action);
+        return true;
+      },
+    });
+  }, [viewerBindings]);
+
+  /**
+   * Rotate / flip the stack (per viewport; display only). Flips are the
+   * engine's camera flips, i.e. screen flips at any rotation. The edge letters
+   * are re-read from the camera afterwards; when the camera is not patient-
+   * aligned (no geometry) the shared orientation maths is used instead.
+   */
+  const applyOrientation = (command: OrientationCommand) => {
+    if (!ready) return;
+    if (mprShowing) {
+      flash("Rotate and flip apply to the stack");
+      return;
+    }
+    const vp = viewportRef.current as unknown as {
+      getCamera?: () => { flipHorizontal?: boolean; flipVertical?: boolean; viewUp?: number[]; viewPlaneNormal?: number[] };
+      setCamera?: (c: Record<string, unknown>) => void;
+      getViewPresentation?: () => { rotation?: number };
+      setViewPresentation?: (p: Record<string, unknown>) => void;
+      render?: () => void;
+    } | null;
+    if (!vp) return;
+    const before = vp.getCamera?.() ?? {};
+    const rotation = vp.getViewPresentation?.()?.rotation ?? 0;
+    if (command === "orient:reset") {
+      vp.setViewPresentation?.({ rotation: 0 });
+      vp.setCamera?.({ flipHorizontal: false, flipVertical: false });
+    } else if (command === "flip:h" || command === "flip:v") {
+      vp.setCamera?.(command === "flip:v" ? { flipVertical: !before.flipVertical } : { flipHorizontal: !before.flipHorizontal });
+    } else {
+      const step = command === "rotate:90" ? 90 : command === "rotate:-90" ? -90 : 180;
+      vp.setViewPresentation?.({ rotation: (((rotation + step) % 360) + 360) % 360 });
+    }
+    vp.render?.();
+    const base = orientationMarkers(readout?.meta?.imageOrientationPatient);
+    if (!base) setTurnedMarkers(null);
+    else {
+      const cam = vp.getCamera?.() ?? {};
+      const after = {
+        rotation: vp.getViewPresentation?.()?.rotation ?? 0,
+        flipH: !!cam.flipHorizontal,
+        flipV: !!cam.flipVertical,
+      };
+      const fromCamera = cameraMarkers(cam.viewUp, cam.viewPlaneNormal);
+      const identity = after.rotation === 0 && !after.flipH && !after.flipV;
+      setTurnedMarkers(identity ? null : fromCamera ?? orientMarkers(base, after));
+    }
+    flash(ORIENTATION_COMMANDS.find((c) => c.command === command)?.label ?? "Orientation");
+  };
+
+  // ── Right-click / long-press menu (shared @flowrad/viewer-core contextMenu) ──
+  const [tagsImageId, setTagsImageId] = useState<string | null>(null);
+  const [annotationsHidden, setAnnotationsHidden] = useState(false);
+  const webMenuShortcut = (command: string): string | undefined => {
+    const [head, arg] = [command.split(":")[0], command.split(":").slice(1).join(":")];
+    if (f.keys && (head === "3d" || head === "reformat")) {
+      const mac = isMac();
+      if (head === "3d") return `${mac ? "⌘" : "Ctrl"}+Shift+M`;
+      const letter = { axial: "A", coronal: "C", sagittal: "S" }[arg as "axial" | "coronal" | "sagittal"];
+      if (letter) return `${mac ? "⌥" : "Alt"}+${letter}`;
+    }
+    if (head === "tool") return shortcutForToolIn(arg, f.keys)?.split(" · ")[0] ?? undefined;
+    if (head === "preset") {
+      if (arg === "auto") return shortcutForPreset(0) ?? undefined;
+      const i = presets.findIndex((p) => p.id === arg);
+      return i >= 0 && i < 9 ? shortcutForPreset(i + 1) ?? undefined : undefined;
+    }
+    if (f.keys && f.layouts && head === "layout") {
+      const m = /^(\d)x(\d)$/.exec(arg);
+      const at = m ? READING_LAYOUTS.findIndex((l) => l.rows === Number(m[1]) && l.cols === Number(m[2])) : -1;
+      if (at >= 0) return `Shift+${at + 1}`;
+    }
+    if (f.keys && command === "orient:reset") return "Shift+Backspace";
+    const orient = ORIENTATION_COMMANDS.find((c) => c.command === command);
+    if (orient) return orient.shortcut && (questionMarkHelp || !orient.shortcut.endsWith("R")) ? orient.shortcut : undefined;
+    if (command === "seriesPanel") return "Ctrl+B";
+    if (f.keys) {
+      const reading: Record<string, string> = {
+        "zoom:fit": "Ctrl+0",
+        "zoom:1": "Ctrl+1",
+        "zoom:2": "Ctrl+2",
+        annotations: "F12",
+        "reformat:axial": "Alt+A",
+        "reformat:coronal": "Alt+C",
+        "reformat:sagittal": "Alt+S",
+        ...(paneLinks ? { "link:scroll": "F5", "link:voi": "Shift+F5", "link:zoom": "Alt+F5", refLines: "Ctrl+F12" } : {}),
+      };
+      if (reading[command]) return reading[command];
+    }
+    if (command === "window:custom") return "Ctrl+F11";
+    if (command === "export" && f.export) return "Ctrl+E";
+    if (command === "linkAtCurrent" && paneLinks) return "Ctrl+Shift+L";
+    if (command === "distractionFree") return "Alt+Shift+Enter";
+    if (command === "fusion" && onFusion) return "Ctrl+Shift+F";
+    return ({ invert: "I", reset: "Backspace", cine: "K", overlay: "O", mpr: "X" } as Record<string, string>)[command];
+  };
+  const webImageMenu = () =>
+    imageMenu({
+      modality,
+      tools: f.tools ? READING_MENU_TOOLS : WEB_MENU_TOOLS,
+      activeTool,
+      presets: presets.map((p) => ({ id: p.id, label: p.label, ww: p.ww, wc: p.wc })),
+      inverted,
+      links: paneLinks ? { scroll: paneLinks.scroll, voi: paneLinks.voi, zoom: paneLinks.zoom } : { scroll: false, voi: false, zoom: false },
+      referenceLines: !!paneLinks?.lines,
+      overlay: overlay !== "off",
+      annotations: !annotationsHidden,
+      distractionFree: distractionFree ? distractionFree.on : null,
+      scaleBar: scaleBar ? scaleBar.on : null,
+      cine: cineOffered ? { playing: cinePlaying, fps: cineFps } : null,
+      slab: f.slabs && ready && sliceCount >= 3 && mprRender !== "3d" ? slab : null,
+      layout: f.layouts && onSetLayout && currentLayout ? currentLayout : null,
+      seriesPanel: seriesPanel ? { shown: seriesPanel.shown } : null,
+      can: {
+        mpr: ready && sliceCount >= 3,
+        reformat: f.slabs && ready && sliceCount >= 3,
+        // 3D volume rendering from the menu, as on the desktop (also Ctrl/⌘+Shift+M and the toolbar's 3D).
+        threeD: f.slabs && ready && sliceCount >= 3,
+        copyImage: true,
+        saveImage: true,
+        tags: true,
+        links: !!paneLinks,
+        linkAtCurrent: !!paneLinks,
+        video: f.export && sliceCount >= 2,
+        exportDialog: f.export,
+        customLayout: f.layouts,
+        measurements: f.tools,
+        fusion: !!onFusion,
+        comparePrior: !!onComparePrior,
+      },
+      shortcut: webMenuShortcut,
+    });
+  const viewportCanvas = () => elementRef.current?.querySelector("canvas") ?? null;
+  const runWebMenuCommand = (command: string) => {
+    const at = command.indexOf(":");
+    const head = at < 0 ? command : command.slice(0, at);
+    const arg = at < 0 ? "" : command.slice(at + 1);
+    const vp = viewportRef.current as unknown as {
+      resetCamera?: () => void;
+      setZoom?: (z: number) => void;
+      getCamera?: () => { flipHorizontal?: boolean; flipVertical?: boolean };
+      setCamera?: (c: Record<string, unknown>) => void;
+      getViewPresentation?: () => { rotation?: number };
+      setViewPresentation?: (p: Record<string, unknown>) => void;
+      getCurrentImageId?: () => string;
+      render?: () => void;
+    } | null;
+    switch (head) {
+      case "tool":
+        return runViewerAction({ type: "tool", tool: arg });
+      case "preset": {
+        if (arg === "auto") return runViewerAction({ type: "preset", ordinal: 0 });
+        const i = presets.findIndex((p) => p.id === arg);
+        return i >= 0 ? runViewerAction({ type: "preset", ordinal: i + 1 }) : undefined;
+      }
+      case "invert":
+      case "reset":
+      case "cine":
+      case "overlay":
+      case "mpr":
+        return runViewerAction({ type: head } as ViewerHotkeyAction);
+      case "zoom": {
+        // "Actual size (1:1)" is one image pixel per screen pixel, as on the desktop.
+        const scale = arg === "fit" ? "fit" : Number(arg);
+        if (scale !== "fit" && !(scale > 0)) return;
+        if (zoomToRef.current(scale)) return;
+        if (scale === "fit") vp?.resetCamera?.();
+        return vp?.render?.();
+      }
+      case "rotate":
+      case "flip":
+      case "orient":
+        if (isOrientationCommand(command)) applyOrientation(command);
+        return;
+      case "reformat":
+        if (arg === "axial" || arg === "coronal" || arg === "sagittal") return reformatPane(arg);
+        return;
+      case "3d":
+        return runReadingKey({ type: "volume3d" });
+      case "layout": {
+        const m = /^(\d)x(\d)$/.exec(arg);
+        if (!m || !onSetLayout) return;
+        const rows = Number(m[1]);
+        const cols = Number(m[2]);
+        onSetLayout(rows, cols);
+        return flash(`Layout: ${layoutForShape(rows, cols)?.label ?? `${rows} × ${cols}`}`);
+      }
+      case "seriesPanel":
+        return seriesPanel?.toggle();
+      case "window":
+        return arg === "custom" ? openCustomWindow() : undefined;
+      case "fps":
+        return setCineFps(clampCineFps(Number(arg)));
+      case "annotations": {
+        const hide = !annotationsHidden;
+        setAnnotationsHidden(hide);
+        void import("@cornerstonejs/tools").then((t) => {
+          for (const a of t.annotation.state.getAllAnnotations()) if (a.annotationUID) t.annotation.visibility.setAnnotationVisibility(a.annotationUID, !hide);
+          vp?.render?.();
+        });
+        return flash(hide ? "Annotations hidden" : "Annotations shown");
+      }
+      case "copyImage": {
+        const canvas = viewportCanvas();
+        if (!canvas) return;
+        canvas.toBlob(async (blob) => {
+          try {
+            if (!blob || typeof ClipboardItem !== "function") throw new Error("unsupported");
+            await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+            flash("Image copied (pixels only)");
+          } catch {
+            flash("Copy not supported here: use Save as PNG");
+          }
+        }, "image/png");
+        return;
+      }
+      case "save": {
+        const canvas = viewportCanvas();
+        if (!canvas) return;
+        const type = arg === "jpeg" ? "image/jpeg" : "image/png";
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) return;
+            // Pixels only (no overlay text), and a name without patient details.
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `${(modality || "image").toLowerCase()}-image-${Date.now().toString(36)}.${arg === "jpeg" ? "jpg" : "png"}`;
+            a.click();
+            window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+            flash("Saved (anonymised)");
+          },
+          type,
+          0.92
+        );
+        return;
+      }
+      case "video":
+        return openExport("video");
+      case "export":
+        return openExport("image");
+      case "measurements":
+        return editCtx ? setMeasurementsOpen(true) : flash("Measurements open once the image has loaded");
+      case "link": {
+        if (!paneLinks || (arg !== "scroll" && arg !== "voi" && arg !== "zoom")) return;
+        const on = !paneLinks[arg];
+        paneLinks.toggle(arg);
+        return flash(`${arg === "scroll" ? "Scroll" : arg === "voi" ? "Window / level" : "Zoom and pan"} link ${on ? "on" : "off"}`);
+      }
+      case "refLines":
+        if (!paneLinks) return;
+        paneLinks.toggle("lines");
+        return flash(`Reference lines ${paneLinks.lines ? "off" : "on"}`);
+      case "linkAtCurrent":
+        if (!paneLinks) return;
+        paneLinks.linkAtCurrent();
+        return flash("Linked at what each pane shows now");
+      case "slab":
+        return setSlab({ mode: arg as SlabMode });
+      case "slab-mm":
+        return setSlab({ mode: slabRef.current.mode === "off" ? "mip" : slabRef.current.mode, mm: Number(arg) });
+      case "distractionFree":
+        return distractionFree?.toggle();
+      case "fusion":
+        return onFusion?.();
+      case "comparePrior":
+        return onComparePrior?.();
+      case "scaleBar":
+        return scaleBar?.toggle();
+      case "tags": {
+        const id = vp?.getCurrentImageId?.();
+        if (id) setTagsImageId(id);
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
+  // ── Offline voice commands (components/viewer/voice) ──
+  const [voice, setVoice] = useState<{ state: VoiceState; heard?: string | null }>({ state: "off" });
+  const voiceSessionRef = useRef<{ stop(): void } | null>(null);
+  // Client-only (the server render has no microphone API): no hydration mismatch.
+  const [canVoice, setCanVoice] = useState(false);
+  useEffect(() => setCanVoice(typeof navigator.mediaDevices?.getUserMedia === "function"), []);
+  const voiceActionRef = useRef<(a: VoiceAction) => void>(() => undefined);
+  voiceActionRef.current = (a: VoiceAction) => {
+    switch (a.type) {
+      case "series": {
+        if (onSeriesStep) return onSeriesStep(a.delta);
+        if (!series?.length || !onSeriesChangeRef.current) return;
+        const next = series[(activeSeriesIndex + a.delta + series.length) % series.length];
+        if (next) onSeriesChangeRef.current(next.seriesInstanceUID);
+        return;
+      }
+      case "slice":
+        return runViewerAction({ type: "slice", delta: a.delta });
+      case "page":
+        return runViewerAction({ type: "slice", delta: a.dir * Math.max(1, Math.round(sliceCount / 10)) });
+      case "zoom":
+        return runViewerAction({ type: "zoom", factor: a.factor });
+      case "tool":
+        return runViewerAction({ type: "tool", tool: a.tool });
+      case "reset":
+        return runViewerAction({ type: "reset" });
+      case "invert":
+        return runViewerAction({ type: "invert" });
+      case "mpr":
+      case "volume3d":
+        return runViewerAction({ type: "mpr" });
+      case "layout":
+        if (onSetLayout) {
+          onSetLayout(a.rows, a.cols);
+          return flash(layoutForShape(a.rows, a.cols)?.label ?? `${a.rows} × ${a.cols}`);
+        }
+        return runViewerAction({ type: "layout" });
+      case "preset": {
+        const want = a.name === "abdomen" ? /abdom|soft/i : new RegExp(a.name, "i");
+        const at = presets.findIndex((p) => want.test(p.label) || want.test(p.id));
+        if (at < 0) return flash(`No ${a.name} window for this series`);
+        return runViewerAction({ type: "preset", ordinal: at + 1 });
+      }
+      case "slab":
+        if (!f.slabs) return flash("Slabs are in the free viewer and the desktop app");
+        return setSlab({ mode: a.mode });
+      case "slabThickness":
+        if (!f.slabs) return flash("Slabs are in the free viewer and the desktop app");
+        return stepSlab(a.deltaMm);
+      case "stop":
+        voiceSessionRef.current?.stop();
+        return;
+    }
+  };
+  const [voiceProgress, setVoiceProgress] = useState<VoiceProgress | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  // What this viewer does with a session's callbacks. The session calls them
+  // through a box (voiceHandoff.ts), so when "next series" remounts the viewer
+  // the next one ADOPTS the live session instead of starting a new one, which
+  // left the reader several seconds deaf right after every series change.
+  const voiceHandlersRef = useRef<VoiceSink | null>(null);
+  voiceHandlersRef.current = {
+    onAction: (action, heard) => {
+      flash(`“${heard}”`);
+      voiceActionRef.current(action);
+    },
+    onUnrecognized: (heard) => flash(`“${heard}” is not a command · ${questionMarkHelp ? "? lists them" : "the voice list shows them"}`),
+    onProgress: setVoiceProgress,
+    onState: (state, detail) => {
+      if (state === "listening" && voiceStateRef.current !== "listening") {
+        flash(questionMarkHelp ? "Voice on · press ? for what to say" : "Voice on · the voice list shows what to say");
+      }
+      voiceStateRef.current = state;
+      setVoice({ state });
+      if (state === "error") setVoiceError(detail ?? null);
+      if (state === "off" || state === "error") voiceSessionRef.current = null;
+      // The reader's choice, so the next series' viewer keeps it (not an unmount).
+      if (!unmountingRef.current && (state === "listening" || state === "off" || state === "error")) {
+        onVoiceChangeRef.current?.(state === "listening");
+      }
+    },
+  };
+  const voiceSink = useRef<VoiceSink>({
+    onAction: (action, heard) => voiceHandlersRef.current?.onAction(action, heard),
+    onUnrecognized: (heard) => voiceHandlersRef.current?.onUnrecognized(heard),
+    onProgress: (progress) => voiceHandlersRef.current?.onProgress(progress),
+    onState: (state, detail) => voiceHandlersRef.current?.onState(state, detail),
+  }).current;
+  const voiceBoxRef = useRef<VoiceSinkBox | null>(null);
+  const voiceStateRef = useRef<VoiceState>("off");
+  const toggleVoice = async () => {
+    if (voiceSessionRef.current || voice.state === "loading") {
+      voiceSessionRef.current?.stop();
+      voiceSessionRef.current = null;
+      setVoice({ state: "off" });
+      return;
+    }
+    // Never two microphones: a session parked by the previous viewer goes.
+    stopParkedVoice();
+    const box: VoiceSinkBox = { current: voiceSink };
+    voiceBoxRef.current = box;
+    setVoiceError(null);
+    setVoiceProgress(null);
+    // Show the loading card at once, before the session module arrives.
+    setVoice({ state: "loading" });
+    let mod: typeof import("./viewer/voice/voiceSession");
+    try {
+      mod = await import("./viewer/voice/voiceSession");
+    } catch {
+      setVoice({ state: "error" });
+      setVoiceError("Voice commands could not be loaded. Check the connection and press Retry.");
+      return;
+    }
+    await mod.startVoice({
+      onSession: (session) => {
+        voiceSessionRef.current = session;
+      },
+      modelUrl: mod.VOICE_MODEL_URL,
+      workerUrl: mod.VOICE_WORKER_URL,
+      onAction: (action, heard) => box.current.onAction(action, heard),
+      onUnrecognized: (heard) => box.current.onUnrecognized(heard),
+      onProgress: (progress) => box.current.onProgress(progress),
+      onState: (state, detail) => box.current.onState(state, detail),
+    });
+  };
+  const unmountingRef = useRef(false);
+  const onVoiceChangeRef = useRef(onVoiceChange);
+  onVoiceChangeRef.current = onVoiceChange;
+  useEffect(
+    () => () => {
+      unmountingRef.current = true;
+      const session = voiceSessionRef.current;
+      const box = voiceBoxRef.current;
+      // A host that keeps voice across series hands a LISTENING session to the
+      // next viewer; anything else (loading, no such host) stops as before.
+      if (session && box && onVoiceChangeRef.current && voiceStateRef.current === "listening") parkVoice(session, box);
+      else session?.stop();
+    },
+    []
+  );
+  // "Next series" by voice remounts the viewer for the new series: carry the
+  // mic over (the model is in the HTTP cache, the permission already given).
+  const voiceResumedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || !canVoice || !voiceOn || voiceResumedRef.current) return;
+    voiceResumedRef.current = true;
+    if (voiceSessionRef.current) return;
+    const adopted = adoptParkedVoice(voiceSink);
+    if (!adopted) {
+      void toggleVoice();
+      return;
+    }
+    voiceSessionRef.current = adopted.session;
+    voiceBoxRef.current = adopted.box;
+    voiceStateRef.current = "listening";
+    setVoice({ state: "listening" });
+    // Commands heard while no viewer was mounted ("next series … zoom in").
+    for (const { action, heard } of adopted.heard) voiceSink.onAction(action, heard);
+    // Once per mount; toggleVoice reads current state itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, canVoice, voiceOn]);
+
+  // Markers live in stack-image fractions. Report MPR only while the volume
+  // is on screen (or still mounting). A failed reconstruction keeps the stack.
+  const mprShowing = mprLive || (viewMode === "mpr" && mprLoading);
+  // Keep the keyboard on the viewer across Stack ↔ MPR. Hiding the focused
+  // stack element drops focus to <body>, so the next X (or arrow) went
+  // nowhere until the reader clicked the image again.
+  const focusSyncArmed = useRef(false);
+  useEffect(() => {
+    // Not on mount: only a Stack ↔ MPR switch moves focus.
+    if (!focusSyncArmed.current) {
+      focusSyncArmed.current = true;
+      return;
+    }
+    const active = document.activeElement;
+    const wrapper = pressGuardRef.current;
+    const lost = !active || active === document.body;
+    if (!wrapper || !(lost || wrapper.contains(active))) return;
+    const host = mprShowing ? wrapper : elementRef.current;
+    if (host && active !== host) host.focus({ preventScroll: true });
+  }, [mprShowing]);
+  useEffect(() => {
+    onViewModeChange?.(mprShowing ? "mpr" : "stack");
+  }, [mprShowing, onViewModeChange]);
 
   // React to the navigator selecting a different series (user-driven switch).
   // Runs after init has wired switchSeriesRef; no-ops on the already-loaded
@@ -915,259 +4916,593 @@ export default function CornerstoneViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSeriesIndex, ready, series]);
 
-  // Close the preset menu on outside click / Escape.
-  const presetMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!presetOpen) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!presetMenuRef.current?.contains(e.target as Node)) setPresetOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPresetOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [presetOpen]);
+  const closeHelp = useCallback(() => {
+    setHelpOpen(false);
+    elementRef.current?.focus({ preventScroll: true });
+  }, []);
 
-  const activePresetLabel =
-    activePreset === FULL_DYNAMIC_ID
-      ? "Full dynamic"
-      : WINDOW_PRESETS.find((p) => p.id === activePreset)?.label ?? "W/L";
-
-  // Floating PACS-style toolbar — shown in BOTH demo and driven modes.
   const toolbar = (
-    <div className="pointer-events-auto absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-strong/60 bg-elevated/85 p-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-elevated/55 surface-hairline">
-      {/* Brand mark */}
-      <span className="flex select-none items-center gap-1.5 pl-1 pr-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md border border-strong bg-elevated text-accent">
-          <Activity className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-        </span>
-        <span className="hidden font-display text-[11px] font-semibold tracking-tight text-primary sm:inline">
-          FlowRad
-        </span>
-      </span>
-      <span className="mx-0.5 h-6 w-px bg-strong/60" />
-
-      {PRIMARY_TOOLS.map((t) => {
-        // Annotation tools stay enabled by default; we only disable (never hide)
-        // them on a study we've confirmed has no pixel spacing, with a tooltip
-        // that explains why.
-        const blocked = !!t.annotation && !annotationsEnabled;
-        return (
-          <ToolButton
-            key={t.name}
-            label={
-              blocked
-                ? `${t.label} — this study has no pixel spacing for measurements`
-                : t.label
+    <ViewerToolbar
+      variant={edge || toolbarHost !== undefined ? "edge" : "dock"}
+      ready={ready}
+      activeTool={activeTool}
+      annotationsEnabled={annotationsEnabled}
+      measurementsEnabled={!mprLive}
+      measureTools={f.tools ? READING_MEASURE_TOOLS : MEASURE_TOOLS}
+      readingKeys={f.keys}
+      inverted={inverted}
+      activePreset={activePreset}
+      presets={presets}
+      viewMode={viewMode}
+      mprRender={mprRender === "3d" ? "3d" : slab.mode !== "off" ? "mip" : "mpr"}
+      onMprRender={(mode) => {
+        // MIP is the slab (15 mm unless one is already set); MPR is a thin slice.
+        if (mode === "mip") {
+          slabFromStack.current = false;
+          setSlabState((s) => ({ mode: "mip", mm: s.mode === "off" ? MIP_SLAB_MM : s.mm }));
+          setMprRender("mpr");
+        } else {
+          if (mode === "mpr") setSlabState((s) => (s.mode === "off" ? s : { ...s, mode: "off" }));
+          setMprRender(mode);
+        }
+        if (viewMode !== "mpr") setViewMode("mpr");
+      }}
+      plane={viewMode === "stack" ? "acquired" : mprFocus ?? "all"}
+      onPlane={showPlane}
+      cineOffered={cineOffered}
+      cinePlaying={cinePlaying}
+      cineFps={cineFps}
+      overlay={overlay}
+      onSelectTool={(name) => {
+        setTextBoxTool(false);
+        setLeftToolRef.current(name);
+      }}
+      textBox={f.tools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
+      onSaveAnnotated={f.export ? () => setAnnotatedExport(true) : undefined}
+      onExport={f.export ? () => openExport("image") : undefined}
+      onMeasurements={f.tools && editCtx ? () => setMeasurementsOpen(true) : undefined}
+      onFusion={onFusion ?? undefined}
+      layoutChoice={layoutChoice}
+      onRecon={
+        f.slabs
+          ? () => {
+              const ids: string[] = (viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? [];
+              if (ids.length < 3) return flash("Oblique and curved MPR need a stack of parallel slices");
+              void import("@cornerstonejs/core").then((core) => {
+                const s = core.metaData.get("generalSeriesModule", ids[0]) as { seriesDescription?: string; modality?: string } | undefined;
+                setRecon({ imageIds: ids.slice(), title: s?.seriesDescription || `${s?.modality ?? ""} series`.trim() });
+              });
             }
-            active={activeTool === t.name}
-            disabled={!ready || blocked}
-            onClick={() => setLeftToolRef.current(t.name)}
-          >
-            <ToolIcon name={t.name} />
-          </ToolButton>
+          : undefined
+      }
+      onPreset={(preset) => {
+        applyPresetRef.current(preset);
+        flash(
+          preset
+            ? `${preset.label}   ${windowLine(preset.ww, preset.wc) ?? ""}`.trim()
+            : "Series default window"
         );
-      })}
-
-      <span className="mx-0.5 h-6 w-px bg-strong/70" />
-
-      {/* Window/Level preset menu */}
-      <div className="relative" ref={presetMenuRef}>
-        <button
-          type="button"
-          disabled={!ready}
-          aria-haspopup="menu"
-          aria-expanded={presetOpen}
-          aria-label="Window/Level presets"
-          onClick={() => setPresetOpen((o) => !o)}
-          className={cn(
-            "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-all duration-150",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-            "disabled:cursor-not-allowed disabled:opacity-40",
-            presetOpen || activePreset
-              ? "bg-accent/15 text-accent"
-              : "text-secondary hover:bg-surface hover:text-primary"
-          )}
-        >
-          <ToolIcon name="Preset" />
-          <span className="max-w-[6rem] truncate tabular-nums">{activePresetLabel}</span>
-          <ChevronDown className="h-3 w-3" strokeWidth={2.2} aria-hidden="true" />
-        </button>
-        {presetOpen && (
-          <div
-            role="menu"
-            aria-label="Window/Level presets"
-            className="absolute left-0 top-full z-30 mt-1.5 w-48 origin-top-left animate-fade-up overflow-hidden rounded-xl border border-strong/70 bg-elevated/95 p-1 shadow-lg backdrop-blur"
-          >
-            <PresetItem
-              label="Full dynamic"
-              hint="series default"
-              active={activePreset === FULL_DYNAMIC_ID}
-              onClick={() => {
-                applyPresetRef.current(null);
-                setPresetOpen(false);
-              }}
-            />
-            <span className="my-1 block h-px bg-strong/50" />
-            {presets.map((p) => (
-              <PresetItem
-                key={p.id}
-                label={p.label}
-                hint={`${p.ww} / ${p.wc}`}
-                active={activePreset === p.id}
-                onClick={() => {
-                  applyPresetRef.current(p);
-                  setPresetOpen(false);
-                }}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <span className="mx-0.5 h-6 w-px bg-strong/70" />
-
-      <ToolButton label="Invert" active={inverted} disabled={!ready} onClick={() => invertRef.current()}>
-        <ToolIcon name="Invert" />
-      </ToolButton>
-      <ToolButton label="Reset view" disabled={!ready} onClick={() => resetRef.current()}>
-        <ToolIcon name="Reset" />
-      </ToolButton>
-      <ToolButton label="Clear annotations" disabled={!ready} onClick={() => clearRef.current()}>
-        <ToolIcon name="Clear" />
-      </ToolButton>
-    </div>
+      }}
+      onInvert={() => invertRef.current()}
+      onReset={() => resetRef.current()}
+      onOrientation={applyOrientation}
+      onClear={() => clearRef.current()}
+      onViewMode={setViewMode}
+      previewLocked={previewing && !mprLive}
+      onCustomWindow={openCustomWindow}
+      onCineToggle={() => setCinePlaying((playing) => !playing)}
+      onCineFps={(fps) => setCineFps(clampCineFps(fps))}
+      onOverlay={cycleOverlay}
+      onHelp={() => {
+        if (!helpOpen || helpTab !== "keys") {
+          setHelpTab("keys");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
+      onVoiceHelp={() => {
+        if (!helpOpen || helpTab !== "voice") {
+          setHelpTab("voice");
+          setHelpOpen(true);
+        } else setHelpOpen(false);
+      }}
+      voice={
+        canVoice
+          ? {
+              state: voice.state,
+              onToggle: () => void toggleVoice(),
+              // Hover / focus: start loading the recognizer so a click is ready at once.
+              onWarm: () => {
+                if (voiceSessionRef.current) return;
+                void import("./viewer/voice/voiceSession").then((m) => m.prewarmVoice(m.VOICE_MODEL_URL, m.VOICE_WORKER_URL));
+              },
+            }
+          : undefined
+      }
+    />
   );
 
-  return (
-    <div className={cn("relative", showToolbar ? "w-full" : "h-full w-full", className)}>
-      <div
-        ref={elementRef}
-        className={cn(
-          "bg-imaging",
-          showToolbar
-            ? "aspect-square w-full overflow-hidden rounded-xl border border-subtle"
-            : "absolute inset-0"
-        )}
-        onContextMenu={(e) => e.preventDefault()}
-        aria-label="DICOM viewer"
-        role="img"
-      />
-      {toolbar}
-      {!ready && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="rounded-md bg-elevated/80 px-3 py-1.5 text-xs text-muted backdrop-blur">
-            {status}
-          </span>
-        </div>
+  // --- Slice scrollbar -----------------------------------------------------
+  // docs/UI_AUDIT.md backlog #2. Wheel-only scroll is invisible: a reader
+  // cannot tell a 240-slice CT from a radiograph, cannot see where they are,
+  // and cannot reach the end without 240 notches. The thumb's height is the
+  // share of the series one slice represents (floored so it stays grabbable),
+  // so series length is legible at a glance. Geometry is in
+  // lib/sliceScrollbar.ts. Hidden in MPR, which has its own three planes.
+  const sliceDragRef = useRef(false);
+  const scrollbarVisible = sliceCount > 1 && ready && !mprShowing;
+  const currentSlice = Math.max(0, (readout?.slice ?? 1) - 1);
+  const trackPx = scrollTrackRef.current?.clientHeight ?? 0;
+  const thumb = thumbGeometry(currentSlice, sliceCount, trackPx || 320);
+
+  const sliceFromEvent = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const track = scrollTrackRef.current;
+    if (!track) return;
+    const box = track.getBoundingClientRect();
+    setSliceRef.current(
+      indexFromPointer(event.clientY, { top: box.top, height: box.height }, sliceCount)
+    );
+  };
+
+  const sliceScrollbar = scrollbarVisible ? (
+    <div
+      ref={scrollTrackRef}
+      role="slider"
+      tabIndex={-1}
+      aria-label="Slice"
+      aria-orientation="vertical"
+      aria-valuemin={1}
+      aria-valuemax={sliceCount}
+      aria-valuenow={readout?.slice ?? 1}
+      aria-valuetext={`Slice ${readout?.slice ?? 1} of ${sliceCount}`}
+      className={cn(
+        "group absolute bottom-10 right-1 top-10 z-10 w-5 cursor-pointer touch-none",
+        "flex justify-center rounded-full"
       )}
-      {showToolbar && (
-        <p className="mt-2 text-xs text-muted">
-          Wheel scroll · right-drag zoom · middle-drag pan · left button = selected tool
-          {ready && !annotationsEnabled && (
-            <>
-              {" · "}
-              <span className="text-warning">
-                this study has no pixel spacing — measurement tools are disabled
-              </span>
-            </>
+      onPointerDown={(event) => {
+        event.preventDefault();
+        sliceDragRef.current = true;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setCinePlaying(false);
+        sliceFromEvent(event);
+      }}
+      onPointerMove={(event) => {
+        if (!sliceDragRef.current) return;
+        sliceFromEvent(event);
+      }}
+      onPointerUp={(event) => {
+        sliceDragRef.current = false;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => {
+        sliceDragRef.current = false;
+      }}
+    >
+      {/* Track: a hairline at rest so it never competes with anatomy, and a
+          full-width rail once the pointer is near it or a drag is live. */}
+      <div
+        className={cn(
+          "pointer-events-none h-full w-1 rounded-full bg-white/15 transition-all",
+          "group-hover:w-2 group-hover:bg-white/25",
+          sliceDragRef.current && "w-2 bg-white/25"
+        )}
+      >
+        <div
+          className="w-full rounded-full bg-white/80 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
+          style={{ marginTop: `${thumb.topPct}%`, height: `${thumb.heightPct}%` }}
+        />
+      </div>
+    </div>
+  ) : null;
+
+  const readoutLabel =
+    readout == null
+      ? undefined
+      : readout.ww != null && readout.wc != null
+        ? `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}, window ${readout.ww}, level ${readout.wc}`
+        : `${readout.plane ? `${readout.plane} ` : ""}Slice ${readout.slice} of ${readout.count}`;
+
+  const corners: ReturnType<typeof overlayCorners> = overlayCorners(
+    readout?.meta,
+    readout
+      ? {
+          slice: readout.slice,
+          count: readout.count,
+          ww: readout.ww,
+          wc: readout.wc,
+          zoom: readout.zoom,
+          plane: readout.plane,
+          inverted,
+          presetLabel:
+            activePreset && activePreset !== FULL_DYNAMIC_ID
+              ? (presets.find((p) => p.id === activePreset) ?? WINDOW_PRESETS.find((p) => p.id === activePreset))?.label ?? null
+              : null,
+          cineFps: cinePlaying ? cineFps : null,
+        }
+      : null,
+    overlay
+  );
+  if (paneLabel) corners.topLeft.unshift(paneLabel.toUpperCase());
+  // Orientation letters only on the stack: the MPR planes carry their own.
+  const headerMarkers = orientationMarkers(readout?.meta?.imageOrientationPatient);
+  const markers = overlay !== "off" && !mprShowing && headerMarkers ? turnedMarkers ?? headerMarkers : null;
+
+  // Grid panes portal one shared bar; a lone pane keeps its own.
+  const sharedBar = toolbarHost !== undefined;
+  const ownBar = (docked || edge) && !sharedBar;
+  const portaledBar =
+    sharedBar && active && toolbarHost ? createPortal(toolbar, toolbarHost) : null;
+
+  return (
+    <div
+      className={cn(
+        docked && !sharedBar && "flex w-full flex-col gap-2",
+        (edge || sharedBar) && "flex h-full w-full flex-col",
+        !docked && !edge && !sharedBar && "relative h-full w-full",
+        "min-w-0 max-w-full",
+        className
+      )}
+      // Overlays (tutor ink, cards) find their canvas and the chrome to keep
+      // clear of from here: the pane, not the whole page.
+      data-viewer-root
+      onPointerDownCapture={onActivate}
+      onFocusCapture={onActivate}
+    >
+      <div
+        ref={pressGuardRef}
+        // Keys land here whether the stack or the MPR grid is showing. A
+        // click must focus the viewer: Cornerstone's own mousedown handler
+        // calls preventDefault, which stops the browser focusing the image,
+        // so arrow keys and PageUp/PageDown silently did nothing.
+        tabIndex={-1}
+        onKeyDown={onViewerKeyDown}
+        onPointerDown={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest("[role=dialog], button, input, select, a")) return;
+          const host = mprShowing ? pressGuardRef.current : elementRef.current;
+          if (host && document.activeElement !== host) host.focus({ preventScroll: true });
+        }}
+        className={cn(
+          "outline-none",
+          "relative",
+          docked && !sharedBar && "w-full",
+          (edge || sharedBar) && "min-h-0 flex-1",
+          !docked && !edge && !sharedBar && "h-full w-full"
+        )}
+      >
+        <div
+          ref={elementRef}
+          data-imaging-element
+          className={cn(
+            "touch-none select-none overscroll-contain bg-imaging",
+            "outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
+            docked && !sharedBar
+              ? "aspect-square w-full max-w-full overflow-hidden rounded-lg border border-[#1F1F1F]"
+              : "absolute inset-0",
+            mprLive && "invisible pointer-events-none"
           )}
+          onContextMenu={(e) => e.preventDefault()}
+          onDoubleClick={() => {
+            // Annotation tools use double-click to edit; leave it to them.
+            if (ANNOTATION_TOOL_NAMES.has(activeTool)) return;
+            if (onToggleMaximize) onToggleMaximize();
+            else fitRef.current();
+          }}
+          // Focusable so the reading-room keys (lib/viewerHotkeys.ts) can be
+          // scoped to the image instead of fighting the session's global keys,
+          // and so the viewer is operable without a mouse at all.
+          tabIndex={mprLive ? -1 : 0}
+          aria-label={
+            sliceCount > 0
+              ? `DICOM viewer, image ${readout?.slice ?? 1} of ${sliceCount}. ` +
+                "Arrow keys scroll, H lists shortcuts."
+              : "DICOM viewer"
+          }
+          aria-hidden={mprLive || undefined}
+          role="img"
+          data-viewer-tool={activeTool}
+        />
+        {!mprLive && <ReplayGeometryLayer shapes={replayShapes} />}
+        {!mprLive && (
+          <AnnotationEditLayer
+            ctx={editCtx}
+            seriesImageIds={viewportRef.current?.getImageIds() ?? []}
+            eraser={activeTool === "Eraser"}
+            handleUndoKeys
+            imageMenu={webImageMenu}
+            onCommand={runWebMenuCommand}
+            menuShortcut={(id) => (id === "ann:delete" ? "Del" : undefined)}
+          />
+        )}
+        {!mprLive && referencePlanes && referencePlanes.length > 0 && (
+          <RemoteReferenceLines ctx={editCtx ? { core: editCtx.core, element: editCtx.element } : null} planes={referencePlanes} />
+        )}
+        {recon && <WebReconOverlay imageIds={recon.imageIds} title={recon.title} onExit={() => setRecon(null)} />}
+        {f.tools && !mprLive && viewMode === "stack" && (
+          <WebTextBoxLayer ref={textBoxRef} element={stageEl} active={textBoxTool} hidden={annotationsHidden} />
+        )}
+        {annotatedExport && (
+          <Modal
+            open
+            onClose={() => setAnnotatedExport(false)}
+            title="Save the image with annotations"
+            description={BURNED_IN_WARNING}
+            size="sm"
+            tone="reading"
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setAnnotatedExport(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    setAnnotatedExport(false);
+                    void textBoxRef.current?.composite().then((canvas) =>
+                      canvas?.toBlob((blob) => {
+                        if (!blob) return;
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        // A name without patient details.
+                        a.download = `${(modality || "image").toLowerCase()}-annotated-${Date.now().toString(36)}.png`;
+                        a.click();
+                        window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+                        flash("Saved with annotations");
+                      }, "image/png")
+                    );
+                  }}
+                >
+                  Save PNG
+                </Button>
+              </>
+            }
+          >
+            <p>
+              The PNG holds the image as shown, its measurements and text boxes. No overlay text or patient
+              details are added. It is saved to this device only.
+            </p>
+          </Modal>
+        )}
+        {measurementsOpen && editCtx && (
+          <MeasurementsPanel
+            open
+            ctx={editCtx}
+            imageIds={(viewportRef.current as unknown as { getImageIds?: () => string[] } | null)?.getImageIds?.() ?? []}
+            onJump={(index) => {
+              const vp = viewportRef.current as unknown as { setImageIdIndex?: (i: number) => unknown } | null;
+              void vp?.setImageIdIndex?.(index);
+            }}
+            onClose={() => {
+              setMeasurementsOpen(false);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            onDone={flash}
+          />
+        )}
+        {exportOpen && (
+          <WebExportDialog
+            open
+            initial={{ kind: exportOpen.kind }}
+            frames={exportOpen.frames}
+            dicom={exportOpen.dicom}
+            onClose={() => {
+              setExportOpen(null);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            onDone={flash}
+          />
+        )}
+        {customWindowOpen && (
+          <CustomWindowDialog
+            open
+            onClose={() => {
+              setCustomWindowOpen(false);
+              elementRef.current?.focus({ preventScroll: true });
+            }}
+            initial={{ ww: readout?.ww, wc: readout?.wc }}
+            unit={modality === "CT" ? "HU" : undefined}
+            tone={f.keys ? "reading" : "app"}
+            onApply={(ww, wc) => {
+              // The same path as a preset: the window is the reader's own
+              // choice, so linked panes, pop-outs and recordings hear it.
+              const id = matchPreset(ww, wc);
+              applyPresetRef.current({ id: id ?? "custom", label: presets.find((p) => p.id === id)?.label ?? "Window", ww, wc, modalities: ["*"] });
+              flash(`Window   ${windowLine(ww, wc) ?? ""}`.trim());
+            }}
+          />
+        )}
+        {tagsImageId && (
+          <DicomTagsDialog
+            open
+            onClose={() => setTagsImageId(null)}
+            imageId={tagsImageId}
+            description={modality ? `${modality} · current image` : undefined}
+            tone={f.keys ? "reading" : "app"}
+          />
+        )}
+        {sliceScrollbar}
+        {(viewMode === "mpr" || mprLive) && (
+          <MprLayout
+            axialRef={axialRef}
+            coronalRef={coronalRef}
+            sagittalRef={sagittalRef}
+            tool={activeTool}
+            live={mprLive}
+            loading={mprLoading}
+            notice={mprNotice}
+            framed={docked && !sharedBar && mprLive}
+            render={mprRender === "3d" ? "3d" : slab.mode !== "off" ? "mip" : "mpr"}
+            slabLabel={mprRender === "3d" ? null : slabLabel(slab) || null}
+            volume3dRef={volume3dRef}
+            volume3dControls={
+              <>
+                <label className="flex items-center gap-1">
+                  <span className="sr-only">3D rendering</span>
+                  <select
+                    value={surface3d == null ? "volume" : String(surface3d)}
+                    onChange={(e) => setSurface3d(e.target.value === "volume" ? null : Number(e.target.value))}
+                    className="rounded bg-black/60 px-1 py-0.5 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <option value="volume">Volume</option>
+                    {SURFACE_PRESETS.map((sp) => (
+                      <option key={sp.id} value={sp.threshold}>
+                        Surface · {sp.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="sr-only">Cut plane</span>
+                  <select
+                    value={cut3d?.axis ?? "off"}
+                    onChange={(e) =>
+                      setCut3d(e.target.value === "off" ? null : { axis: e.target.value as CutAxis, fraction: cut3d?.fraction ?? 0.5 })
+                    }
+                    className="rounded bg-black/60 px-1 py-0.5 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <option value="off">No cut</option>
+                    <option value="axial">Axial cut</option>
+                    <option value="coronal">Coronal cut</option>
+                    <option value="sagittal">Sagittal cut</option>
+                  </select>
+                </label>
+                {cut3d && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={cut3d.fraction}
+                    onChange={(e) => setCut3d({ ...cut3d, fraction: Number(e.target.value) })}
+                    aria-label="Cut plane position"
+                    className="w-20 accent-accent"
+                  />
+                )}
+              </>
+            }
+            onPlanePointer={(plane) => {
+              activePlaneRef.current = plane;
+            }}
+            maximized={mprFocus}
+            onMaximize={setMprFocus}
+            onLayoutChange={() => mprSessionRef.current?.fit()}
+            canDoubleClick={!ANNOTATION_TOOL_NAMES.has(activeTool)}
+            axialReadout={
+              readout && mprLive
+                ? `Im ${readout.slice} / ${readout.count}${
+                    windowLine(readout.ww, readout.wc) ? `   ${windowLine(readout.ww, readout.wc)}` : ""
+                  }`
+                : null
+            }
+            showLabels={overlay !== "off"}
+          />
+        )}
+        {readout && ready && !mprShowing && (
+          <ViewportOverlay
+            corners={corners}
+            markers={markers}
+            scrollbar={scrollbarVisible}
+            label={readoutLabel}
+            scaleBar={scaleBar?.on ? scaleBarFor(readout.mmPerPx, readout.paneWidth ?? 0) : null}
+          />
+        )}
+
+        {!ready && /\b401\b/.test(status) ? (
+          // Signed out on a page whose pixels need a session: say so, and
+          // offer the way in, instead of a raw "Series metadata 401".
+          <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
+            <div className="max-w-xs rounded-lg bg-[#181818] px-4 py-3 text-center text-sm text-white ring-1 ring-white/10">
+              <p className="font-medium">Sign in to view the images</p>
+              <p className="mt-1 text-xs text-white/65">
+                Studies stream only to a signed-in reader or a share link.
+              </p>
+              <a
+                href={`/sign-in?next=${encodeURIComponent(
+                  typeof window === "undefined" ? "/" : window.location.pathname + window.location.search
+                )}`}
+                className="mt-3 inline-flex h-9 items-center rounded-md bg-accent px-3 text-xs font-semibold text-accent-foreground transition-[transform,filter] duration-75 hover:brightness-110 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+              >
+                Sign in
+              </a>
+            </div>
+          </div>
+        ) : !ready && !painted && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="flex items-center gap-2 rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/10">
+              {status.startsWith("Error") ? null : (
+                <Spinner size="sm" label="Loading" className="text-white" />
+              )}
+              {status}
+            </span>
+          </div>
+        )}
+        {((!ready && painted) || (ready && stacking)) && (
+          <p className="pointer-events-none absolute bottom-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md bg-black/80 px-2.5 py-1 text-xs text-white ring-1 ring-white/10">
+            {status}
+          </p>
+        )}
+        {previewing && painted && !mprShowing && (
+          <p
+            className="pointer-events-none absolute bottom-12 right-8 z-10 flex items-center gap-1.5 rounded-md bg-black/80 px-2 py-1 text-xs font-medium text-white ring-1 ring-white/15"
+            title="Showing a fast 8-bit preview. Window/level and measurements unlock when the full-quality image arrives."
+          >
+            <Spinner size="sm" className="text-white/70" label="Loading full-quality image" />
+            <span aria-hidden="true">Preview</span>
+          </p>
+        )}
+        <ViewerHud text={hud} />
+        <ViewerHelp
+          open={helpOpen}
+          onClose={closeHelp}
+          overrides={viewerBindings}
+          tab={helpTab}
+          onTabChange={setHelpTab}
+          paneMaximize={!!onToggleMaximize}
+          features={f}
+          popOut={popOutOffered}
+          voice={canVoice ? { listening: voice.state === "listening", onToggle: () => void toggleVoice() } : undefined}
+        />
+        <VoiceStatus
+          className="absolute right-3 top-3 z-30"
+          state={voice.state}
+          progress={voiceProgress}
+          error={voiceError}
+          onRetry={() => {
+            setVoice({ state: "off" });
+            void toggleVoice();
+          }}
+          onDismiss={() => {
+            voiceSessionRef.current?.stop();
+            voiceSessionRef.current = null;
+            setVoice({ state: "off" });
+          }}
+        />
+        {mprShowing ? null : imageOverlay}
+      </div>
+      {ownBar && toolbar}
+      {portaledBar}
+      {docked && !sharedBar && ready && !annotationsEnabled && (
+        <p className="text-xs text-warning">
+          This study has no pixel spacing — measurement tools are off.
         </p>
       )}
     </div>
   );
 }
 
-function ToolButton({
-  label,
-  active,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string;
-  active?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-        "disabled:cursor-not-allowed disabled:opacity-40",
-        active
-          ? "bg-accent text-accent-foreground shadow-sm"
-          : "text-secondary hover:bg-overlay hover:text-primary active:scale-95"
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function PresetItem({
-  label,
-  hint,
-  active,
-  onClick,
-}: {
-  label: string;
-  hint: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={active}
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
-        active ? "bg-accent/15 text-accent" : "text-secondary hover:bg-surface hover:text-primary"
-      )}
-    >
-      <span className="font-medium">{label}</span>
-      <span className="tabular-nums text-muted">{hint}</span>
-    </button>
-  );
-}
-
-// PACS toolbar glyphs, mapped to lucide icons. Each tool keeps its name; only
-// the rendered glyph changed (no Cornerstone tool binding is touched).
-const TOOL_ICONS: Record<string, LucideIcon> = {
-  WindowLevel: Contrast,
-  Pan: Move,
-  Zoom: ZoomIn,
-  StackScroll: LayersIconL,
-  Length: Ruler,
-  Angle: Triangle,
-  EllipticalROI: Circle,
-  RectangleROI: Square,
-  Probe: Crosshair,
-  ArrowAnnotate: MoveUpRight,
-  Preset: Settings2,
-  Invert: Contrast,
-  Reset: RotateCcw,
-  Clear: Eraser,
-};
-
-function ToolIcon({ name }: { name: string }) {
-  const Icon = TOOL_ICONS[name];
-  if (!Icon) return null;
-  return <Icon className="h-4 w-4" strokeWidth={1.9} aria-hidden="true" />;
+/**
+ * Edge letters from the stack camera (LPS world): top is viewUp, screen-right
+ * is viewUp × viewPlaneNormal. Null when the camera carries no direction.
+ */
+function cameraMarkers(viewUp?: number[], normal?: number[]): OrientationMarkers | null {
+  if (!viewUp || !normal || viewUp.length < 3 || normal.length < 3) return null;
+  const [ux, uy, uz] = viewUp as [number, number, number];
+  const [nx, ny, nz] = normal as [number, number, number];
+  const right = [uy * nz - uz * ny, uz * nx - ux * nz, ux * ny - uy * nx];
+  const neg = (v: number[]) => v.map((x) => -x);
+  const out = {
+    top: orientationLetters(viewUp),
+    bottom: orientationLetters(neg(viewUp)),
+    right: orientationLetters(right),
+    left: orientationLetters(neg(right)),
+  };
+  return out.top && out.right ? out : null;
 }

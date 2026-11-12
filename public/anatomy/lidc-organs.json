@@ -1,0 +1,205 @@
+{
+  "source": "totalsegmentator",
+  "caseId": "case-lidc-nodule-search",
+  "glb": "/anatomy/lidc-organs.glb",
+  "disclaimer": "TotalSegmentator on this de-identified CT, then smoothed, decimated, and shaded with tissue maps.",
+  "structures": [
+    {
+      "id": "right-lung",
+      "node": "right-lung",
+      "lod1": "right-lung__lod1",
+      "lod2": "right-lung__lod2",
+      "label": "Right lung",
+      "position": [
+        57.36821345502494,
+        25.416560833138533,
+        65.32727990891374
+      ],
+      "camera": [
+        237.36821345502494,
+        65.41656083313853,
+        285.32727990891374
+      ]
+    },
+    {
+      "id": "left-lung",
+      "node": "left-lung",
+      "lod1": "left-lung__lod1",
+      "lod2": "left-lung__lod2",
+      "label": "Left lung",
+      "position": [
+        -81.18086579623932,
+        -5.840074192064947,
+        77.27337306915845
+      ],
+      "camera": [
+        98.81913420376068,
+        34.15992580793505,
+        297.2733730691584
+      ]
+    },
+    {
+      "id": "heart",
+      "node": "heart",
+      "lod1": "heart__lod1",
+      "lod2": "heart__lod2",
+      "label": "Heart",
+      "position": [
+        -34.487378871160786,
+        44.00296420124897,
+        39.08095616469046
+      ],
+      "camera": [
+        145.5126211288392,
+        84.00296420124897,
+        259.08095616469046
+      ]
+    },
+    {
+      "id": "aorta",
+      "node": "aorta",
+      "lod1": "aorta__lod1",
+      "lod2": "aorta__lod2",
+      "label": "Aorta",
+      "position": [
+        -24.467559858938174,
+        14.302231310327869,
+        57.684787093932385
+      ],
+      "camera": [
+        155.53244014106184,
+        54.30223131032787,
+        277.6847870939324
+      ]
+    },
+    {
+      "id": "trachea",
+      "node": "trachea",
+      "lod1": "trachea__lod1",
+      "lod2": "trachea__lod2",
+      "label": "Trachea",
+      "position": [
+        -3.7328685336085154,
+        22.023813047664987,
+        123.45336175593326
+      ],
+      "camera": [
+        176.26713146639148,
+        62.02381304766499,
+        343.45336175593326
+      ]
+    },
+    {
+      "id": "liver",
+      "node": "liver",
+      "lod1": "liver__lod1",
+      "lod2": "liver__lod2",
+      "label": "Liver",
+      "position": [
+        68.22680040312076,
+        30.2624294032087,
+        -49.48874952518122
+      ],
+      "camera": [
+        248.22680040312076,
+        70.2624294032087,
+        170.51125047481878
+      ]
+    },
+    {
+      "id": "right-kidney",
+      "node": "right-kidney",
+      "lod1": "right-kidney__lod1",
+      "lod2": "right-kidney__lod2",
+      "label": "Right kidney",
+      "position": [
+        82.20856831973468,
+        -43.01130868228796,
+        -198.60600537187935
+      ],
+      "camera": [
+        262.2085683197347,
+        -3.011308682287961,
+        21.39399462812065
+      ]
+    },
+    {
+      "id": "left-kidney",
+      "node": "left-kidney",
+      "lod1": "left-kidney__lod1",
+      "lod2": "left-kidney__lod2",
+      "label": "Left kidney",
+      "position": [
+        -64.87671029643346,
+        -34.957278846084606,
+        -170.3601367221272
+      ],
+      "camera": [
+        115.12328970356654,
+        5.042721153915394,
+        49.63986327787279
+      ]
+    },
+    {
+      "id": "spine",
+      "node": "spine",
+      "lod1": "spine__lod1",
+      "lod2": "spine__lod2",
+      "label": "Spine",
+      "position": [
+        0.941801178499885,
+        -52.19933707515156,
+        55.635133626559735
+      ],
+      "camera": [
+        180.94180117849987,
+        -12.199337075151561,
+        275.63513362655976
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "findingId": "f_caselidcno_1",
+      "label": "Lung window \u2014 start mid-chest",
+      "position": [
+        6.478436616238648,
+        52.89469491755605,
+        32.624301694902215
+      ],
+      "sliceIndex": 34,
+      "marker": {
+        "x_pct": 0.52,
+        "y_pct": 0.42
+      }
+    },
+    {
+      "findingId": "f_caselidcno_2",
+      "label": "Left apical nodule",
+      "position": [
+        -56.757813383761366,
+        23.64,
+        172.62
+      ],
+      "sliceIndex": 6,
+      "marker": {
+        "x_pct": 0.68,
+        "y_pct": 0.494
+      }
+    },
+    {
+      "findingId": "f_caselidcno_3",
+      "label": "Mediastinal window pass",
+      "position": [
+        22.287499116238656,
+        68.70375741755606,
+        -117.37569830509779
+      ],
+      "sliceIndex": 64,
+      "marker": {
+        "x_pct": 0.48,
+        "y_pct": 0.38
+      }
+    }
+  ]
+}

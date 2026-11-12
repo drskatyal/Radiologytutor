@@ -47,6 +47,23 @@ function sliceAt(fraction: number, count: number): number {
   return Math.max(0, Math.min(count - 1, Math.round((count - 1) * fraction)));
 }
 
+/**
+ * LIDC-IDRI chest CT anchors, by SOP Instance UID, on its 65-image stack sorted
+ * by ImagePositionPatient (cranial first, InstanceNumber 1 = index 0, 5 mm).
+ * Read from the de-identified series' metadata and checked slice by slice on
+ * lung windows (lib/fixtures/lidcStackGeometry.json carries the stack):
+ *   index  6 (Im 7,  Loc 109): solid left apical nodule — on this slice only.
+ *   index  5 (Im 6,  Loc 104): the slice above; the nodule is gone.
+ *   index 20 (Im 21, Loc 179): carina — the trachea divides here.
+ *   index 22 (Im 23, Loc 189): both hila with the central mediastinum.
+ */
+export const LIDC_ANCHOR_SOPS = {
+  nodule: "1.3.6.1.4.1.14519.5.2.1.6279.6001.138706126839335782581450883596",
+  aboveNodule: "1.3.6.1.4.1.14519.5.2.1.6279.6001.209102194911412350844627859098",
+  carina: "1.3.6.1.4.1.14519.5.2.1.6279.6001.342525961847100119987583382238",
+  hila: "1.3.6.1.4.1.14519.5.2.1.6279.6001.279834277732178604383957883357",
+} as const;
+
 /** Published catalog of importable real-DICOM teaching cases. */
 export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
   {
@@ -93,31 +110,84 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Name your search pattern before you scroll — upper lobes first or systematic lobe-by-lobe.",
           "Do not chase mediastinum until both lungs are surveyed.",
         ],
+        reportGold:
+          "Narrow lung window (W 1500 / L -600). Both lungs surveyed from the carina inferiorly before the mediastinum.",
+        reportMustMention: ["1500", "-600", "both lungs", "carina"],
         state: " ",
-        marker: { x_pct: 0.52, y_pct: 0.42, shape: "circle" },
+        // On the carina, where the search starts.
+        marker: { x_pct: 0.54, y_pct: 0.52, shape: "circle" },
         order: 1,
         studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
         seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
-        sliceIndex: sliceAt(0.35, 65),
+        sopInstanceUID: LIDC_ANCHOR_SOPS.carina,
+        sliceIndex: 20,
         windowWidth: 1500,
         windowCenter: -600,
       },
       {
         label: "Peripheral nodule survey",
         description:
-          "On lung windows scrutinise the periphery for round opacities. Compare size on adjacent slices to confirm a true nodule versus vessel on end.",
+          "On lung windows scrutinise the periphery for round opacities. In the left upper lobe apex a small solid nodule is present on one slice and gone on the slices above and below, so it is a nodule, not a vessel on end.",
         teachingPoints: [
-          "Scroll through the nodule — if it disappears it may be a vessel.",
+          "Scroll through the nodule — if it runs on as a tube it is a vessel; a nodule appears and disappears.",
           "Note solid vs subsolid density before measuring.",
         ],
+        landmark: "left lung apex",
+        reportGold:
+          "Periphery checked on lung windows for round opacities. A true nodule is distinguished from a vessel on end on adjacent slices. Density is noted as solid or subsolid before measuring.",
+        reportMustMention: ["round opacities", "nodule", "vessel", "solid", "subsolid"],
         state: " ",
-        marker: { x_pct: 0.68, y_pct: 0.55, shape: "circle" },
+        // A real lesion, not a placeholder position: LIDC-IDRI DICOM-SEG
+        // nodule 2 (three readers), about 5 mm, solid, left upper lobe apex.
+        // Index 6 of the position-sorted stack; compare opens the slice above,
+        // where it is gone.
+        marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+        measurements: [
+          {
+            id: "m_lidc_n2",
+            kind: "ellipse",
+            sliceIndex: 6,
+            sopInstanceUID: LIDC_ANCHOR_SOPS.nodule,
+            handles: [
+              [0.6751, 0.4873],
+              [0.6849, 0.501],
+            ],
+            label: "LIDC reader extent",
+          },
+        ],
         order: 2,
         studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
         seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
-        sliceIndex: sliceAt(0.5, 65),
+        sopInstanceUID: LIDC_ANCHOR_SOPS.nodule,
+        sliceIndex: 6,
         windowWidth: 1500,
         windowCenter: -600,
+        anchors: [
+          {
+            studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+            seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+            sopInstanceUID: LIDC_ANCHOR_SOPS.nodule,
+            sliceIndex: 6,
+            windowWidth: 1500,
+            windowCenter: -600,
+            marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+            viewportRole: "primary",
+            studyRole: "current",
+          },
+          {
+            studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
+            seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
+            sopInstanceUID: LIDC_ANCHOR_SOPS.aboveNodule,
+            sliceIndex: 5,
+            windowWidth: 1500,
+            windowCenter: -600,
+            zoom: 1,
+            pan: [0, 0],
+            marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+            viewportRole: "secondary",
+            studyRole: "current",
+          },
+        ],
       },
       {
         label: "Mediastinal window pass",
@@ -127,12 +197,17 @@ export const PUBLIC_CASE_CATALOG: PublicCaseTemplate[] = [
           "Two-pass reading reduces missed apical or posterior nodules.",
           "Finish with an impression that separates actionable nodules from benign calcified granulomas.",
         ],
+        reportGold:
+          "Mediastinal windows through the hila and mediastinum, then a second peripheral sweep on lung windows. Impression separates actionable nodules from benign calcified granulomas.",
+        reportMustMention: ["mediastinal", "hila", "calcified granulomas"],
         state: " ",
-        marker: { x_pct: 0.48, y_pct: 0.38, shape: "circle" },
+        // Central mediastinum at the level of both hila.
+        marker: { x_pct: 0.52, y_pct: 0.44, shape: "circle" },
         order: 3,
         studyInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.210460865401632134346677582159",
         seriesInstanceUID: "1.3.6.1.4.1.14519.5.2.1.6279.6001.314917368146772872954571551463",
-        sliceIndex: sliceAt(0.65, 65),
+        sopInstanceUID: LIDC_ANCHOR_SOPS.hila,
+        sliceIndex: 22,
         windowWidth: 400,
         windowCenter: 40,
       },

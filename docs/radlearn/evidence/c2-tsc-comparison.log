@@ -1,0 +1,5 @@
+Baseline diagnostics: 279
+C2 diagnostics: 279
+New normalized diagnostics: 0
+Removed normalized diagnostics: 0
+Normalization: ignore source line/column shifts and string-union member ordering only.

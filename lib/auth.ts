@@ -5,18 +5,23 @@
 // source of truth; Better Auth is only the credential provider.
 //
 // Without MONGODB_URI we use the in-memory adapter so `npm run build` and
-// local demo work with no database. A signed demo cookie additionally lets
-// "Continue as demo" work even when the memory adapter is empty.
+// local demo work with no database. Cloud Run (K_SERVICE) refuses that
+// fallback — MONGODB_URI must come from Secret Manager. A signed demo cookie
+// additionally lets "Continue as demo" work even when the memory adapter is empty.
 
+import { elevatedDemoAvailable } from "./demoEntry";
+import { configuredPublicOrigin } from "./trustedHost";
 import { createHmac, timingSafeEqual } from "crypto";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "better-auth/adapters/mongodb";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { nextCookies, toNextJsHandler } from "better-auth/next-js";
 import { MongoClient } from "mongodb";
+import { assertCloudRunMongo } from "./durableStore";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
+import { applyAuthUserCreate } from "@/lib/authProvision";
 import {
   DEFAULT_ORG_ID,
   DEMO_STUDENT_USER_ID,
@@ -30,6 +35,7 @@ import {
   listMembershipsForUser,
   provisionAuthUser,
 } from "@/lib/cases";
+import { SIGNUP_INTENT_COOKIE, parseSignupIntent, type PublicSignupRole } from "@/lib/signupIntent";
 import {
   canAccessOrgResource,
   isPlatformSuperAdmin,
@@ -40,10 +46,8 @@ import type { Membership, MembershipRole, PlatformRole, User } from "@/lib/types
 const DEMO_COOKIE = "flowrad_demo";
 const DEMO_MAX_AGE_SEC = 60 * 60 * 24 * 14;
 
-const APP_URL =
-  process.env.BETTER_AUTH_URL?.trim() ||
-  process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-  "http://localhost:3000";
+// Authentication stays pinned to operator configuration, never request headers.
+const APP_URL = configuredPublicOrigin();
 
 /**
  * Session/demo-cookie signing key.
@@ -97,6 +101,7 @@ const memoryDb: MemoryDB = {
 };
 
 function buildDatabase() {
+  assertCloudRunMongo();
   const uri = process.env.MONGODB_URI?.trim();
   if (!uri) return memoryAdapter(memoryDb);
   // Construct the client without connecting — first adapter op opens the pool.
@@ -128,13 +133,10 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
-        after: async (user) => {
-          await provisionAuthUser({
-            authProviderId: user.id,
-            email: user.email,
-            name: user.name,
-            image: user.image ?? undefined,
-          });
+        after: async (user, context) => {
+          // Email and Google sign-up both land here. Student is opt-in.
+          // The hook never accepts an admin role from the request.
+          await applyAuthUserCreate(user, context);
         },
       },
     },
@@ -187,6 +189,14 @@ function toSessionUser(user: User, memberships: Membership[]): SessionUser {
   };
 }
 
+function signupIntentFromRequest(): PublicSignupRole {
+  try {
+    return parseSignupIntent(cookies().get(SIGNUP_INTENT_COOKIE)?.value);
+  } catch {
+    return "teacher";
+  }
+}
+
 async function domainUserFromAuth(authUser: {
   id: string;
   email: string;
@@ -202,6 +212,7 @@ async function domainUserFromAuth(authUser: {
         email: authUser.email,
         name: authUser.name ?? undefined,
         image: authUser.image ?? undefined,
+        intent: signupIntentFromRequest(),
       });
     }
     return existing;
@@ -211,6 +222,7 @@ async function domainUserFromAuth(authUser: {
     email: authUser.email,
     name: authUser.name ?? undefined,
     image: authUser.image ?? undefined,
+    intent: signupIntentFromRequest(),
   });
 }
 
@@ -255,6 +267,27 @@ function demoCookieOptions() {
   };
 }
 
+/** Better Auth session cookies. Demo persona switches must drop these or
+ *  getSession() keeps the previous account and ignores flowrad_demo. */
+const BETTER_AUTH_COOKIE_NAMES = [
+  "better-auth.session_token",
+  "__Secure-better-auth.session_token",
+  "better-auth.session_data",
+  "__Secure-better-auth.session_data",
+];
+
+function clearBetterAuthCookies(res: NextResponse) {
+  for (const name of BETTER_AUTH_COOKIE_NAMES) {
+    res.cookies.set(name, "", {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+      secure: name.startsWith("__Secure-"),
+    });
+  }
+}
+
 async function sessionFromDomainUser(user: User): Promise<AppSession> {
   const memberships = await listMembershipsForUser(user.id);
   return { user: toSessionUser(user, memberships), memberships };
@@ -267,6 +300,9 @@ async function readDemoSession(): Promise<AppSession | null> {
     if (!raw) return null;
     const userId = verifyDemoToken(raw);
     if (!userId) return null;
+    // A teacher/admin demo cookie minted before the production lockdown is
+    // still signed and unexpired. It must not resolve to an author session.
+    if (!demoIdentityAllowed(userId)) return null;
     await ensureDemoIdentity();
     const user = await getUser(userId);
     if (!user) return null;
@@ -402,15 +438,19 @@ export function demoAuthEnabled(): boolean {
 }
 
 /**
- * Highest demo role this deployment will hand out.
+ * Highest *implicit* demo role this deployment will hand out.
  *
- * Even where demo sign-in is deliberately enabled in production (a public
- * sandbox), it tops out at `author` — platform super-admin is never something
- * an unauthenticated request can mint.
+ * An empty body and "Continue as demo" ask for platform super-admin. Outside
+ * production that is allowed. In production it is never minted: the cap is
+ * `student` unless `DEMO_AUTH_MAX_ROLE=author`. Explicit Teacher / Student
+ * personas are handled in `clampDemoRole` and are not collapsed into this cap.
  */
 export function maxDemoRole(): DemoRole {
-  if (process.env.NODE_ENV !== "production") return "super_admin";
-  return process.env.DEMO_AUTH_MAX_ROLE?.trim() === "author" ? "author" : "student";
+  if (!elevatedDemoAvailable()) return "student";
+  const cap = process.env.DEMO_AUTH_MAX_ROLE?.trim();
+  if (cap === "student") return "student";
+  if (cap === "author") return "author";
+  return "super_admin";
 }
 
 const DEMO_ROLE_RANK: Record<DemoRole, number> = {
@@ -419,14 +459,49 @@ const DEMO_ROLE_RANK: Record<DemoRole, number> = {
   super_admin: 2,
 };
 
-/** Clamp a requested demo role to what this deployment allows. */
+/**
+ * Clamp a requested demo role to what this deployment allows.
+ *
+ * `student` and an explicit `author` are personas. Teacher demo posts
+ * `{ role: "author" }` and must receive the author membership — including on a
+ * production-mode local stack where demo auth is enabled — or Studio stays
+ * behind the student gate. The implicit super-admin request (empty body /
+ * Continue as demo) still follows `maxDemoRole` and is never a platform
+ * super-admin in production.
+ *
+ * Set `DEMO_AUTH_MAX_ROLE=student` to lock the author persona down as well.
+ */
 export function clampDemoRole(requested: DemoRole): DemoRole {
   const cap = maxDemoRole();
   return DEMO_ROLE_RANK[requested] > DEMO_ROLE_RANK[cap] ? cap : requested;
 }
 
+/**
+ * Role the demo route may hand to THIS request, or null to refuse.
+ *
+ * Production: an explicit request above student is refused outright (403),
+ * not silently downgraded — the caller asked for a role it cannot have. An
+ * empty body ("Continue as demo") is the student persona.
+ */
+export function demoRoleForRequest(
+  requested: DemoRole,
+  explicit: boolean
+): DemoRole | null {
+  if (!elevatedDemoAvailable()) {
+    if (requested === "student" || !explicit) return "student";
+    return null;
+  }
+  return clampDemoRole(requested);
+}
+
+/** Demo identities that may still resolve to a session on this deployment. */
+export function demoIdentityAllowed(userId: string): boolean {
+  return elevatedDemoAvailable() || userId === DEMO_STUDENT_USER_ID;
+}
+
 export async function createDemoSessionResponse(
-  requestedRole: DemoRole = "super_admin"
+  requestedRole: DemoRole = "super_admin",
+  explicit = false
 ): Promise<NextResponse> {
   if (!demoAuthEnabled()) {
     return NextResponse.json(
@@ -434,7 +509,16 @@ export async function createDemoSessionResponse(
       { status: 404 }
     );
   }
-  const role = clampDemoRole(requestedRole);
+  const role = demoRoleForRequest(requestedRole, explicit);
+  if (!role) {
+    return NextResponse.json(
+      {
+        error:
+          "Teacher and admin demos are off on this deployment. Create an account to author cases.",
+      },
+      { status: 403 }
+    );
+  }
   await ensureDemoIdentity();
   const userId =
     role === "student"
@@ -449,12 +533,14 @@ export async function createDemoSessionResponse(
   const session = await sessionFromDomainUser(user);
   const res = NextResponse.json({ user: toClientUser(session.user) });
   res.cookies.set(DEMO_COOKIE, signDemoToken(user.id), demoCookieOptions());
+  clearBetterAuthCookies(res);
   return res;
 }
 
 export function clearDemoSessionResponse(): NextResponse {
   const res = NextResponse.json({ ok: true });
   res.cookies.set(DEMO_COOKIE, "", { ...demoCookieOptions(), maxAge: 0 });
+  clearBetterAuthCookies(res);
   return res;
 }
 

@@ -1,0 +1,34 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 24 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 anchor-incomplete.spec.ts:5:5 › M7 T2 index-only finding cannot jump or approve; explicit rendered rebind creates a new exact version (3.2s)
+  ✓  2 anchor-order.spec.ts:5:5 › M7 T1 reordered archive stack still jumps to the same named SOP/frame and recorded view (3.7s)
+  ✓  3 approval.spec.ts:8:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (2.0s)
+  ✓  4 approval.spec.ts:49:5 › M7 keyboard review approves saved versions, invalidates edits and preserves a conflicting local draft (4.6s)
+  ✓  5 approved-tools.spec.ts:9:5 › approved tool route requires a session and never reveals its catalog anonymously (13ms)
+  ✓  6 approved-tools.spec.ts:17:5 › real routes expose approved IDs and metadata bounds, reject forged geometry, and invalidate old commands after edit (11.2s)
+  ✓  7 capture-recovery.spec.ts:4:5 › T4 crash recovery retains acknowledged journal/media and sends missing chunks only (7.3s)
+  ✓  8 capture-recovery.spec.ts:48:5 › capture routes require a session; PUT receipts are idempotent and conflicting bytes return 409 (1.4s)
+  ✓  9 dicomweb-auth.spec.ts:3:5 › DICOMweb requires a session before QIDO, metadata or pixel access (28ms)
+  ✓  10 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (2.1s)
+  ✓  11 extraction.spec.ts:7:5 › M6 retained extraction commits exactly two drafts across a lost response and a later expert edit (4.9s)
+  ✓  12 healthz.spec.ts:3:5 › healthz is public liveness with no environment or service details (16ms)
+  ✓  13 markers.spec.ts:4:5 › T7 three silent markers become three candidates; every Jump confirms its SOP/frame and notes save retains all three (4.8s)
+  ✓  14 mic-retry.spec.ts:4:5 › T5 microphone denial shows an actionable error; a second take captures fake audio on a fresh clock (4.8s)
+  ✓  15 render-ack.spec.ts:4:5 › P0-3/T10 delayed real renders timestamp the displayed identity; restore waits, acknowledges or times out (12.9s)
+  ✓  16 replay-first-frame.spec.ts:4:5 › M4 first frame keeps its SOP when archive opening offset differs from the completed stack order (1.6s)
+  ✓  17 replay-first-frame.spec.ts:29:5 › M4/T3 completed stack missing the opening SOP fails closed instead of retaining its archive index (1.6s)
+  ✓  18 replay-missing-instance.spec.ts:5:5 › M7 T3 review jump fails closed for a missing SOP without nearest-slice substitution (timed replay remains M8) (3.1s)
+  ✓  19 review-jump.spec.ts:6:5 › M7 Jump confirms exact single-frame and multiframe identity, window, camera and invert; evidence seeks retained media (4.0s)
+  ✓  20 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (707ms)
+  ✓  21 trusted-host.spec.ts:7:5 › Worker-authenticated robots and sitemap use the forwarded public origin (21ms)
+  ✓  22 trusted-host.spec.ts:17:5 › unsigned, wrong-secret and malformed-host requests use configured localhost SEO (32ms)
+  ✓  23 trusted-host.spec.ts:33:5 › landing, layout and viewer metadata use the authenticated or configured origin (57ms)
+  ✓  24 trusted-host.spec.ts:47:5 › middleware uses Worker host and never redirects back to the upstream origin (26ms)
+
+  24 passed (1.3m)

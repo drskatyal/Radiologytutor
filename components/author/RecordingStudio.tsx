@@ -2,26 +2,26 @@
 
 // RecordingStudio — the full-page PACS authoring surface.
 //
-// Primary loop (fast, 3–5 min per case):
-//   navigate the study → CLICK the finding → popover opens → dictate with mic →
-//   Gemini structures {label, description, teachingPoints} into the fields →
-//   save with a real normalized marker + series anchor.
+// Primary loop:
+//   land in the viewer → Start recording → Finish recording (review the
+//   viewport take) → Process and teach case → Test as student →
+//   Add to library.
 //
-// Secondary loop (optional demo recording):
-//   Hold Alt+X / Record to capture a narrated walk-through (cursor + viewer
-//   events). Students retrace that track; without a track they still get the
-//   AI laser tween to the click marker.
+// Click-to-annotate stays available, off until the teacher turns it on, so a
+// review pass does not drop a marker on the first click.
 //
 // WHILE RECORDING a pulsing frame marks the viewer live. Captured findings
 // list with replay / re-record / edit / delete. Then publish.
 
+import { retainedMarkers } from "@/lib/anchors/resolve";
+import { anchorFields, singleFindingAnchorFields } from "@/lib/anchors/materialize";
+import { MarkerGroupChoice } from "./MarkerGroupChoice";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Check,
   Circle,
-  Crosshair,
   Mic,
   Play,
   Plus,
@@ -49,27 +49,50 @@ import {
   type MicState,
 } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
-import {
-  BUNDLED_CASE,
-  BUNDLED_CASE_SERIES,
-  caseSeriesToSource,
-  type CaseSeries,
-} from "@/lib/viewerSource";
+import { BUNDLED_CASE, caseSeriesToSource, type CaseSeries } from "@/lib/viewerSource";
+import { lastTeacherSlice } from "@/lib/viewerLoad";
+import { useResolvedSeries } from "@/components/viewer/useResolvedSeries";
 import type {
   CaseData,
   Finding,
+  FindingMeasurement,
   Marker,
   MarkerShape,
   RecordedTrack,
   StructuredFinding,
+  TeacherSketchOp,
+  ViewerEvent,
 } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
+import { CaptureStatus } from "@/components/record/CaptureStatus";
 import { RecordStage } from "@/components/record/RecordStage";
+import { TeacherSketchLayer, type TeacherSketchLayerHandle } from "@/components/author/sketch/TeacherSketchLayer";
+import {
+  SketchShortcutHint,
+  SketchToolPalette,
+  type SketchExportFormat,
+} from "@/components/author/sketch/SketchToolPalette";
+import { useTeacherSketch } from "@/components/author/sketch/useTeacherSketch";
+import { pendingSketchMarkers } from "@/lib/teacherSketch";
+import { resolveStudioHotkey } from "@/lib/studioHotkeys";
+import { isTextTarget } from "@/lib/viewerHotkeys";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
 import { AnnotatePopover } from "@/components/author/AnnotatePopover";
-import { ContinuousCapture } from "@/components/author/ContinuousCapture";
+import { LandmarkField } from "@/components/author/LandmarkField";
+import {
+  ContinuousCapture,
+  type TeacherCaptureApi,
+  type TeacherCapturePhase,
+  type TeacherCompileProgress,
+} from "@/components/author/ContinuousCapture";
+import { TakeReview, type TeacherReview } from "@/components/author/TakeReview";
+import { studentCaseHref, TEACHER_PROCESSING_LABEL } from "@/lib/teacherCapture";
+import { jumpToReview, reviewRequest } from "@/lib/review/client";
+import type { CaseReview } from "@/lib/review/model";
+import { useUnsavedGuard } from "./useUnsavedGuard";
+import { FindingReviewPanel } from "./FindingReviewPanel";
 import { SequenceBoard } from "@/components/author/SequenceBoard";
 import {
   addFinding,
@@ -78,14 +101,28 @@ import {
   patchFinding,
   reorderFindings,
   structureFindingFromAudio,
-  uploadAudio,
+  assembleRecordedFinding,
   LIMITS,
 } from "@/components/author/lib";
+import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import { updateCase } from "@/components/admin/api";
 import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
-import { withSecondaryAnchor } from "@/lib/findingAnchors";
-import { withDisplaySnapshot } from "@/lib/findingDisplayState";
+import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
+import {
+  wantsCompare,
+  withPrimaryAnchor,
+  withSecondaryAnchor,
+  withoutSecondaryAnchor,
+} from "@/lib/findingAnchors";
+import { withAnchorSnapshot, withDisplaySnapshot } from "@/lib/findingDisplayState";
+import {
+  commitAnnotatedFinding,
+  formatRecordedSave,
+  settledDisplay,
+  teacherTrackPresent,
+  type RecordedSaveReceipt,
+} from "@/lib/teachingGuide";
 
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
@@ -100,19 +137,43 @@ export function RecordingStudio({
   initialSeries: CaseSeries[];
 }) {
   const router = useRouter();
+  const [reviewDirty, setReviewDirty] = useState<Set<string>>(() => new Set());
+  const { confirmDiscard } = useUnsavedGuard(reviewDirty.size > 0);
+  const onReviewDirty = useCallback((id: string, dirty: boolean) => setReviewDirty(previous => {
+    if (previous.has(id) === dirty) return previous;
+    const next = new Set(previous); if (dirty) next.add(id); else next.delete(id); return next;
+  }), []);
+  const leaveTo = (path: string) => { if (confirmDiscard()) router.push(path); };
   const { toast } = useToast();
 
+  const [approvedCount, setApprovedCount] = useState(0);
   const [caseData, setCaseData] = useState<CaseData>(initialCase);
-  const series = useMemo<CaseSeries[]>(
-    () => (initialSeries.length > 0 ? initialSeries : BUNDLED_CASE_SERIES),
-    [initialSeries]
-  );
-  const usingSample = initialSeries.length === 0;
+  const resolved = useResolvedSeries(initialCase.caseId, initialSeries);
+  const series = resolved.series;
+  // The sample is only the fallback after the archive list settles with no
+  // real study. Hints from the case document stay a live study immediately.
+  const usingSample = resolved.settled && !resolved.imagingLive;
+  const mountViewer = series.length > 0 && (initialSeries.length > 0 || resolved.settled);
 
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
-  const rr = useRecordReplay({ controls, overlay, ready });
+  // Teacher sketch layer: replay feeds recorded ops back through this sink.
+  const sketchSink = useRef<((op: TeacherSketchOp) => void) | null>(null);
+  const rr = useRecordReplay({
+    controls,
+    overlay,
+    ready,
+    caseId: caseData.caseId,
+    orgId: caseData.orgId,
+    sketchSink,
+  });
+  const [groupMarkers, setGroupMarkers] = useState(false);
+  useEffect(() => setGroupMarkers(false), [rr.track?.captureSessionId]);
+  const sketch = useTeacherSketch({ caseId: initialCase.caseId, onEvent: rr.onViewerEvent });
+  sketchSink.current = sketch.replayOp;
+  const sketchLayerRef = useRef<TeacherSketchLayerHandle | null>(null);
+  const [sketchExporting, setSketchExporting] = useState(false);
   const annotateRecorder = useRecorder();
 
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
@@ -125,7 +186,7 @@ export function RecordingStudio({
   const [annotateSaving, setAnnotateSaving] = useState(false);
   const [annotateNotice, setAnnotateNotice] = useState("");
   const [annotateTranscript, setAnnotateTranscript] = useState("");
-  const [annotateMode, setAnnotateMode] = useState(true);
+  const [annotateMode, setAnnotateMode] = useState(false);
   const [annotateSliceIndex, setAnnotateSliceIndex] = useState<number | undefined>();
 
   // Capture / structuring state for the OPTIONAL walk-through recording path.
@@ -144,7 +205,14 @@ export function RecordingStudio({
   const [deleting, setDeleting] = useState(false);
 
   const [publishing, setPublishing] = useState(false);
-  const [captureTab, setCaptureTab] = useState<"sequence" | "speak" | "walk">("sequence");
+  const [captureTab, setCaptureTab] = useState<"sequence" | "speak" | "walk">("speak");
+  const captureApi = useRef<TeacherCaptureApi | null>(null);
+  const [teacherPhase, setTeacherPhase] = useState<TeacherCapturePhase>("idle");
+  const [compileProgress, setCompileProgress] = useState<TeacherCompileProgress | null>(null);
+  const [review, setReview] = useState<TeacherReview | null>(null);
+  const onCaptureApi = useCallback((api: TeacherCaptureApi | null) => {
+    captureApi.current = api;
+  }, []);
   const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
 
@@ -156,6 +224,10 @@ export function RecordingStudio({
   const initialSource = useMemo(
     () => (series[0] ? caseSeriesToSource(series[0]) : BUNDLED_CASE),
     [series]
+  );
+  const openSlice = useMemo(
+    () => lastTeacherSlice(findings, series[0]?.seriesInstanceUID) ?? null,
+    [findings, series]
   );
 
   // Probe mic on mount so we can guide rather than fail silently.
@@ -184,13 +256,117 @@ export function RecordingStudio({
     };
   }, [rr.supported]);
 
+  // A take starts from what is already drawn: snapshot it as the take's first
+  // sketch op so replay and the compile see the same ink the teacher saw.
+  const { snapshot: sketchSnapshot, endReplay: endSketchReplay, items: sketchItems } = sketch;
+  // Markers on the image that no saved finding carries yet (lib/teacherSketch).
+  const pendingMarkers = useMemo(() => pendingSketchMarkers(sketchItems, findings), [sketchItems, findings]);
+  const sketchItemsRef = useRef(sketchItems);
+  sketchItemsRef.current = sketchItems;
+  useEffect(() => {
+    if (rr.phase === "recording" && sketchItemsRef.current.length) {
+      rr.onViewerEvent({ type: "sketch", ...sketchSnapshot() } as ViewerEvent);
+    }
+    if (rr.phase !== "replaying") endSketchReplay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rr.phase]);
+
+  // Studio-scoped sketch keys (lib/studioHotkeys.ts). Capture phase so they
+  // win over the viewport's letter tools while the image has focus. Alt+X
+  // (record) and every student-session key are left alone.
+  const sketchKeyRef = useRef({ sketch, phase: rr.phase });
+  sketchKeyRef.current = { sketch, phase: rr.phase };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTextTarget(e.target)) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.("[role=dialog], [role=menu]")) return;
+      const action = resolveStudioHotkey(e);
+      if (!action) return;
+      const { sketch: s, phase } = sketchKeyRef.current;
+      if (phase === "replaying") return;
+      // Esc only backs out of an armed sketch tool; otherwise dialogs own it.
+      if (e.key === "Escape" && s.tool === "select") return;
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat && action.type !== "undo" && action.type !== "redo") return;
+      switch (action.type) {
+        case "tool":
+          s.setTool(action.tool);
+          break;
+        case "marker":
+          if (!sketchLayerRef.current?.dropAtPointer()) s.setTool("marker");
+          break;
+        case "undo":
+          s.undo();
+          break;
+        case "redo":
+          s.redo();
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  async function exportSketch(format: SketchExportFormat) {
+    setSketchExporting(true);
+    try {
+      const takeEvents = (rr.track?.events ?? []).filter((e) => e.type === "sketch");
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/sketch-export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format,
+          items: sketch.items,
+          events: takeEvents,
+          narration: rr.track?.narration ?? [],
+          durationMs: rr.track?.durationMs,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data?.error === "string" ? data.error : `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const name =
+        /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ??
+        `sketch.${format === "json" ? "json" : "dcm"}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      const skipped = Number(res.headers.get("X-FlowRad-Skipped") ?? 0);
+      toast({
+        variant: skipped ? "warning" : "success",
+        title: format === "json" ? "Sketch timing exported" : `DICOM ${format === "sr" ? "SR" : "GSPS"} exported`,
+        description: skipped
+          ? `${skipped} mark${skipped === 1 ? "" : "s"} had no DICOM image to anchor to and were left out.`
+          : name,
+      });
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't export the sketch",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setSketchExporting(false);
+    }
+  }
+
   const onReady = useCallback((c: CornerstoneControls) => {
     controls.current = c;
     setReady(true);
   }, []);
 
-  const hasTrack = !!rr.track && rr.track.events.length > 0;
-  const recording = rr.phase === "recording";
+  const hasTrack = !!rr.track && (rr.track.events.length > 0 || !!rr.track.journal?.length);
+  const recording = ["starting", "recording", "stopping"].includes(rr.phase);
   const micBlocked = mic === "denied" || mic === "unsupported";
   const canSaveDraft = !!draft.label.trim();
 
@@ -226,34 +402,65 @@ export function RecordingStudio({
     if (!f) return;
     const start = controls.current?.getStartState();
     const active = series[activeSeriesIndex];
+    const studyInstanceUID = !usingSample ? active?.studyInstanceUID : f.studyInstanceUID;
+    const sameStudy =
+      !studyInstanceUID || !f.studyInstanceUID || studyInstanceUID === f.studyInstanceUID;
     try {
-      const landing = withDisplaySnapshot(
+      const landing = withAnchorSnapshot(
         {
-          studyInstanceUID: !usingSample ? active?.studyInstanceUID : undefined,
+          studyInstanceUID,
           seriesInstanceUID:
             !usingSample
               ? active?.seriesInstanceUID
               : controls.current?.activeSeriesUID,
           marker: { x_pct: x, y_pct: y, shape: "circle" },
           viewportRole: "secondary" as const,
-          studyRole: "prior" as const,
+          studyRole: sameStudy ? ("current" as const) : ("prior" as const),
         },
         start
       );
-      const updated = await patchFinding(caseData.caseId, findingId, {
-        anchors: withSecondaryAnchor(f, landing),
-      });
+      const anchors = withSecondaryAnchor(f, landing);
+      if (!wantsCompare({ ...f, anchors })) {
+        toast({
+          variant: "warning",
+          title: "That view matches the primary finding",
+          description:
+            "Scroll to another slice, change the window or zoom, or switch series, then click again.",
+        });
+        return;
+      }
+      const updated = await patchFinding(caseData.caseId, findingId, { anchors });
       setCaseData(updated);
       setPinningId(null);
       toast({
         variant: "success",
         title: "Compare landing saved",
-        description: "Students will see this series beside the primary finding.",
+        description:
+          "Students open Compare on this slice, window, and camera — beside the primary finding.",
       });
     } catch (e) {
       toast({
         variant: "danger",
         title: "Couldn't save compare landing",
+        description: e instanceof Error ? e.message : undefined,
+      });
+    }
+  }
+
+  async function clearCompareLanding(findingId: string) {
+    const f = findings.find((item) => item.id === findingId);
+    if (!f) return;
+    try {
+      const updated = await patchFinding(caseData.caseId, findingId, {
+        anchors: withoutSecondaryAnchor(f),
+      });
+      setCaseData(updated);
+      setPinningId((cur) => (cur === findingId ? null : cur));
+      toast({ variant: "success", title: "Compare landing removed" });
+    } catch (e) {
+      toast({
+        variant: "danger",
+        title: "Couldn't remove compare landing",
         description: e instanceof Error ? e.message : undefined,
       });
     }
@@ -284,7 +491,7 @@ export function RecordingStudio({
     try {
       const result = await structureFindingFromAudio(rec.base64, rec.mimeType);
       if (result) {
-        setAnnotateDraft(result);
+        setAnnotateDraft((d) => ({ ...result, landmark: d.landmark }));
         setAnnotateTranscript(result.description || result.label);
         setAnnotateNotice("Structured from your dictation — review and save.");
       } else {
@@ -304,13 +511,100 @@ export function RecordingStudio({
     }
   }
 
+  function previewPoint(track: RecordedTrack, clicked: Marker | null): { x: number; y: number } {
+    const recorded = anchorFields(track, { markerId: retainedMarkers(track.journal ?? [])[0]?.payload?.markerId as string | undefined }).marker;
+    const marker = recorded ?? clicked ?? markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
+    return { x: marker.x_pct, y: marker.y_pct };
+  }
+
+  function priorDemoGuide() {
+    if (!editingFindingId) return undefined;
+    const prior = findings.find((item) => item.id === editingFindingId);
+    if (!prior || teacherTrackPresent(prior) || !prior.teachingGuide?.beats?.length) return undefined;
+    return prior.teachingGuide;
+  }
+
+  async function applyTake(
+    base: Partial<Finding>,
+    track: RecordedTrack,
+    measurements: FindingMeasurement[]
+  ) {
+    const start = controls.current?.getStartState();
+    const demo = priorDemoGuide();
+    const assembled = await assembleRecordedFinding(
+      demo ? { ...base, teachingGuide: demo } : base,
+      track,
+      rr.audio,
+      measurements,
+      groupMarkers
+    );
+    let finding = assembled.finding;
+    const money = settledDisplay(finding.track ?? track);
+    if (money.sliceIndex !== start?.sliceIndex) finding = { ...finding, sopInstanceUID: undefined };
+    finding = withDisplaySnapshot(finding, {
+      sliceIndex: money.sliceIndex,
+      ww: money.ww,
+      wc: money.wc,
+      sopInstanceUID:
+        money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+    });
+    Object.assign(finding, singleFindingAnchorFields(track, groupMarkers));
+    return { finding, receipt: assembled.receipt };
+  }
+
+  function toastRecorded(receipt: RecordedSaveReceipt) {
+    const message = formatRecordedSave(receipt);
+    toast({
+      variant: message.tone === "degraded" ? "warning" : "success",
+      title: message.title,
+      description: message.description,
+      duration: 7000,
+    });
+  }
+
+  /**
+   * No walk-through tape (click-to-annotate, or a save with no usable mic).
+   * Build the teach script from the landing gestures and the written notes.
+   * An existing teacher track is left alone — this must not replace a real take.
+   */
+  function withLandingGuide(
+    base: Partial<Finding>,
+    start:
+      | {
+          sliceIndex?: number;
+          ww?: number;
+          wc?: number;
+          zoom?: number;
+          pan?: [number, number];
+        }
+      | null
+      | undefined,
+    measurements: FindingMeasurement[]
+  ): { finding: Partial<Finding>; receipt: RecordedSaveReceipt } | null {
+    if (editingFindingId) {
+      const prior = findings.find((item) => item.id === editingFindingId);
+      if (prior && teacherTrackPresent(prior)) return null;
+    }
+    const demo = priorDemoGuide();
+    const drafted = demo ? { ...base, teachingGuide: demo } : base;
+    return commitAnnotatedFinding(drafted, {
+      sliceIndex: drafted.sliceIndex ?? start?.sliceIndex,
+      windowWidth: drafted.windowWidth ?? start?.ww,
+      windowCenter: drafted.windowCenter ?? start?.wc,
+      zoom: start?.zoom,
+      pan: start?.pan,
+      seriesInstanceUID: drafted.seriesInstanceUID,
+      measurements,
+    });
+  }
+
   /** Persist a click-annotated finding (marker is required). */
   async function saveAnnotatedFinding() {
     if (!pendingMarker || !annotateDraft.label.trim() || annotateSaving) return;
     setAnnotateSaving(true);
     try {
       const start = controls.current?.getStartState();
-      const primaryAnchor = withDisplaySnapshot(
+      const primaryLanding = withAnchorSnapshot(
         {
           studyInstanceUID:
             activeSeries && !usingSample ? activeSeries.studyInstanceUID : undefined,
@@ -331,50 +625,51 @@ export function RecordingStudio({
           teachingPoints: annotateDraft.teachingPoints
             .map((p) => p.trim())
             .filter(Boolean),
+          landmark: annotateDraft.landmark?.trim() || undefined,
           state: " ",
           marker: pendingMarker,
-          anchors: [primaryAnchor],
         },
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
-      if (measurements.length > 0) base.measurements = measurements;
+      if (!hasTrack && measurements.length > 0) base.measurements = measurements;
       if (activeSeries && !usingSample) {
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
       }
-      // Optional: attach a walk-through recorded just before annotate.
+      // A walk-through tape wins. Otherwise the click itself is the script.
+      let receipt: RecordedSaveReceipt | undefined;
       if (hasTrack) {
-        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-        if (rr.audio) {
-          try {
-            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-          } catch {
-            /* keep silent retrace */
-          }
-        }
-        base.track = track;
-        base.durationMs = track.durationMs;
-        // Prefer track.start VOI when the walk-through captured windowing.
-        if (track.start.ww != null && track.start.wc != null) {
-          base = withDisplaySnapshot(base, {
-            sliceIndex: track.start.sliceIndex,
-            ww: track.start.ww,
-            wc: track.start.wc,
-            sopInstanceUID: start?.sopInstanceUID,
-          });
+        const recorded = await applyTake(base, rr.track as RecordedTrack, measurements);
+        base = recorded.finding;
+        receipt = recorded.receipt;
+      } else {
+        const landed = withLandingGuide(base, start, measurements);
+        if (landed) {
+          base = landed.finding;
+          receipt = landed.receipt;
         }
       }
+      const prior = editingFindingId
+        ? findings.find((item) => item.id === editingFindingId)
+        : undefined;
+      base.anchors = prior
+        ? withPrimaryAnchor(prior, primaryLanding)
+        : [{ ...primaryLanding, viewportRole: "primary" as const }];
 
+      if (hasTrack) Object.assign(base, singleFindingAnchorFields(rr.track!, groupMarkers));
       const updated =
         editingFindingId != null
           ? await patchFinding(caseData.caseId, editingFindingId, base)
           : await addFinding(caseData.caseId, base);
       setCaseData(updated);
-      toast({
-        variant: "success",
-        title: editingFindingId ? "Finding updated" : "Finding captured",
-      });
+      if (receipt) toastRecorded(receipt);
+      else {
+        toast({
+          variant: "success",
+          title: editingFindingId ? "Finding updated" : "Finding captured",
+        });
+      }
       closeAnnotate();
       resetCapture();
     } catch (e) {
@@ -392,7 +687,16 @@ export function RecordingStudio({
     closeAnnotate();
     setAnnotateMode(false);
     setNotice("");
-    await rr.startRecording();
+    setCaptureTab("speak");
+    if (!captureApi.current) {
+      toast({
+        variant: "warning",
+        title: "Viewer isn't ready",
+        description: "Wait for the study to open, then start recording.",
+      });
+      return;
+    }
+    await captureApi.current.start();
     const perms = (navigator as Navigator & { permissions?: Permissions }).permissions;
     perms
       ?.query({ name: "microphone" as PermissionName })
@@ -400,6 +704,10 @@ export function RecordingStudio({
         setMic(s.state === "denied" ? "denied" : s.state === "granted" ? "granted" : mic)
       )
       .catch(() => {});
+  }
+
+  function openStudentTest() {
+    leaveTo(studentCaseHref(caseData.caseId, "teach"));
   }
 
   async function structureFromRecording() {
@@ -410,10 +718,15 @@ export function RecordingStudio({
     setStructuring(true);
     setNotice("");
     try {
-      const result = await structureFindingFromAudio(rr.audio.base64, rr.audio.mimeType);
+      const result = await structureFindingFromAudio(
+        rr.audio.base64,
+        rr.audio.mimeType,
+        rr.frames,
+        rr.track?.captureSessionId ? { caseId: caseData.caseId, sessionId: rr.track.captureSessionId } : undefined
+      );
       if (result) {
-        setDraft(result);
-        setNotice("Structured from your narration — review and save.");
+        setDraft((d) => ({ ...result, landmark: d.landmark }));
+        setNotice("Compiled from the recording — review and save.");
       } else {
         setNotice("AI structuring is off (no Gemini key). Type the finding in below.");
       }
@@ -446,33 +759,20 @@ export function RecordingStudio({
           label: draft.label.trim(),
           description: draft.description.trim(),
           teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          landmark: draft.landmark?.trim() || undefined,
           state: " ",
           marker,
         },
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
-      if (measurements.length > 0) base.measurements = measurements;
+      if (!hasTrack && measurements.length > 0) base.measurements = measurements;
 
+      let receipt: RecordedSaveReceipt | undefined;
       if (hasTrack) {
-        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-        if (rr.audio) {
-          try {
-            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-          } catch {
-            // Non-fatal: keep the silent retrace if upload fails.
-          }
-        }
-        base.track = track;
-        base.durationMs = track.durationMs;
-        if (track.start.ww != null && track.start.wc != null) {
-          base = withDisplaySnapshot(base, {
-            sliceIndex: track.start.sliceIndex,
-            ww: track.start.ww,
-            wc: track.start.wc,
-            sopInstanceUID: start?.sopInstanceUID,
-          });
-        }
+        const recorded = await applyTake(base, rr.track as RecordedTrack, measurements);
+        base = recorded.finding;
+        receipt = recorded.receipt;
       }
 
       // Anchor the finding to the active study/series (drives prefetch + the
@@ -481,33 +781,50 @@ export function RecordingStudio({
         base.seriesInstanceUID = activeSeries.seriesInstanceUID;
         base.studyInstanceUID = activeSeries.studyInstanceUID;
       }
-      base.anchors = [
-        withDisplaySnapshot(
-          {
-            studyInstanceUID: base.studyInstanceUID,
-            seriesInstanceUID: base.seriesInstanceUID,
-            marker,
-            viewportRole: "primary" as const,
-            studyRole: "current" as const,
-          },
-          {
-            sliceIndex: base.sliceIndex ?? start?.sliceIndex ?? 0,
-            ww: base.windowWidth ?? start?.ww,
-            wc: base.windowCenter ?? start?.wc,
-            sopInstanceUID: base.sopInstanceUID ?? start?.sopInstanceUID,
-          }
-        ),
-      ];
+      if (!receipt) {
+        const landed = withLandingGuide(base, start, measurements);
+        if (landed) {
+          base = landed.finding;
+          receipt = landed.receipt;
+        }
+      }
+      const primaryLanding = withAnchorSnapshot(
+        {
+          studyInstanceUID: base.studyInstanceUID,
+          seriesInstanceUID: base.seriesInstanceUID,
+          marker,
+          viewportRole: "primary" as const,
+          studyRole: "current" as const,
+        },
+        {
+          sliceIndex: base.sliceIndex ?? start?.sliceIndex ?? 0,
+          ww: base.windowWidth ?? start?.ww,
+          wc: base.windowCenter ?? start?.wc,
+          sopInstanceUID: base.sopInstanceUID ?? start?.sopInstanceUID,
+          zoom: start?.zoom,
+          pan: start?.pan,
+        }
+      );
+      const prior = editingFindingId
+        ? findings.find((item) => item.id === editingFindingId)
+        : undefined;
+      base.anchors = prior
+        ? withPrimaryAnchor(prior, primaryLanding)
+        : [primaryLanding];
 
+      if (hasTrack) Object.assign(base, singleFindingAnchorFields(rr.track!, groupMarkers));
       const updated =
         editingFindingId != null
           ? await patchFinding(caseData.caseId, editingFindingId, base)
           : await addFinding(caseData.caseId, base);
       setCaseData(updated);
-      toast({
-        variant: "success",
-        title: editingFindingId ? "Finding re-recorded" : "Finding captured",
-      });
+      if (receipt) toastRecorded(receipt);
+      else {
+        toast({
+          variant: "success",
+          title: editingFindingId ? "Finding re-recorded" : "Finding captured",
+        });
+      }
       closeAnnotate();
       resetCapture();
     } catch (e) {
@@ -541,28 +858,13 @@ export function RecordingStudio({
     setCaptureTab("sequence");
     const c = controls.current;
     if (!c) return;
-    if (
-      f.seriesInstanceUID &&
-      c.seriesUIDs.includes(f.seriesInstanceUID) &&
-      c.activeSeriesUID !== f.seriesInstanceUID
-    ) {
-      c.showSeries(f.seriesInstanceUID);
-    }
-    if (f.sliceIndex != null && Number.isFinite(f.sliceIndex)) {
-      await c.showState(
-        {
-          sliceIndex: f.sliceIndex,
-          windowWidth: f.windowWidth,
-          windowCenter: f.windowCenter,
-        },
-        500
-      );
-    } else if (f.windowWidth != null && f.windowCenter != null) {
-      c.setWindow(f.windowWidth, f.windowCenter, 500);
-    }
-    const m = f.marker;
-    if (m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
-      overlay.current?.animateTo?.(m.x_pct, m.y_pct, { durationMs: 500 });
+    try {
+      const verified = await reviewRequest<CaseReview>(`/api/cases/${encodeURIComponent(caseData.caseId)}/review`);
+      const row = verified.findings.find(row => row.finding.id === f.id);
+      if (!row) throw new Error("Finding changed. Refresh review.");
+      await jumpToReview(c, row);
+    } catch (error) {
+      toast({ variant: "danger", title: "Finding view unavailable", description: error instanceof Error ? error.message : "Rebind the image anchor." });
     }
   }
 
@@ -575,6 +877,7 @@ export function RecordingStudio({
       label: f.label,
       description: f.description,
       teachingPoints: [...f.teachingPoints],
+      landmark: f.landmark ?? "",
     });
     setNotice("Re-recording — hold Alt+X to capture a new walk-through, then save.");
   }
@@ -641,16 +944,16 @@ export function RecordingStudio({
       setCaseData((c) => ({ ...c, status: updated.status }));
       toast({
         variant: "success",
-        title: "Case published",
-        description: `"${updated.title}" is live for students.`,
+        title: "Added to your library",
+        description: `"${updated.title}" is the case students open.`,
       });
-      router.push(`/studio/cases/${encodeURIComponent(caseData.caseId)}`);
     } catch (e) {
       toast({
         variant: "danger",
         title: "Couldn't publish",
         description: e instanceof Error ? e.message : undefined,
       });
+    } finally {
       setPublishing(false);
     }
   }
@@ -658,6 +961,19 @@ export function RecordingStudio({
   const published = caseData.status === "published";
   const stepperStage = published ? "publish" : findings.length > 0 ? "publish" : "record";
   const readiness = casePublishReadiness(findings);
+  const showStudentTest =
+    !!caseData.liveTeachingPack && (teacherPhase === "idle" || teacherPhase === "ready");
+  const processingTake = teacherPhase === "processing";
+  const reviewingTake = teacherPhase === "review";
+  const packReady = !!caseData.liveTeachingPack && showStudentTest;
+  const canDeploy =
+    !published && approvedCount === findings.length &&
+    (packReady ||
+      (!caseData.liveTeachingPack &&
+        readiness.ready &&
+        teacherPhase !== "recording" &&
+        teacherPhase !== "review" &&
+        teacherPhase !== "processing"));
 
   return (
     <div className="animate-fade-in">
@@ -682,32 +998,51 @@ export function RecordingStudio({
             <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
             <span className="text-xs text-muted">·</span>
             <span className="text-xs text-muted">
-              Click → dictate → save · {readiness.examReady}/{readiness.total} exam-ready
+              Review the study, then record. {approvedCount}/{findings.length} approved
             </span>
           </span>
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
+            {showStudentTest && (
+              <Button size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openStudentTest}>
+                Test as student
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
               leadingIcon={<ArrowLeft className="h-4 w-4" />}
-              onClick={() => router.push(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
+              onClick={() => leaveTo(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
             >
               Save as draft &amp; exit
             </Button>
+            {caseData.findings.length > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => leaveTo(`/case/${encodeURIComponent(caseData.caseId)}`)}
+              >
+                Test as student
+              </Button>
+            )}
             <Button
               size="sm"
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={publish}
               loading={publishing}
-              disabled={published || !readiness.ready}
+              disabled={!canDeploy}
               title={
-                readiness.blockers[0] ??
-                undefined
+                published
+                  ? "In your library"
+                  : packReady
+                    ? "Deploy case"
+                    : caseData.liveTeachingPack
+                      ? "Finish processing before adding this case to the library."
+                      : readiness.blockers[0]
               }
             >
-              {published ? "Published" : "Review & publish"}
+              {published ? "In library" : caseData.liveTeachingPack ? "Add to library" : "Review & publish"}
             </Button>
           </div>
         }
@@ -715,7 +1050,7 @@ export function RecordingStudio({
         <Stepper steps={CASE_FLOW_STEPS} currentId={stepperStage} />
       </PageHeader>
 
-      <div className="mx-auto grid max-w-[1500px] gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_400px]">
+      <div className="mx-auto grid min-w-0 max-w-[1500px] gap-6 overflow-x-clip px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_400px]">
         {/* ── Capture stage ─────────────────────────────────────────────── */}
         <div className="min-w-0">
           {/* The recording-flow frame: a pulsing glow + ring frames the WHOLE
@@ -730,11 +1065,14 @@ export function RecordingStudio({
             )}
           >
             <div className="overflow-hidden rounded-xl">
+              {mountViewer ? (
               <RecordStage
                 source={initialSource}
                 series={series}
                 activeSeriesIndex={activeSeriesIndex}
                 onSeriesChange={setActiveSeriesIndex}
+                seriesLoading={resolved.loading && series.length === 0}
+                openSlice={openSlice}
                 modality={caseData.modality}
                 controls={controls}
                 overlay={overlay}
@@ -745,7 +1083,31 @@ export function RecordingStudio({
                 onReady={onReady}
                 onEvent={rr.onViewerEvent}
                 onCursor={rr.onCursor}
-                annotateMode={annotateMode && !pendingMarker}
+                onMarker={rr.onMarker}
+                annotateMode={annotateMode && !pendingMarker && sketch.tool === "select"}
+                sketchLayer={
+                  <TeacherSketchLayer
+                    ref={sketchLayerRef}
+                    sketch={sketch}
+                    controls={controls}
+                    interactive={rr.phase !== "replaying"}
+                  />
+                }
+                sketchPalette={
+                  <SketchToolPalette
+                    tool={sketch.tool}
+                    onTool={sketch.setTool}
+                    canUndo={sketch.canUndo}
+                    canRedo={sketch.canRedo}
+                    onUndo={sketch.undo}
+                    onRedo={sketch.redo}
+                    onClear={sketch.clearAll}
+                    hasInk={sketch.items.length > 0}
+                    disabled={sketch.replaying}
+                    onExport={exportSketch}
+                    exporting={sketchExporting}
+                  />
+                }
                 onAnnotateClick={onAnnotateClick}
                 annotateSlot={
                   pendingMarker ? (
@@ -772,39 +1134,49 @@ export function RecordingStudio({
                   ) : null
                 }
               />
+              ) : (
+                <div className="flex aspect-square w-full items-center justify-center bg-imaging">
+                  <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
+                    Loading study…
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Transport controls */}
           <Card padded={false} className="mt-4 p-4">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant={annotateMode && !recording ? "secondary" : "ghost"}
-                leadingIcon={<Crosshair className="h-3.5 w-3.5" />}
-                onClick={() => {
-                  if (recording) return;
-                  closeAnnotate();
-                  setAnnotateMode(true);
-                }}
-                disabled={recording || rr.phase === "replaying"}
-              >
-                Click to annotate
-              </Button>
-              <span className="text-xs text-muted">or</span>
-            </div>
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
                 <Button
                   variant="danger"
                   leadingIcon={<Square className="h-4 w-4" />}
                   onClick={() => {
-                    rr.stopRecording();
-                    setAnnotateMode(true);
+                    void captureApi.current?.stop();
                   }}
                 >
-                  Stop recording
+                  Finish recording
                 </Button>
+              ) : reviewingTake ? (
+                <>
+                  <Button
+                    leadingIcon={<Sparkles className="h-4 w-4" />}
+                    onClick={() => {
+                      void captureApi.current?.process();
+                    }}
+                    disabled={processingTake}
+                  >
+                    Process and teach case
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    leadingIcon={<Circle className="h-3.5 w-3.5 fill-current" />}
+                    onClick={() => void beginRecording()}
+                    disabled={!ready || processingTake}
+                  >
+                    Record again
+                  </Button>
+                </>
               ) : rr.phase === "replaying" ? (
                 <Button
                   variant="secondary"
@@ -816,10 +1188,10 @@ export function RecordingStudio({
               ) : (
                 <Button
                   leadingIcon={<Circle className="h-3.5 w-3.5 fill-current" />}
-                  onClick={beginRecording}
-                  disabled={!ready || mic === "unsupported"}
+                  onClick={() => void beginRecording()}
+                  disabled={!ready || processingTake}
                 >
-                  {hasTrack ? "Re-record walk-through" : "Record walk-through"}
+                  Start recording
                 </Button>
               )}
 
@@ -831,14 +1203,28 @@ export function RecordingStudio({
               >
                 Replay
               </Button>
+              {showStudentTest && (
+                <Button variant="secondary" onClick={openStudentTest}>
+                  Test as student
+                </Button>
+              )}
               <Button
-                variant="ghost"
-                leadingIcon={<Sparkles className="h-4 w-4" />}
-                onClick={structureFromRecording}
-                loading={structuring}
-                disabled={!rr.audio || rr.phase !== "idle"}
+                size="sm"
+                variant={annotateMode && !recording ? "secondary" : "ghost"}
+                onClick={() => {
+                  if (recording) return;
+                  if (annotateMode) {
+                    closeAnnotate();
+                    setAnnotateMode(false);
+                    return;
+                  }
+                  closeAnnotate();
+                  setAnnotateMode(true);
+                  setCaptureTab("sequence");
+                }}
+                disabled={recording || rr.phase === "replaying" || processingTake}
               >
-                Structure from voice
+                {annotateMode ? "Done annotating" : "Click to annotate"}
               </Button>
 
               {hasTrack && (
@@ -850,12 +1236,53 @@ export function RecordingStudio({
               {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
             </div>
+            <SketchShortcutHint className="mt-3 border-t border-subtle pt-3" />
+
+            {(captureTab === "walk" || !!editingFindingId) && <MarkerGroupChoice track={rr.track} checked={groupMarkers} onChange={setGroupMarkers} />}
+            <CaptureStatus rr={rr} controls={controls} />
 
             {/* Hotkey hint */}
-            {rr.phase === "idle" && !micBlocked && (
+            {processingTake && (
+              <div
+                className="mt-3 rounded-lg border border-subtle bg-surface px-3 py-2 text-sm text-secondary"
+                role="status"
+                aria-live="polite"
+              >
+                <div className="flex items-center gap-2">
+                  <Spinner size="sm" label={compileProgress?.label ?? TEACHER_PROCESSING_LABEL} />
+                  <span>{compileProgress?.label ?? TEACHER_PROCESSING_LABEL}</span>
+                </div>
+                {compileProgress && (
+                  <ol className="mt-2 flex flex-col gap-1">
+                    {Array.from({ length: compileProgress.total }, (_, index) => (
+                      <li
+                        key={index}
+                        className={
+                          index < compileProgress.index
+                            ? "text-xs text-success"
+                            : index === compileProgress.index
+                              ? "text-xs font-medium text-primary"
+                              : "text-xs text-muted"
+                        }
+                      >
+                        Step {index + 1}.{" "}
+                        {index === compileProgress.index
+                          ? compileProgress.label
+                          : index < compileProgress.index
+                            ? "Done"
+                            : "Waiting"}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            )}
+            {review && teacherPhase !== "recording" && <TakeReview review={review} />}
+            {rr.phase === "idle" && !micBlocked && !processingTake && !reviewingTake && (
               <p className="mt-3 text-xs text-muted">
-                <span className="font-medium text-secondary">Fast path:</span> click the
-                finding, dictate, save. Optional: hold{" "}
+                Scroll and window the study first. Start recording captures the
+                microphone, viewport stills, and the viewer log — window, series,
+                zoom, and pointer. Hold{" "}
                 <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                   Alt
                 </kbd>
@@ -863,7 +1290,7 @@ export function RecordingStudio({
                 <kbd className="rounded border border-strong bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                   X
                 </kbd>{" "}
-                to record a narrated walk-through students can retrace.
+                to record from the keyboard.
               </p>
             )}
             {micBlocked && (
@@ -873,6 +1300,16 @@ export function RecordingStudio({
                   : "Microphone access is blocked. Allow it in your browser's address bar to dictate, or type the finding after clicking."}
               </p>
             )}
+            {hasTrack && rr.phase === "idle" && rr.track && (
+              <div className="mt-3">
+                <RecordedTakeNote
+                  track={rr.track}
+                  hasAudio={Boolean(rr.audio)}
+                  replacesDemo={Boolean(priorDemoGuide())}
+                  point={previewPoint(rr.track, pendingMarker)}
+                />
+              </div>
+            )}
           </Card>
         </div>
 
@@ -880,6 +1317,7 @@ export function RecordingStudio({
         <div className="flex min-w-0 flex-col gap-4">
           <SequenceBoard
             findings={findings}
+            pending={pendingMarkers}
             activeId={focusedFindingId}
             busy={rr.phase !== "idle"}
             onSelect={(f) => void focusFinding(f)}
@@ -899,7 +1337,7 @@ export function RecordingStudio({
                   toast({
                     title: "Pin a compare landing",
                     description:
-                      "Switch series if needed, then click the same finding on that view.",
+                      "Scroll, window, or zoom to the view students should see beside this finding, then click it. Switch series when the study has another.",
                   });
                 }
                 return next;
@@ -907,6 +1345,7 @@ export function RecordingStudio({
               setFocusedFindingId(f.id);
               setCaptureTab("sequence");
             }}
+            onClearCompare={(f) => void clearCompareLanding(f.id)}
           />
 
           <Tabs
@@ -924,13 +1363,13 @@ export function RecordingStudio({
               <h2 className="text-sm font-semibold text-primary">Click to annotate</h2>
               <p className="mt-1.5 text-xs leading-relaxed text-muted">
                 {pinningId
-                  ? "Switch to the compare series, then click the same finding. That landing becomes the second pane for students."
-                  : "Click the lesion on the image. Dictate or type. Save lands a real marker and slice — that is the script the examiner follows. Use Speak once when you want to narrate many findings in a single take. Compare landing pins a second series/slice beside it."}
+                  ? "Set the slice, window, and zoom for the compare pane, then click that view. A single-series study can still pin a different slice or window. The click is rejected if it matches the primary landing."
+                  : "Click the lesion on the image. Dictate or type. Save lands a real marker and slice — that is the script the examiner follows. Use Speak once when you want to narrate many findings in a single take. Compare landing pins a second slice, window, or series beside it."}
               </p>
             </Card>
           )}
 
-          {captureTab === "speak" && (
+          <div className={captureTab === "speak" ? undefined : "hidden"}>
           <ContinuousCapture
             caseId={caseData.caseId}
             rr={rr}
@@ -939,9 +1378,30 @@ export function RecordingStudio({
               !usingSample ? activeSeries?.seriesInstanceUID : undefined
             }
             studyInstanceUID={!usingSample ? activeSeries?.studyInstanceUID : undefined}
+            modality={caseData.modality}
+            clinicalQuestion={caseData.clinicalHistory}
+            diagnosis={caseData.primaryDiagnosis}
+            studySeriesUIDs={(caseData.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? [])}
+            study={{
+              title: caseData.title,
+              modality: caseData.modality,
+              specialty: caseData.specialty,
+              clinicalHistory: caseData.clinicalHistory,
+              patientAge: caseData.patientAge,
+              patientSex: caseData.patientSex,
+            }}
+            adoptExternalTakes={!editingFindingId}
             onCaseUpdated={setCaseData}
+            onPhaseChange={(phase) => {
+              setTeacherPhase(phase);
+              if (phase === "recording") setReview(null);
+              if (phase !== "processing") setCompileProgress(null);
+            }}
+            onProgress={setCompileProgress}
+            onReview={setReview}
+            onApi={onCaptureApi}
           />
-          )}
+          </div>
 
           {captureTab === "walk" && (
           <Card padded={false} className="p-4">
@@ -991,6 +1451,10 @@ export function RecordingStudio({
                   />
                 )}
               </Field>
+              <LandmarkField
+                value={draft.landmark ?? ""}
+                onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+              />
               <Field label="Description">
                 {(p) => (
                   <Textarea
@@ -1012,9 +1476,19 @@ export function RecordingStudio({
               {structuring && (
                 <div className="flex items-center gap-2.5 rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
                   <Spinner size="sm" />
-                  Structuring from your narration…
+                  {COMPILING_FROM_RECORDING}
                 </div>
               )}
+
+              <Button
+                variant="secondary"
+                leadingIcon={<Sparkles className="h-4 w-4" />}
+                onClick={() => void structureFromRecording()}
+                loading={structuring}
+                disabled={!rr.audio || rr.phase !== "idle"}
+              >
+                Structure this take
+              </Button>
 
               <Button
                 onClick={saveFinding}
@@ -1038,21 +1512,25 @@ export function RecordingStudio({
             <h2 className="text-sm font-semibold text-primary">Review &amp; publish</h2>
             <p className="mt-1 text-xs text-muted">
               {readiness.ready
-                ? `${readiness.examReady} exam-ready finding${readiness.examReady === 1 ? "" : "s"}. Students only see this after you publish.`
-                : readiness.blockers[0]}
+                ? `${approvedCount} of ${findings.length} findings approved. Only approved current versions can ground teaching or exams.`
+                : findings.length === 0 && pendingMarkers.length > 0
+                  ? `Finish the take and save to turn ${pendingMarkers.length === 1 ? "marker 1" : `${pendingMarkers.length} markers`} into ${pendingMarkers.length === 1 ? "a finding" : "findings"}.`
+                  : readiness.blockers[0]}
             </p>
             <Button
               className="mt-3 w-full"
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={publish}
               loading={publishing}
-              disabled={published || !readiness.ready}
+              disabled={published || !readiness.ready || approvedCount !== findings.length}
             >
               {published ? "Published" : "Publish case"}
             </Button>
           </Card>
         </div>
       </div>
+
+      {findings.length > 0 && <FindingReviewPanel onDirtyChange={onReviewDirty} caseData={caseData} viewer={controls} ready={ready && rr.phase === "idle"} onChanged={setCaseData} onApprovedCount={setApprovedCount} />}
 
       {/* Edit-text dialog */}
       <EditFindingDialog
@@ -1163,6 +1641,7 @@ function EditFindingDialog({
         label: finding.label,
         description: finding.description,
         teachingPoints: [...finding.teachingPoints],
+        landmark: finding.landmark ?? "",
       });
     }
   }, [finding]);
@@ -1175,6 +1654,7 @@ function EditFindingDialog({
         label: draft.label.trim(),
         description: draft.description.trim(),
         teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+        landmark: draft.landmark?.trim() || "",
       });
     } finally {
       setSaving(false);
@@ -1209,6 +1689,10 @@ function EditFindingDialog({
             />
           )}
         </Field>
+        <LandmarkField
+          value={draft.landmark ?? ""}
+          onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+        />
         <Field label="Description">
           {(p) => (
             <Textarea

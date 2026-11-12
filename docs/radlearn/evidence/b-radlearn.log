@@ -1,0 +1,19 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 9 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 approval.spec.ts:7:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (3.0s)
+  ✓  2 dicomweb-auth.spec.ts:3:5 › DICOMweb requires a session before QIDO, metadata or pixel access (78ms)
+  ✓  3 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (2.5s)
+  ✓  4 healthz.spec.ts:3:5 › healthz is public liveness with no environment or service details (13ms)
+  ✓  5 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (1.3s)
+  ✓  6 trusted-host.spec.ts:7:5 › Worker-authenticated robots and sitemap use the forwarded public origin (24ms)
+  ✓  7 trusted-host.spec.ts:17:5 › unsigned, wrong-secret and malformed-host requests use configured localhost SEO (59ms)
+  ✓  8 trusted-host.spec.ts:33:5 › landing, layout and viewer metadata use the authenticated or configured origin (63ms)
+  ✓  9 trusted-host.spec.ts:47:5 › middleware uses Worker host and never redirects back to the upstream origin (26ms)
+
+  9 passed (10.9s)

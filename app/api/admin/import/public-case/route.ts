@@ -43,8 +43,8 @@ export async function POST(req: NextRequest) {
     if (!orthancConfigured()) {
       return NextResponse.json(
         {
-          error: "Orthanc is not configured (set ORTHANC_URL). Real DICOM import requires Orthanc.",
-          code: "ORTHANC_NOT_CONFIGURED",
+          error: "Imaging archive is not configured. Configure Healthcare, or select local Orthanc.",
+          code: "IMAGING_NOT_CONFIGURED",
         },
         { status: 503 }
       );

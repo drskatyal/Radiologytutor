@@ -1,3 +1,6 @@
+import { assertNoPhi } from "@/lib/phiGuard";
+import { loadApprovedToolContext } from "@/lib/harness/approvedToolContext";
+import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
 //
 // Body:  { caseId, mode, messages: {role,text}[], question?, currentFindingId? }
@@ -16,8 +19,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
 import { geminiConfigured, runTeachingPlan } from "@/lib/gemini";
-import { getCaseForOrg } from "@/lib/cases";
-import { formatFindingsContextFromCase } from "@/lib/teachingPrompt";
+import { getCaseForOrg, groundedCase } from "@/lib/cases";
+import { formatFindingsContextFromCase, formatSeriesCatalog } from "@/lib/teachingPrompt";
+import {
+  authoredSeriesAllowlist,
+  parseSeriesCatalog,
+  promptSeriesCatalog,
+} from "@/lib/setSeries";
+import { spokenFindingSources } from "@/lib/tutorSpeech";
 
 export const runtime = "nodejs";
 
@@ -25,9 +34,11 @@ export const runtime = "nodejs";
 interface InMessage {
   role: "user" | "assistant";
   text: string;
+  findingId?: string;
 }
 
 export async function POST(req: NextRequest) {
+  if (await hasActiveExam()) return NextResponse.json({ error: "Use the examination answer endpoint" }, { status: 403 });
   if (!geminiConfigured()) {
     return NextResponse.json(
       { error: "The AI tutor is unavailable — GEMINI_API_KEY is not set." },
@@ -55,7 +66,14 @@ export async function POST(req: NextRequest) {
       ? String(body.currentFindingId)
       : undefined;
 
-    const data = await getCaseForOrg(orgId, caseId);
+    let stored = await getCaseForOrg(orgId, caseId);
+    if (!stored) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+    // The prompt and its pinned IDs must describe the same revision, including
+    // an edit/reapproval that arrived during metadata I/O.
+    const approvedTools = await loadApprovedToolContext(stored, undefined, async () => {
+      stored = await getCaseForOrg(orgId, caseId); return stored;
+    });
+    const data = stored ? await groundedCase(stored) : null;
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
 
     if (data.status !== "published") {
@@ -77,22 +95,50 @@ export async function POST(req: NextRequest) {
         : (lastUser?.text ?? "");
 
     // History = the turns before the current question (so we don't duplicate it).
-    const history =
+    // findingId keeps the hint ladder on one finding when the chat has several.
+    const history = (
       lastUser && messages[messages.length - 1]?.text === question
         ? messages.slice(0, -1)
-        : messages;
+        : messages
+    ).map((turn) => ({
+      role: turn.role,
+      text: String(turn.text ?? ""),
+      findingId: turn.findingId ? String(turn.findingId) : undefined,
+    }));
 
+    const findings = spokenFindingSources(data.findings, data.primaryDiagnosis);
+    const clientSeries = parseSeriesCatalog(body.series);
+    const authored = authoredSeriesAllowlist({
+      series: clientSeries,
+      studyRefs: data.studyRefs,
+      findings: data.findings,
+      pack: data.liveTeachingPack,
+    });
+    const seriesEntries = promptSeriesCatalog(clientSeries, authored);
+    const seriesAllowlist = seriesEntries.map((entry) => entry.seriesInstanceUID);
+
+    // history excludes the current question. runTeachingPlan turns that into
+    // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
+    assertNoPhi({ question, history });
+    if (!approvedTools.anchors.length) return NextResponse.json({ error: "No current approved tutor anchors are available." }, { status: 422 });
     const result = await runTeachingPlan({
+      renderConfirmed: true, approvedTools,
       question,
       history,
       caseTitle: data.title,
       modality: data.modality,
       mode,
       findingsContext: formatFindingsContextFromCase(data),
+      seriesCatalog: formatSeriesCatalog(seriesEntries),
+      seriesAllowlist,
       currentFindingId,
+      findings,
     });
 
-    return NextResponse.json(result);
+    const approvalIds = approvedTools.anchors.map(a => a.id).sort();
+    const after = await loadApprovedToolContext(stored!, undefined, () => getCaseForOrg(orgId, caseId));
+    if (JSON.stringify(approvalIds) !== JSON.stringify(after.anchors.map(a => a.id).sort())) return NextResponse.json({ error: "Approved evidence changed during planning. Ask again." }, { status: 409 });
+    return NextResponse.json({ ...result, approvalIds }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (err) {
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;

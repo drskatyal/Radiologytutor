@@ -1,0 +1,52 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 11 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 case-viewer.spec.ts:27:7 › case viewer at 1440 › an archive case opens in the shared frame with the teaching tool set (1.7s)
+  ✓  2 case-viewer.spec.ts:49:7 › case viewer at 1440 › a view link opens on its image and window, and View link copies the view back (1.3s)
+  ✓  3 case-viewer.spec.ts:68:7 › case viewer at 1440, more › the toolbar carries the hanging layouts (the header picker's old job) (1.6s)
+  ✓  4 case-viewer.spec.ts:81:7 › case viewer at 1440, more › on a two-screen desktop the image sits right under the header, dark: no light pop-out strip (1.2s)
+  ✓  5 case-viewer.spec.ts:92:7 › case viewer at 1440, more › signed out: a sign-in prompt, back to this view, and no image requests (1.7s)
+  ✓  6 case-viewer.spec.ts:116:7 › case viewer on a phone › the image sits right under the case header, the toolbar pages to its end (1.2s)
+  ✘  7 student-session.spec.ts:21:5 › the session seats the first finding and the tour lands each one, with its overlay on the image (3.3m)
+(node:405) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:405) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  8 student-session.spec.ts:44:5 › compare opens a second pane beside the first with one toolbar, and closes back to one (1.9s)
+  ✓  9 student-session.spec.ts:55:5 › full screen keeps the microphone reachable (1.9s)
+  ✓  10 student-session.spec.ts:65:5 › on a two-screen desktop there is no light pop-out strip over the session's image (1.3s)
+  ✓  11 student-session.spec.ts:74:7 › phone compare › the finding card stays inside its stacked pane, clear of the readouts and the pane badge (5.6s)
+
+
+  1) student-session.spec.ts:21:5 › the session seats the first finding and the tour lands each one, with its overlay on the image
+
+    [31mTest timeout of 60000ms exceeded.[39m
+
+    Error: [31mTimed out 30000ms waiting for [39m[2mexpect([22m[31mlocator[39m[2m).[22mtoBeVisible[2m()[22m
+
+    Locator: getByRole('slider', { name: 'Slice' }).first()
+    Expected: visible
+    Received: <element(s) not found>
+    Call log:
+    [2m  - expect.toBeVisible with timeout 30000ms[22m
+    [2m  - waiting for getByRole('slider', { name: 'Slice' }).first()[22m
+
+
+      12 |   await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
+      13 |   await page.goto("/case/case-e2e-teach");
+    > 14 |   await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
+         |                                                                     ^
+      15 | }
+      16 |
+      17 | const slices = (page: Page) => page.getByRole("slider", { name: "Slice" });
+        at open (/workspace/radlearn-build/e2e/archive/student-session.spec.ts:14:69)
+        at /workspace/radlearn-build/e2e/archive/student-session.spec.ts:22:3
+
+  1 failed
+    student-session.spec.ts:21:5 › the session seats the first finding and the tour lands each one, with its overlay on the image
+  10 passed (3.7m)

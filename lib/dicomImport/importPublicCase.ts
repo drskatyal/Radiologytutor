@@ -1,5 +1,6 @@
 // Import a curated public teaching case: download TCIA DICOM (when needed),
-// ingest to Orthanc, persist patient/study/case + findings for student learning.
+// ingest through the Healthcare/Orthanc facade, persist teaching records and
+// a private object snapshot. Runtime credentials never reach the browser.
 
 import {
   createCaseForOrg,
@@ -12,23 +13,25 @@ import {
   getPatient,
   getStudyByUID,
   updateCaseForOrg,
+  updateFindingScoped,
   upsertDeidReport,
 } from "@/lib/cases";
 import { downloadTciaSeriesDicom } from "@/lib/dicomImport/tcia";
 import { getPublicCaseTemplate } from "@/lib/publicCases/catalog";
+import { missingReportRubric, planPublicCaseFindings } from "@/lib/demoTeachingGuide";
 import {
-  orthancAuthHeader,
-  orthancBase,
+  fetchSeriesSampleDicom,
   orthancConfigured,
   orthancFindSeriesByUID,
   orthancFindStudyByUID,
-  orthancGet,
   orthancIngestInstance,
   orthancSeriesInstances,
 } from "@/lib/orthanc";
 import { deidAllowsPublish, inspectDicomBytes } from "@/lib/deid";
 import type { Case, Finding } from "@/lib/types";
 import { DEFAULT_ORG_ID } from "@/lib/cases";
+import { assertDurableStorageConfigured } from "@/lib/envSchema";
+import { persistImportedCase } from "@/lib/importObjects";
 
 export interface ImportPublicCaseResult {
   caseId: string;
@@ -43,7 +46,7 @@ export interface ImportPublicCaseResult {
 
 export interface ImportPublicCaseOptions {
   orgId?: string;
-  /** Re-download and re-ingest even if study already in Orthanc. */
+  /** Re-download and re-ingest even if study already in the archive. */
   force?: boolean;
   /** Publish after import (requires passing de-id). */
   publish?: boolean;
@@ -51,20 +54,6 @@ export interface ImportPublicCaseOptions {
 
 function genFindingId(caseId: string, order: number): string {
   return `f_${caseId.replace(/-/g, "").slice(0, 10)}_${order}`;
-}
-
-/** Scale finding slice indices to the imported stack height. */
-function scaleFindingSlices(
-  findings: Omit<Finding, "id">[],
-  instanceCount: number
-): Omit<Finding, "id">[] {
-  if (instanceCount <= 1) return findings;
-  const templateMax = Math.max(...findings.map((f) => f.sliceIndex ?? 0), 1);
-  return findings.map((f) => {
-    const t = f.sliceIndex ?? 0;
-    const scaled = Math.round((t / templateMax) * (instanceCount - 1));
-    return { ...f, sliceIndex: Math.max(0, Math.min(instanceCount - 1, scaled)) };
-  });
 }
 
 async function ensureDeidReportForStudy(
@@ -75,17 +64,8 @@ async function ensureDeidReportForStudy(
   const existing = await getDeidReport(orgId, studyUID);
   if (existing && deidAllowsPublish(existing)) return;
 
-  const seriesId = await orthancFindSeriesByUID(seriesUID);
-  if (!seriesId) return;
-  const series = await orthancGet<{ Instances: string[] }>(`/series/${seriesId}`);
-  const instId = series.Instances[0];
-  if (!instId) return;
-
-  const fileRes = await fetch(`${orthancBase()}/instances/${instId}/file`, {
-    headers: { Authorization: orthancAuthHeader() },
-  });
-  if (!fileRes.ok) return;
-  const bytes = await fileRes.arrayBuffer();
+  const bytes = await fetchSeriesSampleDicom(studyUID, seriesUID);
+  if (!bytes) return;
   // Curated public collections only — see DeidInspectOptions in lib/deid.ts.
   const report = inspectDicomBytes(bytes, { allowResearchPseudonyms: true });
   report.studyInstanceUID = studyUID;
@@ -94,7 +74,7 @@ async function ensureDeidReportForStudy(
   }
 }
 
-async function ensureStudyInOrthanc(
+async function ensureStudyInArchive(
   template: NonNullable<ReturnType<typeof getPublicCaseTemplate>>,
   force: boolean
 ): Promise<{ instanceCount: number; orthancStudyId: string | null; ingested: number; skipped: number }> {
@@ -118,7 +98,7 @@ async function ensureStudyInOrthanc(
 
   if (source.kind === "orthanc_existing") {
     throw new Error(
-      `Study ${studyUID} not found in Orthanc — upload the BBMRI MEMPRAGE series first.`
+      `Study ${studyUID} not found in the imaging archive — upload the series first.`
     );
   }
 
@@ -186,7 +166,13 @@ async function upsertCaseRecords(
 
   const existing = await getCaseForOrg(orgId, template.caseId);
   let created = false;
-  const scaledFindings = scaleFindingSlices(template.findings, instanceCount);
+  const planned = planPublicCaseFindings(
+    template.caseId,
+    template.findings,
+    instanceCount,
+    existing?.findings ?? []
+  );
+  const keepIds = new Set(planned.kept.map((finding) => finding.id));
 
   const casePatch = {
     title: template.title,
@@ -218,7 +204,15 @@ async function upsertCaseRecords(
   if (existing) {
     await updateCaseForOrg(orgId, template.caseId, casePatch);
     for (const f of existing.findings) {
+      if (keepIds.has(f.id)) continue;
       await deleteFindingScoped(orgId, template.caseId, f.id);
+    }
+    for (const keptFinding of planned.kept) {
+      const prior = existing.findings.find((f) => f.id === keptFinding.id);
+      if (!prior) continue;
+      const rubric = missingReportRubric(prior, keptFinding);
+      if (!rubric) continue;
+      await updateFindingScoped(orgId, template.caseId, keptFinding.id, rubric);
     }
   } else {
     created = true;
@@ -230,7 +224,7 @@ async function upsertCaseRecords(
     });
   }
 
-  for (const f of scaledFindings) {
+  for (const f of planned.create) {
     const finding: Finding = {
       ...f,
       id: genFindingId(template.caseId, f.order ?? 1),
@@ -248,8 +242,9 @@ export async function importPublicCase(
   caseId: string,
   options: ImportPublicCaseOptions = {}
 ): Promise<ImportPublicCaseResult> {
+  assertDurableStorageConfigured();
   if (!orthancConfigured()) {
-    throw new Error("ORTHANC_URL is not configured — cannot import real DICOM cases.");
+    throw new Error("Imaging archive is not configured — select Healthcare or local Orthanc.");
   }
 
   const template = getPublicCaseTemplate(caseId);
@@ -258,7 +253,7 @@ export async function importPublicCase(
   }
 
   const orgId = options.orgId ?? DEFAULT_ORG_ID;
-  const { instanceCount, orthancStudyId, ingested, skipped } = await ensureStudyInOrthanc(
+  const { instanceCount, orthancStudyId, ingested, skipped } = await ensureStudyInArchive(
     template,
     options.force ?? false
   );
@@ -276,6 +271,8 @@ export async function importPublicCase(
     instanceCount,
     options.publish ?? true
   );
+
+  await persistImportedCase(orgId, caseData);
 
   return {
     caseId: template.caseId,

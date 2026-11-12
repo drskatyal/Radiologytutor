@@ -94,3 +94,14 @@ export function toPublicQuestions(questions: Question[]): Array<{
     return { id: q.id, kind: q.kind, prompt: q.prompt, caseId: q.caseId };
   });
 }
+
+/** Pixel scoring never substitutes a nearby index or another frame of the SOP. */
+export function gradeIdentityPoint(
+  target: { sopUID: string; frame: number; imagePoint: { x: number; y: number } },
+  answer: { sopUID: string; frame: number; imagePoint: { x: number; y: number } },
+  tolerancePixels: number
+): boolean {
+  return target.sopUID === answer.sopUID && target.frame === answer.frame &&
+    Number.isInteger(target.frame) && target.frame >= 1 && Number.isFinite(tolerancePixels) && tolerancePixels >= 0 &&
+    Math.hypot(target.imagePoint.x - answer.imagePoint.x, target.imagePoint.y - answer.imagePoint.y) <= tolerancePixels;
+}

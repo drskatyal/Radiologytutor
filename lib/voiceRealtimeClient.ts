@@ -8,7 +8,7 @@ export type RealtimeSessionCredentials = {
   token?: string;
   model: string;
   wsUrl: string;
-  apiVersion: "v1alpha";
+  apiVersion: "v1beta";
   preferAfterMs: number;
   error?: string;
 };
@@ -20,7 +20,7 @@ export async function mintRealtimeSession(): Promise<RealtimeSessionCredentials>
     token?: string;
     model?: string;
     wsUrl?: string;
-    apiVersion?: "v1alpha";
+    apiVersion?: "v1beta";
     preferAfterMs?: number;
     error?: string;
   };
@@ -30,7 +30,7 @@ export async function mintRealtimeSession(): Promise<RealtimeSessionCredentials>
       available: false,
       model: data.model || "",
       wsUrl: data.wsUrl || "",
-      apiVersion: "v1alpha",
+      apiVersion: "v1beta",
       preferAfterMs: data.preferAfterMs ?? 1200,
       error: data.error || `Realtime mint failed (${res.status})`,
     };
@@ -41,7 +41,7 @@ export async function mintRealtimeSession(): Promise<RealtimeSessionCredentials>
     token: data.token,
     model: data.model || "",
     wsUrl: data.wsUrl || "",
-    apiVersion: data.apiVersion || "v1alpha",
+    apiVersion: data.apiVersion || "v1beta",
     preferAfterMs: data.preferAfterMs ?? 1200,
   };
 }

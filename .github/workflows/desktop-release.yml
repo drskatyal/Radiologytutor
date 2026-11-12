@@ -1,0 +1,223 @@
+# FlowRad Viewer release: Windows (.msi + .exe), macOS (universal .dmg),
+# Linux (.AppImage + .deb), plus the signed updater manifest (latest.json),
+# attached to a DRAFT GitHub release. Nothing is published automatically.
+#
+# Trigger: run manually only (Actions → desktop-release → Run workflow).
+# The draft release is tagged `desktop-v<version>` from
+# desktop/src-tauri/tauri.conf.json. Tags and branch pushes no longer start it.
+#
+# Secrets (all optional — without them the build is unsigned and has no
+# working auto-update, which is fine for a smoke build):
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#       the private half of the updater key whose PUBLIC half is committed in
+#       desktop/src-tauri/tauri.conf.json (plugins.updater.pubkey). With it the
+#       build signs its bundles and attaches a signed latest.json; without it
+#       the build still CHECKS signed updates but its own bundles can't be
+#       offered as one. docs/UPDATES.md has the key, rollout and rollback.
+#   APPLE_CERTIFICATE (base64 .p12 "Developer ID Application"),
+#   APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_PRIVATE_KEY (.p8 contents)
+#       or APPLE_ID, APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID
+#       for signing + notarisation (stapled, so first launch works offline).
+#       Without them the universal .dmg ships unsigned (Gatekeeper: right-click
+#       the app → Open the first time).
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET plus variables
+#   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
+#       for Windows signing with Azure Artifact Signing.
+# Variables: RADLEARN_SERVER_URL (default address for optional sign-in).
+name: desktop-release
+
+# Runs only when started by hand (Actions → this workflow → Run workflow):
+# Actions minutes cost money, so nothing runs on push, PR or tag. Tests and
+# the build run locally before merge and are listed in the PR description.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    env:
+      HAS_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Linux packages
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - run: npm ci
+      - run: npm ci --prefix desktop
+      # Offline voice commands: the small speech model ships inside the
+      # installer (verified against scripts/voice-model.sha256), never downloaded later.
+      - name: Voice model (bundled)
+        shell: bash
+        run: python3 scripts/fetch-voice-model.py && python3 scripts/fetch-voice-model.py --check
+
+      - name: Configure updater and signing for this build
+        shell: bash
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          IS_WINDOWS: ${{ runner.os == 'Windows' }}
+        run: |
+          node - <<'JS'
+          const fs = require("fs");
+          const p = "desktop/src-tauri/tauri.conf.json";
+          const c = JSON.parse(fs.readFileSync(p, "utf8"));
+          // The public key is committed (tauri.conf.json): every build, signed
+          // or not, verifies updates against it. Only the private key decides
+          // whether THIS build's bundles are signed as updates.
+          if (process.env.HAS_UPDATER_KEY !== "true") {
+            console.log("::warning::No TAURI_SIGNING_PRIVATE_KEY secret: building without update artifacts (latest.json). The app still verifies future updates with the committed public key; see docs/UPDATES.md.");
+            c.bundle.createUpdaterArtifacts = false;
+          }
+          if (process.env.IS_WINDOWS === "true" && process.env.HAS_AZURE === "true") {
+            const e = process.env;
+            c.bundle.windows.signCommand = `trusted-signing-cli -e ${e.AZURE_SIGNING_ENDPOINT} -a ${e.AZURE_SIGNING_ACCOUNT} -c ${e.AZURE_SIGNING_PROFILE} -d "FlowRad Viewer" %1`;
+          }
+          fs.writeFileSync(p, JSON.stringify(c, null, 2));
+          JS
+      - name: Azure Artifact Signing CLI
+        if: runner.os == 'Windows' && env.HAS_AZURE == 'true'
+        run: cargo install trusted-signing-cli --locked
+      - name: Apple signing and notarisation (only when configured and valid)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # The Tauri CLI tries to import APPLE_CERTIFICATE whenever the variable
+          # exists, so it is exported only when it decodes to a PKCS#12 that opens
+          # with its password. Otherwise the macOS build ships unsigned (Gatekeeper
+          # will ask the user to allow it) instead of failing the whole release.
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::notice::No APPLE_CERTIFICATE secret: building an unsigned macOS app."
+          elif printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12" 2>/dev/null \
+               && openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -noout -legacy 2>/dev/null \
+                  || openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -noout 2>/dev/null; then
+            {
+              echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            } >> "$GITHUB_ENV"
+            if [ -n "$APPLE_API_PRIVATE_KEY" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_ISSUER" ]; then
+              mkdir -p "$RUNNER_TEMP/apple" && printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/apple/AuthKey.p8"
+              { echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple/AuthKey.p8"; echo "APPLE_API_KEY=$APPLE_API_KEY"; echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"; } >> "$GITHUB_ENV"
+            elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              # Notarisation with an Apple ID and an app-specific password.
+              { echo "APPLE_ID=$APPLE_ID"; echo "APPLE_PASSWORD=$APPLE_PASSWORD"; echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"; } >> "$GITHUB_ENV"
+            else
+              echo "::notice::Signed but not notarised: add APPLE_API_* or APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID to notarise."
+            fi
+          else
+            echo "::warning::APPLE_CERTIFICATE is set but is not a base64 PKCS#12 that opens with APPLE_CERTIFICATE_PASSWORD. Building unsigned; re-export the Developer ID Application certificate as .p12 and base64 it."
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      # Release notes say plainly whether this build can update itself.
+      - name: Release notes — update signing status
+        id: notes
+        shell: bash
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_UPDATER_KEY" = "true" ]; then
+            msg='**Updates:** this build ships signed update artefacts (latest.json, ed25519). The self-update feed goes live only when lib/desktopChannel.ts is pointed at this release after the HP / MacBook tests (docs/UPDATES.md).'
+          else
+            msg='**Updates: NOT LIVE in this build.** The TAURI_SIGNING_PRIVATE_KEY secret was not set, so the update artefacts are unsigned / absent (no latest.json) and the self-update feed is not live. Installers work normally; the app still checks for future updates against the committed public key. Add the secret and cut the next release to make self-update live (docs/UPDATES.md).'
+          fi
+          echo "updates=$msg" >> "$GITHUB_OUTPUT"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RADLEARN_SERVER_URL: ${{ vars.RADLEARN_SERVER_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'desktop-v__VERSION__' }}
+          releaseName: "FlowRad Viewer v__VERSION__"
+          releaseBody: |
+            Free, offline DICOM viewer for Windows, macOS and Linux. Not for diagnostic use.
+            See docs/RADIANT_BENCHMARK.md for what is in this build.
+
+            **macOS:** one universal .dmg for Apple Silicon and Intel Macs (native Metal renderer).
+            If this build is not notarised, macOS says it "can't be opened" the first time:
+            right-click (or Control-click) FlowRad Viewer in Applications → **Open** → **Open**,
+            or allow it under System Settings → Privacy & Security. Later launches open normally.
+
+            ${{ steps.notes.outputs.updates }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+  # The signed update manifest. tauri-action merges each platform's entry into
+  # one latest.json on the draft release; this checks it (Windows and macOS
+  # present, HTTPS, signed) and keeps a copy as a workflow artifact. It is NOT
+  # rolled out: that is a reviewed PR to lib/desktopChannel.ts after the HP
+  # test passes and the release is published (docs/UPDATES.md).
+  updater-manifest:
+    needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect and check latest.json from the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          tag="desktop-v$version"
+          mkdir -p out
+          if gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p latest.json -D out --clobber 2>/dev/null; then
+            node scripts/check-updater-manifest.mjs out/latest.json "$version" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::No latest.json on $tag (TAURI_SIGNING_PRIVATE_KEY is not set): no update artifacts. The app still checks for signed updates."
+            echo "No signed update manifest on $tag: the TAURI_SIGNING_PRIVATE_KEY secret is not set (docs/UPDATES.md)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ hashFiles('out/latest.json') != '' }}
+        with:
+          name: updater-manifest
+          path: out/latest.json

@@ -1,3 +1,9 @@
+import { assertNoPhi, assertReviewedMedia } from "./phiGuard";
+import { rebindStaleLidcCase } from "./lidcStoredAnatomy";
+import { migrateFindings, prepareFinding, appendVersion, approveVersion, approvedFinding, snapshot, type Approver } from "./findingVersions";
+import { anchorFromFinding, FindingConflict, hashContent, findingContent } from "./findingContent";
+import { readFindingInventory, resolveFindingAnchor } from "./findingInventory";
+import type { ExamAttempt, ExamKey } from "./exam/types";
 // ============================================================================
 // lib/cases.ts
 //
@@ -22,13 +28,21 @@
 // `orgId` so real auth slots in without a refactor.
 //
 // Store selection is ENV-GATED and LAZY: with no `MONGODB_URI` the app uses the
-// JSON-on-volume store under DATA_DIR (env-overridable) so it can point at a
-// Railway persistent Volume that survives redeploys with no database. Set
-// `MONGODB_URI` and the entire data layer silently runs on MongoDB instead —
-// no caller changes. Either store seeds itself from the committed `/seed` cases
-// the first time it is empty, so demos always have sample data.
+// JSON-on-volume store under DATA_DIR (env-overridable) so local dev and tests
+// run with no database. Set `MONGODB_URI` and the entire data layer silently
+// runs on MongoDB instead — no caller changes. Cloud Run sets `K_SERVICE`;
+// that runtime refuses the JSON fallback (`assertCloudRunMongo`) because the
+// container disk is not durable. Either store seeds itself from the committed
+// `/seed` cases the first time it is empty. Placeholder courses, playlists,
+// assessments, and the demo author profile are not copied (see
+// catalogPlaceholders). The LIDC teach case still seeds so it can be recorded.
 // ============================================================================
 
+import {
+  findingsFromCompiledTake,
+  materializeLiveTeachingPack,
+  type CompiledTakeCommit,
+} from "./liveTeachingPack";
 import { promises as fs } from "fs";
 import path from "path";
 import type { Collection as MongoNativeCollection } from "mongodb";
@@ -44,13 +58,16 @@ import type {
   Course,
   Playlist,
   Membership,
+  Org,
   Enrollment,
   Progress,
   WishlistItem,
+  UserPrefs,
   Review,
   Certificate,
   Assessment,
   Attempt,
+  CaseShare,
   MembershipRole,
   User,
   UserRole,
@@ -62,8 +79,21 @@ import type {
 } from "./types";
 import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
+import { resolveLiveTeachingPack } from "./liveTeachingPack";
+import { assertCloudRunMongo } from "./durableStore";
 import { ensureIndexes, getDb, mongoConfigured } from "./mongo";
+import {
+  activeShare,
+  generateShareToken,
+  isShareToken,
+  studyUidsForCase,
+} from "./caseShare";
 import { sortRelatedCourses } from "./relatedCourses";
+import {
+  isPlaceholderCatalogCase,
+  isPlaceholderCourse,
+  isPlaceholderSeedFile,
+} from "./catalogPlaceholders";
 
 /** Persisted de-id report — keyed by studyInstanceUID. */
 export type StoredDeidReport = DeidReport & {
@@ -83,7 +113,7 @@ export const DEFAULT_ORG_ID = "org_demo";
 // Paths / config
 // ---------------------------------------------------------------------------
 
-// Mount a Railway Volume here (e.g. /app/data) and the JSON store persists.
+// Local development only; production Cloud Run requires MongoDB, not disk.
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 // Committed sample cases used to seed an empty store.
 const SEED_DIR = path.join(process.cwd(), "seed");
@@ -121,6 +151,7 @@ interface Collection<T extends { id: string }> {
   get(id: string): Promise<T | null>;
   put(record: T): Promise<T>;
   remove(id: string): Promise<boolean>;
+  mutate(id: string, change: (record: T | null) => T): Promise<T>;
 }
 
 /** In-memory evaluation of a `Filter`, shared by the JSON store. */
@@ -184,9 +215,8 @@ async function seedIfEmpty(): Promise<void> {
 async function copyJsonFiles(src: string, dst: string): Promise<void> {
   const files = await fs.readdir(src).catch(() => [] as string[]);
   for (const f of files) {
-    if (f.endsWith(".json")) {
-      await fs.copyFile(path.join(src, f), path.join(dst, f));
-    }
+    if (!f.endsWith(".json") || isPlaceholderSeedFile(f)) continue;
+    await fs.copyFile(path.join(src, f), path.join(dst, f));
   }
 }
 
@@ -198,6 +228,7 @@ type CollectionName =
   | "courses"
   | "playlists"
   | "users"
+  | "orgs"
   | "memberships"
   | "enrollments"
   | "progress"
@@ -206,7 +237,11 @@ type CollectionName =
   | "certificates"
   | "deidReports"
   | "assessments"
-  | "attempts";
+  | "attempts"
+  | "caseShares"
+  | "userPrefs"
+  | "examSessions"
+  | "examKeys";
 
 /**
  * Read and parse every committed seed record for one logical collection. Cases
@@ -219,7 +254,7 @@ async function readSeedRecords<T extends { id: string }>(name: CollectionName): 
   const files = await fs.readdir(dir).catch(() => [] as string[]);
   const records: T[] = [];
   for (const f of files) {
-    if (!f.endsWith(".json")) continue;
+    if (!f.endsWith(".json") || isPlaceholderSeedFile(f)) continue;
     try {
       const raw = await fs.readFile(path.join(dir, f), "utf-8");
       const parsed = JSON.parse(raw) as Partial<T> & { id?: string; caseId?: string };
@@ -287,11 +322,31 @@ class JsonCollection<T extends { id: string }> implements Collection<T> {
     }
   }
 
-  async put(record: T): Promise<T> {
+  private async locked<R>(id: string, run: () => Promise<R>): Promise<R> {
     await this.ready();
-    await fs.writeFile(this.file(record.id), JSON.stringify(record, null, 2), "utf-8");
-    return record;
+    const lock = `${this.file(id)}.lock`;
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      try { await fs.mkdir(lock); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() > deadline) throw new Error("Store is busy; retry the operation");
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+    try { return await run(); } finally { await fs.rmdir(lock); }
   }
+  async mutate(id: string, change: (record: T | null) => T): Promise<T> {
+    return this.locked(id, async () => {
+      const next = change(await this.get(id));
+      const temp = `${this.file(id)}.${crypto.randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(temp, JSON.stringify(next, null, 2), "utf-8");
+        await fs.rename(temp, this.file(id));
+      } finally { await fs.unlink(temp).catch(() => undefined); }
+      return next;
+    });
+  }
+  async put(record: T): Promise<T> { return this.mutate(record.id, () => record); }
 
   async remove(id: string): Promise<boolean> {
     await this.ready();
@@ -414,17 +469,25 @@ class MongoCollection<T extends { id: string }> implements Collection<T> {
     return doc ? this.fromDoc(doc as MongoDoc<T>) : null;
   }
 
-  async put(record: T): Promise<T> {
+  async mutate(id: string, change: (record: T | null) => T): Promise<T> {
     const coll = await this.coll();
-    const { id, ...rest } = record;
-    // Upsert by _id so create and update share one code path (like writeFile).
-    await coll.replaceOne(
-      { _id: id } as never,
-      { _id: id, ...(rest as Omit<T, "id">) } as never,
-      { upsert: true }
-    );
-    return record;
+    for (let retry = 0; retry < 20; retry++) {
+      const doc = await coll.findOne({ _id: id } as never);
+      const revision = (doc as unknown as { __revision?: number } | null)?.__revision;
+      const next = change(doc ? this.fromDoc(doc as MongoDoc<T>) : null);
+      const { id: ignored, ...rest } = next;
+      const replacement = { ...rest, _id: id, __revision: (revision ?? 0) + 1 };
+      if (!doc) {
+        try { await coll.insertOne(replacement as never); return next; }
+        catch (error) { if ((error as { code?: number }).code === 11000) continue; throw error; }
+      }
+      const result = await coll.replaceOne({ _id: id, __revision: revision ?? { $exists: false } } as never, replacement as never);
+      if (result.matchedCount === 1) return next;
+    }
+    throw new Error("Store is busy; retry the operation");
   }
+
+  async put(record: T): Promise<T> { return this.mutate(record.id, () => record); }
 
   async remove(id: string): Promise<boolean> {
     const coll = await this.coll();
@@ -440,6 +503,7 @@ class MongoCollection<T extends { id: string }> implements Collection<T> {
  * run with no database). No caller is aware of which store is returned.
  */
 function collection<T extends { id: string }>(name: CollectionName): Collection<T> {
+  assertCloudRunMongo();
   if (mongoConfigured()) {
     return new MongoCollection<T>(name);
   }
@@ -459,6 +523,7 @@ const authorsStore = collection<Author>("authors");
 const coursesStore = collection<Course>("courses");
 const playlistsStore = collection<Playlist>("playlists");
 const usersStore = collection<User>("users");
+const orgsStore = collection<Org>("orgs");
 const membershipsStore = collection<Membership>("memberships");
 const enrollmentsStore = collection<Enrollment>("enrollments");
 const progressStore = collection<Progress>("progress");
@@ -468,6 +533,8 @@ const certificatesStore = collection<Certificate>("certificates");
 const assessmentsStore = collection<Assessment>("assessments");
 const attemptsStore = collection<Attempt>("attempts");
 const deidReportsStore = collection<StoredDeidReport>("deidReports");
+const caseSharesStore = collection<CaseShare>("caseShares");
+const userPrefsStore = collection<UserPrefs>("userPrefs");
 
 /** Stable demo identities for JSON/dev (also copied from /seed). */
 export const DEMO_USER_ID = "user_demo";
@@ -484,16 +551,17 @@ function toStored(c: Case): CaseStored {
 /** Normalize any persisted case (old seed shape or new) into a full `Case`. */
 function normalizeCase(raw: CaseData & Partial<Case>): Case {
   const now = new Date().toISOString();
-  const findings = (raw.findings ?? []).slice().sort((a, b) => a.order - b.order);
-  return {
-    ...raw,
+  const repaired = rebindStaleLidcCase(raw);
+  const findings = (repaired.findings ?? []).slice().sort((a, b) => a.order - b.order);
+  return migrateFindings({
+    ...repaired,
     findings,
     orgId: raw.orgId ?? DEFAULT_ORG_ID,
     status: raw.status ?? "published",
     studyRefs: raw.studyRefs,
     createdAt: raw.createdAt ?? now,
     updatedAt: raw.updatedAt ?? now,
-  };
+  });
 }
 
 function nowIso(): string {
@@ -519,6 +587,39 @@ export async function listCases(): Promise<CaseData[]> {
     .sort((a, b) => a.title.localeCompare(b.title)) as CaseData[];
 }
 
+/**
+ * Platform maintenance (scripts/dicom-cdn-backfill.ts): every case's imaging
+ * references across ALL orgs — study UID plus the series its findings and
+ * studyRefs name. Not for request handlers; those stay orgId-scoped.
+ */
+export async function listCaseImagingRefsAllOrgs(): Promise<
+  Array<{ orgId: string; caseId: string; studyInstanceUID: string; seriesInstanceUIDs: string[] }>
+> {
+  const out: Array<{ orgId: string; caseId: string; studyInstanceUID: string; seriesInstanceUIDs: string[] }> = [];
+  for (const raw of await casesStore.find({})) {
+    const c = normalizeCase(raw);
+    const byStudy = new Map<string, Set<string>>();
+    const add = (study?: string, series?: string) => {
+      const st = study?.trim();
+      if (!st) return;
+      const set = byStudy.get(st) ?? new Set<string>();
+      if (series?.trim()) set.add(series.trim());
+      byStudy.set(st, set);
+    };
+    for (const ref of c.studyRefs ?? []) {
+      if (!ref.seriesInstanceUIDs?.length) add(ref.studyInstanceUID);
+      for (const series of ref.seriesInstanceUIDs ?? []) add(ref.studyInstanceUID, series);
+    }
+    for (const f of c.findings ?? []) {
+      add(f.studyInstanceUID ?? c.studyRefs?.[0]?.studyInstanceUID, f.seriesInstanceUID);
+    }
+    for (const [studyInstanceUID, series] of byStudy) {
+      out.push({ orgId: c.orgId ?? DEFAULT_ORG_ID, caseId: c.caseId, studyInstanceUID, seriesInstanceUIDs: [...series] });
+    }
+  }
+  return out;
+}
+
 export async function getCase(caseId: string): Promise<CaseData | null> {
   const raw = await casesStore.get(caseId);
   return raw ? normalizeCase(raw) : null;
@@ -527,7 +628,10 @@ export async function getCase(caseId: string): Promise<CaseData | null> {
 export async function saveCase(data: CaseData): Promise<void> {
   const full = normalizeCase({ ...(data as Case) });
   full.updatedAt = nowIso();
-  await casesStore.put(toStored(full));
+  await casesStore.mutate(full.caseId, raw => {
+    if (raw?.findingVersions?.length) throw new FindingConflict("Use the versioned finding API to update an existing case");
+    return toStored(migrateFindings({ ...full, findingVersions: [], findingApprovals: [], findingRevalidations: [] }));
+  });
 }
 
 /** Create a new (empty) case, or return the existing one if it already exists. */
@@ -709,6 +813,7 @@ export type UpdateCaseInput = Partial<
     | "learningObjectives"
     | "discussion"
     | "references"
+    | "liveTeachingPack"
   >
 >;
 
@@ -720,12 +825,17 @@ export async function updateCaseForOrg(
 ): Promise<Case | null> {
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return null;
-  const updated: Case = { ...current, ...patch, caseId, orgId, updatedAt: nowIso() };
+  const nextPatch = patch.liveTeachingPack
+    ? {
+        ...patch,
+        liveTeachingPack: resolveLiveTeachingPack({ ...current, ...patch, caseId }),
+      }
+    : patch;
+  const updated: Case = { ...current, ...nextPatch, caseId, orgId, updatedAt: nowIso() };
   if (updated.status === "published" && current.status !== "published") {
     await assertCasePublishable(updated);
   }
-  await casesStore.put(toStored(updated));
-  return updated;
+  return mutateCase(orgId, caseId, latest => ({ ...latest, ...nextPatch, caseId, orgId, updatedAt: nowIso() }));
 }
 
 /**
@@ -738,6 +848,10 @@ export async function updateCaseForOrg(
  * must be created as drafts.
  */
 export async function assertCasePublishable(c: Case): Promise<void> {
+  for (const finding of c.findings) {
+    assertNoPhi(findingContent(finding));
+    assertReviewedMedia(finding.phiReview);
+  }
   const refs = c.studyRefs ?? [];
   if (refs.length === 0) {
     throw new Error(
@@ -801,7 +915,111 @@ export async function getDeidReport(
 export async function deleteCaseForOrg(orgId: string, caseId: string): Promise<boolean> {
   const current = await getCaseForOrg(orgId, caseId);
   if (!current) return false;
+  await revokeCaseShares(orgId, caseId);
   return casesStore.remove(caseId);
+}
+
+// ============================================================================
+// Case shares — unguessable viewer links (one live token per case)
+// ============================================================================
+
+/** Live share for a token, or null when missing or revoked. */
+export async function getCaseShare(token: string): Promise<CaseShare | null> {
+  if (!isShareToken(token)) return null;
+  const row = await caseSharesStore.get(token);
+  if (!row || row.revokedAt) return null;
+  if (row.orgId == null || row.caseId == null) return null;
+  return row;
+}
+
+export async function listCaseShares(orgId: string, caseId: string): Promise<CaseShare[]> {
+  const rows = await caseSharesStore.find({ orgId, caseId });
+  return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Newest live share for each case in the org. */
+export async function listActiveSharesForOrg(orgId: string): Promise<CaseShare[]> {
+  const rows = await caseSharesStore.find({ orgId });
+  const byCase = new Map<string, CaseShare>();
+  for (const row of rows) {
+    if (row.revokedAt) continue;
+    const prev = byCase.get(row.caseId);
+    if (!prev || row.createdAt > prev.createdAt) byCase.set(row.caseId, row);
+  }
+  return [...byCase.values()];
+}
+
+/**
+ * Return the live share, or mint one. Idempotent so "Copy link" does not
+ * rotate a link the teacher already handed out.
+ */
+export async function createCaseShare(
+  orgId: string,
+  caseId: string,
+  createdBy: string
+): Promise<CaseShare> {
+  const existing = activeShare(await listCaseShares(orgId, caseId));
+  if (existing) return existing;
+  const row: CaseShare = {
+    id: generateShareToken(),
+    orgId,
+    caseId,
+    createdBy,
+    createdAt: nowIso(),
+  };
+  await caseSharesStore.put(row);
+  return row;
+}
+
+/** Kill every live link for the case and mint a new token. */
+export async function rotateCaseShare(
+  orgId: string,
+  caseId: string,
+  createdBy: string
+): Promise<CaseShare> {
+  await revokeCaseShares(orgId, caseId);
+  const row: CaseShare = {
+    id: generateShareToken(),
+    orgId,
+    caseId,
+    createdBy,
+    createdAt: nowIso(),
+  };
+  await caseSharesStore.put(row);
+  return row;
+}
+
+/** Mark live shares revoked. Returns how many were live. */
+export async function revokeCaseShares(orgId: string, caseId: string): Promise<number> {
+  const rows = await listCaseShares(orgId, caseId);
+  const now = nowIso();
+  let count = 0;
+  for (const row of rows) {
+    if (row.revokedAt) continue;
+    await caseSharesStore.put({ ...row, revokedAt: now });
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * What a live token may read: the case's org and the study UIDs it names.
+ * A token never authorizes a study that case does not reference.
+ */
+export async function resolveShareAccess(token: string): Promise<{
+  orgId: string;
+  caseId: string;
+  studyUids: string[];
+} | null> {
+  const share = await getCaseShare(token);
+  if (!share) return null;
+  const caseData = await getCaseForOrg(share.orgId, share.caseId);
+  if (!caseData) return null;
+  return {
+    orgId: share.orgId,
+    caseId: share.caseId,
+    studyUids: studyUidsForCase(caseData),
+  };
 }
 
 // ============================================================================
@@ -812,17 +1030,96 @@ export async function deleteCaseForOrg(orgId: string, caseId: string): Promise<b
 export async function createFinding(
   orgId: string,
   caseId: string,
-  finding: Finding
+  finding: Finding,
+  userId = "legacy-author"
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
-  const f: Finding = { ...finding };
-  if (f.order == null) f.order = data.findings.length + 1;
-  data.findings.push(f);
-  data.findings.sort((a, b) => a.order - b.order);
+  const prepared = await prepareWithInventory(finding, {});
+  return mutateCase(orgId, caseId, data => {
+    if (data.findings.some(f => f.id === finding.id)) throw new FindingConflict("Finding already exists");
+    const version = Math.max(0, ...data.findingVersions!.filter(v => v.findingId === finding.id).map(v => v.version)) + 1;
+    const f = { ...prepared, order: finding.order || data.findings.length + 1, currentVersion: version, status: "needs_review" as const, approvedVersion: undefined };
+    data.findings.push(f);
+    data.findingVersions!.push(snapshot(f, version, userId, nowIso()));
+    data.updatedAt = nowIso();
+    return data;
+  });
+}
+
+/**
+ * Append new draft identities from a compiled take without replacing expert versions.
+ * The track already stored on the capture session is the only source of
+ * viewer anchors. Draft text is label, description, points, times, and rank.
+ */
+export async function commitLiveTeachingPack(
+  orgId: string,
+  caseId: string,
+  input: CompiledTakeCommit
+): Promise<Case> {
+  return mutateCase(orgId, caseId, data => {
+  const sessions = data.captureSessions ? [...data.captureSessions] : [];
+  const session = sessions.find((item) => item.id === input.captureSessionId);
+  if (!session?.track) throw new Error("Recording not found for this case.");
+  const transcript = (input.transcript ?? session.transcript ?? "").trim();
+  const findings = findingsFromCompiledTake({
+    captureSessionId: session.id,
+    track: session.track,
+    drafted: input.findings,
+    markerDecisions: input.markerDecisions,
+    voice: input.voice,
+    seriesInstanceUID: input.seriesInstanceUID,
+    studyInstanceUID: input.studyInstanceUID,
+  });
+  if (!findings.length && !input.markerDecisions?.length) throw new Error("No findings to store.");
+  session.markerDecisions = structuredClone(input.markerDecisions ?? []);
+  if (transcript) session.transcript = transcript;
+  data.captureSessions = sessions;
+  for (const f of findings) {
+    // Stable take/marker or segment identity: retries never overwrite expert edits.
+    const draftKey = f.markerId ?? f.segmentId;
+    if (data.findingVersions!.some(v => v.content.captureSessionId === f.captureSessionId &&
+      (v.content.markerId ?? v.content.segmentId ?? `interval:${v.content.tStartMs ?? 0}:${v.content.tEndMs ?? 0}`) === draftKey)) continue;
+    f.id = `lt_${f.captureSessionId}_${hashContent(f.markerId ?? f.segmentId).slice(0, 16)}`;
+    f.currentVersion = 1; f.status = "needs_review"; f.anchorStatus ??= "legacy_index";
+    data.findings.push(f);
+    data.findingVersions!.push(snapshot(f, 1, "compile", nowIso()));
+  }
+  const ranked = input.findings
+    .filter((draft) => draft.label.trim())
+    .map((draft, index) => ({
+      draft,
+      index,
+      rank: Number.isFinite(Number(draft.clinicalImportance)) && Number(draft.clinicalImportance) > 0
+        ? Math.round(Number(draft.clinicalImportance))
+        : index + 1,
+    }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((row) => row.draft);
+  data.liveTeachingPack = materializeLiveTeachingPack({
+    caseId,
+    modality: data.modality,
+    clinicalQuestion: data.clinicalHistory,
+    diagnosis: data.primaryDiagnosis,
+    findings,
+    prose: findings.map((finding, index) => {
+      const draft = ranked[index];
+      return {
+        id: finding.id,
+        tStartMs: finding.tStartMs,
+        label: finding.label,
+        whatToNotice: draft?.whatToNotice ?? finding.description,
+        pearl: draft?.pearl,
+        mimics: draft?.mimics,
+        clinicalImportance: finding.order,
+        whyClinicallyFirst: draft?.whyClinicallyFirst,
+        reportLine: draft?.reportLine ?? finding.reportGold,
+        landmark: draft?.landmark ?? finding.landmark,
+      };
+    }),
+    studySeriesUIDs: (data.studyRefs ?? []).flatMap((ref) => ref.seriesInstanceUIDs ?? []),
+  });
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 /** Persist a continuous-capture demonstration (parent track + transcript). */
@@ -831,16 +1128,24 @@ export async function appendCaptureSession(
   caseId: string,
   session: CaptureSession
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   const list = data.captureSessions ? [...data.captureSessions] : [];
   const idx = list.findIndex((s) => s.id === session.id);
-  if (idx >= 0) list[idx] = session;
-  else list.push(session);
+  if (idx >= 0 && list[idx].manifest) {
+    const retained = list[idx];
+    if (retained.manifest!.status !== "complete") throw new Error("Complete capture sync before saving the take");
+    // Client save paths cannot replace chunk receipts, render evidence or offsets.
+    list[idx] = { ...retained, audioUrl: session.audioUrl ?? retained.audioUrl, transcript: session.transcript ?? retained.transcript,
+      track: { ...retained.track, audioUrl: session.audioUrl ?? retained.track.audioUrl } };
+  } else if (idx >= 0) list[idx] = session;
+  else {
+    if (session.track.captureSessionId) throw new Error("Retained capture session not found");
+    list.push(session);
+  }
   data.captureSessions = list;
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 /** Patch one finding's fields. Returns the updated case. */
@@ -848,17 +1153,13 @@ export async function updateFindingScoped(
   orgId: string,
   caseId: string,
   findingId: string,
-  patch: Partial<Finding>
+  patch: Partial<Finding>,
+  userId = "legacy-author"
 ): Promise<Case> {
   const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
-  const idx = data.findings.findIndex((f) => f.id === findingId);
-  if (idx === -1) throw new Error(`Finding not found: ${findingId}`);
-  data.findings[idx] = { ...data.findings[idx], ...patch, id: findingId };
-  data.findings.sort((a, b) => a.order - b.order);
-  data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
-  return data;
+  const current = data?.findings.find(f => f.id === findingId);
+  if (!current) throw new FindingConflict("Finding not found", 404);
+  return createVersion(orgId, caseId, findingId, patch, { expectedVersion: current.currentVersion!, userId });
 }
 
 /** Delete one finding. Returns the updated case. */
@@ -867,12 +1168,11 @@ export async function deleteFindingScoped(
   caseId: string,
   findingId: string
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   data.findings = data.findings.filter((f) => f.id !== findingId);
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 /** Reorder findings; `orderedIds` is the new sequence (sets order to index+1). */
@@ -881,8 +1181,7 @@ export async function reorderFindingsScoped(
   caseId: string,
   orderedIds: string[]
 ): Promise<Case> {
-  const data = await getCaseForOrg(orgId, caseId);
-  if (!data) throw new Error(`Case not found: ${caseId}`);
+  return mutateCase(orgId, caseId, data => {
   const rank = new Map(orderedIds.map((id, i) => [id, i + 1]));
   for (const f of data.findings) {
     const r = rank.get(f.id);
@@ -890,8 +1189,8 @@ export async function reorderFindingsScoped(
   }
   data.findings.sort((a, b) => a.order - b.order);
   data.updatedAt = nowIso();
-  await casesStore.put(toStored(data));
   return data;
+  });
 }
 
 // ============================================================================
@@ -1093,6 +1392,7 @@ export async function listCatalogCases(
   const q = filter.q?.trim().toLowerCase();
 
   const matched = all.filter((c) => {
+    if (isPlaceholderCatalogCase(c)) return false;
     if (filter.status && c.status !== filter.status) return false;
     if (filter.system && c.system !== filter.system) return false;
     if (filter.difficulty && c.difficulty !== filter.difficulty) return false;
@@ -1142,6 +1442,7 @@ export async function getCatalogFacets(orgId: string): Promise<CatalogFacets> {
   const modalities = new Set<string>();
   const specialties = new Set<string>();
   for (const c of all) {
+    if (isPlaceholderCatalogCase(c)) continue;
     if (c.system) systems.add(c.system);
     if (c.difficulty) difficulties.add(c.difficulty);
     if (c.modality) modalities.add(c.modality);
@@ -1275,7 +1576,9 @@ export async function listRelatedCourses(
     status: "published",
     excludeId: course.id,
   });
-  return sortRelatedCourses(course, candidates).slice(0, limit);
+  return sortRelatedCourses(course, candidates)
+    .filter((item) => !isPlaceholderCourse(item))
+    .slice(0, limit);
 }
 
 export async function getCourse(orgId: string, courseId: string): Promise<Course | null> {
@@ -1473,17 +1776,100 @@ export async function updateUser(
 }
 
 /**
- * After Better Auth creates a user, ensure a domain User + org membership
- * exist. Looks up by email first so demo identities and re-signups link.
+ * Public email/Google sign-up is a teacher. `"student"` is only for an
+ * explicit learner sign-up.
+ */
+export type AuthSignupIntent = "teacher" | "student";
+
+export async function getOrg(orgId: string): Promise<Org | null> {
+  return orgsStore.get(orgId);
+}
+
+function teachingOrgName(name: string | undefined, email: string): string {
+  return name?.trim() || email.split("@")[0]?.trim() || "Teacher";
+}
+
+/** A personal org the teacher owns. Not the shared demo tenant. */
+async function createPersonalOrg(name: string): Promise<Org> {
+  const org: Org = {
+    id: genId("org"),
+    name,
+    createdAt: nowIso(),
+  };
+  await orgsStore.put(org);
+  return org;
+}
+
+async function ensureOrgRecord(orgId: string, name: string): Promise<void> {
+  if (await orgsStore.get(orgId)) return;
+  const org: Org = { id: orgId, name, createdAt: nowIso() };
+  await orgsStore.put(org);
+}
+
+/**
+ * Seed a membership when the user has none.
+ * A teacher never receives an author seat on the shared demo org.
+ * Existing memberships are not rewritten.
+ */
+async function ensureSignupMembership(user: User, intent: AuthSignupIntent): Promise<void> {
+  const mems = await listMembershipsForUser(user.id);
+  if (mems.length > 0) return;
+
+  if (user.platformRole === "super_admin") {
+    await createMembership({
+      userId: user.id,
+      orgId: user.orgId || DEFAULT_ORG_ID,
+      role: "owner",
+    });
+    return;
+  }
+
+  if (intent === "student") {
+    await createMembership({
+      userId: user.id,
+      orgId: user.orgId || DEFAULT_ORG_ID,
+      role: "student",
+    });
+    return;
+  }
+
+  let orgId = user.orgId;
+  if (!orgId || orgId === DEFAULT_ORG_ID) {
+    const org = await createPersonalOrg(teachingOrgName(user.name, user.email));
+    orgId = org.id;
+    await updateUser(user.id, { orgId, role: "author" });
+  } else {
+    await ensureOrgRecord(orgId, teachingOrgName(user.name, user.email));
+    if (user.role !== "author") await updateUser(user.id, { role: "author" });
+  }
+  await createMembership({
+    userId: user.id,
+    orgId,
+    role: "author",
+  });
+}
+
+/**
+ * After Better Auth creates a user (email or Google), ensure a domain User and
+ * an org membership exist. Looks up by email first so demo identities and
+ * re-signups link.
+ *
+ * Default public sign-up is a teacher: a personal org with membership role
+ * `author`, which is what `requireAuthorOrg` checks. Pass `intent: "student"`
+ * only for an explicit learner sign-up (shared `org_demo` student seat).
+ * Existing memberships are kept — a learner is not promoted and a teacher is
+ * not demoted.
  */
 export async function provisionAuthUser(input: {
   authProviderId: string;
   email: string;
   name?: string;
   image?: string;
+  intent?: AuthSignupIntent;
 }): Promise<User> {
   await ensureDemoIdentity();
   const email = normalizeEmail(input.email);
+  const intent: AuthSignupIntent = input.intent === "student" ? "student" : "teacher";
   const existing =
     (await getUserByAuthProviderId(input.authProviderId)) ?? (await getUserByEmail(email));
   if (existing) {
@@ -1494,30 +1880,213 @@ export async function provisionAuthUser(input: {
       image: input.image ?? existing.image,
     };
     await usersStore.put(updated);
-    const mems = await listMembershipsForUser(updated.id);
-    if (mems.length === 0) {
-      await createMembership({
-        userId: updated.id,
-        orgId: updated.orgId || DEFAULT_ORG_ID,
-        role: updated.platformRole === "super_admin" ? "owner" : "student",
-      });
-    }
-    return updated;
+    await ensureSignupMembership(updated, intent);
+    return (await getUser(updated.id)) ?? updated;
   }
+
+  if (intent === "student") {
+    const user = await createUser({
+      email,
+      name: input.name,
+      image: input.image,
+      role: "student",
+      authProviderId: input.authProviderId,
+      orgId: DEFAULT_ORG_ID,
+    });
+    await ensureSignupMembership(user, "student");
+    return (await getUser(user.id)) ?? user;
+  }
+
+  const org = await createPersonalOrg(teachingOrgName(input.name, email));
   const user = await createUser({
     email,
     name: input.name,
     image: input.image,
-    role: "student",
+    role: "author",
     authProviderId: input.authProviderId,
-    orgId: DEFAULT_ORG_ID,
+    orgId: org.id,
   });
-  await createMembership({
-    userId: user.id,
-    orgId: DEFAULT_ORG_ID,
-    role: "student",
-  });
-  return user;
+  await ensureSignupMembership(user, "teacher");
+  return (await getUser(user.id)) ?? user;
+}
+
+/** Someone asked to grant platform staff to an email that has no account yet. */
+export class AccountNotFoundError extends Error {
+  constructor(email: string) {
+    super(
+      `No account for ${email}. Create a teacher or student account first, then grant platform admin.`
+    );
+    this.name = "AccountNotFoundError";
+  }
+}
+
+/**
+ * Promote an existing account to platform super_admin.
+ * Does not create a login, change their password, or rewrite their membership.
+ * The first admin is granted with scripts/grant-platform-admin.ts. Further
+ * admins are granted from the Platform tab by someone who already has the role.
+ */
+export async function grantPlatformAdminByEmail(email: string): Promise<User> {
+  const normalized = normalizeEmail(email);
+  if (!normalized || !normalized.includes("@")) {
+    throw new AccountNotFoundError(email.trim() || "(blank)");
+  }
+  const user = await getUserByEmail(normalized);
+  if (!user) throw new AccountNotFoundError(normalized);
+  const updated = await updateUser(user.id, { platformRole: "super_admin" });
+  if (!updated) throw new AccountNotFoundError(normalized);
+  return updated;
+}
+
+const TEACHING_ROLES = new Set<MembershipRole>(["author", "admin", "owner"]);
+
+export interface PlatformTeacherRow {
+  userId: string;
+  email: string;
+  name?: string;
+  orgId: string;
+  orgName: string;
+  role: MembershipRole;
+  draftCases: number;
+  publishedCases: number;
+  findingCount: number;
+}
+
+export interface PlatformMemberRow {
+  membershipId: string;
+  userId: string;
+  email?: string;
+  name?: string;
+  orgId: string;
+  orgName: string;
+  role: MembershipRole;
+}
+
+export interface PlatformCaseRow {
+  caseId: string;
+  title: string;
+  status: CaseStatus;
+  orgId: string;
+  orgName: string;
+  findingCount: number;
+  updatedAt?: string;
+}
+
+export interface PlatformDirectory {
+  teachers: PlatformTeacherRow[];
+  members: PlatformMemberRow[];
+  cases: PlatformCaseRow[];
+  activity: {
+    teacherCount: number;
+    studentCount: number;
+    orgCount: number;
+    draftCases: number;
+    publishedCases: number;
+    findingCount: number;
+    enrollmentCount: number;
+    progressCount: number;
+  };
+}
+
+/**
+ * Cross-org view for platform super_admin only. Callers must already have
+ * checked the role — this function does not authorize. Org admin APIs stay
+ * scoped to one org, so a teacher or student never receives another org's drafts
+ * through listCasesForOrg.
+ */
+export async function getPlatformDirectory(): Promise<PlatformDirectory> {
+  const [users, orgs, memberships, cases, enrollments, progress] = await Promise.all([
+    usersStore.all(),
+    orgsStore.all(),
+    membershipsStore.all(),
+    casesStore.all(),
+    enrollmentsStore.all(),
+    progressStore.all(),
+  ]);
+  const orgName = new Map(orgs.map((org) => [org.id, org.name]));
+  const userById = new Map(users.map((user) => [user.id, user]));
+  const active = memberships.filter((membership) => (membership.status ?? "active") !== "revoked");
+  const normalized = cases.map((row) => normalizeCase(row));
+
+  const casesByOrg = new Map<string, Case[]>();
+  for (const row of normalized) {
+    const orgId = row.orgId || DEFAULT_ORG_ID;
+    const list = casesByOrg.get(orgId) ?? [];
+    list.push(row);
+    casesByOrg.set(orgId, list);
+  }
+
+  const nameOf = (orgId: string) => orgName.get(orgId) || orgId;
+
+  const teachers: PlatformTeacherRow[] = active
+    .filter((membership) => TEACHING_ROLES.has(membership.role))
+    .map((membership) => {
+      const user = userById.get(membership.userId);
+      const orgCases = casesByOrg.get(membership.orgId) ?? [];
+      return {
+        userId: membership.userId,
+        email: user?.email ?? "",
+        name: user?.name,
+        orgId: membership.orgId,
+        orgName: nameOf(membership.orgId),
+        role: membership.role,
+        draftCases: orgCases.filter((row) => row.status !== "published").length,
+        publishedCases: orgCases.filter((row) => row.status === "published").length,
+        findingCount: orgCases.reduce((sum, row) => sum + row.findings.length, 0),
+      };
+    })
+    .sort((a, b) => (a.email || a.name || "").localeCompare(b.email || b.name || ""));
+
+  const members: PlatformMemberRow[] = active
+    .map((membership) => {
+      const user = userById.get(membership.userId);
+      return {
+        membershipId: membership.id,
+        userId: membership.userId,
+        email: user?.email,
+        name: user?.name,
+        orgId: membership.orgId,
+        orgName: nameOf(membership.orgId),
+        role: membership.role,
+      };
+    })
+    .sort((a, b) => (a.email || a.name || "").localeCompare(b.email || b.name || ""));
+
+  const caseRows: PlatformCaseRow[] = normalized
+    .map((row) => {
+      const orgId = row.orgId || DEFAULT_ORG_ID;
+      return {
+        caseId: row.caseId,
+        title: row.title,
+        status: row.status ?? "draft",
+        orgId,
+        orgName: nameOf(orgId),
+        findingCount: row.findings.length,
+        updatedAt: row.updatedAt,
+      };
+    })
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+  const orgIds = new Set<string>([
+    ...active.map((membership) => membership.orgId),
+    ...caseRows.map((row) => row.orgId),
+  ]);
+
+  return {
+    teachers,
+    members,
+    cases: caseRows,
+    activity: {
+      teacherCount: teachers.length,
+      studentCount: active.filter((membership) => membership.role === "student").length,
+      orgCount: orgIds.size,
+      draftCases: caseRows.filter((row) => row.status !== "published").length,
+      publishedCases: caseRows.filter((row) => row.status === "published").length,
+      findingCount: caseRows.reduce((sum, row) => sum + row.findingCount, 0),
+      enrollmentCount: enrollments.filter((row) => row.status === "active").length,
+      progressCount: progress.length,
+    },
+  };
 }
 
 export async function listMemberships(orgId: string): Promise<Membership[]> {
@@ -1783,6 +2352,9 @@ export async function listReviewsForCourse(
   orgId: string,
   courseId: string
 ): Promise<CourseReviewsSummary> {
+  if (isPlaceholderCourse({ id: courseId })) {
+    return { reviews: [], average: 0, count: 0 };
+  }
   const reviews = (await reviewsStore.find({ orgId, courseId })).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt)
   );
@@ -2059,4 +2631,155 @@ export async function ensureDemoIdentity(): Promise<void> {
   if (author && !author.userId) {
     await updateAuthor(DEFAULT_ORG_ID, author.id, { userId: DEMO_TEACHER_USER_ID });
   }
+}
+
+// ---------------------------------------------------------------------------
+// User preferences (viewer mouse & keyboard bindings) — org-scoped, per user.
+// ---------------------------------------------------------------------------
+
+const prefsId = (orgId: string, userId: string) => `${orgId}:${userId}`;
+
+export async function getUserPrefs(orgId: string, userId: string): Promise<UserPrefs | null> {
+  const doc = await userPrefsStore.get(prefsId(orgId, userId));
+  return doc && doc.orgId === orgId && doc.userId === userId ? doc : null;
+}
+
+/** Save the bindings file; the newer copy wins (a stale device can't overwrite a newer one). */
+export async function saveUserBindings(
+  orgId: string,
+  userId: string,
+  bindings: NonNullable<UserPrefs["bindings"]>
+): Promise<UserPrefs> {
+  const existing = await getUserPrefs(orgId, userId);
+  const incomingAt = bindings.updatedAt ?? nowIso();
+  if (existing?.bindings?.updatedAt && existing.bindings.updatedAt > incomingAt) return existing;
+  const next: UserPrefs = {
+    id: prefsId(orgId, userId),
+    orgId,
+    userId,
+    bindings: { ...bindings, updatedAt: incomingAt },
+    updatedAt: nowIso(),
+  };
+  await userPrefsStore.put(next);
+  return next;
+}
+
+// Exam documents share the JSON/Mongo seam. Key documents are never route payloads.
+const examSessions = collection<ExamAttempt>("examSessions");
+const examKeys = collection<ExamKey>("examKeys");
+export async function writeExamKey(key: ExamKey): Promise<void> { await examKeys.put(key); }
+export async function readExamKey(orgId: string, id: string): Promise<ExamKey | null> {
+  const key = await examKeys.get(id); return key?.orgId === orgId ? key : null;
+}
+export async function writeExamAttempt(attempt: ExamAttempt): Promise<void> { await examSessions.put(attempt); }
+export async function readExamAttempt(orgId: string, userId: string, id: string): Promise<ExamAttempt | null> {
+  const row = await examSessions.get(id); return row?.orgId === orgId && row.userId === userId ? row : null;
+}
+export async function mutateExamAttempt(orgId: string, userId: string, id: string, change: (attempt: ExamAttempt) => ExamAttempt): Promise<ExamAttempt> {
+  return examSessions.mutate(id, row => {
+    if (!row || row.orgId !== orgId || row.userId !== userId) throw new Error("Attempt not found");
+    return change(row);
+  });
+}
+export async function findActiveExam(orgId: string, userId: string, caseId?: string): Promise<ExamAttempt | null> {
+  return (await examSessions.find({ orgId, userId, caseId, status: "active" }))[0] ?? null;
+}
+
+/** Atomic case transition shared by finding versions and other case mutations. */
+export async function mutateCase(orgId: string, caseId: string, change: (data: Case) => Case): Promise<Case> {
+  return normalizeCase(await casesStore.mutate(caseId, raw => {
+    if (!raw || (raw.orgId ?? DEFAULT_ORG_ID) !== orgId) throw new Error("Case not found");
+    return toStored(change(normalizeCase(raw)));
+  }));
+}
+
+async function prepareWithInventory(current: Finding, patch: Partial<Finding>): Promise<Finding> {
+  const merged = prepareFinding(current, patch);
+  const anchor = anchorFromFinding(merged);
+  const inventory = anchor ? await readFindingInventory(anchor).catch(() => undefined) : undefined;
+  return prepareFinding(current, patch, inventory);
+}
+export async function createVersion(orgId: string, caseId: string, findingId: string, patch: Partial<Finding>, options: { expectedVersion: number; userId: string; sourceKey?: string }): Promise<Case> {
+  if (!Number.isInteger(options.expectedVersion) || options.expectedVersion < 0) throw new FindingConflict("Invalid expectedVersion", 400);
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data) throw new FindingConflict("Case not found", 404);
+  if (options.sourceKey && data.findingVersions?.some(v => v.sourceKey === options.sourceKey && v.findingId === findingId)) return data;
+  const current = data.findings.find(f => f.id === findingId);
+  if (!current && options.expectedVersion !== 0) throw new FindingConflict("Finding not found", 404);
+  const initial: Finding = { id: findingId, label: "", description: "", teachingPoints: [], state: " ", marker: patch.marker!, order: data.findings.length + 1 };
+  const prepared = await prepareWithInventory(current ?? initial, patch);
+  return mutateCase(orgId, caseId, latest => {
+    // The receipt and version are the same atomic write. A lost response cannot
+    // overwrite a later expert version, even if the job receipt was not updated.
+    if (options.sourceKey && latest.findingVersions?.some(v => v.sourceKey === options.sourceKey && v.findingId === findingId)) return latest;
+    let next: Case;
+    if (options.expectedVersion === 0) {
+      if (latest.findings.some(f => f.id === findingId) || latest.findingVersions?.some(v => v.findingId === findingId)) throw new FindingConflict("Finding changed; reload before saving");
+      const created = { ...prepared, id: findingId, order: latest.findings.length + 1, currentVersion: 1, status: "needs_review" as const, approvedVersion: undefined };
+      latest.findings.push(created);
+      latest.findingVersions!.push(snapshot(created, 1, options.userId, nowIso()));
+      latest.updatedAt = nowIso(); next = latest;
+    } else next = appendVersion(latest, findingId, prepared, options.expectedVersion, options.userId);
+    if (options.sourceKey) next.findingVersions!.at(-1)!.sourceKey = options.sourceKey;
+    return next;
+  });
+}
+export async function approve(orgId: string, caseId: string, findingId: string, version: number, contentHash: string, user: Approver): Promise<Case> {
+  const data = await getCaseForOrg(orgId, caseId);
+  const anchor = data?.findingVersions?.find(v => v.findingId === findingId && v.version === version)?.anchor;
+  const inventory = anchor ? await readFindingInventory(anchor).catch(() => undefined) : undefined;
+  return mutateCase(orgId, caseId, latest => approveVersion(latest, findingId, version, contentHash, user, inventory));
+}
+export async function approvedCurrent(orgId: string, caseId: string): Promise<Finding[]> {
+  const data = await getCaseForOrg(orgId, caseId);
+  if (!data || data.status !== "published") return [];
+  const inventories = new Map<string, ReturnType<typeof readFindingInventory>>();
+  const checked = await Promise.all(data.findings.map(async f => {
+    const anchor = anchorFromFinding(f);
+    if (!anchor || f.currentVersion !== f.approvedVersion) return null;
+    const key = `${anchor.studyUID}/${anchor.seriesUID}`;
+    if (!inventories.has(key)) inventories.set(key, readFindingInventory(anchor));
+    const inventory = await inventories.get(key)!.catch(() => undefined);
+    return { findingId: f.id, version: f.currentVersion, inventory };
+  }));
+  const eligible: Finding[] = [];
+  await mutateCase(orgId, caseId, latest => {
+    eligible.length = 0; // Mongo may retry this transition after a CAS conflict.
+    for (const check of checked) {
+      if (!check) continue;
+      const f = latest.findings.find(row => row.id === check.findingId && row.currentVersion === check.version);
+      if (!f) continue;
+      const approved = approvedFinding(latest, f, check.inventory);
+      if (!approved) {
+        // A verified inventory/content mismatch stales approval. An archive outage
+        // with no inventory withholds retrieval without pretending content changed.
+        if (check.inventory) {
+          f.status = "needs_review";
+          delete f.approvedVersion;
+          f.anchorStatus = resolveFindingAnchor(anchorFromFinding(f), check.inventory);
+        }
+        continue;
+      }
+      eligible.push(approved);
+      const v = latest.findingVersions!.find(v => v.findingId === f.id && v.version === f.currentVersion)!;
+      const inventoryOrderHash = hashContent(check.inventory!.instances.map(i => i.sopUID));
+      const prior = latest.findingRevalidations?.filter(r => r.findingId === f.id && r.version === f.currentVersion).at(-1);
+      if (prior?.inventoryOrderHash !== inventoryOrderHash) {
+        latest.findingRevalidations ??= [];
+        latest.findingRevalidations.push({ findingId: f.id, version: f.currentVersion!, contentHash: v.contentHash, inventoryOrderHash, checkedAt: nowIso(), reason: "order_revalidated" });
+      }
+    }
+    return latest;
+  });
+  return eligible;
+}
+/** Tutor projection contains only per-version approved content, never old case-level prose. */
+export async function groundedCase(data: Case): Promise<Case> {
+  const findings = await approvedCurrent(data.orgId, data.caseId);
+  return {
+    caseId: data.caseId, orgId: data.orgId, status: data.status, title: "Imaging case", modality: data.modality,
+    pacsbinBaseUrl: data.pacsbinBaseUrl, studyRefs: data.studyRefs, findings,
+    createdAt: data.createdAt, updatedAt: data.updatedAt,
+    liveTeachingPack: materializeLiveTeachingPack({ caseId: data.caseId, modality: data.modality, findings, studySeriesUIDs: (data.studyRefs ?? []).flatMap(r => r.seriesInstanceUIDs ?? []) }),
+  };
 }

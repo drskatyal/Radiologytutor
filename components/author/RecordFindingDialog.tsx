@@ -6,8 +6,8 @@
 // (with the laser-pointer overlay) to check it, then SAVE:
 //
 //   1. upload the narration audio   → POST /api/audio  (durable URL)
-//   2. structure it (Gemini STT + structuring) if a key is configured — else a
-//      graceful no-op and the author fills the text in by hand
+//   2. compile it with Gemini Flash (audio, plus viewport stills when the mic
+//      was live) if a key is configured — else the author fills the text in by hand
 //   3. create the finding via lib/cases with its `track` + `audioUrl` + text
 //
 // The created finding is then fully editable in the existing Author UI.
@@ -15,6 +15,9 @@
 // The recording surface uses the bundled sample image (the viewer source is a
 // swappable seam); the captured track replays identically wherever it's shown.
 
+import { retainedMarkers } from "@/lib/anchors/resolve";
+import { anchorFields, singleFindingAnchorFields } from "@/lib/anchors/materialize";
+import { MarkerGroupChoice } from "./MarkerGroupChoice";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
@@ -36,17 +39,29 @@ import type { Finding, RecordedTrack, StructuredFinding } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
+import { CaptureStatus } from "@/components/record/CaptureStatus";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
-import { LIMITS, markerFromTrack, structureFindingFromAudio, uploadAudio, validateDraft } from "./lib";
+import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
+import { commitAnnotatedFinding, type RecordedSaveReceipt } from "@/lib/teachingGuide";
+import { LandmarkField } from "./LandmarkField";
+import { RecordedTakeNote } from "./RecordedTakeNote";
+import {
+  LIMITS,
+  assembleRecordedFinding,
+  markerFromTrack,
+  structureFindingFromAudio,
+  validateDraft,
+} from "./lib";
 
 interface RecordFindingDialogProps {
   open: boolean;
   onClose: () => void;
   /** The case being authored — used to resolve its series rail for capture. */
   caseId?: string;
+  orgId?: string;
   /** Append the finding; resolves when created (parent toasts/refreshes). */
-  onCreate: (finding: Partial<Finding>) => Promise<void>;
+  onCreate: (finding: Partial<Finding>, receipt?: RecordedSaveReceipt) => Promise<void>;
 }
 
 const EMPTY: StructuredFinding = { label: "", description: "", teachingPoints: [] };
@@ -54,11 +69,13 @@ const EMPTY: StructuredFinding = { label: "", description: "", teachingPoints: [
 /** Mic availability, so we can guide the author instead of failing silently. */
 type MicStatus = "unknown" | "granted" | "denied" | "unsupported";
 
-export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordFindingDialogProps) {
+export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: RecordFindingDialogProps) {
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
-  const rr = useRecordReplay({ controls, overlay, ready });
+  const rr = useRecordReplay({ controls, overlay, ready, caseId, orgId });
+  const [groupMarkers, setGroupMarkers] = useState(false);
+  useEffect(() => setGroupMarkers(false), [rr.track?.captureSessionId]);
 
   const [draft, setDraft] = useState<StructuredFinding>(EMPTY);
   const [structuring, setStructuring] = useState(false);
@@ -142,7 +159,10 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
   // Remount the stage per open so the viewer/recorder reset cleanly.
   if (!open) return null;
 
-  const hasTrack = !!rr.track && rr.track.events.length > 0;
+  const hasTrack = !!rr.track && (rr.track.events.length > 0 || !!rr.track.journal?.length);
+  const previewMarker = hasTrack
+    ? anchorFields(rr.track!, { markerId: retainedMarkers(rr.track!.journal ?? [])[0]?.payload?.markerId as string | undefined }).marker ?? markerFromTrack(rr.track) ?? { x_pct: 0.5, y_pct: 0.5 }
+    : null;
   const errors = validateDraft(draft);
   const canSave = !!draft.label.trim() && !errors.label;
   const micBlocked = mic === "denied" || mic === "unsupported";
@@ -173,10 +193,15 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
     setError("");
     setNotice("");
     try {
-      const result = await structureFindingFromAudio(rr.audio.base64, rr.audio.mimeType);
+      const result = await structureFindingFromAudio(
+        rr.audio.base64,
+        rr.audio.mimeType,
+        rr.frames,
+        caseId && rr.track?.captureSessionId ? { caseId, sessionId: rr.track.captureSessionId } : undefined
+      );
       if (result) {
-        setDraft(result);
-        setNotice("Structured from your narration — review below.");
+        setDraft((d) => ({ ...result, landmark: d.landmark }));
+        setNotice("Compiled from the recording — review below.");
       } else {
         setNotice("AI structuring is off (no Gemini key). Fill the fields in by hand.");
       }
@@ -208,6 +233,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
           label: draft.label.trim(),
           description: draft.description.trim(),
           teachingPoints: draft.teachingPoints.map((p) => p.trim()).filter(Boolean),
+          landmark: draft.landmark?.trim() || undefined,
           // A finding needs a state + marker to be valid. Prefer last cursor from
           // the walk-through; otherwise a centre placeholder (author can refine).
           state: " ",
@@ -216,29 +242,29 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         start
       );
       const measurements = controls.current?.getMeasurements?.() ?? [];
-      if (measurements.length > 0) base.measurements = measurements;
+      let receipt: RecordedSaveReceipt | undefined;
 
       if (hasTrack) {
-        const track: RecordedTrack = { ...(rr.track as RecordedTrack) };
-        // Persist the narration audio (if any) and attach its durable URL.
-        if (rr.audio) {
-          try {
-            track.audioUrl = await uploadAudio(rr.audio.base64, rr.audio.mimeType);
-          } catch {
-            // Non-fatal: keep the silent retrace if the upload fails — the
-            // recording is never lost, just narrated silently.
-          }
-        }
-        base.track = track;
-        base.durationMs = track.durationMs;
-        if (track.start.ww != null && track.start.wc != null) {
-          base = withDisplaySnapshot(base, {
-            sliceIndex: track.start.sliceIndex,
-            ww: track.start.ww,
-            wc: track.start.wc,
-            sopInstanceUID: start?.sopInstanceUID,
-          });
-        }
+        const assembled = await assembleRecordedFinding(
+          base,
+          rr.track as RecordedTrack,
+          rr.audio,
+          measurements,
+          groupMarkers
+        );
+        base = assembled.finding;
+        receipt = assembled.receipt;
+        const moneySlice = base.sliceIndex ?? start?.sliceIndex ?? 0;
+        if (moneySlice !== start?.sliceIndex) base.sopInstanceUID = undefined;
+        base = withDisplaySnapshot(base, {
+          sliceIndex: moneySlice,
+          ww: base.windowWidth,
+          wc: base.windowCenter,
+          sopInstanceUID:
+            moneySlice === start?.sliceIndex ? start?.sopInstanceUID : undefined,
+        });
+      } else if (measurements.length > 0) {
+        base.measurements = measurements;
       }
 
       const active = series[activeSeriesIndex];
@@ -247,7 +273,22 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         base.studyInstanceUID = active.studyInstanceUID;
       }
 
-      await onCreate(base);
+      if (!hasTrack) {
+        const landed = commitAnnotatedFinding(base, {
+          sliceIndex: base.sliceIndex ?? start?.sliceIndex,
+          windowWidth: base.windowWidth ?? start?.ww,
+          windowCenter: base.windowCenter ?? start?.wc,
+          zoom: start?.zoom,
+          pan: start?.pan,
+          seriesInstanceUID: base.seriesInstanceUID,
+          measurements,
+        });
+        base = landed.finding;
+        receipt = landed.receipt;
+      }
+
+      if (hasTrack) Object.assign(base, singleFindingAnchorFields(rr.track!, groupMarkers));
+      await onCreate(base, receipt);
       handleClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create finding");
@@ -326,12 +367,13 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
             onReady={onReady}
             onEvent={rr.onViewerEvent}
             onCursor={rr.onCursor}
+            onMarker={rr.onMarker}
           />
         </div>
 
         {/* Record / replay controls */}
         <div className="flex flex-wrap items-center gap-2">
-          {rr.phase === "recording" ? (
+          {["starting", "recording", "stopping"].includes(rr.phase) ? (
             <Button variant="danger" size="sm" onClick={() => rr.stopRecording()}>
               Stop recording
             </Button>
@@ -381,6 +423,8 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         </div>
 
         {/* Hotkey + silent-track hints. */}
+        <MarkerGroupChoice track={rr.track} checked={groupMarkers} onChange={setGroupMarkers} />
+        <CaptureStatus rr={rr} controls={controls} />
         {rr.phase === "idle" && !micBlocked && (
           <p className="text-xs text-muted">
             Tip: navigate the viewer and hold{" "}
@@ -394,11 +438,16 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
             to record while you talk. The hotkey is ignored while you type.
           </p>
         )}
-        {hasTrack && !rr.audio && rr.phase === "idle" && (
-          <p className="rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-secondary">
-            Captured a silent walk-through (no narration recorded). You can re-record
-            with audio, or save it as-is and type the teaching text below.
-          </p>
+        {hasTrack && rr.phase === "idle" && rr.track && (
+          <RecordedTakeNote
+            track={rr.track}
+            hasAudio={Boolean(rr.audio)}
+            point={
+              previewMarker
+                ? { x: previewMarker.x_pct, y: previewMarker.y_pct }
+                : undefined
+            }
+          />
         )}
 
         {notice && (
@@ -420,6 +469,10 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
               />
             )}
           </Field>
+          <LandmarkField
+            value={draft.landmark ?? ""}
+            onChange={(landmark) => setDraft((d) => ({ ...d, landmark }))}
+          />
           <Field label="Description">
             {(p) => (
               <Textarea
@@ -486,7 +539,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         {structuring && (
           <div className="flex items-center gap-3 rounded-xl border border-subtle bg-surface px-4 py-3 text-sm text-secondary">
             <Spinner size="sm" />
-            Structuring from your narration…
+            {COMPILING_FROM_RECORDING}
           </div>
         )}
 

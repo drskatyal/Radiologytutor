@@ -3,42 +3,38 @@
 @tailwind utilities;
 
 /* ──────────────────────────────────────────────────────────────────────────
-   FlowRad Learn — design tokens.
+   RadLearn — design tokens.
 
-   Clinical reading-room palette: warm charcoal surfaces (not neon-slate), one
-   restrained film-marker accent, no glow washes. Imaging stays pure black.
-
-   Two token vocabularies share the same variables (FlowRad semantic + shadcn).
+   Daylight teaching product: warm paper, white surfaces, cobalt signal.
+   Imaging viewports stay pure black. Backgrounds are flat. No gold.
    ────────────────────────────────────────────────────────────────────────── */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Surfaces — warm charcoal ladder, film-adjacent, not electric blue-black. */
-  --canvas: 14 13 12; /* #0e0d0c */
-  --surface: 22 21 19; /* #161513 */
-  --elevated: 32 30 27; /* #201e1b */
-  --overlay: 42 39 35; /* #2a2723 */
+  /* Paper, white, warm hover. Not a black void. */
+  --canvas: 247 245 241; /* #F7F5F1 */
+  --surface: 255 255 255;
+  --elevated: 255 255 255;
+  --overlay: 236 232 224; /* #ECE8E0 */
 
-  /* Text — paper-on-film contrast, calm steps down. */
-  --text-primary: 242 237 230; /* #f2ede6 */
-  --text-secondary: 168 160 148; /* #a8a094 */
-  --text-muted: 110 103 94; /* #6e675e */
+  --text-primary: 18 18 18; /* #121212 */
+  --text-secondary: 90 86 80; /* #5A5650 */
+  --text-muted: 92 88 82; /* #5C5852 */
 
-  /* Borders — soft warm hairlines. */
-  --border-subtle: 48 44 39; /* #302c27 */
-  --border-strong: 72 66 58; /* #48423a */
+  --border-subtle: 226 221 212; /* #E2DDD4 */
+  --border-strong: 186 180 170; /* #BAB4AA */
 
-  /* Accent — film annotation amber (PACS-familiar), not neon cyan. */
-  --accent: 212 168 75; /* #d4a84b */
-  --accent-foreground: 20 16 8; /* ink on amber */
-  --accent-muted: 58 46 24; /* quiet amber wash */
-  --accent-bright: 232 196 110; /* highlight without glow */
+  /* Signal cobalt. High contrast on paper and on the black viewport. */
+  --accent: 28 58 214; /* #1C3AD6 */
+  --accent-foreground: 255 255 255;
+  --accent-muted: 226 231 252; /* #E2E7FC */
+  --accent-bright: 47 84 255;
 
-  /* Semantic — legible on charcoal. */
-  --success: 110 176 122; /* #6eb07a */
-  --warning: 212 168 75; /* align with accent */
-  --danger: 196 92 84; /* #c45c54 */
-  --info: 122 148 176; /* #7a94b0 — cool steel, not electric */
+  /* Semantic, darkened so they hold on paper. */
+  --success: 20 122 72;
+  --warning: 140 84 12;
+  --danger: 176 42 36;
+  --info: 28 58 214;
 
   --radius: 0.5rem;
 
@@ -67,17 +63,41 @@
     @apply border-subtle;
   }
 
+  html {
+    scroll-behavior: smooth;
+    /* Clip the viewport, not just the body. A wide toolbar's scroll width was
+       expanding the document on the record stage and showing a page scrollbar. */
+    overflow-x: clip;
+  }
+
   body {
     @apply bg-canvas text-primary font-sans antialiased;
-    font-feature-settings: "ss01", "cv11";
     text-rendering: optimizeLegibility;
-    /* Quiet depth — no accent glow wash. */
-    background-image: linear-gradient(
-      180deg,
-      rgb(var(--surface)) 0%,
-      rgb(var(--canvas)) 28rem
-    );
-    background-attachment: fixed;
+    background-color: #f7f5f1;
+    overflow-x: clip;
+  }
+
+  /* Cornerstone mounts a canvas inside the viewer div. touch-action is not
+     inherited, so the canvas must opt out of page pan/zoom itself. */
+  .touch-none,
+  .touch-none canvas {
+    touch-action: none;
+  }
+
+  /* Cornerstone's active-tool cursor is an SVG whose pointer is a green "+".
+     Scroll, window/level, pan, and zoom should be the system arrow. The
+     library writes an inline cursor on the enabled element, so this has to
+     win. Measurement tools keep their own cursors. MPR crosshair reference
+     lines are canvas drawings and are not affected. */
+  [data-viewer-tool="StackScroll"],
+  [data-viewer-tool="StackScroll"] canvas,
+  [data-viewer-tool="WindowLevel"],
+  [data-viewer-tool="WindowLevel"] canvas,
+  [data-viewer-tool="Pan"],
+  [data-viewer-tool="Pan"] canvas,
+  [data-viewer-tool="Zoom"],
+  [data-viewer-tool="Zoom"] canvas {
+    cursor: default !important;
   }
 
   h1,
@@ -85,8 +105,11 @@
   h3,
   h4 {
     @apply text-primary font-semibold tracking-tight;
-    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
     text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
   }
 
   :focus-visible {
@@ -99,7 +122,15 @@
   }
 
   .font-display {
-    font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /* Hero heading only. Text gradient, never a background fill. */
+  .hero-text {
+    background-image: linear-gradient(90deg, #000000, #666666);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
 
   ::selection {
@@ -130,13 +161,23 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
     *,
     *::before,
     *::after {
-      animation-duration: 0.001ms !important;
+      animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
-      transition-duration: 0.001ms !important;
       scroll-behavior: auto !important;
+      transition-property: opacity, color, background-color, border-color, box-shadow !important;
+    }
+  }
+
+  @media (scripting: none) {
+    .reveal {
+      opacity: 1 !important;
+      transform: none !important;
     }
   }
 }
@@ -149,14 +190,32 @@
     @apply animate-fade-in;
   }
 
-  /* Subtle top edge — no neon. */
+  /* Subtle top edge on paper. */
   .surface-hairline {
-    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.035);
+    box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.8);
   }
 
   /* Active surface ring — hairline accent, no bloom. */
   .accent-glow {
     box-shadow: 0 0 0 1px rgb(var(--accent) / 0.45);
+  }
+}
+
+/* Tutor card: lands after its leader reaches the card edge. */
+@keyframes ink-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-ink-card] {
+    animation: none !important;
   }
 }
 
@@ -183,4 +242,110 @@
   #certificate-document * {
     color: inherit !important;
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   FlowRad Viewer shell (/viewer). Brand forest green (brand/brand.md) on the
+   system's light or dark surface while choosing a study; reading-room black
+   once a study is on screen (`:has(local-stage)`), whatever the system theme.
+   ────────────────────────────────────────────────────────────────────────── */
+.viewer-shell {
+  --vl-bg: 247 245 241; /* paper, as the rest of FlowRad */
+  --vl-surface: 255 255 255;
+  --vl-fg: 18 18 18;
+  --vl-muted: 84 92 88;
+  --vl-border: 214 218 212;
+  --vl-brand: 15 77 58; /* #0F4D3A forest green */
+  --vl-brand-soft: 226 239 233;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  .viewer-shell {
+    --vl-bg: 9 13 12;
+    --vl-surface: 17 24 22;
+    --vl-fg: 240 244 242;
+    --vl-muted: 160 174 168;
+    --vl-border: 40 54 49;
+    --vl-brand: 92 196 156; /* forest green, lifted for contrast on dark */
+    --vl-brand-soft: 20 46 38;
+    color-scheme: dark;
+  }
+}
+
+.viewer-shell:has([data-testid="local-stage"]) {
+  --vl-bg: 0 0 0;
+  --vl-surface: 12 12 12;
+  --vl-fg: 255 255 255;
+  --vl-muted: 179 179 179;
+  --vl-border: 38 38 38;
+  --vl-brand: 92 196 156;
+  --vl-brand-soft: 20 46 38;
+  color-scheme: dark;
+}
+
+/* Dialogs the free viewer opens while reading (Set window, DICOM tags,
+   structured report): <Modal tone="reading">. They portal to <body>, outside
+   the shell, so the reading room's dark surface and brand green ride on the
+   panel itself. A plain class on purpose: a `body:has(…)` rule re-matched the
+   whole page on every scroll frame (p95 frame 17 → 100 ms on the 520-slice CT). */
+.modal-reading {
+  --canvas: 9 13 12;
+  --surface: 17 24 22;
+  --elevated: 17 24 22;
+  --text-primary: 240 244 242;
+  --text-secondary: 190 202 197;
+  --text-muted: 160 174 168;
+  --border-subtle: 40 54 49;
+  --border-strong: 62 80 73;
+  --accent: 92 196 156;
+  --accent-foreground: 9 13 12;
+  --accent-muted: 20 46 38;
+  --accent-bright: 120 214 178;
+  color-scheme: dark;
+}
+
+/* Dialogs over the free viewer's landing (<Modal tone="viewer">): the
+   landing's paper and forest green, dark with the system, as the landing is. */
+.modal-viewer {
+  --accent: 15 77 58;
+  --accent-foreground: 255 255 255;
+  --accent-muted: 226 239 233;
+  --accent-bright: 22 101 77;
+}
+@media (prefers-color-scheme: dark) {
+  .modal-viewer {
+    --canvas: 9 13 12;
+    --surface: 17 24 22;
+    --elevated: 17 24 22;
+    --text-primary: 240 244 242;
+    --text-secondary: 190 202 197;
+    --text-muted: 160 174 168;
+    --border-subtle: 40 54 49;
+    --border-strong: 62 80 73;
+    --accent: 92 196 156;
+    --accent-foreground: 9 13 12;
+    --accent-muted: 20 46 38;
+    --accent-bright: 120 214 178;
+    color-scheme: dark;
+  }
+}
+
+/* The lockup with the wordmark that reads on the current surface. */
+.viewer-shell .vl-logo-dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  .viewer-shell .vl-logo-light {
+    display: none;
+  }
+  .viewer-shell .vl-logo-dark {
+    display: block;
+  }
+}
+.viewer-shell:has([data-testid="local-stage"]) .vl-logo-light {
+  display: none;
+}
+.viewer-shell:has([data-testid="local-stage"]) .vl-logo-dark {
+  display: block;
 }

@@ -1,10 +1,9 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // GET /api/cases/[caseId]/prefetch -> the prefetch manifest for a case.
 //
-// Returns the ordered series UIDs + ordered instance refs the case's findings
-// will need, so the client can warm the /api/dicomweb cache (idle/low-priority)
-// for an instant case open. Imaging metadata is resolved server-side via
-// lib/orthanc.ts; the manifest is sparse (hasImaging:false) when Orthanc isn't
-// configured, so the client still degrades gracefully.
+// Returns series order and finding focus only. Instance SOP lists stay empty
+// so the case list does not enumerate every slice of every series. The viewer
+// prefetches the active series' neighbors after the first frame.
 
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, getSession } from "@/lib/auth";
@@ -36,6 +35,7 @@ export async function GET(_req: NextRequest, { params }: { params: { caseId: str
     }
   }
 
+  if (await hasActiveExam(params.caseId)) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
   const manifest = await buildPrefetchManifest(params.caseId, orgId);
   if (!manifest) {
     return NextResponse.json({ error: "Case not found" }, { status: 404 });

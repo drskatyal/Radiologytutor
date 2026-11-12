@@ -1,0 +1,21 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 11 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 approval.spec.ts:7:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (5.8s)
+  ✓  2 approved-tools.spec.ts:9:5 › approved tool route requires a session and never reveals its catalog anonymously (144ms)
+  ✓  3 approved-tools.spec.ts:17:5 › real routes expose approved IDs and metadata bounds, reject forged geometry, and invalidate old commands after edit (4.3s)
+  ✓  4 dicomweb-auth.spec.ts:3:5 › DICOMweb requires a session before QIDO, metadata or pixel access (106ms)
+  ✓  5 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (5.1s)
+  ✓  6 healthz.spec.ts:3:5 › healthz is public liveness with no environment or service details (24ms)
+  ✓  7 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (1.6s)
+  ✓  8 trusted-host.spec.ts:7:5 › Worker-authenticated robots and sitemap use the forwarded public origin (34ms)
+  ✓  9 trusted-host.spec.ts:17:5 › unsigned, wrong-secret and malformed-host requests use configured localhost SEO (57ms)
+  ✓  10 trusted-host.spec.ts:33:5 › landing, layout and viewer metadata use the authenticated or configured origin (113ms)
+  ✓  11 trusted-host.spec.ts:47:5 › middleware uses Worker host and never redirects back to the upstream origin (38ms)
+
+  11 passed (36.5s)

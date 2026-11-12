@@ -1,25 +1,39 @@
 // POST /api/structure-finding
-// Body: { transcript: string }  OR  { audioBase64, audioMime }
+// Body: { transcript: string }  OR  { audioBase64, audioMime, frames? }
 // Returns strict JSON: { label, description, teachingPoints: string[] }
 //
-// The tutor dictates a finding freely (typed transcript or recorded audio);
-// Gemini Flash does STT (for audio) + structures it. JSON-only, low
-// temperature, defensive parsing.
+// A dictated finding (typed transcript or recorded audio). Optional viewport
+// stills from a walk-through ride along so Flash can see the slice. The text
+// fields are the only output — markers still come from the viewer track.
+// JSON-only, defensive parsing (3.6+ omits sampling). Without stills the prompt
+// matches the audio/transcript call.
 
 import { NextRequest, NextResponse } from "next/server";
 import { generate, parseJsonLoose, userParts } from "@/lib/gemini";
-import { STRUCTURE_FINDING_SYSTEM } from "@/lib/teachingPrompt";
+import { findingSystemInstruction } from "@/lib/compileSession";
+import { coerceCompileFrames } from "@/lib/compileMedia";
 import type { StructuredFinding } from "@/lib/types";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { captureMedia } from "@/lib/journal/storage";
+import { captureHttpError } from "@/lib/journal/http";
+import { CaptureError } from "@/lib/journal/manifest";
+import { PhiError } from "@/lib/phiGuard";
 
 export const runtime = "nodejs";
 
-const SYSTEM = STRUCTURE_FINDING_SYSTEM;
-
 export async function POST(req: NextRequest) {
   try {
-    await requireAuthorOrg();
-    const { transcript, audioBase64, audioMime } = await req.json();
+    const orgId = await requireAuthorOrg();
+    const body = await req.json();
+    const transcript = body.transcript as string | undefined;
+    let audioBase64 = body.audioBase64 as string | undefined;
+    let audioMime = body.audioMime as string | undefined;
+    let frames = coerceCompileFrames(body.frames);
+    if (body.capture) {
+      const media = await captureMedia(orgId, body.capture.caseId, body.capture.sessionId, "audio", true);
+      audioBase64 = media.bytes.toString("base64"); audioMime = media.mimeType;
+      frames = [];
+    }
     if ((typeof transcript !== "string" || transcript.trim() === "") && !audioBase64) {
       return NextResponse.json(
         { error: "transcript or audioBase64 is required" },
@@ -27,17 +41,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const baseText =
+      typeof transcript === "string" && transcript.trim()
+        ? transcript
+        : "Transcribe this dictation and structure the finding.";
     const parts = userParts({
-      text:
-        typeof transcript === "string" && transcript.trim()
-          ? transcript
-          : "Transcribe this dictation and structure the finding.",
+      text: frames.length
+        ? `${baseText}\n\nViewport stills are attached. Use them with the dictation. Do not invent coordinates or measurements.`
+        : baseText,
       audioBase64,
       audioMime,
+      images: frames.map((frame) => ({
+        mimeType: frame.mimeType,
+        data: frame.base64,
+        caption: `Viewport still at t=${frame.tMs}ms.`,
+      })),
     });
 
     const result = await generate({
-      systemInstruction: SYSTEM,
+      systemInstruction: findingSystemInstruction(frames.length > 0),
       temperature: 0.1,
       jsonOnly: true,
       contents: [{ role: "user", parts }],
@@ -47,6 +69,7 @@ export async function POST(req: NextRequest) {
 
     // Defensive normalisation.
     const finding: StructuredFinding = {
+      modelMetadata: result.modelMetadata,
       label: typeof parsed.label === "string" ? parsed.label : "Untitled finding",
       description: typeof parsed.description === "string" ? parsed.description : "",
       teachingPoints: Array.isArray(parsed.teachingPoints)
@@ -56,6 +79,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(finding);
   } catch (err) {
+    if (err instanceof CaptureError || err instanceof PhiError) return captureHttpError(err);
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";

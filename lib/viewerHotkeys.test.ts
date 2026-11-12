@@ -1,0 +1,370 @@
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import {
+  VIEWER_SHORTCUT_GROUPS,
+  shortcutForPreset,
+  shortcutForTool,
+  VIEWER_HOTKEY_HINTS,
+  isTextTarget,
+  resolveViewerHotkey,
+  viewerShortcutGroups,
+} from "./viewerHotkeys";
+import { FREE_VIEWER_FEATURES, TEACHING_FEATURES } from "./viewerFeatures";
+
+/** The old boolean, as feature groups: all on (free viewer) or all off. */
+const featuresOf = (on: boolean) => (on ? FREE_VIEWER_FEATURES : TEACHING_FEATURES);
+
+// Keys the student session already binds on `window`
+// (components/student/StudentSession.tsx + lib/seriesRailPreference.ts).
+const SESSION_KEYS = ["c", "n", "p", "r", "t", "f", "[", "?", " "];
+
+test("number keys 1–9 are window presets and 0 the series default, as on the desktop", () => {
+  for (let n = 1; n <= 9; n += 1) {
+    assert.deepEqual(resolveViewerHotkey({ key: String(n) }), { type: "preset", ordinal: n }, String(n));
+  }
+  assert.deepEqual(resolveViewerHotkey({ key: "0" }), { type: "preset", ordinal: 0 });
+  // Through the bindings engine too (a physical digit on any layout).
+  assert.deepEqual(resolveViewerHotkey({ key: "&", code: "Digit7" }), { type: "preset", ordinal: 7 });
+});
+
+test("each preset row shows its key", () => {
+  assert.equal(shortcutForPreset(1, {}), "1");
+  assert.equal(shortcutForPreset(9, {}), "9");
+  assert.equal(shortcutForPreset(0, {}), "0");
+  assert.equal(shortcutForPreset(10, {}), null);
+});
+
+test("no viewer hotkey collides with a key the student session owns", () => {
+  for (const key of SESSION_KEYS) {
+    assert.equal(
+      resolveViewerHotkey({ key }),
+      null,
+      `${JSON.stringify(key)} is already a session hotkey`
+    );
+  }
+});
+
+test("a modifier hands the key back to the browser", () => {
+  for (const modifier of ["ctrlKey", "metaKey", "altKey"] as const) {
+    assert.equal(resolveViewerHotkey({ key: "1", [modifier]: true }), null, modifier);
+    assert.equal(resolveViewerHotkey({ key: "ArrowDown", [modifier]: true }), null, modifier);
+    assert.equal(resolveViewerHotkey({ key: "0", [modifier]: true }), null, modifier);
+  }
+});
+
+test("arrows and page keys move the stack", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "ArrowDown" }, 240), { type: "slice", delta: 1 });
+  assert.deepEqual(resolveViewerHotkey({ key: "ArrowUp" }, 240), { type: "slice", delta: -1 });
+  assert.deepEqual(resolveViewerHotkey({ key: "PageDown" }, 240), { type: "slice", delta: 12 });
+  assert.deepEqual(resolveViewerHotkey({ key: "ArrowDown", shiftKey: true }, 240), {
+    type: "slice",
+    delta: 12,
+  });
+});
+
+test("Home and End jump to the ends", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "Home" }), {
+    type: "sliceAbsolute",
+    where: "first",
+  });
+  assert.deepEqual(resolveViewerHotkey({ key: "End" }), { type: "sliceAbsolute", where: "last" });
+});
+
+test("zoom, reset, invert and cine", () => {
+  const zoomIn = resolveViewerHotkey({ key: "+" });
+  assert.equal(zoomIn?.type, "zoom");
+  assert.ok(zoomIn && zoomIn.type === "zoom" && zoomIn.factor > 1);
+  const zoomOut = resolveViewerHotkey({ key: "-" });
+  assert.ok(zoomOut && zoomOut.type === "zoom" && zoomOut.factor < 1);
+  assert.deepEqual(resolveViewerHotkey({ key: "=" })?.type, "zoom", "unshifted + on US layouts");
+  assert.deepEqual(resolveViewerHotkey({ key: "Backspace" }), { type: "reset" });
+  assert.deepEqual(resolveViewerHotkey({ key: "i" }), { type: "invert" });
+  assert.deepEqual(resolveViewerHotkey({ key: "I" }), { type: "invert" });
+  assert.deepEqual(resolveViewerHotkey({ key: "k" }), { type: "cine" });
+});
+
+test("Shift and a digit is a window preset, by number or by shifted glyph", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "1", shiftKey: true }), {
+    type: "preset",
+    ordinal: 1,
+  });
+  assert.deepEqual(resolveViewerHotkey({ key: "!" }), { type: "preset", ordinal: 1 });
+  assert.deepEqual(resolveViewerHotkey({ key: "#" }), { type: "preset", ordinal: 3 });
+  assert.deepEqual(resolveViewerHotkey({ key: "(" }), { type: "preset", ordinal: 9 });
+});
+
+test("no digit, bare or shifted, is a tool shortcut", () => {
+  for (const digit of "0123456789") {
+    assert.equal(resolveViewerHotkey({ key: digit })?.type, "preset", digit);
+    assert.equal(resolveViewerHotkey({ key: digit, shiftKey: true })?.type, "preset", `Shift+${digit}`);
+  }
+});
+
+test("unbound keys pass through", () => {
+  for (const key of ["q", "y", "Enter", "Tab", "Escape", "F5"]) {
+    assert.equal(resolveViewerHotkey({ key }), null, key);
+  }
+  for (const key of ["1", "ArrowDown", "a", "z"]) {
+    assert.notEqual(resolveViewerHotkey({ key }), null, key);
+  }
+});
+
+test("text fields are never hijacked", () => {
+  assert.equal(isTextTarget({ tagName: "INPUT" } as unknown as EventTarget), true);
+  assert.equal(isTextTarget({ tagName: "textarea" } as unknown as EventTarget), true);
+  assert.equal(isTextTarget({ tagName: "SELECT" } as unknown as EventTarget), true);
+  assert.equal(
+    isTextTarget({ tagName: "DIV", isContentEditable: true } as unknown as EventTarget),
+    true
+  );
+  assert.equal(isTextTarget({ tagName: "DIV" } as unknown as EventTarget), false);
+  assert.equal(isTextTarget(null), false);
+  assert.equal(isTextTarget({} as unknown as EventTarget), false);
+});
+
+test("every hint names a key the resolver actually answers", () => {
+  assert.ok(VIEWER_HOTKEY_HINTS.length > 0);
+  for (const hint of VIEWER_HOTKEY_HINTS) {
+    assert.ok(hint.keys.trim().length > 0, "a hint without a key");
+    assert.ok(hint.does.trim().length > 0, `"${hint.keys}" without a description`);
+  }
+});
+
+test("letter tools follow the PACS mnemonic", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "w" }), { type: "tool", tool: "WindowLevel" });
+  assert.deepEqual(resolveViewerHotkey({ key: "S" }), { type: "tool", tool: "StackScroll" });
+  assert.deepEqual(resolveViewerHotkey({ key: "z" }), { type: "tool", tool: "Zoom" });
+  assert.deepEqual(resolveViewerHotkey({ key: "m" }), { type: "tool", tool: "Pan" });
+  assert.deepEqual(resolveViewerHotkey({ key: "l" }), { type: "tool", tool: "Length" });
+  assert.deepEqual(resolveViewerHotkey({ key: "a" }), { type: "tool", tool: "Angle" });
+  assert.deepEqual(resolveViewerHotkey({ key: "e" }), { type: "tool", tool: "EllipticalROI" });
+  assert.deepEqual(resolveViewerHotkey({ key: "b" }), { type: "tool", tool: "RectangleROI" });
+});
+
+test("overlay, MPR, layout, help and cine rate", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "o" }), { type: "overlay" });
+  assert.deepEqual(resolveViewerHotkey({ key: "x" }), { type: "mpr" });
+  assert.deepEqual(resolveViewerHotkey({ key: "g" }), { type: "layout" });
+  // H is flip now (rotate / flip test below); the sheet is ? and the toolbar.
+  assert.equal(resolveViewerHotkey({ key: "h" })?.type, "orient");
+  assert.deepEqual(resolveViewerHotkey({ key: "," }), { type: "cineFps", delta: -1 });
+  assert.deepEqual(resolveViewerHotkey({ key: "." }), { type: "cineFps", delta: 1 });
+});
+
+test("? is help only where the viewer owns it", () => {
+  assert.equal(resolveViewerHotkey({ key: "?" }), null);
+  assert.deepEqual(resolveViewerHotkey({ key: "?" }, 0, { questionMarkHelp: true }), {
+    type: "help",
+  });
+});
+
+test("Shift+0 is the series default window", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "0", shiftKey: true }), {
+    type: "preset",
+    ordinal: 0,
+  });
+  assert.deepEqual(resolveViewerHotkey({ key: ")" }), { type: "preset", ordinal: 0 });
+});
+
+test("tooltips and the help sheet read the same bindings", () => {
+  assert.equal(shortcutForTool("WindowLevel"), "W");
+  assert.equal(shortcutForTool("Angle"), "A");
+  assert.equal(shortcutForTool("Probe"), null);
+  for (const group of VIEWER_SHORTCUT_GROUPS) {
+    for (const row of group.rows) {
+      for (const key of row.keys) {
+        if (key.length !== 1 || !/[A-Z]/.test(key)) continue;
+        assert.notEqual(
+          resolveViewerHotkey({ key: key.toLowerCase() }, 0, { rotateKey: true, questionMarkHelp: true }),
+          null,
+          `help lists ${key} but the resolver ignores it`
+        );
+      }
+    }
+  }
+});
+
+test("rotate / flip: R, Shift+R, H, V (as on the desktop)", () => {
+  const own = { rotateKey: true };
+  assert.deepEqual(resolveViewerHotkey({ key: "r" }, 0, own), { type: "orient", command: "rotate:90" });
+  assert.deepEqual(resolveViewerHotkey({ key: "R", shiftKey: true }, 0, own), { type: "orient", command: "rotate:-90" });
+  // In a student session R stays the session's (exam reveal).
+  assert.equal(resolveViewerHotkey({ key: "r" }), null);
+  assert.deepEqual(resolveViewerHotkey({ key: "h" }), { type: "orient", command: "flip:h" });
+  assert.deepEqual(resolveViewerHotkey({ key: "v" }), { type: "orient", command: "flip:v" });
+  // Browser combinations stay the browser's.
+  assert.equal(resolveViewerHotkey({ key: "r", ctrlKey: true }), null);
+});
+
+test("the help lists Enter (maximise a pane) only where the grid can do it", () => {
+  const rows = (paneMaximize: boolean) =>
+    viewerShortcutGroups({}, false, { paneMaximize }).flatMap((g) => g.rows.map((r) => r.keys.join("+")));
+  assert.ok(rows(true).includes("Enter"));
+  assert.ok(!rows(false).includes("Enter"), "the case viewer's grid has no maximise");
+  // Enter is not a viewport key: the grid owns it.
+  assert.equal(resolveViewerHotkey({ key: "Enter" }, 0, {}, {}), null);
+});
+
+test("D is Bidirectional only where the free viewer's extra measure tools are on", () => {
+  assert.deepEqual(resolveViewerHotkey({ key: "d" }, 0, { features: FREE_VIEWER_FEATURES }, {}), { type: "tool", tool: "Bidirectional" });
+  assert.deepEqual(resolveViewerHotkey({ key: "D" }, 0, { features: FREE_VIEWER_FEATURES }, {}), { type: "tool", tool: "Bidirectional" });
+  assert.equal(resolveViewerHotkey({ key: "d" }, 0, {}, {}), null, "teaching surfaces: D stays free");
+  const does = (freeViewer: boolean) =>
+    viewerShortcutGroups({}, false, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows.map((r) => r.does));
+  assert.ok(does(true).includes("Bidirectional"));
+  assert.ok(!does(false).includes("Bidirectional"));
+  // Circle and the magnifier have no default key, so the sheet doesn't list
+  // them. Freehand (N) and Cobb (C) have the desktop's letters in the free
+  // viewer only; teaching surfaces keep N and C free (the student session owns C).
+  assert.ok(!does(true).some((d) => /Circle ROI|Magnif/.test(d)));
+  assert.ok(does(true).includes("Freehand ROI"));
+  assert.ok(does(true).includes("Cobb angle"));
+  assert.ok(!does(false).includes("Freehand ROI"));
+  assert.ok(!does(false).includes("Cobb angle"));
+});
+
+test("the help lists Ctrl+F11 (Set window), ⌘ on a Mac", () => {
+  const row = (mac: boolean) =>
+    viewerShortcutGroups({}, mac).flatMap((g) => g.rows).find((r) => /exact window/.test(r.does));
+  assert.deepEqual(row(false)?.keys, ["Ctrl", "F11"]);
+  assert.deepEqual(row(true)?.keys, ["⌘", "F11"]);
+});
+
+test("the free viewer's help lists Ctrl/⌘+E (Export); teaching surfaces don't", () => {
+  const row = (mac: boolean, freeViewer: boolean) =>
+    viewerShortcutGroups({}, mac, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows).find((r) => /^Export/.test(r.does));
+  assert.deepEqual(row(false, true)?.keys, ["Ctrl", "E"]);
+  assert.deepEqual(row(true, true)?.keys, ["⌘", "E"]);
+  assert.equal(row(false, false), undefined);
+});
+
+test("the free viewer's help lists Alt+Shift+Enter (distraction-free reading), ⌥ on a Mac", () => {
+  const row = (mac: boolean, freeViewer: boolean) =>
+    viewerShortcutGroups({}, mac, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows).find((r) => /Distraction-free/.test(r.does));
+  assert.deepEqual(row(false, true)?.keys, ["Alt", "Shift", "Enter"]);
+  assert.deepEqual(row(true, true)?.keys, ["⌥", "Shift", "Enter"]);
+  assert.equal(row(false, false), undefined);
+});
+
+test("the free viewer's help lists Ctrl/⌘+Shift+F (PET / CT fusion)", () => {
+  const row = (mac: boolean) =>
+    viewerShortcutGroups({}, mac, { features: FREE_VIEWER_FEATURES }).flatMap((g) => g.rows).find((r) => /PET \/ CT fusion/.test(r.does));
+  assert.deepEqual(row(false)?.keys, ["Ctrl", "Shift", "F"]);
+  assert.deepEqual(row(true)?.keys, ["⌘", "Shift", "F"]);
+});
+
+test("the free viewer's help lists T (slab cycle) and Ctrl/⌘+] / [ (slab thickness)", () => {
+  const rows = (mac: boolean, freeViewer: boolean) => viewerShortcutGroups({}, mac, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows);
+  assert.deepEqual(rows(false, true).find((r) => /^Slab:/.test(r.does))?.keys, ["T"]);
+  assert.deepEqual(rows(true, true).find((r) => /slab \(2 mm/.test(r.does))?.keys, ["⌘", "] / ["]);
+  assert.equal(rows(false, false).find((r) => /slab/i.test(r.does)), undefined);
+});
+
+test("the free viewer's help lists Ctrl/⌘+Shift+L (link at current)", () => {
+  const row = (mac: boolean) =>
+    viewerShortcutGroups({}, mac, { features: FREE_VIEWER_FEATURES }).flatMap((g) => g.rows).find((r) => /link the panes at what each shows now/.test(r.does));
+  assert.deepEqual(row(false)?.keys, ["Ctrl", "Shift", "L"]);
+  assert.deepEqual(row(true)?.keys, ["⌘", "Shift", "L"]);
+});
+
+test("the free viewer's help lists RadiAnt's reading keys (zoom levels, pan, F12, F5); teaching surfaces don't", () => {
+  const rows = (mac: boolean, freeViewer: boolean) => viewerShortcutGroups({}, mac, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows);
+  const find = (mac: boolean, freeViewer: boolean, re: RegExp) => rows(mac, freeViewer).find((r) => re.test(r.does));
+  assert.deepEqual(find(false, true, /^Fit to the pane/)?.keys, ["Ctrl", "0"]);
+  assert.deepEqual(find(true, true, /^Zoom 100/)?.keys, ["⌘", "1…4"]);
+  assert.deepEqual(find(false, true, /^Pan the image/)?.keys, ["Ctrl", "Arrows"]);
+  assert.deepEqual(find(false, true, /annotations/)?.keys, ["F12"]);
+  assert.deepEqual(find(false, true, /reference lines/)?.keys, ["Ctrl", "F12"]);
+  assert.deepEqual(find(false, true, /link scrolling/)?.keys, ["F5"]);
+  for (const re of [/^Fit to the pane/, /^Zoom 100/, /annotations/, /link scrolling/]) assert.equal(find(false, false, re), undefined);
+});
+
+test("the free viewer's help lists Alt+A / C / S reformat, Shift+E eraser and Ctrl/⌘+Shift+Backspace clear", () => {
+  const find = (mac: boolean, freeViewer: boolean, re: RegExp) =>
+    viewerShortcutGroups({}, mac, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows).find((r) => re.test(r.does));
+  assert.deepEqual(find(false, true, /^Reformat this pane/)?.keys, ["Alt", "A / C / S"]);
+  assert.deepEqual(find(true, true, /^Reformat this pane/)?.keys, ["⌥", "A / C / S"]);
+  assert.deepEqual(find(false, true, /^Eraser/)?.keys, ["Shift", "E"]);
+  assert.deepEqual(find(true, true, /^Clear all measurements/)?.keys, ["⌘", "Shift", "Backspace"]);
+  for (const re of [/^Reformat this pane/, /^Eraser/, /^Clear all measurements/]) assert.equal(find(false, false, re), undefined);
+});
+
+test("the free viewer's help lists Space cine, [ / ] series, F full screen, Ctrl/⌘+M MPR and Ctrl/⌘+Shift+M 3D", () => {
+  const find = (mac: boolean, freeViewer: boolean, re: RegExp) =>
+    viewerShortcutGroups({}, mac, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows).find((r) => re.test(r.does));
+  assert.deepEqual(find(false, true, /^Play \/ pause cine \(as K\)/)?.keys, ["Space"]);
+  assert.deepEqual(find(false, true, /^Previous \/ next series/)?.keys, ["[ / ]"]);
+  assert.deepEqual(find(false, true, /^Full screen/)?.keys, ["F"]);
+  assert.deepEqual(find(true, true, /^MPR: three planes/)?.keys, ["⌘", "M"]);
+  assert.deepEqual(find(false, true, /^3D volume rendering/)?.keys, ["Ctrl", "Shift", "M"]);
+  assert.deepEqual(find(false, true, /^Overlay text on \/ off/)?.keys, ["Ctrl", "Shift", "F12"]);
+  for (const re of [/^Play \/ pause cine \(as K\)/, /^Full screen/, /^MPR: three planes/]) assert.equal(find(false, false, re), undefined);
+});
+
+test("the free viewer's help lists Shift+Backspace (reset rotation and flips)", () => {
+  const find = (freeViewer: boolean) =>
+    viewerShortcutGroups({}, false, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows).find((r) => /^Reset rotation and flips/.test(r.does));
+  assert.deepEqual(find(true)?.keys, ["Shift", "Backspace"]);
+  assert.equal(find(false), undefined);
+});
+
+test("the free viewer's help: presets on 1…9, Shift+1…7 the layouts; teaching surfaces keep Shift+1…9 presets", () => {
+  const rows = (freeViewer: boolean) => viewerShortcutGroups({}, false, { features: featuresOf(freeViewer) }).flatMap((g) => g.rows);
+  assert.deepEqual(rows(true).find((r) => r.does === "Window preset")?.keys, ["1…9"]);
+  assert.deepEqual(rows(true).find((r) => /^Layout: 1×1/.test(r.does))?.keys, ["Shift", "1…7"]);
+  assert.deepEqual(rows(false).find((r) => r.does === "Window preset")?.keys, ["Shift", "1…9"]);
+  assert.equal(rows(false).find((r) => /^Layout: 1×1/.test(r.does)), undefined);
+});
+
+test("the pop-out key is listed only where pop-out is offered (two or more monitors)", () => {
+  const rows = (popOut: boolean, mac = false) =>
+    viewerShortcutGroups({}, mac, { features: FREE_VIEWER_FEATURES, popOut }).flatMap((g) => g.rows);
+  const row = rows(true).find((r) => /Pop the study out/.test(r.does));
+  assert.deepEqual(row?.keys, ["Ctrl", "Alt", "N"]);
+  assert.deepEqual(rows(true, true).find((r) => /Pop the study out/.test(r.does))?.keys, ["⌘", "⌥", "N"]);
+  assert.ok(!rows(false).some((r) => /Pop the study out/.test(r.does)), "one monitor: not listed");
+});
+
+test("tool keys for tooltips and menus: the free viewer adds the desktop letters, teaching surfaces don't", async () => {
+  const { shortcutForToolIn, READING_TOOL_KEYS } = await import("./viewerHotkeys");
+  assert.equal(shortcutForToolIn("CobbAngle", true), "C");
+  assert.equal(shortcutForToolIn("PlanarFreehandROI", true), "N");
+  assert.equal(shortcutForToolIn("ArrowAnnotate", true), "Y");
+  assert.equal(shortcutForToolIn("Eraser", true), "Shift+E");
+  assert.equal(shortcutForToolIn("Pan", true), "M · P", "the bound key first, then the desktop letter");
+  assert.equal(shortcutForToolIn("Length", true), "L");
+  assert.equal(shortcutForToolIn("CobbAngle", false), null, "teaching: C belongs to the student session");
+  assert.equal(shortcutForToolIn("Pan", false), "M");
+  // Every letter here is one the reading keys really resolve (no tooltip promises a dead key).
+  const { resolveReadingKey } = await import("@flowrad/viewer-core/readingKeys");
+  for (const [tool, key] of Object.entries(READING_TOOL_KEYS)) {
+    const shift = key.startsWith("Shift+");
+    const letter = key.slice(-1);
+    const action = resolveReadingKey({ key: shift ? letter.toUpperCase() : letter.toLowerCase(), code: `Key${letter.toUpperCase()}`, shiftKey: shift });
+    assert.ok(
+      action && ((action.type === "tool" && action.tool === tool) || (tool === "Eraser" && action.type === "eraser")),
+      `${key} resolves to ${tool}`
+    );
+  }
+});
+
+test("feature groups gate independently: one surface can take layouts without export", () => {
+  const does = (features: Partial<import("./viewerFeatures").ViewerFeatures>) =>
+    viewerShortcutGroups({}, false, { features }).flatMap((g) => g.rows.map((r) => r.does));
+  const layoutsOnly = does({ layouts: true });
+  assert.ok(layoutsOnly.some((d) => /Distraction-free/.test(d)));
+  assert.ok(!layoutsOnly.some((d) => /^Export/.test(d)));
+  assert.ok(!layoutsOnly.some((d) => /^Slab/.test(d)));
+  const exportOnly = does({ export: true });
+  assert.ok(exportOnly.some((d) => /^Export/.test(d)));
+  assert.ok(!exportOnly.some((d) => /Distraction-free/.test(d)));
+  const slabsAndKeys = does({ slabs: true, keys: true });
+  assert.ok(slabsAndKeys.some((d) => /^Slab/.test(d)));
+  assert.ok(!slabsAndKeys.some((d) => /Cobb angle/.test(d)), "tool letters need the tools group");
+  assert.ok(!slabsAndKeys.some((d) => /Open DICOM files/.test(d)), "open keys need local studies");
+});
+
+test("D = Bidirectional needs the tools group, not just the keymap", () => {
+  assert.equal(resolveViewerHotkey({ key: "d" }, 0, { features: { keys: true } }, {}), null);
+  assert.deepEqual(resolveViewerHotkey({ key: "d" }, 0, { features: { tools: true } }, {}), { type: "tool", tool: "Bidirectional" });
+});

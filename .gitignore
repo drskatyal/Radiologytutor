@@ -27,9 +27,35 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# runtime case store (seeded from /seed; persisted via Railway Volume)
+# local-only runtime case store (seeded from /seed; Cloud Run requires MongoDB)
 /data/*
 !/data/.gitkeep
 
 # Claude Code harness (agent worktrees, local config)
 .claude/
+
+# GCP local config — never commit filled-in project ids as tfvars, or state
+deploy/gcp/env.local
+deploy/gcp/terraform/.terraform/
+deploy/gcp/terraform/*.tfstate
+deploy/gcp/terraform/*.tfstate.*
+deploy/gcp/terraform/terraform.tfvars
+deploy/gcp/terraform/.terraform.lock.hcl
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+
+# Viewer benchmark artifacts (scripts/bench/run.mjs)
+scripts/bench/.build/
+scripts/bench/results/
+__pycache__/
+public/voice/
+desktop/public/voice/
+brand/build/out/
+public/_static-manifest.json
+
+# RadLearn local validation stores and logs
+/.radlearn-tmp/
+/radlearn-*.log

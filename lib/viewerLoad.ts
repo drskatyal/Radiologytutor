@@ -1,0 +1,299 @@
+import { ViewRequestError } from "./journal/renderAck";
+import { toolFrameFromImageId } from "./harness/approvedTools";
+// Pure planning for viewer open. No Cornerstone, no network.
+//
+// The stack the viewer scrolls is the series metadata array order — the same
+// order `retrieveSeriesMetadata` has always produced — so a stored sliceIndex
+// still lands on the image it was authored against. The opening frame is the
+// last teacher slice on that series when one was stored, otherwise the middle.
+
+import { stackOpenIndex } from "./stackIndex";
+import type { CaseSeries } from "./viewerSource";
+
+/** Neighboring slices prefetched around the current index. Not the whole series. */
+export const ACTIVE_PREFETCH_RADIUS = 10;
+
+export interface OpenSlice {
+  /** 0-based index in metadata order. */
+  sliceIndex?: number;
+  sopInstanceUID?: string;
+  frameNumber?: number;
+}
+
+export interface SeriesHintInput {
+  modality?: string;
+  findings?: readonly {
+    order?: number;
+    studyInstanceUID?: string;
+    seriesInstanceUID?: string;
+  }[];
+  studyRefs?: readonly {
+    order?: number;
+    studyInstanceUID?: string;
+    seriesInstanceUIDs?: readonly string[];
+  }[];
+}
+
+/** A positive DICOMweb count. Missing and 0 are unknown — never "0 images". */
+export function knownInstanceCount(value: number | undefined | null): number | undefined {
+  if (value == null || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.round(value);
+}
+
+export function wadorsImageId(
+  wadoRsRoot: string,
+  studyInstanceUID: string,
+  seriesInstanceUID: string,
+  sopInstanceUID: string,
+  frameNumber = 1
+): string {
+  const base = wadoRsRoot.replace(/\/$/, "");
+  return (
+    `wadors:${base}/studies/${studyInstanceUID}` +
+    `/series/${seriesInstanceUID}/instances/${sopInstanceUID}/frames/${frameNumber}`
+  );
+}
+
+export function dicomTagString(dataset: unknown, tag: string): string | undefined {
+  if (!dataset || typeof dataset !== "object") return undefined;
+  const element = (dataset as Record<string, { Value?: unknown[] } | undefined>)[tag];
+  const raw = element?.Value?.[0];
+  if (typeof raw === "string") return raw.trim() || undefined;
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  if (raw && typeof raw === "object" && "Alphabetic" in raw) {
+    const alphabetic = (raw as { Alphabetic?: unknown }).Alphabetic;
+    if (typeof alphabetic === "string" && alphabetic.trim()) return alphabetic.trim();
+  }
+  return undefined;
+}
+
+export function dicomTagNumber(dataset: unknown, tag: string): number | undefined {
+  const text = dicomTagString(dataset, tag);
+  if (!text) return undefined;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Last authored landing on `seriesInstanceUID` (highest finding order).
+ * That is the slice the teacher left, when one was stored.
+ */
+export function lastTeacherSlice(
+  findings: readonly {
+    order?: number;
+    seriesInstanceUID?: string;
+    sliceIndex?: number;
+    sopInstanceUID?: string;
+    frameNumber?: number;
+  }[],
+  seriesInstanceUID: string | undefined
+): OpenSlice | undefined {
+  if (!seriesInstanceUID) return undefined;
+  let best: (typeof findings)[number] | undefined;
+  for (const finding of findings) {
+    if (finding.seriesInstanceUID !== seriesInstanceUID) continue;
+    const sop = finding.sopInstanceUID?.trim();
+    const hasSlice = finding.sliceIndex != null && Number.isFinite(finding.sliceIndex);
+    if (!sop && !hasSlice) continue;
+    if (!best || (finding.order ?? 0) >= (best.order ?? 0)) best = finding;
+  }
+  if (!best) return undefined;
+  const sop = best.sopInstanceUID?.trim();
+  return {
+    ...(sop ? { sopInstanceUID: sop, ...(best.frameNumber !== undefined ? { frameNumber: best.frameNumber } : {}) } : {}),
+    ...(best.sliceIndex != null && Number.isFinite(best.sliceIndex)
+      ? { sliceIndex: Math.max(0, Math.round(best.sliceIndex)) }
+      : {}),
+  };
+}
+
+/** Index to show once the ordered SOP list is known. */
+export function resolveOpenIndex(
+  count: number,
+  sops: readonly string[],
+  hint?: OpenSlice | null
+): number {
+  const sop = hint?.sopInstanceUID?.trim();
+  if (sop) {
+    const found = sops.indexOf(sop);
+    if (found >= 0 && found < count && sops.lastIndexOf(sop) === found && (hint?.frameNumber ?? 1) === 1) return found;
+    throw new ViewRequestError("missing_identity", "Requested SOP/frame is absent or ambiguous; rebind the image");
+  }
+  if (!Number.isFinite(count) || count <= 0) return 0;
+  if (hint?.sliceIndex != null && Number.isFinite(hint.sliceIndex)) {
+    return Math.max(0, Math.min(count - 1, Math.round(hint.sliceIndex)));
+  }
+  return stackOpenIndex(count);
+}
+
+/**
+ * Indexes to prefetch around `center`, excluding `center` itself.
+ * Clamped to the stack. A 1000-image series stays a small window.
+ */
+export function neighborIndexes(
+  count: number,
+  center: number,
+  radius: number = ACTIVE_PREFETCH_RADIUS
+): number[] {
+  if (!Number.isFinite(count) || count <= 0) return [];
+  const span = Math.max(0, Math.floor(radius));
+  const at = Math.max(0, Math.min(count - 1, Math.round(center)));
+  const start = Math.max(0, at - span);
+  const end = Math.min(count - 1, at + span);
+  const out: number[] = [];
+  for (let index = start; index <= end; index++) {
+    if (index !== at) out.push(index);
+  }
+  return out;
+}
+
+/**
+ * Series the viewer can open without a DICOMweb round trip.
+ * Finding order leads. Counts and thumbnails are not invented here.
+ */
+export function seriesHintFromCase(input: SeriesHintInput, wadoRsRoot: string): CaseSeries[] {
+  const findings = [...(input.findings ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const refs = [...(input.studyRefs ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const out: CaseSeries[] = [];
+  const seen = new Set<string>();
+
+  const push = (seriesInstanceUID: string | undefined, studyInstanceUID: string | undefined) => {
+    const seriesUid = seriesInstanceUID?.trim();
+    if (!seriesUid || seen.has(seriesUid)) return;
+    const studyUid =
+      studyInstanceUID?.trim() ||
+      findings.find((finding) => finding.seriesInstanceUID === seriesUid)?.studyInstanceUID ||
+      refs.find((ref) => (ref.seriesInstanceUIDs ?? []).includes(seriesUid))?.studyInstanceUID ||
+      refs[0]?.studyInstanceUID;
+    if (!studyUid?.trim()) return;
+    seen.add(seriesUid);
+    out.push({
+      seriesInstanceUID: seriesUid,
+      studyInstanceUID: studyUid.trim(),
+      modality: input.modality,
+      wadoRsRoot,
+    });
+  };
+
+  for (const finding of findings) push(finding.seriesInstanceUID, finding.studyInstanceUID);
+  for (const ref of refs) {
+    for (const seriesUid of ref.seriesInstanceUIDs ?? []) push(seriesUid, ref.studyInstanceUID);
+  }
+  return out;
+}
+
+/**
+ * Keep the series already on screen in place and fill in DICOMweb metadata.
+ * A positive measured count wins over a missing or zero tag.
+ */
+export function mergeSeriesRail(current: readonly CaseSeries[], incoming: readonly CaseSeries[]): CaseSeries[] {
+  if (incoming.length === 0) return [...current];
+  if (current.length === 0) return incoming.map(preferPositiveCount);
+  const byId = new Map(incoming.map((series) => [series.seriesInstanceUID, series]));
+  const seen = new Set<string>();
+  const out: CaseSeries[] = [];
+  for (const series of current) {
+    seen.add(series.seriesInstanceUID);
+    const fresh = byId.get(series.seriesInstanceUID);
+    if (!fresh) {
+      out.push(series);
+      continue;
+    }
+    const count =
+      knownInstanceCount(fresh.instanceCount) ?? knownInstanceCount(series.instanceCount);
+    out.push({
+      ...series,
+      ...fresh,
+      ...(count != null ? { instanceCount: count } : { instanceCount: undefined }),
+      thumbnailInstanceUID: fresh.thumbnailInstanceUID || series.thumbnailInstanceUID,
+    });
+  }
+  for (const series of incoming) {
+    if (seen.has(series.seriesInstanceUID)) continue;
+    out.push(preferPositiveCount(series));
+  }
+  return out;
+}
+
+function preferPositiveCount(series: CaseSeries): CaseSeries {
+  const count = knownInstanceCount(series.instanceCount);
+  if (count == null) {
+    const { instanceCount: _drop, ...rest } = series;
+    return rest;
+  }
+  return { ...series, instanceCount: count };
+}
+
+/** Full stack addresses may be sorted differently from the archive's early QIDO offset. */
+export function resolveImageOpenIndex(imageIds: readonly string[], hint?: OpenSlice | null, openedImageId?: string): number {
+  if (openedImageId) {
+    const at = imageIds.indexOf(openedImageId);
+    if (at >= 0 && imageIds.lastIndexOf(openedImageId) === at) return at;
+    throw new ViewRequestError("missing_identity", "The progressive opening image is absent from the completed stack");
+  }
+  if (hint?.sopInstanceUID) {
+    const hits = imageIds.flatMap((id, i) => { const f = toolFrameFromImageId(id); return f && f.sopUID === hint.sopInstanceUID && f.frame === (hint.frameNumber ?? 1) ? [i] : []; });
+    if (hits.length !== 1) throw new ViewRequestError("missing_identity", "Requested SOP/frame is absent or ambiguous; rebind the image");
+    return hits[0];
+  }
+  return resolveOpenIndex(imageIds.length, [], hint);
+}
+
+/**
+ * Index of an instance in a WADO-RS stack, by its SOP Instance UID, or -1
+ * (local `dicomfile:` stacks carry no UID in their ids). A finding anchored
+ * by SOP lands on its image wherever the stack's order puts it.
+ */
+export function stackIndexOfSop(imageIds: readonly string[], sopInstanceUID: string): number {
+  const needle = `/instances/${sopInstanceUID.trim()}/frames/`;
+  return sopInstanceUID.trim() ? imageIds.findIndex((id) => id.includes(needle)) : -1;
+}
+
+/**
+ * Findings with each SOP-anchored slice index taken from the stack the
+ * viewer actually holds (`indexOf` → -1 while that instance is unknown, and
+ * the stored index stands). Stored indices were captured in whatever order
+ * the stack had then; the SOP is the image. Same array when nothing moves.
+ */
+export function withSopAnchoredSlices<F extends { sopInstanceUID?: string; sliceIndex?: number }>(
+  findings: readonly F[],
+  indexOf: (sopInstanceUID: string) => number
+): readonly F[] {
+  let changed = false;
+  const next = findings.map((finding) => {
+    const sop = finding.sopInstanceUID?.trim();
+    if (!sop) return finding;
+    const index = indexOf(sop);
+    if (index < 0 || index === finding.sliceIndex) return finding;
+    changed = true;
+    return { ...finding, sliceIndex: index };
+  });
+  return changed ? next : findings;
+}
+
+/**
+ * Where a learner-facing viewer opens: the slice of the case's FIRST anchored
+ * finding (lowest order that has a slice index or a SOP) on this series — the
+ * start of the teaching story. A first finding with neither is skipped, not
+ * the end of the search. The last finding is where an author left off
+ * (lastTeacherSlice); opening a reader there dropped the LIDC chest case onto
+ * its final, upper-abdomen slice.
+ */
+export function firstTeacherSlice(
+  findings: readonly {
+    order?: number;
+    seriesInstanceUID?: string;
+    sliceIndex?: number;
+    sopInstanceUID?: string;
+  }[],
+  seriesInstanceUID: string | undefined
+): OpenSlice | undefined {
+  const anchored = findings.filter(
+    (f) =>
+      f.seriesInstanceUID === seriesInstanceUID &&
+      (Boolean(f.sopInstanceUID?.trim()) || (f.sliceIndex != null && Number.isFinite(f.sliceIndex)))
+  );
+  if (!anchored.length) return undefined;
+  const first = anchored.reduce((a, b) => ((b.order ?? 0) < (a.order ?? 0) ? b : a));
+  return lastTeacherSlice([{ ...first, order: 0 }], seriesInstanceUID);
+}

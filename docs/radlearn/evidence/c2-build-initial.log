@@ -1,0 +1,28 @@
+
+> flowrad-learn@0.1.0 prebuild
+> node scripts/build-voice-worker.mjs
+
+build-voice-worker: wrote recognizer-worker.js (4.3 MB) for web and desktop
+
+> flowrad-learn@0.1.0 build
+> next build
+
+  ▲ Next.js 14.2.35
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+Failed to compile.
+
+./lib/fixtures/cloudMock.ts:82:27
+Type error: Argument of type 'Buffer<ArrayBufferLike>' is not assignable to parameter of type 'BodyInit | null | undefined'.
+  Type 'Buffer<ArrayBufferLike>' is missing the following properties from type 'URLSearchParams': size, append, delete, get, and 2 more.
+
+  80 |       const range = new Headers(init?.headers).get("range")?.match(/bytes=(\d+)-(\d+)/);
+  81 |       const bytes = range ? found.bytes.subarray(Number(range[1]), Number(range[2]) + 1) : found.bytes;
+> 82 |       return new Response(bytes, { status: range ? 206 : 200, headers: { "Content-Type": found.contentType } });
+     |                           ^
+  83 |     }
+  84 |     assert.ok(url.href.startsWith(CLOUD_ROOT + "/"), "NO LIVE GCP CALL WAS MADE: unexpected URL blocked");
+  85 |     if (init?.method === "POST") {
+Next.js build worker exited with code: 1 and signal: null

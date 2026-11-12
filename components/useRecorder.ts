@@ -1,10 +1,9 @@
 "use client";
 
 // Mic capture via MediaRecorder. We send the recorded audio to the server,
-// where Gemini Flash does speech-to-text + reasoning in a single call (no
-// separate STT). Surface stays stable so callers don't care what's behind it.
+// where a transcription-only request precedes the separate tutor plan.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface Recording {
   base64: string;
@@ -18,10 +17,16 @@ function pickMime(): string {
 }
 
 export function useRecorder() {
-  const supported =
-    typeof navigator !== "undefined" &&
-    !!navigator.mediaDevices &&
-    typeof MediaRecorder !== "undefined";
+  // True on the server and the first client render. Detecting the mic during
+  // render made `disabled` disagree and Next painted an error toast over the case.
+  const [supported, setSupported] = useState(true);
+  useEffect(() => {
+    setSupported(
+      typeof navigator !== "undefined" &&
+        !!navigator.mediaDevices &&
+        typeof MediaRecorder !== "undefined"
+    );
+  }, []);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -33,28 +38,30 @@ export function useRecorder() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
     const mimeType = pickMime();
-    const rec = new MediaRecorder(stream, { mimeType });
+    let rec: MediaRecorder;
+    try { rec = new MediaRecorder(stream, { mimeType }); }
+    catch (error) { stream.getTracks().forEach(t => t.stop()); streamRef.current = null; throw error; }
     chunksRef.current = [];
     rec.ondataavailable = (e) => {
       if (e.data.size > 0) chunksRef.current.push(e.data);
     };
-    rec.start();
+    try { rec.start(); } catch (error) { stream.getTracks().forEach(t => t.stop()); streamRef.current = null; throw error; }
     recorderRef.current = rec;
     setRecording(true);
   }, [supported]);
 
   /** Stop and resolve with the recorded audio as base64 (no data: prefix). */
   const stop = useCallback((): Promise<Recording | null> => {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const rec = recorderRef.current;
       if (!rec) return resolve(null);
+      recorderRef.current = null;
       rec.onstop = async () => {
         streamRef.current?.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
         setRecording(false);
         const blob = new Blob(chunksRef.current, { type: rec.mimeType });
-        const base64 = await blobToBase64(blob);
-        resolve({ base64, mimeType: rec.mimeType.split(";")[0] });
+        try { const base64 = await blobToBase64(blob); resolve({ base64, mimeType: rec.mimeType.split(";")[0] }); } catch (error) { reject(error); }
       };
       rec.stop();
     });

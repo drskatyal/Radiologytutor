@@ -6,6 +6,9 @@
  * See docs/HARNESS.md (Grok Bot parallel: tools on a persistent computer).
  */
 
+import { isProtectedTool, resolveApprovedTool, type ApprovedToolContext, type ApprovedToolAction } from "./approvedTools";
+import { parseSetSeriesArgs } from "../setSeries";
+
 /** Minimal tool schema (Gemini / OpenAPI-compatible). */
 export type HarnessToolDeclaration = {
   name: string;
@@ -21,14 +24,65 @@ export type HarnessViewerAction =
   | { type: "set_window"; windowWidth: number; windowCenter: number }
   | {
       type: "point_to";
+      anchorId?: string; target?: ApprovedToolAction["target"]; point?: ApprovedToolAction["point"];
       findingId?: string;
       x_pct?: number;
       y_pct?: number;
     }
+  | {
+      type: "scroll_to";
+      anchorId?: string; target?: ApprovedToolAction["target"];
+      sliceIndex: number;
+      seriesInstanceUID?: string;
+      findingId?: string;
+    }
+  | {
+      type: "set_series";
+      anchorId?: string; target?: ApprovedToolAction["target"];
+      /** Authored SeriesInstanceUID. Never a model-invented value. */
+      seriesInstanceUID: string;
+      sliceIndex?: number;
+      /** Window width. Present only together with `wc`. */
+      ww?: number;
+      /** Window center. Present only together with `ww`. */
+      wc?: number;
+    }
+  | { type: "zoom_to"; zoom: number; panX?: number; panY?: number }
+  | { type: "set_zoom"; zoom: number; panX?: number; panY?: number }
+  | { type: "set_invert"; value: boolean }
+  | {
+      type: "draw_annotation";
+      annotationId?: string; anchorId?: string; target?: ApprovedToolAction["target"]; annotation?: ApprovedToolAction["annotation"];
+      findingId?: string;
+      tool?: string;
+      x_pct?: number;
+      y_pct?: number;
+      x2_pct?: number;
+      y2_pct?: number;
+    }
+  | { type: "draw_circle"; findingId?: string; uncertain?: boolean }
+  | { type: "draw_arrow"; findingId?: string; uncertain?: boolean }
+  | {
+      type: "place_card";
+      findingId?: string;
+      uncertain?: boolean;
+      template?: string;
+      title?: string;
+      lines?: string[];
+      name?: string;
+      meaning?: string;
+    }
+  | { type: "clear_overlay" }
+  | { type: "jump_to_key_view"; findingId: string }
+  | { type: "play_guide"; findingId: string }
   | { type: "none" };
 
+/** Appended to every viewer tool so a tool call cannot replace the spoken answer. */
+export const SPOKEN_ANSWER_TOOL_CLAUSE =
+  "Always include a spoken answer of 1–3 sentences in the same turn. Never call this tool with an empty message.";
+
 /** Gemini / OpenAPI-style function declarations for the tutor. */
-export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = [
+const HARNESS_VIEWER_TOOL_BASE: HarnessToolDeclaration[] = [
   {
     name: "show_finding",
     description:
@@ -50,6 +104,24 @@ export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = [
     parameters: { type: "object", properties: {} },
   },
   {
+    name: "set_series",
+    description:
+      "Switch the active DICOM series (T1, T2, FLAIR, DWI, post-contrast, prior). seriesInstanceUID must be copied from the case series list or from a finding's series=, drive.series, or compare.series. Never invent a UID. Optional sliceIndex must come from the approved viewer catalog and resolve to an approved SOP/frame within the actual series frame count. Optional ww and wc are the authored window width and center. Omit sliceIndex to keep the current slice. Omit ww and wc to keep the current window.",
+    parameters: {
+      type: "object",
+      properties: {
+        seriesInstanceUID: {
+          type: "string",
+          description: "SeriesInstanceUID copied from the case series list or finding.drive / finding.compare",
+        },
+        sliceIndex: { type: "number", description: "0-based index from the approved server catalog" },
+        ww: { type: "number", description: "Authored window width" },
+        wc: { type: "number", description: "Authored window center" },
+      },
+      required: ["seriesInstanceUID"],
+    },
+  },
+  {
     name: "set_window",
     description:
       "Adjust the window width / center (VOI) on the current view to make a feature more conspicuous.",
@@ -64,25 +136,147 @@ export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = [
   },
   {
     name: "point_to",
+    description: "Point to an approved anchor. Copy anchorId from the approved viewer catalog. Coordinates and findingId are not accepted.",
+    parameters: { type: "object", properties: { anchorId: { type: "string" } }, required: ["anchorId"] },
+  },
+  {
+    name: "scroll_to",
+    description: "Navigate to an approved SOP/frame. Prefer anchorId from the approved viewer catalog. Alternatively copy sliceIndex and seriesInstanceUID from that catalog; indices are bounded to its actual frame count and approved frame set.",
+    parameters: { type: "object", properties: {
+      anchorId: { type: "string" }, sliceIndex: { type: "integer", minimum: 0 },
+      seriesInstanceUID: { type: "string" }, findingId: { type: "string" },
+    } },
+  },
+  {
+    name: "zoom_to",
     description:
-      "Animate a laser pointer to a place on the current image. Prefer a findingId (uses that finding's stored click marker). Or pass x_pct/y_pct in [0,1] when pointing at something without a finding.",
+      "Zoom (and optionally pan) to the magnification on the finding's teaching guide. Copy guide=[zoom(N)]. This is how a consultant leans in on a nodule — never invent a zoom.",
     parameters: {
       type: "object",
       properties: {
-        findingId: { type: "string", description: "Optional finding whose marker to point at" },
-        x_pct: { type: "number", description: "Normalized X in [0,1]" },
-        y_pct: { type: "number", description: "Normalized Y in [0,1]" },
+        zoom: { type: "number", description: "Magnification from the guide, e.g. 2.2" },
+        panX: { type: "number" },
+        panY: { type: "number" },
+        findingId: { type: "string" },
+      },
+      required: ["zoom"],
+    },
+  },
+  {
+    name: "set_zoom",
+    description:
+      "Alias of zoom_to. Zoom (and optionally pan) to a magnification from the finding's teaching guide. Prefer zoom_to.",
+    parameters: {
+      type: "object",
+      properties: {
+        zoom: { type: "number" },
+        panX: { type: "number" },
+        panY: { type: "number" },
+      },
+      required: ["zoom"],
+    },
+  },
+  {
+    name: "set_invert",
+    description: "Invert or restore the grayscale, matching an invert step in the teaching guide.",
+    parameters: {
+      type: "object",
+      properties: { value: { type: "boolean" } },
+      required: ["value"],
+    },
+  },
+  {
+    name: "draw_annotation",
+    description: "Draw one approved annotation on its named SOP/frame. Copy annotationId from the approved viewer catalog. Never supply coordinates, tool geometry or findingId.",
+    parameters: { type: "object", properties: { annotationId: { type: "string" } }, required: ["annotationId"] },
+  },
+  {
+    name: "draw_circle",
+    description:
+      "Draw a hand-drawn circle on an authored finding. Pass findingId. Do not pass coordinates. Pass uncertain:true only to circle the learner's own tap — that stroke is labelled uncertain. Never invent a lesion location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
       },
     },
   },
+  {
+    name: "draw_arrow",
+    description:
+      "Draw a hand-drawn arrow whose tip is the authored marker, or the learner's tap when uncertain:true. Do not pass coordinates. Never invent a lesion location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "place_card",
+    description:
+      "Place a diagram card (template differential, mechanism, or sign) on an authored finding or the learner's tap. Send plain text fields only. Never send HTML. Do not invent a location.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string" },
+        uncertain: { type: "boolean" },
+        template: { type: "string" },
+        title: { type: "string" },
+        lines: { type: "array", items: { type: "string" } },
+        name: { type: "string" },
+        meaning: { type: "string" },
+      },
+      required: ["template"],
+    },
+  },
+  {
+    name: "clear_overlay",
+    description: "Remove hand-drawn circles, arrows, underlines, and cards from the viewer.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "jump_to_key_view",
+    description:
+      "Jump to the authored key view for a finding: slice, window, and zoom. Pass findingId only. Do not invent those numbers.",
+    parameters: {
+      type: "object",
+      properties: { findingId: { type: "string" } },
+      required: ["findingId"],
+    },
+  },
+  {
+    name: "play_guide",
+    description:
+      "Perform the finding's consultant walk-through in order (scroll, window, zoom, hold, point, measure) while you speak. Prefer this over inventing scroll_to / zoom_to. Pass the finding id.",
+    parameters: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Finding id whose guide=[…] to perform" },
+      },
+      required: ["findingId"],
+    },
+  },
 ];
+
+export const HARNESS_VIEWER_TOOLS: HarnessToolDeclaration[] = HARNESS_VIEWER_TOOL_BASE.map(
+  (tool) => ({
+    ...tool,
+    description: tool.description.includes(SPOKEN_ANSWER_TOOL_CLAUSE)
+      ? tool.description
+      : `${tool.description.trim()} ${SPOKEN_ANSWER_TOOL_CLAUSE}`,
+  })
+);
 
 /** Map a model function call into a typed viewer action. */
 export function harnessActionFromCall(call?: {
   name: string;
   args: Record<string, unknown>;
-}): HarnessViewerAction {
-  if (!call) return { type: "none" };
+}, context?: ApprovedToolContext): HarnessViewerAction {
+  if (!call || !call.args || typeof call.args !== "object" || Array.isArray(call.args)) return { type: "none" };
+  if (isProtectedTool(call.name, call.args)) return resolveApprovedTool(call.name, call.args, context) ?? { type: "none" };
   switch (call.name) {
     case "show_finding":
       return { type: "show_finding", findingId: String(call.args.findingId ?? "") };
@@ -96,17 +290,56 @@ export function harnessActionFromCall(call?: {
         windowWidth: Number(call.args.windowWidth),
         windowCenter: Number(call.args.windowCenter),
       };
-    case "point_to": {
-      const findingId =
-        call.args.findingId != null ? String(call.args.findingId) : undefined;
-      const x = call.args.x_pct != null ? Number(call.args.x_pct) : undefined;
-      const y = call.args.y_pct != null ? Number(call.args.y_pct) : undefined;
+    case "set_series":
+      return parseSetSeriesArgs(call.args) ?? { type: "none" };
+    case "zoom_to":
+    case "set_zoom": {
+      const zoom = Number(call.args.zoom);
+      if (!Number.isFinite(zoom) || zoom <= 0) return { type: "none" };
+      const panX = call.args.panX != null ? Number(call.args.panX) : undefined;
+      const panY = call.args.panY != null ? Number(call.args.panY) : undefined;
       return {
-        type: "point_to",
-        findingId,
-        x_pct: Number.isFinite(x) ? x : undefined,
-        y_pct: Number.isFinite(y) ? y : undefined,
+        type: "zoom_to",
+        zoom,
+        panX: Number.isFinite(panX) ? panX : undefined,
+        panY: Number.isFinite(panY) ? panY : undefined,
       };
+    }
+    case "set_invert":
+      return { type: "set_invert", value: Boolean(call.args.value) };
+    case "play_guide": {
+      const findingId = String(call.args.findingId ?? "").trim();
+      if (!findingId) return { type: "none" };
+      return { type: "play_guide", findingId };
+    }
+    case "draw_circle":
+    case "draw_arrow":
+      return {
+        type: call.name,
+        findingId: call.args.findingId != null ? String(call.args.findingId) : undefined,
+        uncertain: call.args.uncertain === true,
+      };
+    case "place_card": {
+      const lines = Array.isArray(call.args.lines)
+        ? call.args.lines.map((line) => String(line)).filter(Boolean).slice(0, 4)
+        : undefined;
+      return {
+        type: "place_card",
+        findingId: call.args.findingId != null ? String(call.args.findingId) : undefined,
+        uncertain: call.args.uncertain === true,
+        template: call.args.template != null ? String(call.args.template) : undefined,
+        title: call.args.title != null ? String(call.args.title) : undefined,
+        lines,
+        name: call.args.name != null ? String(call.args.name) : undefined,
+        meaning: call.args.meaning != null ? String(call.args.meaning) : undefined,
+      };
+    }
+    case "clear_overlay":
+      return { type: "clear_overlay" };
+    case "jump_to_key_view": {
+      const findingId = String(call.args.findingId ?? "").trim();
+      if (!findingId) return { type: "none" };
+      return { type: "jump_to_key_view", findingId };
     }
     default:
       return { type: "none" };

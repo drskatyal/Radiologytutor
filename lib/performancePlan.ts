@@ -1,7 +1,6 @@
 // Performance plan — interleave spoken beats with viewer drive.
-// The examiner speaks AND moves the image in the same turn. We never wait
-// for a full laser tween before starting TTS, and we never invent extra
-// actions: each drive comes from the tutor's tool calls.
+// This pure function pairs sentences with the full ordered action list.
+// The tutor orchestrator waits for each action's render acknowledgement before speech.
 
 export interface DriveAction {
   type: string;
@@ -30,7 +29,7 @@ export function splitSentences(text: string): string[] {
 
 /**
  * Pair sentences with viewer actions. First action lands on the first beat
- * (look + speak together). Extra actions spread onto later beats; leftovers
+ * (render, acknowledge, then speak). Extra actions spread onto later beats; leftovers
  * pile on the last beat so nothing is dropped.
  */
 export function buildPerformancePlan<T>(

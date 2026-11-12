@@ -1,0 +1,12 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 2 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 [exam-model-mock] › exam-flow.spec.ts:23:5 › M10 full report, rendered point and held voice attempt: deterministic evidence, assistance history and explicit reveal; entire-flow leak scan (6.5s)
+  ✓  2 [exam-model-mock] › exam-flow.spec.ts:110:5 › M10 exam APIs enforce ownership, revisions, idempotency, PHI review, exact image bounds and close-before-reveal (4.0s)
+
+  2 passed (12.5s)

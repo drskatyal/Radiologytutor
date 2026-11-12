@@ -1,0 +1,159 @@
+# Optional. Prefer deploy/gcp/deploy-app.sh, which refuses to roll a revision
+# until GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI and radlearn-trusted-proxy-secret have versions.
+# This resource assumes those versions already exist.
+
+locals {
+  dicomweb_env = {
+    NODE_ENV               = "production"
+    DICOMWEB_BACKEND       = "healthcare"
+    HEALTHCARE_PROJECT     = var.project_id
+    HEALTHCARE_LOCATION    = var.region
+    HEALTHCARE_DATASET     = var.dataset_id
+    HEALTHCARE_DICOM_STORE = var.dicom_store_id
+    MONGODB_DB             = var.mongodb_db
+    GEMINI_MODEL           = var.gemini_model
+    GEMINI_TTS_MODEL       = "gemini-3.8-flash-tts"
+    GEMINI_TTS_VOICE       = "Kore"
+    GEMINI_LIVE_MODEL      = "gemini-3.8-live"
+    GEMINI_TIMEOUT_MS      = "45000"
+    VOICE_LATENCY_BUDGET_MS = "1200"
+    ELEVENLABS_TTS_MODEL   = "eleven_multilingual_v2"
+    FRAME_CACHE_WAIT_MS    = "25"
+    DEMO_AUTH_ENABLED      = "0"
+  }
+}
+
+resource "google_cloud_run_v2_service" "app" {
+  count    = var.deploy_app ? 1 : 0
+  name     = var.service_name
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  lifecycle {
+    precondition {
+      condition     = var.app_image != ""
+      error_message = "Set app_image when deploy_app is true."
+    }
+    precondition {
+      condition     = var.public_url != ""
+      error_message = "Set public_url before first boot; production requires BETTER_AUTH_URL."
+    }
+  }
+
+  template {
+    service_account                  = google_service_account.app.email
+    timeout                          = "300s"
+    max_instance_request_concurrency = 40
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+
+    vpc_access {
+      egress = var.vpc_egress
+      network_interfaces {
+        network    = google_compute_network.app.name
+        subnetwork = google_compute_subnetwork.app.name
+      }
+    }
+
+    scaling {
+      min_instance_count = var.min_instances
+      max_instance_count = var.max_instances
+    }
+
+    containers {
+      image = var.app_image
+
+      ports {
+        container_port = 8080
+      }
+
+      resources {
+        limits = {
+          cpu    = "2"
+          memory = "2Gi"
+        }
+        cpu_idle          = false
+        startup_cpu_boost = true
+      }
+
+      dynamic "env" {
+        for_each = local.dicomweb_env
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.public_url == "" ? [] : [var.public_url]
+        content {
+          name  = "BETTER_AUTH_URL"
+          value = env.value
+        }
+      }
+
+      # Shared private object bucket env is administered separately pending
+      # GCP Admin confirmation of the provisional name in ENV_SCHEMA.md.
+      # No R2 endpoint, bucket alias or HMAC credentials are required.
+
+      # Converted-DICOM delivery (dicom_cdn.tf). The signing key secret is
+      # attached by deploy/gcp/deploy-app.sh once DICOM_CDN_KEY has a version.
+      dynamic "env" {
+        for_each = var.dicom_cdn_bucket == "" ? {} : merge(
+          { DICOM_CDN_BUCKET = var.dicom_cdn_bucket },
+          var.dicom_cdn_domain == "" ? {} : {
+            DICOM_CDN_URL      = "https://${var.dicom_cdn_domain}"
+            DICOM_CDN_KEY_NAME = var.dicom_cdn_key_name
+          }
+        )
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      # Optional secrets (Google OAuth, ElevenLabs) are attached by
+      # deploy/gcp/deploy-app.sh only when a version exists. Referencing an
+      # empty secret here would stop the revision from starting.
+      # Env name → existing Secret Manager id. TRUSTED_PROXY_SECRET is already
+      # stored as radlearn-trusted-proxy-secret; do not provision a second secret.
+      dynamic "env" {
+        for_each = {
+          GEMINI_API_KEY       = "GEMINI_API_KEY"
+          BETTER_AUTH_SECRET   = "BETTER_AUTH_SECRET"
+          MONGODB_URI          = "MONGODB_URI"
+          TRUSTED_PROXY_SECRET = "radlearn-trusted-proxy-secret"
+        }
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      startup_probe {
+        initial_delay_seconds = 5
+        timeout_seconds       = 3
+        period_seconds        = 5
+        failure_threshold     = 24
+        http_get {
+          path = "/api/healthz"
+          port = 8080
+        }
+      }
+    }
+  }
+
+  depends_on = [google_project_service.apis, google_compute_router_nat.app]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "public" {
+  count    = var.deploy_app ? 1 : 0
+  name     = google_cloud_run_v2_service.app[0].name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}

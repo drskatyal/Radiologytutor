@@ -13,6 +13,7 @@ export function TutorCaption({
   revealed,
   modeLabel,
   sources,
+  className,
 }: {
   text: string;
   stepLabel?: string;
@@ -21,36 +22,30 @@ export function TutorCaption({
   /** "Teaching" | "Examiner" etc. */
   modeLabel?: string;
   sources?: ChatSource[];
+  className?: string;
 }) {
   if (!text.trim()) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-40 z-20 flex justify-center px-4 sm:bottom-44">
-      <div
-        className={cn(
-          "w-full max-w-xl rounded-lg border px-3.5 py-2.5 shadow-md",
-          "border-subtle bg-elevated/95"
+    <div
+      className={cn("w-full text-left", className)}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="mb-1 flex items-center gap-2">
+        {stepLabel && (
+          <Badge variant="accent" className="tabular-nums">
+            {stepLabel}
+          </Badge>
         )}
-        role="status"
-        aria-live="polite"
-      >
-        <div className="mb-1 flex items-center gap-2">
-          {stepLabel && (
-            <Badge variant="accent" className="tabular-nums">
-              {stepLabel}
-            </Badge>
-          )}
-          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
-            {modeLabel ?? (revealed ? "Teaching" : "Examiner")}
-          </span>
-        </div>
-        <p className="text-sm leading-snug text-primary">{text}</p>
-        {sources && sources.length > 0 && (
-          <p className="mt-1.5 truncate text-[10px] text-muted">
-            {sources[0].title}
-          </p>
-        )}
+        <span className="text-xs font-medium uppercase tracking-wide text-secondary">
+          {modeLabel ?? (revealed ? "Teaching" : "Examiner")}
+        </span>
       </div>
+      <p className="line-clamp-3 text-sm leading-relaxed text-primary">{text}</p>
+      {sources && sources.length > 0 && (
+        <p className="mt-1 truncate text-xs text-secondary">{sources[0].title}</p>
+      )}
     </div>
   );
 }

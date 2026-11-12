@@ -1,0 +1,296 @@
+app/api/admin/cases/caseDetails.test.ts(10,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+e2e/visual/export.spec.ts(79,39): error TS2339: Property 'readFile' does not exist on type 'AdmZip'.
+e2e/visual/export.spec.ts(107,48): error TS2339: Property 'readFile' does not exist on type 'AdmZip'.
+e2e/visual/free-viewer.perf.spec.ts(639,7): error TS2339: Property 'addLocalFolder' does not exist on type 'AdmZip'.
+e2e/visual/free-viewer.perf.spec.ts(640,7): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+e2e/visual/free-viewer.perf.spec.ts(641,7): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+e2e/visual/free-viewer.perf.spec.ts(643,7): error TS2339: Property 'writeZip' does not exist on type 'AdmZip'.
+lib/accessMatrix.test.ts(3,59): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/accessMatrix.test.ts(4,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/anatomyCatalog.test.ts(4,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/anatomyCatalog.test.ts(23,47): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/annotationEditing.test.ts(14,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/assessmentGrade.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/authRoles.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/bindings.test.ts(43,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/captureSession.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/caseShare.test.ts(23,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/caseShare.test.ts(115,42): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/catalogPlaceholders.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/clickFinding.test.ts(3,49): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compareSeat.test.ts(3,49): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compareSeat.test.ts(4,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compareSeat.test.ts(5,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compareSeat.test.ts(6,32): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compareViewport.test.ts(10,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compileMedia.test.ts(14,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compileSession.test.ts(3,68): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compileSession.test.ts(4,61): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compileSession.test.ts(5,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/compileSession.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/contextMenu.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/continuousCapture.test.ts(23,34): error TS7016: Could not find a declaration file for module 'jsdom'. '/workspace/radlearn-build/node_modules/jsdom/lib/api.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/jsdom` if it exists or add a new declaration (.d.ts) file containing `declare module 'jsdom';`
+lib/continuousCapture.test.ts(75,46): error TS5097: An import path can only end with a '.tsx' extension when 'allowImportingTsExtensions' is enabled.
+lib/continuousCapture.test.ts(76,42): error TS5097: An import path can only end with a '.tsx' extension when 'allowImportingTsExtensions' is enabled.
+lib/crossWindow.test.ts(15,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/dashboardPath.test.ts(3,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/deid.test.ts(12,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoAuth.test.ts(6,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoAuth.test.ts(7,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoAuth.test.ts(14,13): error TS2540: Cannot assign to 'NODE_ENV' because it is a read-only property.
+lib/demoAuth.test.ts(25,44): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoAuth.test.ts(30,44): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoAuth.test.ts(78,7): error TS2322: Type 'string | null' is not assignable to type '"super_admin" | null | undefined'.
+  Type 'string' is not assignable to type '"super_admin"'.
+lib/demoAuth.test.ts(85,7): error TS2322: Type 'string | null' is not assignable to type '"super_admin" | null | undefined'.
+  Type 'string' is not assignable to type '"super_admin"'.
+lib/demoAuth.test.ts(139,15): error TS2540: Cannot assign to 'NODE_ENV' because it is a read-only property.
+lib/demoAuth.test.ts(156,17): error TS2540: Cannot assign to 'NODE_ENV' because it is a read-only property.
+lib/demoAuth.test.ts(164,15): error TS2540: Cannot assign to 'NODE_ENV' because it is a read-only property.
+lib/demoAuth.test.ts(171,17): error TS2540: Cannot assign to 'NODE_ENV' because it is a read-only property.
+lib/demoAuth.test.ts(217,48): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoEntry.test.ts(3,62): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(5,35): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(6,33): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(7,58): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(8,39): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(15,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(27,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/demoTeachingGuide.test.ts(378,11): error TS7022: 'finding' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.
+lib/dicomAnonymize.test.ts(7,49): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/dicomAnonymize.test.ts(8,91): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/dicomAnonymize.test.ts(9,24): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/dicomTags.test.ts(3,75): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/dicomwebProxy.test.ts(9,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/durableStore.test.ts(3,37): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/durableStore.test.ts(8,25): error TS2352: Conversion of type '{ MONGODB_URI: string; }' to type 'ProcessEnv' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'NODE_ENV' is missing in type '{ MONGODB_URI: string; }' but required in type 'ProcessEnv'.
+lib/durableStore.test.ts(14,31): error TS2352: Conversion of type '{ K_SERVICE: string; }' to type 'ProcessEnv' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'NODE_ENV' is missing in type '{ K_SERVICE: string; }' but required in type 'ProcessEnv'.
+lib/durableStore.test.ts(19,27): error TS2352: Conversion of type '{ K_SERVICE: string; MONGODB_URI: string; }' to type 'ProcessEnv' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'NODE_ENV' is missing in type '{ K_SERVICE: string; MONGODB_URI: string; }' but required in type 'ProcessEnv'.
+lib/durableStore.test.ts(29,25): error TS2352: Conversion of type '{ K_SERVICE: string; MONGODB_URI: string; }' to type 'ProcessEnv' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'NODE_ENV' is missing in type '{ K_SERVICE: string; MONGODB_URI: string; }' but required in type 'ProcessEnv'.
+lib/examLocate.test.ts(19,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/examLocate.test.ts(20,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/examLocate.test.ts(293,27): error TS2339: Property 'liveCaption' does not exist on type '{ id: string; role: "assistant"; text: string; }'.
+lib/examLocate.test.ts(300,25): error TS2339: Property 'liveCaption' does not exist on type '{ id: string; role: "assistant"; text: string; }'.
+lib/findingAnchors.test.ts(13,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/findingAnchors.test.ts(35,16): error TS18048: 'a.marker' is possibly 'undefined'.
+lib/findingDisplayState.test.ts(9,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/findingDisplayState.test.ts(29,18): error TS2339: Property 'sliceIndex' does not exist on type '{ label: string; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/findingDisplayState.test.ts(30,18): error TS2339: Property 'windowWidth' does not exist on type '{ label: string; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/findingDisplayState.test.ts(31,18): error TS2339: Property 'windowCenter' does not exist on type '{ label: string; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/findingDisplayState.test.ts(32,18): error TS2339: Property 'sopInstanceUID' does not exist on type '{ label: string; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/findingDisplayState.test.ts(43,23): error TS2339: Property 'sliceIndex' does not exist on type '{ marker: { x_pct: number; y_pct: number; shape: "circle"; }; viewportRole: "secondary"; }'.
+lib/findingDisplayState.test.ts(44,23): error TS2339: Property 'windowWidth' does not exist on type '{ marker: { x_pct: number; y_pct: number; shape: "circle"; }; viewportRole: "secondary"; }'.
+lib/findingDisplayState.test.ts(45,23): error TS2339: Property 'windowCenter' does not exist on type '{ marker: { x_pct: number; y_pct: number; shape: "circle"; }; viewportRole: "secondary"; }'.
+lib/findingDisplayState.test.ts(46,23): error TS2339: Property 'zoom' does not exist on type '{ marker: { x_pct: number; y_pct: number; shape: "circle"; }; viewportRole: "secondary"; }'.
+lib/findingDisplayState.test.ts(47,27): error TS2339: Property 'pan' does not exist on type '{ marker: { x_pct: number; y_pct: number; shape: "circle"; }; viewportRole: "secondary"; }'.
+lib/findingMeasurements.test.ts(6,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/findingQuality.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/gemini.test.ts(3,69): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/gemini.test.ts(4,32): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/geminiFiles.test.ts(3,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/geminiLiveProtocol.test.ts(14,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/geminiLiveProtocol.test.ts(15,60): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/harness/mergeCapture.test.ts(3,43): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/harness/mergeCapture.test.ts(4,61): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/harness/tutorEval.test.ts(5,39): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/harness/tutorEval.test.ts(23,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/imagingBackend.test.ts(10,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/imagingBackend.test.ts(11,67): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/jsonArrayStream.test.ts(4,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/learnerEntry.test.ts(7,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/liveTeachingPack.test.ts(3,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/liveTeachingPack.test.ts(16,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/markerFromTrack.test.ts(3,33): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/measurementReport.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/micButton.test.ts(27,34): error TS7016: Could not find a declaration file for module 'jsdom'. '/workspace/radlearn-build/node_modules/jsdom/lib/api.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/jsdom` if it exists or add a new declaration (.d.ts) file containing `declare module 'jsdom';`
+lib/micButton.test.ts(69,38): error TS5097: An import path can only end with a '.tsx' extension when 'allowImportingTsExtensions' is enabled.
+lib/mpr.test.ts(3,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/mpr.test.ts(17,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/mpr.test.ts(156,90): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/mpr.test.ts(169,45): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/pacsbinUrl.test.ts(12,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/performancePlan.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/petFusion.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/petFusion.test.ts(83,45): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/petFusion.test.ts(93,63): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/pointerTween.test.ts(7,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/pointerTween.test.ts(41,44): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/prefetchWarm.test.ts(5,37): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/prefetchWarm.test.ts(13,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/provisionAuthUser.test.ts(6,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/provisionAuthUser.test.ts(10,13): error TS2540: Cannot assign to 'NODE_ENV' because it is a read-only property.
+lib/provisionAuthUser.test.ts(17,44): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/publishGate.test.ts(6,53): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/publishGate.test.ts(37,42): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/r2.test.ts(3,92): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/readingDigest.test.ts(6,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/recordedTour.test.ts(4,35): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/recordedTour.test.ts(5,64): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/recordedTour.test.ts(13,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/relatedCourses.test.ts(4,56): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/replay.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/replay.test.ts(12,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/replay.test.ts(13,25): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/replay.test.ts(14,89): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/replay.test.ts(237,3): error TS2349: This expression is not callable.
+  Type 'never' has no call signatures.
+lib/replay.test.ts(935,13): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/reportGrade.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/screens.test.ts(3,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/scrollSensitivity.test.ts(15,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/seriesRail.test.ts(4,32): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/seriesRail.test.ts(14,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/seriesRail.ui.test.ts(49,34): error TS7016: Could not find a declaration file for module 'jsdom'. '/workspace/radlearn-build/node_modules/jsdom/lib/api.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/jsdom` if it exists or add a new declaration (.d.ts) file containing `declare module 'jsdom';`
+lib/seriesRail.ui.test.ts(74,44): error TS5097: An import path can only end with a '.tsx' extension when 'allowImportingTsExtensions' is enabled.
+lib/seriesRail.ui.test.ts(75,46): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/seriesRailPreference.test.ts(14,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/setSeries.test.ts(3,39): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/setSeries.test.ts(4,46): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/setSeries.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/sketchMarks.test.ts(3,67): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/sketchMarks.test.ts(12,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/sketchMarks.test.ts(19,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/sketchMarks.test.ts(32,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/sketchMarks.test.ts(33,100): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/speak.test.ts(3,71): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/speak.test.ts(123,43): error TS2339: Property 'playStarted' does not exist on type 'never'.
+lib/speak.test.ts(127,22): error TS2339: Property 'playStarted' does not exist on type 'never'.
+lib/speak.test.ts(130,25): error TS2339: Property 'paused' does not exist on type 'never'.
+lib/speak.test.ts(170,5): error TS2349: This expression is not callable.
+  Type 'never' has no call signatures.
+lib/speak.test.ts(219,43): error TS2339: Property 'playStarted' does not exist on type 'never'.
+lib/speak.test.ts(223,16): error TS2339: Property 'onended' does not exist on type 'never'.
+lib/speak.test.ts(260,43): error TS2339: Property 'playStarted' does not exist on type 'never'.
+lib/speak.test.ts(264,21): error TS2339: Property 'playStarted' does not exist on type 'never'.
+lib/speak.test.ts(265,11): error TS2339: Property 'onended' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(4,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/speakOnceCapture.test.ts(5,43): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/speakOnceCapture.test.ts(6,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/speakOnceCapture.test.ts(13,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/speakOnceCapture.test.ts(173,32): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; teachingGuide: { durationMs: number; start: { sliceIndex: number; }; beats: { t: number; act: "pearl"; actions: never[]; say: string; }[]; }; }'.
+lib/speakOnceCapture.test.ts(174,35): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; teachingGuide: { durationMs: number; start: { sliceIndex: number; }; beats: { t: number; act: "pearl"; actions: never[]; say: string; }[]; }; }'.
+lib/speakOnceCapture.test.ts(191,25): error TS2339: Property 'voice' does not exist on type '{ durationMs: number; start: { sliceIndex: number; }; beats: { t: number; act: "pearl"; actions: never[]; say: string; }[]; }'.
+lib/speakOnceCapture.test.ts(192,48): error TS2367: This comparison appears to be unintentional because the types '"pearl"' and '"orient"' have no overlap.
+lib/speakOnceCapture.test.ts(193,26): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(194,17): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(194,56): error TS2339: Property 'sliceIndex' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(196,46): error TS2367: This comparison appears to be unintentional because the types '"pearl"' and '"lean-in"' have no overlap.
+lib/speakOnceCapture.test.ts(197,24): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(198,15): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(198,50): error TS2339: Property 'zoom' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(200,23): error TS2367: This comparison appears to be unintentional because the types '"pearl"' and '"commit"' have no overlap.
+lib/speakOnceCapture.test.ts(201,41): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(202,25): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(203,16): error TS2339: Property 'type' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(204,26): error TS2339: Property 'x' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(205,26): error TS2339: Property 'y' does not exist on type 'never'.
+lib/speakOnceCapture.test.ts(208,37): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; teachingGuide: { durationMs: number; start: { sliceIndex: number; }; beats: { t: number; act: "pearl"; actions: never[]; say: string; }[]; }; }'.
+lib/speakOnceCapture.test.ts(208,66): error TS7006: Parameter 'span' implicitly has an 'any' type.
+lib/speakOnceCapture.test.ts(233,39): error TS2345: Argument of type '{ label: string; track?: unknown; teachingGuide?: { beats: { say?: string | undefined; }[]; } | undefined; }' is not assignable to parameter of type 'Partial<Pick<Finding, "sliceIndex" | "label" | "description" | "teachingPoints" | "marker" | "track" | "teachingGuide" | "windowWidth" | "windowCenter">>'.
+  Types of property 'track' are incompatible.
+    Type 'unknown' is not assignable to type 'RecordedTrack | undefined'.
+lib/speakOnceCapture.test.ts(241,29): error TS2345: Argument of type '{ beats: { say?: string | undefined; }[]; } | null | undefined' is not assignable to parameter of type 'Pick<TeachingGuide, "beats"> | null | undefined'.
+  Type '{ beats: { say?: string | undefined; }[]; }' is not assignable to type 'Pick<TeachingGuide, "beats">'.
+    Types of property 'beats' are incompatible.
+      Type '{ say?: string | undefined; }[]' is not assignable to type 'TeachBeat[]'.
+        Type '{ say?: string | undefined; }' is missing the following properties from type 'TeachBeat': t, actions
+lib/speechPipeline.test.ts(3,44): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/stackIndex.test.ts(4,32): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/stackStart.test.ts(3,48): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/storeQuery.test.ts(24,42): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/taxonomy.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/taxonomy.test.ts(13,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teacherCapture.test.ts(9,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingDeidentify.test.ts(7,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingDeidentify.test.ts(8,49): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingDeidentify.test.ts(9,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingDeidentify.test.ts(16,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingGuide.test.ts(18,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingGuide.test.ts(19,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingGuide.test.ts(21,39): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingGuide.test.ts(385,27): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; teachingGuide: TeachingGuide; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/teachingGuide.test.ts(385,61): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; teachingGuide: TeachingGuide; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/teachingGuide.test.ts(417,27): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; teachingGuide: TeachingGuide; }'.
+lib/teachingGuide.test.ts(449,27): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(452,49): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(461,57): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(486,38): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: never[]; }'.
+lib/teachingGuide.test.ts(489,57): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: never[]; }'.
+lib/teachingGuide.test.ts(527,27): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; windowWidth: number; windowCenter: number; teachingGuide: TeachingGuide; }'.
+lib/teachingGuide.test.ts(528,35): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; windowWidth: number; windowCenter: number; teachingGuide: TeachingGuide; }'.
+lib/teachingGuide.test.ts(528,64): error TS7006: Parameter 'span' implicitly has an 'any' type.
+lib/teachingGuide.test.ts(566,48): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "arrow"; }; }'.
+lib/teachingGuide.test.ts(582,31): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: never[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; windowWidth: number; windowCenter: number; }'.
+lib/teachingGuide.test.ts(583,12): error TS7006: Parameter 'beat' implicitly has an 'any' type.
+lib/teachingGuide.test.ts(584,21): error TS7006: Parameter 'action' implicitly has an 'any' type.
+lib/teachingGuide.test.ts(623,32): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(624,12): error TS7006: Parameter 'beat' implicitly has an 'any' type.
+lib/teachingGuide.test.ts(625,21): error TS7006: Parameter 'action' implicitly has an 'any' type.
+lib/teachingGuide.test.ts(628,40): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(656,30): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(659,45): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(663,36): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(731,31): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; windowWidth: number; windowCenter: number; }'.
+lib/teachingGuide.test.ts(757,32): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; windowWidth: number; windowCenter: number; }'.
+lib/teachingGuide.test.ts(776,37): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(777,37): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(778,37): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(779,46): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; }'.
+lib/teachingGuide.test.ts(795,31): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; sliceIndex: number; windowWidth: number; windowCenter: number; }'.
+lib/teachingGuide.test.ts(819,36): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/teachingGuide.test.ts(820,45): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; marker: { x_pct: number; y_pct: number; shape: "circle"; }; }'.
+lib/teachingGuide.test.ts(841,19): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(842,20): error TS2339: Property 'track' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(843,19): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(843,42): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(844,41): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(844,70): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingGuide.test.ts(846,45): error TS2339: Property 'teachingGuide' does not exist on type '{ label: string; description: string; teachingPoints: string[]; }'.
+lib/teachingPrompt.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(9,61): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(10,83): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(11,31): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(12,57): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(91,35): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(106,45): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(107,54): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/teachingUpload.test.ts(138,11): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+lib/teachingUpload.test.ts(139,11): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+lib/teachingUpload.test.ts(140,79): error TS2339: Property 'toBuffer' does not exist on type 'AdmZip'.
+lib/toolBindings.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/toolBindings.test.ts(12,36): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tourAdapt.test.ts(12,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tourCheckIn.test.ts(5,35): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tourCheckIn.test.ts(18,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tutorSpeech.test.ts(4,54): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tutorSpeech.test.ts(5,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tutorSpeech.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tutorSpeech.test.ts(12,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/tutorSpeech.test.ts(25,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/uploadBudget.test.ts(4,28): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewerExport.test.ts(10,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewerExport.test.ts(11,90): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewerExport.test.ts(12,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewerLayout.test.ts(10,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewerLoad.test.ts(12,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewerSource.test.ts(11,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/viewportVoi.test.ts(13,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/voiTransition.test.ts(3,55): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/voice.test.ts(8,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/voice.test.ts(9,38): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/voiceCommands.test.ts(3,122): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/voiceCommands.test.ts(94,64): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/windowPresets.test.ts(9,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/zipArchive.test.ts(30,7): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+lib/zipArchive.test.ts(31,7): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+lib/zipArchive.test.ts(32,7): error TS2339: Property 'addFile' does not exist on type 'AdmZip'.
+lib/zipArchive.test.ts(33,36): error TS2339: Property 'toBuffer' does not exist on type 'AdmZip'.
+lib/zipWriter.test.ts(3,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+lib/zipWriter.test.ts(4,34): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.

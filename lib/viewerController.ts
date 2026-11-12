@@ -13,6 +13,17 @@
 import { buildViewerUrl, type ChromeOptions } from "./pacsbinUrl";
 import type { Finding, Keyframe, Marker, PacsbinViewport, ViewerState } from "./types";
 import { authoredDisplayState } from "./findingDisplayState";
+import type { RenderAck, RenderedView, ViewCommand } from "./journal/types";
+import type { ImagePointEvidence } from "./journal/viewer";
+
+export interface RenderConfirmedViewer {
+  cancelView?(): void;
+  showReplayGeometry?(shapes: import("./replay/types").ReplayShape[]): void;
+  onRendered(cb: (view: RenderedView) => void): () => void;
+  getRenderedView(): RenderedView | null;
+  requestView(command: ViewCommand): Promise<RenderAck>;
+  captureImagePoint(x: number, y: number): ImagePointEvidence | null;
+}
 
 export type ApplyUrl = (url: string) => void;
 
@@ -98,6 +109,11 @@ export async function playKeyframes(
 export interface CornerstoneViewerState {
   /** Absolute 0-based stack index. Takes precedence over sliceFraction. */
   sliceIndex?: number;
+  /**
+   * The instance to show. Wins over sliceIndex when the stack holds it: an
+   * index means a position in one particular ordering, the SOP the image.
+   */
+  sopInstanceUID?: string;
   /** Slice to show, as a fraction [0,1] of the stack (resolved to an index by
    *  the viewer, which knows the actual image count). Absent = keep current. */
   sliceFraction?: number;

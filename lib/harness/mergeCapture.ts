@@ -1,3 +1,5 @@
+import { reconcileDrafts, type MarkerDecision } from "../anchors/reconcile";
+import { anchorFields } from "../anchors/materialize";
 /**
  * Merge a continuous demonstration: speech segments (structured JSON) +
  * timestamped DICOM walk-through (RecordedTrack) → Finding drafts + CaptureSession.
@@ -12,6 +14,9 @@ import {
   sliceTrack,
   segmentMidMs,
 } from "../captureSession";
+import { measurementsFromTrack } from "../findingMeasurements";
+import { teacherMarkerInWindow } from "../teacherSketch";
+import { guideForFindingTrack } from "../teachingGuide";
 import type {
   CaptureSession,
   Finding,
@@ -25,6 +30,7 @@ export type MergeCaptureInput = {
   sessionId: string;
   parentTrack: RecordedTrack;
   segments: StructuredSessionFinding[];
+  markerDecisions?: MarkerDecision[];
   transcript?: string;
   audioUrl?: string;
   studyInstanceUID?: string;
@@ -56,15 +62,21 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
     audioUrl: input.audioUrl,
     transcript: input.transcript,
     createdAt,
+    markerDecisions: input.markerDecisions,
   };
 
   const findings: Partial<Finding>[] = [];
-  for (let i = 0; i < input.segments.length; i++) {
-    const seg = input.segments[i];
+  const segments = reconcileDrafts(track, input.segments, input.markerDecisions);
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     if (!seg.label?.trim()) continue;
 
     const mid = segmentMidMs(seg.tStartMs, seg.tEndMs);
+    // The teacher's own numbered marker beats a cursor sample: it is where
+    // they pressed M, on the image they pressed it on.
+    const pinned = teacherMarkerInWindow(track, seg.tStartMs, seg.tEndMs);
     const marker: Marker =
+      pinned?.marker ??
       seg.suggestedMarker ??
       markerNearTime(track, mid) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" };
     const sub = sliceTrack(track, seg.tStartMs, seg.tEndMs);
@@ -84,10 +96,12 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
     }
 
     const sliceIndex =
+      pinned?.sliceIndex ??
       seg.suggestedSliceIndex ??
       landingSlice ??
       0;
     const seriesUID =
+      pinned?.seriesInstanceUID ||
       seriesNearTime(track, mid) ||
       input.seriesInstanceUID ||
       undefined;
@@ -96,7 +110,7 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       sliceIndex,
       ww,
       wc,
-      sopInstanceUID: input.sopInstanceUID,
+      sopInstanceUID: pinned?.sopInstanceUID ?? input.sopInstanceUID,
     };
 
     const anchor: FindingAnchor = {
@@ -111,10 +125,17 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       studyRole: "current",
     };
 
+    const description = (seg.description ?? "").trim();
+    const teachingPoints = (seg.teachingPoints ?? [])
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const teachingGuide = guideForFindingTrack(sub, { description, teachingPoints });
+    const measurements = measurementsFromTrack({ ...sub, journal: track.journal?.filter(e => e.kind === "render" || (e.t >= seg.tStartMs && e.t <= seg.tEndMs)) });
+
     const finding: Partial<Finding> = {
       label: seg.label.trim(),
-      description: (seg.description ?? "").trim(),
-      teachingPoints: (seg.teachingPoints ?? []).map((t) => t.trim()).filter(Boolean),
+      description,
+      teachingPoints,
       state: " ",
       marker,
       studyInstanceUID: input.studyInstanceUID,
@@ -122,6 +143,8 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       anchors: [anchor],
       track: sub,
       durationMs: sub.durationMs,
+      teachingGuide,
+      ...(measurements.length ? { measurements } : {}),
       captureSessionId: session.id,
       tStartMs: seg.tStartMs,
       tEndMs: seg.tEndMs,
@@ -131,6 +154,7 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       sopInstanceUID: snap.sopInstanceUID,
       order: i + 1,
     };
+    Object.assign(finding, anchorFields(track, seg));
     findings.push(finding);
   }
 

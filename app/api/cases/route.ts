@@ -1,3 +1,4 @@
+import { hasActiveExam } from "@/lib/exam/access";
 // GET  /api/cases        -> list org cases (published-only for anonymous)
 // POST /api/cases        -> create a case { caseId, title, modality, pacsbinBaseUrl }
 
@@ -10,6 +11,7 @@ import { parseBaseUrl } from "@/lib/pacsbinUrl";
 export const runtime = "nodejs";
 
 export async function GET() {
+  if (await hasActiveExam()) return NextResponse.json({ error: "Unavailable during examination" }, { status: 403 });
   const orgId = await activeOrgId();
   const session = await getSession();
   const canSeeAll = session

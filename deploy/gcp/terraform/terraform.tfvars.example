@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (gitignored). Defaults match the live RadLearn project.
+project_id    = "radlearn-app"
+region        = "europe-west2"
+frame_bucket  = "" # e.g. "radlearn-app-frames"
+deploy_app    = false
+app_image     = ""
+public_url    = ""
+gemini_model  = "gemini-3.8-flash"
+# Converted DICOM delivery (docs/DICOM_CDN_REPORT.md). Bucket alone = app-served
+# chunks; add the domain + key for Cloud CDN. Key: head -c 16 /dev/urandom | base64 | tr +/ -_
+dicom_cdn_bucket      = "" # e.g. "radlearn-app-dicom-cdn"
+dicom_cdn_domain      = "" # e.g. "dicom-cdn.radlearn.app"
+dicom_cdn_signing_key = "" # same value as the DICOM_CDN_KEY secret version

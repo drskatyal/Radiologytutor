@@ -5,6 +5,7 @@ import {
   FULL_DYNAMIC_ID,
   presetsForModality,
   matchPreset,
+  parseCustomWindow,
 } from "./windowPresets.ts";
 
 test("ships the canonical CT presets with correct ww/wc", () => {
@@ -38,4 +39,18 @@ test("matchPreset identifies a preset within tolerance", () => {
 
 test("FULL_DYNAMIC_ID is distinct from any real preset id", () => {
   assert.ok(!WINDOW_PRESETS.some((p) => p.id === FULL_DYNAMIC_ID));
+});
+
+test("Set window: typed width / level, validated", () => {
+  assert.deepEqual(parseCustomWindow("400", "40"), { ww: 400, wc: 40 });
+  assert.deepEqual(parseCustomWindow(" 1500 ", "-600"), { ww: 1500, wc: -600 }, "lung: negative level");
+  assert.deepEqual(parseCustomWindow("2,5", "0.5"), { ww: 2.5, wc: 0.5 }, "a decimal comma");
+  assert.deepEqual(parseCustomWindow("1", "0"), { ww: 1, wc: 0 }, "width 1 is the minimum");
+  assert.equal(parseCustomWindow("0.5", "40"), null, "width under 1");
+  assert.equal(parseCustomWindow("-400", "40"), null);
+  assert.equal(parseCustomWindow("", "40"), null);
+  assert.equal(parseCustomWindow("400", ""), null);
+  assert.equal(parseCustomWindow("4e2", "40"), null, "no exponent notation");
+  assert.equal(parseCustomWindow("400abc", "40"), null);
+  assert.equal(parseCustomWindow("400", "NaN"), null);
 });

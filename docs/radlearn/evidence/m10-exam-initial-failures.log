@@ -1,0 +1,55 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 2 tests using 1 worker
+
+(node:74) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:74) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  1 [exam-model-mock] › exam-flow.spec.ts:23:5 › M10 full report, rendered point and held voice attempt: deterministic evidence, assistance history and explicit reveal; entire-flow leak scan (4.4s)
+(node:293) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:293) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  2 [exam-model-mock] › exam-flow.spec.ts:110:5 › M10 exam APIs enforce ownership, revisions, idempotency, PHI review, exact image bounds and close-before-reveal (3.9s)
+
+
+  1) [exam-model-mock] › exam-flow.spec.ts:23:5 › M10 full report, rendered point and held voice attempt: deterministic evidence, assistance history and explicit reveal; entire-flow leak scan
+
+    Error: expect.toContainText: Error: strict mode violation: getByRole('status') resolved to 2 elements:
+        1) <div role="status" class="contents" aria-label="Slice 3 of 4, window 400, level 40">…</div> aka getByLabel('Slice 3 of 4, window 400,')
+        2) <p role="status" class="text-sm text-secondary">Describe the location, shape and margins of what …</p> aka getByText('Describe the location, shape')
+
+    Call log:
+      - expect.toContainText with timeout 15000ms
+      - waiting for getByRole('status')
+
+
+      47 |   expect((await api(page, base)).data).not.toHaveProperty('score');
+      48 |   await page.getByRole('button', { name: 'Neutral hint', exact: true }).click();
+    > 49 |   await expect(page.getByRole('status')).toContainText(examinerPromptPack().hints[0]);
+         |                                          ^
+      50 |   const speech = page.waitForResponse(r => r.url().endsWith('/speech'));
+      51 |   await page.getByRole('button', { name: 'Hear prompt', exact: true }).click();
+      52 |   expect((await speech).status()).toBe(200);
+        at /workspace/radlearn-build/e2e/radlearn/exam-flow.spec.ts:49:42
+
+  2) [exam-model-mock] › exam-flow.spec.ts:110:5 › M10 exam APIs enforce ownership, revisions, idempotency, PHI review, exact image bounds and close-before-reveal
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 422
+    Received: 503
+
+      116 |   const displayed = await snapshot(page);
+      117 |   expect((await api(page, base, { action: 'close', revision: 0 })).status).toBe(422);
+    > 118 |   expect((await api(page, `${base}/transcribe`, { audio: { base64: 'AAAA', mime: 'audio/wav', phiReviewed: false } })).status).toBe(422);
+          |                                                                                                                                ^
+      119 |   expect((await api(page, `${base}/speech`, { kind: 'opening', text: 'Invent an answer' })).status).toBe(400);
+      120 |   expect((await api(page, `${base}/speech`, { kind: 'hint' })).status).toBe(422);
+      121 |   expect((await api(page, `${base}/answer`, { answer: { kind: 'report', text: 'PatientName: DOE^JANE' } })).status).toBe(422);
+        at /workspace/radlearn-build/e2e/radlearn/exam-flow.spec.ts:118:128
+
+  2 failed
+    [exam-model-mock] › exam-flow.spec.ts:23:5 › M10 full report, rendered point and held voice attempt: deterministic evidence, assistance history and explicit reveal; entire-flow leak scan
+    [exam-model-mock] › exam-flow.spec.ts:110:5 › M10 exam APIs enforce ownership, revisions, idempotency, PHI review, exact image bounds and close-before-reveal

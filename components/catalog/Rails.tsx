@@ -89,7 +89,7 @@ export function CoursesRail({
               href={`/course/${course.id}`}
               className="group flex items-start gap-4 border-b border-subtle py-4 transition-colors hover:bg-surface/40"
             >
-              <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-subtle bg-imaging text-accent">
+              <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
                 <BookOpen className="h-4 w-4" aria-hidden="true" />
               </span>
               <div className="min-w-0 flex-1">
@@ -123,7 +123,7 @@ export function TeachersRail({
   courseCountByAuthor = {},
   showHeading = true,
   title = "Teachers",
-  description = "Verified radiologists and educators on FlowRad.",
+  description = "Radiologists who have published a teach.",
   aside,
 }: {
   id?: string;
@@ -246,7 +246,7 @@ export function PlaylistsRail({
             href={`/playlist/${pl.id}`}
             className="group flex items-center gap-4 border-b border-subtle py-4 transition-colors hover:bg-surface/40"
           >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-subtle bg-imaging text-accent">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
               <ListMusic className="h-4 w-4" aria-hidden="true" />
             </span>
             <div className="min-w-0 flex-1">

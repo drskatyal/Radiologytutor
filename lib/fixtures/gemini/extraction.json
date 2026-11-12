@@ -1,0 +1,35 @@
+{
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+  "body": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "inlineData": {
+              "mimeType": "video/webm",
+              "data": "AAAA"
+            },
+            "mediaProcessing": "AGENTIC",
+            "mediaResolution": {
+              "level": "MEDIA_RESOLUTION_LOW"
+            }
+          },
+          {
+            "text": "Here is the transcript (prefer this if audio is also provided):\nSynthetic teaching observation.\n\nSession durationMs=300000.\n\nA DICOM viewport recording is attached. Use it with the viewer log. Do not read the rest of the page — the file is the viewport only.\n\nReturn transcript plus findings with whatToNotice, pearl, mimics, tStartMs, tEndMs, and clinicalImportance only. Do not include coordinates or slice indices."
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "responseMimeType": "application/json"
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You structure a radiologist's CONTINUOUS teaching dictation (spoken while scrolling a study) for an interactive DICOM tutor.\nReturn ONLY JSON — no prose, no markdown — with EXACTLY:\n{\n  \"transcript\": string,\n  \"findings\": [\n    {\n      \"label\": string,\n      \"description\": string,\n      \"teachingPoints\": string[],\n      \"whatToNotice\": string,\n      \"pearl\": string,\n      \"mimics\": string[],\n      \"clinicalImportance\": number,\n      \"whyClinicallyFirst\": string,\n      \"reportLine\": string,\n      \"landmark\": string,\n      \"tStartMs\": number,\n      \"tEndMs\": number\n    }\n  ]\n}\nSegmentation:\n- New finding when they move to a different lesion, sign, or teaching beat (\"next\", \"now look\", \"first… second…\").\n- One finding if they only discuss one thing.\n- label 2–6 words; include laterality if spoken.\n- description = their words, 1–3 sentences. teachingPoints = 0–4 pearls they said.\n- whatToNotice = the look cue (what the eye should catch). pearl = the one line to remember. mimics = 0–3 things it can be mistaken for. reportLine = the sentence they would dictate. landmark = the anatomical level, not the diagnosis.\n- clinicalImportance is an integer, 1 = most urgent. Rank every finding. whyClinicallyFirst says why that rank, in their words.\n- NEVER invent anatomy, measurements, or diagnoses.\n- Do NOT include slice indexes, pixel coordinates, window width, window center, or series UIDs. The server places those from the viewer log.\n- tStartMs/tEndMs within [0, durationMs], ordered, non-overlapping.\n- transcript is the full verbatim dictation."
+        }
+      ]
+    }
+  }
+}

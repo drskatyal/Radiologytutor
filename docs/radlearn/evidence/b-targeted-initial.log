@@ -1,0 +1,16 @@
+✔ B production validation accepts C2/PACS configuration without optional providers or legacy backends (2.259078ms)
+✔ B every required production variable independently fails closed when absent or blank (1.122283ms)
+✔ B malformed production configuration reports variable names, never values (0.774696ms)
+✔ B OAuth fields are required together; localhost origins remain usable for local production checks (0.19829ms)
+✔ B compiled production preload exits before server code, hides values and honors PORT (188.705388ms)
+✔ B liveness GET/HEAD is constant, uncached and does not call providers or log (16.860088ms)
+✔ B Docker static contract: checked production build, non-root standalone runner, injected PORT, no secret args (0.703934ms)
+✔ B Docker context excludes credentials and test state; Railway configuration is absent and probes use healthz (0.388529ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 695.34606

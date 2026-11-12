@@ -21,6 +21,10 @@
 // tested without the WebGL viewer; the viewer applies the same calls live.
 
 export const PRIMARY = "Primary";
+/** One-finger drag. Moves with the selected tool, same as the left button. */
+export const TOUCH_PRIMARY = "Touch1";
+/** Two-finger pinch. Stays on Zoom no matter which tool is selected. */
+export const TOUCH_PINCH = "Touch2";
 export type FixedBinding = "Wheel" | "Secondary" | "Auxiliary";
 
 /** A tool's permanent (non-left-button) binding, if any. */
@@ -40,22 +44,26 @@ export interface ToolBindingState {
 /** Build the initial binding state: every fixed binding applied, no left tool. */
 export function initToolBindings(
   order: string[],
-  fixed: FixedBindings
+  fixed: FixedBindings,
+  extras?: Record<string, readonly string[]>
 ): ToolBindingState {
   const bindings: Record<string, Set<string>> = {};
   for (const name of order) {
     bindings[name] = new Set();
     const f = fixed[name];
     if (f) bindings[name].add(f);
+    for (const extra of extras?.[name] ?? []) bindings[name].add(extra);
   }
   return { order, fixed, bindings, leftTool: null };
 }
 
 /**
- * Move the Primary (left button) binding to `name`. Mirrors exactly what the
- * viewer does against the real Cornerstone tool group:
- *   • remove ONLY Primary from the outgoing tool (its fixed binding stays),
- *   • add Primary to the incoming tool.
+ * Move the Primary (left button) and one-finger bindings to `name`.
+ * Mirrors the viewer:
+ *   • remove ONLY Primary and Touch1 from the outgoing tool (wheel, right,
+ *     middle, and pinch stay),
+ *   • add Primary and Touch1 to the incoming tool.
+ * Exactly one tool owns each of those two gestures.
  */
 export function setLeftTool(state: ToolBindingState, name: string): ToolBindingState {
   if (!state.bindings[name]) {
@@ -63,10 +71,43 @@ export function setLeftTool(state: ToolBindingState, name: string): ToolBindingS
   }
   if (state.leftTool && state.leftTool !== name) {
     state.bindings[state.leftTool].delete(PRIMARY);
+    state.bindings[state.leftTool].delete(TOUCH_PRIMARY);
   }
   state.bindings[name].add(PRIMARY);
+  state.bindings[name].add(TOUCH_PRIMARY);
   state.leftTool = name;
   return state;
+}
+
+/** Insertion order used by the Cornerstone tool group. */
+export const READING_TOOL_ORDER = [
+  "WindowLevel",
+  "Pan",
+  "Zoom",
+  "StackScroll",
+  "Length",
+  "Angle",
+  "ArrowAnnotate",
+  "RectangleROI",
+  "EllipticalROI",
+  "Probe",
+] as const;
+
+const READING_FIXED: FixedBindings = {
+  Pan: "Auxiliary",
+  Zoom: "Secondary",
+  StackScroll: "Wheel",
+};
+
+/**
+ * Reading-room bindings: wheel scrolls, right-drag and pinch zoom, middle-drag
+ * pans, and the selected tool owns left-drag and one-finger drag.
+ */
+export function initReadingToolBindings(defaultTool: string): ToolBindingState {
+  const state = initToolBindings(Array.from(READING_TOOL_ORDER), READING_FIXED, {
+    Zoom: [TOUCH_PINCH],
+  });
+  return setLeftTool(state, defaultTool);
 }
 
 /**
