@@ -10,7 +10,8 @@ import { captureReviewPoint, jumpToReview, reviewRequest } from "@/lib/review/cl
 const textOf = (f: Finding) => ({ label: f.label, description: f.description, teachingPoints: f.teachingPoints.join("\n") });
 const phiOf = (f: Finding) => f.phiReview ?? { pixels: false, audio: false, screen: false };
 const clock = (t: number | null) => t === null ? "Unknown time" : `${Math.floor(t / 60000)}:${((t % 60000) / 1000).toFixed(2).padStart(5, "0")}`;
-export function FindingReview({ caseId, review, viewer, ready, capture, onChanged, onReload, onEvidence, onDirtyChange }: {
+export function FindingReview({ caseId, review, viewer, ready, capture, onChanged, onReload, onEvidence, onDirtyChange, onReplay }: {
+  onReplay?: () => void;
   onDirtyChange?: (id: string, dirty: boolean) => void;
   caseId: string; review: FindingReviewState; viewer: MutableRefObject<Partial<RenderConfirmedViewer> | null>; ready: boolean;
   capture?: CaptureSession; onChanged: (data: Case) => void; onReload: () => Promise<void>; onEvidence: (session: CaptureSession, t: number) => void;
@@ -85,6 +86,7 @@ export function FindingReview({ caseId, review, viewer, ready, capture, onChange
         {review.snapshot && <details><summary className="cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Image identity</summary><p className="mt-1 break-all">SOP {review.snapshot.sopUID} · frame {review.snapshot.frame}</p></details>}
       </div>
       <div className="flex flex-wrap gap-2" aria-label="Finding evidence">
+        {onReplay && <Button size="sm" variant="secondary" disabled={!ready || !review.approved || dirty || stale || !capture?.journal?.length} onClick={onReplay}>Replay approved take</Button>}
         {(f.evidence ?? []).map((e, i) => <Button key={i} size="sm" variant="ghost" disabled={!capture?.manifest || e.tStart === null || e.tStart < 0 || e.tStart > capture.durationMs || !capture.manifest.chunks.some(c => c.stream !== "journal")}
           onClick={() => capture && e.tStart !== null && onEvidence(capture, e.tStart)} title={`Journal events ${e.journalSeq.join(", ") || "unknown"}`}>
           Evidence {clock(e.tStart)}–{clock(e.tEnd)}{e.estimated ? " · estimated" : ""}

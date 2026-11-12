@@ -7,17 +7,17 @@ merge, deployment, new remote data, or implementation of the deferred milestones
 |---|---|---|
 | T1 order independence | M0 `lib/synthetic.test.ts`, shuffled synthetic archive fixture; M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/anchor-order.spec.ts` | Archive and shuffled order resolve the approved finding to the same SOP and frame. UI navigation must do the same. |
 | T2 no silent fallback | M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/anchor-incomplete.spec.ts` | Removing the SOP makes a finding index-only/incomplete and not approvable; an index never repairs identity. |
-| T3 missing instance | M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/replay-missing-instance.spec.ts` (review Jump); M8 timed replay planned in that spec | Missing named SOP/frame is unresolved. Never substitute the nearest slice. |
+| T3 missing instance | M2 `lib/findingAcceptance.test.ts`; M7 `e2e/radlearn/replay-missing-instance.spec.ts` (review Jump); M8 timed replay implemented in that spec | Missing named SOP/frame is unresolved. Never substitute the nearest slice. |
 | T4 crash recovery | M4 `e2e/radlearn/capture-recovery.spec.ts` | Recovery resumes acknowledged media and journal chunks without loss or duplication. |
 | T5 mic failure | M4 `lib/journal/recorder.test.ts`, `e2e/radlearn/mic-retry.spec.ts` | Clean permission error; second start succeeds with a new session clock. |
-| T6 audio gap | M4 `lib/journal/recorder.test.ts`; M8 planned `e2e/radlearn/replay-clock.spec.ts` | Detect discontinuity and reproduce offsets within explicit tolerance. |
+| T6 audio gap | M4 `lib/journal/recorder.test.ts`; M8 `lib/replay/{player,audio}.test.ts`, `e2e/radlearn/replay-clock.spec.ts` | Detect discontinuity and reproduce offsets within explicit tolerance. |
 | T7 three silent markers | M5 `lib/anchors/reconcile.test.ts`, `e2e/radlearn/markers.spec.ts` | Three retained markers produce three candidates without narration; no production cardinality change in M0–M2. |
-| T8 measurement round-trip | M5 `lib/anchors/geometry.test.ts`; M8 planned `e2e/radlearn/replay-geometry.spec.ts` | Pixel/patient coordinates round-trip; record PixelSpacing/ImagerPixelSpacing/uncalibrated provenance. |
+| T8 measurement round-trip | M5 `lib/anchors/geometry.test.ts`; M8 `lib/replay/geometry.test.ts`, `e2e/radlearn/replay-geometry.spec.ts` | Pixel/patient coordinates round-trip; record PixelSpacing/ImagerPixelSpacing/uncalibrated provenance. |
 | T9 invalidation | M2 `lib/findingAcceptance.test.ts`; M7 `lib/review/server.test.ts`, extended `e2e/radlearn/approval.spec.ts` | Any version contentHash change invalidates approval. Text, marker/coordinates, measurement, view state, rubric, instance-set fingerprint, ordering algorithm, model and prompt versions are covered. Pure reorder with the same SOP/frame and instance set revalidates, preserves approval, and is logged. |
-| T10 delayed image load | M4 `lib/journal/match.test.ts`, `e2e/radlearn/render-ack.spec.ts`; M8 planned `e2e/radlearn/replay-delay.spec.ts` | Replay waits for the matching render acknowledgement, then resumes or times out; never continues unconfirmed. |
+| T10 delayed image load | M4 `lib/journal/match.test.ts`, `e2e/radlearn/render-ack.spec.ts`; M8 `lib/replay/player.test.ts`, `e2e/radlearn/replay-delay.spec.ts` | Replay waits for the matching render acknowledgement, then resumes or times out; never continues unconfirmed. |
 
 Image identity is Study/Series/SOP Instance UID plus a one-based frame, never a
-slice index. M2 has immutable version and approval records; M4 must add render
+slice index. M2 has immutable version and approval records; M4 adds render
 records with a monotonic clock. The viewer event journal is the source of timing
 and geometry. A 1 fps video is not that journal. Models propose text and rough
 windows only; recorded evidence supplies identities, coordinates and timing.
@@ -43,8 +43,7 @@ pass. M0–M2 alone do not claim capture/replay completion.
   `e2e/radlearn/replay-first-frame.spec.ts` must cover `viewerLoad` retaining an
   old index when a SOP is absent and progressiveStack's archive-offset versus
   sorted-stack first-frame mismatch. M4 now fails closed in the viewer loader and
-  resolves the early SOP/frame against the final order; M8 timed replay remains
-  deferred. The tests include real viewer reorder and missing-opening-SOP paths.
+  resolves the early SOP/frame against the final order; M8 now verifies timed replay without using that offset as image identity. The tests include real viewer reorder and missing-opening-SOP paths.
 - P0-4 pulled forward from M9: implemented `lib/harness/approvedTools.test.ts`,
   caller updates in `lib/gemini.test.ts`, `lib/liveTeachingPack.test.ts`,
   `lib/setSeries.test.ts`, and `e2e/radlearn/approved-tools.spec.ts`.
@@ -231,3 +230,22 @@ Exact **timed replay**, T6's drift tolerance and T10's replay hold/resume remain
 M8 acceptance; M7's Jump acknowledgement does not claim their completion. No
 additional T4/T5/T7 or P0 implementation is moved into this milestone.
 See FINDING_REVIEW.md for behavior and M7_VALIDATION.md for executed evidence.
+
+
+## M8 exact replay acceptance
+
+T3/T6/T8/T10 replay portions are implemented in the files mapped above. Every
+journal render/layout entry is requested and acknowledged before the shared
+clock and recorded audio continue. Missing identity, unknown audio gaps,
+unsupported geometry and timeouts stop visibly and report a miss. First-frame
+time and SOP/frame survive a deliberately invalid index hint. The same player
+backs author take preview and current-approved-finding replay; diagnostic
+receipts pin version/hash and do not grant approval.
+
+`e2e/radlearn/replay.spec.ts` completes the first **one CT series / one take /
+one finding** capture → retained extraction → expert edit/approval → exact
+replay round trip. Real local capture, render acknowledgements and geometry are
+used; only the model response is injected. Synthetic beep drift is measured
+from decoded Web Audio output in `replay-clock.spec.ts` (≤100 ms per cue).
+See EXACT_REPLAY.md and M8_VALIDATION.md for evidence and limitations. M9 remains
+unimplemented; no tutor action queue or speech orchestration is claimed here.
