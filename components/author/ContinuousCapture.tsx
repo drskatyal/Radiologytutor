@@ -9,6 +9,7 @@
 // stop still keeps the viewer track, and Save builds a notes-voiced
 // teaching guide from that track and the typed label, description, and points.
 
+import { processRetainedCapture } from "@/lib/extract/client";
 import { notesDrafts } from "@/lib/anchors/notes";
 import { retainedMarkers, resolveAnchor } from "@/lib/anchors/resolve";
 import { reconcileDrafts, type MarkerDecision } from "@/lib/anchors/reconcile";
@@ -298,6 +299,14 @@ export function ContinuousCapture({
     const sessionId = take.track.captureSessionId ?? `cap_${Date.now().toString(36)}`;
     try {
       if (take.track.captureSessionId && !rr.mediaReviewed) throw new Error("Review the captured media for patient identifiers before processing.");
+      if (take.track.captureSessionId) {
+        const updated = await processRetainedCapture(caseId, sessionId, markerDecisions);
+        onCaseUpdated(updated);
+        setProposals([]); onProgress?.(null); onPhaseChange?.("ready");
+        const count = updated.findings.filter(f => f.captureSessionId === sessionId).length;
+        setNotice(`Draft findings ready — ${count} candidate${count === 1 ? "" : "s"}. Review the evidence before approval.`);
+        return;
+      }
       let audioUrl: string | undefined;
       try {
         audioUrl = await uploadAudio(take.audio.base64, take.audio.mimeType);

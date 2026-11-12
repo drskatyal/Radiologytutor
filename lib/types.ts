@@ -134,6 +134,7 @@ export interface FindingAnchor {
  * segments this into multiple Findings (see StructuredSessionFinding).
  */
 export interface CaptureSession {
+  extractionJobs?: import("./extract/types").ExtractionJob[];
   markerDecisions?: import("./anchors/reconcile").MarkerDecision[];
   /** Server-bound Files API result for this completed, PHI-reviewed manifest. */
   geminiVideo?: { uri: string; mimeType: string };
@@ -375,6 +376,7 @@ export interface FindingVersion {
   findingId: string; version: number; contentHash: string; content: FindingContent;
   anchor?: FindingAnchorSnapshot; evidence: Array<{ tStart: number | null; tEnd: number | null; journalSeq: number[]; estimated?: boolean }>;
   createdBy: string; createdAt: string; parentVersion: number | null;
+  sourceKey?: string;
 }
 export interface FindingApproval {
   findingId: string; version: number; contentHash: string; approvedBy: string; approvedAt: string; revokedAt?: string;
@@ -382,6 +384,7 @@ export interface FindingApproval {
 export type FindingContent = Omit<Finding, "id" | "order" | "sliceIndex" | "status" | "currentVersion" | "approvedVersion" | "anchorStatus">;
 
 export interface Finding {
+  extraction?: { jobId: string; proposalIndexes: number[]; dictatedOrVisual: import("./extract/schema").ExtractProposal["dictatedOrVisual"]; confidence: number | null; issues: string[]; modelMetadata: import("./geminiMetadata").GeminiRequestMetadata };
   resolvedAnchor?: import("./anchors/resolve").ResolvedAnchor;
   groupedAnchors?: import("./anchors/resolve").ResolvedAnchor[];
   markerReconciliation?: import("./anchors/reconcile").MarkerAssignment["reconciliation"];

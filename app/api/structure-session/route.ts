@@ -10,7 +10,7 @@
 // A separate speech-to-text pass is optional scaffolding, not required.
 
 import { NextRequest, NextResponse } from "next/server";
-import { captureSession, captureMedia } from "@/lib/journal/storage";
+import { captureSession } from "@/lib/journal/storage";
 import { assertReviewedMedia, PhiError } from "@/lib/phiGuard";
 import { CaptureError } from "@/lib/journal/manifest";
 import { captureHttpError } from "@/lib/journal/http";
@@ -78,15 +78,9 @@ export async function POST(req: NextRequest) {
       const retained = await captureSession(orgId, body.caseId, track.captureSessionId);
       if (retained.manifest?.status !== "complete") throw new CaptureError("Complete capture sync before processing", 409);
       assertReviewedMedia(retained.manifest.phiReview);
-      track = retained.track;
-      durationMs = retained.durationMs;
-      // Review applies to retained bytes, never replacement media supplied by a client.
-      if (retained.manifest.chunks.some(c => c.stream === "audio")) {
-        const media = await captureMedia(orgId, body.caseId, retained.id, "audio", true);
-        audioBase64 = media.bytes.toString("base64"); audioMime = media.mimeType;
-      } else audioBase64 = undefined;
-      video = retained.geminiVideo ? { fileUri: retained.geminiVideo.uri, mimeType: retained.geminiVideo.mimeType } : undefined;
-      frames = [];
+      // Durable captures have one persisted extraction/commit path. Never run a
+      // second, untracked model request through this legacy compiler endpoint.
+      throw new CaptureError("Use the capture-session extract endpoint for retained captures", 409);
     }
     const transcriptHint = typeof body.transcript === "string" ? body.transcript.trim() : "";
     if (!audioBase64 && !transcriptHint && !video) {

@@ -45,7 +45,7 @@ export function resolveAnchor(id: string | undefined, journal: readonly JournalE
   const render = [...journal].reverse().find(r => r.seq < e.seq && r.t <= e.t && r.kind === "render" && r.snapshot?.viewportId === e.snapshot!.viewportId);
   const validPoints = pointValid(imagePoint, dimensions) && (p.imagePoints === undefined || (!!points?.length && points.every(p => pointValid(p, dimensions))));
   if (!validPoints) return { ...fallback, snapshot: structuredClone(e.snapshot), journalSeq: [e.seq] };
-  const resolved = !!render?.snapshot && render.snapshot.renderSeq === e.snapshot.renderSeq && matchesView(render.snapshot, e.snapshot) && !/mpr|volume/i.test(e.snapshot.layout);
+  const resolved = (e.renderSeq === undefined || e.renderSeq === e.snapshot.renderSeq) && !!render?.snapshot && render.snapshot.renderSeq === e.snapshot.renderSeq && matchesView(render.snapshot, e.snapshot) && !/mpr|volume/i.test(e.snapshot.layout);
   return { anchorId: id, anchorStatus: resolved ? "resolved" : "unresolved", snapshot: structuredClone(e.snapshot), imagePoint: imagePoint ? structuredClone(imagePoint) : null,
     dimensions, geometry, calibration: geometry.calibration, patientPoint: imagePoint ? pixelToPatient(imagePoint, geometry) : null,
     journalSeq: render ? [render.seq, e.seq] : [e.seq],

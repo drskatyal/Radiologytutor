@@ -199,6 +199,8 @@ export interface FunctionDeclaration {
 }
 
 export interface GenerateOptions {
+  /** Server-selected model frozen into a persisted extraction job. */
+  model?: string;
   contents: GeminiContent[];
   systemInstruction?: string;
   temperature?: number;
@@ -300,7 +302,7 @@ function recordRequest(model: string, apiSurface: GeminiRequestMetadata["apiSurf
 }
 
 export async function generate(opts: GenerateOptions): Promise<GeminiResult> {
-  const model = process.env.GEMINI_MODEL?.trim() || GEMINI_MODEL_DEFAULT;
+  const model = opts.model ?? (process.env.GEMINI_MODEL?.trim() || GEMINI_MODEL_DEFAULT);
   const body = buildGenerateRequest(opts, model);
   const res = await callGemini(model, requireKey(), body, opts.timeoutMs);
   const data = await res.json();

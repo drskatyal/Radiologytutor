@@ -2512,12 +2512,30 @@ async function prepareWithInventory(current: Finding, patch: Partial<Finding>): 
   const inventory = anchor ? await readFindingInventory(anchor).catch(() => undefined) : undefined;
   return prepareFinding(current, patch, inventory);
 }
-export async function createVersion(orgId: string, caseId: string, findingId: string, patch: Partial<Finding>, options: { expectedVersion: number; userId: string }): Promise<Case> {
+export async function createVersion(orgId: string, caseId: string, findingId: string, patch: Partial<Finding>, options: { expectedVersion: number; userId: string; sourceKey?: string }): Promise<Case> {
+  if (!Number.isInteger(options.expectedVersion) || options.expectedVersion < 0) throw new FindingConflict("Invalid expectedVersion", 400);
   const data = await getCaseForOrg(orgId, caseId);
-  const current = data?.findings.find(f => f.id === findingId);
-  if (!current) throw new FindingConflict("Finding not found", 404);
-  const prepared = await prepareWithInventory(current, patch);
-  return mutateCase(orgId, caseId, latest => appendVersion(latest, findingId, prepared, options.expectedVersion, options.userId));
+  if (!data) throw new FindingConflict("Case not found", 404);
+  if (options.sourceKey && data.findingVersions?.some(v => v.sourceKey === options.sourceKey && v.findingId === findingId)) return data;
+  const current = data.findings.find(f => f.id === findingId);
+  if (!current && options.expectedVersion !== 0) throw new FindingConflict("Finding not found", 404);
+  const initial: Finding = { id: findingId, label: "", description: "", teachingPoints: [], state: " ", marker: patch.marker!, order: data.findings.length + 1 };
+  const prepared = await prepareWithInventory(current ?? initial, patch);
+  return mutateCase(orgId, caseId, latest => {
+    // The receipt and version are the same atomic write. A lost response cannot
+    // overwrite a later expert version, even if the job receipt was not updated.
+    if (options.sourceKey && latest.findingVersions?.some(v => v.sourceKey === options.sourceKey && v.findingId === findingId)) return latest;
+    let next: Case;
+    if (options.expectedVersion === 0) {
+      if (latest.findings.some(f => f.id === findingId) || latest.findingVersions?.some(v => v.findingId === findingId)) throw new FindingConflict("Finding changed; reload before saving");
+      const created = { ...prepared, id: findingId, order: latest.findings.length + 1, currentVersion: 1, status: "needs_review" as const, approvedVersion: undefined };
+      latest.findings.push(created);
+      latest.findingVersions!.push(snapshot(created, 1, options.userId, nowIso()));
+      latest.updatedAt = nowIso(); next = latest;
+    } else next = appendVersion(latest, findingId, prepared, options.expectedVersion, options.userId);
+    if (options.sourceKey) next.findingVersions!.at(-1)!.sourceKey = options.sourceKey;
+    return next;
+  });
 }
 export async function approve(orgId: string, caseId: string, findingId: string, version: number, contentHash: string, user: Approver): Promise<Case> {
   const data = await getCaseForOrg(orgId, caseId);
