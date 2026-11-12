@@ -1,0 +1,45 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 30 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 anchor-incomplete.spec.ts:5:5 › M7 T2 index-only finding cannot jump or approve; explicit rendered rebind creates a new exact version (3.3s)
+  ✓  2 anchor-order.spec.ts:5:5 › M7 T1 reordered archive stack still jumps to the same named SOP/frame and recorded view (3.6s)
+  ✓  3 approval.spec.ts:8:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (2.0s)
+  ✓  4 approval.spec.ts:49:5 › M7 keyboard review approves saved versions, invalidates edits and preserves a conflicting local draft (4.6s)
+  ✓  5 approved-tools.spec.ts:9:5 › approved tool route requires a session and never reveals its catalog anonymously (13ms)
+  ✓  6 approved-tools.spec.ts:17:5 › real routes expose approved IDs and metadata bounds, reject forged geometry, and invalidate old commands after edit (11.2s)
+  ✓  7 capture-recovery.spec.ts:4:5 › T4 crash recovery retains acknowledged journal/media and sends missing chunks only (7.2s)
+  ✓  8 capture-recovery.spec.ts:48:5 › capture routes require a session; PUT receipts are idempotent and conflicting bytes return 409 (1.4s)
+  ✓  9 dicomweb-auth.spec.ts:3:5 › DICOMweb requires a session before QIDO, metadata or pixel access (27ms)
+  ✓  10 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (2.1s)
+  ✓  11 extraction.spec.ts:7:5 › M6 retained extraction commits exactly two drafts across a lost response and a later expert edit (5.2s)
+  ✓  12 healthz.spec.ts:3:5 › healthz is public liveness with no environment or service details (11ms)
+  ✓  13 markers.spec.ts:4:5 › T7 three silent markers become three candidates; every Jump confirms its SOP/frame and notes save retains all three (4.7s)
+  ✓  14 mic-retry.spec.ts:4:5 › T5 microphone denial shows an actionable error; a second take captures fake audio on a fresh clock (5.7s)
+  ✓  15 render-ack.spec.ts:4:5 › P0-3/T10 delayed real renders timestamp the displayed identity; restore waits, acknowledges or times out (12.2s)
+  ✓  16 replay-clock.spec.ts:3:5 › M8 T6 decoded synthetic beep onsets align with the shared replay clock within 100 ms (9.2s)
+  ✓  17 replay-clock.spec.ts:37:5 › M8 T6 an uncertain retained audio gap is detected before replay instead of drifting silently (3.5s)
+  ✓  18 replay-delay.spec.ts:3:5 › M8 T10 delayed real image load holds timeline then resumes; timeout records a miss and never continues (20.3s)
+  ✓  19 replay-first-frame.spec.ts:4:5 › M4 first frame keeps its SOP when archive opening offset differs from the completed stack order (1.7s)
+  ✓  20 replay-first-frame.spec.ts:29:5 › M4/T3 completed stack missing the opening SOP fails closed instead of retaining its archive index (1.7s)
+  ✓  21 replay-geometry.spec.ts:7:5 › M8 T8 exact replay restores named image pixels, patient mm, spacing provenance and the recorded view (9.9s)
+  ✓  22 replay-missing-instance.spec.ts:5:5 › M7 T3 review jump fails closed for a missing SOP without nearest-slice substitution (timed replay remains M8) (3.1s)
+(node:73) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///workspace/radlearn-build/e2e/support/replayFixture.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /workspace/radlearn-build/package.json.
+  ✓  23 replay-missing-instance.spec.ts:22:5 › M8 T3 timed replay stops at missing SOP; no nearest-slice substitute and no subsequent render (8.1s)
+  ✓  24 replay.spec.ts:8:5 › M8 one CT series, one take, one finding: capture → retained extraction → edit/approve → exact replay (8.3s)
+  ✓  25 review-jump.spec.ts:6:5 › M7 Jump confirms exact single-frame and multiframe identity, window, camera and invert; evidence seeks retained media (4.0s)
+  ✓  26 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (713ms)
+  ✓  27 trusted-host.spec.ts:7:5 › Worker-authenticated robots and sitemap use the forwarded public origin (19ms)
+  ✓  28 trusted-host.spec.ts:17:5 › unsigned, wrong-secret and malformed-host requests use configured localhost SEO (34ms)
+  ✓  29 trusted-host.spec.ts:33:5 › landing, layout and viewer metadata use the authenticated or configured origin (57ms)
+  ✓  30 trusted-host.spec.ts:47:5 › middleware uses Worker host and never redirects back to the upstream origin (26ms)
+
+  Slow test file: replay-delay.spec.ts (20.3s)
+  Consider splitting slow test files to speed up parallel execution
+  30 passed (2.3m)
