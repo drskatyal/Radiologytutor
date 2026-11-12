@@ -25,10 +25,9 @@ import type {
 export const LIDC_CASE_ID = "case-lidc-nodule-search";
 
 /**
- * Image count of the public LIDC-IDRI series in the catalog. sliceAt() anchors
- * are written against this height, then import scales by the highest template
- * slice, which lands the three findings on 34 / 6 / 64 (6 is the reader-
- * annotated left apical nodule).
+ * Image count of the public LIDC-IDRI series in the catalog. Its findings are
+ * SOP-anchored on the position-sorted stack (carina 20, nodule 6, hila 22), so
+ * import keeps them as authored instead of scaling them.
  */
 export const LIDC_STACK_SLICES = 65;
 
@@ -36,12 +35,11 @@ export const LIDC_STACK_SLICES = 65;
 export const DEMO_LEAN_IN_ZOOM = 2.2;
 
 /**
- * How many slices above the nodule survey the compare pane opens.
- * The public LIDC case has one series. This adjacent slice is the demo that
- * Compare is not a second copy of the primary landing. Two slices stays inside
- * the case prefetch radius around the nodule.
+ * How many slices above the nodule survey the compare pane opens when the
+ * finding has no authored compare landing. The public LIDC case has one
+ * series; the slice above is where the nodule is gone (nodule vs vessel).
  */
-export const LIDC_COMPARE_SLICE_DELTA = 2;
+export const LIDC_COMPARE_SLICE_DELTA = 1;
 
 type GuideInput = Partial<Finding> &
   Pick<Finding, "label" | "description" | "teachingPoints" | "marker"> & {
@@ -56,12 +54,21 @@ export function findingHasTeacherTrack(finding: { track?: Finding["track"] }): b
   return teacherTrackPresent(finding);
 }
 
-/** Scale catalog slice indices onto the imported stack. */
-export function scaleTemplateSlices<T extends { sliceIndex?: number }>(
+/**
+ * Scale catalog slice indices onto the imported stack. A template whose
+ * anchored findings all name their SOP Instance UID was authored against the
+ * real (position-sorted) stack: its indices are exact and are kept. Scaling
+ * by the deepest finding put the LIDC mediastinal pass on the last image.
+ */
+export function scaleTemplateSlices<T extends { sliceIndex?: number; sopInstanceUID?: string }>(
   findings: T[],
   instanceCount: number
 ): T[] {
   if (instanceCount <= 1) return findings;
+  const anchored = findings.filter((finding) => finding.sliceIndex != null);
+  if (anchored.length > 0 && anchored.every((finding) => finding.sopInstanceUID?.trim())) {
+    return findings;
+  }
   const templateMax = Math.max(...findings.map((finding) => finding.sliceIndex ?? 0), 1);
   return findings.map((finding) => {
     const t = finding.sliceIndex ?? 0;
@@ -170,6 +177,8 @@ export function lidcNoduleCompareAnchors(
 }
 
 function withLidcCompareLanding<T extends Partial<Finding>>(finding: T): T {
+  // An authored compare landing (with its SOP) wins over the derived one.
+  if (secondaryAnchor(finding as Finding)) return finding;
   const anchors = lidcNoduleCompareAnchors(finding);
   if (!anchors) return finding;
   return { ...finding, anchors };
