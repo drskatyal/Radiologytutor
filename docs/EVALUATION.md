@@ -86,7 +86,7 @@ drop `POST` from the proxy entirely (uploads have their own gated route).
 `app/api/auth/demo/route.ts:13`. An empty POST body defaults to `role = "super_admin"`, and
 `DEMO_USER_ID` carries `platformRole: "super_admin"` (`lib/cases.ts:1931`) — which
 `requireRole()` short-circuits on before any membership check. There is no `NODE_ENV` guard
-and no env flag. On the live Railway URL, `curl -X POST https://<app>/api/auth/demo` is a
+and no env flag. On the public app URL (Cloud Run behind the Worker), `curl -X POST https://<app>/api/auth/demo` is a
 complete authentication bypass to the highest privilege in the system.
 
 **Fix:** gate on `NODE_ENV !== "production"` **or** an explicit `DEMO_AUTH_ENABLED=1`, and cap

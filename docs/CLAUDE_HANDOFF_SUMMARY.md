@@ -1,3 +1,5 @@
+> Historical Railway incident evidence. Step B removes Railway configuration from this branch. GCP Cloud Run / GCP Admin is the only current deployment target; see [CLOUD_RUN.md](radlearn/CLOUD_RUN.md). The historical commands below are not authorization to run them. External Railway integration/preview disconnection is still an orchestrator hold.
+
 # Production outage — Railway crash loop since 27 Oct 22:28 (fixed on this branch)
 
 **Symptom (Railway logs, every boot):**

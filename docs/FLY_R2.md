@@ -1,6 +1,6 @@
 # Fly.io + Cloudflare R2
 
-Current Fly deployment. **Production target is RadLearn on Cloud Run** (project `radlearn-app`, `europe-west2`) with a Cloud Healthcare API DICOM store and MongoDB Atlas — see `docs/GCP_CLOUD_RUN.md`. Keep Fly until that cutover checklist has been run. Local Orthanc (`ORTHANC_URL`, `docker-compose.orthanc.yml`) is unchanged.
+Historical Fly/R2 reference; not an authorized deployment target. **Production target is RadLearn on Cloud Run** (project `radlearn-app`, `europe-west2`) with a Cloud Healthcare API DICOM store and MongoDB Atlas — see `docs/GCP_CLOUD_RUN.md`. Only GCP Admin may act on the separately authorized cutover; this build never operates hosting. The current image/startup contract is [CLOUD_RUN.md](radlearn/CLOUD_RUN.md). Local Orthanc (`ORTHANC_URL`, `docker-compose.orthanc.yml`) is unchanged.
 
 Product decisions: `docs/DECISIONS.md`.
 

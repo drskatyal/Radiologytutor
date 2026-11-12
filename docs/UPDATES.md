@@ -34,7 +34,7 @@ Updates are signed with a minisign (ed25519) key.
 
 The app asks, in order:
 
-1. `https://radiologytutor-production.up.railway.app/api/desktop/update`: our site (`app/api/desktop/update/route.ts`), serving `LATEST` from `lib/desktopChannel.ts`.
+1. `https://learn.flowrad.ai/api/desktop/update`: our site (`app/api/desktop/update/route.ts`), serving `LATEST` from `lib/desktopChannel.ts`.
 2. `https://github.com/drskatyal/Radiologytutor/releases/latest/download/latest.json`: GitHub's latest *published* release. This is a fallback only; drafts never resolve here.
 
 `LATEST` is `null` until a person rolls a release out. `null` answers **204 No Content**, which the app reads as "no update". Setting it back to `null` stops a rollout within minutes. The response is cached for 5 minutes, and the app checks every 4 h.
@@ -50,7 +50,7 @@ Why our site rather than only GitHub: the release workflow makes **draft** relea
    - Paste the release's `latest.json` into `LATEST`.
    - Move the previous `LATEST` into `ROLLBACK`; it is the version a failed update falls back to.
    - `lib/desktopChannel.test.ts` and `isManifest` reject a malformed paste.
-   - Merge it. Railway deploys, and installed copies pick it up within 4 h.
+   - After the orchestrator releases the merge hold, GCP Admin deploys the reviewed Cloud Run revision. Installed copies pick it up within 4 h. A merge alone does not authorize or trigger deployment.
 5. **Pull a bad release:** set `LATEST` back to `null` (or to the previous manifest) and merge.
 
 ## Rollback

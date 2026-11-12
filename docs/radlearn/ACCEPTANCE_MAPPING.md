@@ -102,3 +102,19 @@ the provisional bucket name and Admin confirmation requirement.
 de-identification, encoding, storage serialization and route authorization are
 real. C2 does not reassign or claim completion of deferred T1–T10 capture/replay
 work, render acknowledgement, multi-marker extraction or M9 tools.
+
+## Step B deployment preparation acceptance
+
+`lib/cloudRunStartup.test.ts` validates every required C2/PACS setting, malformed
+configurations, variable-name-only errors, actual compiled Node preload failure
+before server code, PORT defaults/overrides, dependency-free liveness, Docker
+source/secret exclusions, non-root standalone startup, removed Railway config,
+health probes and the desktop public update origin. Docker is unavailable, so
+these are static image checks, not a claimed docker build. No new dependencies.
+`e2e/radlearn/healthz.spec.ts` checks anonymous GET/HEAD on the real local Next app.
+The production preload has no test-mode escape; existing local Playwright
+fixture runners use their separate direct Next command with JSON/mock Orthanc.
+
+No T1–T10 or P0 capture/replay test moves into Step B. All prior milestones'
+unit/browser checks rerun; runtime dependency availability and deployed image
+health remain GCP Admin's separate verification after the hold is released.

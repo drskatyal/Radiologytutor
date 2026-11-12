@@ -129,13 +129,13 @@ rate limits and body-size caps.
 
 ## Production imaging
 
-Study bytes in production go to a **Cloud Healthcare API DICOM store** next to the Next.js app on **Cloud Run** (GCP project `radlearn-app`, region `europe-west2`). The browser still only calls `/api/dicomweb`. Local and Fly Orthanc stay on `ORTHANC_URL` — do not set `DICOMWEB_BACKEND=healthcare` on a machine that uses localhost Orthanc. Cases on Cloud Run live in MongoDB Atlas (`MONGODB_URI` in Secret Manager); the container refuses the JSON-on-disk fallback.
+Study bytes in production go to a **Cloud Healthcare API DICOM store** next to the Next.js app on **Cloud Run** (GCP project `radlearn-app`, region `europe-west2`). The browser still only calls `/api/dicomweb`. Local Orthanc stays on `ORTHANC_URL` — do not set `DICOMWEB_BACKEND=healthcare` on a machine that uses localhost Orthanc. Cases on Cloud Run live in MongoDB Atlas (`MONGODB_URI` in Secret Manager); the container refuses the JSON-on-disk fallback.
 
 ```bash
 docker compose -f docker-compose.orthanc.yml up -d   # local Orthanc on :8042
 ```
 
-Deploy scripts, the latency notes, and the Fly migration checklist: [`docs/GCP_CLOUD_RUN.md`](./docs/GCP_CLOUD_RUN.md).
+Cloud Run is the only deployment target, owned by GCP Admin. Files-only handoff, startup validation and health endpoint: [`docs/radlearn/CLOUD_RUN.md`](./docs/radlearn/CLOUD_RUN.md). Existing deploy sources and historical migration notes: [`docs/GCP_CLOUD_RUN.md`](./docs/GCP_CLOUD_RUN.md). No deployment is authorized by these documents.
 
 ## Database
 

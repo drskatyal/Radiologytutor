@@ -3,8 +3,10 @@
 ## Deployment target and branch push (Sanyam, 11 Nov 2026)
 
 - **Google Cloud (Cloud Run, owned by GCP Admin) is the only intended deploy target for RadLearn.**
-  Railway is legacy: it still auto-deploys the integration branch `claude/epic-noether-3nvcbf`
-  (`railway.json`, `flowrad-learn / production`), so that branch must never be pushed from this build.
+  Railway is legacy: prior evidence recorded integration-branch auto-deploys
+  (`flowrad-learn / production`). Step B removes `railway.json` locally; that does
+  not prove external integrations or previews are disconnected. The integration
+  branch must never be pushed from this build.
   This build never deploys anywhere; any Cloud Run deployment is a GCP Admin decision outside this branch.
 - **Historical branch push approval (orchestrator only under current instructions):** "Yes, push the RadLearn build branch once the no-Actions check passes."
   The build agent never pushes. The orchestrator owns any later push after its
@@ -118,3 +120,32 @@ requires a matching SOP acknowledgement; partial responses are failures.
 Source deploy examples drop R2/HMAC wiring; no deployment/provisioning script
 was executed. **NO LIVE GCP CALL WAS MADE.** Gemini remains mocked, **live
 contract not verified**. All C1 merge/PR/Actions/deployment holds remain.
+
+## Step B — Cloud Run files and production startup (12 November 2026)
+
+The existing Dockerfile is the only app image definition: production Next build,
+standalone non-root runtime, default port 8080, runtime-injected secrets and a
+preloaded validation module compiled from C2's typed env schema. Repository and
+container `npm start` both enforce it. Builds remain independent of production
+credentials. Production requires Healthcare/Mongo/GCS; local Orthanc development
+and the existing local browser fixture runner remain separate.
+
+`/api/healthz` reports process liveness only, with no auth/provider/DB/network
+calls or configuration output. Existing Cloud Run startup probes now use it.
+The public auth origin must be set before boot; the old post-start URL fallback
+would be incompatible with fail-fast validation and was removed.
+
+`railway.json` is deleted locally. Active deployment documentation and desktop
+update defaults target Cloud Run through the stable public Worker front door.
+Historical incident evidence remains labeled historical. This does not prove
+Railway integrations/previews are disconnected and does not release any hold.
+Old live-site asset carry and automatic speech-model downloading are removed
+from image construction; reviewed models can be supplied in public assets.
+
+Docker was not installed, so no docker build/run/push occurred. Static image
+checks, real compiled-validator child processes and local application suites are
+the validation boundary; native desktop runtime was not executed. The provisional
+bucket still needs GCP Admin confirmation. No separate Step A web-PACS env names
+exist in this checkout; existing Healthcare/Orthanc settings were documented
+without inventing new aliases. **NO LIVE GCP CALL WAS MADE**; Gemini **live
+contract not verified**. See CLOUD_RUN.md.

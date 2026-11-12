@@ -4,7 +4,7 @@ Production deploy for **RadLearn**. GCP project id **`radlearn-app`** (display n
 
 The Next.js app runs on **Cloud Run**. Study bytes live in a **Cloud Healthcare API DICOM store** in the same region. Cases, accounts, and progress live in **MongoDB Atlas** (Atlas region `EUROPE_WEST_2`). Secrets live in **Secret Manager**. The browser still talks only to `/api/dicomweb`.
 
-Teach-mode fidelity on a real case is proven, including the tour check-in. This path is ready to deploy. Local Orthanc remains for laptops. Fly stays up until the cutover checklist below has been run; that checklist is the apply procedure, not a hold.
+**Current hold:** deployment preparation is files-only. GCP Cloud Run / GCP Admin is the only target; no push, PR, merge, Actions or hosting changes are authorized. Use [the Step B handoff](radlearn/CLOUD_RUN.md) and [validated environment schema](radlearn/ENV_SCHEMA.md). Older operational examples below are reference material, not commands executed by the build agent. Local Orthanc remains for laptops. Live cloud/model contracts have not been verified in this build.
 
 This is the fastest way to open a study **on Cloud Run**. A warm Orthanc process with a local SSD can beat a regional API for one reader. Cloud Run has no local disk, so that shape is not available here. Putting Orthanc on Cloud Run makes it worse: the app would call a second Cloud Run service, which would call Cloud SQL and then GCS. The Healthcare store is that storage without the extra process.
 
@@ -102,7 +102,7 @@ Gemini (`generativelanguage.googleapis.com`) is a global API. Same-region Cloud 
 | Concurrency | 40 | A frame response holds the request open while it streams |
 | Max instances | 10 | Raise before a large course |
 | Timeout | 300s | Zipped study uploads |
-| Startup probe | `GET /` | Cloud Run will not send traffic until the process answers |
+| Startup probe | `GET /api/healthz` on 8080 | Cheap process liveness after production env validation; no dependency checks |
 | VPC egress | `all-traffic` until Atlas PSC, then `private-ranges-only` | Atlas IP allowlist vs DICOM not hairpinning through NAT |
 | Public CDN | no | Frames are `Cache-Control: private`. Converted series can go through Cloud CDN with **signed URL prefixes** only: see docs/DICOM_CDN_REPORT.md |
 | Object cache | private GCS, same region | Shares the import/media bucket through `lib/gcs.ts` and ADC. Hedged read (see 5); `X-Cache` says HIT/MISS |
@@ -156,7 +156,7 @@ Project, region, and model below are the deploy defaults. Secret **values** are 
 | `MONGODB_URI` | secret `MONGODB_URI` | Atlas SRV URI. Required. Missing → process error, not JSON |
 | `MONGODB_DB` | `radlearn` | Plain env. App-code fallback when unset is still `flowrad` (Fly/local) |
 | `BETTER_AUTH_SECRET` | secret | Required in production |
-| `BETTER_AUTH_URL` | the Cloud Run URL | `deploy-app.sh` sets it from the service URL when you leave it empty |
+| `BETTER_AUTH_URL` | public HTTPS origin | Required before first boot; no post-start URL fallback |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | secrets, optional | Redirect: `{BETTER_AUTH_URL}/api/auth/callback/google` |
 | `DEMO_AUTH_ENABLED` | `1` | Plain env. Teacher/Student buttons on the public service. Unset in the shell keeps the live value; it is not forced back to `0` |
 | `DEMO_AUTH_MAX_ROLE` | `author` | Plain env. Teacher demo can open the author role. Same preserve rule as `DEMO_AUTH_ENABLED` |
@@ -197,7 +197,7 @@ IMAGE=europe-west2-docker.pkg.dev/radlearn-app/radlearn/app:latest \
 deploy/gcp/deploy-app.sh
 ```
 
-The image is the existing `Dockerfile` (Next standalone, webpack, not Turbopack). Cloud Run sets `PORT=8080`.
+The existing `Dockerfile` uses Next standalone, a non-root runtime, default port 8080 and the compiled C2 environment preload. Cloud Run can override PORT. Docker was unavailable during Step B: static checks only; no image build or deployment is claimed.
 
 Terraform, after `terraform.tfvars` exists:
 
@@ -234,8 +234,8 @@ docker compose -f docker-compose.orthanc.yml up -d
 1. Confirm project `radlearn-app` and region `europe-west2`. The values in `deploy/gcp/env.example` already match. Keep filled-in secrets in `deploy/gcp/env.local` and `terraform.tfvars`, not in git.
 2. Create the Atlas cluster on GCP in **`EUROPE_WEST_2`**, database user, database `radlearn`.
 3. Run `deploy/gcp/setup.sh`. Confirm the DICOM store IAM is the runtime service account, not the public. Copy the printed egress IP into the Atlas allowlist (that IP only).
-4. Add secret versions for `GEMINI_API_KEY`, `BETTER_AUTH_SECRET`, and `MONGODB_URI`. Add Google OAuth and ElevenLabs versions if you use them.
-5. Build and `deploy/gcp/deploy-app.sh`. Confirm `BETTER_AUTH_URL` is the service URL and `GEMINI_MODEL` is `gemini-3.8-flash`. Set the Google OAuth redirect to `{BETTER_AUTH_URL}/api/auth/callback/google`.
+4. After separate authorization, Admin supplies the required secret names from ENV_SCHEMA.md, including `TRUSTED_PROXY_SECRET`, and any enabled provider/OAuth secrets.
+5. Before any candidate revision starts, Admin configures the complete ENV_SCHEMA.md set, including the public BETTER_AUTH_URL and confirmed shared bucket. Follow CLOUD_RUN.md; incomplete first-boot configuration fails immediately. OAuth redirects use `{BETTER_AUTH_URL}/api/auth/callback/google`.
 6. Re-import studies. The Fly volume does not move. `orthancStudyId` values already in Mongo are Orthanc hashes; on this backend the app looks up by StudyInstanceUID (`imagingStudyKey`). New uploads store the UID in that field.
 7. Smoke test as a student: open a case, scroll a series, ask the tutor a question. First frame should not wait on a cold start. A second open of the same frame should be fast (browser cache, or `X-Cache: HIT` with `X-Cache-Tier: object` if the bucket is configured).
 8. Smoke test as an author: upload one already-de-identified instance. A file with a real patient name must be refused. Confirm the instance is in the store (`gcloud healthcare dicom-stores` / a QIDO from the app, not from the public internet). Confirm a case save lands in Atlas, not in the container.
