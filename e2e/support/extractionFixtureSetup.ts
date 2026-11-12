@@ -15,6 +15,6 @@ async function main() {
       markerId: m.payload!.markerId, evidence: [{ tStart: m.t, tEnd: Math.min(m.t + 20, markers[i + 1]?.t ?? session.durationMs, session.durationMs), journalSeq: [m.seq] }] })) }),
     modelMetadata: { requestedModel: options.model!, responseModelVersion: "local-synthetic-mock", apiSurface: "generateContent", configHash: hashContent({ model: options.model, body: buildGenerateRequest(options, options.model!) }) },
   }) });
-  if (job.status !== "ready" || job.drafts.length !== 2 || job.drafts.some(d => d.issues.length)) throw new Error("Synthetic extraction did not resolve");
+  if (job.status !== "ready" || job.drafts.length !== 2 || job.drafts.some(d => d.issues.length)) throw new Error(`Synthetic extraction did not resolve: ${JSON.stringify({ status: job.status, error: job.errorCode, issues: job.drafts.map(d => d.issues) })}`);
 }
 void main().catch(error => { console.error(error instanceof Error ? error.message : "Fixture failed"); process.exitCode = 1; });

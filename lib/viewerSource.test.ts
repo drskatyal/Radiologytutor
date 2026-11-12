@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   caseSeriesToSource,
   viewerSourceKey,
+  viewerEngineKey,
   BUNDLED_CASE,
   BUNDLED_CASE_SERIES,
   BUNDLED_STUDY_UID,
@@ -66,4 +67,15 @@ test("seriesForSource: the bundled sample is its 1-series case, a WADO-RS series
     [{ seriesInstanceUID: "1.2.3", studyInstanceUID: "1.2", wadoRsRoot: "/api/dicomweb" }]
   );
   assert.deepEqual(seriesForSource({ kind: "imageIds", key: "k", imageIds: ["a"] }), []);
+});
+
+test("M7 archive rail keeps the render coordinator alive across series and invalidates it on a different archive", () => {
+  const rail = ["1.1", "1.2"].map(seriesInstanceUID => ({ studyInstanceUID: "1", seriesInstanceUID, wadoRsRoot: "/api/dicomweb" }));
+  const first = caseSeriesToSource(rail[0]), second = caseSeriesToSource(rail[1]);
+  assert.equal(viewerEngineKey(first, rail), viewerEngineKey(second, rail));
+  assert.notEqual(viewerEngineKey(first, rail), viewerEngineKey(second));
+  const other = rail.map(row => ({ ...row, wadoRsRoot: "/other-archive" }));
+  assert.notEqual(viewerEngineKey(first, rail), viewerEngineKey(caseSeriesToSource(other[0]), other));
+  assert.equal(viewerEngineKey(first, other), viewerSourceKey(first));
+  assert.notEqual(viewerEngineKey(first, rail), viewerEngineKey(first, rail.slice(0, 1)));
 });

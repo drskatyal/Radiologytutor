@@ -1,5 +1,6 @@
 import { voiToWwWc } from "@flowrad/viewer-core/viewportVoi";
 import { toolFrameFromImageId } from "../harness/approvedTools";
+import { VIEW_TOLERANCE } from "./match";
 import type { ViewerSnapshot } from "./types";
 
 export interface SnapshotViewport {
@@ -50,4 +51,15 @@ export function imagePointEvidence(snapshot: ViewerSnapshot | null, normalized: 
   if (!snapshot || !normalized || !dimensions || dimensions.length < 2 || dimensions[0] < 2 || dimensions[1] < 2 ||
     ![normalized.x, normalized.y].every(v => Number.isFinite(v) && v >= 0 && v <= 1)) return null;
   return { snapshot: structuredClone(snapshot), imagePoint: { x: normalized.x * (dimensions[0] - 1), y: normalized.y * (dimensions[1] - 1) }, dimensions: [dimensions[0], dimensions[1]] };
+}
+
+/** Cornerstone setPan ignores deltas below one pixel. A recorded view uses the
+ * tighter acknowledgement tolerance, so force a final write when that deadband
+ * would otherwise retain the previous pan. No intermediate render is requested. */
+export function applyRecordedPan(vp: { setPan(pan: [number, number]): void; getPan(): [number, number] }, pan: [number, number]): void {
+  vp.setPan(pan);
+  if (vp.getPan().some((value, index) => Math.abs(value - pan[index]) > VIEW_TOLERANCE.pan)) {
+    vp.setPan([pan[0] + 2, pan[1] + 2]);
+    vp.setPan(pan);
+  }
 }

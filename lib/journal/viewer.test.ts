@@ -22,3 +22,12 @@ test("render snapshot reads the displayed SOP/frame and every camera field", () 
   assert.equal(imagePointEvidence(view, { x: 1.1, y: 0 }, [101, 201]), null);
   assert.equal(displayedSnapshot({ ...vp, getCurrentImageId: () => "index:3" }, "pane", "single", 8), null);
 });
+
+
+test("M7 recorded pan crosses Cornerstone's one-pixel deadband without widening render tolerance", async () => {
+  const { applyRecordedPan } = await import("./viewer");
+  let current: [number, number] = [9.28, -6.96]; const writes: number[][] = [];
+  const vp = { getPan: () => current, setPan: (next: [number, number]) => { writes.push(next); if (next.every((value, index) => Math.abs(value - current[index]) < 1)) return; current = next; } };
+  applyRecordedPan(vp, [10, -6]); assert.deepEqual(current, [10, -6]); assert.equal(writes.length, 3);
+  writes.length = 0; applyRecordedPan(vp, [20, -16]); assert.deepEqual(current, [20, -16]); assert.equal(writes.length, 1);
+});

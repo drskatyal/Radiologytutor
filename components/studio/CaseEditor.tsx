@@ -23,6 +23,8 @@ import {
 } from "@/components/ui";
 import type { CaseData, Finding } from "@/lib/types";
 import { formatRecordedSave, type RecordedSaveReceipt } from "@/lib/teachingGuide";
+import { FindingReviewWorkspace } from "@/components/author/FindingReviewWorkspace";
+import { Tabs } from "@/components/ui";
 import { FindingsList } from "@/components/author/FindingsList";
 import { AddFindingDialog } from "@/components/author/AddFindingDialog";
 import { RecordFindingDialog } from "@/components/author/RecordFindingDialog";
@@ -51,6 +53,8 @@ export function CaseEditor({ caseId }: { caseId: string }) {
   const [authors, setAuthors] = useState<Author[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Finding | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [editorTab, setEditorTab] = useState("review");
+  const [approvedCount, setApprovedCount] = useState(0);
   const [publishing, setPublishing] = useState(false);
   const [undo, setUndo] = useState<{ finding: Finding } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -340,6 +344,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={togglePublish}
               loading={publishing}
+              disabled={!published && approvedCount !== findings.length}
             >
               {published ? "Published" : "Publish"}
             </Button>
@@ -347,7 +352,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
         }
       />
 
-      <PageContainer width="narrow">
+      <PageContainer width={editorTab === "review" ? "wide" : "narrow"}>
         <div className="mb-5 flex items-start gap-3 rounded-xl border border-subtle bg-surface px-4 py-3 text-sm text-secondary [&_svg]:h-4 [&_svg]:w-4">
           <span className="mt-0.5 shrink-0 text-info">
             <InfoIcon />
@@ -361,10 +366,8 @@ export function CaseEditor({ caseId }: { caseId: string }) {
               </>
             ) : (
               <>
-                Click <span className="font-medium text-primary">Edit</span> on a finding to fix its text, drag to
-                reorder the teaching sequence, then{" "}
-                <span className="font-medium text-primary">Test as student</span> to open the microphone on this study. Every change
-                saves automatically.
+                Review the image, edit the finding, then approve the saved version. Use the sequence editor for
+                reordering, report rubrics and other authoring tools. Approval is required for tutor and exam use.
               </>
             )}
           </p>
@@ -408,7 +411,9 @@ export function CaseEditor({ caseId }: { caseId: string }) {
             }
           />
         ) : (
-          <FindingsList
+          <div className="space-y-4">
+          <Tabs items={[{ value: "review", label: "Approval review" }, { value: "sequence", label: "Sequence editor" }]} value={editorTab} onValueChange={value => { if (confirmDiscard()) setEditorTab(value); }} />
+          {editorTab === "review" ? <FindingReviewWorkspace onDirtyChange={onDirtyChange} caseData={caseData} onChanged={setCaseData} onApprovedCount={setApprovedCount} /> : <FindingsList
             findings={findings}
             onSaveFinding={saveFinding}
             onDeleteFinding={(id) => setDeleteTarget(findings.find((f) => f.id === id) ?? null)}
@@ -416,7 +421,8 @@ export function CaseEditor({ caseId }: { caseId: string }) {
             onReorder={applyReorder}
             onPreview={openPreview}
             onDirtyChange={onDirtyChange}
-          />
+          />}
+          </div>
         )}
       </PageContainer>
 

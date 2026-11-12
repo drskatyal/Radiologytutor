@@ -16,10 +16,18 @@ test("approved tool route requires a session and never reveals its catalog anony
 
 test("real routes expose approved IDs and metadata bounds, reject forged geometry, and invalidate old commands after edit", async ({ page, context }) => {
   await page.goto("/viewer/local");
-  const api = (url: string, data?: unknown, method = "POST") => page.evaluate(async ({ url, data, method }) => {
-    const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
-    return { status: response.status, data: await response.json() };
-  }, { url, data, method });
+  const api = async (url: string, data?: unknown, method = "POST") => {
+    for (let attempt = 0; ; attempt++) {
+      const result = await page.evaluate(async ({ url, data, method }) => {
+        const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+        return { status: response.status, data: await response.json(), retryAfter: response.headers.get("retry-after") };
+      }, { url, data, method });
+      // More author specs now share this localhost auth limiter. Respect its
+      // backoff as captureFixture does; never relax the server limit or assertions.
+      if (url !== "/api/auth/sign-up/email" || result.status !== 429 || attempt >= 2) return result;
+      await page.waitForTimeout(Math.min(30000, Math.max(1000, Number(result.retryAfter || 10) * 1000)));
+    }
+  };
   await context.clearCookies();
   expect((await api("/api/auth/sign-up/email", { name: "Synthetic Tool Author", email: `synthetic-tools-${Date.now()}@example.test`, password: "synthetic-local-test-password" })).status).toBe(200);
   const caseId = `case-tools-${Date.now()}`;

@@ -66,7 +66,7 @@ export function SequenceBoard({
         <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
           Teaching sequence
           <span className="rounded-full bg-elevated px-2 py-0.5 text-xs tabular-nums text-muted">
-            {readiness.examReady}/{readiness.total} ready
+            {readiness.total} findings
           </span>
         </h2>
       </div>

@@ -148,3 +148,11 @@ export function viewerSourceKey(source: ViewerSource): string {
   }
   return `wadors\0${source.wadoRsRoot}\0${source.StudyInstanceUID}\0${source.SeriesInstanceUID}`;
 }
+
+/** An archive rail changes its stack in place. Keep the renderer and pending
+ * render acknowledgements alive when the selected source changes within it.
+ * A different rail/origin still tears down the engine and cancels old requests. */
+export function viewerEngineKey(source: ViewerSource, series?: CaseSeries[]): string {
+  if (source.kind !== "wadors" || !series?.some(row => row.studyInstanceUID === source.StudyInstanceUID && row.seriesInstanceUID === source.SeriesInstanceUID && row.wadoRsRoot === source.wadoRsRoot)) return viewerSourceKey(source);
+  return `rail:${JSON.stringify(series.map(row => viewerSourceKey(caseSeriesToSource(row))))}`;
+}

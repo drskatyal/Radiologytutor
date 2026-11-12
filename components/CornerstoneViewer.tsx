@@ -41,7 +41,7 @@
 import { imageGeometry } from "@/lib/anchors/geometryCache";
 import { matchesView } from "../lib/journal/match";
 import { RenderCoordinator, ViewRequestError } from "../lib/journal/renderAck";
-import { displayedSnapshot, imagePointEvidence, validSnapshot } from "../lib/journal/viewer";
+import { applyRecordedPan, displayedSnapshot, imagePointEvidence, validSnapshot } from "../lib/journal/viewer";
 import { approvedStackIndex } from "../lib/harness/approvedTools";
 import type { RenderConfirmedViewer } from "../lib/viewerController";
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
@@ -127,7 +127,7 @@ import { previewBlocksPress } from "../lib/dicomCdn/previewLock";
 import {
   BUNDLED_CASE,
   caseSeriesToSource,
-  viewerSourceKey,
+  viewerEngineKey,
   type CaseSeries,
   type ViewerSource,
 } from "../lib/viewerSource";
@@ -1301,7 +1301,7 @@ export default function CornerstoneViewer({
   // engine down — that reloads the stack at the mid-slice default and strands
   // a secondary landing. Series changes on an existing rail go through
   // switchSeries, which does not change this key.
-  const sourceKey = viewerSourceKey(source);
+  const sourceKey = viewerEngineKey(source, series);
 
   useEffect(() => {
     let disposed = false;
@@ -3620,7 +3620,7 @@ export default function CornerstoneViewer({
               vp.setViewPresentation?.({ rotation: target.camera.rotation });
               vp.setCamera?.({ flipHorizontal: target.camera.flipH, flipVertical: target.camera.flipV, viewPlaneNormal: target.orientation.normal, viewUp: target.orientation.up });
               vp.setZoom(target.camera.zoom);
-              vp.setPan(target.camera.pan);
+              applyRecordedPan(vp, target.camera.pan);
               vp.render();
             });
           },

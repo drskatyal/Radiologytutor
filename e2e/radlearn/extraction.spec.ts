@@ -2,13 +2,21 @@ import { expect, test } from "@playwright/test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
-import { authorCaptureCase, localCaptures, snapshot } from "../support/captureFixture";
+import { authorCaptureCase, localCaptures, localJournal, snapshot } from "../support/captureFixture";
 
 test("M6 retained extraction commits exactly two drafts across a lost response and a later expert edit", async ({ page, browser }) => {
   test.setTimeout(120000);
   const { caseId, orgId } = await authorCaptureCase(page);
   await page.getByRole("button", { name: "Start recording", exact: true }).first().click();
   await expect(page.getByRole("button", { name: "Finish recording", exact: true })).toBeVisible();
+  // Exercise a continuous interval after both real synthetic media streams start.
+  // A fast marker during microphone startup correctly remains unresolved in M6.
+  await expect.poll(async () => {
+    const local = (await localCaptures(page))[0];
+    if (!local) return false;
+    const journal = await localJournal(page, local.manifest.sessionId);
+    return ["audio", "video"].every(stream => journal.some(entry => entry.kind === "discontinuity" && entry.payload?.stream === stream && ["media_start", "permission_delay"].includes(String(entry.payload?.reason))));
+  }).toBe(true);
   const slider = page.getByRole("slider", { name: "Slice", exact: true }).first();
   const canvas = page.locator("[data-viewer-snapshot] canvas").first();
   const expected = [];
@@ -64,5 +72,13 @@ test("M6 retained extraction commits exactly two drafts across a lost response a
   const again = await (await page.request.get(base)).json();
   expect(again.id).toBe(job.id); expect(again.attempts).toBe(1); expect(again.status).toBe("committed"); expect(again.receipts).toHaveLength(2);
   expect(again.modelMetadata.responseModelVersion).toBe("local-synthetic-mock");
+  // M7: the actual retained capture and M6 drafts can now be reviewed on the record surface.
+  const card = page.getByTestId(`finding-review-${final.findings[0].id}`);
+  await card.getByRole("button", { name: "Jump", exact: true }).click();
+  await expect(card.getByText("Rendered ✓", { exact: true })).toBeVisible();
+  expect((await snapshot(page)).sopUID).toBe(expected[0].sopUID);
+  await expect(card.getByRole("button", { name: "Approve v2" })).toBeEnabled();
+  await card.getByRole("button", { name: "Approve v2" }).click();
+  await expect(card.getByText("Approved v2", { exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("extraction-committed.png"), fullPage: true });
 });

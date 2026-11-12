@@ -77,6 +77,10 @@ import {
 } from "@/components/author/ContinuousCapture";
 import { TakeReview, type TeacherReview } from "@/components/author/TakeReview";
 import { studentCaseHref, TEACHER_PROCESSING_LABEL } from "@/lib/teacherCapture";
+import { jumpToReview, reviewRequest } from "@/lib/review/client";
+import type { CaseReview } from "@/lib/review/model";
+import { useUnsavedGuard } from "./useUnsavedGuard";
+import { FindingReviewPanel } from "./FindingReviewPanel";
 import { SequenceBoard } from "@/components/author/SequenceBoard";
 import {
   addFinding,
@@ -121,8 +125,16 @@ export function RecordingStudio({
   initialSeries: CaseSeries[];
 }) {
   const router = useRouter();
+  const [reviewDirty, setReviewDirty] = useState<Set<string>>(() => new Set());
+  const { confirmDiscard } = useUnsavedGuard(reviewDirty.size > 0);
+  const onReviewDirty = useCallback((id: string, dirty: boolean) => setReviewDirty(previous => {
+    if (previous.has(id) === dirty) return previous;
+    const next = new Set(previous); if (dirty) next.add(id); else next.delete(id); return next;
+  }), []);
+  const leaveTo = (path: string) => { if (confirmDiscard()) router.push(path); };
   const { toast } = useToast();
 
+  const [approvedCount, setApprovedCount] = useState(0);
   const [caseData, setCaseData] = useState<CaseData>(initialCase);
   const resolved = useResolvedSeries(initialCase.caseId, initialSeries);
   const series = resolved.series;
@@ -566,7 +578,7 @@ export function RecordingStudio({
   }
 
   function openStudentTest() {
-    router.push(studentCaseHref(caseData.caseId, "teach"));
+    leaveTo(studentCaseHref(caseData.caseId, "teach"));
   }
 
   async function structureFromRecording() {
@@ -717,28 +729,13 @@ export function RecordingStudio({
     setCaptureTab("sequence");
     const c = controls.current;
     if (!c) return;
-    if (
-      f.seriesInstanceUID &&
-      c.seriesUIDs.includes(f.seriesInstanceUID) &&
-      c.activeSeriesUID !== f.seriesInstanceUID
-    ) {
-      c.showSeries(f.seriesInstanceUID);
-    }
-    if (f.sliceIndex != null && Number.isFinite(f.sliceIndex)) {
-      await c.showState(
-        {
-          sliceIndex: f.sliceIndex,
-          windowWidth: f.windowWidth,
-          windowCenter: f.windowCenter,
-        },
-        500
-      );
-    } else if (f.windowWidth != null && f.windowCenter != null) {
-      c.setWindow(f.windowWidth, f.windowCenter, 500);
-    }
-    const m = f.marker;
-    if (m && Number.isFinite(m.x_pct) && Number.isFinite(m.y_pct)) {
-      overlay.current?.animateTo?.(m.x_pct, m.y_pct, { durationMs: 500 });
+    try {
+      const verified = await reviewRequest<CaseReview>(`/api/cases/${encodeURIComponent(caseData.caseId)}/review`);
+      const row = verified.findings.find(row => row.finding.id === f.id);
+      if (!row) throw new Error("Finding changed. Refresh review.");
+      await jumpToReview(c, row);
+    } catch (error) {
+      toast({ variant: "danger", title: "Finding view unavailable", description: error instanceof Error ? error.message : "Rebind the image anchor." });
     }
   }
 
@@ -841,7 +838,7 @@ export function RecordingStudio({
   const reviewingTake = teacherPhase === "review";
   const packReady = !!caseData.liveTeachingPack && showStudentTest;
   const canDeploy =
-    !published &&
+    !published && approvedCount === findings.length &&
     (packReady ||
       (!caseData.liveTeachingPack &&
         readiness.ready &&
@@ -872,7 +869,7 @@ export function RecordingStudio({
             <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
             <span className="text-xs text-muted">·</span>
             <span className="text-xs text-muted">
-              Review the study, then record. {readiness.examReady}/{readiness.total} exam-ready
+              Review the study, then record. {approvedCount}/{findings.length} approved
             </span>
           </span>
         }
@@ -887,7 +884,7 @@ export function RecordingStudio({
               variant="ghost"
               size="sm"
               leadingIcon={<ArrowLeft className="h-4 w-4" />}
-              onClick={() => router.push(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
+              onClick={() => leaveTo(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
             >
               Save as draft &amp; exit
             </Button>
@@ -895,7 +892,7 @@ export function RecordingStudio({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => router.push(`/case/${encodeURIComponent(caseData.caseId)}`)}
+                onClick={() => leaveTo(`/case/${encodeURIComponent(caseData.caseId)}`)}
               >
                 Test as student
               </Button>
@@ -1361,7 +1358,7 @@ export function RecordingStudio({
             <h2 className="text-sm font-semibold text-primary">Review &amp; publish</h2>
             <p className="mt-1 text-xs text-muted">
               {readiness.ready
-                ? `${readiness.examReady} exam-ready finding${readiness.examReady === 1 ? "" : "s"}. Students only see this after you publish.`
+                ? `${approvedCount} of ${findings.length} findings approved. Only approved current versions can ground teaching or exams.`
                 : readiness.blockers[0]}
             </p>
             <Button
@@ -1369,13 +1366,15 @@ export function RecordingStudio({
               leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
               onClick={publish}
               loading={publishing}
-              disabled={published || !readiness.ready}
+              disabled={published || !readiness.ready || approvedCount !== findings.length}
             >
               {published ? "Published" : "Publish case"}
             </Button>
           </Card>
         </div>
       </div>
+
+      {findings.length > 0 && <FindingReviewPanel onDirtyChange={onReviewDirty} caseData={caseData} viewer={controls} ready={ready && rr.phase === "idle"} onChanged={setCaseData} onApprovedCount={setApprovedCount} />}
 
       {/* Edit-text dialog */}
       <EditFindingDialog
