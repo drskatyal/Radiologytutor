@@ -133,8 +133,8 @@ fi
 EGRESS_IP=$(gcloud compute addresses describe "${EGRESS_IP_NAME}" --region="${REGION}" --format='value(address)')
 
 # Secret containers only. Add versions yourself — never commit the values.
-REQUIRED_SECRETS=(GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI)
-OPTIONAL_SECRETS=(GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY)
+REQUIRED_SECRETS=(GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI TRUSTED_PROXY_SECRET)
+OPTIONAL_SECRETS=(GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY)
 for name in "${REQUIRED_SECRETS[@]}" "${OPTIONAL_SECRETS[@]}"; do
   if ! gcloud secrets describe "${name}" >/dev/null 2>&1; then
     gcloud secrets create "${name}" --replication-policy=automatic
@@ -161,7 +161,7 @@ Next: add secret versions, then deploy/gcp/deploy-app.sh.
   printf '%s' "\$BETTER_AUTH_SECRET" | gcloud secrets versions add BETTER_AUTH_SECRET --data-file=-
   printf '%s' "\$MONGODB_URI" | gcloud secrets versions add MONGODB_URI --data-file=-
 
-Optional, same pattern: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ELEVENLABS_API_KEY,
-R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (GCS HMAC of ${SA_EMAIL} if you set FRAME_BUCKET).
+Optional, same pattern: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ELEVENLABS_API_KEY.
+Object storage uses the attached service-account ADC; no HMAC access keys.
 
 EOF

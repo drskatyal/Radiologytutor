@@ -8,6 +8,7 @@
 //   Otherwise a configured Healthcare store is used only when ORTHANC_URL is
 //   unset, so a laptop that still points at localhost Orthanc never flips
 //   over because a Healthcare project id happens to be in the environment.
+//   With neither configured, Healthcare is the default (still unconfigured).
 
 export type ImagingBackend = "orthanc" | "healthcare";
 
@@ -75,7 +76,7 @@ export function resolveImagingBackend(env: ImagingEnv): ImagingBackend {
   const explicit = env.dicomwebBackend?.trim().toLowerCase();
   if (explicit === "healthcare" || explicit === "orthanc") return explicit;
   if (healthcareReady(env) && !env.orthancUrl?.trim()) return "healthcare";
-  return "orthanc";
+  return env.orthancUrl?.trim() ? "orthanc" : "healthcare";
 }
 
 export function imagingBackend(): ImagingBackend {

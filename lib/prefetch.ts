@@ -13,7 +13,7 @@
 //   • On OPEN, the viewer prefetches the active series ± a few neighbors
 //     (lib/viewerLoad.ts) after the first frame is requested. Other series
 //     stay metadata-only until selected.
-//   • Frames may later be served from the R2 cache (lib/r2.ts) via the
+//   • Frames may later be served from the private GCS object cache via the
 //     DICOMweb proxy.
 //
 // Two products:

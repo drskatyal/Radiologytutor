@@ -13,6 +13,8 @@ import { scheduleSeriesBundle } from "./dicomCdn/jobs";
 import { looksLikeDicomUid, readDicomUids } from "./healthcareDicom";
 import { imagingStudySummary, orthancIngestInstance, orthancSeriesMeta } from "./orthanc";
 import { TeachingDeidError, deidentifyTeachingInstance } from "./teachingDeidentify";
+import { assertDurableStorageConfigured } from "./envSchema";
+import { persistUploadReceipt } from "./importObjects";
 
 /** Cover-ready metadata for one uploaded series (mirrors UploadedSeries). */
 export interface UploadSeriesOut {
@@ -98,6 +100,7 @@ function friendlyStoreError(e: unknown): string {
  * Expand zips, skip junk, and STOW each DICOM instance that passes the de-id gate.
  */
 export async function ingestUpload(orgId: string, form: FormData): Promise<UploadIngestResult> {
+  assertDurableStorageConfigured();
   const uploaded = form.getAll("files").filter((f): f is File => f instanceof File);
   if (uploaded.length === 0) {
     return { status: 400, body: { error: "No files were uploaded." } };
@@ -244,10 +247,12 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
     }
   }
 
+  if (stored > 0 || duplicates > 0) await persistUploadReceipt(orgId, series, { stored, duplicates });
+
   // Convert each touched series to HTJ2K + previews once the upload settles
   // (lib/dicomCdn/jobs.ts). Reads the de-identified bytes back from the
   // archive, so it never sees anything the gate above did not pass. No-op
-  // unless DICOM_CDN_BUCKET / DICOM_CDN_LOCAL_DIR is set.
+  // unless the shared GCS bucket or a legacy/local bundle store is set.
   if (stored > 0) {
     for (const s of series) scheduleSeriesBundle(s.studyInstanceUID, s.seriesInstanceUID);
   }

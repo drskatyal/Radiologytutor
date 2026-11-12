@@ -29,7 +29,6 @@ STORE=${STORE:-radlearn-dicom}
 REPO=${REPO:-radlearn}
 SA_NAME=${SA_NAME:-radlearn-app}
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-FRAME_BUCKET=${FRAME_BUCKET:-}
 NETWORK=${NETWORK:-radlearn}
 SUBNET=${SUBNET:-radlearn-run}
 VPC_EGRESS=${VPC_EGRESS:-all-traffic}
@@ -79,7 +78,7 @@ ENV_VARS+=",HEALTHCARE_DATASET=$(env_get HEALTHCARE_DATASET "${DATASET}")"
 ENV_VARS+=",HEALTHCARE_DICOM_STORE=$(env_get HEALTHCARE_DICOM_STORE "${STORE}")"
 ENV_VARS+=",MONGODB_DB=$(env_get MONGODB_DB "${MONGODB_DB}")"
 ENV_VARS+=",GEMINI_MODEL=$(env_get GEMINI_MODEL gemini-3.8-flash)"
-ENV_VARS+=",GEMINI_TTS_MODEL=$(env_get GEMINI_TTS_MODEL gemini-2.5-flash-preview-tts)"
+ENV_VARS+=",GEMINI_TTS_MODEL=$(env_get GEMINI_TTS_MODEL gemini-3.8-flash-tts)"
 ENV_VARS+=",GEMINI_TTS_VOICE=$(env_get GEMINI_TTS_VOICE Kore)"
 ENV_VARS+=",GEMINI_LIVE_MODEL=$(env_get GEMINI_LIVE_MODEL gemini-3.8-live)"
 ENV_VARS+=",GEMINI_TIMEOUT_MS=$(env_get GEMINI_TIMEOUT_MS 45000)"
@@ -91,10 +90,8 @@ ENV_VARS+=",DEMO_AUTH_MAX_ROLE=$(env_get DEMO_AUTH_MAX_ROLE author)"
 if [[ -n "${BETTER_AUTH_URL:-}" ]]; then
   ENV_VARS+=",BETTER_AUTH_URL=${BETTER_AUTH_URL}"
 fi
-if [[ -n "${FRAME_BUCKET}" ]]; then
-  ENV_VARS+=",R2_ENDPOINT=https://storage.googleapis.com"
-  ENV_VARS+=",R2_BUCKET=${FRAME_BUCKET}"
-fi
+# Private object bucket configuration is administered separately; see ENV_SCHEMA.md.
+# No R2/HMAC variables are needed by Cloud Run. Unmentioned env is preserved.
 
 # Converted-DICOM delivery (docs/DICOM_CDN_REPORT.md). Off unless the bucket is set.
 if [[ -n "${DICOM_CDN_BUCKET:-}" ]]; then
@@ -109,7 +106,8 @@ fi
 SECRETS="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 SECRETS+=",BETTER_AUTH_SECRET=BETTER_AUTH_SECRET:latest"
 SECRETS+=",MONGODB_URI=MONGODB_URI:latest"
-for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY DICOM_CDN_KEY; do
+SECRETS+=",TRUSTED_PROXY_SECRET=TRUSTED_PROXY_SECRET:latest"
+for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY DICOM_CDN_KEY; do
   if gcloud secrets versions describe latest --secret="${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     SECRETS+=",${name}=${name}:latest"
   fi

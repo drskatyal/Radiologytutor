@@ -43,6 +43,7 @@
     "dicom-parser": "^1.8.21",
     "dicomweb-client": "^0.10.4",
     "framer-motion": "^12.40.0",
+    "google-auth-library": "11.3.4",
     "lucide-react": "^1.21.0",
     "mongodb": "^6.21.0",
     "mp4-muxer": "^5.2.2",

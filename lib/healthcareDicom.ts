@@ -7,6 +7,7 @@
 // Pixel reads for the viewer do not go through this file. They are proxied
 // by /api/dicomweb straight at dicomWebRoot(), with a service-account bearer.
 
+import { randomUUID } from "node:crypto";
 import { parseDicom } from "dicom-parser";
 import { gcpAccessToken } from "./gcpAuth";
 import {
@@ -82,6 +83,7 @@ export async function healthcareQido(pathAndQuery: string): Promise<DicomJson[]>
       Accept: "application/dicom+json",
     },
     cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
   });
   if (res.status === 204) return [];
   if (!res.ok) {
@@ -230,29 +232,30 @@ export interface HealthcareStoreResult {
 export async function healthcareStoreInstance(bytes: ArrayBuffer): Promise<HealthcareStoreResult> {
   const uids = readDicomUids(bytes);
   if (!uids) throw new Error("Healthcare STOW -> 400");
+  const boundary = `radlearn-${randomUUID()}`;
+  const payload = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/dicom\r\n\r\n`), Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--\r\n`)]);
   const res = await fetch(`${dicomWebRoot()}/studies`, {
     method: "POST",
     headers: {
       Authorization: await bearer(),
-      "Content-Type": "application/dicom",
+      "Content-Type": `multipart/related; type="application/dicom"; boundary=${boundary}`,
       Accept: "application/dicom+json",
     },
-    body: Buffer.from(bytes),
+    body: payload,
     cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
   });
-  if (res.status === 409) {
-    return {
-      ID: uids.sop,
-      ParentStudy: uids.study,
-      ParentSeries: uids.series,
-      Status: "AlreadyStored",
-    };
-  }
-  if (!res.ok) throw new Error(`Healthcare STOW -> ${res.status}`);
+  if (!res.ok && res.status !== 409) throw new Error(`Healthcare STOW -> ${res.status}`);
+  const body: unknown = await res.json().catch(() => null);
+  const dataset = (Array.isArray(body) ? body[0] : body) as DicomJson | null;
+  const failures = dataset?.["00081198"]?.Value;
+  const acknowledged = dataset?.["00081199"]?.Value?.some(item =>
+    dicomJsonString(item as DicomJson, "00081155") === uids.sop);
+  if (failures?.length || !acknowledged) throw new Error(`Healthcare STOW -> ${res.status}: instance was not acknowledged`);
   return {
     ID: uids.sop,
     ParentStudy: uids.study,
     ParentSeries: uids.series,
-    Status: "Success",
+    Status: res.status === 409 ? "AlreadyStored" : "Success",
   };
 }

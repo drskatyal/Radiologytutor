@@ -50,6 +50,7 @@ import {
 import { imagingBackend } from "@/lib/imagingBackend";
 import { dicomWebRoot, imagingAuthHeader, orthancConfigured } from "@/lib/orthanc";
 import { authorizeStudyRead } from "@/lib/studyAccess";
+import { getSession } from "@/lib/auth";
 import { createTtlMemo } from "@/lib/ttlMemo";
 
 /**
@@ -138,13 +139,6 @@ async function archiveFetch(target: string, accept: string | undefined, method: 
 }
 
 async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
-  if (!orthancConfigured()) {
-    return new Response(
-      "Imaging archive is not configured (set ORTHANC_URL, or DICOMWEB_BACKEND=healthcare).",
-      { status: 503 }
-    );
-  }
-
   const segments = ctx.params.path;
   const studyUid = studyUidFromPath(segments);
 
@@ -153,7 +147,9 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
   // whole archive across tenants, so it is refused outright — callers list
   // studies through /api/admin/studies, which is org-scoped.
   if (!studyUid) {
-    return new Response("A StudyInstanceUID is required.", { status: 400 });
+    return await getSession()
+      ? new Response("A StudyInstanceUID is required.", { status: 400 })
+      : new Response("Unauthorized", { status: 401 });
   }
 
   const access = await authorizeStudyRead(req, studyUid);
@@ -162,6 +158,9 @@ async function handle(req: NextRequest, ctx: { params: { path: string[] } }) {
       status: access.status,
     });
   }
+
+  // Authenticate before inspecting backend configuration or requesting an ADC token.
+  if (!orthancConfigured()) return new Response("Imaging archive is not configured.", { status: 503 });
 
   const path = segments.join("/");
   const search = req.nextUrl.search || "";

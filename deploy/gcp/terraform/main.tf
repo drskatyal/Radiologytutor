@@ -16,8 +16,7 @@ locals {
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "ELEVENLABS_API_KEY",
-    "R2_ACCESS_KEY_ID",
-    "R2_SECRET_ACCESS_KEY",
+    "TRUSTED_PROXY_SECRET",
     "DICOM_CDN_KEY",
   ]
   app_sa = google_service_account.app.email

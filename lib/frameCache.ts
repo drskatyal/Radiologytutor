@@ -4,7 +4,7 @@
 //   L1  in-process LRU, bounded by bytes (FRAME_MEMORY_CACHE_MB, default 64 — sized for a small container).
 //       Zero-latency, per instance. On by default — a single app instance
 //       (Railway) gets repeat-open hits even with no bucket configured.
-//   L2  the object store (R2, or GCS via R2_ENDPOINT) when configured. Shared
+//   L2  private GCS via runtime ADC (R2 is optional legacy) when configured. Shared
 //       across instances and restarts.
 //
 // Why it matters: a Cloud Healthcare frame costs ~620 ms however many are in
@@ -14,7 +14,7 @@
 // real bucket (30–80 ms) almost never won, so the cache was "on" and missed
 // every time.
 
-import { getObject, putObject, r2Configured } from "./r2";
+import { getObject, putObject, objectStorageConfigured } from "./objectStorage";
 
 export interface CachedBody {
   bytes: Buffer;
@@ -53,14 +53,14 @@ function memoryPut(key: string, bytes: Buffer, contentType: string): void {
 }
 
 export function frameCacheEnabled(): boolean {
-  return MEMORY_BYTES > 0 || r2Configured();
+  return MEMORY_BYTES > 0 || objectStorageConfigured();
 }
 
 /** L1, then L2 (promoting an L2 hit into L1). Never throws. */
 export async function cacheGet(key: string): Promise<CachedBody | null> {
   const local = memoryGet(key);
   if (local) return local;
-  if (!r2Configured()) return null;
+  if (!objectStorageConfigured()) return null;
   try {
     const remote = await getObject(key);
     if (!remote) return null;
@@ -74,7 +74,7 @@ export async function cacheGet(key: string): Promise<CachedBody | null> {
 /** Write-through. The L2 write is fire-and-forget; failures only cost a future miss. */
 export function cachePut(key: string, bytes: Buffer, contentType: string): void {
   memoryPut(key, bytes, contentType);
-  if (r2Configured()) void putObject(key, bytes, contentType).catch(() => undefined);
+  if (objectStorageConfigured()) void putObject(key, bytes, contentType).catch(() => undefined);
 }
 
 /** Tests only. */

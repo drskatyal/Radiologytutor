@@ -2,7 +2,7 @@
 
 Pinned integration: `03f1df5d80af716df54be2a724ff3695be4ca1c9`.
 Branch: `codex/radlearn-strategy-build`. The checkout was clean at the start.
-All activity is local. No new npm dependencies; `npm ci` was already completed by the orchestrator.
+All activity is local. No new npm dependencies at baseline; `npm ci` was already completed by the orchestrator.
 
 | Command | Result at pinned source |
 | --- | --- |
@@ -35,3 +35,16 @@ anonymize` cannot resolve the uncached `dicom-dictionary-std` crate. No packages
 or crates were downloaded. These checks are not claimed as passes. The standalone
 Rust export-policy tests pass with rustc, its tag set is checked against the web
 allowlist in npm test, and the real browser export spec passes with synthetic CT.
+
+## C2 dependency and cloud verification boundary
+
+C2 adds the explicitly authorized `google-auth-library@11.3.4` for runtime ADC.
+No Google auth dependency existed on the base. The existing GCS JSON API
+transport was extracted and reused; `@google-cloud/storage` was unnecessary.
+Installation used `--ignore-scripts` and a workspace npm cache; no audit fix or
+unrelated upgrade was requested. This is the only new direct dependency.
+
+**NO LIVE GCP CALL WAS MADE.** Tests mock token acquisition and all Healthcare /
+GCS HTTP, using synthetic Part-10 files generated from M0 fixtures. No credential
+file was read. Gemini: **live contract not verified**. The single provisional
+bucket env name and the required GCP Admin confirmation are in ENV_SCHEMA.md.

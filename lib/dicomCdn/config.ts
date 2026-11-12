@@ -5,7 +5,8 @@
 // nothing set the feature is off and the viewer reads DICOMweb exactly as
 // before. Nothing here is ever sent to the browser except the public CDN host.
 //
-//   DICOM_CDN_BUCKET           Private GCS bucket for converted series (prod).
+//   Shared GCS bucket         Read through envSchema (also used by imports/media).
+//   DICOM_CDN_BUCKET           Optional legacy bundle-only bucket override.
 //   DICOM_CDN_LOCAL_DIR        Directory store instead of a bucket (dev, tests).
 //   DICOM_CDN_URL              https origin of the Cloud CDN load balancer that
 //                              fronts the bucket. Unset → chunks are served by
@@ -21,6 +22,7 @@
 // ============================================================================
 
 import type { CdnSigningKey } from "./sign";
+import { readGcsBucket } from "../envSchema";
 
 export type StoreTarget =
   | { kind: "gcs"; bucket: string }
@@ -39,7 +41,7 @@ export interface DicomCdnConfig {
 
 export function readDicomCdnConfig(env: NodeJS.ProcessEnv = process.env): DicomCdnConfig | null {
   if (env.DICOM_CDN_DISABLED?.trim() === "1") return null;
-  const bucket = env.DICOM_CDN_BUCKET?.trim();
+  const bucket = readGcsBucket(env) ?? env.DICOM_CDN_BUCKET?.trim();
   const dir = env.DICOM_CDN_LOCAL_DIR?.trim();
   let store: StoreTarget | null = null;
   if (bucket) {

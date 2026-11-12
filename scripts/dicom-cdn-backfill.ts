@@ -16,7 +16,7 @@
 // ORTHANC_URL) and the store (DICOM_CDN_BUCKET, or DICOM_CDN_LOCAL_DIR).
 // --all / --case read cases through lib/cases.ts, so set MONGODB_URI for
 // production (JSON DATA_DIR otherwise). From a laptop against GCP:
-//   GOOGLE_ACCESS_TOKEN=$(gcloud auth print-access-token)
+//   Uses attached runtime service-account ADC; no injected token or key file.
 // lets both the Healthcare API and the bucket accept the calls; on Cloud Run
 // (a job using the app image) the runtime service account is used instead.
 //

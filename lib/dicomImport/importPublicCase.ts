@@ -1,5 +1,6 @@
 // Import a curated public teaching case: download TCIA DICOM (when needed),
-// ingest to Orthanc, persist patient/study/case + findings for student learning.
+// ingest through the Healthcare/Orthanc facade, persist teaching records and
+// a private object snapshot. Runtime credentials never reach the browser.
 
 import {
   createCaseForOrg,
@@ -29,6 +30,8 @@ import {
 import { deidAllowsPublish, inspectDicomBytes } from "@/lib/deid";
 import type { Case, Finding } from "@/lib/types";
 import { DEFAULT_ORG_ID } from "@/lib/cases";
+import { assertDurableStorageConfigured } from "@/lib/envSchema";
+import { persistImportedCase } from "@/lib/importObjects";
 
 export interface ImportPublicCaseResult {
   caseId: string;
@@ -43,7 +46,7 @@ export interface ImportPublicCaseResult {
 
 export interface ImportPublicCaseOptions {
   orgId?: string;
-  /** Re-download and re-ingest even if study already in Orthanc. */
+  /** Re-download and re-ingest even if study already in the archive. */
   force?: boolean;
   /** Publish after import (requires passing de-id). */
   publish?: boolean;
@@ -71,7 +74,7 @@ async function ensureDeidReportForStudy(
   }
 }
 
-async function ensureStudyInOrthanc(
+async function ensureStudyInArchive(
   template: NonNullable<ReturnType<typeof getPublicCaseTemplate>>,
   force: boolean
 ): Promise<{ instanceCount: number; orthancStudyId: string | null; ingested: number; skipped: number }> {
@@ -95,7 +98,7 @@ async function ensureStudyInOrthanc(
 
   if (source.kind === "orthanc_existing") {
     throw new Error(
-      `Study ${studyUID} not found in Orthanc — upload the BBMRI MEMPRAGE series first.`
+      `Study ${studyUID} not found in the imaging archive — upload the series first.`
     );
   }
 
@@ -239,8 +242,9 @@ export async function importPublicCase(
   caseId: string,
   options: ImportPublicCaseOptions = {}
 ): Promise<ImportPublicCaseResult> {
+  assertDurableStorageConfigured();
   if (!orthancConfigured()) {
-    throw new Error("ORTHANC_URL is not configured — cannot import real DICOM cases.");
+    throw new Error("Imaging archive is not configured — select Healthcare or local Orthanc.");
   }
 
   const template = getPublicCaseTemplate(caseId);
@@ -249,7 +253,7 @@ export async function importPublicCase(
   }
 
   const orgId = options.orgId ?? DEFAULT_ORG_ID;
-  const { instanceCount, orthancStudyId, ingested, skipped } = await ensureStudyInOrthanc(
+  const { instanceCount, orthancStudyId, ingested, skipped } = await ensureStudyInArchive(
     template,
     options.force ?? false
   );
@@ -267,6 +271,8 @@ export async function importPublicCase(
     instanceCount,
     options.publish ?? true
   );
+
+  await persistImportedCase(orgId, caseData);
 
   return {
     caseId: template.caseId,

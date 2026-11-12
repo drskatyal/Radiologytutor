@@ -3,7 +3,7 @@
 //
 // Storage seam for narration audio captured during record → replay.
 //
-// Prefer Cloudflare R2 when configured (`lib/r2.ts`). Fall back to
+// Prefer private GCS with runtime ADC. Optional legacy R2 or local dev uses
 // DATA_DIR/audio/<id>.<ext> (JSON-on-volume / local) so dev and `npm run build`
 // work with no bucket. GET /api/audio/[id] always serves bytes through this
 // module — the client never sees storage credentials.
@@ -14,7 +14,8 @@
 
 import { promises as fs } from "fs";
 import path from "path";
-import { getObject, putObject, r2Configured } from "./r2";
+import { assertDurableStorageConfigured, requiresCloudStorage } from "./envSchema";
+import { getObject, putObject, objectStorageConfigured } from "./objectStorage";
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const AUDIO_DIR = path.join(DATA_DIR, "audio");
@@ -40,7 +41,7 @@ function genId(): string {
   return `aud_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function r2Keys(id: string, ext: string): { bytes: string; meta: string } {
+function objectKeys(id: string, ext: string): { bytes: string; meta: string } {
   return { bytes: `audio/${id}.${ext}`, meta: `audio/${id}.json` };
 }
 
@@ -59,14 +60,15 @@ interface AudioMeta {
 
 /** Persist a base64 clip; returns its id + same-origin URL. */
 export async function putAudio(base64: string, mimeType: string): Promise<StoredAudio> {
+  assertDurableStorageConfigured();
   const id = genId();
   const ext = extFor(mimeType);
   const buf = Buffer.from(base64, "base64");
   const meta: AudioMeta = { mimeType, ext, bytes: buf.length };
   const stored: StoredAudio = { id, url: audioUrl(id), mimeType, bytes: buf.length };
 
-  if (r2Configured()) {
-    const keys = r2Keys(id, ext);
+  if (objectStorageConfigured()) {
+    const keys = objectKeys(id, ext);
     const put = await putObject(keys.bytes, buf, mimeType);
     if (put) {
       await putObject(keys.meta, Buffer.from(JSON.stringify(meta), "utf-8"), "application/json");
@@ -87,12 +89,13 @@ export interface AudioBytes {
 
 /** Read a stored clip back (for GET /api/audio/[id]). Null when missing. */
 export async function getAudio(id: string): Promise<AudioBytes | null> {
+  assertDurableStorageConfigured();
   const clean = safeId(id);
   if (!clean) return null;
 
-  if (r2Configured()) {
-    const fromR2 = await getAudioFromR2(clean);
-    if (fromR2) return fromR2;
+  if (objectStorageConfigured()) {
+    const fromStore = await getAudioFromObjectStore(clean);
+    if (fromStore || requiresCloudStorage()) return fromStore;
   }
 
   try {
@@ -106,7 +109,7 @@ export async function getAudio(id: string): Promise<AudioBytes | null> {
   }
 }
 
-async function getAudioFromR2(id: string): Promise<AudioBytes | null> {
+async function getAudioFromObjectStore(id: string): Promise<AudioBytes | null> {
   const metaObj = await getObject(`audio/${id}.json`);
   if (!metaObj) return null;
   let meta: AudioMeta;

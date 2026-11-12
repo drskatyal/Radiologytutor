@@ -12,7 +12,7 @@ locals {
     HEALTHCARE_DICOM_STORE = var.dicom_store_id
     MONGODB_DB             = var.mongodb_db
     GEMINI_MODEL           = var.gemini_model
-    GEMINI_TTS_MODEL       = "gemini-2.5-flash-preview-tts"
+    GEMINI_TTS_MODEL       = "gemini-3.8-flash-tts"
     GEMINI_TTS_VOICE       = "Kore"
     GEMINI_LIVE_MODEL      = "gemini-3.8-live"
     GEMINI_TIMEOUT_MS      = "45000"
@@ -87,21 +87,9 @@ resource "google_cloud_run_v2_service" "app" {
         }
       }
 
-      dynamic "env" {
-        for_each = var.frame_bucket == "" ? [] : [var.frame_bucket]
-        content {
-          name  = "R2_ENDPOINT"
-          value = "https://storage.googleapis.com"
-        }
-      }
-
-      dynamic "env" {
-        for_each = var.frame_bucket == "" ? [] : [var.frame_bucket]
-        content {
-          name  = "R2_BUCKET"
-          value = var.frame_bucket
-        }
-      }
+      # Shared private object bucket env is administered separately pending
+      # GCP Admin confirmation of the provisional name in ENV_SCHEMA.md.
+      # No R2 endpoint, bucket alias or HMAC credentials are required.
 
       # Converted-DICOM delivery (dicom_cdn.tf). The signing key secret is
       # attached by deploy/gcp/deploy-app.sh once DICOM_CDN_KEY has a version.
@@ -119,11 +107,11 @@ resource "google_cloud_run_v2_service" "app" {
         }
       }
 
-      # Optional secrets (Google OAuth, ElevenLabs, GCS HMAC) are attached by
+      # Optional secrets (Google OAuth, ElevenLabs) are attached by
       # deploy/gcp/deploy-app.sh only when a version exists. Referencing an
       # empty secret here would stop the revision from starting.
       dynamic "env" {
-        for_each = toset(["GEMINI_API_KEY", "BETTER_AUTH_SECRET", "MONGODB_URI"])
+        for_each = toset(["GEMINI_API_KEY", "BETTER_AUTH_SECRET", "MONGODB_URI", "TRUSTED_PROXY_SECRET"])
         content {
           name = env.value
           value_source {
