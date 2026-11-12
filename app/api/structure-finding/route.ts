@@ -14,17 +14,26 @@ import { findingSystemInstruction } from "@/lib/compileSession";
 import { coerceCompileFrames } from "@/lib/compileMedia";
 import type { StructuredFinding } from "@/lib/types";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
+import { captureMedia } from "@/lib/journal/storage";
+import { captureHttpError } from "@/lib/journal/http";
+import { CaptureError } from "@/lib/journal/manifest";
+import { PhiError } from "@/lib/phiGuard";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    await requireAuthorOrg();
+    const orgId = await requireAuthorOrg();
     const body = await req.json();
     const transcript = body.transcript as string | undefined;
-    const audioBase64 = body.audioBase64 as string | undefined;
-    const audioMime = body.audioMime as string | undefined;
-    const frames = coerceCompileFrames(body.frames);
+    let audioBase64 = body.audioBase64 as string | undefined;
+    let audioMime = body.audioMime as string | undefined;
+    let frames = coerceCompileFrames(body.frames);
+    if (body.capture) {
+      const media = await captureMedia(orgId, body.capture.caseId, body.capture.sessionId, "audio", true);
+      audioBase64 = media.bytes.toString("base64"); audioMime = media.mimeType;
+      frames = [];
+    }
     if ((typeof transcript !== "string" || transcript.trim() === "") && !audioBase64) {
       return NextResponse.json(
         { error: "transcript or audioBase64 is required" },
@@ -70,6 +79,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(finding);
   } catch (err) {
+    if (err instanceof CaptureError || err instanceof PhiError) return captureHttpError(err);
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";

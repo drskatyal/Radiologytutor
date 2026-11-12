@@ -14,6 +14,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
+import { JournalRecorder, recoverCapture } from "@/lib/journal/recorder";
+import { captureBase } from "@/lib/journal/sync";
+import { captureLocalStore, type LocalCapture } from "@/lib/journal/localStore";
+import type { RenderConfirmedViewer } from "@/lib/viewerController";
 import { TrackRecorder } from "@/lib/recorder";
 import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
@@ -44,7 +48,7 @@ const EMPTY_PLAYBACK: TakePlayback = {
   audioOffsetMs: 0,
 };
 
-export type RecordPhase = "idle" | "recording" | "replaying";
+export type RecordPhase = "idle" | "starting" | "recording" | "stopping" | "replaying";
 
 export interface UploadedAudio {
   url: string;
@@ -54,6 +58,14 @@ export interface UploadedAudio {
 
 export interface UseRecordReplay {
   phase: RecordPhase;
+  captureError?: string;
+  mediaReviewed?: boolean;
+  reviewMedia?: () => Promise<void>;
+  acknowledgedChunks?: number;
+  recoverable?: LocalCapture[];
+  recoveredSessionId?: string;
+  recover?: (sessionId: string) => Promise<void>;
+  onMarker?: (x: number, y: number) => void;
   /** Whether mic capture is supported in this browser. */
   supported: boolean;
   /**
@@ -154,9 +166,21 @@ export function useRecordReplay(opts: {
   controls: MutableRefObject<CornerstoneControls | null>;
   overlay: MutableRefObject<ReplayOverlayHandle | null>;
   ready: boolean;
+  caseId?: string;
+  orgId?: string;
 }): UseRecordReplay {
   const { controls, overlay, ready } = opts;
 
+  const [captureError, setCaptureError] = useState("");
+  const [acknowledgedChunks, setAcknowledgedChunks] = useState(0);
+  const [recoverable, setRecoverable] = useState<LocalCapture[]>([]);
+  const [recoveredSessionId, setRecoveredSessionId] = useState("");
+  const refreshRecovery = useCallback(async () => {
+    if (!opts.caseId || !opts.orgId) return;
+    try { setRecoverable((await captureLocalStore.list(opts.orgId, opts.caseId)).filter(c => !c.synced)); }
+    catch { setCaptureError("Browser storage is unavailable. Capture cannot be retained until storage is enabled."); }
+  }, [opts.caseId, opts.orgId]);
+  useEffect(() => { void refreshRecovery(); }, [refreshRecovery]);
   const [phase, setPhase] = useState<RecordPhase>("idle");
   const [micCapture, setMicCapture] = useState<"unknown" | "live" | "unavailable">("unknown");
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -167,7 +191,8 @@ export function useRecordReplay(opts: {
   const [progress, setProgress] = useState(0);
   const playbackRef = useRef<TakePlayback>(EMPTY_PLAYBACK);
 
-  const recorderRef = useRef<TrackRecorder | null>(null);
+  const startingRef = useRef<Promise<void>>(Promise.resolve());
+  const recorderRef = useRef<TrackRecorder | JournalRecorder | null>(null);
   const framesRef = useRef<CompileFrame[]>([]);
   const replayRef = useRef<ReplayController | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
@@ -185,7 +210,18 @@ export function useRecordReplay(opts: {
     replayRef.current = null;
     overlay.current?.clear();
 
-    const rec = new TrackRecorder();
+    phaseRef.current = "starting";
+    setPhase("starting"); setCaptureError(""); setAcknowledgedChunks(0); setRecoveredSessionId("");
+    setTrack(null); setAudio(null);
+    const viewer = controls.current;
+    if (opts.caseId && opts.orgId && (!viewer.onRendered || !viewer.requestView || !viewer.getRenderedView || !viewer.captureImagePoint)) {
+      setCaptureError("The viewer is not ready for render-confirmed capture."); setPhase("idle"); phaseRef.current = "idle"; return false;
+    }
+    const rec = opts.caseId && opts.orgId ? new JournalRecorder({
+      caseId: opts.caseId, orgId: opts.orgId, viewer: viewer as RenderConfirmedViewer,
+      onPhase: next => { if (next !== "stopped" && phaseRef.current !== "stopping") { phaseRef.current = next; setPhase(next); } },
+      onError: setCaptureError, onSync: setAcknowledgedChunks,
+    }) : new TrackRecorder();
     recorderRef.current = rec;
     framesRef.current = [];
     setFrames([]);
@@ -200,16 +236,21 @@ export function useRecordReplay(opts: {
     } catch {
       videoStream = null;
     }
-    await rec.start(priming, { onMic: (state) => setMicCapture(state), videoStream });
-    setPhase("recording");
+    try { startingRef.current = rec.start(priming, { onMic: (state) => setMicCapture(state), videoStream }); await startingRef.current; }
+    catch {
+      videoStream?.getTracks().forEach(t => t.stop());
+      setCaptureError("Capture could not start. Enable browser storage and microphone access, then retry.");
+      setPhase("idle"); phaseRef.current = "idle"; recorderRef.current = null; return false;
+    }
+    if (["stopping"].includes(phaseRef.current)) return true;
+    if (!(rec instanceof JournalRecorder)) { setPhase("recording"); phaseRef.current = "recording"; }
     setElapsedMs(0);
-    const t0 = performance.now();
     elapsedTimerRef.current = setInterval(
-      () => setElapsedMs(Math.round(performance.now() - t0)),
+      () => setElapsedMs(Math.round(rec.elapsedMs())),
       100
     );
     return true;
-  }, [ready, controls, overlay]);
+  }, [ready, controls, overlay, opts.caseId, opts.orgId]);
 
   const stopRecording = useCallback(async (): Promise<{
     track: RecordedTrack;
@@ -217,7 +258,8 @@ export function useRecordReplay(opts: {
     frames: CompileFrame[];
   } | null> => {
     const rec = recorderRef.current;
-    if (!rec || phaseRef.current !== "recording") return null;
+    if (!rec || !["starting", "recording"].includes(phaseRef.current)) return null;
+    phaseRef.current = "stopping"; setPhase("stopping");
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     elapsedTimerRef.current = null;
     const shot = readViewportStill(controls.current);
@@ -228,7 +270,12 @@ export function useRecordReplay(opts: {
         base64: shot.base64,
       });
     }
-    const stopped = await rec.stop();
+    let stopped;
+    try { await startingRef.current; stopped = await rec.stop(); }
+    catch {
+      setCaptureError("Capture could not finish. Retained chunks remain available below; retry recovery.");
+      setPhase("idle"); phaseRef.current = "idle"; recorderRef.current = null; await refreshRecovery(); return null;
+    }
     const stills = framesRef.current;
     recorderRef.current = null;
     const nextPlayback = playbackFromStop(stopped.video, stopped.audio, stopped.micOffsetMs);
@@ -237,9 +284,10 @@ export function useRecordReplay(opts: {
     setTrack(stopped.track);
     setAudio(stopped.audio);
     setFrames(stills);
-    setPhase("idle");
+    setPhase("idle"); phaseRef.current = "idle";
+    await refreshRecovery();
     return { track: stopped.track, audio: stopped.audio, frames: stills };
-  }, [controls]);
+  }, [controls, refreshRecovery]);
 
   // --- Replay ---------------------------------------------------------------
   const stopReplay = useCallback(() => {
@@ -257,7 +305,7 @@ export function useRecordReplay(opts: {
   const replay = useCallback(
     (which?: RecordedTrack, audioUrl?: string) => {
       const t = which ?? track;
-      if (!t || !controls.current || phaseRef.current === "recording") return;
+      if (!t || !controls.current || ["starting", "recording", "stopping"].includes(phaseRef.current)) return;
       stopReplay();
 
       const url = audioUrl ?? t.audioUrl;
@@ -313,7 +361,7 @@ export function useRecordReplay(opts: {
   // Viewport stills share the recorder clock for the whole take. A failed
   // grab is ignored — the track and audio still save.
   useEffect(() => {
-    if (phase !== "recording") return;
+    if (phase !== "recording" && phase !== "starting") return;
     const sample = () => {
       const rec = recorderRef.current;
       if (!rec?.isRecording) return;
@@ -344,7 +392,7 @@ export function useRecordReplay(opts: {
     const onKeyUp = (e: KeyboardEvent) => {
       // Release on either Alt or X up — keeps it forgiving.
       if (!(e.key === "x" || e.key === "X" || e.code === "KeyX" || e.key === "Alt")) return;
-      if (phaseRef.current === "recording") {
+      if (["starting", "recording", "stopping"].includes(phaseRef.current)) {
         e.preventDefault();
         void stopRecording();
       }
@@ -365,9 +413,52 @@ export function useRecordReplay(opts: {
     recorderRef.current?.handle.pushCursor(x, y);
   }, []);
 
+  const onMarker = useCallback((x: number, y: number) => {
+    const recorder = recorderRef.current;
+    if (recorder instanceof JournalRecorder) recorder.marker(x, y);
+  }, []);
+  const recover = useCallback(async (sessionId: string) => {
+    if (phaseRef.current !== "idle") return;
+    setCaptureError(""); phaseRef.current = "stopping"; setPhase("stopping");
+    try {
+      const local = await captureLocalStore.get(sessionId);
+      if (!local || local.orgId !== opts.orgId || local.manifest.caseId !== opts.caseId) throw new Error("Capture unavailable");
+      const recovered = await recoverCapture(local);
+      const chunks = await captureLocalStore.chunks(sessionId);
+      const audioChunks = chunks.filter(c => c.chunk.stream === "audio");
+      const videoChunks = chunks.filter(c => c.chunk.stream === "video");
+      const audioBlob = audioChunks.length ? new Blob(audioChunks.map(c => c.blob), { type: audioChunks[0].chunk.mime }) : null;
+      const audioData = audioBlob ? { base64: await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = reject; reader.readAsDataURL(audioBlob);
+      }), mimeType: audioBlob.type } : null;
+      const video = videoChunks.length ? { blob: new Blob(videoChunks.map(c => c.blob), { type: videoChunks[0].chunk.mime }), mimeType: videoChunks[0].chunk.mime, offsetMs: recovered.manifest.offsets.video ?? 0 } : null;
+      releasePlayback(playbackRef.current);
+      const nextPlayback = playbackFromStop(video, audioData, recovered.manifest.offsets.audio ?? 0);
+      playbackRef.current = nextPlayback; setPlayback(nextPlayback);
+      setTrack(recovered.track ?? null); setAudio(audioData); setFrames([]); setRecoveredSessionId(sessionId);
+      setAcknowledgedChunks(recovered.manifest.chunks.length);
+      await refreshRecovery();
+    } catch (error) { setCaptureError(error instanceof Error ? error.message : "Recovery failed; retained data was kept. Retry when connected."); }
+    finally { phaseRef.current = "idle"; setPhase("idle"); }
+  }, [opts.orgId, opts.caseId, refreshRecovery]);
+
+  const reviewMedia = useCallback(async () => {
+    if (!track?.captureSessionId || !opts.caseId) return;
+    try {
+      const res = await fetch(`${captureBase(opts.caseId, track.captureSessionId)}/manifest`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "review", review: { pixels: true, audio: true, screen: true } }) });
+      const manifest = await res.json();
+      if (!res.ok) throw new Error(manifest.error || "Complete server sync before reviewing media.");
+      const local = await captureLocalStore.get(track.captureSessionId);
+      if (local) { local.manifest = manifest; await captureLocalStore.save(local); }
+      setTrack(previous => previous ? { ...previous, mediaManifest: manifest } : previous);
+      setCaptureError("");
+    } catch (error) { setCaptureError(error instanceof Error ? error.message : "Media review could not be saved. Retry."); }
+  }, [track, opts.caseId]);
+
   // Cleanup.
   useEffect(
     () => () => {
+      if (recorderRef.current?.isRecording) void recorderRef.current.stop().catch(() => {});
       replayRef.current?.cancel();
       if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
       audioElRef.current?.pause();
@@ -377,7 +468,7 @@ export function useRecordReplay(opts: {
   );
 
   return {
-    phase,
+    phase, mediaReviewed: Boolean(track?.mediaManifest?.phiReview.pixels && track.mediaManifest.phiReview.audio && track.mediaManifest.phiReview.screen), reviewMedia, captureError, acknowledgedChunks, recoverable, recoveredSessionId, recover, onMarker,
     supported,
     micCapture,
     elapsedMs,

@@ -225,11 +225,9 @@ export async function commitLiveTeachingPack(
 
 /** Viewport recording → Gemini Files API. The key stays on the server. */
 export async function uploadTeachingVideo(
-  blob: Blob
+  caseId: string, sessionId: string
 ): Promise<{ fileUri: string; mimeType: string }> {
-  const body = new FormData();
-  body.set("video", blob, "viewport.webm");
-  const res = await fetch("/api/gemini/files", { method: "POST", body });
+  const res = await fetch("/api/gemini/files", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ caseId, sessionId }) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (looksLikeMissingKey(res.status, data?.error)) throw new AiUnavailableError();
@@ -296,7 +294,7 @@ function looksLikeMissingKey(status: number, message: unknown): boolean {
 async function structureRequest(
   body:
     | { transcript: string }
-    | { audioBase64: string; audioMime: string; frames?: CompileFrame[] }
+    | { audioBase64: string; audioMime: string; frames?: CompileFrame[]; capture?: { caseId: string; sessionId: string } }
 ): Promise<StructuredFinding> {
   const res = await fetch("/api/structure-finding", {
     method: "POST",
@@ -325,14 +323,15 @@ export async function structureFinding(transcript: string): Promise<StructuredFi
 export async function structureFindingFromAudio(
   base64: string,
   mime: string,
-  frames?: CompileFrame[]
+  frames?: CompileFrame[],
+  capture?: { caseId: string; sessionId: string }
 ): Promise<StructuredFinding | null> {
   try {
     const prepared = frames?.length ? prepareCompileFrames(frames) : [];
     return await structureRequest(
       prepared.length
-        ? { audioBase64: base64, audioMime: mime, frames: prepared }
-        : { audioBase64: base64, audioMime: mime }
+        ? { audioBase64: base64, audioMime: mime, frames: prepared, capture }
+        : { audioBase64: base64, audioMime: mime, capture }
     );
   } catch (e) {
     if (e instanceof AiUnavailableError) return null;

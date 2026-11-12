@@ -3,8 +3,8 @@
 // private window or blocked storage just means nothing is remembered.
 
 const DB = "flowrad-viewer-local";
-const VERSION = 1;
-export const STORES = ["annotations", "watchFolders"] as const;
+const VERSION = 2;
+export const STORES = ["annotations", "watchFolders", "captures", "captureChunks"] as const;
 export type StoreName = (typeof STORES)[number];
 
 let opening: Promise<IDBDatabase> | null = null;
@@ -17,7 +17,11 @@ function db(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       for (const s of STORES) if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onblocked = () => reject(new Error("Close older viewer tabs, then retry capture storage."));
+    req.onsuccess = () => {
+      req.result.onversionchange = () => { req.result.close(); opening = null; };
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
   });
   opening.catch(() => (opening = null));
@@ -39,3 +43,16 @@ export const idbGet = <T>(store: StoreName, key: string): Promise<T | undefined>
 export const idbSet = (store: StoreName, key: string, value: unknown): Promise<void> => run(store, "readwrite", (s) => s.put(value, key)).then(() => undefined, () => undefined);
 export const idbDelete = (store: StoreName, key: string): Promise<void> => run(store, "readwrite", (s) => s.delete(key)).then(() => undefined, () => undefined);
 export const idbAll = <T>(store: StoreName): Promise<T[]> => run<T[]>(store, "readonly", (s) => s.getAll() as IDBRequest<T[]>).catch(() => [] as T[]);
+
+/** Capture must fail visibly when storage fails, and wait for transaction commit. */
+export async function captureTransaction<T>(stores: StoreName[], mode: IDBTransactionMode, execute: (tx: IDBTransaction, result: (value: T) => void) => void): Promise<T> {
+  const database = await db();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction(stores, mode);
+    let value: T;
+    tx.oncomplete = () => resolve(value);
+    tx.onabort = tx.onerror = () => reject(new Error("Capture storage failed. Free browser storage and retry; this take has not been saved."));
+    try { execute(tx, result => { value = result; }); }
+    catch (error) { tx.abort(); reject(error); }
+  });
+}

@@ -10,6 +10,10 @@
 // A separate speech-to-text pass is optional scaffolding, not required.
 
 import { NextRequest, NextResponse } from "next/server";
+import { captureSession, captureMedia } from "@/lib/journal/storage";
+import { assertReviewedMedia, PhiError } from "@/lib/phiGuard";
+import { CaptureError } from "@/lib/journal/manifest";
+import { captureHttpError } from "@/lib/journal/http";
 import { coerceCompileFrames } from "@/lib/compileMedia";
 import { compileStructuredSession, type CompileStudyContext, type CompileVideo } from "@/lib/compileSession";
 import { jsonAuthError, requireAuthorOrg } from "@/lib/auth";
@@ -62,14 +66,29 @@ export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    await requireAuthorOrg();
+    const orgId = await requireAuthorOrg();
     const body = await req.json();
-    const audioBase64 = typeof body.audioBase64 === "string" ? body.audioBase64 : undefined;
-    const audioMime = (body.audioMime as string | undefined) || "audio/webm";
-    const durationMs = Number(body.durationMs) || 0;
-    const track = body.track as RecordedTrack | undefined;
+    let audioBase64 = typeof body.audioBase64 === "string" ? body.audioBase64 : undefined;
+    let audioMime = (body.audioMime as string | undefined) || "audio/webm";
+    let durationMs = Number(body.durationMs) || 0;
+    let video = videoOf(body);
+    let frames = coerceCompileFrames(body.frames);
+    let track = body.track as RecordedTrack | undefined;
+    if (track?.captureSessionId) {
+      const retained = await captureSession(orgId, body.caseId, track.captureSessionId);
+      if (retained.manifest?.status !== "complete") throw new CaptureError("Complete capture sync before processing", 409);
+      assertReviewedMedia(retained.manifest.phiReview);
+      track = retained.track;
+      durationMs = retained.durationMs;
+      // Review applies to retained bytes, never replacement media supplied by a client.
+      if (retained.manifest.chunks.some(c => c.stream === "audio")) {
+        const media = await captureMedia(orgId, body.caseId, retained.id, "audio", true);
+        audioBase64 = media.bytes.toString("base64"); audioMime = media.mimeType;
+      } else audioBase64 = undefined;
+      video = retained.geminiVideo ? { fileUri: retained.geminiVideo.uri, mimeType: retained.geminiVideo.mimeType } : undefined;
+      frames = [];
+    }
     const transcriptHint = typeof body.transcript === "string" ? body.transcript.trim() : "";
-    const video = videoOf(body);
     if (!audioBase64 && !transcriptHint && !video) {
       return NextResponse.json(
         { error: "audioBase64 or transcript is required" },
@@ -83,7 +102,7 @@ export async function POST(req: NextRequest) {
       transcript: transcriptHint,
       durationMs,
       track,
-      frames: coerceCompileFrames(body.frames),
+      frames,
       video,
       caseId: typeof body.caseId === "string" ? body.caseId : undefined,
       modality: typeof body.modality === "string" ? body.modality : undefined,
@@ -97,6 +116,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(session);
   } catch (err) {
+    if (err instanceof CaptureError || err instanceof PhiError) return captureHttpError(err);
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;
     const message = err instanceof Error ? err.message : "Unknown error";

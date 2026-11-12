@@ -60,6 +60,7 @@ import type {
 } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
+import { CaptureStatus } from "@/components/record/CaptureStatus";
 import { RecordStage } from "@/components/record/RecordStage";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { useRecorder } from "@/components/useRecorder";
@@ -130,7 +131,7 @@ export function RecordingStudio({
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
-  const rr = useRecordReplay({ controls, overlay, ready });
+  const rr = useRecordReplay({ controls, overlay, ready, caseId: caseData.caseId, orgId: caseData.orgId });
   const annotateRecorder = useRecorder();
 
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
@@ -219,7 +220,7 @@ export function RecordingStudio({
   }, []);
 
   const hasTrack = !!rr.track && rr.track.events.length > 0;
-  const recording = rr.phase === "recording";
+  const recording = ["starting", "recording", "stopping"].includes(rr.phase);
   const micBlocked = mic === "denied" || mic === "unsupported";
   const canSaveDraft = !!draft.label.trim();
 
@@ -570,7 +571,8 @@ export function RecordingStudio({
       const result = await structureFindingFromAudio(
         rr.audio.base64,
         rr.audio.mimeType,
-        rr.frames
+        rr.frames,
+        rr.track?.captureSessionId ? { caseId: caseData.caseId, sessionId: rr.track.captureSessionId } : undefined
       );
       if (result) {
         setDraft((d) => ({ ...result, landmark: d.landmark }));
@@ -945,6 +947,7 @@ export function RecordingStudio({
                 onReady={onReady}
                 onEvent={rr.onViewerEvent}
                 onCursor={rr.onCursor}
+                onMarker={rr.onMarker}
                 annotateMode={annotateMode && !pendingMarker}
                 onAnnotateClick={onAnnotateClick}
                 annotateSlot={
@@ -1074,6 +1077,8 @@ export function RecordingStudio({
               {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
             </div>
+
+            <CaptureStatus rr={rr} controls={controls} />
 
             {/* Hotkey hint */}
             {processingTake && (

@@ -422,7 +422,7 @@ export function CaseEditor({ caseId }: { caseId: string }) {
 
       <AddFindingDialog open={showAdd} onClose={() => setShowAdd(false)} onCreate={createFinding} />
 
-      <RecordFindingDialog open={showRecord} onClose={() => setShowRecord(false)} caseId={caseId} onCreate={createFinding} />
+      <RecordFindingDialog open={showRecord} onClose={() => setShowRecord(false)} caseId={caseId} orgId={caseData?.orgId} onCreate={createFinding} />
 
       <EditCaseModal
         caseId={showEditDetails ? caseData.caseId : null}

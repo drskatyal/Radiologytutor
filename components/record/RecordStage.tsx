@@ -44,6 +44,7 @@ export function RecordStage({
   onReady,
   onEvent,
   onCursor,
+  onMarker,
   annotateMode = false,
   onAnnotateClick,
   annotateSlot,
@@ -68,6 +69,7 @@ export function RecordStage({
   onReady: (c: CornerstoneControls) => void;
   onEvent: (e: ViewerEvent) => void;
   onCursor: (x: number, y: number) => void;
+  onMarker?: (x: number, y: number) => void;
   /**
    * When true (and not recording/replaying), a transparent hit layer captures
    * clicks on the imaging square and reports normalized [0,1] coords.
@@ -93,7 +95,7 @@ export function RecordStage({
   };
 
   const handleMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (phase !== "recording") return;
+    if (phase !== "recording" && phase !== "starting") return;
     const p = normFromEvent(e);
     if (p) onCursor(p.x, p.y);
   };
@@ -200,7 +202,10 @@ export function RecordStage({
   void modality;
 
   return (
-    <div className="viewer-shell relative min-w-0" onPointerMove={handleMove}>
+    <div className="viewer-shell relative min-w-0" onPointerMove={handleMove} onClick={e => {
+      if ((phase !== "recording" && phase !== "starting") || (e.target as HTMLElement).closest("button")) return;
+      const point = normFromEvent(e); if (point) onMarker?.(point.x, point.y);
+    }}>
       <ViewerFrame tone="page" source={frameSource} teaching={teaching} initial={initial} />
     </div>
   );

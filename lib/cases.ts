@@ -1126,8 +1126,17 @@ export async function appendCaptureSession(
   return mutateCase(orgId, caseId, data => {
   const list = data.captureSessions ? [...data.captureSessions] : [];
   const idx = list.findIndex((s) => s.id === session.id);
-  if (idx >= 0) list[idx] = session;
-  else list.push(session);
+  if (idx >= 0 && list[idx].manifest) {
+    const retained = list[idx];
+    if (retained.manifest!.status !== "complete") throw new Error("Complete capture sync before saving the take");
+    // Client save paths cannot replace chunk receipts, render evidence or offsets.
+    list[idx] = { ...retained, audioUrl: session.audioUrl ?? retained.audioUrl, transcript: session.transcript ?? retained.transcript,
+      track: { ...retained.track, audioUrl: session.audioUrl ?? retained.track.audioUrl } };
+  } else if (idx >= 0) list[idx] = session;
+  else {
+    if (session.track.captureSessionId) throw new Error("Retained capture session not found");
+    list.push(session);
+  }
   data.captureSessions = list;
   data.updatedAt = nowIso();
   return data;

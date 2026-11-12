@@ -8,6 +8,14 @@ export default defineConfig({
   ...archive,
   testDir: "e2e/radlearn",
   workers: 1,
+  use: {
+    ...archive.use,
+    permissions: ["microphone"],
+    launchOptions: {
+      ...archive.use?.launchOptions,
+      args: [...(archive.use?.launchOptions?.args ?? []), "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", `--use-file-for-fake-audio-capture=${path.join(process.cwd(), "fixtures/synthetic/narration.wav")}`],
+    },
+  },
   webServer: (Array.isArray(archive.webServer) ? archive.webServer : []).map(server => ({
     ...server,
     reuseExistingServer: false,

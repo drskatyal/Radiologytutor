@@ -36,6 +36,7 @@ import type { Finding, RecordedTrack, StructuredFinding } from "@/lib/types";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
 import { RecordStage } from "@/components/record/RecordStage";
+import { CaptureStatus } from "@/components/record/CaptureStatus";
 import { useRecordReplay } from "@/components/record/useRecordReplay";
 import { withDisplaySnapshot } from "@/lib/findingDisplayState";
 import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
@@ -55,6 +56,7 @@ interface RecordFindingDialogProps {
   onClose: () => void;
   /** The case being authored — used to resolve its series rail for capture. */
   caseId?: string;
+  orgId?: string;
   /** Append the finding; resolves when created (parent toasts/refreshes). */
   onCreate: (finding: Partial<Finding>, receipt?: RecordedSaveReceipt) => Promise<void>;
 }
@@ -64,11 +66,11 @@ const EMPTY: StructuredFinding = { label: "", description: "", teachingPoints: [
 /** Mic availability, so we can guide the author instead of failing silently. */
 type MicStatus = "unknown" | "granted" | "denied" | "unsupported";
 
-export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordFindingDialogProps) {
+export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: RecordFindingDialogProps) {
   const controls = useRef<CornerstoneControls | null>(null);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
-  const rr = useRecordReplay({ controls, overlay, ready });
+  const rr = useRecordReplay({ controls, overlay, ready, caseId, orgId });
 
   const [draft, setDraft] = useState<StructuredFinding>(EMPTY);
   const [structuring, setStructuring] = useState(false);
@@ -189,7 +191,8 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
       const result = await structureFindingFromAudio(
         rr.audio.base64,
         rr.audio.mimeType,
-        rr.frames
+        rr.frames,
+        caseId && rr.track?.captureSessionId ? { caseId, sessionId: rr.track.captureSessionId } : undefined
       );
       if (result) {
         setDraft((d) => ({ ...result, landmark: d.landmark }));
@@ -357,12 +360,13 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
             onReady={onReady}
             onEvent={rr.onViewerEvent}
             onCursor={rr.onCursor}
+            onMarker={rr.onMarker}
           />
         </div>
 
         {/* Record / replay controls */}
         <div className="flex flex-wrap items-center gap-2">
-          {rr.phase === "recording" ? (
+          {["starting", "recording", "stopping"].includes(rr.phase) ? (
             <Button variant="danger" size="sm" onClick={() => rr.stopRecording()}>
               Stop recording
             </Button>
@@ -412,6 +416,7 @@ export function RecordFindingDialog({ open, onClose, caseId, onCreate }: RecordF
         </div>
 
         {/* Hotkey + silent-track hints. */}
+        <CaptureStatus rr={rr} controls={controls} />
         {rr.phase === "idle" && !micBlocked && (
           <p className="text-xs text-muted">
             Tip: navigate the viewer and hold{" "}

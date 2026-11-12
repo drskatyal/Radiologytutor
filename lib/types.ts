@@ -131,6 +131,8 @@ export interface FindingAnchor {
  * segments this into multiple Findings (see StructuredSessionFinding).
  */
 export interface CaptureSession {
+  /** Server-bound Files API result for this completed, PHI-reviewed manifest. */
+  geminiVideo?: { uri: string; mimeType: string };
   /** Durable capture state; older sessions have no journal. */
   manifest?: CaptureManifest;
   journal?: JournalEntry[];

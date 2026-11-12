@@ -35,6 +35,17 @@ export interface RecorderVideo {
   offsetMs: number;
 }
 
+export interface RecorderHooks {
+  onMic?: (state: "live" | "unavailable") => void;
+  videoStream?: MediaStream | null;
+  /** Shared clock supplied by the durable journal. */
+  t0?: number;
+  timesliceMs?: number;
+  onChunk?: (stream: "audio" | "video", blob: Blob, tStart: number, tEnd: number) => void;
+  onMediaStart?: (stream: "audio" | "video", offsetMs: number) => void;
+  onDiscontinuity?: (reason: string, details: Record<string, unknown>) => void;
+}
+
 export interface RecorderResult {
   track: RecordedTrack;
   /** Recorded audio as base64 (no data: prefix) + its mime, for upload. */
@@ -69,6 +80,7 @@ const MIC_STOP_WAIT_MS = 300;
  * viewer's starting state; hold the hotkey; call `stop()` to finalize.
  */
 export class TrackRecorder {
+  private hooks: RecorderHooks = {};
   private events: RecordedEvent[] = [];
   private t0 = 0;
   private clockStarted = false;
@@ -133,11 +145,7 @@ export class TrackRecorder {
    */
   async start(
     priming: RecordedTrack["start"],
-    hooks?: {
-      onMic?: (state: "live" | "unavailable") => void;
-      /** Cornerstone canvas stream. Page chrome is never captured. */
-      videoStream?: MediaStream | null;
-    }
+    hooks?: RecorderHooks
   ): Promise<void> {
     this.events = [];
     this.chunks = [];
@@ -149,7 +157,8 @@ export class TrackRecorder {
     this.videoOffsetMs = 0;
     this.micOffsetMs = 0;
     this.start_ = priming;
-    this.t0 = performance.now();
+    this.hooks = hooks ?? {};
+    this.t0 = hooks?.t0 ?? performance.now();
     this.clockStarted = true;
     this.lastCursorT = -Infinity;
     this.recording = true;
@@ -185,15 +194,14 @@ export class TrackRecorder {
       const mimeType = pickMime();
       const rec = new MediaRecorder(stream, { mimeType });
       this.micOffsetMs = this.elapsedMs();
-      rec.ondataavailable = (e) => {
-        if (e.data.size > 0) this.chunks.push(e.data);
-      };
-      rec.start();
+      this.observeMedia(rec, "audio", this.chunks, this.micOffsetMs);
+      rec.start(this.hooks.timesliceMs ?? 2000);
       this.rec = rec;
       this.setMic("live");
     } catch {
       // Mic blocked/unavailable — record a silent track (events only).
       this.rec = null;
+      this.stream?.getTracks().forEach(t => t.stop());
       this.stream = null;
       this.setMic("unavailable");
     }
@@ -264,11 +272,9 @@ export class TrackRecorder {
     try {
       const mimeType = pickVideoMime();
       const rec = new MediaRecorder(stream, { mimeType });
-      rec.ondataavailable = (e) => {
-        if (e.data.size > 0) this.videoChunks.push(e.data);
-      };
       this.videoOffsetMs = this.elapsedMs();
-      rec.start(1000);
+      this.observeMedia(rec, "video", this.videoChunks, this.videoOffsetMs);
+      rec.start(this.hooks.timesliceMs ?? 2000);
       this.videoRec = rec;
       this.videoStream = stream;
     } catch {
@@ -276,6 +282,27 @@ export class TrackRecorder {
       this.videoRec = null;
       this.videoStream = null;
     }
+  }
+
+  private observeMedia(rec: MediaRecorder, stream: "audio" | "video", chunks: Blob[], requestedStart: number): void {
+    let last = requestedStart;
+    const timeslice = this.hooks.timesliceMs ?? 2000;
+    rec.onstart = () => {
+      last = this.elapsedMs();
+      if (stream === "audio") this.micOffsetMs = last; else this.videoOffsetMs = last;
+      this.hooks.onMediaStart?.(stream, last);
+    };
+    rec.onpause = () => this.hooks.onDiscontinuity?.("media_pause", { stream });
+    rec.onresume = () => this.hooks.onDiscontinuity?.("media_resume", { stream });
+    rec.onerror = () => this.hooks.onDiscontinuity?.("media_error", { stream });
+    rec.ondataavailable = event => {
+      if (!event.data.size) return;
+      const end = this.elapsedMs();
+      if (end - last > timeslice + 500) this.hooks.onDiscontinuity?.("media_delivery_gap", { stream, tStart: last, tEnd: end, expectedMs: timeslice, estimated: true });
+      chunks.push(event.data);
+      this.hooks.onChunk?.(stream, event.data, last, end);
+      last = end;
+    };
   }
 
   private finishVideo(): Promise<RecorderVideo | null> {

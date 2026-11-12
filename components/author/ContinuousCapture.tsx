@@ -148,7 +148,7 @@ export function ContinuousCapture({
     audio: { base64: string; mimeType: string } | null;
   } | null>(null);
 
-  const recording = rr.phase === "recording";
+  const recording = ["starting", "recording", "stopping"].includes(rr.phase);
   const notesMode = Boolean(lastTake && !lastTake.audio && proposals.length > 0 && !recording);
   // True only after Speak once itself started the take. The transport bar and
   // the Alt+X hotkey call rr.stopRecording() without going through stop(), so
@@ -284,8 +284,9 @@ export function ContinuousCapture({
     setStructuring(true);
     onPhaseChange?.("processing");
     report(0);
-    const sessionId = `cap_${Date.now().toString(36)}`;
+    const sessionId = take.track.captureSessionId ?? `cap_${Date.now().toString(36)}`;
     try {
+      if (take.track.captureSessionId && !rr.mediaReviewed) throw new Error("Review the captured media for patient identifiers before processing.");
       let audioUrl: string | undefined;
       try {
         audioUrl = await uploadAudio(take.audio.base64, take.audio.mimeType);
@@ -305,7 +306,7 @@ export function ContinuousCapture({
       let video: { fileUri: string; mimeType: string } | undefined;
       if (agentic && take.videoBlob) {
         try {
-          video = await uploadTeachingVideo(take.videoBlob);
+          video = await uploadTeachingVideo(caseId, sessionId);
         } catch (err) {
           if (err instanceof AiUnavailableError) throw err;
           video = undefined;
@@ -417,6 +418,13 @@ export function ContinuousCapture({
     return () => onApi?.(null);
   }, [onApi]);
 
+  const adoptedRecovery = useRef("");
+  useEffect(() => {
+    if (!rr.recoveredSessionId || adoptedRecovery.current === rr.recoveredSessionId || rr.phase !== "idle" || !rr.track) return;
+    adoptedRecovery.current = rr.recoveredSessionId;
+    void finishRef.current({ track: rr.track, audio: rr.audio, frames: rr.frames, videoBlob: rr.playback?.videoBlob ?? null, playback: rr.playback ?? null });
+  }, [rr.recoveredSessionId, rr.phase, rr.track, rr.audio, rr.frames, rr.playback]);
+
   useEffect(() => {
     if (adoptExternalTakes && recording) speakSession.current = true;
   }, [adoptExternalTakes, recording]);
@@ -485,7 +493,7 @@ export function ContinuousCapture({
       const money = settledDisplay(finding.track ?? parentTrack);
       const seriesUID =
         finding.seriesInstanceUID || seriesInstanceUID || controls.current?.activeSeriesUID;
-      const sessionId = `cap_${Date.now().toString(36)}`;
+      const sessionId = parentTrack.captureSessionId ?? `cap_${Date.now().toString(36)}`;
       const snap = {
         sliceIndex: money.sliceIndex,
         ww: money.ww,
