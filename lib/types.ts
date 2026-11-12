@@ -1,3 +1,4 @@
+import type { CaptureManifest, JournalEntry, ViewerSnapshot } from "./journal/types";
 // Core data model for FlowRad Learn.
 //
 // Two layers coexist here:
@@ -130,6 +131,11 @@ export interface FindingAnchor {
  * segments this into multiple Findings (see StructuredSessionFinding).
  */
 export interface CaptureSession {
+  /** Durable capture state; older sessions have no journal. */
+  manifest?: CaptureManifest;
+  journal?: JournalEntry[];
+  audioOffsetMs?: number;
+  videoOffsetMs?: number;
   id: string;
   durationMs: number;
   track: RecordedTrack;
@@ -296,7 +302,15 @@ export interface NarrationSpan {
 export interface TeachingGuide {
   durationMs: number;
   /** Viewport to prime before the first beat. */
-  start: { sliceIndex: number; ww?: number; wc?: number };
+  start: { sliceIndex: number; ww?: number; wc?: number; snapshot?: ViewerSnapshot;
+    studyInstanceUID?: string; seriesInstanceUID?: string; sopInstanceUID?: string; frameNumber?: number;
+    zoom?: number; pan?: [number, number]; invert?: boolean; rotation?: number; flipH?: boolean; flipV?: boolean; layout?: string };
+  journal?: JournalEntry[];
+  captureSessionId?: string;
+  mediaManifest?: CaptureManifest;
+  /** First sample relative to this track. Negative for a child using untrimmed parent audio. */
+  audioOffsetMs?: number;
+  videoOffsetMs?: number;
   beats: TeachBeat[];
   /**
    * Set when this script was rebuilt from a `voice: "notes"` track.
@@ -312,7 +326,15 @@ export interface TeachingGuide {
 export interface RecordedTrack {
   durationMs: number;
   /** The starting viewer state (slice index + W/L) so replay can prime it. */
-  start: { sliceIndex: number; ww?: number; wc?: number };
+  start: { sliceIndex: number; ww?: number; wc?: number; snapshot?: ViewerSnapshot;
+    studyInstanceUID?: string; seriesInstanceUID?: string; sopInstanceUID?: string; frameNumber?: number;
+    zoom?: number; pan?: [number, number]; invert?: boolean; rotation?: number; flipH?: boolean; flipV?: boolean; layout?: string };
+  journal?: JournalEntry[];
+  captureSessionId?: string;
+  mediaManifest?: CaptureManifest;
+  /** First sample relative to this track. Negative for a child using untrimmed parent audio. */
+  audioOffsetMs?: number;
+  videoOffsetMs?: number;
   events: RecordedEvent[];
   /** URL/key of the teacher's narration audio (their real voice). Learners do not play this. */
   audioUrl?: string;

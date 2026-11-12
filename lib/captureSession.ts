@@ -131,7 +131,27 @@ export function sliceTrack(
     .map((e) => ({ ...e, t: e.t - start }));
   return {
     durationMs: Math.max(1, end - start),
-    start: { sliceIndex: sliceAtStart, ww, wc },
+    start: (() => {
+      const snapshot = [...(track.journal ?? [])].reverse().find(e => e.kind === "render" && e.t <= start)?.snapshot ?? track.start.snapshot;
+      const state = { ...track.start, sliceIndex: sliceAtStart, ww, wc };
+      for (const e of track.events) {
+        if (e.t > start) break;
+        if (e.type === "camera") { state.zoom = e.zoom; state.pan = [...e.pan]; }
+        if (e.type === "invert") state.invert = e.value;
+        if (e.type === "series") state.seriesInstanceUID = e.seriesInstanceUID;
+      }
+      if (snapshot) Object.assign(state, {
+        snapshot: structuredClone(snapshot), studyInstanceUID: snapshot.studyUID, seriesInstanceUID: snapshot.seriesUID,
+        sopInstanceUID: snapshot.sopUID, frameNumber: snapshot.frame, ww: snapshot.voi.ww, wc: snapshot.voi.wc,
+        zoom: snapshot.camera.zoom, pan: [...snapshot.camera.pan], invert: snapshot.invert,
+        rotation: snapshot.camera.rotation, flipH: snapshot.camera.flipH, flipV: snapshot.camera.flipV, layout: snapshot.layout,
+      });
+      return state;
+    })(),
+    ...(track.journal ? { journal: track.journal.filter(e => e.t >= start && e.t <= end).map(e => ({ ...structuredClone(e), t: e.t - start })) } : {}),
+    ...(track.captureSessionId ? { captureSessionId: track.captureSessionId } : {}),
+    audioOffsetMs: (track.audioOffsetMs ?? 0) - start,
+    ...(track.videoOffsetMs !== undefined ? { videoOffsetMs: track.videoOffsetMs - start } : {}),
     events,
     audioUrl: track.audioUrl,
   };

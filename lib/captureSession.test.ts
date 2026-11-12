@@ -49,3 +49,25 @@ test("sliceTrack rebases events into a window", () => {
   assert.ok(sub.events.every((e) => e.t >= 0 && e.t <= 2100));
   assert.equal(sub.events[0]?.type, "slice");
 });
+
+test("M4 child track retains full rendered identity/camera/layout and signed parent audio offset", () => {
+  const snapshot = {
+    studyUID: "study", seriesUID: "series", sopUID: "sop", frame: 3, viewportId: "primary", layout: "1x1",
+    voi: { ww: 800, wc: 100 }, invert: true,
+    camera: { zoom: 2, pan: [3, 4] as [number, number], rotation: 90, flipH: true, flipV: false },
+    orientation: { normal: [0, 0, 1], up: [0, -1, 0] }, renderSeq: 7,
+  };
+  const parent: RecordedTrack = { ...track, captureSessionId: "capture", audioOffsetMs: 250, videoOffsetMs: 100,
+    journal: [{ seq: 0, kind: "render", t: 400, renderSeq: 7, snapshot }, { seq: 1, kind: "input", t: 800 }] };
+  const sub = sliceTrack(parent, 500, 2600);
+  assert.deepEqual(sub.start.snapshot, snapshot);
+  assert.equal(sub.start.seriesInstanceUID, "series"); assert.equal(sub.start.sopInstanceUID, "sop");
+  assert.equal(sub.start.frameNumber, 3); assert.deepEqual(sub.start.pan, [3, 4]);
+  assert.equal(sub.start.zoom, 2); assert.equal(sub.start.invert, true); assert.equal(sub.start.rotation, 90);
+  assert.equal(sub.start.flipH, true); assert.equal(sub.start.layout, "1x1");
+  assert.equal(sub.audioOffsetMs, -250); assert.equal(sub.videoOffsetMs, -400);
+  assert.equal(sub.journal?.[0].t, 300);
+  assert.equal(sub.captureSessionId, "capture");
+  sub.start.snapshot!.camera.pan[0] = 99;
+  assert.equal(snapshot.camera.pan[0], 3, "child must not mutate parent evidence");
+});
