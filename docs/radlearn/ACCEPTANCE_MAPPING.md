@@ -85,3 +85,20 @@ and output, SEO origins and upstream-port-safe redirects.
 `e2e/radlearn/trusted-host.spec.ts` exercises real local robots/sitemap routes,
 landing/layout/viewer metadata and middleware with a synthetic Worker header.
 C1 does not implement or reassign T1–T10 or deferred capture/replay milestones.
+
+## C2 cutover acceptance
+
+`lib/c2Storage.test.ts` exercises runtime ADC without credential-file discovery,
+private GCS objects, fail-closed durable writes, case/receipt PHI allowlists,
+synthetic multipart STOW with matching SOP acknowledgement, QIDO, WADO and
+metadata feeding the existing GCS bundle builder. The resulting bundle preserves
+the source SOP identity; M2 approval/reorder tests still run unchanged.
+Anonymous proxy requests are tested directly and in
+`e2e/radlearn/dicomweb-auth.spec.ts`; no ADC/HTTP happens before authorization.
+The existing Orthanc and R2 compatibility tests remain. ENV_SCHEMA.md records
+the provisional bucket name and Admin confirmation requirement.
+
+**NO LIVE GCP CALL WAS MADE.** Cloud transports and tokens are mocked; local
+de-identification, encoding, storage serialization and route authorization are
+real. C2 does not reassign or claim completion of deferred T1–T10 capture/replay
+work, render acknowledgement, multi-marker extraction or M9 tools.

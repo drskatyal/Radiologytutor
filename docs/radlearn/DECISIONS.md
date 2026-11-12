@@ -94,3 +94,27 @@ workflows stay manual-only, commits carry `[skip ci]`, and zero Actions runs are
 verified after every push and merge. The current build agent still performs no
 push, PR or merge. Never #130/#252/#109. GCP Cloud Run / GCP Admin is the only
 deploy target; no grandfathering remains in force.
+
+## C2 — private GCS objects and Healthcare ingestion (12 November 2026)
+
+Extend the existing Healthcare/Orthanc facade and existing GCS bundle transport.
+Healthcare is the default; configured/explicit local Orthanc remains supported.
+Case import snapshots, upload receipts, audio and cached frames use private GCS;
+DICOM instances use Healthcare multipart STOW-RS after the existing de-id gate.
+Mongo remains authoritative for cases, versions and approvals. No grandfathering
+or approval restoration from object snapshots.
+
+The single provisional runtime bucket name is `GCS_OBJECT_BUCKET`, declared in
+`lib/envSchema.ts`; **GCP Admin must confirm the name, bucket and service-account
+access before cutover**. The name was not present in the supplied production
+list, so no existing bucket or IAM grant is assumed. See ENV_SCHEMA.md.
+Runtime ADC uses google-auth-library with the attached Compute service-account
+client, shared by GCS/Healthcare, with no credential-file discovery or injected
+tokens. No R2, Orthanc credentials, public object URLs or HMAC keys are needed
+in production. Legacy R2 remains optional outside Healthcare/Cloud Run.
+
+Durable writes fail closed without the bucket or on GCS errors. STOW success
+requires a matching SOP acknowledgement; partial responses are failures.
+Source deploy examples drop R2/HMAC wiring; no deployment/provisioning script
+was executed. **NO LIVE GCP CALL WAS MADE.** Gemini remains mocked, **live
+contract not verified**. All C1 merge/PR/Actions/deployment holds remain.

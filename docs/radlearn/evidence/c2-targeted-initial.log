@@ -1,0 +1,40 @@
+✔ C2 schema uses the agreed names and one provisional bucket; errors expose names only (2.887526ms)
+✔ C2 runtime ADC ignores injected tokens and credential-file discovery; failures/logs hide tokens (2.26954ms)
+✔ C2 private GCS JSON API supports binary objects, ranges, listing, deletion and misses with ADC (5.0574ms)
+✔ C2 GCS paginates and handles ignored Range; errors never echo upstream bodies (2.884904ms)
+✔ C2 audio and frame cache use GCS without R2, public URLs or ephemeral-disk fallback (9.216208ms)
+✔ C2 GCS transport failure is surfaced for durable audio and import snapshots (1.585073ms)
+✔ C2 case snapshots allowlist teaching content and reject non-placeholder identity before upload (1.029443ms)
+✖ C2 synthetic STOW then QIDO, metadata and WADO feed the existing GCS bundle path (74.354974ms)
+✔ C2 STOW rejects malformed input, partial success, missing SOP acknowledgement and unproven conflicts (2.434373ms)
+✔ C2 upload de-identifies synthetic Part-10 before Healthcare STOW and writes a private GCS receipt (370.882456ms)
+✔ C2 actual DICOMweb route denies anonymous GET/HEAD before ADC or any upstream request (1274.104753ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 10
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2246.759194
+
+✖ failing tests:
+
+test at lib/c2Storage.test.ts:2:11390
+✖ C2 synthetic STOW then QIDO, metadata and WADO feed the existing GCS bundle path (74.354974ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  undefined !== 1
+
+      at <anonymous> (/workspace/radlearn-build/lib/c2Storage.test.ts:165:12)
+      at async withMockCloud (/workspace/radlearn-build/lib/fixtures/cloudMock.ts:100:9)
+      at async TestContext.<anonymous> (/workspace/radlearn-build/lib/c2Storage.test.ts:149:3)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

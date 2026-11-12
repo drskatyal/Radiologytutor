@@ -28,7 +28,7 @@ browser  →  Cloud Run (Next.js, min instances ≥ 1, project radlearn-app, eur
 6. Upstream Accept on frames is the Cornerstone wadors value (`multipart/related; type=application/octet-stream; transfer-syntax=*`) unless the client already sent `multipart/related`. That skips Healthcare's transcode. The policy lives in `lib/dicomwebProxy.ts` (the same helper Teach uses so a prefetch 400 cannot be cached). Rendered thumbnails pass through jpeg/png when the client asked for one, otherwise `image/jpeg`.
 7. Successful frame responses are `Cache-Control: private, immutable` plus `Vary: Accept`. **4xx and 5xx are not cached.** A shared cache must not store these bytes.
 8. Cornerstone decodes in up to 4 web workers. The retrieval pool allows 16 interaction requests (the library default is 6). Prefetch (`components/student/prefetch.ts`) warms the slice the stack opens on and a short window around each finding (cap 18, concurrency 3) with that same Accept. It does not pull the first 32 slices of the series.
-9. Voice is a different path and does not touch the DICOM store. Opening the microphone on a case calls `POST /api/voice/realtime` (`requireSession`), then the browser opens Gemini Live (`GEMINI_LIVE_MODEL`, default `gemini-3.8-live`). The system instruction is the LiveTeachingPack prose. Drive anchors stay on tool calls, including `set_series`. Flash (`GEMINI_MODEL=gemini-3.8-flash`) compiles the teacher recording offline and never drives the student viewer. The key never goes to the client. TTS for authored guide playback stays on `gemini-2.5-flash-preview-tts`.
+9. Voice is a different path and does not touch the DICOM store. Opening the microphone on a case calls `POST /api/voice/realtime` (`requireSession`), then the browser opens Gemini Live (`GEMINI_LIVE_MODEL`, default `gemini-3.8-live`). The system instruction is the LiveTeachingPack prose. Drive anchors stay on tool calls, including `set_series`. Flash (`GEMINI_MODEL=gemini-3.8-flash`) compiles the teacher recording offline and never drives the student viewer. The key never goes to the client. TTS for authored guide playback uses `gemini-3.8-flash-tts` through Interactions (NOT VERIFIED LIVE).
 
 Upload (author), still one gate:
 
@@ -84,9 +84,9 @@ The browser does not hold a Google token for the DICOM store, and it does not re
 
 - **Learners and teachers:** Better Auth session on `/api/dicomweb` and `/api/upload`, then the org-ownership check.
 - **Cloud Run → DICOM store:** the runtime service account (`radlearn-app@radlearn-app.iam.gserviceaccount.com`) with `roles/healthcare.dicomEditor` **on that store**. That role includes `dicomWebRead` and `dicomWebWrite`. It is not `roles/healthcare.datasetAdmin`, and it is not `allUsers`.
-- **Token:** the metadata server, cached in `lib/gcpAuth.ts` until a minute before expiry. `GOOGLE_ACCESS_TOKEN` is only for a laptop smoke test. Leave it unset on Cloud Run.
+- **Token:** runtime ADC via google-auth-library in `lib/gcpAuth.ts`, using the attached service-account Compute client. No credential-file discovery or injected access-token override. Refresh is managed by the library.
 - **Cloud Run itself** is `--allow-unauthenticated` because Better Auth is the gate. The DICOM store has no public invoker.
-- **Secrets:** `GEMINI_API_KEY`, `BETTER_AUTH_SECRET`, and `MONGODB_URI` are required versions. Google OAuth, ElevenLabs, and the GCS HMAC are attached only when a version exists.
+- **Secrets:** see [the C2 environment contract](radlearn/ENV_SCHEMA.md). Worker authentication also requires `TRUSTED_PROXY_SECRET`. Google OAuth and ElevenLabs are optional features; object storage uses ADC, with no HMAC secrets.
 
 ## Region, warmth, cache
 
@@ -105,7 +105,7 @@ Gemini (`generativelanguage.googleapis.com`) is a global API. Same-region Cloud 
 | Startup probe | `GET /` | Cloud Run will not send traffic until the process answers |
 | VPC egress | `all-traffic` until Atlas PSC, then `private-ranges-only` | Atlas IP allowlist vs DICOM not hairpinning through NAT |
 | Public CDN | no | Frames are `Cache-Control: private`. Converted series can go through Cloud CDN with **signed URL prefixes** only: see docs/DICOM_CDN_REPORT.md |
-| Object cache | optional, same region | `R2_ENDPOINT=https://storage.googleapis.com` reuses `lib/r2.ts`. Hedged read (see 5); `X-Cache` says HIT/MISS |
+| Object cache | private GCS, same region | Shares the import/media bucket through `lib/gcs.ts` and ADC. Hedged read (see 5); `X-Cache` says HIT/MISS |
 
 Raise the DICOM store read quota before a class. A room of students scrolling is a lot of WADO-RS. HTTP 429 is the symptom. Google's conformance statement documents 429; the numeric quota is the project's, so confirm it in Cloud Console rather than guessing a limit here.
 
@@ -125,7 +125,7 @@ Raise the DICOM store read quota before a class. A room of students scrolling is
 | `app/api/upload/route.ts` | De-id, then store. If QIDO lags STOW, the batch still returns the UIDs parsed from the file |
 | `components/CornerstoneViewer.tsx` | Retrieval pool 16 / 8 / 8 |
 | `components/student/prefetch.ts` | Tip warmer: open slice and finding windows, Cornerstone Accept |
-| `lib/r2.ts` | `R2_ENDPOINT` optional. Unset, the client is still Cloudflare R2 |
+| `lib/gcs.ts`, `lib/objectStorage.ts` | Private JSON API storage with runtime ADC. R2 is optional legacy outside Healthcare/Cloud Run |
 
 `orthancConfigured()` is true when the **active** archive is configured. Admin status and upload keep the existing `ORTHANC_NOT_CONFIGURED` code so the UI does not change.
 
@@ -143,11 +143,11 @@ Project, region, and model below are the deploy defaults. Secret **values** are 
 | `HEALTHCARE_DATASET` | `radlearn` | Plain env |
 | `HEALTHCARE_DICOM_STORE` | `radlearn-dicom` | Plain env |
 | `HEALTHCARE_DICOMWEB_URL` | optional full root | Overrides the four ids. No trailing slash |
-| `GOOGLE_ACCESS_TOKEN` | unset | Metadata server on Cloud Run |
+| Runtime ADC | attached service account | No access-token env override or credential files |
 | `GEMINI_API_KEY` | secret `GEMINI_API_KEY` | STT, tutor, structure, grade, Gemini TTS, Live mint |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Plain env. Stable GA. Code default matches. `deploy-app.sh` keeps a live value when the shell variable is unset |
 | `GEMINI_TIMEOUT_MS` | `45000` | Plain env |
-| `GEMINI_TTS_MODEL` | `gemini-2.5-flash-preview-tts` | Plain env. Tip id, unchanged |
+| `GEMINI_TTS_MODEL` | `gemini-3.8-flash-tts` | Plain env. Interactions TTS; NOT VERIFIED LIVE |
 | `GEMINI_TTS_VOICE` | `Kore` | Plain env |
 | `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Plain env. Student mic session. The script refuses `gemini-live-2.5-flash-native-audio` unless `ALLOW_STALE_GEMINI_LIVE_MODEL=1` |
 | `VOICE_LATENCY_BUDGET_MS` | `1200` | Plain env |
@@ -160,7 +160,7 @@ Project, region, and model below are the deploy defaults. Secret **values** are 
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | secrets, optional | Redirect: `{BETTER_AUTH_URL}/api/auth/callback/google` |
 | `DEMO_AUTH_ENABLED` | `1` | Plain env. Teacher/Student buttons on the public service. Unset in the shell keeps the live value; it is not forced back to `0` |
 | `DEMO_AUTH_MAX_ROLE` | `author` | Plain env. Teacher demo can open the author role. Same preserve rule as `DEMO_AUTH_ENABLED` |
-| `R2_*` | optional | Unset: no object cache, reads go to the DICOM store. GCS: `R2_ENDPOINT=https://storage.googleapis.com`, `R2_BUCKET`, HMAC in `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`. Leave `R2_PUBLIC_BASE_URL` unset |
+| Shared GCS bucket | required for durable imports/media | Provisional runtime name in [ENV_SCHEMA.md](radlearn/ENV_SCHEMA.md); GCP Admin confirmation required. R2 is not set in production |
 | `FRAME_CACHE_WAIT_MS` | `25` | `0` skips the cache read |
 | `DATA_DIR` | unset | Do not rely on the container filesystem |
 | `VPC_EGRESS` | `all-traffic` | `private-ranges-only` after Atlas PSC |
@@ -237,11 +237,11 @@ docker compose -f docker-compose.orthanc.yml up -d
 4. Add secret versions for `GEMINI_API_KEY`, `BETTER_AUTH_SECRET`, and `MONGODB_URI`. Add Google OAuth and ElevenLabs versions if you use them.
 5. Build and `deploy/gcp/deploy-app.sh`. Confirm `BETTER_AUTH_URL` is the service URL and `GEMINI_MODEL` is `gemini-3.8-flash`. Set the Google OAuth redirect to `{BETTER_AUTH_URL}/api/auth/callback/google`.
 6. Re-import studies. The Fly volume does not move. `orthancStudyId` values already in Mongo are Orthanc hashes; on this backend the app looks up by StudyInstanceUID (`imagingStudyKey`). New uploads store the UID in that field.
-7. Smoke test as a student: open a case, scroll a series, ask the tutor a question. First frame should not wait on a cold start. A second open of the same frame should be fast (browser cache, or `x-flowrad-cache: r2` if the bucket is configured).
+7. Smoke test as a student: open a case, scroll a series, ask the tutor a question. First frame should not wait on a cold start. A second open of the same frame should be fast (browser cache, or `X-Cache: HIT` with `X-Cache-Tier: object` if the bucket is configured).
 8. Smoke test as an author: upload one already-de-identified instance. A file with a real patient name must be refused. Confirm the instance is in the store (`gcloud healthcare dicom-stores` / a QIDO from the app, not from the public internet). Confirm a case save lands in Atlas, not in the container.
 9. Before a class, set `MIN_INSTANCES=2` and check the DICOM read quota.
 10. Leave Fly running until steps 7 and 8 pass. Then scale the Fly apps down. Do not delete the Orthanc volume until you have opened every published case on Cloud Run.
-11. Optional: create an HMAC key for `radlearn-app`, store it as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, set `FRAME_BUCKET` (for example `radlearn-app-frames`), redeploy. Frames stay private.
+11. Before a separately authorized cutover, GCP Admin must confirm the shared private bucket name/configuration and attached service-account access from [ENV_SCHEMA.md](radlearn/ENV_SCHEMA.md). No HMAC keys or R2 runtime variables are needed. No provisioning or deployment was performed in C2.
 12. Optional later: Atlas Private Service Connect in `radlearn-run`, then `VPC_EGRESS=private-ranges-only`.
 
 ## Out of scope
