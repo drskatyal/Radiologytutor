@@ -1,0 +1,29 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 17 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 approval.spec.ts:7:5 › author approves two exact findings; editing one invalidates its badge and tutor retrieval (2.2s)
+  ✓  2 approved-tools.spec.ts:9:5 › approved tool route requires a session and never reveals its catalog anonymously (20ms)
+  ✓  3 approved-tools.spec.ts:17:5 › real routes expose approved IDs and metadata bounds, reject forged geometry, and invalidate old commands after edit (1.2s)
+  ✓  4 capture-recovery.spec.ts:4:5 › T4 crash recovery retains acknowledged journal/media and sends missing chunks only (17.2s)
+  ✓  5 capture-recovery.spec.ts:48:5 › capture routes require a session; PUT receipts are idempotent and conflicting bytes return 409 (1.4s)
+  ✓  6 dicomweb-auth.spec.ts:3:5 › DICOMweb requires a session before QIDO, metadata or pixel access (27ms)
+  ✓  7 exam-leak.spec.ts:3:5 › exam HTML, RSC, JSON, socket frames and initial viewport contain no finding hints (2.1s)
+  ✓  8 healthz.spec.ts:3:5 › healthz is public liveness with no environment or service details (12ms)
+  ✓  9 mic-retry.spec.ts:4:5 › T5 microphone denial shows an actionable error; a second take captures fake audio on a fresh clock (4.8s)
+  ✓  10 render-ack.spec.ts:4:5 › P0-3/T10 delayed real renders timestamp the displayed identity; restore waits, acknowledges or times out (12.4s)
+  ✓  11 replay-first-frame.spec.ts:4:5 › M4 first frame keeps its SOP when archive opening offset differs from the completed stack order (1.6s)
+  ✓  12 replay-first-frame.spec.ts:29:5 › M4/T3 completed stack missing the opening SOP fails closed instead of retaining its archive index (1.6s)
+  ✓  13 synthetic.spec.ts:3:5 › synthetic study loads real Cornerstone pixels in the case viewer (1.2s)
+  ✓  14 trusted-host.spec.ts:7:5 › Worker-authenticated robots and sitemap use the forwarded public origin (25ms)
+  ✓  15 trusted-host.spec.ts:17:5 › unsigned, wrong-secret and malformed-host requests use configured localhost SEO (35ms)
+  ✓  16 trusted-host.spec.ts:33:5 › landing, layout and viewer metadata use the authenticated or configured origin (63ms)
+  ✓  17 trusted-host.spec.ts:47:5 › middleware uses Worker host and never redirects back to the upstream origin (26ms)
+
+  Slow test file: capture-recovery.spec.ts (18.6s)
+  Consider splitting slow test files to speed up parallel execution
+  17 passed (50.8s)

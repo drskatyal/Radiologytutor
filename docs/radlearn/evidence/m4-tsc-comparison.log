@@ -1,0 +1,5 @@
+Baseline diagnostics: 279
+M4 diagnostics: 279
+New diagnostics: 0
+Removed diagnostics: 0
+Normalization: source line/column and string-literal union ordering only.

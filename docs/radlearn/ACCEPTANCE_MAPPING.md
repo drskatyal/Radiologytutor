@@ -8,13 +8,13 @@ merge, deployment, new remote data, or implementation of the deferred milestones
 | T1 order independence | M0 `lib/synthetic.test.ts`, shuffled synthetic archive fixture; M2 `lib/findingAcceptance.test.ts`; M7 planned `e2e/radlearn/anchor-order.spec.ts` | Archive and shuffled order resolve the approved finding to the same SOP and frame. UI navigation must do the same. |
 | T2 no silent fallback | M2 `lib/findingAcceptance.test.ts`; M7 planned `e2e/radlearn/anchor-incomplete.spec.ts` | Removing the SOP makes a finding index-only/incomplete and not approvable; an index never repairs identity. |
 | T3 missing instance | M2 `lib/findingAcceptance.test.ts`; M7/M8 planned `e2e/radlearn/replay-missing-instance.spec.ts` | Missing named SOP/frame is unresolved. Never substitute the nearest slice. |
-| T4 crash recovery | M4 planned `e2e/radlearn/capture-recovery.spec.ts` | Recovery resumes acknowledged media and journal chunks without loss or duplication. |
-| T5 mic failure | M4 planned `lib/journal/recorder.test.ts`, `e2e/radlearn/mic-retry.spec.ts` | Clean permission error; second start succeeds with a new session clock. |
-| T6 audio gap | M4 planned `lib/journal/recorder.test.ts`; M8 planned `e2e/radlearn/replay-clock.spec.ts` | Detect discontinuity and reproduce offsets within explicit tolerance. |
+| T4 crash recovery | M4 `e2e/radlearn/capture-recovery.spec.ts` | Recovery resumes acknowledged media and journal chunks without loss or duplication. |
+| T5 mic failure | M4 `lib/journal/recorder.test.ts`, `e2e/radlearn/mic-retry.spec.ts` | Clean permission error; second start succeeds with a new session clock. |
+| T6 audio gap | M4 `lib/journal/recorder.test.ts`; M8 planned `e2e/radlearn/replay-clock.spec.ts` | Detect discontinuity and reproduce offsets within explicit tolerance. |
 | T7 three silent markers | M5 planned `lib/anchors/reconcile.test.ts`, `e2e/radlearn/markers.spec.ts` | Three retained markers produce three candidates without narration; no production cardinality change in M0–M2. |
 | T8 measurement round-trip | M5 planned `lib/anchors/geometry.test.ts`; M8 planned `e2e/radlearn/replay-geometry.spec.ts` | Pixel/patient coordinates round-trip; record PixelSpacing/ImagerPixelSpacing/uncalibrated provenance. |
 | T9 invalidation | M2 `lib/findingAcceptance.test.ts`, `e2e/radlearn/approval.spec.ts` | Any version contentHash change invalidates approval. Text, marker/coordinates, measurement, view state, rubric, instance-set fingerprint, ordering algorithm, model and prompt versions are covered. Pure reorder with the same SOP/frame and instance set revalidates, preserves approval, and is logged. |
-| T10 delayed image load | M4 planned `lib/journal/match.test.ts`, `e2e/radlearn/render-ack.spec.ts`; M8 planned `e2e/radlearn/replay-delay.spec.ts` | Replay waits for the matching render acknowledgement, then resumes or times out; never continues unconfirmed. |
+| T10 delayed image load | M4 `lib/journal/match.test.ts`, `e2e/radlearn/render-ack.spec.ts`; M8 planned `e2e/radlearn/replay-delay.spec.ts` | Replay waits for the matching render acknowledgement, then resumes or times out; never continues unconfirmed. |
 
 Image identity is Study/Series/SOP Instance UID plus a one-based frame, never a
 slice index. M2 has immutable version and approval records; M4 must add render
@@ -37,13 +37,14 @@ pass. M0–M2 alone do not claim capture/replay completion.
   pass the same guard. Existing exam client exposes no provider microphone path.
 - P0-1/M2: `lib/findingAcceptance.test.ts` requires Study, Series, SOP and frame
   independently. Index-only rows carry `legacy_index`/incomplete badge data.
-- P0-3/M4: planned `lib/journal/recorder.test.ts` asserts that timestamps follow
+- P0-3/M4: `lib/journal/recorder.test.ts` asserts that timestamps follow
   the matching render acknowledgement, including delayed first frame and layout.
-- M4/M8: planned `lib/viewerLoad.identity.test.ts` and
+- M4: `lib/viewerLoad.identity.test.ts` and
   `e2e/radlearn/replay-first-frame.spec.ts` must cover `viewerLoad` retaining an
   old index when a SOP is absent and progressiveStack's archive-offset versus
-  sorted-stack first-frame mismatch. M2's resolver fails closed; the viewer
-  loading/replay integration is explicitly deferred.
+  sorted-stack first-frame mismatch. M4 now fails closed in the viewer loader and
+  resolves the early SOP/frame against the final order; M8 timed replay remains
+  deferred. The tests include real viewer reorder and missing-opening-SOP paths.
 - P0-4 pulled forward from M9: implemented `lib/harness/approvedTools.test.ts`,
   caller updates in `lib/gemini.test.ts`, `lib/liveTeachingPack.test.ts`,
   `lib/setSeries.test.ts`, and `e2e/radlearn/approved-tools.spec.ts`.
@@ -107,7 +108,7 @@ the source SOP identity; M2 approval/reorder tests still run unchanged.
 Anonymous proxy requests are tested directly and in
 `e2e/radlearn/dicomweb-auth.spec.ts`; no ADC/HTTP happens before authorization.
 The existing Orthanc and R2 compatibility tests remain. ENV_SCHEMA.md records
-the provisional bucket name and Admin confirmation requirement.
+the unchanged bucket name and Radlearn/GCP Admin’s reported confirmation (12 Nov 2026); this checkout did not verify it.
 
 **NO LIVE GCP CALL WAS MADE.** Cloud transports and tokens are mocked; local
 de-identification, encoding, storage serialization and route authorization are
@@ -129,3 +130,30 @@ fixture runners use their separate direct Next command with JSON/mock Orthanc.
 No T1–T10 or P0 capture/replay test moves into Step B. All prior milestones'
 unit/browser checks rerun; runtime dependency availability and deployed image
 health remain GCP Admin's separate verification after the hold is released.
+
+## M4 capture acceptance
+
+Implemented T4/T5/T6 capture portions and T10/P0-3 renderer portions:
+`lib/journal/{match,viewer,recorder,storage}.test.ts`,
+`lib/viewerLoad.identity.test.ts`, the child-track regression in
+`lib/captureSession.test.ts`, and browser specs
+`e2e/radlearn/{capture-recovery,mic-retry,render-ack,replay-first-frame}.spec.ts`.
+The browser uses real Cornerstone renders, IndexedDB transactions, local
+authenticated Next routes, local durable objects, canvas video and a fake mic
+playing the synthetic WAV. Delays affect real rendering; no IMAGE_RENDERED is
+forged. Recovery sends missing chunks after reconciling server receipts and
+retains the exact acknowledged journal prefix. A marker records image pixels
+on the displayed SOP/frame; annotation/measurement calibration is explicitly
+unresolved until M5.
+
+T6 detects delayed delivery and pause/resume with explicit estimated timing.
+T10 verifies the request/ack boundary and timeout, including Restore captured
+view; the full timed replay scheduler and ≤100 ms audio drift acceptance are
+still M8 tests, not claimed here. Crash recovery finalizes the retained take
+with an explicit interruption and unknown unretained tail, rather than making
+up elapsed time from a dead browser clock. A new take receives a new UUID/clock.
+The one CT series / one take / one finding end-to-end target remains binding
+through the later extraction, approval UI and replay milestones.
+
+See JOURNAL_CAPTURE.md for durability, timing limits, PHI review, model upload
+gates, and the exact acceptance boundaries. No M5+ implementation is implied.
