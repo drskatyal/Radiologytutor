@@ -85,7 +85,7 @@ variable "app_image" {
 }
 
 variable "public_url" {
-  description = "Public HTTPS origin for BETTER_AUTH_URL. Required before first boot when deploy_app is true."
+  description = "Public HTTPS origin for BETTER_AUTH_URL. Production must use https://learn.flowrad.ai, never a *.workers.dev preview or run.app URL. Required before first boot when deploy_app is true."
   type        = string
   default     = ""
 }

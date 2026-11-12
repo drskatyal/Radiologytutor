@@ -69,14 +69,24 @@ DICOMweb adapter; no alternate endpoint variable or PACS alias was introduced.
 Local Orthanc uses the existing optional `ORTHANC_*` settings. Desktop DIMSE
 nodes are local desktop configuration, not Cloud Run environment variables.
 
-The one provisional plain name remains **GCS_OBJECT_BUCKET**. GCP Admin must
-confirm the name, private bucket and attached service-account access before
-cutover. No real bucket name is invented. Public `BETTER_AUTH_URL` is required
-before first boot; it can no longer be derived after a failing revision starts.
+The bucket env name remains **GCS_OBJECT_BUCKET**. Radlearn/GCP Admin reported
+its adoption as `radlearn-app-case-media` on 12 November 2026; this checkout made
+no GCP call to verify that report. See ENV_SCHEMA.md for the reported private
+bucket, location and service-account grant.
+
+Production **must set `BETTER_AUTH_URL=https://learn.flowrad.ai`**, the public
+front door. Never use a `*.workers.dev` preview or the Cloud Run `run.app` URL.
+It remains required before first boot; the startup check is not relaxed and the
+value must not be derived after a failing revision starts. Root `.env.example`
+retains `http://localhost:3000` for local development only.
 Production does not require or set `R2_*`, `ORTHANC_*`, `NEXT_PUBLIC_APP_URL`,
 access-token overrides or credential-file paths.
 
 ## GCP Admin procedure after a separate authorization
+
+GCP Admin will deploy a later SHA that includes Step B and later milestones,
+and point startup/liveness probes at `/api/healthz`. This branch does not deploy;
+these documentation/example edits do not change any live service.
 
 These are handoff steps, not executed commands. All deployment identifiers below
 are placeholders; the established resource shape is documented in ENV_SCHEMA.md.

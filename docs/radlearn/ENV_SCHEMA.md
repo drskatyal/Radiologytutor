@@ -30,6 +30,12 @@ FRAME_CACHE_WAIT_MS can be zero. Demo flags are 0/1 and student/author. Google
 OAuth ID/secret must be supplied together. Validation checks syntax/presence,
 not network reachability, IAM permissions or secret correctness.
 
+Production **must set `BETTER_AUTH_URL=https://learn.flowrad.ai`**, the public
+front door used for authentication callbacks and origin fallback. Never use a
+`*.workers.dev` preview or a Cloud Run `run.app` URL for this production setting.
+The required-at-startup check remains unchanged. Root `.env.example` keeps
+`http://localhost:3000` for local development only.
+
 The PACS variables inherited from the existing implementation are the Healthcare
 rows below and optional local `ORTHANC_*` compatibility settings. No separate
 Step A web-PACS schema or additional PACS env names exist on this checkout;
@@ -42,7 +48,7 @@ none are invented. Desktop DIMSE node settings remain desktop-local. See
 | `DICOMWEB_BACKEND` | Plain | Yes, healthcare |
 | `HEALTHCARE_PROJECT`, `HEALTHCARE_LOCATION`, `HEALTHCARE_DATASET`, `HEALTHCARE_DICOM_STORE` | Plain | Yes: radlearn-app, europe-west2, radlearn, radlearn-dicom respectively |
 | `MONGODB_DB` | Plain | Yes; Mongo remains the authoritative case/approval store |
-| `BETTER_AUTH_URL` | Plain | Yes; public origin fallback and auth callbacks |
+| `BETTER_AUTH_URL` | Plain | Yes; `https://learn.flowrad.ai` in production, never a workers.dev preview or run.app upstream |
 | `GCS_OBJECT_BUCKET` | Plain | Yes for durable Healthcare imports/media; `radlearn-app-case-media` confirmed/adopted as REPORTED by Radlearn/GCP Admin, not verified by this checkout |
 | `GEMINI_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`, `GEMINI_LIVE_MODEL` | Plain | Optional overrides of the documented adapter defaults |
 | `GEMINI_TIMEOUT_MS`, `VOICE_LATENCY_BUDGET_MS`, `FRAME_CACHE_WAIT_MS` | Plain | Optional deadline/cache defaults |
