@@ -111,10 +111,16 @@ updates optimistically with rollback on error and a toast on success/failure.
 - `npm run build` must pass before any commit. `npm test` for lib logic (151 tests).
 - Do NOT run with `--turbo` (the Cornerstone webpack/wasm config needs the default builder).
 - Commit in coherent units with clear messages. Keep the working tree clean.
-- Integration branch: `claude/epic-noether-3nvcbf`. Feature work branches off it and
-  opens a single draft PR back into it.
-- Railway: app service auto-deploys this branch; Orthanc is a separate service; never push a
-  broken build (it breaks the live app).
+- GCP Cloud Run, owned by GCP Admin, is the only deploy target. See
+  `docs/radlearn/CLOUD_RUN.md` and the existing `deploy/gcp/` files. Production
+  uses Healthcare DICOMweb and private GCS via runtime ADC; Orthanc is a local option.
+- Build work stays on `codex/radlearn-strategy-build`, based on the pinned integration
+  SHA. No agent pushes, PRs, merges, Actions runs or deployments. Every commit ends
+  with ` [skip ci]`; local unit/build/Playwright checks are required.
+- Railway config has been removed from this branch. This does not disconnect its
+  external GitHub integration or previews. PRs and merges remain held until the
+  orchestrator confirms both are disconnected. Never touch the integration branch,
+  main or #130/#252/#109. Historical deployment behavior is not authorization.
 
 ## 4a. SaaS shape, data model & performance
 

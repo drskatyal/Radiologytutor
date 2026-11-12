@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build (unless SKIP_BUILD=1) and deploy the Next.js app to Cloud Run.
 # The DICOM store, VPC, and Cloud NAT must already exist (deploy/gcp/setup.sh).
-# Required secret versions: GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI.
+# Required secret versions: GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI,
+# TRUSTED_PROXY_SECRET. Plain runtime settings must satisfy ENV_SCHEMA.md.
 # Cloud Run refuses to boot the JSON store: MONGODB_URI is mandatory.
 #
 # Env policy — do not hardcode a downgrade:
@@ -37,7 +38,7 @@ MAX_INSTANCES=${MAX_INSTANCES:-10}
 MONGODB_DB=${MONGODB_DB:-radlearn}
 IMAGE=${IMAGE:-"${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/app:latest"}
 
-for name in GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI; do
+for name in GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI TRUSTED_PROXY_SECRET; do
   if ! gcloud secrets versions describe latest --secret="${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     echo "Missing secret version: ${name}. Add it before deploy (docs/GCP_CLOUD_RUN.md)." >&2
     exit 1
@@ -87,9 +88,12 @@ ENV_VARS+=",ELEVENLABS_TTS_MODEL=$(env_get ELEVENLABS_TTS_MODEL eleven_multiling
 ENV_VARS+=",FRAME_CACHE_WAIT_MS=$(env_get FRAME_CACHE_WAIT_MS 25)"
 ENV_VARS+=",DEMO_AUTH_ENABLED=$(env_get DEMO_AUTH_ENABLED 1)"
 ENV_VARS+=",DEMO_AUTH_MAX_ROLE=$(env_get DEMO_AUTH_MAX_ROLE author)"
-if [[ -n "${BETTER_AUTH_URL:-}" ]]; then
-  ENV_VARS+=",BETTER_AUTH_URL=${BETTER_AUTH_URL}"
+PUBLIC_URL=$(env_get BETTER_AUTH_URL "")
+if [[ -z "${PUBLIC_URL}" ]]; then
+  echo "Missing required variable: BETTER_AUTH_URL. Configure the public origin before first boot (docs/radlearn/ENV_SCHEMA.md)." >&2
+  exit 1
 fi
+ENV_VARS+=",BETTER_AUTH_URL=${PUBLIC_URL}"
 # Private object bucket configuration is administered separately; see ENV_SCHEMA.md.
 # No R2/HMAC variables are needed by Cloud Run. Unmentioned env is preserved.
 
@@ -134,7 +138,7 @@ gcloud run deploy "${SERVICE}" \
   --ingress=all \
   --allow-unauthenticated \
   --labels=app=radlearn,role=web \
-  --startup-probe="initialDelaySeconds=5,timeoutSeconds=3,periodSeconds=5,failureThreshold=24,httpGet.port=8080,httpGet.path=/" \
+  --startup-probe="initialDelaySeconds=5,timeoutSeconds=3,periodSeconds=5,failureThreshold=24,httpGet.port=8080,httpGet.path=/api/healthz" \
   --update-env-vars="${ENV_VARS}" \
   --set-secrets="${SECRETS}"
 
@@ -142,14 +146,7 @@ URL=$(gcloud run services describe "${SERVICE}" \
   --project="${PROJECT_ID}" --region="${REGION}" \
   --format='value(status.url)')
 
-# First boot only. An existing BETTER_AUTH_URL (custom domain or a previous
-# deploy) is left alone — filling it from status.url would rewrite it.
-if [[ -z "${BETTER_AUTH_URL:-}" && -z "${EXISTING[BETTER_AUTH_URL]-}" && -n "${URL}" ]]; then
-  gcloud run services update "${SERVICE}" \
-    --project="${PROJECT_ID}" \
-    --region="${REGION}" \
-    --update-env-vars="BETTER_AUTH_URL=${URL}"
-fi
+# BETTER_AUTH_URL was validated before deployment; never derive it after boot.
 
 echo
 echo "App: ${URL:-"(url pending)"}"

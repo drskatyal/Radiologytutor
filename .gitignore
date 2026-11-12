@@ -27,7 +27,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# runtime case store (seeded from /seed; persisted via Railway Volume)
+# local-only runtime case store (seeded from /seed; Cloud Run requires MongoDB)
 /data/*
 !/data/.gitkeep
 

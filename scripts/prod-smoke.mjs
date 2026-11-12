@@ -12,11 +12,11 @@
 // complete chunk (it parses, and registers the chunk id its name says).
 //
 // --expect-commit polls /api/version until the deployed commit is that commit
-// or a later one that contains it (Railway may go straight to a newer push),
+// or a later one that contains it (a deployed revision may include a newer commit),
 // up to --wait-deploy-s seconds. Containment is checked with git in the
 // checkout, fetching --deploy-branch (default: the integration branch). If
 // production is on an older commit and every file changed since is one the
-// site does not serve (desktop/, docs/, CI, tests, these scripts), Railway has
+// site does not serve (desktop/, docs/, CI, tests, these scripts), the deployment pipeline has
 // nothing to deploy and the check passes at once.
 //
 // Writes a Markdown report to stdout (and $GITHUB_STEP_SUMMARY when set);
@@ -78,7 +78,7 @@ function containsExpected(commit) {
   }
   try {
     // Production is on an older commit and everything since changes files the
-    // site does not serve: Railway skips such pushes, so there is nothing to wait for.
+    // site does not serve: the deployment pipeline may skip such pushes, so there is nothing to wait for.
     git("merge-base", "--is-ancestor", deployedSha, expectCommit);
     const changed = git("diff", "--name-only", deployedSha, expectCommit).split("\n").filter(Boolean);
     return changed.length > 0 && changed.every((file) => UNSERVED.test(file));

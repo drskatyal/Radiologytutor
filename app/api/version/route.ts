@@ -11,8 +11,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return NextResponse.json(
     {
-      commit: process.env.GIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || null,
-      revision: process.env.K_REVISION || process.env.RAILWAY_DEPLOYMENT_ID || null,
+      commit: process.env.GIT_SHA || null,
+      revision: process.env.K_REVISION || null,
       service: process.env.K_SERVICE || null,
     },
     { headers: { "Cache-Control": "no-store" } }

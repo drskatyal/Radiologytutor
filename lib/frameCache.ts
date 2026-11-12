@@ -3,7 +3,7 @@
 //
 //   L1  in-process LRU, bounded by bytes (FRAME_MEMORY_CACHE_MB, default 64 — sized for a small container).
 //       Zero-latency, per instance. On by default — a single app instance
-//       (Railway) gets repeat-open hits even with no bucket configured.
+//       gets repeat-open hits even with no bucket configured.
 //   L2  private GCS via runtime ADC (R2 is optional legacy) when configured. Shared
 //       across instances and restarts.
 //

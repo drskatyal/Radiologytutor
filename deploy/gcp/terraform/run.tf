@@ -1,5 +1,5 @@
 # Optional. Prefer deploy/gcp/deploy-app.sh, which refuses to roll a revision
-# until GEMINI_API_KEY, BETTER_AUTH_SECRET, and MONGODB_URI have versions.
+# until GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI and TRUSTED_PROXY_SECRET have versions.
 # This resource assumes those versions already exist.
 
 locals {
@@ -33,6 +33,10 @@ resource "google_cloud_run_v2_service" "app" {
     precondition {
       condition     = var.app_image != ""
       error_message = "Set app_image when deploy_app is true."
+    }
+    precondition {
+      condition     = var.public_url != ""
+      error_message = "Set public_url before first boot; production requires BETTER_AUTH_URL."
     }
   }
 
@@ -129,7 +133,7 @@ resource "google_cloud_run_v2_service" "app" {
         period_seconds        = 5
         failure_threshold     = 24
         http_get {
-          path = "/"
+          path = "/api/healthz"
           port = 8080
         }
       }

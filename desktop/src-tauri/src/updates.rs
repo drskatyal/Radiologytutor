@@ -33,7 +33,7 @@ use tauri_plugin_updater::UpdaterExt;
 /// Overridable at build time for a staging channel.
 pub const CHANNEL_BASE: &str = match option_env!("FLOWRAD_UPDATE_BASE") {
     Some(v) => v,
-    None => "https://radiologytutor-production.up.railway.app",
+    None => "https://learn.flowrad.ai",
 };
 /// Fallback when the site is down: GitHub's "latest published release" asset.
 pub const GITHUB_LATEST: &str = "https://github.com/drskatyal/Radiologytutor/releases/latest/download/latest.json";

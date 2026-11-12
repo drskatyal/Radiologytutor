@@ -3,7 +3,8 @@
 // that loaded the old build can still fetch its lazy chunks after a deploy
 // (otherwise: "Loading chunk N failed" the moment the old container is gone).
 //
-// Runs in the Docker build after `npm run build`:
+// Historical optional maintenance tool; no longer run by the Cloud Run image
+// build. Remote asset retrieval needs separate explicit authorization:
 //
 //   node scripts/carry-static.mjs [--from https://live.example.com] [--keep-days 7]
 //

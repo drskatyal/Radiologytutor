@@ -85,7 +85,7 @@ variable "app_image" {
 }
 
 variable "public_url" {
-  description = "https://…run.app origin for BETTER_AUTH_URL. Empty until the first deploy prints the URL."
+  description = "Public HTTPS origin for BETTER_AUTH_URL. Required before first boot when deploy_app is true."
   type        = string
   default     = ""
 }

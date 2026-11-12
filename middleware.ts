@@ -13,7 +13,7 @@
 //      sanity cap for the same reason, with no request-rate limit.
 //
 // Deliberately simple: a fixed-window counter in module memory. That is correct
-// for a single long-lived server (the Fly/Railway deployment) and degrades to
+// for a single server process (each Cloud Run instance) and degrades to
 // per-instance limits if we ever scale horizontally — at which point this moves
 // behind Redis/Upstash. It is a floor, not a billing control; it exists so the
 // *absence* of a limit is no longer the thing standing between us and a bill.

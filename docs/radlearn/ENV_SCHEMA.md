@@ -1,9 +1,40 @@
-# C2 runtime environment contract
+# Runtime environment contract — C2 storage and Step B startup
 
 `lib/envSchema.ts` is the typed name/classification contract. Diagnostics list
 names only. Values for secrets belong in Secret Manager/runtime configuration,
 never source or logs. `TRUSTED_PROXY_SECRET` appears in both lists supplied by the
 orchestrator; it is classified as **secret** because it authenticates the Worker.
+
+## Startup validation (Step B)
+
+`validateProductionEnv` in the same typed module runs once through the production
+Node preload, before Next can start listening. `npm run build` compiles that
+schema into `.next/standalone/runtime/envSchema.cjs`; it neither reads production
+values nor validates the build host. Docker and repository `npm start` both
+preload `startup-check.cjs`. Missing or invalid settings produce a variable-name
+list and exit 1, with no values, client initialization or external calls.
+
+The production launcher defaults `NODE_ENV` to production and `PORT` to 8080.
+An explicitly different NODE_ENV is rejected; there is no test-mode bypass.
+Cloud Run's injected PORT overrides the default and must be an integer from
+1 to 65535. PORT and HOSTNAME are platform transport settings, not new secrets.
+The image listens on `0.0.0.0`. A missing compiled preload also fails startup.
+`next dev` and the local fixture harness do not invoke this production launcher.
+
+Production requires Healthcare, the four resource identifiers (no path or URL
+injection), a Mongo database name and URI, a bare GCS bucket, a public origin
+and the required secret names below. BETTER_AUTH_URL must be an HTTPS origin
+without userinfo, path, query or fragment; HTTP loopback is allowed for local
+production smoke checks. Deadlines must be positive integer milliseconds;
+FRAME_CACHE_WAIT_MS can be zero. Demo flags are 0/1 and student/author. Google
+OAuth ID/secret must be supplied together. Validation checks syntax/presence,
+not network reachability, IAM permissions or secret correctness.
+
+The PACS variables inherited from the existing implementation are the Healthcare
+rows below and optional local `ORTHANC_*` compatibility settings. No separate
+Step A web-PACS schema or additional PACS env names exist on this checkout;
+none are invented. Desktop DIMSE node settings remain desktop-local. See
+[CLOUD_RUN.md](CLOUD_RUN.md) for the deployment handoff and validation limits.
 
 | Names | Class | Required in production |
 | --- | --- | --- |

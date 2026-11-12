@@ -1,4 +1,6 @@
-# FlowRad Learn — Next.js app on Fly.io
+# Historical Fly app configuration — unsupported deployment target.
+# GCP Cloud Run / GCP Admin is the only current target (docs/radlearn/CLOUD_RUN.md).
+# Retained as reference only; do not run the legacy commands below.
 #
 # RadLearn on Cloud Run (project radlearn-app, europe-west2) is the production
 # target. This Fly file stays until the cutover checklist in

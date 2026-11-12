@@ -112,7 +112,7 @@ export const DEFAULT_ORG_ID = "org_demo";
 // Paths / config
 // ---------------------------------------------------------------------------
 
-// Mount a Railway Volume here (e.g. /app/data) and the JSON store persists.
+// Local development only; production Cloud Run requires MongoDB, not disk.
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 // Committed sample cases used to seed an empty store.
 const SEED_DIR = path.join(process.cwd(), "seed");
