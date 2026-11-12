@@ -36,3 +36,13 @@ test("group with an unresolved member cannot supply an approvable primary anchor
   const [f] = findingsFromCompiledTake({ captureSessionId: "take", track, drafted: [], markerDecisions: [{ kind: "group", markerIds: ["marker-0", "marker-1"], reason: "Explicit group" }] });
   assert.equal(f.anchorStatus, "unresolved"); assert.equal(anchorFromFinding(f), undefined);
 });
+
+test("a later render in the same viewport makes an old marker snapshot unresolved; malformed geometry fails closed", () => {
+  const track = markerTrack();
+  track.journal!.push({ ...structuredClone(track.journal![1]), seq: 6, t: 300, payload: { ...track.journal![1].payload, markerId: "stale-marker" } });
+  assert.equal(resolveAnchor("stale-marker", track.journal!).anchorStatus, "unresolved");
+  for (const bad of [null, "invalid", { x: NaN, y: 0 }]) {
+    track.journal![1].payload!.imagePoints = [bad];
+    assert.equal(resolveAnchor("marker-0", track.journal!).anchorStatus, "unresolved");
+  }
+});

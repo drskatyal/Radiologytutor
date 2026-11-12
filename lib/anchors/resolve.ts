@@ -42,8 +42,10 @@ export function resolveAnchor(id: string | undefined, journal: readonly JournalE
   const imagePoint = p.imagePoint as ImagePoint | undefined ?? points?.[0] ?? null;
   const dimensions = p.dimensions as [number, number] | undefined ?? null;
   const geometry = validGeometry(p.geometry as ImageGeometry) ? structuredClone(p.geometry as ImageGeometry) : uncalibratedGeometry();
-  const render = [...journal].reverse().find(r => r.seq <= e.seq && r.t <= e.t && r.kind === "render" && r.snapshot?.renderSeq === e.snapshot!.renderSeq && matchesView(r.snapshot!, e.snapshot!));
-  const resolved = !!render && pointValid(imagePoint, dimensions) && (p.imagePoints === undefined || (!!points?.length && points.every(p => pointValid(p, dimensions)))) && !/mpr|volume/i.test(e.snapshot.layout);
+  const render = [...journal].reverse().find(r => r.seq < e.seq && r.t <= e.t && r.kind === "render" && r.snapshot?.viewportId === e.snapshot!.viewportId);
+  const validPoints = pointValid(imagePoint, dimensions) && (p.imagePoints === undefined || (!!points?.length && points.every(p => pointValid(p, dimensions))));
+  if (!validPoints) return { ...fallback, snapshot: structuredClone(e.snapshot), journalSeq: [e.seq] };
+  const resolved = !!render?.snapshot && render.snapshot.renderSeq === e.snapshot.renderSeq && matchesView(render.snapshot, e.snapshot) && !/mpr|volume/i.test(e.snapshot.layout);
   return { anchorId: id, anchorStatus: resolved ? "resolved" : "unresolved", snapshot: structuredClone(e.snapshot), imagePoint: imagePoint ? structuredClone(imagePoint) : null,
     dimensions, geometry, calibration: geometry.calibration, patientPoint: imagePoint ? pixelToPatient(imagePoint, geometry) : null,
     journalSeq: render ? [render.seq, e.seq] : [e.seq],
