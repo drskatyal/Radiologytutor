@@ -61,6 +61,8 @@ import type {
   Certificate,
   Assessment,
   Attempt,
+  AttemptReportGrade,
+  ReportQuestion,
   CaseShare,
   MembershipRole,
   User,
@@ -71,7 +73,12 @@ import type {
   TargetLevel,
   CaptureSession,
 } from "./types";
-import { gradeAttempt, toPublicQuestions, type LearnerAnswer } from "./assessmentGrade";
+import {
+  cleanReportText,
+  gradeAttempt,
+  toPublicQuestions,
+  type LearnerAnswer,
+} from "./assessmentGrade";
 import { deidAllowsPublish, type DeidReport } from "./deid";
 import { resolveLiveTeachingPack } from "./liveTeachingPack";
 import { assertCloudRunMongo } from "./durableStore";
@@ -1574,6 +1581,8 @@ export async function updateCourse(
 export async function deleteCourse(orgId: string, courseId: string): Promise<boolean> {
   const current = await getCourse(orgId, courseId);
   if (!current) return false;
+  // A post-test has no meaning without its course; attempts stay as history.
+  await deleteAssessmentForCourse(orgId, courseId);
   return coursesStore.remove(courseId);
 }
 
@@ -2260,6 +2269,41 @@ export async function getPublicAssessmentForCourse(
   };
 }
 
+/**
+ * Create or replace a course's post-test (one per course). Keeps the existing
+ * id and createdAt so stored attempts still point at it. The questions must
+ * already be validated (lib/assessmentDraft.ts) — this layer only persists.
+ */
+export async function saveAssessmentForCourse(
+  orgId: string,
+  courseId: string,
+  input: Pick<Assessment, "title" | "description" | "passingScore" | "questions">
+): Promise<Assessment> {
+  const existing = await getAssessmentForCourse(orgId, courseId);
+  const now = nowIso();
+  const assessment: Assessment = {
+    id: existing?.id ?? genId("assess"),
+    orgId,
+    courseId,
+    title: input.title,
+    description: input.description,
+    passingScore: input.passingScore,
+    questions: input.questions,
+    cmeEligible: false,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await assessmentsStore.put(assessment);
+  return assessment;
+}
+
+/** Remove a course's post-test. Attempts are kept as history. */
+export async function deleteAssessmentForCourse(orgId: string, courseId: string): Promise<boolean> {
+  const existing = await getAssessmentForCourse(orgId, courseId);
+  if (!existing) return false;
+  return assessmentsStore.remove(existing.id);
+}
+
 export async function listAttemptsForUser(userId: string): Promise<Attempt[]> {
   const all = await attemptsStore.find({ userId });
   return all.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
@@ -2288,6 +2332,15 @@ export type SubmitAttemptInput = {
   orgId: string;
   assessmentId: string;
   answers: LearnerAnswer[];
+  /**
+   * Grades one report question. Injected by the route so the data layer never
+   * calls the AI itself; without it report questions earn no credit.
+   */
+  gradeReport?: (input: {
+    question: ReportQuestion;
+    caseData: Case | null;
+    text: string;
+  }) => Promise<AttemptReportGrade | null>;
 };
 
 export async function submitAttempt(input: SubmitAttemptInput): Promise<Attempt> {
@@ -2296,7 +2349,26 @@ export async function submitAttempt(input: SubmitAttemptInput): Promise<Attempt>
     throw new Error("Assessment not found.");
   }
 
-  const { responses, score } = gradeAttempt(assessment.questions, input.answers);
+  const reportGrades: Record<string, AttemptReportGrade> = {};
+  const gradeReport = input.gradeReport;
+  if (gradeReport) {
+    const answersById = new Map(input.answers.map((a) => [a.questionId, a]));
+    const reportQuestions = assessment.questions.filter(
+      (q): q is ReportQuestion => q.kind === "report"
+    );
+    // Reports are independent; grade them in parallel so a multi-report
+    // post-test does not stack model latency.
+    await Promise.all(
+      reportQuestions.map(async (question) => {
+        const text = cleanReportText(answersById.get(question.id)?.text);
+        const caseData = await getCaseForOrg(input.orgId, question.caseId);
+        const grade = await gradeReport({ question, caseData, text });
+        if (grade) reportGrades[question.id] = grade;
+      })
+    );
+  }
+
+  const { responses, score } = gradeAttempt(assessment.questions, input.answers, reportGrades);
   const passed = score >= assessment.passingScore;
   const now = nowIso();
   const attempt: Attempt = {

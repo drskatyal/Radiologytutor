@@ -6,7 +6,7 @@
 // home instead of a cross-org admin surface.
 
 import { useEffect, useMemo, useState } from "react";
-import { GraduationCap, ListMusic, Pencil, Plus, Trash2 } from "lucide-react";
+import { ClipboardCheck, GraduationCap, ListMusic, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   Badge,
   Button,
@@ -23,6 +23,7 @@ import {
   useToast,
 } from "@/components/ui";
 import { StudioHeader } from "./StudioHeader";
+import { PostTestEditor } from "./PostTestEditor";
 import { difficultyLabel } from "@/lib/taxonomy";
 import { CaseOrderPicker } from "@/components/admin/CaseOrderPicker";
 import {
@@ -160,6 +161,7 @@ function CoursesPanel({
 }) {
   const [editing, setEditing] = useState<Course | "new" | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Course | null>(null);
+  const [postTestFor, setPostTestFor] = useState<Course | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function remove(c: Course) {
@@ -206,6 +208,16 @@ function CoursesPanel({
                   </span>
                 </div>
               </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setPostTestFor(c)}
+                disabled={c.caseIds.length === 0}
+                title={c.caseIds.length === 0 ? "Add cases to the course first" : undefined}
+                leadingIcon={<ClipboardCheck className="h-4 w-4" aria-hidden="true" />}
+              >
+                Post-test
+              </Button>
               <IconButton aria-label="Edit course" variant="ghost" onClick={() => setEditing(c)}>
                 <Pencil className="h-4 w-4" />
               </IconButton>
@@ -229,6 +241,8 @@ function CoursesPanel({
         }}
         toast={toast}
       />
+
+      <PostTestEditor course={postTestFor} onClose={() => setPostTestFor(null)} toast={toast} />
 
       <ConfirmDelete
         open={pendingDelete != null}

@@ -1,6 +1,9 @@
 "use client";
 
-// The imaging surface for a click-the-finding assessment question.
+// The imaging surface for an assessment question: click-the-finding
+// ("locate"), a report question's study to read before dictating ("browse"),
+// and the post-submit review of a click answer against the revealed target
+// ("review").
 //
 // This mounts the SAME Cornerstone viewer the student learns on, loaded with
 // the real study the finding was authored against and driven to the authored
@@ -8,8 +11,10 @@
 // [0,1] click is only meaningful if the learner is looking at the anatomy the
 // marker was placed on.
 //
-// The answer never reaches the browser — /api/assessments/question-view returns
-// viewport state and no marker, and grading stays server-side.
+// The answer never reaches the browser while the question is open —
+// /api/assessments/question-view returns viewport state and no marker, and
+// grading stays server-side. In review mode the target comes from the attempt
+// review, which only carries it on a passed attempt.
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -46,17 +51,24 @@ type LoadState =
   | { status: "no-imaging" }
   | { status: "error"; message: string };
 
+export type LocateStageMode = "locate" | "browse" | "review";
+
 export function LocateStage({
   courseId,
   questionId,
   answer,
   onLocate,
+  mode = "locate",
+  target,
 }: {
   courseId: string;
   questionId: string;
   /** The learner's current pick, in normalized [0,1] viewport space. */
   answer?: { x_pct?: number; y_pct?: number };
-  onLocate: (x_pct: number, y_pct: number) => void;
+  onLocate?: (x_pct: number, y_pct: number) => void;
+  mode?: LocateStageMode;
+  /** Review only: the authored target and its hit radius (unit-square). */
+  target?: { x_pct: number; y_pct: number; radius: number };
 }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [viewerReady, setViewerReady] = useState(false);
@@ -150,7 +162,7 @@ export function LocateStage({
       if (r.width === 0 || r.height === 0) return;
       const x = (e.clientX - r.left) / r.width;
       const y = (e.clientY - r.top) / r.height;
-      onLocate(Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y)));
+      onLocate?.(Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y)));
       // One click places the mark and hands the viewer back, so the learner can
       // keep scrolling to check themselves before moving on.
       setMarking(false);
@@ -164,17 +176,26 @@ export function LocateStage({
       : null;
 
   const ready = state.status === "ready";
+  const canMark = mode === "locate" && Boolean(onLocate);
+  const hint =
+    mode === "browse"
+      ? "Drag scrolls the stack, pinch zooms. Window and pan are on the toolbar. Read the study, then write your report."
+      : mode === "review"
+        ? target
+          ? "Your mark and the authored target. Scroll the stack to check yourself."
+          : "Your mark. The target is shown once you pass the post-test."
+        : marking
+          ? "Click the abnormality on the image."
+          : "Drag scrolls the stack, pinch zooms. Window and pan are on the toolbar. Then mark the finding.";
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-xs text-secondary">
           <Crosshair className="h-3.5 w-3.5" aria-hidden="true" />
-          {marking
-            ? "Click the abnormality on the image."
-            : "Drag scrolls the stack, pinch zooms. Window and pan are on the toolbar. Then mark the finding."}
+          {hint}
         </p>
-        {ready && (
+        {ready && canMark && (
           <Button
             type="button"
             size="sm"
@@ -225,7 +246,7 @@ export function LocateStage({
               modality={state.payload.modality}
               controls={controls}
               onReady={handleReady}
-              instanceId={`locate-${questionId}`}
+              instanceId={`${mode}-${questionId}`}
               chrome="edge"
               defaultTool="StackScroll"
               className="h-full w-full"
@@ -239,7 +260,7 @@ export function LocateStage({
                 could not search the stack at all, which is most of the skill
                 being assessed. Same reason StudentViewer gates its hit layer
                 behind `locateMode`. */}
-            {marking && (
+            {marking && canMark && (
               <button
                 ref={hitRef}
                 type="button"
@@ -249,7 +270,19 @@ export function LocateStage({
               />
             )}
 
-            {placed && (
+            {mode === "review" && target && (
+              <span
+                className="pointer-events-none absolute z-20 aspect-square -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-dashed border-success bg-success/15"
+                style={{
+                  left: `${target.x_pct * 100}%`,
+                  top: `${target.y_pct * 100}%`,
+                  width: `${target.radius * 200}%`,
+                }}
+                aria-hidden="true"
+              />
+            )}
+
+            {placed && mode !== "browse" && (
               <span
                 className="pointer-events-none absolute z-20 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-accent bg-accent/30 text-accent"
                 style={{ left: `${placed.x * 100}%`, top: `${placed.y * 100}%` }}

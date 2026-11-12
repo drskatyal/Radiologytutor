@@ -5,15 +5,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { activeOrgId, jsonAuthError, requireSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
-import { geminiConfigured, generate, parseJsonLoose } from "@/lib/gemini";
 import { getCaseForOrg } from "@/lib/cases";
-import {
-  GRADE_REPORT_SYSTEM,
-  buildReportRubric,
-  localReportGrade,
-  normalizeReportGrade,
-  type ReportGrade,
-} from "@/lib/reportGrade";
+import { buildReportRubric, localReportGrade } from "@/lib/reportGrade";
+import { gradeReportText } from "@/lib/reportGradeServer";
 
 export const runtime = "nodejs";
 
@@ -52,48 +46,21 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (!geminiConfigured()) {
+    const outcome = await gradeReportText(report, rubric);
+    if (outcome.gradedBy === "local") {
       return NextResponse.json(
         {
-          error: "The AI grader is unavailable — GEMINI_API_KEY is not set.",
+          error:
+            outcome.reason === "unconfigured"
+              ? "The AI grader is unavailable — GEMINI_API_KEY is not set."
+              : "The grader is unavailable right now.",
           fallback: true,
-          grade: localReportGrade(report, rubric),
+          grade: outcome.grade,
         },
-        { status: 503 }
+        { status: outcome.reason === "unconfigured" ? 503 : 502 }
       );
     }
-
-    let result;
-    try {
-      result = await generate({
-        systemInstruction: GRADE_REPORT_SYSTEM,
-        temperature: 0.2,
-        jsonOnly: true,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `RUBRIC:\n${JSON.stringify(rubric, null, 2)}\n\nTRAINEE REPORT:\n${report}`,
-              },
-            ],
-          },
-        ],
-      });
-    } catch (err) {
-      console.error("[api/grade-report]", err);
-      return NextResponse.json(
-        {
-          error: "The grader is unavailable right now.",
-          fallback: true,
-          grade: localReportGrade(report, rubric),
-        },
-        { status: 502 }
-      );
-    }
-
-    const parsed = parseJsonLoose<Partial<ReportGrade>>(result.text);
-    return NextResponse.json(normalizeReportGrade(parsed, rubric, report));
+    return NextResponse.json(outcome.grade);
   } catch (err) {
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;
