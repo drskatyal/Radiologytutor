@@ -1,3 +1,4 @@
+import { resolveOpenIndex } from "../viewerLoad";
 // ============================================================================
 // lib/dicomCdn/format.ts  (isomorphic — server packer AND browser client)
 //
@@ -270,17 +271,7 @@ export function bundleOpenIndex(
   sops: readonly string[],
   hint?: { sopInstanceUID?: string; sliceIndex?: number } | null
 ): number {
-  const count = sops.length;
-  if (count <= 0) return 0;
-  const sop = hint?.sopInstanceUID?.trim();
-  if (sop) {
-    const found = sops.indexOf(sop);
-    if (found >= 0) return found;
-  }
-  if (hint?.sliceIndex != null && Number.isFinite(hint.sliceIndex)) {
-    return Math.max(0, Math.min(count - 1, Math.round(hint.sliceIndex)));
-  }
-  return Math.floor(count / 2);
+  return resolveOpenIndex(sops.length, sops, hint);
 }
 
 /** Sanity check of an index read from the bucket or the API. */

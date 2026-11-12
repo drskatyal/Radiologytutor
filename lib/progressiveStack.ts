@@ -36,7 +36,8 @@ import {
   ACTIVE_PREFETCH_RADIUS,
   dicomTagString,
   neighborIndexes,
-  resolveOpenIndex,
+  resolveImageOpenIndex,
+  dicomTagNumber,
   wadorsImageId,
   type OpenSlice,
 } from "./viewerLoad";
@@ -151,11 +152,11 @@ function registerMetadata(imageId: string, dataset: unknown): void {
   );
 }
 
-function imageIdFor(root: string, study: string, dataset: unknown, fallbackSeries: string): string | null {
+function imageIdFor(root: string, study: string, dataset: unknown, fallbackSeries: string, frame = 1): string | null {
   const sop = dicomTagString(dataset, SOP_TAG);
   if (!sop) return null;
   const series = dicomTagString(dataset, SERIES_TAG) || fallbackSeries;
-  return wadorsImageId(root, study, series, sop);
+  return wadorsImageId(root, study, series, sop, frame);
 }
 
 async function qidoSopAt(
@@ -265,6 +266,7 @@ export function startProgressiveWadorsLoad(input: {
   let resolveOpening: (imageId: string) => void = () => undefined;
   let rejectOpening: (error: unknown) => void = () => undefined;
   let openingSettled = false;
+  let openedImageId: string | undefined;
   const opening = new Promise<string>((resolve, reject) => {
     resolveOpening = resolve;
     rejectOpening = reject;
@@ -285,6 +287,7 @@ export function startProgressiveWadorsLoad(input: {
   const emit = (imageId: string) => {
     if (openingSettled) return;
     openingSettled = true;
+    openedImageId = imageId;
     resolveOpening(imageId);
   };
   const fail = (error: unknown) => {
@@ -294,7 +297,7 @@ export function startProgressiveWadorsLoad(input: {
   };
 
   const full = (async () => {
-    if (input.bundles !== false) {
+    if (input.bundles !== false && (hint?.frameNumber ?? 1) === 1) {
       const bundled = await openFromBundle({
         root,
         study,
@@ -326,7 +329,9 @@ export function startProgressiveWadorsLoad(input: {
     const opened: { sop?: string } = {};
 
     const publishDataset = (dataset: unknown) => {
-      const imageId = imageIdFor(root, study, dataset, series);
+      const requestedFrame = hint?.frameNumber ?? 1;
+      if (!Number.isSafeInteger(requestedFrame) || requestedFrame < 1 || requestedFrame > (dicomTagNumber(dataset, "00280008") ?? 1)) throw new Error("Requested frame is absent");
+      const imageId = imageIdFor(root, study, dataset, series, hint?.frameNumber ?? 1);
       if (!imageId) return;
       registerMetadata(imageId, dataset);
       opened.sop = dicomTagString(dataset, SOP_TAG);
@@ -421,31 +426,20 @@ export function startProgressiveWadorsLoad(input: {
     if (tail) take(scanner.push(tail));
 
     const imageIds: string[] = [];
-    const sops: string[] = [];
     for (const dataset of datasets) {
-      const imageId = imageIdFor(root, study, dataset, series);
-      const sop = dicomTagString(dataset, SOP_TAG);
-      if (!imageId || !sop) continue;
-      imageIds.push(imageId);
-      sops.push(sop);
+      const count = dicomTagNumber(dataset, "00280008") ?? 1;
+      if (!Number.isSafeInteger(count) || count < 1) throw new Error("Invalid multiframe identity");
+      for (let frame = 1; frame <= count; frame++) {
+        const imageId = imageIdFor(root, study, dataset, series, frame);
+        if (!imageId) continue;
+        registerMetadata(imageId, dataset);
+        imageIds.push(imageId);
+      }
     }
     if (imageIds.length === 0) throw new Error("Series metadata was empty");
-
-    // The frame already on screen wins. Without this, a stale archive count
-    // (we asked QIDO for offset knownCount/2) would land the finished stack
-    // on realCount/2 and the image would jump under the reader.
-    let openIndex = resolveOpenIndex(imageIds.length, sops, {
-      ...hint,
-      ...(opened.sop ? { sopInstanceUID: opened.sop } : {}),
-    });
-    if (sliceHint == null && !earlySop && !openingSettled) {
-      openIndex = stackOpenIndex(imageIds.length);
-    }
-    const openingId = imageIds[openIndex];
-    if (openingId) {
-      registerMetadata(openingId, datasets[openIndex]);
-      emit(openingId);
-    }
+    // Resolve the actual early SOP/frame in the final order, never reuse its archive offset.
+    const openIndex = resolveImageOpenIndex(imageIds, hint, openedImageId);
+    emit(imageIds[openIndex]);
     return { imageIds, openIndex, source: "dicomweb" as const };
   })().catch((err) => {
     fail(err);

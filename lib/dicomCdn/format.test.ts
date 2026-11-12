@@ -87,7 +87,8 @@ test("fetch plan skips what is already on the device", () => {
 test("open index mirrors the DICOMweb path: SOP, then slice, then middle", () => {
   const sops = ["a", "b", "c", "d", "e"];
   assert.equal(bundleOpenIndex(sops, { sopInstanceUID: "d", sliceIndex: 0 }), 3);
-  assert.equal(bundleOpenIndex(sops, { sopInstanceUID: "zz", sliceIndex: 1 }), 1);
+  // M4/T3: a missing named SOP must never reuse a stale index (strategy §4 M4).
+  assert.throws(() => bundleOpenIndex(sops, { sopInstanceUID: "zz", sliceIndex: 1 }), /absent or ambiguous/);
   assert.equal(bundleOpenIndex(sops, { sliceIndex: 99 }), 4);
   assert.equal(bundleOpenIndex(sops, null), 2);
   assert.equal(bundleOpenIndex([], null), 0);

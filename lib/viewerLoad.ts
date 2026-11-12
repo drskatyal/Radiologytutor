@@ -1,3 +1,5 @@
+import { ViewRequestError } from "./journal/renderAck";
+import { toolFrameFromImageId } from "./harness/approvedTools";
 // Pure planning for viewer open. No Cornerstone, no network.
 //
 // The stack the viewer scrolls is the series metadata array order — the same
@@ -15,6 +17,7 @@ export interface OpenSlice {
   /** 0-based index in metadata order. */
   sliceIndex?: number;
   sopInstanceUID?: string;
+  frameNumber?: number;
 }
 
 export interface SeriesHintInput {
@@ -41,12 +44,13 @@ export function wadorsImageId(
   wadoRsRoot: string,
   studyInstanceUID: string,
   seriesInstanceUID: string,
-  sopInstanceUID: string
+  sopInstanceUID: string,
+  frameNumber = 1
 ): string {
   const base = wadoRsRoot.replace(/\/$/, "");
   return (
     `wadors:${base}/studies/${studyInstanceUID}` +
-    `/series/${seriesInstanceUID}/instances/${sopInstanceUID}/frames/1`
+    `/series/${seriesInstanceUID}/instances/${sopInstanceUID}/frames/${frameNumber}`
   );
 }
 
@@ -80,6 +84,7 @@ export function lastTeacherSlice(
     seriesInstanceUID?: string;
     sliceIndex?: number;
     sopInstanceUID?: string;
+    frameNumber?: number;
   }[],
   seriesInstanceUID: string | undefined
 ): OpenSlice | undefined {
@@ -95,7 +100,7 @@ export function lastTeacherSlice(
   if (!best) return undefined;
   const sop = best.sopInstanceUID?.trim();
   return {
-    ...(sop ? { sopInstanceUID: sop } : {}),
+    ...(sop ? { sopInstanceUID: sop, ...(best.frameNumber !== undefined ? { frameNumber: best.frameNumber } : {}) } : {}),
     ...(best.sliceIndex != null && Number.isFinite(best.sliceIndex)
       ? { sliceIndex: Math.max(0, Math.round(best.sliceIndex)) }
       : {}),
@@ -108,12 +113,13 @@ export function resolveOpenIndex(
   sops: readonly string[],
   hint?: OpenSlice | null
 ): number {
-  if (!Number.isFinite(count) || count <= 0) return 0;
   const sop = hint?.sopInstanceUID?.trim();
   if (sop) {
     const found = sops.indexOf(sop);
-    if (found >= 0) return found;
+    if (found >= 0 && found < count && sops.lastIndexOf(sop) === found && (hint?.frameNumber ?? 1) === 1) return found;
+    throw new ViewRequestError("missing_identity", "Requested SOP/frame is absent or ambiguous; rebind the image");
   }
+  if (!Number.isFinite(count) || count <= 0) return 0;
   if (hint?.sliceIndex != null && Number.isFinite(hint.sliceIndex)) {
     return Math.max(0, Math.min(count - 1, Math.round(hint.sliceIndex)));
   }
@@ -216,4 +222,19 @@ function preferPositiveCount(series: CaseSeries): CaseSeries {
     return rest;
   }
   return { ...series, instanceCount: count };
+}
+
+/** Full stack addresses may be sorted differently from the archive's early QIDO offset. */
+export function resolveImageOpenIndex(imageIds: readonly string[], hint?: OpenSlice | null, openedImageId?: string): number {
+  if (openedImageId) {
+    const at = imageIds.indexOf(openedImageId);
+    if (at >= 0 && imageIds.lastIndexOf(openedImageId) === at) return at;
+    throw new ViewRequestError("missing_identity", "The progressive opening image is absent from the completed stack");
+  }
+  if (hint?.sopInstanceUID) {
+    const hits = imageIds.flatMap((id, i) => { const f = toolFrameFromImageId(id); return f && f.sopUID === hint.sopInstanceUID && f.frame === (hint.frameNumber ?? 1) ? [i] : []; });
+    if (hits.length !== 1) throw new ViewRequestError("missing_identity", "Requested SOP/frame is absent or ambiguous; rebind the image");
+    return hits[0];
+  }
+  return resolveOpenIndex(imageIds.length, [], hint);
 }
