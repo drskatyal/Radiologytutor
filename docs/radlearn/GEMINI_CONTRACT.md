@@ -25,3 +25,13 @@ authorized synthetic live check is still needed; no live-check script was run.
 
 Full suite results and the read-only gate are recorded in
 `/workspace/radlearn-build-status.md`; committed M3 logs are in `evidence/`.
+
+## M6 retained extraction
+
+The new retained-media prompt/schema and job runner have mocked local request,
+response, Files-upload and retry tests. `lib/extract/prompt.test.ts` asserts the
+safe clock, offsets, explicit model, JSON request, absent sampling/Search tools
+and absence of PHI/answer canaries. Request metadata is persisted with each job
+and resulting finding version. The browser fixture injects a mock into this same
+runner; production routes have no fixture/model bypass. No optional live check
+was run: **NOT VERIFIED LIVE — live contract not verified**. No live GCP call.

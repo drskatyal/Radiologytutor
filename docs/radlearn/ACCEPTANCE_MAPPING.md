@@ -177,3 +177,30 @@ SOP/frame jumps and three persisted notes findings using the real local viewer.
 No M6 extraction implementation or M7 approval surface is included; M8 still
 owns measurement replay, timeline synchronization and drift. See MARKER_ANCHORS.md
 and M5_VALIDATION.md for the contract, test results and remaining limits.
+
+## M6 extraction acceptance
+
+Implemented `lib/extract/{schema,prompt,run,materialize,client}.ts` and tests
+`lib/extract/{prompt,run,materialize,client}.test.ts`, plus
+`e2e/radlearn/extraction.spec.ts`. Required M6 adversarial-output, persisted
+job/result replay, PHI/canary prompt exclusion and lost-commit-response tests
+are present. The latter creates exactly two findings, preserves a later expert
+version and checks immutable source receipts. Concurrent requests/commits,
+expired-worker fencing and edits during model I/O are also exercised.
+
+T7's retained-marker cardinality remains binding at extraction: empty model
+output does not erase markers, and explicit group/omit decisions are frozen and
+recorded. T8's native measurement evidence keeps named SOP/frame, pixels and
+spacing provenance; removed annotation revisions cannot be resurrected by a
+model reference. T9's version hashing/CAS extends to extraction source,
+confidence, issues and request provenance. P0-3's render acknowledgement is
+reused by M5 resolution, including a contradictory renderSeq rejection.
+Invalid/overlapping windows remain estimated/unresolved and unknown timestamps
+stay null. The obsolete proportional-time test was corrected in its own commit;
+see M6_TIMING_CORRECTION.md.
+
+The original T1–T10 milestone assignments remain unchanged. M6 does not claim
+M7 approval navigation, M8 replay timing/geometry/drift, or the remaining M9
+queue work. See EXTRACTION.md and M6_VALIDATION.md for the implementation,
+real-versus-mocked boundary and local evidence. **live contract not verified**;
+**NO LIVE GCP CALL WAS MADE**.

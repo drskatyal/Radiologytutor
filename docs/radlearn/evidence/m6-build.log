@@ -1,0 +1,149 @@
+
+> flowrad-learn@0.1.0 prebuild
+> node scripts/build-voice-worker.mjs
+
+build-voice-worker: wrote recognizer-worker.js (4.3 MB) for web and desktop
+
+> flowrad-learn@0.1.0 build
+> next build
+
+  ▲ Next.js 14.2.35
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/40) ...
+   Generating static pages (10/40)
+   Generating static pages (20/40)
+   Generating static pages (30/40)
+ ✓ Generating static pages (40/40)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                                        Size     First Load JS
+┌ ƒ /                                                              6.88 kB         202 kB
+├ ƒ /_not-found                                                    161 B            89 kB
+├ ƒ /admin                                                         7.96 kB         219 kB
+├ ƒ /api/admin/authors                                             0 B                0 B
+├ ƒ /api/admin/authors/[authorId]                                  0 B                0 B
+├ ƒ /api/admin/cases                                               0 B                0 B
+├ ƒ /api/admin/cases/[caseId]                                      0 B                0 B
+├ ƒ /api/admin/courses                                             0 B                0 B
+├ ƒ /api/admin/courses/[courseId]                                  0 B                0 B
+├ ƒ /api/admin/import/public-case                                  0 B                0 B
+├ ƒ /api/admin/memberships                                         0 B                0 B
+├ ƒ /api/admin/orthanc-status                                      0 B                0 B
+├ ƒ /api/admin/patients                                            0 B                0 B
+├ ƒ /api/admin/patients/[patientId]/studies                        0 B                0 B
+├ ƒ /api/admin/playlists                                           0 B                0 B
+├ ƒ /api/admin/playlists/[playlistId]                              0 B                0 B
+├ ƒ /api/admin/studies                                             0 B                0 B
+├ ƒ /api/admin/studies/[studyId]/series                            0 B                0 B
+├ ƒ /api/assessments                                               0 B                0 B
+├ ƒ /api/assessments/question-view                                 0 B                0 B
+├ ƒ /api/attempts                                                  0 B                0 B
+├ ƒ /api/audio                                                     0 B                0 B
+├ ƒ /api/audio/[id]                                                0 B                0 B
+├ ƒ /api/auth/[...all]                                             0 B                0 B
+├ ƒ /api/auth/demo                                                 0 B                0 B
+├ ƒ /api/cases                                                     0 B                0 B
+├ ƒ /api/cases/[caseId]                                            0 B                0 B
+├ ƒ /api/cases/[caseId]/approved-tools                             0 B                0 B
+├ ƒ /api/cases/[caseId]/capture-sessions                           0 B                0 B
+├ ƒ /api/cases/[caseId]/capture-sessions/[sessionId]/chunks/[seq]  0 B                0 B
+├ ƒ /api/cases/[caseId]/capture-sessions/[sessionId]/extract       0 B                0 B
+├ ƒ /api/cases/[caseId]/capture-sessions/[sessionId]/manifest      0 B                0 B
+├ ƒ /api/cases/[caseId]/findings                                   0 B                0 B
+├ ƒ /api/cases/[caseId]/findings/[findingId]                       0 B                0 B
+├ ƒ /api/cases/[caseId]/findings/[findingId]/approve               0 B                0 B
+├ ƒ /api/cases/[caseId]/findings/[findingId]/versions              0 B                0 B
+├ ƒ /api/cases/[caseId]/live-teaching-pack                         0 B                0 B
+├ ƒ /api/cases/[caseId]/prefetch                                   0 B                0 B
+├ ƒ /api/cases/[caseId]/reorder                                    0 B                0 B
+├ ƒ /api/cases/[caseId]/series                                     0 B                0 B
+├ ƒ /api/cases/[caseId]/share                                      0 B                0 B
+├ ƒ /api/catalog                                                   0 B                0 B
+├ ƒ /api/certificates                                              0 B                0 B
+├ ƒ /api/certificates/[id]                                         0 B                0 B
+├ ƒ /api/desktop/config                                            0 B                0 B
+├ ƒ /api/desktop/update                                            0 B                0 B
+├ ƒ /api/desktop/update/rollback                                   0 B                0 B
+├ ƒ /api/dicom-cdn/files/[...path]                                 0 B                0 B
+├ ƒ /api/dicom-cdn/manifest                                        0 B                0 B
+├ ƒ /api/dicomweb/[...path]                                        0 B                0 B
+├ ƒ /api/enrollments                                               0 B                0 B
+├ ƒ /api/exam/sessions                                             0 B                0 B
+├ ƒ /api/exam/sessions/[id]/answer                                 0 B                0 B
+├ ƒ /api/gemini/files                                              0 B                0 B
+├ ƒ /api/grade-report                                              0 B                0 B
+├ ƒ /api/healthz                                                   0 B                0 B
+├ ƒ /api/me                                                        0 B                0 B
+├ ƒ /api/me/prefs                                                  0 B                0 B
+├ ƒ /api/progress                                                  0 B                0 B
+├ ƒ /api/reviews                                                   0 B                0 B
+├ ƒ /api/structure-finding                                         0 B                0 B
+├ ƒ /api/structure-session                                         0 B                0 B
+├ ƒ /api/studio/profile                                            0 B                0 B
+├ ƒ /api/studio/voice                                              0 B                0 B
+├ ƒ /api/tour-check-in                                             0 B                0 B
+├ ƒ /api/transcribe                                                0 B                0 B
+├ ƒ /api/transcribe-narration                                      0 B                0 B
+├ ƒ /api/tts                                                       0 B                0 B
+├ ƒ /api/tutor                                                     0 B                0 B
+├ ƒ /api/upload                                                    0 B                0 B
+├ ƒ /api/version                                                   0 B                0 B
+├ ƒ /api/voice/realtime                                            0 B                0 B
+├ ƒ /api/voice/search                                              0 B                0 B
+├ ƒ /api/voice/status                                              0 B                0 B
+├ ƒ /api/wishlist                                                  0 B                0 B
+├ ƒ /author                                                        161 B            89 kB
+├ ƒ /author/record/[caseId]                                        161 B            89 kB
+├ ƒ /authors/[id]                                                  983 B           211 kB
+├ ƒ /case/[caseId]                                                 39.2 kB         366 kB
+├ ƒ /certificate/[id]                                              604 B           208 kB
+├ ƒ /cornerstone                                                   2.77 kB         211 kB
+├ ƒ /course/[id]                                                   15.5 kB         226 kB
+├ ƒ /dashboard                                                     274 B           208 kB
+├ ƒ /dev/sketch                                                    9.44 kB         234 kB
+├ ƒ /dev/teaching-layer                                            4.61 kB         260 kB
+├ ○ /icon.svg                                                      0 B                0 B
+├ ƒ /learning                                                      1.73 kB         210 kB
+├ ƒ /library                                                       10.6 kB         232 kB
+├ ○ /manifest.webmanifest                                          0 B                0 B
+├ ○ /opengraph-image                                               0 B                0 B
+├ ƒ /playlist/[id]                                                 2.12 kB         210 kB
+├ ƒ /privacy                                                       183 B          97.7 kB
+├ ƒ /record                                                        3.3 kB          311 kB
+├ ƒ /robots.txt                                                    0 B                0 B
+├ ƒ /s/[token]                                                     1.11 kB         274 kB
+├ ƒ /sign-in                                                       152 B           199 kB
+├ ƒ /sign-up                                                       152 B           199 kB
+├ ƒ /sitemap.xml                                                   0 B                0 B
+├ ƒ /studio                                                        5.02 kB         213 kB
+├ ƒ /studio/cases                                                  4.91 kB         213 kB
+├ ƒ /studio/cases/[caseId]                                         15 kB           340 kB
+├ ƒ /studio/cases/[caseId]/record                                  22.7 kB         354 kB
+├ ƒ /studio/courses                                                6.97 kB         215 kB
+├ ƒ /studio/new                                                    12.1 kB         220 kB
+├ ƒ /studio/profile                                                6.11 kB         214 kB
+├ ƒ /terms                                                         183 B          97.7 kB
+├ ƒ /upload                                                        161 B            89 kB
+├ ƒ /viewer                                                        170 B           275 kB
+└ ƒ /viewer/local                                                  170 B           275 kB
++ First Load JS shared by all                                      88.8 kB
+  ├ chunks/2117-e0168b9985c2339e.js                                31.9 kB
+  ├ chunks/fd9d1056-1b2263830d00611d.js                            53.6 kB
+  └ other shared chunks (total)                                    3.3 kB
+
+
+ƒ Middleware                                                       28.3 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+> flowrad-learn@0.1.0 postbuild
+> node scripts/build-runtime-env.mjs
+
+Built production environment check (names only; no runtime values).
