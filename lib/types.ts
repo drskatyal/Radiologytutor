@@ -384,6 +384,7 @@ export interface FindingApproval {
 export type FindingContent = Omit<Finding, "id" | "order" | "sliceIndex" | "status" | "currentVersion" | "approvedVersion" | "anchorStatus">;
 
 export interface Finding {
+  expertReview?: { sourceVersion: number; sourceHash: string; userId: string; at: string; kind: "rebind" | "edit"; resolvedIssues: string[]; reason: string };
   extraction?: { jobId: string; proposalIndexes: number[]; dictatedOrVisual: import("./extract/schema").ExtractProposal["dictatedOrVisual"]; confidence: number | null; issues: string[]; modelMetadata: import("./geminiMetadata").GeminiRequestMetadata };
   resolvedAnchor?: import("./anchors/resolve").ResolvedAnchor;
   groupedAnchors?: import("./anchors/resolve").ResolvedAnchor[];
