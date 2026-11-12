@@ -101,9 +101,10 @@ are placeholders; the established resource shape is documented in ENV_SCHEMA.md.
    publishing for Admin use. Do not add secrets to build inputs. This agent does
    not run those files, build remotely, publish an image or deploy.
 4. Configure the full ENV_SCHEMA plain-variable set before boot, including the
-   confirmed bucket name and public HTTPS origin. Bind secret **names** to their
+   confirmed bucket name and public HTTPS origin.    Bind secret **names** to their
    Secret Manager versions: `BETTER_AUTH_SECRET`, `MONGODB_URI`,
-   `TRUSTED_PROXY_SECRET`, plus enabled provider/OAuth secrets. Existing deployment
+   runtime `TRUSTED_PROXY_SECRET` from existing secret `radlearn-trusted-proxy-secret`,
+   plus enabled provider/OAuth secrets. Existing deployment
    helpers preserve unmentioned settings; they do not provision/guess the
    provisional shared bucket setting. A fresh service needs its complete env
    configured by Admin, not a bootstrap with missing mandatory variables.

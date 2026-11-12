@@ -109,5 +109,8 @@ export function authoredDisplayState(
     windowCenter: hasAuthoredVoi ? finding.windowCenter : fallback?.windowCenter,
     zoom: fallback?.zoom,
     pan: fallback?.pan,
+    // The stable anchor: the viewer lands on this instance wherever the stack
+    // puts it, and uses sliceIndex only when the instance is not in the stack.
+    ...(finding.sopInstanceUID?.trim() ? { sopInstanceUID: finding.sopInstanceUID.trim() } : {}),
   };
 }

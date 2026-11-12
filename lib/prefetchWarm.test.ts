@@ -22,14 +22,14 @@ function seriesOf(count: number, seriesInstanceUID = "1.2.840.series"): WarmSeri
   };
 }
 
-test("LIDC findings focus the warmer on their own slices: 34, the apical nodule on 6, and 64", () => {
+test("LIDC findings focus the warmer on their own slices: the carina 20, the apical nodule 6, the hila 22", () => {
   const seed = JSON.parse(
     readFileSync(new URL("../seed/case-lidc-nodule-search.json", import.meta.url), "utf8")
   ) as { findings: { seriesInstanceUID?: string; sliceIndex?: number; order?: number }[] };
   const focus = collectFocusSlices(seed.findings);
   assert.deepEqual(
     focus.map((item) => item.sliceIndex),
-    [34, 6, 64]
+    [20, 6, 22]
   );
 });
 

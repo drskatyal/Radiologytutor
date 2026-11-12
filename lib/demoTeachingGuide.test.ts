@@ -125,12 +125,12 @@ test("every LIDC finding gets a five-beat demo guide and a teacher track wins", 
   assert.notEqual(rebuilt?.beats.map((beat) => beat.say).join(" "), kept.teachingGuide?.beats[0].say);
 });
 
-test("import scaling lands the demo guide on slices 34, 6 (the apical nodule), and 64", () => {
+test("import keeps the SOP-anchored LIDC slices: carina 20, the apical nodule 6, the hila 22", () => {
   assert.equal(LIDC_STACK_SLICES, 65);
   const planned = planPublicCaseFindings(LIDC_CASE_ID, template.findings, LIDC_STACK_SLICES);
   assert.deepEqual(
     planned.create.map((finding) => finding.sliceIndex),
-    [34, 6, 64]
+    [20, 6, 22]
   );
   const nodule = planned.create.find((finding) => /nodule/i.test(finding.label));
   assert.ok(nodule?.teachingGuide);
@@ -169,8 +169,9 @@ test("committed seed case matches the demo guide for a 65-slice stack", () => {
   assert.equal(seed.status, "published");
   assert.deepEqual(
     seed.findings.map((finding) => finding.sliceIndex),
-    // 6 is the LIDC readers' left apical nodule, not a placeholder fraction.
-    [34, 6, 64]
+    // Indices of the position-sorted stack, each with its SOP: carina, the
+    // LIDC readers' left apical nodule, both hila.
+    [20, 6, 22]
   );
   assert.deepEqual(
     seed.findings.map((finding) => finding.teachingGuide),

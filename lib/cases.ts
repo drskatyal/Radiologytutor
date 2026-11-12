@@ -1,4 +1,5 @@
 import { assertNoPhi, assertReviewedMedia } from "./phiGuard";
+import { rebindStaleLidcCase } from "./lidcStoredAnatomy";
 import { migrateFindings, prepareFinding, appendVersion, approveVersion, approvedFinding, snapshot, type Approver } from "./findingVersions";
 import { anchorFromFinding, FindingConflict, hashContent, findingContent } from "./findingContent";
 import { readFindingInventory, resolveFindingAnchor } from "./findingInventory";
@@ -550,9 +551,10 @@ function toStored(c: Case): CaseStored {
 /** Normalize any persisted case (old seed shape or new) into a full `Case`. */
 function normalizeCase(raw: CaseData & Partial<Case>): Case {
   const now = new Date().toISOString();
-  const findings = (raw.findings ?? []).slice().sort((a, b) => a.order - b.order);
+  const repaired = rebindStaleLidcCase(raw);
+  const findings = (repaired.findings ?? []).slice().sort((a, b) => a.order - b.order);
   return migrateFindings({
-    ...raw,
+    ...repaired,
     findings,
     orgId: raw.orgId ?? DEFAULT_ORG_ID,
     status: raw.status ?? "published",

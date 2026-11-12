@@ -1,5 +1,5 @@
 # Optional. Prefer deploy/gcp/deploy-app.sh, which refuses to roll a revision
-# until GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI and TRUSTED_PROXY_SECRET have versions.
+# until GEMINI_API_KEY, BETTER_AUTH_SECRET, MONGODB_URI and radlearn-trusted-proxy-secret have versions.
 # This resource assumes those versions already exist.
 
 locals {
@@ -114,10 +114,17 @@ resource "google_cloud_run_v2_service" "app" {
       # Optional secrets (Google OAuth, ElevenLabs) are attached by
       # deploy/gcp/deploy-app.sh only when a version exists. Referencing an
       # empty secret here would stop the revision from starting.
+      # Env name → existing Secret Manager id. TRUSTED_PROXY_SECRET is already
+      # stored as radlearn-trusted-proxy-secret; do not provision a second secret.
       dynamic "env" {
-        for_each = toset(["GEMINI_API_KEY", "BETTER_AUTH_SECRET", "MONGODB_URI", "TRUSTED_PROXY_SECRET"])
+        for_each = {
+          GEMINI_API_KEY       = "GEMINI_API_KEY"
+          BETTER_AUTH_SECRET   = "BETTER_AUTH_SECRET"
+          MONGODB_URI          = "MONGODB_URI"
+          TRUSTED_PROXY_SECRET = "radlearn-trusted-proxy-secret"
+        }
         content {
-          name = env.value
+          name = env.key
           value_source {
             secret_key_ref {
               secret  = env.value

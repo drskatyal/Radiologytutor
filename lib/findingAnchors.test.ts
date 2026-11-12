@@ -168,6 +168,33 @@ test("wantsCompare is true for the same slice in a different window", () => {
   assert.equal(view?.sliceIndex, 3);
   assert.equal(view?.windowWidth, 400);
   assert.equal(view?.windowCenter, 40);
+  assert.equal(view?.sopInstanceUID, undefined);
+});
+
+test("secondaryViewerState carries the compare anchor's SOP so the pane lands by image, not index", () => {
+  // case-lidc-nodule-search finding 2 on staging: a secondary anchor stored as
+  // index 47 only. With a SOP the compare pane can land on that exact image.
+  const f = finding({
+    anchors: [
+      {
+        seriesInstanceUID: "ser-a",
+        sliceIndex: 6,
+        sopInstanceUID: "1.2.3.7",
+        marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+        viewportRole: "primary",
+      },
+      {
+        seriesInstanceUID: "ser-a",
+        sliceIndex: 4,
+        sopInstanceUID: " 1.2.3.5 ",
+        marker: { x_pct: 0.68, y_pct: 0.494, shape: "circle" },
+        viewportRole: "secondary",
+      },
+    ],
+  });
+  const view = secondaryViewerState(f);
+  assert.equal(view?.sliceIndex, 4);
+  assert.equal(view?.sopInstanceUID, "1.2.3.5");
 });
 
 test("wantsCompare is true when only the camera differs", () => {

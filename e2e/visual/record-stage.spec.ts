@@ -12,6 +12,8 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const sliceText = (page: Page) => page.getByRole("slider", { name: "Slice" }).first().getAttribute("aria-valuetext");
 
 test("record a walk-through on the shared frame, then replay it from its first slice", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error)));
   await page.addInitScript(() => window.localStorage.setItem("radlearn-cookie-ack", "1"));
   await page.goto("/record");
   await expect(page.getByRole("slider", { name: "Slice" }).first()).toBeVisible({ timeout: 30_000 });
@@ -19,6 +21,8 @@ test("record a walk-through on the shared frame, then replay it from its first s
   await expect(page.getByRole("button", { name: /^Window \/ level/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: /^Full screen/ })).toBeVisible();
   await expect.poll(() => sliceText(page)).toBe("Slice 6 of 10");
+  // No hydration errors (React #418 / #423): the mic badge waits for mount.
+  expect(pageErrors).toEqual([]);
 
   await page.getByRole("button", { name: "Start recording" }).click();
   await expect(page.getByText("Rec", { exact: true })).toBeVisible();

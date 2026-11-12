@@ -133,9 +133,12 @@ fi
 EGRESS_IP=$(gcloud compute addresses describe "${EGRESS_IP_NAME}" --region="${REGION}" --format='value(address)')
 
 # Secret containers only. Add versions yourself — never commit the values.
-REQUIRED_SECRETS=(GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI TRUSTED_PROXY_SECRET)
+# TRUSTED_PROXY_SECRET is the Cloud Run env name. The existing Secret Manager
+# id is radlearn-trusted-proxy-secret; do not create a second secret.
+REQUIRED_SECRETS=(GEMINI_API_KEY BETTER_AUTH_SECRET MONGODB_URI)
+PROXY_SECRET_ID=radlearn-trusted-proxy-secret
 OPTIONAL_SECRETS=(GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ELEVENLABS_API_KEY)
-for name in "${REQUIRED_SECRETS[@]}" "${OPTIONAL_SECRETS[@]}"; do
+for name in "${REQUIRED_SECRETS[@]}" "${PROXY_SECRET_ID}" "${OPTIONAL_SECRETS[@]}"; do
   if ! gcloud secrets describe "${name}" >/dev/null 2>&1; then
     gcloud secrets create "${name}" --replication-policy=automatic
   fi

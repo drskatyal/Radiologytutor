@@ -4,6 +4,8 @@
 names only. Values for secrets belong in Secret Manager/runtime configuration,
 never source or logs. `TRUSTED_PROXY_SECRET` appears in both lists supplied by the
 orchestrator; it is classified as **secret** because it authenticates the Worker.
+Secret Manager already stores it as `radlearn-trusted-proxy-secret`. Deploy maps
+that id onto the runtime env name and does not create a second secret.
 
 ## Startup validation (Step B)
 

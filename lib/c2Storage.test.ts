@@ -43,8 +43,20 @@ test("C2 production deployment sources no longer wire R2 credentials or HMAC end
   for (const file of ["deploy/gcp/deploy-app.sh", "deploy/gcp/setup.sh", "deploy/gcp/terraform/main.tf", "deploy/gcp/terraform/run.tf"]) {
     const source = readFileSync(file, "utf8");
     assert.doesNotMatch(source, /R2_(?:ENDPOINT|BUCKET|ACCESS_KEY_ID|SECRET_ACCESS_KEY)/, file);
-    assert.match(source, /TRUSTED_PROXY_SECRET/, file);
+    assert.match(source, /TRUSTED_PROXY_SECRET|radlearn-trusted-proxy-secret/, file);
   }
+  const deploy = readFileSync("deploy/gcp/deploy-app.sh", "utf8");
+  assert.match(deploy, /PROXY_SECRET_ID=radlearn-trusted-proxy-secret/);
+  assert.match(deploy, /TRUSTED_PROXY_SECRET=\$\{PROXY_SECRET_ID\}:latest/);
+  assert.doesNotMatch(deploy, /--secret="TRUSTED_PROXY_SECRET"/);
+  const setup = readFileSync("deploy/gcp/setup.sh", "utf8");
+  assert.match(setup, /PROXY_SECRET_ID=radlearn-trusted-proxy-secret/);
+  assert.doesNotMatch(setup, /REQUIRED_SECRETS=\(.*TRUSTED_PROXY_SECRET/);
+  const run = readFileSync("deploy/gcp/terraform/run.tf", "utf8");
+  assert.match(run, /TRUSTED_PROXY_SECRET\s*=\s*"radlearn-trusted-proxy-secret"/);
+  const main = readFileSync("deploy/gcp/terraform/main.tf", "utf8");
+  assert.match(main, /"radlearn-trusted-proxy-secret"/);
+  assert.doesNotMatch(main, /"TRUSTED_PROXY_SECRET"/);
 });
 
 test("C2 runtime ADC ignores injected tokens and credential-file discovery; failures/logs hide tokens", async t => {

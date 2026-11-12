@@ -3,8 +3,9 @@
 //
 // Convert ONE series, once, into the bundle layout in lib/dicomCdn/format.ts.
 //
-//   1. Read the archive's series metadata document (its array order is the
-//      viewer's stack order — never re-sorted here).
+//   1. Read the archive's series metadata document and put it in the
+//      viewer's stack order (lib/stackOrder — anatomical, the same order the
+//      DICOMweb path builds), so a converted series scrolls as it did before.
 //   2. For each instance, read frame 1 as Explicit VR Little Endian (the
 //      archive transcodes; Healthcare and Orthanc both honour the
 //      `transfer-syntax` Accept parameter). If the archive will only return the
@@ -22,6 +23,7 @@
 // keeps using DICOMweb for that series. There are no partial bundles.
 // ============================================================================
 
+import { orderStackDatasets } from "../stackOrder";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { parseDicom, readEncapsulatedPixelDataFromFragments } from "dicom-parser";
@@ -285,7 +287,7 @@ export async function buildSeriesBundle(
   const concurrency = Math.max(1, opts.concurrency ?? 6);
   const createdAt = (opts.now?.() ?? new Date()).toISOString();
 
-  const metadata = await archive.seriesMetadata(study, series);
+  const metadata = orderStackDatasets(await archive.seriesMetadata(study, series));
   if (metadata.length === 0) throw new NotConvertibleError("Series has no instances");
   const sops: string[] = [];
   for (const meta of metadata) {

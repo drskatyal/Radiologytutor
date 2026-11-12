@@ -11,6 +11,8 @@ import type { Finding, FindingAnchor, Marker } from "./types";
 /** Viewer target for the compare pane. Fields absent stay as the pane left them. */
 export interface SecondaryViewState {
   sliceIndex?: number;
+  /** Exact image; wins over sliceIndex when the compare stack holds it. */
+  sopInstanceUID?: string;
   windowWidth?: number;
   windowCenter?: number;
   zoom?: number;
@@ -117,6 +119,9 @@ export function secondaryViewerState(finding: Finding): SecondaryViewState | nul
   if (!sec || !wantsCompare(finding)) return null;
   const state: SecondaryViewState = {};
   if (finite(sec.sliceIndex)) state.sliceIndex = sec.sliceIndex;
+  // The SOP rides along so the pane lands on the authored image whatever
+  // order the archive stacks the series in (showState prefers it).
+  if (sec.sopInstanceUID?.trim()) state.sopInstanceUID = sec.sopInstanceUID.trim();
   if (finite(sec.windowWidth)) state.windowWidth = sec.windowWidth;
   if (finite(sec.windowCenter)) state.windowCenter = sec.windowCenter;
   if (finite(sec.zoom) && sec.zoom > 0) state.zoom = sec.zoom;

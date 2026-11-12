@@ -113,3 +113,59 @@ test("merging the rail keeps the open series in place and prefers a positive cou
   assert.equal(merged[0]?.description, "Active");
   assert.equal(merged[1]?.instanceCount, undefined);
 });
+
+test("firstTeacherSlice opens a reader on the first finding, not the last (the LIDC chest case's slice 64 is upper abdomen)", async () => {
+  const { firstTeacherSlice, lastTeacherSlice } = await import("./viewerLoad");
+  const S = "1.2.3";
+  const findings = [
+    { order: 3, seriesInstanceUID: S, sliceIndex: 64 },
+    { order: 1, seriesInstanceUID: S, sliceIndex: 34, sopInstanceUID: "9.9.1" },
+    { order: 2, seriesInstanceUID: S, sliceIndex: 6 },
+    { order: 0, seriesInstanceUID: "other", sliceIndex: 1 },
+  ];
+  assert.deepEqual(firstTeacherSlice(findings, S), { sopInstanceUID: "9.9.1", sliceIndex: 34 });
+  assert.equal(lastTeacherSlice(findings, S)?.sliceIndex, 64, "authors still resume where they left off");
+  assert.equal(firstTeacherSlice(findings, "missing"), undefined);
+  assert.equal(firstTeacherSlice([], S), undefined);
+});
+
+test("stackIndexOfSop finds an instance by UID wherever the stack's order put it", async () => {
+  const { stackIndexOfSop, wadorsImageId } = await import("./viewerLoad");
+  const ids = ["1.9", "1.10", "1.1"].map((sop) => wadorsImageId("/api/dicomweb", "1.2", "1.2.3", sop));
+  assert.equal(stackIndexOfSop(ids, "1.1"), 2);
+  assert.equal(stackIndexOfSop(ids, "1.10"), 1, "a UID that prefixes another is not confused with it");
+  assert.equal(stackIndexOfSop(ids, "9.9"), -1);
+  assert.equal(stackIndexOfSop(ids, " "), -1);
+  assert.equal(stackIndexOfSop(["dicomfile:0"], "1.1"), -1);
+});
+
+test("withSopAnchoredSlices moves a SOP-anchored finding to its image's index; unknown SOPs and index-only findings stay", async () => {
+  const { withSopAnchoredSlices } = await import("./viewerLoad");
+  const findings = [
+    { id: "a", sopInstanceUID: "1.1", sliceIndex: 34 },
+    { id: "b", sliceIndex: 6 },
+    { id: "c", sopInstanceUID: "9.9", sliceIndex: 12 },
+  ];
+  const where: Record<string, number> = { "1.1": 3 };
+  const moved = withSopAnchoredSlices(findings, (sop) => where[sop] ?? -1);
+  assert.deepEqual(moved.map((f) => f.sliceIndex), [3, 6, 12]);
+  assert.equal(withSopAnchoredSlices(findings, () => -1), findings, "nothing known: the same array");
+});
+
+test("firstTeacherSlice skips an earlier finding with no slice or SOP instead of giving up", async () => {
+  const { firstTeacherSlice } = await import("./viewerLoad");
+  const S = "1.2.3";
+  assert.deepEqual(
+    firstTeacherSlice(
+      [
+        { order: 1, seriesInstanceUID: S },
+        { order: 2, seriesInstanceUID: S, sliceIndex: 20 },
+        { order: 3, seriesInstanceUID: S, sliceIndex: 40 },
+      ],
+      S
+    ),
+    { sliceIndex: 20 }
+  );
+  assert.deepEqual(firstTeacherSlice([{ order: 1, seriesInstanceUID: S, sopInstanceUID: "9.1" }], S), { sopInstanceUID: "9.1" });
+  assert.equal(firstTeacherSlice([{ order: 1, seriesInstanceUID: S }], S), undefined);
+});
