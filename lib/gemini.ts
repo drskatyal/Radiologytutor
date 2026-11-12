@@ -1,3 +1,5 @@
+import { examinerPromptPack } from "./exam/prompt";
+import { plannerCommand } from "./tutor/commands";
 import { approvedToolsPrompt, type ApprovedToolContext } from "./harness/approvedTools";
 import { assertNoPhi } from "./phiGuard";
 import { assertGeminiCapability, stripDeprecatedSampling } from "./geminiPolicy";
@@ -448,6 +450,8 @@ export interface TeachingTurn {
 }
 
 export interface TeachingPlanInput {
+  /** M9 caller: advertise only commands that can receive an exact render acknowledgement. */
+  renderConfirmed?: boolean;
   /** Server-built current approvals + actual DICOM frame inventory. Missing means protected tools are denied. */
   approvedTools?: ApprovedToolContext;
   /** Spoken-text question (already transcribed) or typed question. */
@@ -532,20 +536,26 @@ export async function runTeachingPlan(input: TeachingPlanInput): Promise<Teachin
   const result = await generate({
     systemInstruction: `${teachingSystemPrompt({ ...input, hintLevel })}\n\n${approvedToolsPrompt(input.approvedTools)}`,
     temperature: 0.4,
-    tools: TEACHING_TOOLS,
+    tools: input.renderConfirmed ? TEACHING_TOOLS.filter(tool => ["show_finding", "next_in_tour", "prev_in_tour", "set_window", "point_to", "scroll_to", "set_series", "zoom_to", "set_zoom", "set_invert", "draw_annotation", "clear_overlay", "jump_to_key_view"].includes(tool.name)).map(tool => ["zoom_to", "set_zoom"].includes(tool.name) ? { ...tool, description: "Set bounded magnification on the current approved image. Camera position is preserved.", parameters: { type: "object", properties: { zoom: { type: "number", minimum: 0.1, maximum: 10 } }, required: ["zoom"] } } : tool) : TEACHING_TOOLS,
     // Web-grounded teaching: answers cite current radiology references.
     googleSearch: true,
     contents,
   });
 
-  const called = result.functionCalls
-    .map((call) => toAction(call, input.approvedTools))
-    .filter((a) => a.type !== "none");
+  const called = result.functionCalls.map(call => {
+    // Validate raw scalar values before the legacy parser can coerce them.
+    if (input.renderConfirmed && !["point_to", "scroll_to", "draw_annotation", "set_series"].includes(call.name)) plannerCommand({ type: call.name, ...call.args });
+    const action = toAction(call, input.approvedTools);
+    // Fail the complete plan rather than silently dropping an unsupported action.
+    if (input.renderConfirmed) plannerCommand(action);
+    return action;
+  }).filter(a => a.type !== "none");
 
   const seated = called;
   const actions = input.seriesAllowlist
     ? sanitizeSeriesActions(seated, new Set(input.seriesAllowlist))
     : seated;
+  if (input.renderConfirmed && actions.length !== called.length) throw new Error('Tutor requested a series outside the approved allowlist.');
 
   // Tool-only replies leave Discussion blank and stall Teach on speech onEnd.
   // Fill a drive-first line from the authored finding; never invent anatomy.
@@ -584,20 +594,20 @@ export interface SynthesizedSpeech {
 /** Delivery direction is metadata, never prepended to the spoken text. */
 export const ATTENDING_TTS_DIRECTION = "Calm attending radiologist voice, measured pace, verbatim, with no preamble.";
 
-export function buildTtsRequest(text: string, model: string, voice: string, opts?: { persona?: "attending" }) {
+export function buildTtsRequest(text: string, model: string, voice: string, opts?: { persona?: "attending" | "examiner" }) {
   assertGeminiCapability(model, "tts");
   return {
     model,
     input: [{ type: "user_input", content: [{
       type: "text", text,
-      annotations: [{ type: "speech_metadata", style: opts?.persona === "attending" ? ATTENDING_TTS_DIRECTION : "Clear, natural delivery, verbatim, with no preamble." }],
+      annotations: [{ type: "speech_metadata", style: opts?.persona === "examiner" ? examinerPromptPack().voiceStyle : opts?.persona === "attending" ? ATTENDING_TTS_DIRECTION : "Clear, natural delivery, verbatim, with no preamble." }],
     }] }],
     response_format: { type: "audio" },
     generation_config: { speech_config: [{ voice }] },
   };
 }
 
-export async function synthesizeSpeech(text: string, opts?: { persona?: "attending" }): Promise<SynthesizedSpeech> {
+export async function synthesizeSpeech(text: string, opts?: { persona?: "attending" | "examiner" }): Promise<SynthesizedSpeech> {
   const model = process.env.GEMINI_TTS_MODEL?.trim() || GEMINI_TTS_MODEL_DEFAULT;
   const body = buildTtsRequest(text, model, process.env.GEMINI_TTS_VOICE?.trim() || "Kore", opts);
   const res = await callGemini(model, requireKey(), body, undefined, "interactions");

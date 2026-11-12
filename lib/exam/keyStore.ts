@@ -10,11 +10,11 @@ export async function snapshotExamKey(orgId: string, caseId: string): Promise<Ex
   if (!data || data.status !== "published") throw new ExamError("Published case not found", 404);
   const items = (await approvedCurrent(orgId, caseId)).map(f => ({ id: f.id,
     phrases: (f.reportMustMention?.length ? f.reportMustMention : [f.reportGold || f.description]).filter(Boolean),
-    tolerancePixels: 5,
+    tolerancePixels: 5, label: f.label, description: f.description, teachingPoints: f.teachingPoints, approvedVersion: f.approvedVersion,
     ...(f.sopInstanceUID && f.frameNumber && f.imagePoint ? { point: { sopUID: f.sopInstanceUID, frame: f.frameNumber, imagePoint: f.imagePoint } } : {}),
   }));
   const rubricVersion = createHash("sha256").update(JSON.stringify(items)).digest("hex");
-  const key: ExamKey = { id: randomUUID(), orgId, caseId, rubricVersion, items };
+  const key: ExamKey = { id: randomUUID(), orgId, caseId, rubricVersion, items, studyRefs: (data.studyRefs ?? []).map(r => ({ studyInstanceUID: r.studyInstanceUID, seriesInstanceUIDs: r.seriesInstanceUIDs ?? [] })) };
   await writeExamKey(key);
   return key;
 }

@@ -626,6 +626,8 @@ export interface CaseData {
    * back via `captureSessionId` + `tStartMs`/`tEndMs`.
    */
   captureSessions?: CaptureSession[];
+  /** Author-only diagnostics; never a source of approval or exam hints. */
+  replayRuns?: import("./replay/types").ReplayRun[];
 
   /**
    * What Gemini Live teaches from. Prose comes from compile; drive anchors are

@@ -18,6 +18,15 @@ export function reviewSnapshot(f: Finding): ViewerSnapshot | null {
   return structuredClone(s);
 }
 const stable = (value: unknown): string => value && typeof value === "object" ? Array.isArray(value) ? `[${value.map(stable).join(",")}]` : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value) ?? "—";
+/** Session render evidence belongs to the exact image/view/geometry, not its editable text or version number. */
+export function reviewRenderIdentity(f: Finding): string | null {
+  const snapshot = reviewSnapshot(f), anchor = f.resolvedAnchor;
+  if (!snapshot || anchor?.anchorStatus !== "resolved") return null;
+  const { renderSeq: _renderSeq, ...view } = snapshot;
+  return stable({ findingId: f.id, view, anchor: f.anchor, imagePoint: f.imagePoint, marker: f.marker,
+    geometry: anchor.geometry, dimensions: anchor.dimensions, calibration: anchor.calibration,
+    anchorPoint: anchor.imagePoint, imagePoints: anchor.imagePoints, patientPoint: anchor.patientPoint, patientPoints: anchor.patientPoints });
+}
 export function versionDiff(before: FindingVersion | undefined, after: FindingVersion): Array<{ field: string; before: string; after: string }> {
   const a = before?.content ?? {}, b = after.content;
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].sort().flatMap(field => {

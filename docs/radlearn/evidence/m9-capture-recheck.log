@@ -1,0 +1,12 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 2 tests using 1 worker
+
+(node:74) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:74) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 capture-recovery.spec.ts:4:5 › T4 crash recovery retains acknowledged journal/media and sends missing chunks only (7.5s)
+  ✓  2 capture-recovery.spec.ts:48:5 › capture routes require a session; PUT receipts are idempotent and conflicting bytes return 409 (1.4s)
+
+  2 passed (11.1s)

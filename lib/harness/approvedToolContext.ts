@@ -3,6 +3,8 @@ import type { Case, RecordedAnnotation } from "../types";
 import { approvedFinding } from "../findingVersions";
 import { inventoryFromMetadata, readFindingMetadata } from "../findingInventory";
 import { emptyToolContext, type ApprovedToolContext, type ToolFrame } from "./approvedTools";
+import { validSnapshot } from '../journal/viewer';
+import type { ResolvedAnchor } from '../anchors/resolve';
 
 const unit = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
 const pair = (v: unknown): v is [number, number] => Array.isArray(v) && v.length === 2 && v.every(unit);
@@ -10,6 +12,16 @@ const pair = (v: unknown): v is [number, number] => Array.isArray(v) && v.length
 export function namedAnnotation(raw: unknown, target: ToolFrame): RecordedAnnotation | null {
   if (!raw || typeof raw !== "object") return null;
   const a = raw as Record<string, unknown>;
+  // M5+ annotations retain original image pixels, rather than legacy normalized handles.
+  if (a.resolvedAnchor) {
+    const r = a.resolvedAnchor as ResolvedAnchor, s = r.snapshot, dims = r.dimensions;
+    const points = r.imagePoints ?? (r.imagePoint ? [r.imagePoint] : []);
+    if (r.anchorStatus !== 'resolved' || !s || !validSnapshot(s) || ['studyUID', 'seriesUID', 'sopUID', 'frame'].some(k => s[k as keyof typeof s] !== target[k as keyof ToolFrame]) ||
+        !dims || dims.length !== 2 || !dims.every(n => Number.isInteger(n) && n > 1) || !points.length) return null;
+    const handles: [number, number][] = points.map(p => [p.x / (dims[0] - 1), p.y / (dims[1] - 1)]);
+    if (!handles.every(pair) || !['Length', 'EllipticalROI', 'RectangleROI', 'Probe', 'ArrowAnnotate', 'Angle', 'Bidirectional'].includes(String(a.tool))) return null;
+    return { shape: a.tool === 'ArrowAnnotate' ? 'arrow' : 'circle', from: handles[0], to: handles.at(-1)!, handles, tool: String(a.tool) };
+  }
   if (["studyUID", "seriesUID", "sopUID", "frame"].some(k => a[k] !== target[k as keyof ToolFrame])) return null;
   if (!["circle", "arrow"].includes(String(a.shape)) || !pair(a.from) || !pair(a.to)) return null;
   if (a.handles !== undefined && (!Array.isArray(a.handles) || !a.handles.length || !a.handles.every(pair))) return null;

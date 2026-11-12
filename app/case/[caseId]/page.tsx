@@ -1,7 +1,7 @@
 import { ExamSession } from "@/components/exam/ExamSession";
 import { isExamMode, learnerCaseProjection } from "@/lib/exam/projection";
 import { hasActiveExam } from "@/lib/exam/access";
-import { startExam } from "@/lib/exam/service";
+import { startExam, ownedExam } from "@/lib/exam/service";
 import { redirect, notFound } from "next/navigation";
 import { activeOrgId, getSession } from "@/lib/auth";
 import { canAccessOrgResource } from "@/lib/authRoles";
@@ -36,7 +36,7 @@ export default async function CasePage({
   searchParams,
 }: {
   params: { caseId: string };
-  searchParams?: { course?: string; mode?: string };
+  searchParams?: { course?: string; mode?: string; attempt?: string };
 }) {
   const orgId = await activeOrgId();
   let caseData = await getCaseForOrg(orgId, params.caseId);
@@ -57,7 +57,8 @@ export default async function CasePage({
 
   if (isExamMode(searchParams?.mode) || await hasActiveExam(params.caseId)) {
     if (!session) redirect(`/sign-in?next=${encodeURIComponent(`/case/${params.caseId}?mode=exam`)}`);
-    const attempt = await startExam(orgId, session.user.id, params.caseId);
+    const attempt = searchParams?.attempt ? await ownedExam(orgId, session.user.id, searchParams.attempt) : await startExam(orgId, session.user.id, params.caseId);
+    if (attempt.caseId !== params.caseId) notFound();
     return <ExamSession caseData={learnerCaseProjection(caseData)} attemptId={attempt.id} />;
   }
 

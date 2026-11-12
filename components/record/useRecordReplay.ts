@@ -21,6 +21,7 @@ import { captureBase } from "@/lib/journal/sync";
 import { captureLocalStore, type LocalCapture } from "@/lib/journal/localStore";
 import type { RenderConfirmedViewer } from "@/lib/viewerController";
 import { TrackRecorder } from "@/lib/recorder";
+import { startExactReplay } from "@/lib/replay/client";
 import { startReplay, type ReplayController } from "@/lib/replay";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
 import type { ReplayOverlayHandle } from "@/components/ReplayOverlay";
@@ -199,7 +200,7 @@ export function useRecordReplay(opts: {
   const startingRef = useRef<Promise<void>>(Promise.resolve());
   const recorderRef = useRef<TrackRecorder | JournalRecorder | null>(null);
   const framesRef = useRef<CompileFrame[]>([]);
-  const replayRef = useRef<ReplayController | null>(null);
+  const replayRef = useRef<ReplayController | ReturnType<typeof startExactReplay> | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const phaseRef = useRef<RecordPhase>("idle");
@@ -313,7 +314,17 @@ export function useRecordReplay(opts: {
       if (!t || !controls.current || ["starting", "recording", "stopping"].includes(phaseRef.current)) return;
       stopReplay();
 
-      const url = audioUrl ?? t.audioUrl;
+      const url = audioUrl ?? t.audioUrl ?? (!which ? playbackRef.current.audioUrl : null);
+      if (t.journal?.length) {
+        if (!controls.current.requestView) { setCaptureError("Exact replay requires a render-confirmed viewer."); return; }
+        setCaptureError(""); setPhase("replaying"); setProgress(0);
+        const ctrl = startExactReplay(async () => ({ track: t, audioUrl: url ?? null }), controls.current as RenderConfirmedViewer, {
+          onState: state => { setProgress(state.elapsedMs / t.durationMs); if (state.phase === "failed") setCaptureError(state.message); },
+        });
+        replayRef.current = ctrl;
+        void ctrl.finished.then(() => { if (replayRef.current === ctrl) setPhase("idle"); });
+        return;
+      }
       let audioEl: HTMLAudioElement | null = null;
       if (url) {
         audioEl = new Audio(url);

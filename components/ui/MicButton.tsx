@@ -9,6 +9,8 @@ export type MicState = "idle" | "recording" | "processing";
 
 export interface MicButtonProps {
   state: MicState;
+  holdToTalk?: boolean;
+  onCancel?: () => void;
   /** Called when the user begins recording (idle → recording). */
   onStart: () => void;
   /** Called when the user ends recording (recording → processing/idle). */
@@ -39,6 +41,8 @@ export function micButtonAccessibleName(state: MicState, label?: React.ReactNode
  */
 export function MicButton({
   state,
+  holdToTalk = false,
+  onCancel,
   onStart,
   onStop,
   disabled = false,
@@ -52,12 +56,12 @@ export function MicButton({
   const isProcessing = state === "processing";
 
   const handleClick = () => {
-    if (disabled || isProcessing) return;
+    if (holdToTalk || disabled || isProcessing) return;
     if (isRecording) onStop();
     else onStart();
   };
 
-  const ariaLabel = micButtonAccessibleName(state, label);
+  const ariaLabel = holdToTalk ? (isRecording ? "Release to send" : "Hold to ask") : micButtonAccessibleName(state, label);
   const visibleLabel =
     label ??
     (isRecording ? "Listening…" : isProcessing ? "Thinking…" : "Hold to ask");
@@ -69,7 +73,15 @@ export function MicButton({
         type="button"
         aria-label={ariaLabel}
         aria-pressed={isRecording}
-        disabled={disabled || isProcessing}
+        data-tutor-hold={holdToTalk || undefined}
+        disabled={disabled || (!holdToTalk && isProcessing)}
+        onPointerDown={holdToTalk ? e => { if (e.button !== 0 || disabled) return; e.preventDefault(); e.currentTarget.focus(); e.currentTarget.setPointerCapture(e.pointerId); onStart(); } : undefined}
+        onPointerUp={holdToTalk ? () => onStop() : undefined}
+        onPointerCancel={holdToTalk ? () => onCancel?.() : undefined}
+        onLostPointerCapture={holdToTalk ? () => onStop() : undefined}
+        onKeyDown={holdToTalk ? e => { if ((e.code === "Space" || e.code === "Enter") && !e.repeat) { e.preventDefault(); onStart(); } if (e.key === "Escape") onCancel?.(); } : undefined}
+        onKeyUp={holdToTalk ? e => { if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); onStop(); } } : undefined}
+        onBlur={holdToTalk ? () => onCancel?.() : undefined}
         onClick={handleClick}
         className={cn(
           "group inline-flex items-center rounded-full text-left",

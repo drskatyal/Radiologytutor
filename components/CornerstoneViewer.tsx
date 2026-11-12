@@ -38,6 +38,9 @@
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
+import { ReplayGeometryLayer } from "./record/ReplayGeometryLayer";
+import { projectReplayShapes } from "@/lib/replay/geometry";
+import type { ReplayShape, ProjectedReplayShape } from "@/lib/replay/types";
 import { imageGeometry } from "@/lib/anchors/geometryCache";
 import { matchesView } from "../lib/journal/match";
 import { RenderCoordinator, ViewRequestError } from "../lib/journal/renderAck";
@@ -1125,6 +1128,7 @@ export default function CornerstoneViewer({
   const instanceCountFor = (seriesInstanceUID: string): number | undefined =>
     seriesRef.current?.find((s) => s.seriesInstanceUID === seriesInstanceUID)?.instanceCount;
 
+  const [replayShapes, setReplayShapes] = useState<ProjectedReplayShape[]>([]);
   const [status, setStatus] = useState("Initializing viewer…");
   // A failure is shown as a calm sentence, never an exception message on the
   // black stage. Code that would not load (ChunkLoadError after retries) is
@@ -2019,6 +2023,8 @@ export default function CornerstoneViewer({
         const renders = new RenderCoordinator();
         let renderSeq = 0;
         let requestEpoch = 0;
+        let replayGeometry: ReplayShape[] = [];
+        let refreshReplayGeometry = () => {};
         const onImageRendered = (event: Event) => {
           const detail = (event as CustomEvent).detail;
           if (disposed || detail?.viewportId !== viewportId || mprHeld || mprSessionRef.current) return;
@@ -2026,6 +2032,7 @@ export default function CornerstoneViewer({
           if (!snapshot) return;
           el.dataset.viewerSnapshot = JSON.stringify(snapshot);
           renders.publish({ snapshot, at: performance.now(), displayIndex: viewport.getCurrentImageIdIndex() });
+          refreshReplayGeometry();
         };
         let suppressDepth = 0;
         const beginSuppress = () => {
@@ -3660,7 +3667,22 @@ export default function CornerstoneViewer({
           restoreRaf = requestAnimationFrame(tick);
         };
 
+        const showReplayGeometry = (shapes: ReplayShape[]) => {
+          replayGeometry = shapes;
+          if (!shapes.length) { setReplayShapes([]); return; }
+          const frame = readProjector(), current = renders.current?.snapshot;
+          const vp = viewportRef.current;
+          const dimensions = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[] } } | null)?.getImageData?.()?.dimensions;
+          if (!frame || !current || !dimensions) throw new Error("Recorded annotation projection is unavailable.");
+          setReplayShapes(projectReplayShapes(shapes, current, dimensions, frame.project));
+        };
+        refreshReplayGeometry = () => {
+          // A subsequent user view never leaves a stale overlay on another image.
+          if (replayGeometry.length) { try { showReplayGeometry(replayGeometry); } catch { setReplayShapes([]); } }
+        };
         const handle: CornerstoneControls = {
+          cancelView: () => { requestEpoch++; renders.cancel(); },
+          showReplayGeometry,
           onRendered: listener => renders.subscribe(listener),
           getRenderedView: () => renders.current,
           requestView: command => {
@@ -5179,6 +5201,7 @@ export default function CornerstoneViewer({
           role="img"
           data-viewer-tool={activeTool}
         />
+        {!mprLive && <ReplayGeometryLayer shapes={replayShapes} />}
         {!mprLive && (
           <AnnotationEditLayer
             ctx={editCtx}

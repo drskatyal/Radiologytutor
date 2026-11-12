@@ -1,0 +1,15 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 4 tests using 1 worker
+
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:73) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+Synthetic replay beep drift (ms): {"measuredMs":[1344.6666666666667,3343.9999999999995],"driftMs":[5.3333333333332575,6.000000000000455]}
+  ✓  1 replay-clock.spec.ts:3:5 › M8 T6 decoded synthetic beep onsets align with the shared replay clock within 100 ms (10.0s)
+  ✓  2 replay-clock.spec.ts:38:5 › M8 T6 an uncertain retained audio gap is detected before replay instead of drifting silently (3.6s)
+  ✓  3 replay-missing-instance.spec.ts:6:5 › M7 T3 review jump fails closed for a missing SOP without nearest-slice substitution (timed replay remains M8) (3.3s)
+  ✓  4 replay-missing-instance.spec.ts:23:5 › M8 T3 timed replay stops at missing SOP; no nearest-slice substitute and no subsequent render (6.3s)
+
+  4 passed (25.3s)

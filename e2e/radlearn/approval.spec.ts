@@ -61,6 +61,10 @@ test("M7 keyboard review approves saved versions, invalidates edits and preserve
       expect((await checkbox.boundingBox())!.y).toBeGreaterThanOrEqual(96);
     }
     await card.getByRole("button", { name: "Save new version" }).click();
+    await expect(card.getByRole("button", { name: "Approve v2" })).toBeDisabled();
+    await expect(card.getByText("Jump to confirm the image first", { exact: true })).toBeVisible();
+    await card.getByRole("button", { name: "Jump", exact: true }).click();
+    await expect(card.getByText("Rendered ✓", { exact: true })).toBeVisible();
     await expect(card.getByRole("button", { name: "Approve v2" })).toBeEnabled();
     await card.getByRole("button", { name: "Approve v2" }).focus(); await page.keyboard.press("Enter");
     await expect(card.getByText("Approved v2", { exact: true })).toBeVisible();
