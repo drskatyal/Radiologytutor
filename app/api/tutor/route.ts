@@ -1,3 +1,4 @@
+import { assertNoPhi } from "@/lib/phiGuard";
 import { loadApprovedToolContext } from "@/lib/harness/approvedToolContext";
 import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/tutor  — CALL 2 of the student voice Q&A flow (CLAUDE.md §2).
@@ -65,7 +66,13 @@ export async function POST(req: NextRequest) {
       ? String(body.currentFindingId)
       : undefined;
 
-    const stored = await getCaseForOrg(orgId, caseId);
+    let stored = await getCaseForOrg(orgId, caseId);
+    if (!stored) return NextResponse.json({ error: "Case not found" }, { status: 404 });
+    // The prompt and its pinned IDs must describe the same revision, including
+    // an edit/reapproval that arrived during metadata I/O.
+    const approvedTools = await loadApprovedToolContext(stored, undefined, async () => {
+      stored = await getCaseForOrg(orgId, caseId); return stored;
+    });
     const data = stored ? await groundedCase(stored) : null;
     if (!data) return NextResponse.json({ error: "Case not found" }, { status: 404 });
 
@@ -112,8 +119,10 @@ export async function POST(req: NextRequest) {
 
     // history excludes the current question. runTeachingPlan turns that into
     // the socratic/viva hint rung for this finding (look, location, mimic, reveal).
+    assertNoPhi({ question, history });
+    if (!approvedTools.anchors.length) return NextResponse.json({ error: "No current approved tutor anchors are available." }, { status: 422 });
     const result = await runTeachingPlan({
-      approvedTools: await loadApprovedToolContext(stored!, undefined, () => getCaseForOrg(orgId, caseId)),
+      renderConfirmed: true, approvedTools,
       question,
       history,
       caseTitle: data.title,
@@ -126,7 +135,10 @@ export async function POST(req: NextRequest) {
       findings,
     });
 
-    return NextResponse.json(result);
+    const approvalIds = approvedTools.anchors.map(a => a.id).sort();
+    const after = await loadApprovedToolContext(stored!, undefined, () => getCaseForOrg(orgId, caseId));
+    if (JSON.stringify(approvalIds) !== JSON.stringify(after.anchors.map(a => a.id).sort())) return NextResponse.json({ error: "Approved evidence changed during planning. Ask again." }, { status: 409 });
+    return NextResponse.json({ ...result, approvalIds }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (err) {
     const authErr = jsonAuthError(err);
     if (authErr) return authErr;

@@ -63,10 +63,14 @@ pass. M0–M2 alone do not claim capture/replay completion.
   `lib/gemini.test.ts` ("tools with an empty message get a drive-first authored
   line") still asserts all three returned actions survive, now with approved
   IDs and actual frame inventory. The P0-4 tests also assert ordered retention
-  of all valid actions when invalid geometry/range calls are also present. Planned `lib/tutor/queue.test.ts` must prove sequential
-  execution with matching acknowledgements.
+  of all valid actions when invalid geometry/range calls are also present. M9 now adds
+  `lib/tutor/orchestrator.test.ts` and `e2e/radlearn/tutor-loop.spec.ts` for sequential
+  execution with matching acknowledgements. The planned queue.test.ts is named
+  orchestrator.test.ts to match strategy §4 M9 and the implemented module.
   The review's blanket claim that this function returns only actions[0] does not
-  match this base. Caller execution and acknowledgement remain M9 work.
+  match this base. M9 now executes all actions through the acknowledged queue.
+  Its render-confirmed planner rejects a whole unsupported plan; the legacy
+  planner compatibility tests remain unchanged.
 - Export/M2 addendum: `lib/exportPhi.test.ts` and native `export_policy.rs` tests cover web/desktop metadata and
   overlay allowlists plus DICOM identity stripping and fail-closed validation.
   PR #130 sketch export is absent. Future test `lib/sketchExport.phi.test.ts`
@@ -247,5 +251,36 @@ one finding** capture → retained extraction → expert edit/approval → exact
 replay round trip. Real local capture, render acknowledgements and geometry are
 used; only the model response is injected. Synthetic beep drift is measured
 from decoded Web Audio output in `replay-clock.spec.ts` (≤100 ms per cue).
-See EXACT_REPLAY.md and M8_VALIDATION.md for evidence and limitations. M9 remains
-unimplemented; no tutor action queue or speech orchestration is claimed here.
+See EXACT_REPLAY.md and M8_VALIDATION.md for evidence and limitations. That M8 evidence does not claim tutor queue coverage; the M9 evidence below does.
+
+
+## M9 implementation and acceptance evidence
+
+- P0-8: `lib/tutor/orchestrator.test.ts` checks every ordered action before
+  speech, delayed/reordered/wrong/failed/timed-out renders, cancelled generations,
+  late speech completion and speech failure. `tutor-loop.spec.ts` observes actual
+  render snapshots at real `audio.play`, including three actions before one
+  sentence, and cancellation before later actions/utterances.
+- P0-4 and T1/T2/T3/T9 regressions: existing approved-tool/anchor tests remain.
+  `lib/tutor/commands.test.ts` adds strict named finding/anchor/annotation and
+  exact SOP/frame commands, window/zoom bounds, foreign/unapproved identities,
+  original image-pixel highlights and spacing provenance. `planner.test.ts`
+  checks the supported request tools, full ordered list, numeric coercion
+  rejection and fail-closed unsupported/foreign-series plans.
+- T9 at the speech boundary: every action and speech release checks fresh
+  approvals. The browser spec edits a finding during rendering and proves no
+  speech starts. Stored answers keep their original approval IDs and spoken
+  command beats; replay does not adopt edited evidence.
+- T10 at the tutor boundary: delayed real render frames hold speech; missing or
+  mismatched identity/acknowledgement fails closed. Existing M4/M8 replay
+  acceptance remains intact; M9 does not change replay geometry/timing.
+- Held voice: `holdToTalk.test.ts` covers repeat/release, min/max duration,
+  blur/visibility/Escape, permission denial and late permission, plus immediate
+  barge-in while transcription is pending. Browser STT and teaching remain
+  separate calls. No persistent Live microphone is opened.
+
+See TUTOR_LOOP.md and M9_VALIDATION.md. The only changed old assertion is the
+fullscreen microphone's name (Open microphone → Hold to ask), documented and
+committed separately in M9_TEST_CHANGES.md. No assertion is skipped or weakened.
+Synthetic data only; STT, model and TTS transport are mocked. **live contract not
+verified. NO LIVE GCP CALL WAS MADE.** M10 has not started.

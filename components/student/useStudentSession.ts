@@ -2,23 +2,23 @@
 
 // The student session state machine.
 //
-// Opening the microphone starts a Gemini Live session loaded from the case's
-// LiveTeachingPack. Scrolling the study does not start teaching. Hang up ends
-// the session. Recorded-tour playback stays available as a tool the model may
-// call; it does not autoplay. Examiner withholds the diagnosis. Teach me the
-// case speaks and drives the viewer from authored anchors, including set_series.
+// Held microphone capture uses STT then a separate teaching plan. Commands
+// are server-authorized and rendered sequentially before their speech.
+// Scrolling never starts teaching; examination remains on its isolated path.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRecorder } from "@/components/useRecorder";
+import { HoldToTalk, type HoldRelease } from "@/lib/tutor/holdToTalk";
+import { TutorOrchestrator, type TutorBeat } from "@/lib/tutor/orchestrator";
+import { plannerCommand, type TutorStep } from "@/lib/tutor/commands";
+import { assertNoPhi } from "@/lib/phiGuard";
+import { useRecorder, type Recording } from "@/components/useRecorder";
 import { useToast, type MicState } from "@/components/ui";
-import { primeAttendingSpeech, speakBeats, stopSpeaking } from "@/lib/speak";
+import { speakBeats, stopSpeaking } from "@/lib/speak";
 import {
   buildPerformancePlan,
   normalizeTutorActions,
-  splitSentences,
 } from "@/lib/performancePlan";
 import {
-  NARRATION_HOLD_MAX_MS,
   examHintLevel,
   seatExamReveal,
   spokenFindingSources,
@@ -26,7 +26,7 @@ import {
   type SpokenFindingSource,
 } from "@/lib/tutorSpeech";
 import { findingViewerState } from "@/lib/viewerController";
-import { interruptGuidePlayback, playTeachingGuide, type ReplayController } from "@/lib/replay";
+import { interruptGuidePlayback, type ReplayController } from "@/lib/replay";
 import {
   adaptRemainingFromState,
   decisionBeatIndex,
@@ -38,19 +38,10 @@ import {
   type CheckInBranch,
   type FindingCheckInState,
 } from "@/lib/tourCheckIn";
-import { emptyToolContext, isProtectedTool, type ApprovedToolAction, type ApprovedToolContext } from "@/lib/harness/approvedTools";
-import { executeApprovedTool } from "@/lib/harness/executeApprovedTool";
 import type { HarnessViewerAction } from "@/lib/harness/tools";
 import { useSketchLayer } from "./useSketchLayer";
-import { GeminiLiveSession, type LiveToolResult } from "@/lib/geminiLiveSession";
-import { buildLiveContextUpdate, type LiveToolCall } from "@/lib/geminiLiveProtocol";
 import {
-  liveModeFromSession,
-  livePackInstruction,
-  livePackTools,
-  liveSessionKick,
   resolveLiveTeachingPack,
-  validateLiveToolCall,
 } from "@/lib/liveTeachingPack";
 import { authoredSeriesAllowlist, sanitizeSeriesActions } from "@/lib/setSeries";
 import {
@@ -127,6 +118,9 @@ export interface ChatTurn {
   error?: boolean;
   /** Web sources the tutor cited (assistant turns; from grounding). */
   sources?: ChatSource[];
+  /** Approval IDs pinned when this answer was planned; replay cannot adopt later edits. */
+  approvalIds?: string[];
+  tutorBeats?: TutorBeat[];
   /**
    * Sentence whose audio just started. The rail keeps the full `text`.
    * The on-image caption prefers this so it moves with speech.
@@ -157,6 +151,16 @@ export function useStudentSession(
   const sketch = useSketchLayer(controls);
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const voiceAbortRef = useRef<AbortController | null>(null);
+  const tutorRef = useRef<TutorOrchestrator | null>(null);
+  const tutorTurnRef = useRef<string | null>(null);
+  const tutorPlanRef = useRef<TutorBeat[]>([]);
+  const tutorReplayRef = useRef(false);
+  const holdRef = useRef<HoldToTalk<Recording> | null>(null);
+  const [tutorNotice, setTutorNotice] = useState("");
+  const [voiceReviewed, setVoiceReviewed] = useState(false);
+  const voiceReviewedRef = useRef(voiceReviewed); voiceReviewedRef.current = voiceReviewed;
+  const allowedApprovalRef = useRef<string[] | null>(null);
   // Author QA replay only — student product does not VCR-play tracks.
   const replayRef = useRef<ReplayController | null>(null);
   const replayAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -179,8 +183,6 @@ export function useStudentSession(
    */
   const revealEpochRef = useRef(0);
   const modeRef = useRef(mode);
-  /** play_guide is the only speech on this turn — speak its beats. */
-  const narrateGuideRef = useRef(false);
   const runTutorRef = useRef<(q: string, h: ChatTurn[]) => Promise<void>>(
     async () => {}
   );
@@ -266,24 +268,15 @@ export function useStudentSession(
   locatedIdsRef.current = locatedIds;
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
-  const liveRef = useRef<GeminiLiveSession | null>(null);
-  const [liveStatus, setLiveStatus] = useState<"closed" | "connecting" | "open">("closed");
+  const liveStatus = "closed" as "closed" | "connecting" | "open"; // Optional Live path is disabled.
   const liveStatusRef = useRef(liveStatus);
   liveStatusRef.current = liveStatus;
-  const liveUserTurn = useRef<string | null>(null);
-  const liveAssistantTurn = useRef<string | null>(null);
-  const kickRef = useRef("");
-  const liveContextKey = useRef("");
-  const liveCatalogAbortRef = useRef<AbortController | null>(null);
-  const liveModeRef = useRef(liveModeFromSession(mode));
-  liveModeRef.current = liveModeFromSession(mode);
   // Mirror of `turns` so side-effecting handlers can read history without
   // running effects inside a setState updater (StrictMode-safe).
   const turnsRef = useRef<ChatTurn[]>([]);
   turnsRef.current = turns;
 
   const teachingPack = useMemo(() => resolveLiveTeachingPack(caseData), [caseData]);
-  const approvedToolsRef = useRef<ApprovedToolContext>(emptyToolContext());
   const teachingPackRef = useRef(teachingPack);
   teachingPackRef.current = teachingPack;
   const orderedFindings = useMemo(() => {
@@ -508,6 +501,8 @@ export function useStudentSession(
   // speak() after stopSpeaking starts a new clip — that is how the previous
   // finding's "Follow the stack." was landing on the notes finding.
   const interruptPlayback = useCallback(() => {
+    tutorRef.current?.interrupt();
+    abortRef.current?.abort(); voiceAbortRef.current?.abort();
     checkInAbortRef.current?.abort();
     releaseCheckIn(-1);
     playbackGenRef.current += 1;
@@ -530,32 +525,6 @@ export function useStudentSession(
     setTourActive(false);
     interruptPlayback();
   }, [interruptPlayback]);
-
-  // Prefetch the next beat's first sentence. speakBeats plays that sentence
-  // from the primed blob and fetches any further sentences while it plays.
-  const primeGuideLine = useCallback((text: string) => {
-    const first = splitSentences(text)[0];
-    if (first) primeAttendingSpeech(first);
-  }, []);
-
-  const speakGuideSentences = useCallback(
-    async (turnId: string, text: string, stale: () => boolean) => {
-      const sentences = splitSentences(text);
-      if (sentences.length === 0 || stale()) return;
-      await speakBeats(sentences, {
-        persona: "attending",
-        onStartBeat: (index) => {
-          if (stale()) return;
-          const sentence = sentences[index] ?? "";
-          const lineEpoch = revealEpochRef.current;
-          setTurns((prev) =>
-            commitSpokenProgress(prev, turnId, sentence, lineEpoch, revealEpochRef.current)
-          );
-        },
-      });
-    },
-    []
-  );
 
   /** Animate the laser to a normalized point, then optionally land a marker. */
   const pointLaser = useCallback(async (x: number, y: number, landMarker?: Marker) => {
@@ -677,247 +646,57 @@ export function useStudentSession(
   );
 
   // --- Play a cleaned teach script (learner clock, not the mic tape) ------
-  const playFindingGuide = useCallback(
-    async (
-      finding: Finding,
-      guide: TeachingGuide,
-      opts?: {
-        narrate?: (text: string) => Promise<void>;
-        primeNarration?: (text: string) => void;
-        onCheckIn?: (ctx: {
-          beat: { say?: string };
-          index: number;
-        }) => Promise<CheckInBranch | "skip" | "paused" | null | void>;
-      }
-    ) => {
-      if (!controls.current) return;
-      stopReplay();
-      setMarkerVisible(false);
-      setMeasurementsVisible(false);
-      setReplaying(true);
-      // Ink follows the voice: the ring lands when the laser does on the
-      // commit line, the card arrives with the pearl. Nothing is drawn
-      // ahead of the sentence that names it, and nothing in exam mode.
-      sketch.clearAuthored();
-      const inkAllowed = () => !isExamMode(modeRef.current);
-      const ctrl = playTeachingGuide(
-        guide,
-        {
-          applyEvent: (e) => controls.current?.applyEvent(e),
-          getSliceIndex: () => controls.current?.getStartState().sliceIndex ?? 0,
-          settle: () => controls.current?.settle() ?? Promise.resolve(),
-          setWindow: (ww, wc) => controls.current?.setWindow(ww, wc),
-          showState: (state, ms) => controls.current?.showState(state, ms),
-          annotationLanded: () => controls.current?.annotationApplied === true,
-          overlay: {
-            cursor: (x, y) => overlay.current?.cursor(x, y),
-            annotation: (e) => overlay.current?.annotation(e),
-            animateTo: (x, y, o) =>
-              overlay.current?.animateTo(x, y, o) ?? Promise.resolve(),
-            clear: () => overlay.current?.clear(),
-          },
-        },
-        {
-          narrate: opts?.narrate,
-          primeNarration: opts?.primeNarration,
-          onCheckIn: opts?.onCheckIn,
-          onBeat: ({ beat, phase }) => {
-            if (!inkAllowed()) return;
-            if (beat.act === "commit" && phase === "landed") {
-              sketch.replay(teachingPackRef.current, finding.id, "ring");
-            } else if (beat.act === "pearl" && phase === "start") {
-              sketch.replay(teachingPackRef.current, finding.id, "card");
-            }
-          },
-          // Hint only. The script's own say lines already go through narrate.
-          // Do not fill this with tutorSpeech — guided mode would name the finding.
-          landmark: finding.landmark,
-          withholdTerms: finding.label ? [finding.label] : undefined,
-        }
-      );
-      replayRef.current = ctrl;
-      await ctrl.finished;
-      if (replayRef.current === ctrl) {
-        replayRef.current = null;
-        setReplaying(false);
-      }
-    },
-    [stopReplay, sketch.clearAuthored, sketch.replay]
-  );
-
-  // Recheck approval after model latency and before every protected action. Browser counts
-  // and cached packs cannot authorize geometry; the server supplies canonical SOP/frame.
-  const runApprovedCall = useCallback(async (name: string, args: Record<string, unknown>): Promise<boolean> => {
-    if (isExamMode(modeRef.current) || !controls.current) return false;
-    try {
-      const response = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/approved-tools`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args }),
-      });
-      if (!response.ok) return false;
-      const { action } = await response.json() as { action: ApprovedToolAction };
-      if (isExamMode(modeRef.current) || !controls.current) return false;
-      return await executeApprovedTool(action, controls.current, (x, y) => pointLaser(x, y));
-    } catch { return false; }
-  }, [caseData.caseId, pointLaser]);
-
-  // --- Execute a tutor viewer action ---------------------------------------
-  const executeAction = useCallback(
-    async (action: ViewerAction) => {
-      const cur = activeIndexRef.current;
-      switch (action.type) {
-        case "show_finding": {
-          const idx = orderedFindings.findIndex((f) => f.id === action.findingId);
-          if (idx >= 0) await revealFinding(idx);
-          break;
-        }
-        case "next_in_tour":
-          await revealFinding(Math.min(cur + 1, orderedFindings.length - 1));
-          break;
-        case "prev_in_tour":
-          await revealFinding(Math.max(cur - 1, 0));
-          break;
-        case "set_window":
-          if (action.windowWidth != null && action.windowCenter != null) {
-            // Adaptive: scrolls when Δ is small, snaps bone↔lung when large.
-            controls.current?.setWindow(action.windowWidth, action.windowCenter);
+  const ensureTutor = useCallback(() => {
+    if (!tutorRef.current) tutorRef.current = new TutorOrchestrator({
+      viewer: () => controls.current,
+      stopSpeech: stopSpeaking,
+      resolve: async (command, currentFindingId, currentView, signal) => {
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/tutor-commands`, { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify({ command, currentFindingId, currentView }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Approved tutor command unavailable.");
+        const step = data as TutorStep;
+        if (allowedApprovalRef.current && !allowedApprovalRef.current.includes(step.anchorId)) throw new Error("The approved evidence changed after planning. Ask again.");
+        return step;
+      },
+      onStep: step => {
+        const index = orderedFindingsRef.current.findIndex(f => f.id === step.findingId);
+        if (index >= 0) { commitFindingStep(index); markRevealed(step.findingId); }
+        setMarkerVisible(false); setMeasurementsVisible(false);
+        window.dispatchEvent(new CustomEvent("radlearn:tutor", { detail: { type: "rendered", findingId: step.findingId, snapshot: controls.current?.getRenderedView?.()?.snapshot } }));
+      },
+      onState: (state, message) => {
+        setTutorNotice(message ?? "");
+        if (state === "speaking") setPhase("speaking");
+        else if (state === "rendering" || state === "resolving") setPhase("thinking");
+        else { setPhase("idle"); setSpeakingTurnId(null); }
+        if (state === "failed") setTurns(prev => [...prev, { id: nextId(), role: "assistant", text: message ?? "Tutor stopped before speech.", error: true }]);
+      },
+      speak: async (text, signal) => {
+        if (signal.aborted) return;
+        const stop = () => stopSpeaking(); signal.addEventListener("abort", stop, { once: true });
+        const id = tutorTurnRef.current;
+        try { await speakBeats([text], { authorId: caseData.authorId, onStartBeat: () => {
+          if (!signal.aborted && id) {
+            setSpeakingTurnId(id);
+            const replay = tutorReplayRef.current, beat = tutorPlanRef.current.shift();
+            setTurns(prev => replay ? prev.map(t => t.id === id ? { ...t, liveCaption: text } : t) : commitSpokenProgress(prev, id, text, revealEpochRef.current, revealEpochRef.current).map(t => t.id === id && beat ? { ...t, tutorBeats: [...(t.tutorBeats ?? []), beat] } : t));
           }
-          break;
-        case "point_to":
-        case "draw_annotation":
-        case "scroll_to": {
-          const args = action.type === "draw_annotation" ? { annotationId: action.annotationId }
-            : { anchorId: action.anchorId };
-          if (!await runApprovedCall(action.type, args)) toast({ title: "Viewer action unavailable", description: "The target is no longer approved or its exact image is not loaded.", variant: "warning" });
-          break;
-        }
-        case "set_series": {
-          if (action.sliceIndex !== undefined || action.anchorId !== undefined) {
-            if (!await runApprovedCall("set_series", { anchorId: action.anchorId, seriesInstanceUID: action.seriesInstanceUID, ...(action.ww !== undefined ? { ww: action.ww, wc: action.wc } : {}) })) toast({ title: "Viewer action unavailable", description: "The target is no longer approved or its exact image is not loaded.", variant: "warning" });
-            break;
-          }
-          // Collapsed rail is presentation. This uses the loaded series list.
-          const uid = action.seriesInstanceUID;
-          if (!uid || !seriesAllowRef.current.has(uid)) break;
-          if (!controls.current?.seriesUIDs.includes(uid)) break;
-          if (controls.current.activeSeriesUID !== uid) {
-            controls.current.showSeries(uid);
-            await controls.current.settle();
-          }
-          const view: {
-            sliceIndex?: number;
-            windowWidth?: number;
-            windowCenter?: number;
-          } = {};
-          if (action.sliceIndex != null) view.sliceIndex = action.sliceIndex;
-          if (action.ww != null && action.wc != null) {
-            view.windowWidth = action.ww;
-            view.windowCenter = action.wc;
-          }
-          if (view.sliceIndex != null || view.windowWidth != null) {
-            await controls.current.showState(view, 520);
-          }
-          break;
-        }
-        case "zoom_to":
-        case "set_zoom": {
-          const pan =
-            action.panX != null && action.panY != null
-              ? ([action.panX, action.panY] as [number, number])
-              : undefined;
-          await controls.current?.showState({ zoom: action.zoom, pan }, 520);
-          break;
-        }
-        case "set_invert":
-          controls.current?.applyEvent({ t: 0, type: "invert", value: action.value });
-          break;
-        case "play_guide": {
-          const target =
-            orderedFindings.find((item) => item.id === action.findingId) ??
-            orderedFindings[activeIndexRef.current];
-          if (!target) break;
-          const epoch = revealEpochRef.current;
-          const idx = orderedFindings.indexOf(target);
-          // The guide owns the step from here. A later student selection
-          // bumps the selection token, so this call cannot rewind the badge
-          // when its viewer work finishes.
-          if (idx >= 0) commitFindingStep(idx);
-          markRevealed(target.id, epoch);
-          const guide = resolveTeachingGuide(target);
-          if (guide && guideHasMotion(guide)) {
-            // A live answer is already in speakBeats. Speaking the guide on
-            // top would cancel that clip. Narrate only when this call is the
-            // speech (a tool-only turn with nothing else to say).
-            if (narrateGuideRef.current) {
-              interruptPlayback();
-              const playbackGen = playbackGenRef.current;
-              const turnId = nextId();
-              setTurns((prev) =>
-                appendGuideTurn(
-                  prev,
-                  { id: turnId, role: "assistant", text: "" },
-                  epoch,
-                  revealEpochRef.current
-                )
-              );
-              setPhase("speaking");
-              setSpeakingTurnId(turnId);
-              await playFindingGuide(target, guide, {
-                primeNarration: primeGuideLine,
-                narrate: (text) =>
-                  speakGuideSentences(
-                    turnId,
-                    text,
-                    () => playbackGen !== playbackGenRef.current
-                  ),
-              });
-              setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
-              setPhase((phase) => (phase === "speaking" ? "idle" : phase));
-            } else {
-              await playFindingGuide(target, guide);
-            }
-          } else if (idx >= 0) {
-            await revealFinding(idx);
-          }
-          if (epoch !== revealEpochRef.current) break;
-          if (target.marker) {
-            setMarker(target.marker);
-            setMarkerVisible(true);
-          }
-          break;
-        }
-        case "draw_circle":
-        case "draw_arrow":
-        case "place_card":
-        case "clear_overlay":
-          await sketch.applyAction(teachingPackRef.current, action, {
-            spoil: !isExamMode(modeRef.current),
-            currentFindingId:
-              activeIndexRef.current >= 0
-                ? orderedFindings[activeIndexRef.current]?.id
-                : undefined,
-          });
-          break;
-        case "jump_to_key_view": {
-          const idx = orderedFindings.findIndex((item) => item.id === action.findingId);
-          if (idx >= 0) await revealFinding(idx, { spoil: !isExamMode(modeRef.current) });
-          break;
-        }
-        default:
-          break;
-      }
-    },
-    [orderedFindings, revealFinding, pointLaser, runApprovedCall, toast, playFindingGuide, markRevealed, interruptPlayback, commitFindingStep, primeGuideLine, speakGuideSentences, sketch.applyAction]
-  );
+        } }); } finally { signal.removeEventListener("abort", stop); }
+      },
+    });
+    return tutorRef.current;
+  }, [caseData.caseId, caseData.authorId, commitFindingStep, markRevealed]);
 
   // --- CALL 2: teaching plan (text question -> answer + action) ------------
   const runTutor = useCallback(
     async (question: string, history: ChatTurn[]) => {
       // A tutor call started under Teach must not speak or reveal after Exam.
       if (isExamMode(modeRef.current) && !isExamMode(mode)) return;
-      const epoch = revealEpochRef.current;
+      const epoch = revealEpochRef.current, playbackGeneration = playbackGenRef.current;
       const staleTutor = () =>
-        epoch !== revealEpochRef.current ||
+        epoch !== revealEpochRef.current || playbackGeneration !== playbackGenRef.current ||
         (isExamMode(modeRef.current) && !isExamMode(mode));
+      try { assertNoPhi({ question, history }); } catch { setTutorNotice("Remove patient identifiers before asking the tutor."); return; }
       setPhase("thinking");
       // Light the "searching" orb up front when the question reads like it
       // needs outside evidence; sources arriving below confirm it after.
@@ -968,7 +747,7 @@ export function useStudentSession(
           const cur = activeIndexRef.current;
           const atEnd = cur >= orderedFindings.length - 1;
           window.setTimeout(() => {
-            if (abortRef.current?.signal.aborted) return;
+            if (ac.signal.aborted || staleTutor()) return;
             if (!tourActiveRef.current) return;
             if (atEnd) {
               finishTourRef.current();
@@ -978,56 +757,14 @@ export function useStudentSession(
           }, 1100);
         };
 
-        const deliverSpeech = (
-          text: string,
-          speechActions: ViewerAction[],
-          sources: ChatSource[]
-        ) => {
-          const plan = buildPerformancePlan(text, speechActions);
-          const spoken = plan.filter((beat) => beat.text.trim());
-          const lead = plan.filter((beat) => !beat.text.trim());
-          for (const beat of lead) {
-            for (const action of beat.actions) void executeAction(action);
-          }
-          if (spoken.length === 0) {
-            setPhase("idle");
-            queueGuidedAdvance();
-            return;
-          }
-          const id = nextId();
-          const epoch = revealEpochRef.current;
-          setTurns((prev) =>
-            appendGuideTurn(
-              prev,
-              { id, role: "assistant", text: "", sources, findingId: currentFindingId },
-              epoch,
-              revealEpochRef.current
-            )
-          );
-          setPhase("speaking");
-          setSpeakingTurnId(id);
-          void speakBeats(
-            spoken.map((beat) => beat.text),
-            {
-              authorId: caseData.authorId,
-              onStartBeat: (i) => {
-                const sentence = spoken[i]?.text ?? "";
-                setTurns((prev) =>
-                  commitSpokenProgress(prev, id, sentence, epoch, revealEpochRef.current)
-                );
-                // This sentence's tools start with the sentence, not after
-                // the whole answer has been spoken.
-                for (const action of spoken[i].actions) {
-                  void executeAction(action);
-                }
-              },
-              onEnd: () => {
-                setSpeakingTurnId((cur) => (cur === id ? null : cur));
-                setPhase((phase) => (phase === "speaking" ? "idle" : phase));
-                queueGuidedAdvance();
-              },
-            }
-          );
+        const deliverSpeech = async (text: string, speechActions: ViewerAction[], sources: ChatSource[]) => {
+          const beats = buildPerformancePlan(text, speechActions.map(plannerCommand));
+          if (!beats.length) { setPhase("idle"); return; }
+          const id = nextId(); tutorTurnRef.current = id;
+          tutorReplayRef.current = false; tutorPlanRef.current = beats.filter(b => b.text.trim());
+          setTurns(prev => appendGuideTurn(prev, { id, role: "assistant", text: "", sources, findingId: currentFindingId, approvalIds: [...(allowedApprovalRef.current ?? [])] }, epoch, revealEpochRef.current));
+          const outcome = await ensureTutor().run(beats, currentFindingId);
+          if (outcome === "completed" && !staleTutor()) queueGuidedAdvance();
         };
 
         const priorTurns = history.map((turn) => ({
@@ -1047,52 +784,15 @@ export function useStudentSession(
             })
           : 3;
 
-        if (!res.ok) {
-          // 503 means GEMINI_API_KEY isn't set — still speak an authored line
-          // (Teach) or the exam stem (viva) instead of a silent error toast.
-          // A partial exam answer climbs the hint ladder instead of the stem.
-          if (res.status === 503) {
-            setAiAvailable(false);
-            setSearching(false);
-            const offlineActions = examMode
-              ? seatExamReveal([], examLevel, currentFindingId)
-              : [];
-            const speech = tutorSpeechPlan({
-              answer: "",
-              actions: offlineActions,
-              mode,
-              question,
-              findings: spokenFindings,
-              currentFindingId,
-              tourActive,
-              viewerAlreadySeated: tourActive,
-              history: priorTurns,
-            });
-            const line = speech.speak
-              ? speech.answer
-              : examMode
-                ? examFallbackStem(orderedFindings.length)
-                : "";
-            if (line.trim()) {
-              if (staleTutor()) return;
-              deliverSpeech(line, offlineActions, []);
-              return;
-            }
-            setPhase("idle");
-            if (speech.advanceWithoutSpeech) queueGuidedAdvance();
-            return;
-          }
-          throw new Error(data.error || "Tutor error");
-        }
+        if (!res.ok) { if (res.status === 503) setAiAvailable(false); throw new Error(data.error || "Tutor unavailable"); }
+        if (!Array.isArray(data.approvalIds) || data.approvalIds.some((id: unknown) => typeof id !== "string")) throw new Error("The tutor plan has no current approval references. Ask again.");
+        allowedApprovalRef.current = data.approvalIds;
         setAiAvailable(true);
 
         const opening = question === "Begin the session.";
-        let actions = sanitizeSeriesActions(
-          normalizeTutorActions(
-            data as { action?: ViewerAction; actions?: ViewerAction[] }
-          ),
-          seriesAllowRef.current
-        );
+        // The server validates every command. Never silently drop a rejected
+        // series action and speak over whichever image happened to remain.
+        let actions = normalizeTutorActions(data as { action?: ViewerAction; actions?: ViewerAction[] });
         // Opening a viva: we already seated the slice. Don't spoil the
         // marker just because the model called show_finding with the stem.
         if (examMode && opening) {
@@ -1119,22 +819,7 @@ export function useStudentSession(
           history: priorTurns,
         });
         if (staleTutor()) return;
-        if (!speech.speak) {
-          narrateGuideRef.current = true;
-          try {
-            for (const action of actions) {
-              if (staleTutor()) return;
-              await executeAction(action);
-            }
-          } finally {
-            narrateGuideRef.current = false;
-          }
-          if (staleTutor()) return;
-          setPhase("idle");
-          if (speech.advanceWithoutSpeech) queueGuidedAdvance();
-          return;
-        }
-        deliverSpeech(speech.answer, actions, sources);
+        await deliverSpeech(speech.speak ? speech.answer : "", actions, sources);
       } catch (e) {
         if (staleTutor()) return;
         setSearching(false);
@@ -1151,7 +836,7 @@ export function useStudentSession(
         setPhase("idle");
       }
     },
-    [caseData.caseId, caseData.authorId, mode, orderedFindings, executeAction, toast, revealFinding, examMode, courseId]
+    [caseData.caseId, caseData.authorId, mode, orderedFindings, ensureTutor, toast, revealFinding, examMode, courseId]
   );
 
   runTutorRef.current = runTutor;
@@ -1180,243 +865,14 @@ export function useStudentSession(
 
   finishTourRef.current = finishTour;
 
-  const runGuidedFrom = useCallback(
-    async (index: number) => {
-      const gen = ++tourGenRef.current;
-      const stale = () => gen !== tourGenRef.current || !tourActiveRef.current;
-      if (!tourActiveRef.current) return;
-      // Drop the previous finding's guide and any clip still in flight
-      // before this finding is the one on screen. Tour auto-advance uses
-      // this same entry, not only the finding rail.
-      interruptPlayback();
-      const playbackGen = playbackGenRef.current;
-      const lineStale = () => stale() || playbackGen !== playbackGenRef.current;
-      if (index >= orderedFindings.length) {
-        finishTour();
-        return;
-      }
-      const finding = orderedFindings[index];
-      if (!finding) return;
-      const guide = resolveTeachingGuide(finding);
-      if (guide && guideHasMotion(guide) && controls.current) {
-        commitFindingStep(index);
-        markRevealed(finding.id);
-        const says = authoredGuideLines(guide);
-        // A guide with motion but no authored lines used to play silently.
-        // Speak a look-cue with the drive, then the name once the guide lands.
-        // Demo scripts (LIDC) always have a line per beat, so this fallback
-        // does not replace them. speak() caps a clip that never ends.
-        const fallbackSentences = says.length
-          ? []
-          : splitSentences(
-              tutorSpeechPlan({
-                answer: "",
-                actions: [{ type: "show_finding", findingId: finding.id }],
-                mode: "guided",
-                question: "Teach the finding now on screen.",
-                findings: spokenSources(orderedFindings, caseData.primaryDiagnosis),
-                currentFindingId: finding.id,
-                tourActive: true,
-              }).answer
-            );
-        const fallbackCue = fallbackSentences[0] ?? "";
-        const fallbackRest = fallbackSentences.slice(1).join(" ");
-        const ask = decisionBeatIndex(guide) != null;
-        const turnId = says.length || fallbackCue || ask ? nextId() : null;
-        const epoch = revealEpochRef.current;
-        narrateTurnRef.current = turnId;
-        if (turnId) {
-          setTurns((prev) =>
-            appendGuideTurn(
-              prev,
-              { id: turnId, role: "assistant", text: "" },
-              epoch,
-              revealEpochRef.current
-            )
-          );
-          setPhase("speaking");
-          setSpeakingTurnId(turnId);
-        }
-        const readyRef: { current: Awaited<ReturnType<typeof loadTourCheckIn>> | undefined } = {
-          current: undefined,
-        };
-        if (ask) {
-          const ac = new AbortController();
-          checkInAbortRef.current = ac;
-          void loadTourCheckIn(finding, ac.signal).then((value) => {
-            if (ac.signal.aborted) return;
-            readyRef.current = value;
-          });
-        }
-        const guidePlay = playFindingGuide(finding, guide, {
-          primeNarration: primeGuideLine,
-          narrate: turnId
-            ? (text) => {
-                const id = narrateTurnRef.current ?? turnId;
-                if (lineStale()) return Promise.resolve();
-                setPhase("speaking");
-                setSpeakingTurnId(id);
-                return speakGuideSentences(id, text, lineStale);
-              }
-            : undefined,
-          onCheckIn: ask
-            ? async () => {
-                if (stale()) return "paused";
-                const check =
-                  readyRef.current !== undefined ? readyRef.current : fallbackCheckIn(finding);
-                if (!check || stale()) return "skip";
-                const qId = nextId();
-                setTurns((prev) =>
-                  appendGuideTurn(
-                    prev,
-                    { id: qId, role: "assistant", text: "" },
-                    epoch,
-                    revealEpochRef.current
-                  )
-                );
-                setPhase("speaking");
-                setSpeakingTurnId(qId);
-                const askGen = tourGenRef.current;
-                const pickedPromise = new Promise<number>((resolve) => {
-                  checkInResolveRef.current = resolve;
-                  setCheckIn({
-                    findingId: finding.id,
-                    prompt: check.prompt,
-                    options: check.options,
-                  });
-                });
-                // The card is up before the clip ends so Space and the choices
-                // both work while the question is still being spoken.
-                void speakGuideSentences(qId, check.prompt, lineStale).finally(() => {
-                  if (tourGenRef.current !== askGen) return;
-                  if (!checkInResolveRef.current) return;
-                  setSpeakingTurnId((id) => (id === qId ? null : id));
-                  setPhase((phase) => (phase === "speaking" ? "idle" : phase));
-                });
-                const picked = await pickedPromise;
-                if (picked < 0 || stale()) return "paused";
-                const result = gradeCheckIn(check, picked);
-                const nextState = recordCheckIn(checkInsRef.current, {
-                  findingId: finding.id,
-                  result,
-                  prompt: check.prompt,
-                });
-                checkInsRef.current = nextState;
-                setCheckIns(nextState);
-                const option = check.options[picked] ?? "Don't know";
-                const userId = nextId();
-                const replyId = nextId();
-                narrateTurnRef.current = replyId;
-                setTurns((prev) =>
-                  appendGuideTurn(
-                    [
-                      ...prev,
-                      {
-                        id: userId,
-                        role: "user" as const,
-                        text: option,
-                        findingId: finding.id,
-                      },
-                    ],
-                    { id: replyId, role: "assistant", text: "" },
-                    epoch,
-                    revealEpochRef.current
-                  )
-                );
-                setPhase("speaking");
-                setSpeakingTurnId(replyId);
-                return adaptRemainingFromState(guide, nextState, finding.id, check) ?? "skip";
-              }
-            : undefined,
-        });
-        const cuePlay =
-          fallbackCue && turnId
-            ? speakGuideSentences(turnId, fallbackCue, lineStale)
-            : Promise.resolve();
-        await Promise.all([guidePlay, cuePlay]);
-        if (stale() || playbackGen !== playbackGenRef.current) return;
-        if (fallbackRest && turnId) {
-          await speakGuideSentences(turnId, fallbackRest, lineStale);
-        }
-        if (stale() || playbackGen !== playbackGenRef.current) return;
-        setSpeakingTurnId((cur) => (cur === turnId ? null : cur));
-        setPhase((p) => (p === "speaking" ? "idle" : p));
-        if (finding.marker) {
-          setMarker(finding.marker);
-          setMarkerVisible(true);
-        }
-        const saved = finding.measurements ?? [];
-        const drawn = measurementsFromGuide(guide);
-        const meas = saved.length ? saved : drawn;
-        // Native tool strokes stay on the viewport when they landed. The
-        // overlay / measurement layer covers a miss, without doubling a hit.
-        if (meas.length && controls.current?.annotationApplied !== true) {
-          overlay.current?.clear();
-          setMeasurements(meas);
-          setMeasurementsVisible(true);
-        } else if (!drawn.length && saved.length) {
-          setMeasurements(saved);
-          setMeasurementsVisible(true);
-        }
-        window.setTimeout(() => {
-          if (gen !== tourGenRef.current || !tourActiveRef.current) return;
-          const next = nextGuidedIndex(index, orderedFindings.length);
-          if (next == null) {
-            finishTour();
-            return;
-          }
-          void runGuidedRef.current(next);
-        }, 700);
-        return;
-      }
-      await revealFinding(index, { spoil: true });
-      if (stale()) return;
-      void runTutorRef.current(
-        "Teach the finding now on screen. Apply authored windowing and point if useful. Explain how a registrar should observe it and how to put it in the report. Two to three short sentences. Do not call next_in_tour.",
-        turnsRef.current
-      );
-    },
-    [
-      orderedFindings,
-      playFindingGuide,
-      markRevealed,
-      revealFinding,
-      finishTour,
-      caseData.authorId,
-      interruptPlayback,
-      commitFindingStep,
-      primeGuideLine,
-      speakGuideSentences,
-    ]
-  );
+  const runGuidedFrom = useCallback(async (index: number) => {
+    if (!tourActiveRef.current) return;
+    if (index >= orderedFindings.length) { finishTour(); return; }
+    interruptPlayback(); commitFindingStep(index);
+    await runTutor("Teach the approved finding currently in focus.", turnsRef.current);
+  }, [orderedFindings.length, finishTour, interruptPlayback, commitFindingStep, runTutor]);
 
   runGuidedRef.current = runGuidedFrom;
-
-  // A beat that never reports another caption (hung TTS the player did not
-  // cut, or a tween that ignored cancel) must not leave Speaking latched.
-  // New caption text resets the timer, so a guide that is still advancing
-  // is left alone. The last finding unlocks Continue; earlier ones advance.
-  useEffect(() => {
-    // A check-in is a deliberate pause. Hung-speech recovery must not skip it.
-    if (mode !== "guided" || !tourActive || phase !== "speaking" || checkIn) return;
-    const gen = tourGenRef.current;
-    const index = activeIndexRef.current;
-    const timer = window.setTimeout(() => {
-      if (tourGenRef.current !== gen || !tourActiveRef.current) return;
-      interruptPlayback();
-      setSpeakingTurnId(null);
-      setPhase((current) => (current === "speaking" ? "idle" : current));
-      const next = nextGuidedIndex(index, orderedFindings.length);
-      if (next == null) {
-        tourGenRef.current += 1;
-        tourActiveRef.current = false;
-        setTourActive(false);
-        return;
-      }
-      void runGuidedRef.current(next);
-    }, NARRATION_HOLD_MAX_MS + 2_000);
-    return () => window.clearTimeout(timer);
-  }, [mode, tourActive, phase, turns, orderedFindings.length, interruptPlayback, checkIn]);
 
   const resumeTour = useCallback(() => {
     if (mode !== "guided" || busy) return;
@@ -1448,15 +904,6 @@ export function useStudentSession(
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
-      if (liveRef.current?.isOpen) {
-        const findingId =
-          activeIndexRef.current >= 0
-            ? orderedFindingsRef.current[activeIndexRef.current]?.id
-            : undefined;
-        setTurns((prev) => [...prev, { id: nextId(), role: "user", text: trimmed, findingId }]);
-        liveRef.current.sendText(trimmed);
-        return;
-      }
       pauseTour();
       const history = turnsRef.current;
       const findingId =
@@ -1481,326 +928,40 @@ export function useStudentSession(
     sendText("I don't know. Please show me this finding and teach it.");
   }, [revealFinding, sendText, orderedFindings]);
 
-  const appendLiveTranscript = useCallback((role: "user" | "assistant", chunk: string) => {
-    const piece = chunk.trim();
-    if (!piece) return;
-    if (role === "user" && kickRef.current && (kickRef.current.startsWith(piece) || piece === kickRef.current)) {
-      return;
-    }
-    const findingId =
-      activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : undefined;
-    setTurns((prev) => {
-      const currentId = role === "user" ? liveUserTurn.current : liveAssistantTurn.current;
-      if (currentId) {
-        return prev.map((turn) => {
-          if (turn.id !== currentId) return turn;
-          const text = turn.text && piece.startsWith(turn.text) ? piece : `${turn.text} ${piece}`.replace(/\s+/g, " ").trim();
-          return {
-            ...turn,
-            text,
-            pending: false,
-            liveCaption: role === "assistant" ? piece : turn.liveCaption,
-          };
-        });
-      }
-      const id = nextId();
-      if (role === "user") liveUserTurn.current = id;
-      else liveAssistantTurn.current = id;
-      return [
-        ...prev,
-        {
-          id,
-          role,
-          text: piece,
-          voice: role === "user",
-          findingId,
-          liveCaption: role === "assistant" ? piece : undefined,
-        },
-      ];
-    });
-  }, []);
-
-  const runLiveCall = useCallback(
-    async (call: LiveToolCall): Promise<LiveToolResult> => {
-      const pack = teachingPackRef.current;
-      const reply = (response: Record<string, unknown>): LiveToolResult => ({
-        id: call.id,
-        name: call.name,
-        response,
-      });
-      if (isProtectedTool(call.name, call.args)) {
-        const ok = await runApprovedCall(call.name, call.args);
-        return reply(ok ? { ok: true } : { ok: false, error: "Current approved target unavailable; no image or geometry substituted." });
-      }
-      const currentId =
-        activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : undefined;
-      const decision = validateLiveToolCall(pack, call.name, call.args, currentId);
-      if (!decision.ok) return reply({ ok: false, error: decision.error, allowedSeries: decision.allowedSeries });
-
-      if (decision.clearOverlay) {
-        sketch.clear();
-        return reply({ ok: true, cleared: true });
-      }
-
-      if (call.name === "web_search") {
-        const query = decision.query ?? "";
-        setSearching(true);
-        try {
-          const res = await fetch("/api/voice/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query }),
-          });
-          const data = (await res.json()) as { answer?: string; error?: string; sources?: ChatSource[] };
-          if (!res.ok) return reply({ ok: false, error: data.error || "Search failed" });
-          if (data.sources?.length) {
-            setTurns((prev) => {
-              const id = liveAssistantTurn.current;
-              if (!id) return prev;
-              return prev.map((turn) => (turn.id === id ? { ...turn, sources: data.sources } : turn));
-            });
-          }
-          return reply({ ok: true, answer: data.answer ?? "", sources: data.sources ?? [] });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Search failed";
-          return reply({ ok: false, error: message });
-        } finally {
-          setSearching(false);
-        }
-      }
-
-      const viewer = controls.current;
-      if (!viewer) return reply({ ok: false, error: "Viewer is not ready.", drive: decision.drive });
-      const spoil = liveModeRef.current === "teach_me";
-
-      if (
-        decision.findingId &&
-        (call.name === "show_finding" || call.name === "next_finding" || call.name === "jump_to_key_view")
-      ) {
-        const idx = orderedFindingsRef.current.findIndex((item) => item.id === decision.findingId);
-        if (idx < 0) return reply({ ok: false, error: "That finding is not on this case." });
-        await revealFinding(idx, { spoil });
-        return reply({ ok: true, findingId: decision.findingId, drive: decision.drive });
-      }
-
-      if (decision.seriesInstanceUID) {
-        // The series rail may be collapsed. That preference is not a gate.
-        if (!viewer.seriesUIDs.includes(decision.seriesInstanceUID)) {
-          return reply({
-            ok: false,
-            error: "That series is not loaded in the viewer.",
-            allowedSeries: pack.authoredSeriesInstanceUIDs,
-            drive: decision.drive,
-          });
-        }
-        if (viewer.activeSeriesUID !== decision.seriesInstanceUID) {
-          viewer.showSeries(decision.seriesInstanceUID);
-          await viewer.settle();
-        }
-      }
-
-      const view: { sliceIndex?: number; windowWidth?: number; windowCenter?: number; zoom?: number; pan?: [number, number] } = {};
-      if (decision.sliceIndex != null) view.sliceIndex = decision.sliceIndex;
-      if (decision.ww != null && decision.wc != null) {
-        view.windowWidth = decision.ww;
-        view.windowCenter = decision.wc;
-      }
-      if (decision.zoom != null) {
-        view.zoom = decision.zoom;
-        if (decision.panX != null && decision.panY != null) view.pan = [decision.panX, decision.panY];
-      }
-      if (Object.keys(view).length) await viewer.showState(view, 520);
-
-      if (decision.x_pct != null && decision.y_pct != null) {
-        const marker = { x_pct: decision.x_pct, y_pct: decision.y_pct, shape: "circle" as const };
-        await pointLaser(decision.x_pct, decision.y_pct, spoil ? marker : undefined);
-      }
-
-      if (decision.marks?.length) sketch.showMarks(decision.marks);
-
-      return reply({
-        ok: true,
-        findingId: decision.findingId,
-        seriesInstanceUID: decision.seriesInstanceUID,
-        sliceIndex: decision.sliceIndex,
-        ww: decision.ww,
-        wc: decision.wc,
-        drive: decision.drive,
-      });
-    },
-    [pointLaser, revealFinding, runApprovedCall, sketch.clear, sketch.showMarks]
-  );
-
-  // --- Microphone opens Gemini Live. Hang up ends it. -----------------------
-  const onMicStart = useCallback(async () => {
-    if (liveRef.current || liveStatusRef.current !== "closed") return;
-    if (isExamMode(modeRef.current)) return;
-    const catalogAbort = new AbortController();
-    liveCatalogAbortRef.current = catalogAbort;
-    liveStatusRef.current = "connecting";
-    setLiveStatus("connecting");
-    try {
-      const response = await fetch(`/api/cases/${encodeURIComponent(caseData.caseId)}/approved-tools`, { cache: "no-store", signal: catalogAbort.signal });
-      if (!response.ok) throw new Error("Approved tools unavailable");
-      approvedToolsRef.current = await response.json();
-    } catch {
-      if (catalogAbort.signal.aborted) return;
-      liveStatusRef.current = "closed";
-      setLiveStatus("closed");
-      toast({ title: "Live session", description: "Approved viewer tools are unavailable. Try again.", variant: "warning" });
-      return;
-    } finally {
-      if (liveCatalogAbortRef.current === catalogAbort) liveCatalogAbortRef.current = null;
-    }
-    if (catalogAbort.signal.aborted) return;
-    if (isExamMode(modeRef.current)) { liveStatusRef.current = "closed"; setLiveStatus("closed"); return; }
-    pauseTour();
-    tourActiveRef.current = false;
-    setTourActive(false);
-    const liveMode = liveModeRef.current;
-    kickRef.current = liveSessionKick(liveMode);
-    const session = new GeminiLiveSession({
-      onPhase: (next) => {
-        if (next === "connecting") {
-          setLiveStatus("connecting");
-          setPhase("recording");
-          return;
-        }
-        setLiveStatus("open");
-        setPhase(next === "speaking" ? "speaking" : "recording");
-      },
-      onInputTranscript: (text) => appendLiveTranscript("user", text),
-      onOutputTranscript: (text) => appendLiveTranscript("assistant", text),
-      onTurnComplete: () => {
-        liveUserTurn.current = null;
-        liveAssistantTurn.current = null;
-      },
-      onInterrupted: () => {
-        setPhase("recording");
-      },
-      onSources: (sources) => {
-        setTurns((prev) => {
-          const id = liveAssistantTurn.current;
-          if (!id) return prev;
-          return prev.map((turn) => (turn.id === id ? { ...turn, sources } : turn));
-        });
-      },
-      onToolCalls: async (calls) => {
-        const results: LiveToolResult[] = [];
-        for (const call of calls) results.push(await runLiveCall(call));
-        return results;
-      },
-      onLevel: (level) => setMicLevel(level),
-      onError: (message) => {
-        toast({ title: "Live session", description: message, variant: "danger" });
-      },
-      onClose: () => {
-        liveRef.current = null;
-        liveUserTurn.current = null;
-        liveAssistantTurn.current = null;
-        setLiveStatus("closed");
-        setPhase("idle");
-        setMicLevel(0);
-      },
-    });
-    liveRef.current = session;
-    setLiveStatus("connecting");
-    setPhase("recording");
-    const pack = teachingPackRef.current;
-    const focusId =
-      activeIndexRef.current >= 0 ? orderedFindingsRef.current[activeIndexRef.current]?.id : pack.findingOrder[0];
-    liveContextKey.current = `${liveMode}:${focusId ?? ""}`;
-    await session.start({
-      systemInstruction: livePackInstruction(pack, liveMode, caseData.title, focusId),
-      tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current, approvedToolsRef.current),
-      openingText: kickRef.current,
-    });
-  }, [appendLiveTranscript, caseData.caseId, caseData.title, pauseTour, runLiveCall, toast]);
-
-  // Finding or mode change replaces the speakable instruction and the full tool list.
-  useEffect(() => {
-    const session = liveRef.current;
-    if (!session?.isOpen || liveStatus !== "open") return;
-    const focusId = activeIndex >= 0 ? orderedFindings[activeIndex]?.id : undefined;
-    const key = `${liveModeRef.current}:${focusId ?? ""}`;
-    if (liveContextKey.current === key) return;
-    liveContextKey.current = key;
-    const pack = teachingPackRef.current;
-    session.sendContextUpdate(
-      buildLiveContextUpdate({
-        mode: liveModeRef.current,
-        systemInstruction: livePackInstruction(pack, liveModeRef.current, caseData.title, focusId),
-        tools: livePackTools(pack.authoredSeriesInstanceUIDs, liveModeRef.current, approvedToolsRef.current),
-      })
-    );
-  }, [liveStatus, activeIndex, mode, orderedFindings, caseData.title]);
-
-  const onMicStop = useCallback(async () => {
-    if (liveCatalogAbortRef.current) {
-      liveCatalogAbortRef.current.abort();
-      liveCatalogAbortRef.current = null;
-      liveStatusRef.current = "closed";
-      setLiveStatus("closed");
-      setPhase("idle");
-      return;
-    }
-    if (liveRef.current || liveStatusRef.current !== "closed") {
-      liveRef.current?.hangup();
-      return;
-    }
-    const rec = await recorder.stop();
-    if (!rec) {
-      setPhase("idle");
-      return;
-    }
-
-    // Render a pending user turn immediately, fill it with the transcript.
+  // Held microphone capture uses two separate server calls; optional Live voice is not enabled here.
+  const acceptRecording = useCallback(async (rec: Recording) => {
+    if (isExamMode(modeRef.current) || !voiceReviewedRef.current) return;
+    const epoch = playbackGenRef.current, ac = new AbortController(); voiceAbortRef.current = ac;
     const pendingId = nextId();
-    const findingId =
-      activeIndexRef.current >= 0
-        ? orderedFindings[activeIndexRef.current]?.id
-        : undefined;
-    setTurns((prev) => [
-      ...prev,
-      { id: pendingId, role: "user", text: "", voice: true, pending: true, findingId },
-    ]);
-    setPhase("transcribing");
-
+    const findingId = orderedFindingsRef.current[activeIndexRef.current]?.id;
+    setTurns(prev => [...prev, { id: pendingId, role: "user", text: "", voice: true, pending: true, findingId }]); setPhase("transcribing");
     try {
-      // CALL 1 — transcription only.
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audio: { base64: rec.base64, mime: rec.mimeType } }),
-      });
+      const res = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal, body: JSON.stringify({ audio: { base64: rec.base64, mime: rec.mimeType, phiReviewed: true } }) });
       const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 503) setAiAvailable(false);
-        throw new Error(data.error || "Transcription failed");
-      }
-
-      const transcript = String(data.transcript ?? "").trim();
-      if (!transcript) {
-        setTurns((prev) => prev.filter((t) => t.id !== pendingId));
-        toast({ title: "Didn't catch that", description: "No speech detected — try again.", variant: "warning" });
-        setPhase("idle");
-        return;
-      }
-
-      // Resolve the user's transcript turn, then CALL 2 with prior history
-      // (everything before this voice turn).
-      const history = turnsRef.current.filter((t) => t.id !== pendingId);
-      setTurns((prev) =>
-        prev.map((t) => (t.id === pendingId ? { ...t, text: transcript, pending: false } : t))
-      );
-      runTutor(transcript, history);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Transcription failed";
-      setTurns((prev) => prev.filter((t) => t.id !== pendingId));
-      toast({ title: "Voice unavailable", description: msg, variant: "danger" });
-      setPhase("idle");
-    }
-  }, [orderedFindings, recorder, runTutor, toast]);
+      if (ac.signal.aborted || epoch !== playbackGenRef.current) return;
+      if (!res.ok) throw new Error(data.error || "Transcription failed");
+      const transcript = String(data.transcript ?? "").trim(); assertNoPhi(transcript);
+      if (!transcript) throw new Error("No speech detected. Hold and try again.");
+      const history = turnsRef.current.filter(t => t.id !== pendingId);
+      setTurns(prev => prev.map(t => t.id === pendingId ? { ...t, text: transcript, pending: false } : t));
+      await runTutor(transcript, history);
+    } catch (error) {
+      if (!ac.signal.aborted && epoch === playbackGenRef.current) { setTutorNotice(error instanceof Error ? error.message : "Voice unavailable. Try again."); setPhase("idle"); }
+    } finally { setTurns(prev => prev.filter(t => t.id !== pendingId || !t.pending)); }
+  }, [runTutor]);
+  const holdCallbacks = useRef({ recorder, pauseTour, acceptRecording }); holdCallbacks.current = { recorder, pauseTour, acceptRecording };
+  if (!holdRef.current) holdRef.current = new HoldToTalk<Recording>({
+    recorder: { start: () => holdCallbacks.current.recorder.start(), stop: () => holdCallbacks.current.recorder.stop() },
+    interrupt: () => holdCallbacks.current.pauseTour(), submit: rec => holdCallbacks.current.acceptRecording(rec),
+    state: (state, message) => { setPhase(state === "idle" ? "idle" : "recording"); setTutorNotice(message ?? (state === "starting" ? "Waiting for microphone permission…" : state === "recording" ? "Listening — release to send." : "")); },
+  });
+  const onMicStart = useCallback(() => {
+    if (isExamMode(modeRef.current) || !controls.current) return;
+    if (!voiceReviewedRef.current) { setTutorNotice("Confirm your question contains no patient identifiers before using the microphone."); return; }
+    holdRef.current?.press();
+  }, []);
+  const onMicStop = useCallback(() => holdRef.current?.release(), []);
+  const onMicCancel = useCallback((reason: HoldRelease = "cancel") => { holdRef.current?.release(reason); pauseTour(); }, [pauseTour]);
 
   // --- Tour controls (step rail) -------------------------------------------
   const goTo = useCallback(
@@ -1892,48 +1053,18 @@ export function useStudentSession(
     setCompareOpen(true);
   }, [orderedFindings, series]);
 
-  const onStopSpeaking = useCallback(() => {
-    if (liveRef.current) {
-      liveRef.current.interruptPlayback();
-      return;
-    }
-    if (phase === "speaking") {
-      stopSpeaking();
-      setSpeakingTurnId(null);
-      setPhase("idle");
-    }
-  }, [phase]);
-
-  // Replay (or stop replaying) a tutor turn's voice on demand — the ▶ control
-  // on assistant bubbles. Re-speaking interrupts any current speech (barge-in).
-  const replayTurn = useCallback(
-    (turn: ChatTurn) => {
-      if (turn.role !== "assistant" || turn.error || !turn.text) return;
-      // Toggle off if this exact turn is the one currently speaking.
-      if (speakingTurnId === turn.id) {
-        stopSpeaking();
-        setSpeakingTurnId(null);
-        if (phase === "speaking") setPhase("idle");
-        return;
-      }
-      interruptPlayback();
-      setPhase("speaking");
-      setSpeakingTurnId(turn.id);
-      const sentences = splitSentences(turn.text);
-      void speakBeats(sentences.length ? sentences : [turn.text], {
-        authorId: caseData.authorId,
-        onStartBeat: (index) => {
-          const sentence = sentences[index] ?? turn.text;
-          setTurns((prev) => focusLiveCaption(prev, turn.id, sentence));
-        },
-        onEnd: () => {
-          setSpeakingTurnId((cur) => (cur === turn.id ? null : cur));
-          setPhase((p) => (p === "speaking" ? "idle" : p));
-        },
-      });
-    },
-    [speakingTurnId, phase, interruptPlayback, caseData.authorId]
-  );
+  const onStopSpeaking = useCallback(() => { interruptPlayback(); setSpeakingTurnId(null); setPhase("idle"); }, [interruptPlayback]);
+  const replayTurn = useCallback((turn: ChatTurn) => {
+    if (turn.role !== "assistant" || turn.error || !turn.text) return;
+    if (speakingTurnId === turn.id) { onStopSpeaking(); return; }
+    pauseTour(); tutorTurnRef.current = turn.id;
+    if (!turn.approvalIds?.length || !turn.tutorBeats?.length) { setTutorNotice("This answer has no current approval reference. Ask the question again."); return; }
+    allowedApprovalRef.current = turn.approvalIds;
+    tutorReplayRef.current = true; tutorPlanRef.current = [];
+    const findingId = turn.findingId ?? orderedFindingsRef.current[activeIndexRef.current]?.id;
+    if (!findingId) { setTutorNotice("Choose an approved finding before replaying this answer."); return; }
+    void ensureTutor().run(turn.tutorBeats, findingId);
+  }, [speakingTurnId, onStopSpeaking, pauseTour, ensureTutor]);
 
   // Seat the first finding. Scrolling and opening the case do not start teaching.
   useEffect(() => {
@@ -2022,11 +1153,10 @@ export function useStudentSession(
   // Cleanup: stop audio/replay + abort any in-flight tutor call on unmount.
   useEffect(
     () => () => {
+      holdRef.current?.release("cancel"); voiceAbortRef.current?.abort(); tutorRef.current?.interrupt();
       checkInAbortRef.current?.abort();
       checkInResolveRef.current?.(-1);
       checkInResolveRef.current = null;
-      liveCatalogAbortRef.current?.abort();
-      liveRef.current?.hangup();
       stopSpeaking();
       replayRef.current?.cancel();
       replayAudioRef.current?.pause();
@@ -2066,6 +1196,7 @@ export function useStudentSession(
     sendText,
     onMicStart,
     onMicStop,
+    onMicCancel, tutorNotice, voiceReviewed, setVoiceReviewed, manualOverride: onStopSpeaking,
     onStopSpeaking,
     next,
     prev,

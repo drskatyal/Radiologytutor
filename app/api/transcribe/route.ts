@@ -1,3 +1,4 @@
+import { tutorAudio, tutorText } from "@/lib/tutor/input";
 import { hasActiveExam } from "@/lib/exam/access";
 // POST /api/transcribe  — CALL 1 of the student voice Q&A flow (CLAUDE.md §2).
 //
@@ -27,12 +28,8 @@ export async function POST(req: NextRequest) {
   try {
     await requireSession();
     const { audio } = await req.json();
-    const base64 = audio?.base64;
-    if (typeof base64 !== "string" || !base64) {
-      return NextResponse.json({ error: "audio.base64 is required" }, { status: 400 });
-    }
-
-    const transcript = await transcribeAudio(base64, audio?.mime || "audio/webm");
+    const checked = tutorAudio(audio);
+    const transcript = tutorText(await transcribeAudio(checked.base64, checked.mime));
     return NextResponse.json({ transcript });
   } catch (err) {
     const authErr = jsonAuthError(err);

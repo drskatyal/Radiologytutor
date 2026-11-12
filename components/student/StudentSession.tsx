@@ -6,6 +6,7 @@
 // registrar how to report. Dock = voice + Teach/Exam intent. Rail is optional
 // transcript / finding spine. Capture tracks arm the model; they are not a tape.
 
+import { bindHoldKeys } from "@/lib/tutor/holdToTalk";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
@@ -49,7 +50,7 @@ type PanelTab = "lesson" | "ask";
 type Intent = "teach" | "exam";
 
 const ORB_TAGLINE: Record<OrbState, string> = {
-  idle: "Open the microphone to start",
+  idle: "Hold Space to ask, release to send",
   listening: "Listening…",
   thinking: "Thinking…",
   searching: "Searching sources…",
@@ -215,6 +216,7 @@ export default function StudentSession({
     compareOpen: s.compareOpen,
     examMode: s.examMode,
   };
+  const micCancelRef = useRef(s.onMicCancel); micCancelRef.current = s.onMicCancel;
   useEffect(() => {
     const isTextTarget = (el: EventTarget | null) => {
       const node = el as HTMLElement | null;
@@ -224,20 +226,6 @@ export default function StudentSession({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingRef.current || isTextTarget(e.target)) return;
-        if (e.code === "Space" && !e.repeat) {
-        const keys = hotkeyRef.current;
-        e.preventDefault();
-        if (!keys.micSupported) return;
-        // The session stays open until the mic control hangs up. Releasing
-        // Space must not end it. A second press while the attending is
-        // speaking takes the floor.
-        if (keys.liveOpen) {
-          if (keys.speaking) keys.bargeIn();
-          return;
-        }
-        void keys.start();
-        return;
-      }
       if (e.key === "?" ) {
         e.preventDefault();
         setKeysOpen((o) => !o);
@@ -271,9 +259,14 @@ export default function StudentSession({
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === "Space") heldRef.current = false;
     };
+    const unbindHold = bindHoldKeys(window, document, {
+      press: repeat => { if (!repeat) hotkeyRef.current.start(); },
+      release: reason => { if (reason && reason !== "release") micCancelRef.current(reason); else hotkeyRef.current.stop(); },
+    }, () => typingRef.current || !hotkeyRef.current.micSupported || hotkeyRef.current.examMode);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => {
+      unbindHold();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
@@ -302,7 +295,7 @@ export default function StudentSession({
     (s.liveStatus === "connecting"
       ? "Connecting the attending…"
       : s.liveStatus === "closed" && s.ready
-        ? "Scroll freely. Open the microphone to start."
+        ? "Scroll freely. Hold Space or the microphone to ask, then release to send."
         : "");
   const stepLabel = findingStepLabel(s.activeIndex, s.orderedFindings.length);
 
@@ -419,7 +412,11 @@ export default function StudentSession({
         </div>
       </header>
 
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden"
+        onPointerDownCapture={e => { const target = e.target as HTMLElement; if (target.closest("[data-testid=local-stage]") && !target.closest("[data-tutor-hold]")) s.manualOverride(); }}
+        onWheelCapture={e => { if ((e.target as HTMLElement).closest("[data-testid=local-stage]")) s.manualOverride(); }}
+        onKeyDownCapture={e => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key) && (e.target as HTMLElement).closest("[data-viewer-root], [role=slider]")) s.manualOverride(); }}
+      >
         <div
           className={cn(
             "relative min-h-0 min-w-0 flex-1 bg-imaging",
@@ -433,19 +430,18 @@ export default function StudentSession({
             {showViewer ? (
             <StudentViewer
           dock={
+            <div className="max-w-sm rounded-lg bg-surface/95 p-2 text-xs text-secondary">
               <MicButton
+                holdToTalk onCancel={() => s.onMicCancel()}
                 state={s.micState}
                 onStart={s.onMicStart}
                 onStop={s.onMicStop}
-                disabled={!s.micSupported || (s.busy && s.micState === "idle")}
-                label={
-                  s.liveStatus === "connecting"
-                    ? "Connecting…"
-                    : s.liveStatus === "open"
-                      ? "End session"
-                      : "Open microphone"
-                }
+                disabled={!s.micSupported || s.examMode || !s.ready}
+                label={s.micState === "recording" ? "Release to send" : "Hold to ask"}
               />
+              {!s.examMode && <label className="flex min-h-8 items-center gap-2"><input type="checkbox" checked={s.voiceReviewed} onChange={e => s.setVoiceReviewed(e.target.checked)} />Question contains no patient identifiers (full screen)</label>}
+              {s.tutorNotice && <p role="status">{s.tutorNotice}</p>}
+            </div>
           }
           source={liveSource}
           series={rail}
@@ -760,24 +756,23 @@ export default function StudentSession({
               <AgentOrb state={s.orbState} level={s.micLevel} size="sm" />
             </button>
             <MicButton
+                holdToTalk onCancel={() => s.onMicCancel()}
               size="sm"
               state={s.micState}
               onStart={s.onMicStart}
               onStop={s.onMicStop}
-              disabled={!s.micSupported || (s.busy && s.micState === "idle")}
-              label={
-                s.liveStatus === "connecting"
-                  ? "Connecting…"
-                  : s.liveStatus === "open"
-                    ? "End session"
-                    : "Open microphone"
-              }
+              disabled={!s.micSupported || s.examMode || !s.ready}
+              label={s.micState === "recording" ? "Release to send" : "Hold to ask"}
             />
           </div>
         </div>
       </footer>
 
 
+      <div className="border-t border-subtle bg-surface px-4 py-2 text-xs text-secondary" data-tutor-status>
+        {!s.examMode && <label className="inline-flex min-h-8 items-center gap-2"><input type="checkbox" checked={s.voiceReviewed} onChange={e => s.setVoiceReviewed(e.target.checked)} />My question contains no patient identifiers.</label>}
+        {s.tutorNotice && <p role="status">{s.tutorNotice}</p>}
+      </div>
       <HotkeysOverlay open={keysOpen} onClose={() => setKeysOpen(false)} />
     </div>
   );
