@@ -68,13 +68,15 @@ export async function POST(req: NextRequest, { params }: { params: { caseId: str
       studyInstanceUID:
         typeof body.studyInstanceUID === "string" ? body.studyInstanceUID : undefined,
       findings: drafts(body.findings),
+      ...(body.voice === "notes" ? { voice: "notes" as const } : {}),
+      markerDecisions: body.markerDecisions as import("@/lib/anchors/reconcile").MarkerDecision[] | undefined,
     });
     return NextResponse.json(updated);
   } catch (err) {
     const denied = jsonAuthError(err);
     if (denied) return denied;
     const message = err instanceof Error ? err.message : "Unknown error";
-    const status = /not found|no findings/i.test(message) ? 400 : 500;
+    const status = /not found|no findings|marker reconciliation/i.test(message) ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

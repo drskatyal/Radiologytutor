@@ -1,3 +1,5 @@
+import { reconcileDrafts, type MarkerDecision } from "../anchors/reconcile";
+import { anchorFields } from "../anchors/materialize";
 /**
  * Merge a continuous demonstration: speech segments (structured JSON) +
  * timestamped DICOM walk-through (RecordedTrack) → Finding drafts + CaptureSession.
@@ -27,6 +29,7 @@ export type MergeCaptureInput = {
   sessionId: string;
   parentTrack: RecordedTrack;
   segments: StructuredSessionFinding[];
+  markerDecisions?: MarkerDecision[];
   transcript?: string;
   audioUrl?: string;
   studyInstanceUID?: string;
@@ -58,11 +61,13 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
     audioUrl: input.audioUrl,
     transcript: input.transcript,
     createdAt,
+    markerDecisions: input.markerDecisions,
   };
 
   const findings: Partial<Finding>[] = [];
-  for (let i = 0; i < input.segments.length; i++) {
-    const seg = input.segments[i];
+  const segments = reconcileDrafts(track, input.segments, input.markerDecisions);
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     if (!seg.label?.trim()) continue;
 
     const mid = segmentMidMs(seg.tStartMs, seg.tEndMs);
@@ -118,7 +123,7 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       .map((t) => t.trim())
       .filter(Boolean);
     const teachingGuide = guideForFindingTrack(sub, { description, teachingPoints });
-    const measurements = measurementsFromTrack(sub);
+    const measurements = measurementsFromTrack({ ...sub, journal: track.journal?.filter(e => e.kind === "render" || (e.t >= seg.tStartMs && e.t <= seg.tEndMs)) });
 
     const finding: Partial<Finding> = {
       label: seg.label.trim(),
@@ -142,6 +147,7 @@ export function mergeCaptureDemonstration(input: MergeCaptureInput): MergedCaptu
       sopInstanceUID: snap.sopInstanceUID,
       order: i + 1,
     };
+    Object.assign(finding, anchorFields(track, seg));
     findings.push(finding);
   }
 

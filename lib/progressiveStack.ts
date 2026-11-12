@@ -1,3 +1,4 @@
+import { retainImageGeometry } from "./anchors/geometryCache";
 // Progressive WADO-RS stack load.
 //
 // First pixel does not wait for every instance's metadata, and it does not
@@ -146,6 +147,7 @@ export function fillImageIndexes(
 }
 
 function registerMetadata(imageId: string, dataset: unknown): void {
+  retainImageGeometry(imageId, dataset);
   cornerstoneDICOMImageLoader.wadors.metaDataManager.add(
     imageId,
     dataset as Parameters<typeof cornerstoneDICOMImageLoader.wadors.metaDataManager.add>[1]

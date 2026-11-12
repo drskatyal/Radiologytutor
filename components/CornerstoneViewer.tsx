@@ -38,6 +38,7 @@
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
+import { imageGeometry } from "@/lib/anchors/geometryCache";
 import { matchesView } from "../lib/journal/match";
 import { RenderCoordinator, ViewRequestError } from "../lib/journal/renderAck";
 import { displayedSnapshot, imagePointEvidence, validSnapshot } from "../lib/journal/viewer";
@@ -2327,6 +2328,25 @@ export default function CornerstoneViewer({
             unit: stats.unit,
           });
           if (!event) return;
+          const vp = viewportRef.current;
+          const latest = renders.current?.snapshot;
+          const currentId = vp?.getCurrentImageId?.();
+          // A debounced tool callback must still name the displayed image; never
+          // project an old stroke through a newer slice or camera.
+          if (vp && latest && currentId && raw.metadata?.referencedImageId === currentId && !mprHeld && !mprSessionRef.current) {
+            const current = displayedSnapshot(vp, viewportId, journalLayoutRef.current, latest.renderSeq);
+            const data = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[]; imageData?: { worldToIndex: (world: number[], out: number[]) => number[] | void } } }).getImageData?.();
+            const dims = data?.dimensions;
+            if (current && matchesView(current, latest) && data?.imageData && dims && dims.length >= 2) {
+              const points = (raw.data?.handles?.points ?? []).map(world => {
+                const out = [0, 0, 0];
+                const index = data.imageData!.worldToIndex(world, out) ?? out;
+                return { x: index[0], y: index[1] };
+              });
+              const evidence = points.map(p => imagePointEvidence(latest, { x: p.x / (dims[0] - 1), y: p.y / (dims[1] - 1) }, dims));
+              if (evidence.length && evidence.every(Boolean)) event.imageEvidence = { ...evidence[0]!, imagePoints: points, geometry: imageGeometry(currentId) };
+            }
+          }
           if (lastStroke && sameAnnotationStroke(lastStroke, event)) return;
           lastStroke = event;
           emit(event);
@@ -3613,7 +3633,8 @@ export default function CornerstoneViewer({
             const frame = readProjector();
             const point = frame?.unproject(x * frame.width, y * frame.height);
             const dimensions = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[] } }).getImageData?.()?.dimensions;
-            return imagePointEvidence(latest, point ? { x: point.x_pct, y: point.y_pct } : null, dimensions);
+            const evidence = imagePointEvidence(latest, point ? { x: point.x_pct, y: point.y_pct } : null, dimensions);
+            return evidence ? { ...evidence, geometry: imageGeometry(vp.getCurrentImageId?.() ?? "") } : null;
           },
           fit: () => fitRef.current(),
           ready: true,

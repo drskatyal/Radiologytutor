@@ -42,6 +42,7 @@ export interface ImagePointEvidence {
   snapshot: ViewerSnapshot;
   imagePoint: { x: number; y: number };
   dimensions: [number, number];
+  geometry?: import("../anchors/geometry").ImageGeometry;
 }
 
 /** Normalized canvas positions are converted by the viewer's actual image transform. */

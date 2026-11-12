@@ -1,3 +1,4 @@
+import { retainedMarkers } from "../anchors/resolve";
 import { TrackRecorder, type RecorderHandle, type RecorderHooks, type RecorderResult } from "../recorder";
 import type { RecordedTrack, ViewerEvent } from "../types";
 import type { RenderConfirmedViewer } from "../viewerController";
@@ -15,6 +16,7 @@ export interface JournalRecorderOptions {
   onPhase?: (phase: CapturePhase) => void;
   onError?: (message: string) => void;
   onSync?: (acked: number) => void;
+  onMarkers?: (entries: JournalEntry[]) => void;
 }
 
 export async function chunkDigest(blob: Blob): Promise<string> {
@@ -59,9 +61,10 @@ export class JournalRecorder {
       this.base.handle.onEvent(event);
       this.entry("input", { event });
       if (event.type === "annotation") {
-        const snapshot = this.options.viewer.getRenderedView()?.snapshot;
-        this.entry("annotation", { event, geometryStatus: "unresolved" }, snapshot);
-        if (["Length", "Angle", "EllipticalROI", "Probe"].includes(event.tool ?? "")) this.entry("measurement", { event, calibrationStatus: "unresolved" }, snapshot);
+        const evidence = event.imageEvidence;
+        const payload = { event, annotationId: event.annotationUID, ...(evidence ? { imagePoints: evidence.imagePoints, imagePoint: evidence.imagePoint, dimensions: evidence.dimensions, geometry: evidence.geometry } : { geometryStatus: "unresolved" }) };
+        this.entry("annotation", payload, evidence?.snapshot);
+        if (["Length", "Angle", "EllipticalROI", "Probe"].includes(event.tool ?? "")) this.entry("measurement", payload, evidence?.snapshot);
       }
     },
     pushCursor: (x, y) => {
@@ -77,13 +80,22 @@ export class JournalRecorder {
     if (!this.active) return;
     const point = this.options.viewer.captureImagePoint(x, y);
     if (!point) { this.entry("discontinuity", { reason: "marker_without_rendered_image" }); return; }
-    this.entry("marker", { markerId: crypto.randomUUID(), imagePoint: point.imagePoint, dimensions: point.dimensions }, point.snapshot);
+    this.entry("marker", { action: "add", markerId: crypto.randomUUID(), imagePoint: point.imagePoint, dimensions: point.dimensions, geometry: point.geometry }, point.snapshot);
+  }
+  removeMarker(markerId: string, action: "remove" | "undo" = "remove"): void {
+    if (!this.active || !retainedMarkers(this.journal).some(e => e.payload?.markerId === markerId)) return;
+    this.entry("marker", { action, markerId });
+  }
+  undoMarker(): void {
+    const last = retainedMarkers(this.journal).at(-1)?.payload?.markerId;
+    if (typeof last === "string") this.removeMarker(last, "undo");
   }
   private entry(kind: JournalEntry["kind"], payload?: Record<string, unknown>, snapshot?: JournalEntry["snapshot"], at = this.now()): void {
     if (!this.active) return;
     const t = Math.max(0, at - this.t0);
     const entry: JournalEntry = { seq: this.journal.length, t, kind, ...(payload ? { payload } : {}), ...(snapshot ? { snapshot: structuredClone(snapshot), renderSeq: snapshot.renderSeq } : {}) };
     this.journal.push(entry);
+    if (kind === "marker") this.options.onMarkers?.(structuredClone(retainedMarkers(this.journal)));
     this.enqueue("journal", new Blob([JSON.stringify([entry])], { type: "application/json" }), t, t);
   }
   private rendered = (view: RenderedView) => {

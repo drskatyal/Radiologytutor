@@ -1,3 +1,5 @@
+import { resolveAnchor } from "./anchors/resolve";
+import { measuredLength } from "./anchors/geometry";
 /**
  * Normalize Cornerstone annotation tools into durable FindingMeasurement rows.
  * Tools draw in world space; we persist overlay [0,1] handles + numeric stats
@@ -14,7 +16,7 @@ import type {
 
 export type RawAnnotationLike = {
   annotationUID?: string;
-  metadata?: { toolName?: string };
+  metadata?: { toolName?: string; referencedImageId?: string };
   data?: {
     handles?: { points?: number[][] };
     cachedStats?: Record<
@@ -189,6 +191,21 @@ export function measurementFromAnnotationEvent(
  * snapshot is empty but the recording captured Length / ROI / Arrow.
  */
 export function measurementsFromTrack(track: RecordedTrack | null | undefined): FindingMeasurement[] {
+  if (track?.journal?.length) {
+    const ids = [...new Set(track.journal.filter(e => e.kind === "annotation").map(e => e.payload?.annotationId).filter((id): id is string => typeof id === "string"))];
+    return ids.flatMap(id => {
+      const a = resolveAnchor(id, track.journal!);
+      const entry = [...track.journal!].reverse().find(e => e.kind === "annotation" && e.payload?.annotationId === id);
+      const event = entry?.payload?.event as Extract<RecordedEvent, { type: "annotation" }> | undefined;
+      const kind = event && kindFromTool(event.tool, event.shape);
+      if (!kind || a.anchorStatus !== "resolved" || !a.imagePoints?.length || !a.dimensions) return [];
+      const length = kind === "length" || kind === "bidirectional" ? measuredLength(a.imagePoints.slice(0, 2), a.geometry) : null;
+      return [{ id, kind, handles: a.imagePoints.map(p => [p.x / (a.dimensions![0] - 1), p.y / (a.dimensions![1] - 1)] as [number, number]), resolvedAnchor: a,
+        sopInstanceUID: a.snapshot!.sopUID, frameNumber: a.snapshot!.frame, label: event?.label,
+        ...(length !== null ? { lengthMm: length, unit: "mm" } : {}),
+      }];
+    });
+  }
   if (!track?.events?.length) return [];
   const byKey = new Map<string, FindingMeasurement>();
   let n = 0;

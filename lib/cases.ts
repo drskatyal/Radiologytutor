@@ -1062,10 +1062,13 @@ export async function commitLiveTeachingPack(
     captureSessionId: session.id,
     track: session.track,
     drafted: input.findings,
+    markerDecisions: input.markerDecisions,
+    voice: input.voice,
     seriesInstanceUID: input.seriesInstanceUID,
     studyInstanceUID: input.studyInstanceUID,
   });
-  if (!findings.length) throw new Error("No findings to store.");
+  if (!findings.length && !input.markerDecisions?.length) throw new Error("No findings to store.");
+  session.markerDecisions = structuredClone(input.markerDecisions ?? []);
   if (transcript) session.transcript = transcript;
   data.captureSessions = sessions;
   for (const f of findings) {
@@ -1074,7 +1077,7 @@ export async function commitLiveTeachingPack(
     if (data.findingVersions!.some(v => v.content.captureSessionId === f.captureSessionId &&
       (v.content.markerId ?? v.content.segmentId ?? `interval:${v.content.tStartMs ?? 0}:${v.content.tEndMs ?? 0}`) === draftKey)) continue;
     f.id = `lt_${f.captureSessionId}_${hashContent(f.markerId ?? f.segmentId).slice(0, 16)}`;
-    f.currentVersion = 1; f.status = "needs_review"; f.anchorStatus = "legacy_index";
+    f.currentVersion = 1; f.status = "needs_review"; f.anchorStatus ??= "legacy_index";
     data.findings.push(f);
     data.findingVersions!.push(snapshot(f, 1, "compile", nowIso()));
   }

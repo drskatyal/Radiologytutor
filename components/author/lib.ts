@@ -194,26 +194,7 @@ export async function addFinding(
 /** Write the LiveTeachingPack. The server rebuilds anchors from the stored track. */
 export async function commitLiveTeachingPack(
   caseId: string,
-  body: {
-    captureSessionId: string;
-    transcript?: string;
-    seriesInstanceUID?: string;
-    studyInstanceUID?: string;
-    findings: Array<{
-      label: string;
-      description?: string;
-      teachingPoints?: string[];
-      whatToNotice?: string;
-      pearl?: string;
-      mimics?: string[];
-      clinicalImportance?: number;
-      whyClinicallyFirst?: string;
-      reportLine?: string;
-      landmark?: string;
-      tStartMs: number;
-      tEndMs: number;
-    }>;
-  }
+  body: import("@/lib/liveTeachingPack").CompiledTakeCommit
 ): Promise<CaseData> {
   const res = await fetch(`/api/cases/${caseId}/live-teaching-pack`, {
     method: "POST",

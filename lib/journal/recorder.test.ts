@@ -182,3 +182,28 @@ test("stopping is idempotent and a permission rejection after stop cannot revive
   assert.deepEqual(phases, completed);
   assert.equal(phases.at(-1), "stopped"); assert.equal(recorder.isRecording, false);
 });
+
+test("M5 pending markers, undo/removal and annotation geometry survive durable recorder completion", async t => {
+  const { geometryFromDicom } = await import("../anchors/geometry");
+  const { plane } = await import("../anchors/fixtures");
+  const { resolveAnchor, retainedMarkers } = await import("../anchors/resolve");
+  const b = browser(t); const store = new MemoryStore(); const remote = new Remote(store);
+  b.mic(async () => { throw new Error("Synthetic silent take"); });
+  b.viewer.captureImagePoint = () => ({ snapshot: journalTestView, imagePoint: { x: 23, y: 42 }, dimensions: [64, 64], geometry: geometryFromDicom(plane, 1) });
+  let pending: JournalEntry[] = [];
+  const recorder = new JournalRecorder({ caseId: "synthetic", orgId: "org", viewer: b.viewer, store, remote, onMarkers: entries => { pending = entries; } });
+  await recorder.start({ sliceIndex: 0 }); b.clock(1100); b.render();
+  recorder.marker(.2, .3); recorder.marker(.4, .5); recorder.marker(.6, .7);
+  assert.equal(pending.length, 3);
+  const first = pending[0].payload!.markerId as string;
+  recorder.undoMarker(); recorder.removeMarker(first);
+  assert.equal(pending.length, 1);
+  const remaining = pending[0].payload!.markerId as string;
+  recorder.handle.onEvent({ type: "annotation", shape: "circle", from: [.1, .2], to: [.2, .2], tool: "Length", annotationUID: "synthetic-length", imageEvidence: { ...b.viewer.captureImagePoint(0, 0)!, imagePoints: [{ x: 10, y: 20 }, { x: 20, y: 20 }] } });
+  const stopped = await recorder.stop();
+  assert.equal(retainedMarkers(stopped.track.journal!).length, 1);
+  const anchor = resolveAnchor(remaining, stopped.track.journal!);
+  assert.equal(anchor.anchorStatus, "resolved"); assert.equal(anchor.calibration, "PixelSpacing");
+  assert.deepEqual(resolveAnchor("synthetic-length", stopped.track.journal!).imagePoints, [{ x: 10, y: 20 }, { x: 20, y: 20 }]);
+  assert.equal(resolveAnchor(first, stopped.track.journal!).anchorStatus, "unresolved");
+});

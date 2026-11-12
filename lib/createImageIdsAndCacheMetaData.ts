@@ -1,3 +1,4 @@
+import { retainImageGeometry } from "./anchors/geometryCache";
 // Build Cornerstone `wadors:` imageIds for a series and register per-instance
 // metadata with the DICOM image loader (required before pixels can be decoded).
 // Mirrors the official cornerstonejs/nextjs-cornerstone3d template helper.
@@ -37,6 +38,7 @@ export default async function createImageIdsAndCacheMetaData({
     const imageId =
       `wadors:${wadoRsRoot}/studies/${StudyInstanceUID}` +
       `/series/${seriesUID}/instances/${sopUID}/frames/1`;
+    retainImageGeometry(imageId, inst);
     cornerstoneDICOMImageLoader.wadors.metaDataManager.add(
       imageId,
       inst as unknown as Parameters<typeof cornerstoneDICOMImageLoader.wadors.metaDataManager.add>[1]

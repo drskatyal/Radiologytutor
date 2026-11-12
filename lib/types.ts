@@ -73,6 +73,8 @@ export type FindingMeasurementKind =
   | "angle";
 
 export interface FindingMeasurement {
+  resolvedAnchor?: import("./anchors/resolve").ResolvedAnchor;
+  frameNumber?: number;
   id: string;
   kind: FindingMeasurementKind;
   /** Overlay handles in [0,1] (tool-specific point count). */
@@ -100,6 +102,7 @@ export interface FindingMeasurement {
  * `marker`. Side-by-side compare uses `viewportRole`.
  */
 export interface FindingAnchor {
+  frameNumber?: number;
   studyInstanceUID?: string;
   seriesInstanceUID?: string;
   /** Exact SOP when known (preferred over sliceIndex for prefetch). */
@@ -131,6 +134,7 @@ export interface FindingAnchor {
  * segments this into multiple Findings (see StructuredSessionFinding).
  */
 export interface CaptureSession {
+  markerDecisions?: import("./anchors/reconcile").MarkerDecision[];
   /** Server-bound Files API result for this completed, PHI-reviewed manifest. */
   geminiVideo?: { uri: string; mimeType: string };
   /** Durable capture state; older sessions have no journal. */
@@ -177,6 +181,8 @@ export interface Keyframe {
  * stroke came from a Cornerstone tool.
  */
 export interface RecordedAnnotation {
+  /** Captured from the matching rendered SOP/frame, not the delayed live camera. */
+  imageEvidence?: import("./journal/viewer").ImagePointEvidence & { imagePoints: import("./anchors/geometry").ImagePoint[] };
   shape: MarkerShape;
   /** Normalized [0,1]. First handle (or the only point for a probe). */
   from: [number, number];
@@ -376,6 +382,9 @@ export interface FindingApproval {
 export type FindingContent = Omit<Finding, "id" | "order" | "sliceIndex" | "status" | "currentVersion" | "approvedVersion" | "anchorStatus">;
 
 export interface Finding {
+  resolvedAnchor?: import("./anchors/resolve").ResolvedAnchor;
+  groupedAnchors?: import("./anchors/resolve").ResolvedAnchor[];
+  markerReconciliation?: import("./anchors/reconcile").MarkerAssignment["reconciliation"];
   status?: "draft" | "needs_review" | "approved" | "superseded";
   currentVersion?: number;
   approvedVersion?: number;
@@ -559,6 +568,7 @@ export interface StructuredFinding {
  * range on the session clock so we can slice the recorded track / audio later.
  */
 export interface StructuredSessionFinding extends StructuredFinding {
+  markerId?: string;
   /** ms from session start — inclusive. */
   tStartMs: number;
   /** ms from session start — exclusive/end. */

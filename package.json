@@ -10,7 +10,7 @@
     "postbuild": "node scripts/build-runtime-env.mjs",
     "start": "node --require ./.next/standalone/runtime/startup-check.cjs ./node_modules/next/dist/bin/next start",
     "lint": "next lint",
-    "test": "tsx --tsconfig tsconfig.test.json --test lib/*.test.ts lib/harness/*.test.ts lib/journal/*.test.ts lib/dicomImport/*.test.ts lib/dicomCdn/*.test.ts lib/exam/*.test.ts",
+    "test": "tsx --tsconfig tsconfig.test.json --test lib/*.test.ts lib/harness/*.test.ts lib/journal/*.test.ts lib/anchors/*.test.ts lib/dicomImport/*.test.ts lib/dicomCdn/*.test.ts lib/exam/*.test.ts",
     "test:access": "node scripts/access-harness.mjs",
     "eval:tutor": "tsx scripts/eval-tutor.ts",
     "eval:record-guide": "tsx scripts/eval-recorded-tour.ts",

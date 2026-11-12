@@ -1,3 +1,6 @@
+import { reconcileDrafts, type MarkerDecision } from "./anchors/reconcile";
+import { commitSpeakOnceWithoutMic } from "./teachingGuide";
+import { anchorFields } from "./anchors/materialize";
 import { HARNESS_VIEWER_TOOLS } from "./harness/tools";
 import { approvedToolsPrompt, isProtectedTool, resolveApprovedTool, type ApprovedToolContext, type ApprovedToolAction } from "./harness/approvedTools";
 import { examinerPromptPack } from "./exam/prompt";
@@ -887,6 +890,8 @@ export interface CompiledTakeDraft {
 }
 
 export interface CompiledTakeCommit {
+  markerDecisions?: MarkerDecision[];
+  voice?: "notes";
   captureSessionId: string;
   transcript?: string;
   /** Open series when the log never emitted a series event. Not a model UID. */
@@ -906,17 +911,19 @@ function cleanLines(values: string[] | undefined): string[] {
 }
 
 /**
- * Case findings for one compiled take. Every landing is a sample of `track`
- * at the spoken midpoint. Draft text is label, prose, times, and rank.
+ * Retained marker identities own the landings and draft cardinality.
+ * An unmarked cursor midpoint is only a suggestion and stays unresolved.
  */
 export function findingsFromCompiledTake(input: {
   captureSessionId: string;
   track: RecordedTrack;
   drafted: readonly CompiledTakeDraft[];
+  markerDecisions?: MarkerDecision[];
+  voice?: "notes";
   seriesInstanceUID?: string;
   studyInstanceUID?: string;
 }): Finding[] {
-  const ordered = input.drafted
+  const ordered = reconcileDrafts(input.track, input.drafted, input.markerDecisions)
     .filter((draft) => draft.label.trim())
     .map((draft, index) => ({ draft, index, rank: finiteRank(draft.clinicalImportance, index) }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index);
@@ -947,7 +954,7 @@ export function findingsFromCompiledTake(input: {
     const pearl = (draft.pearl ?? points[0] ?? "").trim();
     const mimics = cleanLines(draft.mimics);
     const teachingPoints = [...new Set([pearl, ...mimics, ...points].filter(Boolean))];
-    const measurements = measurementsFromTrack(sub);
+    const measurements = measurementsFromTrack({ ...sub, journal: input.track.journal?.filter(e => e.kind === "render" || (e.t >= tStartMs && e.t <= tEndMs)) });
     const compare = compareNearTime(input.track, mid);
     const label = draft.label.trim();
     const finding: Finding = {
@@ -1012,6 +1019,8 @@ export function findingsFromCompiledTake(input: {
       anchors.push(secondary);
       finding.anchors = anchors;
     }
+    if (input.voice === "notes") Object.assign(finding, commitSpeakOnceWithoutMic(finding, sub).finding);
+    Object.assign(finding, anchorFields(input.track, draft));
     return finding;
   });
 }

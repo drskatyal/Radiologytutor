@@ -14,8 +14,9 @@ export function findingContent(f: Finding): FindingContent {
   const keys = FINDING_CONTENT_KEYS;
   return structuredClone(Object.fromEntries(keys.filter(key => f[key] !== undefined).map(key => [key, f[key]]))) as FindingContent;
 }
-export const FINDING_CONTENT_KEYS = ["label", "description", "teachingPoints", "state", "marker", "keyframes", "track", "teachingGuide", "durationMs", "studyInstanceUID", "seriesInstanceUID", "sopInstanceUID", "sopInstanceUIDs", "frameNumber", "imagePoint", "landmark", "windowWidth", "windowCenter", "measurements", "anchors", "annotations", "anchor", "evidence", "provenance", "phiReview", "reportGold", "reportMustMention", "captureSessionId", "markerId", "segmentId", "tStartMs", "tEndMs"] as const;
+export const FINDING_CONTENT_KEYS = ["resolvedAnchor", "groupedAnchors", "markerReconciliation", "label", "description", "teachingPoints", "state", "marker", "keyframes", "track", "teachingGuide", "durationMs", "studyInstanceUID", "seriesInstanceUID", "sopInstanceUID", "sopInstanceUIDs", "frameNumber", "imagePoint", "landmark", "windowWidth", "windowCenter", "measurements", "anchors", "annotations", "anchor", "evidence", "provenance", "phiReview", "reportGold", "reportMustMention", "captureSessionId", "markerId", "segmentId", "tStartMs", "tEndMs"] as const;
 export function anchorFromFinding(f: Finding): FindingAnchorSnapshot | undefined {
+  if ((f.resolvedAnchor && f.resolvedAnchor.anchorStatus !== "resolved") || f.groupedAnchors?.some(a => a.anchorStatus !== "resolved")) return undefined;
   return f.anchor ?? (f.studyInstanceUID && f.seriesInstanceUID && f.sopInstanceUID && f.frameNumber ? {
     studyUID: f.studyInstanceUID, seriesUID: f.seriesInstanceUID, sopUID: f.sopInstanceUID, frame: f.frameNumber,
     imagePoint: f.imagePoint, view: { ww: f.windowWidth, wc: f.windowCenter },
