@@ -57,10 +57,6 @@ function canSeeAdminNav(me: MeUser | null): boolean {
   return role === "admin" || role === "owner";
 }
 
-function teachHref(me: MeUser | null): string {
-  return canSeeTeachNav(me) ? "/studio" : "/sign-up";
-}
-
 function navGroups(showDeveloper: boolean, me: MeUser | null): NavGroup[] {
   const groups: NavGroup[] = [
     {
@@ -163,16 +159,21 @@ function AuthCluster({
       );
     }
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Link href="/sign-up?role=teacher" onClick={onNavigate}>
+          <Button size="sm">Teacher</Button>
+        </Link>
+        <Link href="/sign-up?role=student" onClick={onNavigate}>
+          <Button size="sm" variant="secondary">
+            Student
+          </Button>
+        </Link>
         <Link
           href="/sign-in"
           onClick={onNavigate}
           className="rounded-lg px-3 py-2 text-sm font-semibold text-secondary transition-colors duration-300 ease-draw hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           Sign in
-        </Link>
-        <Link href={teachHref(me)} onClick={onNavigate}>
-          <Button size="sm">Start teaching</Button>
         </Link>
       </div>
     );
