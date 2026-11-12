@@ -1,0 +1,18 @@
+[WebServer]  ⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
+
+Running 6 tests using 1 worker
+
+(node:74) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:74) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 tutor-loop.spec.ts:62:5 › M9/P0-8 held STT then plan: every action is rendered sequentially before audio.play (12.4s)
+  ✓  2 tutor-loop.spec.ts:86:5 › M9 cancellation during a delayed render cannot release stale audio or later actions (11.5s)
+  ✓  3 tutor-loop.spec.ts:98:5 › M9 command API rejects missing, numeric, foreign, anonymous and examination authority (6.3s)
+  ✓  4 tutor-loop.spec.ts:114:5 › M9 barge-in during the first speech beat drops every remaining command and audio beat (10.5s)
+  ✓  5 tutor-loop.spec.ts:125:5 › M9/T9 an edit while rendering invalidates the planned approval and blocks all speech (6.0s)
+  ✓  6 tutor-loop.spec.ts:136:5 › M9 a manual viewer scroll overrides speech and its remaining actions (10.5s)
+
+  Slow test file: tutor-loop.spec.ts (57.2s)
+  Consider splitting slow test files to speed up parallel execution
+  6 passed (59.9s)
