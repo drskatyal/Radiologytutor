@@ -57,7 +57,7 @@ test("full screen keeps the microphone reachable", async ({ page }) => {
   await page.getByRole("button", { name: /^Full screen/ }).click();
   const stage = page.getByTestId("local-stage");
   await expect(stage).toHaveAttribute("data-expanded", "true");
-  await expect(stage.getByRole("button", { name: "Open microphone" })).toBeInViewport();
+  await expect(stage.getByRole("button", { name: "Hold to ask" })).toBeInViewport();
   await page.keyboard.press("Escape");
   await expect(stage).not.toHaveAttribute("data-expanded", "true");
 });
