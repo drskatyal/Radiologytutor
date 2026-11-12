@@ -36,6 +36,14 @@ export function CaptureStatus({ rr, controls }: { rr: UseRecordReplay; controls:
     {rr.phase === "starting" && <p role="status" className="text-sm text-secondary">Starting capture — waiting for the first microphone sample…</p>}
     {rr.phase === "stopping" && <p role="status" className="text-sm text-secondary">Retaining capture and checking server acknowledgements…</p>}
     {rr.captureError && <p role="alert" className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-primary">{rr.captureError}</p>}
+    {["starting", "recording"].includes(rr.phase) && !!rr.pendingMarkers?.length && <Card className="space-y-2 rounded-lg bg-surface p-3" data-testid="pending-markers">
+      <p className="text-sm text-primary">{rr.pendingMarkers.length} retained markers</p>
+      <Button size="sm" variant="secondary" onClick={() => rr.undoMarker?.()}>Undo last marker (Alt+Z)</Button>
+      <ul className="space-y-1">{rr.pendingMarkers.map((entry, i) => <li key={String(entry.payload?.markerId)} className="flex items-center justify-between gap-2 text-xs text-secondary">
+        <span>Marker {i + 1} · frame {entry.snapshot?.frame ?? "unresolved"}</span>
+        <Button size="sm" variant="ghost" aria-label={`Remove marker ${i + 1}`} onClick={() => rr.removeMarker?.(String(entry.payload?.markerId))}>Remove</Button>
+      </li>)}</ul>
+    </Card>}
     {!!rr.acknowledgedChunks && <p role="status" className="text-xs text-secondary">{rr.acknowledgedChunks} capture chunks acknowledged by the server.</p>}
     {(rr.recoverable ?? []).map(local => <Card key={local.manifest.sessionId} className="rounded-lg bg-surface p-3">
       <p className="text-sm text-primary">Retained recording · {local.manifest.chunks.length} chunks</p>

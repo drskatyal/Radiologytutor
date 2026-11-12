@@ -80,6 +80,7 @@ export function RecordStage({
   annotateSlot?: ReactNode;
 }) {
   const imageRef = useRef<HTMLDivElement>(null);
+  const markerPress = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const clickToAnnotate =
     annotateMode && phase === "idle" && !!onAnnotateClick && ready;
 
@@ -95,6 +96,8 @@ export function RecordStage({
   };
 
   const handleMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const press = markerPress.current;
+    if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 5) press.moved = true;
     if (phase !== "recording" && phase !== "starting") return;
     const p = normFromEvent(e);
     if (p) onCursor(p.x, p.y);
@@ -202,7 +205,12 @@ export function RecordStage({
   void modality;
 
   return (
-    <div className="viewer-shell relative min-w-0" onPointerMove={handleMove} onClick={e => {
+    <div className="viewer-shell relative min-w-0" onPointerMove={handleMove}
+      onPointerDownCapture={e => { markerPress.current = e.button === 0 ? { x: e.clientX, y: e.clientY, moved: false } : null; }}
+      onPointerCancel={() => { markerPress.current = null; }}
+      onClick={e => {
+      const press = markerPress.current; markerPress.current = null;
+      if (!press || press.moved || Math.hypot(e.clientX - press.x, e.clientY - press.y) > 5) return;
       if ((phase !== "recording" && phase !== "starting") || (e.target as HTMLElement).closest("button")) return;
       const point = normFromEvent(e); if (point) onMarker?.(point.x, point.y);
     }}>

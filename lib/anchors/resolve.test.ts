@@ -46,3 +46,15 @@ test("a later render in the same viewport makes an old marker snapshot unresolve
     assert.equal(resolveAnchor("marker-0", track.journal!).anchorStatus, "unresolved");
   }
 });
+
+test("single-finding save requires explicit multi-marker grouping and preserves every grouped anchor", async () => {
+  const { singleFindingAnchorFields } = await import("./materialize");
+  const track = markerTrack();
+  assert.throws(() => singleFindingAnchorFields(track), /3 retained markers.*explicit grouping/);
+  const grouped = singleFindingAnchorFields(track, true);
+  assert.equal(grouped.markerReconciliation!.kind, "group");
+  assert.equal(grouped.groupedAnchors!.length, 3);
+  assert.deepEqual(grouped.resolvedAnchor, resolveAnchor("marker-0", track.journal!));
+  track.journal = track.journal!.slice(0, 2);
+  assert.deepEqual(singleFindingAnchorFields(track).resolvedAnchor, resolveAnchor("marker-0", track.journal));
+});

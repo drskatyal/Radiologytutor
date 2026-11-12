@@ -13,6 +13,9 @@
 // WHILE RECORDING a pulsing frame marks the viewer live. Captured findings
 // list with replay / re-record / edit / delete. Then publish.
 
+import { retainedMarkers } from "@/lib/anchors/resolve";
+import { anchorFields, singleFindingAnchorFields } from "@/lib/anchors/materialize";
+import { MarkerGroupChoice } from "./MarkerGroupChoice";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -132,6 +135,8 @@ export function RecordingStudio({
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
   const rr = useRecordReplay({ controls, overlay, ready, caseId: caseData.caseId, orgId: caseData.orgId });
+  const [groupMarkers, setGroupMarkers] = useState(false);
+  useEffect(() => setGroupMarkers(false), [rr.track?.captureSessionId]);
   const annotateRecorder = useRecorder();
 
   const [activeSeriesIndex, setActiveSeriesIndex] = useState(0);
@@ -219,7 +224,7 @@ export function RecordingStudio({
     setReady(true);
   }, []);
 
-  const hasTrack = !!rr.track && rr.track.events.length > 0;
+  const hasTrack = !!rr.track && (rr.track.events.length > 0 || !!rr.track.journal?.length);
   const recording = ["starting", "recording", "stopping"].includes(rr.phase);
   const micBlocked = mic === "denied" || mic === "unsupported";
   const canSaveDraft = !!draft.label.trim();
@@ -366,7 +371,8 @@ export function RecordingStudio({
   }
 
   function previewPoint(track: RecordedTrack, clicked: Marker | null): { x: number; y: number } {
-    const marker = clicked ?? markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
+    const recorded = anchorFields(track, { markerId: retainedMarkers(track.journal ?? [])[0]?.payload?.markerId as string | undefined }).marker;
+    const marker = recorded ?? clicked ?? markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
     return { x: marker.x_pct, y: marker.y_pct };
   }
 
@@ -388,7 +394,8 @@ export function RecordingStudio({
       demo ? { ...base, teachingGuide: demo } : base,
       track,
       rr.audio,
-      measurements
+      measurements,
+      groupMarkers
     );
     let finding = assembled.finding;
     const money = settledDisplay(finding.track ?? track);
@@ -400,6 +407,7 @@ export function RecordingStudio({
       sopInstanceUID:
         money.sliceIndex === start?.sliceIndex ? start?.sopInstanceUID : undefined,
     });
+    Object.assign(finding, singleFindingAnchorFields(track, groupMarkers));
     return { finding, receipt: assembled.receipt };
   }
 
@@ -508,6 +516,7 @@ export function RecordingStudio({
         ? withPrimaryAnchor(prior, primaryLanding)
         : [{ ...primaryLanding, viewportRole: "primary" as const }];
 
+      if (hasTrack) Object.assign(base, singleFindingAnchorFields(rr.track!, groupMarkers));
       const updated =
         editingFindingId != null
           ? await patchFinding(caseData.caseId, editingFindingId, base)
@@ -662,6 +671,7 @@ export function RecordingStudio({
         ? withPrimaryAnchor(prior, primaryLanding)
         : [primaryLanding];
 
+      if (hasTrack) Object.assign(base, singleFindingAnchorFields(rr.track!, groupMarkers));
       const updated =
         editingFindingId != null
           ? await patchFinding(caseData.caseId, editingFindingId, base)
@@ -1078,6 +1088,7 @@ export function RecordingStudio({
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
             </div>
 
+            {(captureTab === "walk" || !!editingFindingId) && <MarkerGroupChoice track={rr.track} checked={groupMarkers} onChange={setGroupMarkers} />}
             <CaptureStatus rr={rr} controls={controls} />
 
             {/* Hotkey hint */}

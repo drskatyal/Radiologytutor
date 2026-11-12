@@ -15,6 +15,9 @@
 // The recording surface uses the bundled sample image (the viewer source is a
 // swappable seam); the captured track replays identically wherever it's shown.
 
+import { retainedMarkers } from "@/lib/anchors/resolve";
+import { anchorFields, singleFindingAnchorFields } from "@/lib/anchors/materialize";
+import { MarkerGroupChoice } from "./MarkerGroupChoice";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
@@ -71,6 +74,8 @@ export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: 
   const overlay = useRef<ReplayOverlayHandle | null>(null);
   const [ready, setReady] = useState(false);
   const rr = useRecordReplay({ controls, overlay, ready, caseId, orgId });
+  const [groupMarkers, setGroupMarkers] = useState(false);
+  useEffect(() => setGroupMarkers(false), [rr.track?.captureSessionId]);
 
   const [draft, setDraft] = useState<StructuredFinding>(EMPTY);
   const [structuring, setStructuring] = useState(false);
@@ -154,9 +159,9 @@ export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: 
   // Remount the stage per open so the viewer/recorder reset cleanly.
   if (!open) return null;
 
-  const hasTrack = !!rr.track && rr.track.events.length > 0;
+  const hasTrack = !!rr.track && (rr.track.events.length > 0 || !!rr.track.journal?.length);
   const previewMarker = hasTrack
-    ? markerFromTrack(rr.track) ?? { x_pct: 0.5, y_pct: 0.5 }
+    ? anchorFields(rr.track!, { markerId: retainedMarkers(rr.track!.journal ?? [])[0]?.payload?.markerId as string | undefined }).marker ?? markerFromTrack(rr.track) ?? { x_pct: 0.5, y_pct: 0.5 }
     : null;
   const errors = validateDraft(draft);
   const canSave = !!draft.label.trim() && !errors.label;
@@ -244,7 +249,8 @@ export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: 
           base,
           rr.track as RecordedTrack,
           rr.audio,
-          measurements
+          measurements,
+          groupMarkers
         );
         base = assembled.finding;
         receipt = assembled.receipt;
@@ -281,6 +287,7 @@ export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: 
         receipt = landed.receipt;
       }
 
+      if (hasTrack) Object.assign(base, singleFindingAnchorFields(rr.track!, groupMarkers));
       await onCreate(base, receipt);
       handleClose();
     } catch (e) {
@@ -416,6 +423,7 @@ export function RecordFindingDialog({ open, onClose, caseId, orgId, onCreate }: 
         </div>
 
         {/* Hotkey + silent-track hints. */}
+        <MarkerGroupChoice track={rr.track} checked={groupMarkers} onChange={setGroupMarkers} />
         <CaptureStatus rr={rr} controls={controls} />
         {rr.phase === "idle" && !micBlocked && (
           <p className="text-xs text-muted">

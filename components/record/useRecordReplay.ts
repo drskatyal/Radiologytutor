@@ -12,6 +12,8 @@
 // The viewer/overlay are owned by the caller; this hook just wires the handles
 // it's given. Everything is client-only (mic, rAF, performance.now).
 
+import { studioHotkey } from "@/lib/studioHotkeys";
+import type { JournalEntry } from "@/lib/journal/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { JournalRecorder, recoverCapture } from "@/lib/journal/recorder";
@@ -66,6 +68,9 @@ export interface UseRecordReplay {
   recoveredSessionId?: string;
   recover?: (sessionId: string) => Promise<void>;
   onMarker?: (x: number, y: number) => void;
+  pendingMarkers?: JournalEntry[];
+  removeMarker?: (id: string) => void;
+  undoMarker?: () => void;
   /** Whether mic capture is supported in this browser. */
   supported: boolean;
   /**
@@ -108,13 +113,6 @@ export interface UseRecordReplay {
   stopReplay: () => void;
   /** Discard the last recording. */
   reset: () => void;
-}
-
-/** True when the event target is a text input we must not hijack the hotkey in. */
-function isTypingTarget(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) return false;
-  const tag = el.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
 function releasePlayback(current: TakePlayback) {
@@ -182,6 +180,7 @@ export function useRecordReplay(opts: {
   }, [opts.caseId, opts.orgId]);
   useEffect(() => { void refreshRecovery(); }, [refreshRecovery]);
   const [phase, setPhase] = useState<RecordPhase>("idle");
+  const [pendingMarkers, setPendingMarkers] = useState<JournalEntry[]>([]);
   const [micCapture, setMicCapture] = useState<"unknown" | "live" | "unavailable">("unknown");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [track, setTrack] = useState<RecordedTrack | null>(null);
@@ -212,7 +211,7 @@ export function useRecordReplay(opts: {
 
     phaseRef.current = "starting";
     setPhase("starting"); setCaptureError(""); setAcknowledgedChunks(0); setRecoveredSessionId("");
-    setTrack(null); setAudio(null);
+    setTrack(null); setAudio(null); setPendingMarkers([]);
     const viewer = controls.current;
     if (opts.caseId && opts.orgId && (!viewer.onRendered || !viewer.requestView || !viewer.getRenderedView || !viewer.captureImagePoint)) {
       setCaptureError("The viewer is not ready for render-confirmed capture."); setPhase("idle"); phaseRef.current = "idle"; return false;
@@ -220,7 +219,7 @@ export function useRecordReplay(opts: {
     const rec = opts.caseId && opts.orgId ? new JournalRecorder({
       caseId: opts.caseId, orgId: opts.orgId, viewer: viewer as RenderConfirmedViewer,
       onPhase: next => { if (next !== "stopped" && phaseRef.current !== "stopping") { phaseRef.current = next; setPhase(next); } },
-      onError: setCaptureError, onSync: setAcknowledgedChunks,
+      onError: setCaptureError, onSync: setAcknowledgedChunks, onMarkers: setPendingMarkers,
     }) : new TrackRecorder();
     recorderRef.current = rec;
     framesRef.current = [];
@@ -380,26 +379,29 @@ export function useRecordReplay(opts: {
 
   // --- Alt+X hold-to-record hotkey -----------------------------------------
   useEffect(() => {
-    const isHotkey = (e: KeyboardEvent) =>
-      e.altKey && (e.key === "x" || e.key === "X" || e.code === "KeyX");
-
+    let held = false;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!isHotkey(e) || e.repeat) return;
-      if (isTypingTarget(e.target)) return;
-      e.preventDefault();
-      if (phaseRef.current === "idle") void startRecording();
+      const action = studioHotkey(e);
+      if (!action) return;
+      if (action === "undo-marker") {
+        if (recorderRef.current instanceof JournalRecorder && recorderRef.current.isRecording) { e.preventDefault(); recorderRef.current.undoMarker(); }
+        return;
+      }
+      if (phaseRef.current === "idle") { e.preventDefault(); held = true; void startRecording(); }
+    };
+    const release = () => {
+      if (!held) return;
+      held = false;
+      if (["starting", "recording"].includes(phaseRef.current)) void stopRecording();
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      // Release on either Alt or X up — keeps it forgiving.
-      if (!(e.key === "x" || e.key === "X" || e.code === "KeyX" || e.key === "Alt")) return;
-      if (["starting", "recording", "stopping"].includes(phaseRef.current)) {
-        e.preventDefault();
-        void stopRecording();
-      }
+      if (held && (e.code === "KeyX" || e.key.toLowerCase() === "x" || e.key === "Alt")) { e.preventDefault(); release(); }
     };
+    window.addEventListener("blur", release);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => {
+      window.removeEventListener("blur", release);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
@@ -417,6 +419,8 @@ export function useRecordReplay(opts: {
     const recorder = recorderRef.current;
     if (recorder instanceof JournalRecorder) recorder.marker(x, y);
   }, []);
+  const removeMarker = useCallback((id: string) => { if (recorderRef.current instanceof JournalRecorder) recorderRef.current.removeMarker(id); }, []);
+  const undoMarker = useCallback(() => { if (recorderRef.current instanceof JournalRecorder) recorderRef.current.undoMarker(); }, []);
   const recover = useCallback(async (sessionId: string) => {
     if (phaseRef.current !== "idle") return;
     setCaptureError(""); phaseRef.current = "stopping"; setPhase("stopping");
@@ -468,7 +472,7 @@ export function useRecordReplay(opts: {
   );
 
   return {
-    phase, mediaReviewed: Boolean(track?.mediaManifest?.phiReview.pixels && track.mediaManifest.phiReview.audio && track.mediaManifest.phiReview.screen), reviewMedia, captureError, acknowledgedChunks, recoverable, recoveredSessionId, recover, onMarker,
+    pendingMarkers, removeMarker, undoMarker, phase, mediaReviewed: Boolean(track?.mediaManifest?.phiReview.pixels && track.mediaManifest.phiReview.audio && track.mediaManifest.phiReview.screen), reviewMedia, captureError, acknowledgedChunks, recoverable, recoveredSessionId, recover, onMarker,
     supported,
     micCapture,
     elapsedMs,

@@ -9,6 +9,9 @@
 // stop still keeps the viewer track, and Save builds a notes-voiced
 // teaching guide from that track and the typed label, description, and points.
 
+import { notesDrafts } from "@/lib/anchors/notes";
+import { retainedMarkers, resolveAnchor } from "@/lib/anchors/resolve";
+import { reconcileDrafts, type MarkerDecision } from "@/lib/anchors/reconcile";
 import { useEffect, useRef, useState } from "react";
 import { Check, Layers, Mic, Sparkles, Trash2 } from "lucide-react";
 import {
@@ -142,12 +145,17 @@ export function ContinuousCapture({
   const [saving, setSaving] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [proposals, setProposals] = useState<StructuredSessionFinding[]>([]);
+  const [markerDecisions, setMarkerDecisions] = useState<MarkerDecision[]>([]);
+  const [jumpStatus, setJumpStatus] = useState<Record<string, string>>({});
+  const [jumping, setJumping] = useState(false);
   const [notice, setNotice] = useState("");
   const [lastTake, setLastTake] = useState<{
     track: RecordedTrack;
     audio: { base64: string; mimeType: string } | null;
   } | null>(null);
 
+  const markerTake = lastTake?.track && retainedMarkers(lastTake.track.journal ?? []).length > 0;
+  const candidates = markerTake ? reconcileDrafts(lastTake!.track, proposals, markerDecisions) : proposals;
   const recording = ["starting", "recording", "stopping"].includes(rr.phase);
   const notesMode = Boolean(lastTake && !lastTake.audio && proposals.length > 0 && !recording);
   // True only after Speak once itself started the take. The transport bar and
@@ -164,6 +172,7 @@ export function ContinuousCapture({
   async function start() {
     setNotice("");
     setProposals([]);
+    setMarkerDecisions([]); setJumpStatus({});
     setTranscript("");
     setLastTake(null);
     held.current = null;
@@ -192,6 +201,8 @@ export function ContinuousCapture({
   }
 
   function openNotesDraft(track: RecordedTrack) {
+    setMarkerDecisions([]); setJumpStatus({});
+    if (retainedMarkers(track.journal ?? []).length) { setProposals(notesDrafts(track)); setNotice(""); return; }
     const marker =
       markerFromTrack(track) ?? { x_pct: 0.5, y_pct: 0.5, shape: "circle" as const };
     setProposals([
@@ -341,7 +352,7 @@ export function ContinuousCapture({
         return;
       }
       setTranscript(result.transcript);
-      if (!result.findings.length) {
+      if (!result.findings.length && !retainedMarkers(take.track.journal ?? []).length) {
         onPhaseChange?.("review");
         setNotice("No findings detected in the recording — try naming each lesion as you scroll.");
         return;
@@ -352,7 +363,8 @@ export function ContinuousCapture({
         transcript: result.transcript,
         seriesInstanceUID,
         studyInstanceUID,
-        findings: result.findings.map((finding) => ({
+        findings: reconcileDrafts(take.track, result.findings).map((finding) => ({
+          markerId: finding.markerId,
           label: finding.label,
           description: finding.description,
           teachingPoints: finding.teachingPoints,
@@ -462,14 +474,50 @@ export function ContinuousCapture({
   apiRef.current.stop = stop;
 
   function patchProposal(i: number, patch: Partial<StructuredSessionFinding>) {
-    setProposals((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
+    const markerId = candidates[i]?.markerId;
+    setProposals(prev => prev.map((p, idx) => (markerId ? p.markerId === markerId : idx === i) ? { ...p, ...patch } : p));
   }
-
+  function candidateIds(i: number): string[] {
+    const p = candidates[i] as (StructuredSessionFinding & { markerIds?: string[] }) | undefined;
+    return p?.markerIds ?? (p?.markerId ? [p.markerId] : []);
+  }
   function removeProposal(i: number) {
-    setProposals((prev) => prev.filter((_, idx) => idx !== i));
+    const ids = candidateIds(i);
+    if (ids.length) setMarkerDecisions(prev => [...prev.filter(d => !d.markerIds.some(id => ids.includes(id))), { kind: "omit", markerIds: ids, reason: "Omitted by author in take review" }]);
+    else setProposals(prev => prev.filter((_, idx) => idx !== i));
+  }
+  function groupProposal(i: number) {
+    const ids = [...candidateIds(i), ...candidateIds(i + 1)];
+    if (ids.length < 2) return;
+    setMarkerDecisions(prev => [...prev.filter(d => !d.markerIds.some(id => ids.includes(id))), { kind: "group", markerIds: ids, reason: "Grouped by author as views of one finding" }]);
+  }
+  async function jumpProposal(p: StructuredSessionFinding) {
+    const a = resolveAnchor(p.markerId, lastTake?.track.journal ?? []);
+    const viewer = controls.current;
+    const current = viewer?.getRenderedView?.()?.snapshot;
+    if (a.anchorStatus !== "resolved" || !a.snapshot || !viewer?.requestView || !current) return;
+    const id = p.markerId!; setJumping(true); setJumpStatus(prev => ({ ...prev, [id]: "Waiting for render…" }));
+    try {
+      await viewer.requestView({ commandId: crypto.randomUUID(), generation: 0, snapshot: { ...a.snapshot, viewportId: current.viewportId }, timeoutMs: 5000 });
+      setJumpStatus(prev => ({ ...prev, [id]: "Rendered and confirmed" }));
+    } catch { setJumpStatus(prev => ({ ...prev, [id]: "Image not confirmed. Check the series and retry." })); }
+    finally { setJumping(false); }
+  }
+  async function saveJournalDrafts(parentTrack: RecordedTrack, notes: boolean) {
+    if (!parentTrack.captureSessionId || candidates.some(p => !p.label.trim())) return;
+    setSaving(true);
+    try {
+      await saveCaptureSession(caseId, { id: parentTrack.captureSessionId, durationMs: parentTrack.durationMs, track: parentTrack, transcript, createdAt: new Date().toISOString() });
+      const updated = await commitLiveTeachingPack(caseId, { captureSessionId: parentTrack.captureSessionId, transcript, markerDecisions, findings: candidates, ...(notes ? { voice: "notes" as const } : {}) });
+      onCaseUpdated(updated);
+      toast({ variant: "success", title: "Draft findings saved", description: `${candidates.length} candidates; every retained marker is assigned or explicitly omitted.` });
+      setProposals([]); setMarkerDecisions([]); setLastTake(null); setTranscript(""); setNotice(""); rr.reset();
+    } catch (e) { toast({ variant: "danger", title: "Couldn't save findings", description: e instanceof Error ? e.message : undefined }); }
+    finally { setSaving(false); }
   }
 
   async function saveNotes(parentTrack: RecordedTrack) {
+    if (parentTrack.captureSessionId && parentTrack.journal?.length) { await saveJournalDrafts(parentTrack, true); return; }
     const draft = proposals.find((p) => p.label.trim());
     if (!draft) return;
     setSaving(true);
@@ -570,6 +618,7 @@ export function ContinuousCapture({
       await saveNotes(parentTrack);
       return;
     }
+    if (parentTrack.captureSessionId && parentTrack.journal?.length) { await saveJournalDrafts(parentTrack, false); return; }
     const takeAudio = lastTake?.audio ?? rr.audio;
     setSaving(true);
     try {
@@ -771,20 +820,32 @@ export function ContinuousCapture({
         </div>
       )}
 
+      {markerTake && <div className="mt-3 space-y-2">
+        <p className="text-xs text-secondary">{retainedMarkers(lastTake!.track.journal ?? []).length} retained markers · {candidates.length} draft candidates · {markerDecisions.filter(d => d.kind === "omit").flatMap(d => d.markerIds).length} explicitly omitted</p>
+        {markerDecisions.length > 0 && <Button size="sm" variant="ghost" disabled={saving} onClick={() => setMarkerDecisions([])}>Reset grouping and omissions</Button>}
+      </div>}
       {proposals.length > 0 && (
         <ul className="mt-3 flex flex-col gap-3">
-          {proposals.map((p, i) => {
+          {candidates.map((p, i) => {
+            const anchor = resolveAnchor(p.markerId, lastTake?.track.journal ?? []);
             const guide = guideFor(p);
             return (
             <li
-              key={`${p.tStartMs}-${i}`}
+              data-testid="marker-candidate"
+              data-marker-id={p.markerId}
+              key={p.markerId ?? `${p.tStartMs}-${i}`}
               className="rounded-xl border border-subtle bg-elevated/40 p-3"
             >
               <div className="mb-2 flex items-center justify-between gap-2">
                 <Badge variant="accent">
                   {(p.tStartMs / 1000).toFixed(1)}s – {(p.tEndMs / 1000).toFixed(1)}s
                 </Badge>
-                <div className="flex items-center gap-1">
+                <div className="flex flex-wrap items-center gap-1">
+                  {p.markerId && <>
+                    <Badge variant={anchor.anchorStatus === "resolved" ? "neutral" : "warning"}>{anchor.anchorStatus === "resolved" ? `Frame ${anchor.snapshot!.frame} · ${anchor.calibration}` : "Unresolved anchor"}</Badge>
+                    <Button size="sm" variant="secondary" disabled={jumping || anchor.anchorStatus !== "resolved"} onClick={() => void jumpProposal(p)} aria-label={`Jump to candidate ${i + 1}`}>Jump</Button>
+                    {i + 1 < candidates.length && <Button size="sm" variant="ghost" disabled={saving} onClick={() => groupProposal(i)}>Group with next</Button>}
+                  </>}
                   {guide && guide.beats.length > 0 && (
                     <Badge variant="neutral">
                       {guide.beats.length} teach {guide.beats.length === 1 ? "beat" : "beats"}
@@ -803,18 +864,21 @@ export function ContinuousCapture({
                     size="sm"
                     variant="ghost"
                     aria-label={`Remove proposal ${i + 1}`}
+                    disabled={saving}
                     onClick={() => removeProposal(i)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </div>
+              {p.markerId && jumpStatus[p.markerId] && <p role="status" className="mb-2 text-xs text-secondary">{jumpStatus[p.markerId]}</p>}
               <div className="flex flex-col gap-2">
                 <Field label="Label" required>
                   {(props) => (
                     <Input
                       {...props}
                       value={p.label}
+                      disabled={saving}
                       maxLength={LIMITS.label}
                       onChange={(e) => patchProposal(i, { label: e.target.value })}
                     />
@@ -826,6 +890,7 @@ export function ContinuousCapture({
                       {...props}
                       rows={2}
                       value={p.description}
+                      disabled={saving}
                       maxLength={LIMITS.description}
                       onChange={(e) =>
                         patchProposal(i, { description: e.target.value })
@@ -839,6 +904,7 @@ export function ContinuousCapture({
                       {...props}
                       rows={2}
                       value={p.teachingPoints.join("\n")}
+                      disabled={saving}
                       onChange={(e) =>
                         patchProposal(i, {
                           teachingPoints: e.target.value
@@ -864,13 +930,13 @@ export function ContinuousCapture({
             leadingIcon={<Check className="h-4 w-4" />}
             onClick={saveAll}
             loading={saving}
-            disabled={notesMode && !proposals.some((p) => p.label.trim())}
+            disabled={candidates.some(p => !p.label.trim()) || saving}
           >
-            Save {proposals.length} finding{proposals.length === 1 ? "" : "s"} to sequence
+            Save {candidates.length} finding{candidates.length === 1 ? "" : "s"} to sequence
           </Button>
-          {notesMode && !proposals.some((p) => p.label.trim()) && (
+          {notesMode && candidates.some(p => !p.label.trim()) && (
             <p className="mt-2 text-center text-[11px] text-muted">
-              Add a label. Save builds the teach script from this track and your notes.
+              Add a label to every candidate. Save builds the teach script from this track and your notes.
             </p>
           )}
         </>

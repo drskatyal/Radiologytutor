@@ -1,6 +1,7 @@
 import type { Finding, RecordedTrack } from "../types";
 import type { MarkerAssignment } from "./reconcile";
-import { resolveAnchor, type ResolvedAnchor } from "./resolve";
+import { reconcileMarkers } from "./reconcile";
+import { retainedMarkers, resolveAnchor, type ResolvedAnchor } from "./resolve";
 
 /** No live viewport state and no model geometry can enter these fields. */
 export function anchorFields(track: RecordedTrack, assignment: Partial<MarkerAssignment>): Partial<Finding> {
@@ -20,4 +21,14 @@ export function anchorFields(track: RecordedTrack, assignment: Partial<MarkerAss
     evidence: [{ tStart: track.journal?.find(e => e.seq === a.journalSeq.at(-1))?.t ?? 0, tEnd: track.journal?.find(e => e.seq === a.journalSeq.at(-1))?.t ?? 0, journalSeq: a.journalSeq }],
     anchors: (groupedAnchors.length ? groupedAnchors : [a]).filter((g): g is ResolvedAnchor & { snapshot: NonNullable<ResolvedAnchor["snapshot"]> } => g.anchorStatus === "resolved" && !!g.snapshot).map(g => ({ studyInstanceUID: g.snapshot.studyUID, seriesInstanceUID: g.snapshot.seriesUID, sopInstanceUID: g.snapshot.sopUID, frameNumber: g.snapshot.frame, windowWidth: g.snapshot.voi.ww, windowCenter: g.snapshot.voi.wc, viewportRole: "primary", studyRole: "current" })),
   };
+}
+
+/** Single-finding editors must not silently collapse a multi-marker take. */
+export function singleFindingAnchorFields(track: RecordedTrack, explicitlyGrouped = false): Partial<Finding> {
+  if (!track.journal) return {};
+  const ids = retainedMarkers(track.journal).map(e => e.payload!.markerId as string);
+  if (ids.length > 1 && !explicitlyGrouped) throw new Error(`${ids.length} retained markers need separate candidates in Speak once, or explicit grouping as views of this finding.`);
+  const decisions = ids.length > 1 ? [{ kind: "group" as const, markerIds: ids, reason: "Explicitly grouped by author in the single-finding editor" }] : [];
+  const assignment = reconcileMarkers(track.journal, decisions).drafts[0];
+  return { ...anchorFields(track, assignment ?? {}), captureSessionId: track.captureSessionId };
 }

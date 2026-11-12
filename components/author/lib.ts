@@ -2,6 +2,7 @@
 // calls the author UI makes. Every write goes through these so the page and
 // cards share one code path (optimistic update + toast happen at the call site).
 
+import { singleFindingAnchorFields } from "@/lib/anchors/materialize";
 import type {
   CaptureSession,
   CaseData,
@@ -456,12 +457,14 @@ export async function assembleRecordedFinding<T extends Partial<Finding>>(
   base: T,
   track: RecordedTrack,
   audio: { base64: string; mimeType: string } | null | undefined,
-  liveMeasurements?: FindingMeasurement[]
+  liveMeasurements?: FindingMeasurement[],
+  explicitlyGrouped = false
 ): Promise<{ finding: T; receipt: RecordedSaveReceipt }> {
+  const anchor = singleFindingAnchorFields(track, explicitlyGrouped);
   const attached = await attachTakeAudio(track, audio);
   const description = base.description?.trim() || attached.transcript || "";
   const drafted = { ...base, description };
-  return commitRecordedFinding(
+  const result = commitRecordedFinding(
     drafted,
     attached.track,
     {
@@ -478,6 +481,7 @@ export async function assembleRecordedFinding<T extends Partial<Finding>>(
     },
     liveMeasurements
   );
+  return { ...result, finding: { ...result.finding, ...anchor } };
 }
 
 /** Upload narration audio; returns the durable same-origin URL to store. */
