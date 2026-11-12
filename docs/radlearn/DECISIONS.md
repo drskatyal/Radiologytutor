@@ -106,10 +106,14 @@ DICOM instances use Healthcare multipart STOW-RS after the existing de-id gate.
 Mongo remains authoritative for cases, versions and approvals. No grandfathering
 or approval restoration from object snapshots.
 
-The single provisional runtime bucket name is `GCS_OBJECT_BUCKET`, declared in
-`lib/envSchema.ts`; **GCP Admin must confirm the name, bucket and service-account
-access before cutover**. The name was not present in the supplied production
-list, so no existing bucket or IAM grant is assumed. See ENV_SCHEMA.md.
+**REPORTED by Radlearn/GCP Admin (12 November 2026):** GCP Admin confirmed
+and adopted `GCS_OBJECT_BUCKET=radlearn-app-case-media`. The bucket
+`gs://radlearn-app-case-media` is private, in `europe-west2`, with
+`roles/storage.objectAdmin` granted only to
+`radlearn-app@radlearn-app.iam.gserviceaccount.com`.
+This is a supplied report, **NOT verified by this checkout; no GCP call made**.
+The env name remains `GCS_OBJECT_BUCKET`, declared once in `lib/envSchema.ts`;
+no bucket default is hard-coded. See ENV_SCHEMA.md.
 Runtime ADC uses google-auth-library with the attached Compute service-account
 client, shared by GCS/Healthcare, with no credential-file discovery or injected
 tokens. No R2, Orthanc credentials, public object URLs or HMAC keys are needed
@@ -144,8 +148,8 @@ from image construction; reviewed models can be supplied in public assets.
 
 Docker was not installed, so no docker build/run/push occurred. Static image
 checks, real compiled-validator child processes and local application suites are
-the validation boundary; native desktop runtime was not executed. The provisional
-bucket still needs GCP Admin confirmation. No separate Step A web-PACS env names
+the validation boundary; native desktop runtime was not executed. The bucket
+confirmation is reported above; this checkout has not verified it. No separate Step A web-PACS env names
 exist in this checkout; existing Healthcare/Orthanc settings were documented
 without inventing new aliases. **NO LIVE GCP CALL WAS MADE**; Gemini **live
 contract not verified**. See CLOUD_RUN.md.

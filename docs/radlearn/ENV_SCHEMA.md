@@ -43,7 +43,7 @@ none are invented. Desktop DIMSE node settings remain desktop-local. See
 | `HEALTHCARE_PROJECT`, `HEALTHCARE_LOCATION`, `HEALTHCARE_DATASET`, `HEALTHCARE_DICOM_STORE` | Plain | Yes: radlearn-app, europe-west2, radlearn, radlearn-dicom respectively |
 | `MONGODB_DB` | Plain | Yes; Mongo remains the authoritative case/approval store |
 | `BETTER_AUTH_URL` | Plain | Yes; public origin fallback and auth callbacks |
-| `GCS_OBJECT_BUCKET` | Plain, **provisional** | Yes for durable Healthcare imports/media; GCP Admin must confirm the name and private bucket before cutover |
+| `GCS_OBJECT_BUCKET` | Plain | Yes for durable Healthcare imports/media; `radlearn-app-case-media` confirmed/adopted as REPORTED by Radlearn/GCP Admin, not verified by this checkout |
 | `GEMINI_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`, `GEMINI_LIVE_MODEL` | Plain | Optional overrides of the documented adapter defaults |
 | `GEMINI_TIMEOUT_MS`, `VOICE_LATENCY_BUDGET_MS`, `FRAME_CACHE_WAIT_MS` | Plain | Optional deadline/cache defaults |
 | `ELEVENLABS_TTS_MODEL` | Plain | Optional model default |
@@ -53,8 +53,15 @@ none are invented. Desktop DIMSE node settings remain desktop-local. See
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Required together to enable Google OAuth |
 | `ELEVENLABS_API_KEY` | Secret | Required to enable the primary cloned-voice provider |
 
-The one provisional bucket name is declared in `lib/envSchema.ts` and accessed
-through its reader. No actual bucket name or credential value is introduced.
+**REPORTED by Radlearn/GCP Admin (12 November 2026):** GCP Admin confirmed
+and adopted `GCS_OBJECT_BUCKET=radlearn-app-case-media`. The bucket
+`gs://radlearn-app-case-media` is private, in `europe-west2`, with
+`roles/storage.objectAdmin` granted only to
+`radlearn-app@radlearn-app.iam.gserviceaccount.com`.
+**NOT verified by this checkout; no GCP call made.** This records the supplied
+confirmation, not a local IAM or bucket inspection. The env name stays unchanged,
+declared in exactly one existing env-schema constant and accessed through its
+reader; no default bucket value is added to code and no secret value is recorded.
 The same private bucket serves `cases/` import snapshots, `imports/` receipts,
 `audio/`, cached DICOMweb responses and the existing converted series bundle
 layout. The bucket must already exist; this change provisions nothing.
@@ -90,8 +97,9 @@ attached Cloud Run service account
 `radlearn-app@radlearn-app.iam.gserviceaccount.com`. `GoogleAuth` receives an
 explicit `Compute` ADC client, avoiding key files and well-known local credential
 discovery. Token refresh is handled by the library; injected access-token envs
-are ignored. GCP Admin must grant this account access to the chosen private
-bucket and DICOM store. No IAM changes were attempted.
+are ignored. The bucket grant is REPORTED above, not independently verified.
+DICOM-store access remains GCP Admin's responsibility. No IAM changes were
+attempted.
 
 Browser requests stay same-origin. Anonymous DICOMweb GET/HEAD returns 401
 before archive configuration, ADC or network access. The existing scoped share
