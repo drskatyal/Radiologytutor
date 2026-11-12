@@ -238,19 +238,18 @@ function materializeFindings(
 ): StructuredSessionFinding[] {
   return rawFindings.map((raw, i) => {
     const f = (raw ?? {}) as Partial<StructuredSessionFinding>;
-    let tStart = Number(f.tStartMs);
-    let tEnd = Number(f.tEndMs);
-    if (!Number.isFinite(tStart)) tStart = 0;
-    if (!Number.isFinite(tEnd) || tEnd <= tStart) {
-      const n = Math.max(1, rawFindings.length);
-      const span = Math.max(1, durationMs || 1000);
-      tStart = Math.round((i / n) * span);
-      tEnd = Math.round(((i + 1) / n) * span);
-    }
-    if (durationMs > 0) {
-      tStart = Math.max(0, Math.min(durationMs, tStart));
-      tEnd = Math.max(tStart + 1, Math.min(durationMs, tEnd));
-    }
+    const suppliedStart = typeof f.tStartMs === "number" && Number.isFinite(f.tStartMs) ? f.tStartMs : null;
+    const suppliedEnd = typeof f.tEndMs === "number" && Number.isFinite(f.tEndMs) ? f.tEndMs : null;
+    const validInterval = suppliedStart !== null && suppliedEnd !== null && suppliedStart >= 0 && suppliedEnd > suppliedStart && suppliedEnd <= durationMs;
+    const overlap = validInterval && rawFindings.some((other, index) => {
+      if (index === i || !other || typeof other !== "object") return false;
+      const interval = other as Partial<StructuredSessionFinding>;
+      return typeof interval.tStartMs === "number" && typeof interval.tEndMs === "number" && interval.tStartMs < suppliedEnd && interval.tEndMs > suppliedStart;
+    });
+    // Legacy display fields need numbers. Evidence retains null for missing times;
+    // zeros here are explicitly unresolved, never invented proportional windows.
+    const tStart = suppliedStart ?? 0, tEnd = suppliedEnd ?? 0;
+    const usable = validInterval && !overlap;
     const mid = segmentMidMs(tStart, tEnd);
     const description = typeof f.description === "string" ? f.description : "";
     const teachingPoints = Array.isArray(f.teachingPoints)
@@ -265,7 +264,7 @@ function materializeFindings(
       ? prose.mimics.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
       : [];
     const importance = Number(prose.clinicalImportance);
-    const sub = track ? sliceTrack(track, tStart, tEnd) : undefined;
+    const sub = track && usable ? sliceTrack(track, tStart, tEnd) : undefined;
     const whatToNotice = textOf("whatToNotice") ?? (description || undefined);
     // Marker, slice, window, and series stay on the track. Model coordinates are dropped.
     return {
@@ -281,8 +280,10 @@ function materializeFindings(
       landmark: textOf("landmark"),
       tStartMs: tStart,
       tEndMs: tEnd,
-      suggestedMarker: markerNearTime(track, mid) ?? undefined,
-      suggestedSliceIndex: sliceNearTime(track, mid) ?? undefined,
+      evidence: [{ tStart: suppliedStart, tEnd: suppliedEnd, journalSeq: [], ...(!usable ? { estimated: true } : {}) }],
+      anchorStatus: "unresolved",
+      suggestedMarker: usable ? markerNearTime(track, mid) ?? undefined : undefined,
+      suggestedSliceIndex: usable ? sliceNearTime(track, mid) ?? undefined : undefined,
       teachingGuide: sub
         ? guideForFindingTrack(sub, { description: whatToNotice ?? description, teachingPoints })
         : undefined,

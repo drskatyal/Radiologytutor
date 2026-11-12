@@ -232,7 +232,7 @@ test("compile ignores model coordinates when the take has no viewer track", asyn
   assert.equal(session.transcript, "Left lower lobe nodule, then a right pleural effusion.");
 });
 
-test("compile partitions missing times and still lands them on the track", async () => {
+test("M6 missing times remain unknown and unresolved, never proportionally partitioned", async () => {
   const generate: CompileGenerate = async () => ({
     text: JSON.stringify({
       transcript: "",
@@ -250,13 +250,17 @@ test("compile partitions missing times and still lands them on the track", async
   assert.deepEqual(
     session.findings.map((finding) => [finding.tStartMs, finding.tEndMs]),
     [
-      [0, 2000],
-      [2000, 4000],
+      [0, 0],
+      [0, 0],
     ]
   );
-  assert.equal(session.findings[1]?.suggestedSliceIndex, sliceNearTime(track, 3000));
-  assert.deepEqual(session.findings[1]?.suggestedMarker, markerNearTime(track, 3000));
-  assert.ok(session.findings[0]?.teachingGuide?.beats.length);
+  for (const finding of session.findings) {
+    assert.deepEqual(finding.evidence, [{ tStart: null, tEnd: null, journalSeq: [], estimated: true }]);
+    assert.equal(finding.anchorStatus, "unresolved");
+    assert.equal(finding.suggestedSliceIndex, undefined);
+    assert.equal(finding.suggestedMarker, undefined);
+    assert.equal(finding.teachingGuide, undefined);
+  }
 });
 
 test("a long viewport recording uses agentic video and drops dense stills", async () => {
@@ -367,4 +371,14 @@ test("compile refuses a body with neither audio nor transcript", async () => {
     () => compileStructuredSession({ durationMs: 1000, track }, async () => ({ text: "{}" })),
     /audioBase64 or transcript is required/
   );
+});
+
+
+test("M6 reversed/out-of-range and overlapping intervals are retained and flagged, never clamped or redistributed", async () => {
+  for (const ranges of [[[1200, 300], [-100, 5000]], [[100, 900], [800, 1500]]]) {
+    const session = await compileStructuredSession({ audioBase64: "AUDIODATA", durationMs: 4000, track }, async () => ({ text: JSON.stringify({ findings: ranges.map(([tStartMs, tEndMs], i) => ({ label: `Synthetic ${i}`, tStartMs, tEndMs })) }) }));
+    assert.deepEqual(session.findings.map(f => [f.tStartMs, f.tEndMs]), ranges);
+    assert.deepEqual(session.findings.map(f => [f.evidence![0].tStart, f.evidence![0].tEnd]), ranges);
+    for (const f of session.findings) { assert.equal(f.evidence![0].estimated, true); assert.equal(f.anchorStatus, "unresolved"); assert.equal(f.suggestedMarker, undefined); assert.equal(f.teachingGuide, undefined); }
+  }
 });

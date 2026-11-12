@@ -373,7 +373,7 @@ export interface SeriesInventory {
 }
 export interface FindingVersion {
   findingId: string; version: number; contentHash: string; content: FindingContent;
-  anchor?: FindingAnchorSnapshot; evidence: Array<{ tStart: number; tEnd: number; journalSeq: number[]; estimated?: boolean }>;
+  anchor?: FindingAnchorSnapshot; evidence: Array<{ tStart: number | null; tEnd: number | null; journalSeq: number[]; estimated?: boolean }>;
   createdBy: string; createdAt: string; parentVersion: number | null;
 }
 export interface FindingApproval {
@@ -568,6 +568,8 @@ export interface StructuredFinding {
  * range on the session clock so we can slice the recorded track / audio later.
  */
 export interface StructuredSessionFinding extends StructuredFinding {
+  evidence?: FindingVersion["evidence"];
+  anchorStatus?: Finding["anchorStatus"];
   markerId?: string;
   /** ms from session start — inclusive. */
   tStartMs: number;
