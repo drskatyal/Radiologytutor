@@ -17,22 +17,23 @@ export class RenderCoordinator {
     for (const listener of this.listeners) listener(view);
   }
   cancel(): void { this.cancelPending?.(); }
-  request(command: ViewCommand, drive: () => Promise<void>): Promise<RenderAck> {
+  request(command: ViewCommand, drive: (signal: AbortSignal) => Promise<void>): Promise<RenderAck> {
     this.cancel();
     const after = this.latest?.snapshot.renderSeq ?? -1;
     return new Promise((resolve, reject) => {
+      const controller = new AbortController();
       let done = false;
       const finish = (error?: unknown, view?: RenderedView) => {
         if (done) return;
         done = true; clearTimeout(timer); off(); this.cancelPending = null;
-        if (error) reject(error); else resolve({ ...view!, commandId: command.commandId, generation: command.generation });
+        if (error) { controller.abort(); reject(error); } else resolve({ ...view!, commandId: command.commandId, generation: command.generation });
       };
       const off = this.subscribe(view => {
         if (view.snapshot.renderSeq > after && matchesView(view.snapshot, command.snapshot)) finish(undefined, view);
       });
       const timer = setTimeout(() => finish(new ViewRequestError("timeout", "The requested image was not confirmed by the renderer")), command.timeoutMs ?? 5000);
       this.cancelPending = () => finish(new ViewRequestError("cancelled", "View request cancelled"));
-      Promise.resolve().then(drive).catch(error => finish(error));
+      Promise.resolve().then(() => { if (!done) return drive(controller.signal); }).catch(error => finish(error));
     });
   }
 }

@@ -7,7 +7,12 @@ export interface ViewerSnapshot {
   orientation: { normal: number[]; up: number[] };
   renderSeq: number;
 }
-export interface RenderedView { snapshot: ViewerSnapshot; /** performance.now(), same origin as recorder t0. */ at: number }
+export interface RenderedView {
+  snapshot: ViewerSnapshot;
+  /** Display hint for legacy event playback, never image identity. */
+  displayIndex?: number;
+  /** performance.now(), same origin as recorder t0. */ at: number;
+}
 export interface ViewCommand { commandId: string; generation: number; snapshot: ViewerSnapshot; timeoutMs?: number }
 export interface RenderAck extends RenderedView { commandId: string; generation: number }
 export interface JournalEntry {

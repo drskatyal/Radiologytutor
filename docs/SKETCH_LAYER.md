@@ -92,11 +92,11 @@ The 3D manifest records the slice and marker each mark was built from, and the
 panel hides a mark whose finding no longer matches, so an old store never shows
 a 3D nodule the 2D view is not circling.
 
-**Stack order.** The viewer keeps the archive's series-metadata order on every
-path (the progressive loader and `createImageIdsAndCacheMetaData` agree), so an
-authored `sliceIndex` never moves under existing cases. The demo indices above
-assume the archive returns this series cranial-first, as
-`scripts/serve_local_ct.py` does.
+**Stack order.** Legacy demo indices assume the archive returns this series
+cranial-first, as `scripts/serve_local_ct.py` does. They are display hints, not
+image identity. M4 resolves the progressive opening SOP/frame against the final
+stack even if the order changes; a missing or duplicate identity fails closed.
+No historical index is silently migrated or substituted.
 
 ## Running it locally
 
@@ -126,5 +126,6 @@ Image identity is Study/Series/SOP Instance UID plus a one-based frame. Archive
 indices are display hints only, even when the stack is reordered. Index-only
 legacy findings have `anchorStatus: "legacy_index"` and require an expert rebind
 before approval or exact replay. A missing named instance is unresolved: never
-repair it by selecting a nearby slice. Anatomical stack sorting and render
-acknowledgement remain later milestones; no historical indices are migrated.
+repair it by selecting a nearby slice. M4 records actual IMAGE_RENDERED snapshots
+and acknowledges full SOP/frame/view matches. Anatomical sorting is not introduced
+by M4; no historical indices are migrated. Timed exact journal replay remains M8.

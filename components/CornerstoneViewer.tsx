@@ -38,6 +38,11 @@
 //
 // Must be loaded with `next/dynamic({ ssr:false })` — uses WebGL/DOM/workers.
 
+import { matchesView } from "../lib/journal/match";
+import { RenderCoordinator, ViewRequestError } from "../lib/journal/renderAck";
+import { displayedSnapshot, imagePointEvidence, validSnapshot } from "../lib/journal/viewer";
+import { approvedStackIndex } from "../lib/harness/approvedTools";
+import type { RenderConfirmedViewer } from "../lib/viewerController";
 import { safeErrorText } from "@flowrad/viewer-core/safeLog";
 import { syntheticDicomBytes } from "@flowrad/viewer-core/syntheticDicom";
 import { releaseLocalImages } from "@flowrad/viewer-core/localIngest";
@@ -340,7 +345,10 @@ interface DrivableViewport {
   worldToCanvas?: (p: [number, number, number]) => [number, number];
   canvasToWorld?: (p: [number, number]) => [number, number, number];
   getFrameOfReferenceUID?: () => string;
-  getCamera?: () => { viewPlaneNormal?: number[]; viewUp?: number[] };
+  getCamera?: () => { viewPlaneNormal?: number[]; viewUp?: number[]; flipHorizontal?: boolean; flipVertical?: boolean };
+  setCamera?: (camera: Record<string, unknown>) => void;
+  getViewPresentation?: () => { rotation?: number };
+  setViewPresentation?: (presentation: Record<string, unknown>) => void;
   element?: HTMLDivElement;
 }
 
@@ -350,7 +358,7 @@ interface DrivableViewport {
  *   • applyEvent          — exact re-application of ONE recorded event (replay).
  * Plus the record-side reads (getStartState) and toggles (setInvert).
  */
-export interface CornerstoneControls {
+export interface CornerstoneControls extends Partial<RenderConfirmedViewer> {
   /** Whether the viewer has loaded its series and is drivable. */
   ready: boolean;
   /** Number of slices in the loaded series. */
@@ -1058,6 +1066,8 @@ export default function CornerstoneViewer({
   const featuresRef = useRef(f);
   featuresRef.current = f;
   defaultToolRef.current = defaultTool;
+  const journalLayoutRef = useRef("single");
+  journalLayoutRef.current = currentLayout ? `${currentLayout.rows}x${currentLayout.cols}` : "single";
   const elementRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   // Stable handles the toolbar uses after init.
@@ -2003,6 +2013,17 @@ export default function CornerstoneViewer({
         // throttled ~50ms; order is preserved (latest value wins per window).
         // Programmatic applyEvent / setWindow bumps suppressDepth so a replay
         // or teach script does not echo back into a recording.
+        const renders = new RenderCoordinator();
+        let renderSeq = 0;
+        let requestEpoch = 0;
+        const onImageRendered = (event: Event) => {
+          const detail = (event as CustomEvent).detail;
+          if (disposed || detail?.viewportId !== viewportId || mprHeld || mprSessionRef.current) return;
+          const snapshot = displayedSnapshot(viewport, viewportId, journalLayoutRef.current, ++renderSeq);
+          if (!snapshot) return;
+          el.dataset.viewerSnapshot = JSON.stringify(snapshot);
+          renders.publish({ snapshot, at: performance.now(), displayIndex: viewport.getCurrentImageIdIndex() });
+        };
         let suppressDepth = 0;
         const beginSuppress = () => {
           suppressDepth += 1;
@@ -2345,6 +2366,7 @@ export default function CornerstoneViewer({
           toolEventNames?.ANNOTATION_MODIFIED ||
           "CORNERSTONE_TOOLS_ANNOTATION_MODIFIED";
 
+        el.addEventListener(core.Enums.Events.IMAGE_RENDERED, onImageRendered);
         el.addEventListener(stackEvt, emitSlice as EventListener);
         el.addEventListener(voiEvt, emitVoi as EventListener);
         el.addEventListener(camEvt, emitCamera as EventListener);
@@ -2367,6 +2389,9 @@ export default function CornerstoneViewer({
         };
         core.eventTarget.addEventListener(annCompleted, onFreehandDone);
         detachListeners = () => {
+          requestEpoch++;
+          renders.cancel();
+          el.removeEventListener(core.Enums.Events.IMAGE_RENDERED, onImageRendered);
           core.eventTarget.removeEventListener(annCompleted, onFreehandDone);
           el.removeEventListener(stackEvt, emitSlice as EventListener);
           el.removeEventListener(voiEvt, emitVoi as EventListener);
@@ -3547,6 +3572,49 @@ export default function CornerstoneViewer({
         };
 
         const handle: CornerstoneControls = {
+          onRendered: listener => renders.subscribe(listener),
+          getRenderedView: () => renders.current,
+          requestView: command => {
+            const epoch = ++requestEpoch;
+            return renders.request(command, async signal => {
+              const target = command.snapshot;
+              if (!validSnapshot(target)) throw new ViewRequestError("missing_identity", "A complete recorded image identity is required");
+              if (target.viewportId !== viewportId || target.layout !== journalLayoutRef.current || mprHeld || mprSessionRef.current) throw new ViewRequestError("unavailable", "The recorded viewport layout is unavailable");
+              await pending;
+              if (disposed || signal.aborted || epoch !== requestEpoch) throw new ViewRequestError("cancelled", "View request superseded");
+              const list = seriesRef.current;
+              if (handle.activeSeriesUID !== target.seriesUID) {
+                const index = list?.findIndex(item => item.seriesInstanceUID === target.seriesUID) ?? -1;
+                if (index < 0) throw new ViewRequestError("missing_identity", "Recorded series not found");
+                await switchSeries(index, false);
+              }
+              if (disposed || signal.aborted || epoch !== requestEpoch) throw new ViewRequestError("cancelled", "View request superseded");
+              const vp = viewportRef.current;
+              const index = vp ? approvedStackIndex(target, vp.getImageIds()) : null;
+              if (!vp || index === null) throw new ViewRequestError("missing_identity", "Recorded SOP/frame not found");
+              await vp.setImageIdIndex(index);
+              if (disposed || signal.aborted || epoch !== requestEpoch) throw new ViewRequestError("cancelled", "View request superseded");
+              cancelTweenRef.current();
+              writeVoi(target.voi.ww, target.voi.wc);
+              vp.setProperties({ invert: target.invert });
+              vp.setViewPresentation?.({ rotation: target.camera.rotation });
+              vp.setCamera?.({ flipHorizontal: target.camera.flipH, flipVertical: target.camera.flipV, viewPlaneNormal: target.orientation.normal, viewUp: target.orientation.up });
+              vp.setZoom(target.camera.zoom);
+              vp.setPan(target.camera.pan);
+              vp.render();
+            });
+          },
+          captureImagePoint: (x, y) => {
+            const latest = renders.current?.snapshot ?? null;
+            const vp = viewportRef.current;
+            if (!vp || mprHeld || mprSessionRef.current || !latest || approvedStackIndex(latest, [vp.getCurrentImageId?.() ?? ""]) !== 0) return null;
+            const now = displayedSnapshot(vp, viewportId, journalLayoutRef.current, latest.renderSeq);
+            if (!now || !matchesView(now, latest)) return null;
+            const frame = readProjector();
+            const point = frame?.unproject(x * frame.width, y * frame.height);
+            const dimensions = (vp as DrivableViewport & { getImageData?: () => { dimensions?: number[] } }).getImageData?.()?.dimensions;
+            return imagePointEvidence(latest, point ? { x: point.x_pct, y: point.y_pct } : null, dimensions);
+          },
           fit: () => fitRef.current(),
           ready: true,
           imageCount: imageIds.length,
@@ -3618,6 +3686,7 @@ export default function CornerstoneViewer({
         publishView();
         if (controls) controls.current = handle;
         onReady?.(handle);
+        viewport.render(); // Seed the journal from a real render after the listener is installed.
         // A view link names a window. Apply it once the stack is drivable;
         // the caller's own setWindow (teach) still wins afterwards.
         const linkedWindow = initialWindowRef.current;

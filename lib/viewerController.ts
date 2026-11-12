@@ -13,6 +13,15 @@
 import { buildViewerUrl, type ChromeOptions } from "./pacsbinUrl";
 import type { Finding, Keyframe, Marker, PacsbinViewport, ViewerState } from "./types";
 import { authoredDisplayState } from "./findingDisplayState";
+import type { RenderAck, RenderedView, ViewCommand } from "./journal/types";
+import type { ImagePointEvidence } from "./journal/viewer";
+
+export interface RenderConfirmedViewer {
+  onRendered(cb: (view: RenderedView) => void): () => void;
+  getRenderedView(): RenderedView | null;
+  requestView(command: ViewCommand): Promise<RenderAck>;
+  captureImagePoint(x: number, y: number): ImagePointEvidence | null;
+}
 
 export type ApplyUrl = (url: string) => void;
 
