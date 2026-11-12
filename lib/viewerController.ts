@@ -17,6 +17,8 @@ import type { RenderAck, RenderedView, ViewCommand } from "./journal/types";
 import type { ImagePointEvidence } from "./journal/viewer";
 
 export interface RenderConfirmedViewer {
+  cancelView?(): void;
+  showReplayGeometry?(shapes: import("./replay/types").ReplayShape[]): void;
   onRendered(cb: (view: RenderedView) => void): () => void;
   getRenderedView(): RenderedView | null;
   requestView(command: ViewCommand): Promise<RenderAck>;
