@@ -284,3 +284,33 @@ fullscreen microphone's name (Open microphone → Hold to ask), documented and
 committed separately in M9_TEST_CHANGES.md. No assertion is skipped or weakened.
 Synthetic data only; STT, model and TTS transport are mocked. **live contract not
 verified. NO LIVE GCP CALL WAS MADE.** M10 has not started.
+
+## M10 — examiner mode end-to-end
+
+M10 builds on the M1 isolation contract and preserves T1–T3/T9 identity and approval
+invariants; it does not introduce another capture/replay milestone. Implemented
+acceptance coverage:
+
+- `e2e/radlearn/exam-flow.spec.ts`: full report/point/held-voice attempt, neutral
+  opening and hints, recorded retry and assistance, active receipt with no score,
+  deterministic closed score/evidence, separate explicit reveal and closed reload.
+  Point answers use the actual render-confirmed SOP/frame and image pixels. Unknown
+  SOPs, frame overflow and out-of-image points fail closed on the server.
+- The same spec scans HTML, RSC, JSON, API bodies and socket frames across the full
+  attempt before reveal. `playwright.exam.config.ts` additionally exercises the
+  real STT/TTS/structure routes with a server transport mock and scans model request
+  bodies. No reference finding, diagnosis or answer-bearing context reaches the
+  model; no Search, guide/navigation tools or provider WebSocket is opened.
+- The API flow also covers ownership, close-before-answer, close-before-reveal,
+  PHI/audio review, revision conflicts, idempotent save/retry after close, and a
+  new active exam blocking the previous key's reveal.
+- `lib/exam/score.test.ts`, `attempt.test.ts`: reproducibility, hints/retries and
+  persistent assistance, latest-current-try scoring (no best-of-history), wrong
+  SOP/frame rejection, neutral examiner speech request and stale-render point guard.
+- `lib/exam/store.test.ts`: competing revisions cannot both commit; cross-owner
+  mutations fail. Existing `promptLeak.test.ts` and `exam-leak.spec.ts` stay intact.
+
+See [EXAMINER.md](EXAMINER.md) for server boundaries and scoring semantics. M10
+completes the strategy's final milestone; no later milestone is started.
+**All model/audio provider output is mocked. NOT VERIFIED LIVE; live contract not
+verified. NO LIVE GCP CALL WAS MADE.**
