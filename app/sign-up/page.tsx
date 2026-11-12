@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AuthForm } from "@/components/auth/AuthForm";
 import { BrandMark, Wordmark } from "@/components/brand/BrandMark";
 import { demoAuthEnabled, googleAuthEnabled } from "@/lib/auth";
+import { parseSignupIntent } from "@/lib/signupIntent";
 
 export const dynamic = "force-dynamic";
 
@@ -12,12 +13,13 @@ export const metadata = {
 export default function SignUpPage({
   searchParams,
 }: {
-  searchParams?: { next?: string };
+  searchParams?: { next?: string; role?: string };
 }) {
   const next =
     searchParams?.next?.startsWith("/") && !searchParams.next.startsWith("//")
       ? searchParams.next
       : "/dashboard";
+  const role = parseSignupIntent(searchParams?.role);
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center bg-canvas px-4 py-16">
       <div className="w-full max-w-sm">
@@ -31,6 +33,7 @@ export default function SignUpPage({
             googleEnabled={googleAuthEnabled()}
             demoEnabled={demoAuthEnabled()}
             next={next}
+            initialRole={role}
           />
         </div>
         <p className="mt-6 text-center text-sm text-secondary">

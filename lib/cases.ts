@@ -1910,6 +1910,185 @@ export async function provisionAuthUser(input: {
   return (await getUser(user.id)) ?? user;
 }
 
+/** Someone asked to grant platform staff to an email that has no account yet. */
+export class AccountNotFoundError extends Error {
+  constructor(email: string) {
+    super(
+      `No account for ${email}. Create a teacher or student account first, then grant platform admin.`
+    );
+    this.name = "AccountNotFoundError";
+  }
+}
+
+/**
+ * Promote an existing account to platform super_admin.
+ * Does not create a login, change their password, or rewrite their membership.
+ * The first admin is granted with scripts/grant-platform-admin.ts. Further
+ * admins are granted from the Platform tab by someone who already has the role.
+ */
+export async function grantPlatformAdminByEmail(email: string): Promise<User> {
+  const normalized = normalizeEmail(email);
+  if (!normalized || !normalized.includes("@")) {
+    throw new AccountNotFoundError(email.trim() || "(blank)");
+  }
+  const user = await getUserByEmail(normalized);
+  if (!user) throw new AccountNotFoundError(normalized);
+  const updated = await updateUser(user.id, { platformRole: "super_admin" });
+  if (!updated) throw new AccountNotFoundError(normalized);
+  return updated;
+}
+
+const TEACHING_ROLES = new Set<MembershipRole>(["author", "admin", "owner"]);
+
+export interface PlatformTeacherRow {
+  userId: string;
+  email: string;
+  name?: string;
+  orgId: string;
+  orgName: string;
+  role: MembershipRole;
+  draftCases: number;
+  publishedCases: number;
+  findingCount: number;
+}
+
+export interface PlatformMemberRow {
+  membershipId: string;
+  userId: string;
+  email?: string;
+  name?: string;
+  orgId: string;
+  orgName: string;
+  role: MembershipRole;
+}
+
+export interface PlatformCaseRow {
+  caseId: string;
+  title: string;
+  status: CaseStatus;
+  orgId: string;
+  orgName: string;
+  findingCount: number;
+  updatedAt?: string;
+}
+
+export interface PlatformDirectory {
+  teachers: PlatformTeacherRow[];
+  members: PlatformMemberRow[];
+  cases: PlatformCaseRow[];
+  activity: {
+    teacherCount: number;
+    studentCount: number;
+    orgCount: number;
+    draftCases: number;
+    publishedCases: number;
+    findingCount: number;
+    enrollmentCount: number;
+    progressCount: number;
+  };
+}
+
+/**
+ * Cross-org view for platform super_admin only. Callers must already have
+ * checked the role — this function does not authorize. Org admin APIs stay
+ * scoped to one org, so a teacher or student never receives another org's drafts
+ * through listCasesForOrg.
+ */
+export async function getPlatformDirectory(): Promise<PlatformDirectory> {
+  const [users, orgs, memberships, cases, enrollments, progress] = await Promise.all([
+    usersStore.all(),
+    orgsStore.all(),
+    membershipsStore.all(),
+    casesStore.all(),
+    enrollmentsStore.all(),
+    progressStore.all(),
+  ]);
+  const orgName = new Map(orgs.map((org) => [org.id, org.name]));
+  const userById = new Map(users.map((user) => [user.id, user]));
+  const active = memberships.filter((membership) => (membership.status ?? "active") !== "revoked");
+  const normalized = cases.map((row) => normalizeCase(row));
+
+  const casesByOrg = new Map<string, Case[]>();
+  for (const row of normalized) {
+    const orgId = row.orgId || DEFAULT_ORG_ID;
+    const list = casesByOrg.get(orgId) ?? [];
+    list.push(row);
+    casesByOrg.set(orgId, list);
+  }
+
+  const nameOf = (orgId: string) => orgName.get(orgId) || orgId;
+
+  const teachers: PlatformTeacherRow[] = active
+    .filter((membership) => TEACHING_ROLES.has(membership.role))
+    .map((membership) => {
+      const user = userById.get(membership.userId);
+      const orgCases = casesByOrg.get(membership.orgId) ?? [];
+      return {
+        userId: membership.userId,
+        email: user?.email ?? "",
+        name: user?.name,
+        orgId: membership.orgId,
+        orgName: nameOf(membership.orgId),
+        role: membership.role,
+        draftCases: orgCases.filter((row) => row.status !== "published").length,
+        publishedCases: orgCases.filter((row) => row.status === "published").length,
+        findingCount: orgCases.reduce((sum, row) => sum + row.findings.length, 0),
+      };
+    })
+    .sort((a, b) => (a.email || a.name || "").localeCompare(b.email || b.name || ""));
+
+  const members: PlatformMemberRow[] = active
+    .map((membership) => {
+      const user = userById.get(membership.userId);
+      return {
+        membershipId: membership.id,
+        userId: membership.userId,
+        email: user?.email,
+        name: user?.name,
+        orgId: membership.orgId,
+        orgName: nameOf(membership.orgId),
+        role: membership.role,
+      };
+    })
+    .sort((a, b) => (a.email || a.name || "").localeCompare(b.email || b.name || ""));
+
+  const caseRows: PlatformCaseRow[] = normalized
+    .map((row) => {
+      const orgId = row.orgId || DEFAULT_ORG_ID;
+      return {
+        caseId: row.caseId,
+        title: row.title,
+        status: row.status ?? "draft",
+        orgId,
+        orgName: nameOf(orgId),
+        findingCount: row.findings.length,
+        updatedAt: row.updatedAt,
+      };
+    })
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+  const orgIds = new Set<string>([
+    ...active.map((membership) => membership.orgId),
+    ...caseRows.map((row) => row.orgId),
+  ]);
+
+  return {
+    teachers,
+    members,
+    cases: caseRows,
+    activity: {
+      teacherCount: teachers.length,
+      studentCount: active.filter((membership) => membership.role === "student").length,
+      orgCount: orgIds.size,
+      draftCases: caseRows.filter((row) => row.status !== "published").length,
+      publishedCases: caseRows.filter((row) => row.status === "published").length,
+      findingCount: caseRows.reduce((sum, row) => sum + row.findingCount, 0),
+      enrollmentCount: enrollments.filter((row) => row.status === "active").length,
+      progressCount: progress.length,
+    },
+  };
+}
+
 export async function listMemberships(orgId: string): Promise<Membership[]> {
   const all = await membershipsStore.find({ orgId });
   return all

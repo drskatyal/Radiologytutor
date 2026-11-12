@@ -16,7 +16,8 @@
     "eval:record-guide": "tsx scripts/eval-recorded-tour.ts",
     "import:cases": "tsx scripts/import-public-cases.ts",
     "seed:lidc-teach": "tsx scripts/seed-lidc-teach.ts",
-    "dicom-cdn:backfill": "tsx scripts/dicom-cdn-backfill.ts"
+    "dicom-cdn:backfill": "tsx scripts/dicom-cdn-backfill.ts",
+    "admin:grant": "tsx scripts/grant-platform-admin.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1112.0",

@@ -4,7 +4,7 @@
 // Platform (super-admin tools on the roadmap). Auth gates land via lib/auth.
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, LayoutGrid, Users } from "lucide-react";
 import {
   Breadcrumbs,
@@ -44,6 +44,8 @@ export function AdminConsole() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [section, setSection] = useState<Section>("cases");
+  const [platformStaff, setPlatformStaff] = useState(false);
+  const sectionTouched = useRef(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const [editId, setEditId] = useState<string | null>(null);
@@ -67,6 +69,24 @@ export function AdminConsole() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/me")
+      .then(async (res) => {
+        if (!res.ok) return null;
+        return res.json() as Promise<{ user?: { platformRole?: string | null } | null }>;
+      })
+      .then((data) => {
+        if (!alive || data?.user?.platformRole !== "super_admin") return;
+        setPlatformStaff(true);
+        if (!sectionTouched.current) setSection("platform");
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const counts = useMemo(
     () => ({
@@ -139,7 +159,11 @@ export function AdminConsole() {
       <PageHeader
         breadcrumbs={<Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Admin" }]} />}
         title="Admin"
-        description="Platform console — org admins oversee cases; Super-admins run teacher verification and marketplace health."
+        description={
+          platformStaff
+            ? "Every teacher, their org, their cases, and learner activity. Grant another platform admin from the Platform tab."
+            : "This organization's cases, teachers, and members. A platform admin sees every org."
+        }
         actions={
           <Link href="/studio/new">
             <Button leadingIcon={<LayoutGrid className="h-4 w-4" aria-hidden="true" />}>New case</Button>
@@ -149,7 +173,10 @@ export function AdminConsole() {
         <Tabs
           variant="underline"
           value={section}
-          onValueChange={(v) => setSection(v as Section)}
+          onValueChange={(v) => {
+            sectionTouched.current = true;
+            setSection(v as Section);
+          }}
           items={[
             { value: "cases", label: "Cases", icon: <LayoutGrid className="h-4 w-4" />, count: loading ? undefined : cases.length },
             { value: "teachers", label: "Teachers", icon: <Users className="h-4 w-4" />, count: loading ? undefined : authors.length },

@@ -7,25 +7,47 @@ import { Button, Field, Input, useToast } from "@/components/ui";
 import { DemoSignInButton, GoogleSignInButton } from "./AuthButtons";
 import { dashboardPath } from "@/lib/dashboardPath";
 import { safeNext } from "@/lib/demoEntry";
+import {
+  SIGNUP_INTENT_HEADER,
+  rememberSignupIntent,
+  type PublicSignupRole,
+} from "@/lib/signupIntent";
+import { cn } from "@/components/ui";
 import type { MembershipRole, PlatformRole } from "@/lib/types";
+
+const ROLES: { value: PublicSignupRole; label: string; detail: string }[] = [
+  { value: "teacher", label: "Teacher", detail: "Record cases" },
+  { value: "student", label: "Student", detail: "Learn from published cases" },
+];
+
+function authPath(path: "/sign-in" | "/sign-up", role: PublicSignupRole, next?: string) {
+  const params = new URLSearchParams();
+  params.set("role", role);
+  if (next) params.set("next", next);
+  return `${path}?${params.toString()}`;
+}
 
 export function AuthForm({
   mode,
   googleEnabled,
   demoEnabled,
   next,
+  initialRole = "teacher",
 }: {
   mode: "sign-in" | "sign-up";
   googleEnabled: boolean;
   /** Keyless demo sign-in — off in production unless DEMO_AUTH_ENABLED is set. */
   demoEnabled: boolean;
   next?: string;
+  /** Teacher or student. Ignored for an account that already has a membership. */
+  initialRole?: PublicSignupRole;
 }) {
   const router = useRouter();
   const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [role, setRole] = useState<PublicSignupRole>(initialRole);
   const [nameError, setNameError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -51,6 +73,7 @@ export function AuthForm({
     if (busy) return;
     if (!validate()) return;
     setBusy(true);
+    rememberSignupIntent(role);
     try {
       const path =
         mode === "sign-up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email";
@@ -60,7 +83,10 @@ export function AuthForm({
           : { email, password, callbackURL: dest || "/" };
       const res = await fetch(path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [SIGNUP_INTENT_HEADER]: role,
+        },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
@@ -106,14 +132,19 @@ export function AuthForm({
         {mode === "sign-up" ? "Create your account" : "Sign in"}
       </h1>
       <p className="mt-2 text-sm text-secondary text-pretty">
-        {mode === "sign-up"
-          ? "Create a teacher account to record a case. No card is required."
-          : "Sign in to teach, or to continue a case."}
+        Teachers record cases. Students learn from published cases.
       </p>
+
+      <RoleChoice role={role} onChange={setRole} />
+      {mode === "sign-in" && (
+        <p className="mt-2 text-xs text-muted text-pretty">
+          This choice applies when the account is created. Signing in keeps the role you already have.
+        </p>
+      )}
 
       {googleEnabled && (
         <div className="mt-6">
-          <GoogleSignInButton callbackURL={dest} />
+          <GoogleSignInButton callbackURL={dest} intent={role} />
         </div>
       )}
 
@@ -188,7 +219,7 @@ export function AuthForm({
           <>
             Already have an account?{" "}
             <Link
-              href={next ? `/sign-in?next=${encodeURIComponent(dest)}` : "/sign-in"}
+              href={authPath("/sign-in", role, dest || undefined)}
               className="text-accent hover:underline"
             >
               Sign in
@@ -198,7 +229,7 @@ export function AuthForm({
           <>
             New here?{" "}
             <Link
-              href={next ? `/sign-up?next=${encodeURIComponent(dest)}` : "/sign-up"}
+              href={authPath("/sign-up", role, dest || undefined)}
               className="text-accent hover:underline"
             >
               Create an account
@@ -207,5 +238,47 @@ export function AuthForm({
         )}
       </p>
     </div>
+  );
+}
+
+function RoleChoice({
+  role,
+  onChange,
+}: {
+  role: PublicSignupRole;
+  onChange: (role: PublicSignupRole) => void;
+}) {
+  return (
+    <fieldset className="mt-6">
+      <legend className="text-sm font-semibold text-primary">I am a</legend>
+      <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Teacher or student">
+        {ROLES.map((option) => {
+          const selected = role === option.value;
+          return (
+            <label
+              key={option.value}
+              className={cn(
+                "cursor-pointer rounded-lg border px-3 py-2.5 text-left transition-colors",
+                "focus-within:ring-2 focus-within:ring-accent",
+                selected
+                  ? "border-accent bg-accent/10"
+                  : "border-subtle bg-elevated hover:border-strong"
+              )}
+            >
+              <input
+                type="radio"
+                name="account-role"
+                value={option.value}
+                checked={selected}
+                onChange={() => onChange(option.value)}
+                className="sr-only"
+              />
+              <span className="block text-sm font-semibold text-primary">{option.label}</span>
+              <span className="mt-0.5 block text-xs text-secondary">{option.detail}</span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }

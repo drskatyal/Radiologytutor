@@ -21,6 +21,7 @@ import { assertCloudRunMongo } from "./durableStore";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { NextResponse } from "next/server";
+import { applyAuthUserCreate } from "@/lib/authProvision";
 import {
   DEFAULT_ORG_ID,
   DEMO_STUDENT_USER_ID,
@@ -34,6 +35,7 @@ import {
   listMembershipsForUser,
   provisionAuthUser,
 } from "@/lib/cases";
+import { SIGNUP_INTENT_COOKIE, parseSignupIntent, type PublicSignupRole } from "@/lib/signupIntent";
 import {
   canAccessOrgResource,
   isPlatformSuperAdmin,
@@ -131,15 +133,10 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
-        after: async (user) => {
-          // Email and Google sign-up both land here. No intent means teacher:
-          // a personal org with an author membership. Student is opt-in only.
-          await provisionAuthUser({
-            authProviderId: user.id,
-            email: user.email,
-            name: user.name,
-            image: user.image ?? undefined,
-          });
+        after: async (user, context) => {
+          // Email and Google sign-up both land here. Student is opt-in.
+          // The hook never accepts an admin role from the request.
+          await applyAuthUserCreate(user, context);
         },
       },
     },
@@ -192,6 +189,14 @@ function toSessionUser(user: User, memberships: Membership[]): SessionUser {
   };
 }
 
+function signupIntentFromRequest(): PublicSignupRole {
+  try {
+    return parseSignupIntent(cookies().get(SIGNUP_INTENT_COOKIE)?.value);
+  } catch {
+    return "teacher";
+  }
+}
+
 async function domainUserFromAuth(authUser: {
   id: string;
   email: string;
@@ -207,6 +212,7 @@ async function domainUserFromAuth(authUser: {
         email: authUser.email,
         name: authUser.name ?? undefined,
         image: authUser.image ?? undefined,
+        intent: signupIntentFromRequest(),
       });
     }
     return existing;
@@ -216,6 +222,7 @@ async function domainUserFromAuth(authUser: {
     email: authUser.email,
     name: authUser.name ?? undefined,
     image: authUser.image ?? undefined,
+    intent: signupIntentFromRequest(),
   });
 }
 

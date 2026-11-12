@@ -13,6 +13,11 @@ import {
   type DemoPick,
   type DemoSessionUser,
 } from "@/lib/demoEntry";
+import {
+  SIGNUP_INTENT_HEADER,
+  rememberSignupIntent,
+  type PublicSignupRole,
+} from "@/lib/signupIntent";
 
 export type { DemoPick };
 
@@ -46,7 +51,9 @@ export function useDemoSignIn(defaultNext?: string) {
     // the teacher door is a real account, which gets its own org.
     if (role !== "student" && !elevatedDemoAvailable()) {
       const dest = safeNext(next ?? defaultNext);
-      window.location.assign(dest ? `/sign-up?next=${encodeURIComponent(dest)}` : "/sign-up");
+      const params = new URLSearchParams({ role: "teacher" });
+      if (dest) params.set("next", dest);
+      window.location.assign(`/sign-up?${params.toString()}`);
       return;
     }
     setBusyId(id ?? role);
@@ -64,8 +71,11 @@ export function useDemoSignIn(defaultNext?: string) {
 
 export function GoogleSignInButton({
   callbackURL = "/",
+  intent = "teacher",
 }: {
   callbackURL?: string;
+  /** Applied when this Google login creates the account. */
+  intent?: PublicSignupRole;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,10 +84,14 @@ export function GoogleSignInButton({
     if (busy) return;
     setBusy(true);
     setError(null);
+    rememberSignupIntent(intent);
     try {
       const res = await fetch("/api/auth/sign-in/social", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [SIGNUP_INTENT_HEADER]: intent,
+        },
         body: JSON.stringify({ provider: "google", callbackURL: safeNext(callbackURL) || "/" }),
       });
       const data = (await res.json().catch(() => ({}))) as {
