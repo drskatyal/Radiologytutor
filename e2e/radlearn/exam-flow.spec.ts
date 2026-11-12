@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { authorReplayCase } from '../support/replayFixture';
 import { snapshot } from '../support/captureFixture';
+import { expectVisibleHitTarget } from '../support/visibleHitTarget';
 import { examinerPromptPack } from '../../lib/exam/prompt';
 
 const modelLog = '.radlearn-tmp/exam-model-requests.jsonl';
@@ -146,3 +147,32 @@ test('M10 exam APIs enforce ownership, revisions, idempotency, PHI review, exact
   expect(next.status).toBe(200); expect((await api(page, `${base}/reveal`)).status).toBe(409); // no previous key while another exam is open
   expect((await api(page, `/api/exam/sessions/${next.data.id}/answer`, { answer: { kind: 'report', text: 'No opacity.' }, close: true })).status).toBe(200);
 });
+
+for (const width of [1440, 1024]) {
+  test(`M10 exam response is pointer accessible and results unobstructed at ${width}px`, async ({ page }) => {
+    test.setTimeout(120000);
+    await page.setViewportSize({ width, height: 900 });
+    const caseId = await examFixture(page);
+    await page.goto(`/case/${caseId}?mode=exam`);
+    await snapshot(page); // Test against the rendered canvas, not its loading placeholder.
+    const panel = page.getByRole('region', { name: 'Examination response' });
+    const observations = panel.getByLabel('Your observations');
+    await expectVisibleHitTarget(observations);
+    await observations.click();
+    await expect(observations).toBeFocused();
+    await page.keyboard.type('A round opacity.');
+    await expect(observations).toHaveValue('A round opacity.');
+    await panel.getByRole('button', { name: 'Submit and finish', exact: true }).click();
+    const score = panel.getByRole('status').filter({ hasText: 'Attempt completed. Score:' });
+    await expectVisibleHitTarget(score);
+    const finding = panel.getByRole('listitem').filter({ hasText: 'Finding 1:' });
+    await expectVisibleHitTarget(finding);
+    const reveal = panel.getByRole('button', { name: 'Reveal reference answers' });
+    await expectVisibleHitTarget(reveal);
+    await reveal.click();
+    const reference = panel.getByRole('heading', { name: 'CANARY_REFERENCE_M10' });
+    await reference.scrollIntoViewIfNeeded();
+    await expectVisibleHitTarget(reference);
+    await expectVisibleHitTarget(panel.getByText('round opacity', { exact: true }));
+  });
+}

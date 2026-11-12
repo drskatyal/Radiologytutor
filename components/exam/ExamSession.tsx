@@ -84,9 +84,11 @@ export function ExamSession({ caseData, attemptId }: { caseData: LearnerSafeCase
   }
   const canSubmit = mode === 'point' ? !!point : !!text.trim() && (mode !== 'voice' || transcriptReviewed);
   return <main className="flex h-dvh flex-col bg-canvas" data-testid="exam-session" data-attempt-id={attemptId}>
-    <header className="flex items-center justify-between gap-3 border-b border-subtle bg-surface px-4 py-3"><h1 className="text-base font-semibold text-primary">Imaging examination</h1><Badge variant="neutral">{receipt?.status === 'closed' ? 'Completed' : 'In progress'}</Badge></header>
-    <div ref={host} className="min-h-48 flex-1"><ViewerFrame source={source} initial={examInitialView} teaching={teaching} /></div>
-    <section className="max-h-[55dvh] overflow-y-auto border-t border-subtle bg-surface p-4" aria-label="Examination response">
+    <header className="flex shrink-0 items-center justify-between gap-3 border-b border-subtle bg-surface px-4 py-3"><h1 className="text-base font-semibold text-primary">Imaging examination</h1><Badge variant="neutral">{receipt?.status === 'closed' ? 'Completed' : 'In progress'}</Badge></header>
+    <div className="grid min-h-0 flex-1 grid-rows-[minmax(16rem,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_24rem] lg:grid-rows-1">
+    {/* Reading mode sizes the canvas to its grid cell; page mode uses a square image that can overflow it. */}
+    <div ref={host} className="relative min-h-0 min-w-0 overflow-hidden"><ViewerFrame tone="reading" source={source} initial={examInitialView} teaching={teaching} /></div>
+    <section className="min-h-0 min-w-0 overflow-y-auto border-t border-subtle bg-surface p-4 lg:border-l lg:border-t-0" aria-label="Examination response">
       <div className="mx-auto flex max-w-4xl flex-col gap-3">
         {error && <p role="alert" className="text-sm text-danger">{error} <Button size="sm" variant="ghost" onClick={() => void load()}>Reload attempt</Button></p>}
         {receipt?.status === 'closed' ? <>
@@ -112,5 +114,6 @@ export function ExamSession({ caseData, attemptId }: { caseData: LearnerSafeCase
         </>}
       </div>
     </section>
+    </div>
   </main>;
 }
