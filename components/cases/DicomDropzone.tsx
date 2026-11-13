@@ -25,9 +25,12 @@ import {
   type UploadResult,
 } from "@/components/admin/types";
 import { uploadDicomBatch } from "@/components/admin/api";
+import { forEachLimited } from "@/lib/pool";
 
 /** How many files we send per request. Keeps each POST small and resumable. */
 const BATCH_SIZE = 20;
+/** Upload requests in flight at once. */
+const BATCH_CONCURRENCY = 3;
 
 // Client-side mirror of the server's filter, so the count we show is honest
 // before we ever hit the network. The server re-checks (incl. DICM magic).
@@ -213,8 +216,9 @@ export function DicomDropzone({
     setProgress({ totalFiles, doneFiles, storedImages });
 
     try {
-      for (const batch of batches) {
-        if (controller.signal.aborted) break;
+      // A few batches in flight: one at a time left the archive idle between
+      // round trips. Results arrive out of order; every tally is additive.
+      await forEachLimited(batches, BATCH_CONCURRENCY, async (batch) => {
         const result = await uploadDicomBatch(batch, { signal: controller.signal });
         doneFiles += batch.length;
         storedImages += result.stored;
@@ -229,7 +233,7 @@ export function DicomDropzone({
         setProgress({ totalFiles, doneFiles, storedImages });
         setSkipped([...accSkipped]);
         setFailed([...accFailed]);
-      }
+      }, () => controller.signal.aborted);
     } catch (e) {
       if (e instanceof OrthancUnavailableError) {
         setPhase("idle");

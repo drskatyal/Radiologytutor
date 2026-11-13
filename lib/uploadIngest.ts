@@ -15,6 +15,10 @@ import { imagingStudySummary, orthancIngestInstance, orthancSeriesMeta } from ".
 import { TeachingDeidError, deidentifyTeachingInstance } from "./teachingDeidentify";
 import { assertDurableStorageConfigured } from "./envSchema";
 import { persistUploadReceipt } from "./importObjects";
+import { forEachLimited } from "./pool";
+
+/** Instances stored at once per upload request (archive round trips in flight). */
+const STORE_CONCURRENCY = 6;
 
 /** Cover-ready metadata for one uploaded series (mirrors UploadedSeries). */
 export interface UploadSeriesOut {
@@ -146,7 +150,11 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
   let deidentified = 0;
   const failed: UploadSkipped[] = [];
 
-  for (const c of candidates) {
+  // Stores run STORE_CONCURRENCY at a time: one archive round trip per
+  // instance, awaited serially, made a 1,000-image MR take minutes. Each
+  // SOP is claimed before its await so a duplicate in the same upload is
+  // still skipped.
+  await forEachLimited(candidates, STORE_CONCURRENCY, async (c) => {
     let bytes = c.bytes;
     try {
       const cleaned = deidentifyTeachingInstance(new Uint8Array(c.bytes));
@@ -154,18 +162,18 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
       bytes = toArrayBuffer(cleaned.bytes);
     } catch (e) {
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
-      continue;
+      return;
     }
 
     const uids = readDicomUids(bytes);
     if (uids && seenSop.has(uids.sop)) {
       duplicates++;
-      continue;
+      return;
     }
+    if (uids) seenSop.add(uids.sop);
 
     try {
       const res = await orthancIngestInstance(bytes);
-      if (uids) seenSop.add(uids.sop);
       if (!deidByStudy.has(res.ParentStudy)) {
         deidByStudy.set(res.ParentStudy, res.deidReport);
       }
@@ -174,16 +182,18 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
         if (!seriesMap.has(res.ParentSeries)) {
           seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 0 });
         }
-        continue;
+        return;
       }
       stored++;
       const existing = seriesMap.get(res.ParentSeries);
       if (existing) existing.count++;
       else seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 1 });
     } catch (e) {
+      // A failed store may be retried by a later copy of the same SOP.
+      if (uids) seenSop.delete(uids.sop);
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
     }
-  }
+  });
 
   const series: UploadSeriesOut[] = [];
   const studyCache = new Map<
