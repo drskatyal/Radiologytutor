@@ -391,6 +391,13 @@ export function RecordingStudio({
     });
   }, []);
   const panelBeforeTake = useRef<boolean | null>(null);
+  // A retained take is processed only after the teacher confirms its media
+  // carry no patient identifiers (lib/captureSession). Say so on the bar —
+  // the button used to fail silently with the reason off in the side panel.
+  // Why the last "Process and teach case" failed, kept on the record bar
+  // (a toast vanished, and the AI-unavailable notice sat in the side panel).
+  const [processError, setProcessError] = useState<string | null>(null);
+  const mediaReviewPending = Boolean(rr.track?.captureSessionId) && !rr.mediaReviewed;
   useEffect(() => {
     if (recording && panelBeforeTake.current === null) {
       panelBeforeTake.current = panelOpen;
@@ -1206,7 +1213,8 @@ export function RecordingStudio({
                     onClick={() => {
                       void captureApi.current?.process();
                     }}
-                    disabled={processingTake}
+                    disabled={processingTake || mediaReviewPending}
+                    title={mediaReviewPending ? "Confirm the media review in the side panel first." : undefined}
                   >
                     Process and teach case
                   </Button>
@@ -1277,6 +1285,24 @@ export function RecordingStudio({
               )}
               {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
+              {reviewingTake && processError && !processingTake && (
+                <span role="alert" className="max-w-md text-xs text-danger">
+                  Processing failed: {processError}
+                </span>
+              )}
+              {reviewingTake && mediaReviewPending && (
+                <span role="status" className="text-xs text-warning">
+                  Before processing: confirm the media review in the side panel
+                  {!panelOpen && (
+                    <>
+                      {" "}
+                      <button type="button" className="font-medium underline underline-offset-2" onClick={togglePanel}>
+                        Show panel
+                      </button>
+                    </>
+                  )}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -1445,6 +1471,7 @@ export function RecordingStudio({
               if (phase !== "processing") setCompileProgress(null);
             }}
             onProgress={setCompileProgress}
+            onProcessError={setProcessError}
             onReview={setReview}
             onApi={onCaptureApi}
           />

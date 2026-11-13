@@ -122,6 +122,8 @@ import { loadScrollPreferences } from "@/lib/scrollPreferencesStore";
 import { getRecentStudiesEnabled, setRecentStudiesEnabled, useRecentStudiesEnabled } from "@/lib/recentStudiesSetting";
 import { readSeriesListCompact, writeSeriesListCompact } from "@flowrad/viewer-core/seriesPanel";
 import { RecentStudies } from "./RecentStudies";
+import { useLazySeriesRail } from "./useLazySeriesRail";
+import { seriesThumbUrl } from "@/lib/seriesRail";
 
 /** Raised when the viewer's own code could not be fetched (after retries). */
 const VIEWER_CHUNK_ERROR_EVENT = "flowrad:viewer-chunk-error";
@@ -294,6 +296,8 @@ function cloudOpenResult(studies: readonly LocalStudy[]): LocalIngestResult {
  * files and no teaching layer (the free viewer); RadLearn passes a
  * `teaching` layer (lib/teachingLayer.ts) for its markers, tour and tutor.
  */
+const NO_SERIES: readonly CaseSeries[] = [];
+
 export function ViewerFrame({
   tone = "page",
   source: frameSource = LOCAL_SOURCE,
@@ -1622,7 +1626,22 @@ export function ViewerFrame({
     (item: LocalSeries) => studySource?.imageIds(item) ?? [],
     [studySource]
   );
-  const thumbUrlFor = useCallback((item: LocalSeries) => studySource?.thumbnailUrl(item) ?? null, [studySource]);
+  // Archive covers: a case's stored series list names no instance, so look
+  // each series up once the first image is up (QIDO, else the metadata the
+  // viewer already read) — the same lazy rail the older layout used.
+  const cloudRail = useLazySeriesRail((cloudSeries as readonly CaseSeries[] | null) ?? NO_SERIES, cloudSeries ? firstImageUp : undefined);
+  const cloudThumbs = useMemo(() => {
+    const byUid = new Map<string, string>();
+    for (const entry of cloudRail) {
+      const url = seriesThumbUrl(entry);
+      if (url) byUid.set(entry.seriesInstanceUID, url);
+    }
+    return byUid;
+  }, [cloudRail]);
+  const thumbUrlFor = useCallback(
+    (item: LocalSeries) => studySource?.thumbnailUrl(item) ?? cloudThumbs.get(item.seriesInstanceUID) ?? null,
+    [studySource, cloudThumbs]
+  );
   const pinned = phase.state === "open" || phase.state === "reading" ? phase.pinned : null;
   const study: LocalStudy | null = result?.studies[activeStudy] ?? null;
   const series: LocalSeries | null = study?.series[activeSeries] ?? null;
