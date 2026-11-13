@@ -18,7 +18,10 @@
 //             (DICOMWEB_SESSION_TTL_MS, default 10 s): a revoked session keeps
 //             reading pixels for at most this long.
 //   share     a /s/{token} link's org + study allowlist (60 s).
-//   ownership does that org own this study (60 s; negatives cached too).
+//   ownership does that org own this study (60 s, YES answers only). A "no"
+//             is never cached: the case-setup thumbnails ask about a fresh
+//             upload before its Study record exists, and a cached "no" then
+//             404'd every frame the Studio requested for the next minute.
 // ============================================================================
 
 import type { NextRequest } from "next/server";
@@ -37,7 +40,7 @@ import {
   studyUidsForCase,
 } from "@/lib/caseShare";
 import { studyReadAllowed } from "@/lib/studyAccessPolicy";
-import { createTtlMemo } from "@/lib/ttlMemo";
+import { createTtlMemo, type TtlMemo } from "@/lib/ttlMemo";
 
 const SESSION_TTL_MS = Number(process.env.DICOMWEB_SESSION_TTL_MS ?? 10_000);
 type Caller = { orgId: string; canAuthor: boolean };
@@ -110,11 +113,20 @@ async function publishedStudyUids(orgId: string): Promise<Set<string>> {
 }
 
 async function orgOwnsStudy(orgId: string, studyUid: string): Promise<boolean> {
-  const key = `${orgId}\u0000${studyUid}`;
-  const hit = ownershipMemo.get(key);
-  if (hit !== undefined) return hit;
-  const owned = Boolean(await getStudyByUID(orgId, studyUid));
-  ownershipMemo.set(key, owned);
+  return memoisedOwnership(ownershipMemo, `${orgId}\u0000${studyUid}`, async () =>
+    Boolean(await getStudyByUID(orgId, studyUid))
+  );
+}
+
+/** Ownership through the memo, caching only positive answers (see header). */
+export async function memoisedOwnership(
+  memo: Pick<TtlMemo<boolean>, "get" | "set">,
+  key: string,
+  lookup: () => Promise<boolean>
+): Promise<boolean> {
+  if (memo.get(key)) return true;
+  const owned = await lookup();
+  if (owned) memo.set(key, true);
   return owned;
 }
 
