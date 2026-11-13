@@ -31,7 +31,9 @@ export function mergeUpload(
   prev: StagedStudy[],
   result: UploadResult
 ): { next: StagedStudy[]; firstNewStudy?: StagedStudy } {
-  const next = prev.map((s) => ({ ...s, series: [...s.series], selected: [...s.selected] }));
+  // Copy the series objects too: counts are added in place below, and React
+  // may run a state updater twice (StrictMode), which double-counted batches.
+  const next = prev.map((s) => ({ ...s, series: s.series.map((x) => ({ ...x })), selected: [...s.selected] }));
   const byUid = new Map(next.map((s) => [s.studyInstanceUID, s]));
   let firstNewStudy: StagedStudy | undefined;
 
@@ -76,15 +78,15 @@ export function mergeUpload(
         studyInstanceUID: s.studyInstanceUID,
         firstInstanceUID: s.firstInstanceUID,
       });
+      // Every series of an upload is in the case by default; the teacher
+      // unticks what they do not need (one ticked series hid the rest).
+      study.selected.push(s.seriesInstanceUID);
     }
   }
 
-  // Ensure every study has a primary/selection default (first series).
+  // Every study has a primary: the first series.
   for (const study of next) {
-    if (study.selected.length === 0 && study.series[0]) {
-      study.selected = [study.series[0].seriesInstanceUID];
-      study.primary = study.series[0].seriesInstanceUID;
-    }
+    if (!study.primary && study.series[0]) study.primary = study.series[0].seriesInstanceUID;
   }
   return { next, firstNewStudy };
 }
