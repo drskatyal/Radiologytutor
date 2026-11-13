@@ -23,6 +23,8 @@ import {
   Check,
   Circle,
   Mic,
+  PanelRightClose,
+  PanelRightOpen,
   Play,
   Plus,
   RotateCcw,
@@ -123,6 +125,9 @@ import {
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
 type MicStatus = "unknown" | "granted" | "denied" | "unsupported";
+
+/** Remembers whether the teacher folded the Studio side panel (this browser only). */
+const STUDIO_PANEL_KEY = "radlearn-studio-panel";
 
 export function RecordingStudio({
   initialCase,
@@ -363,6 +368,40 @@ export function RecordingStudio({
 
   const hasTrack = !!rr.track && (rr.track.events.length > 0 || !!rr.track.journal?.length);
   const recording = ["starting", "recording", "stopping"].includes(rr.phase);
+
+  // The side column (sequence, capture modes, review) folds away so the
+  // teacher can work on the whole window. The choice is remembered in this
+  // browser; while recording it folds on its own and returns for review.
+  const [panelOpen, setPanelOpen] = useState(true);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(STUDIO_PANEL_KEY) === "closed") setPanelOpen(false);
+    } catch {
+      // Storage blocked: the panel simply starts open.
+    }
+  }, []);
+  const togglePanel = useCallback(() => {
+    setPanelOpen((open) => {
+      try {
+        window.localStorage.setItem(STUDIO_PANEL_KEY, open ? "closed" : "open");
+      } catch {
+        // Not remembered; the toggle still works.
+      }
+      return !open;
+    });
+  }, []);
+  const panelBeforeTake = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (recording && panelBeforeTake.current === null) {
+      panelBeforeTake.current = panelOpen;
+      setPanelOpen(false);
+    } else if (!recording && panelBeforeTake.current !== null) {
+      setPanelOpen(panelBeforeTake.current);
+      panelBeforeTake.current = null;
+    }
+    // panelOpen is read only at the start of a take.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording]);
   const micBlocked = mic === "denied" || mic === "unsupported";
   const canSaveDraft = !!draft.label.trim();
 
@@ -996,6 +1035,16 @@ export function RecordingStudio({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            leadingIcon={panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+            onClick={togglePanel}
+            aria-pressed={panelOpen}
+            aria-controls="studio-side-panel"
+          >
+            {panelOpen ? "Hide panel" : `Show panel${findings.length > 0 ? ` · ${findings.length}` : ""}`}
+          </Button>
           {(showStudentTest || caseData.findings.length > 0) && (
             <Button
               variant="secondary"
@@ -1029,7 +1078,12 @@ export function RecordingStudio({
         </div>
       </header>
 
-      <div className="grid min-h-0 min-w-0 flex-1 gap-4 overflow-x-clip p-3 sm:p-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <div
+        className={cn(
+          "grid min-h-0 min-w-0 flex-1 gap-4 overflow-x-clip p-3 sm:p-4",
+          panelOpen && "lg:grid-cols-[minmax(0,1fr)_380px]"
+        )}
+      >
         {/* ── Capture stage: the viewer takes all the height, the record bar
             sits right under it, never below the fold. ─────────────────── */}
         <div className="flex min-h-0 min-w-0 flex-col gap-3">
@@ -1075,21 +1129,27 @@ export function RecordingStudio({
                     interactive={rr.phase !== "replaying"}
                   />
                 }
-                sketchPalette={
-                  <SketchToolPalette
-                    tool={sketch.tool}
-                    onTool={sketch.setTool}
-                    canUndo={sketch.canUndo}
-                    canRedo={sketch.canRedo}
-                    onUndo={sketch.undo}
-                    onRedo={sketch.redo}
-                    onClear={sketch.clearAll}
-                    hasInk={sketch.items.length > 0}
-                    disabled={sketch.replaying}
-                    onExport={exportSketch}
-                    exporting={sketchExporting}
-                  />
-                }
+                sketchTools={{
+                  // One toolbar: the ink tools are a group on the viewer's own bar.
+                  tools: (
+                    <SketchToolPalette
+                      inline
+                      tool={sketch.tool}
+                      onTool={sketch.setTool}
+                      canUndo={sketch.canUndo}
+                      canRedo={sketch.canRedo}
+                      onUndo={sketch.undo}
+                      onRedo={sketch.redo}
+                      onClear={sketch.clearAll}
+                      hasInk={sketch.items.length > 0}
+                      disabled={sketch.replaying}
+                      onExport={exportSketch}
+                      exporting={sketchExporting}
+                    />
+                  ),
+                  active: sketch.tool !== "select",
+                  onViewerTool: () => sketch.setTool("select"),
+                }}
                 onAnnotateClick={onAnnotateClick}
                 annotateSlot={
                   pendingMarker ? (
@@ -1222,7 +1282,10 @@ export function RecordingStudio({
         </div>
 
         {/* ── Capture column: scrolls on its own beside the fixed stage. ── */}
-        <div className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pb-2 lg:pr-1">
+        <div
+          id="studio-side-panel"
+          className={cn("flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pb-2 lg:pr-1", !panelOpen && "hidden")}
+        >
           <Card padded={false} className="p-4">
             <SketchShortcutHint />
 
