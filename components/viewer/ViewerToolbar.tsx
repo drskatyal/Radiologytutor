@@ -262,6 +262,13 @@ export interface ViewerToolbarProps {
   variant: "edge" | "dock";
   ready: boolean;
   activeTool: string;
+  /**
+   * A host's own tools (the Studio's teaching ink) as a group on this bar, so
+   * there is one toolbar, not a second floating palette. While one of them is
+   * on (`hostToolActive`), no viewer tool shows as selected.
+   */
+  hostTools?: ReactNode;
+  hostToolActive?: boolean;
   /** False when the study has no pixel spacing. */
   annotationsEnabled: boolean;
   /** False in MPR — measurements stay on the stack. */
@@ -338,7 +345,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
   const {
     variant,
     ready,
-    activeTool,
+    activeTool: viewerTool,
     annotationsEnabled,
     measurementsEnabled,
     inverted,
@@ -359,6 +366,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
   const claimStage = stage?.claim;
   useEffect(() => claimStage?.(), [claimStage]);
 
+  const activeTool = props.hostToolActive ? "" : viewerTool;
   const activeMeasure = measureTools.find((t) => t.name === activeTool) ?? measureTools[0]!;
   const measureActive = measureTools.some((t) => t.name === activeTool);
   const measureBlocked = (tool: ViewerTool) =>
@@ -507,6 +515,13 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           <ToolbarButton label="PET / CT fusion" disabled={!ready} container={host} pressed={false} onClick={props.onFusion}>
             <Icon as={Combine} />
           </ToolbarButton>
+        )}
+
+        {props.hostTools && (
+          <>
+            <Divider />
+            {props.hostTools}
+          </>
         )}
 
         <Divider />

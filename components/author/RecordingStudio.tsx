@@ -23,6 +23,8 @@ import {
   Check,
   Circle,
   Mic,
+  PanelRightClose,
+  PanelRightOpen,
   Play,
   Plus,
   RotateCcw,
@@ -31,10 +33,8 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { PageHeader } from "@/components/AppShell";
 import {
   Badge,
-  Breadcrumbs,
   Button,
   Card,
   Field,
@@ -42,7 +42,6 @@ import {
   Input,
   Modal,
   Spinner,
-  Stepper,
   Tabs,
   Textarea,
   useToast,
@@ -106,7 +105,6 @@ import {
 } from "@/components/author/lib";
 import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import { updateCase } from "@/components/admin/api";
-import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
 import {
@@ -127,6 +125,9 @@ import {
 const EMPTY_DRAFT: StructuredFinding = { label: "", description: "", teachingPoints: [] };
 
 type MicStatus = "unknown" | "granted" | "denied" | "unsupported";
+
+/** Remembers whether the teacher folded the Studio side panel (this browser only). */
+const STUDIO_PANEL_KEY = "radlearn-studio-panel";
 
 export function RecordingStudio({
   initialCase,
@@ -367,6 +368,47 @@ export function RecordingStudio({
 
   const hasTrack = !!rr.track && (rr.track.events.length > 0 || !!rr.track.journal?.length);
   const recording = ["starting", "recording", "stopping"].includes(rr.phase);
+
+  // The side column (sequence, capture modes, review) folds away so the
+  // teacher can work on the whole window. The choice is remembered in this
+  // browser; while recording it folds on its own and returns for review.
+  const [panelOpen, setPanelOpen] = useState(true);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(STUDIO_PANEL_KEY) === "closed") setPanelOpen(false);
+    } catch {
+      // Storage blocked: the panel simply starts open.
+    }
+  }, []);
+  const togglePanel = useCallback(() => {
+    setPanelOpen((open) => {
+      try {
+        window.localStorage.setItem(STUDIO_PANEL_KEY, open ? "closed" : "open");
+      } catch {
+        // Not remembered; the toggle still works.
+      }
+      return !open;
+    });
+  }, []);
+  const panelBeforeTake = useRef<boolean | null>(null);
+  // A retained take is processed only after the teacher confirms its media
+  // carry no patient identifiers (lib/captureSession). Say so on the bar —
+  // the button used to fail silently with the reason off in the side panel.
+  // Why the last "Process and teach case" failed, kept on the record bar
+  // (a toast vanished, and the AI-unavailable notice sat in the side panel).
+  const [processError, setProcessError] = useState<string | null>(null);
+  const mediaReviewPending = Boolean(rr.track?.captureSessionId) && !rr.mediaReviewed;
+  useEffect(() => {
+    if (recording && panelBeforeTake.current === null) {
+      panelBeforeTake.current = panelOpen;
+      setPanelOpen(false);
+    } else if (!recording && panelBeforeTake.current !== null) {
+      setPanelOpen(panelBeforeTake.current);
+      panelBeforeTake.current = null;
+    }
+    // panelOpen is read only at the start of a take.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording]);
   const micBlocked = mic === "denied" || mic === "unsupported";
   const canSaveDraft = !!draft.label.trim();
 
@@ -959,7 +1001,6 @@ export function RecordingStudio({
   }
 
   const published = caseData.status === "published";
-  const stepperStage = published ? "publish" : findings.length > 0 ? "publish" : "record";
   const readiness = casePublishReadiness(findings);
   const showStudentTest =
     !!caseData.liveTeachingPack && (teacherPhase === "idle" || teacherPhase === "ready");
@@ -976,97 +1017,99 @@ export function RecordingStudio({
         teacherPhase !== "processing"));
 
   return (
-    <div className="animate-fade-in">
-      <PageHeader
-        breadcrumbs={
-          <Breadcrumbs
-            items={[{ label: "Studio", href: "/studio" }, { label: caseData.title, href: `/studio/cases/${encodeURIComponent(caseData.caseId)}` }, { label: "Record" }]}
-          />
-        }
-        title={
-          <span className="flex items-center gap-2.5">
-            Annotate &amp; teach
-            <Badge variant="accent" dot>
-              {usingSample ? "Sample study" : "Live study"}
-            </Badge>
-          </span>
-        }
-        description={
-          <span className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-secondary">{caseData.title}</span>
-            <Badge variant="neutral">{caseData.modality}</Badge>
-            <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
-            <span className="text-xs text-muted">·</span>
-            <span className="text-xs text-muted">
-              Review the study, then record. {approvedCount}/{findings.length} approved
+    <div className="flex animate-fade-in flex-col lg:h-dvh lg:overflow-hidden">
+      {/* One compact row: where you are, the case, and the two exits (draft /
+          publish). The floating site nav is hidden on this route
+          (components/AppShell.tsx) so the viewer gets the screen. */}
+      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-subtle bg-surface px-4 py-2.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          leadingIcon={<ArrowLeft className="h-4 w-4" />}
+          onClick={() => leaveTo(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
+        >
+          Save &amp; exit
+        </Button>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <h1 className="truncate text-base font-semibold text-primary">{caseData.title}</h1>
+          <Badge variant="neutral">{caseData.modality}</Badge>
+          <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
+          {usingSample && <Badge variant="accent">Sample study</Badge>}
+          {findings.length > 0 && (
+            <span className="text-xs tabular-nums text-muted">
+              {approvedCount}/{findings.length} approved
             </span>
-          </span>
-        }
-        actions={
-          <div className="flex max-w-full flex-wrap items-center gap-2">
-            {showStudentTest && (
-              <Button size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openStudentTest}>
-                Test as student
-              </Button>
-            )}
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            leadingIcon={panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+            onClick={togglePanel}
+            aria-pressed={panelOpen}
+            aria-controls="studio-side-panel"
+          >
+            {panelOpen ? "Hide panel" : `Show panel${findings.length > 0 ? ` · ${findings.length}` : ""}`}
+          </Button>
+          {(showStudentTest || caseData.findings.length > 0) && (
             <Button
-              variant="ghost"
+              variant="secondary"
               size="sm"
-              leadingIcon={<ArrowLeft className="h-4 w-4" />}
-              onClick={() => leaveTo(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
-            >
-              Save as draft &amp; exit
-            </Button>
-            {caseData.findings.length > 0 && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => leaveTo(`/case/${encodeURIComponent(caseData.caseId)}`)}
-              >
-                Test as student
-              </Button>
-            )}
-            <Button
-              size="sm"
-              leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-              onClick={publish}
-              loading={publishing}
-              disabled={!canDeploy}
-              title={
-                published
-                  ? "In your library"
-                  : packReady
-                    ? "Deploy case"
-                    : caseData.liveTeachingPack
-                      ? "Finish processing before adding this case to the library."
-                      : readiness.blockers[0]
+              leadingIcon={<Play className="h-4 w-4" />}
+              onClick={() =>
+                showStudentTest ? openStudentTest() : leaveTo(`/case/${encodeURIComponent(caseData.caseId)}`)
               }
             >
-              {published ? "In library" : caseData.liveTeachingPack ? "Add to library" : "Review & publish"}
+              Test as student
             </Button>
-          </div>
-        }
-      >
-        <Stepper steps={CASE_FLOW_STEPS} currentId={stepperStage} />
-      </PageHeader>
+          )}
+          <Button
+            size="sm"
+            leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            onClick={publish}
+            loading={publishing}
+            disabled={!canDeploy}
+            title={
+              published
+                ? "In your library"
+                : packReady
+                  ? "Deploy case"
+                  : caseData.liveTeachingPack
+                    ? "Finish processing before adding this case to the library."
+                    : readiness.blockers[0]
+            }
+          >
+            {published ? "In library" : caseData.liveTeachingPack ? "Add to library" : "Review & publish"}
+          </Button>
+        </div>
+      </header>
 
-      <div className="mx-auto grid min-w-0 max-w-[1500px] gap-6 overflow-x-clip px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_400px]">
-        {/* ── Capture stage ─────────────────────────────────────────────── */}
-        <div className="min-w-0">
+      <div
+        className={cn(
+          "grid min-h-0 min-w-0 flex-1 gap-4 overflow-x-clip p-3 sm:p-4",
+          panelOpen && "lg:grid-cols-[minmax(0,1fr)_380px]"
+        )}
+      >
+        {/* ── Capture stage: the viewer takes all the height, the record bar
+            sits right under it, never below the fold. ─────────────────── */}
+        <div className="flex min-h-0 min-w-0 flex-col gap-3">
           {/* The recording-flow frame: a pulsing glow + ring frames the WHOLE
               viewer while capture is live, so it's unmistakable that recording
               is on. Uses the design-system `mic-pulse` keyframe (token-driven). */}
           <div
             className={cn(
-              "relative rounded-2xl border bg-imaging p-1 transition-colors duration-300",
+              "relative h-[70dvh] rounded-2xl border bg-imaging p-1 transition-colors duration-300 lg:h-auto lg:min-h-0 lg:flex-1",
               recording
                 ? "animate-mic-pulse border-danger/70 ring-1 ring-danger/40"
                 : "border-subtle"
             )}
           >
-            <div className="overflow-hidden rounded-xl">
+            <div className="h-full overflow-hidden rounded-xl">
               {mountViewer ? (
               <RecordStage
+                fill
+                label={caseData.title}
                 source={initialSource}
                 series={series}
                 activeSeriesIndex={activeSeriesIndex}
@@ -1093,21 +1136,27 @@ export function RecordingStudio({
                     interactive={rr.phase !== "replaying"}
                   />
                 }
-                sketchPalette={
-                  <SketchToolPalette
-                    tool={sketch.tool}
-                    onTool={sketch.setTool}
-                    canUndo={sketch.canUndo}
-                    canRedo={sketch.canRedo}
-                    onUndo={sketch.undo}
-                    onRedo={sketch.redo}
-                    onClear={sketch.clearAll}
-                    hasInk={sketch.items.length > 0}
-                    disabled={sketch.replaying}
-                    onExport={exportSketch}
-                    exporting={sketchExporting}
-                  />
-                }
+                sketchTools={{
+                  // One toolbar: the ink tools are a group on the viewer's own bar.
+                  tools: (
+                    <SketchToolPalette
+                      inline
+                      tool={sketch.tool}
+                      onTool={sketch.setTool}
+                      canUndo={sketch.canUndo}
+                      canRedo={sketch.canRedo}
+                      onUndo={sketch.undo}
+                      onRedo={sketch.redo}
+                      onClear={sketch.clearAll}
+                      hasInk={sketch.items.length > 0}
+                      disabled={sketch.replaying}
+                      onExport={exportSketch}
+                      exporting={sketchExporting}
+                    />
+                  ),
+                  active: sketch.tool !== "select",
+                  onViewerTool: () => sketch.setTool("select"),
+                }}
                 onAnnotateClick={onAnnotateClick}
                 annotateSlot={
                   pendingMarker ? (
@@ -1135,7 +1184,7 @@ export function RecordingStudio({
                 }
               />
               ) : (
-                <div className="flex aspect-square w-full items-center justify-center bg-imaging">
+                <div className="flex h-full w-full items-center justify-center bg-imaging">
                   <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
                     Loading study…
                   </span>
@@ -1144,8 +1193,8 @@ export function RecordingStudio({
             </div>
           </div>
 
-          {/* Transport controls */}
-          <Card padded={false} className="mt-4 p-4">
+          {/* Record bar: one primary action for the current step. */}
+          <div className="shrink-0 rounded-xl border border-subtle bg-surface px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
                 <Button
@@ -1164,7 +1213,8 @@ export function RecordingStudio({
                     onClick={() => {
                       void captureApi.current?.process();
                     }}
-                    disabled={processingTake}
+                    disabled={processingTake || mediaReviewPending}
+                    title={mediaReviewPending ? "Confirm the media review in the side panel first." : undefined}
                   >
                     Process and teach case
                   </Button>
@@ -1235,8 +1285,35 @@ export function RecordingStudio({
               )}
               {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
+              {reviewingTake && processError && !processingTake && (
+                <span role="alert" className="max-w-md text-xs text-danger">
+                  Processing failed: {processError}
+                </span>
+              )}
+              {reviewingTake && mediaReviewPending && (
+                <span role="status" className="text-xs text-warning">
+                  Before processing: confirm the media review in the side panel
+                  {!panelOpen && (
+                    <>
+                      {" "}
+                      <button type="button" className="font-medium underline underline-offset-2" onClick={togglePanel}>
+                        Show panel
+                      </button>
+                    </>
+                  )}
+                </span>
+              )}
             </div>
-            <SketchShortcutHint className="mt-3 border-t border-subtle pt-3" />
+          </div>
+        </div>
+
+        {/* ── Capture column: scrolls on its own beside the fixed stage. ── */}
+        <div
+          id="studio-side-panel"
+          className={cn("flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pb-2 lg:pr-1", !panelOpen && "hidden")}
+        >
+          <Card padded={false} className="p-4">
+            <SketchShortcutHint />
 
             {(captureTab === "walk" || !!editingFindingId) && <MarkerGroupChoice track={rr.track} checked={groupMarkers} onChange={setGroupMarkers} />}
             <CaptureStatus rr={rr} controls={controls} />
@@ -1311,10 +1388,6 @@ export function RecordingStudio({
               </div>
             )}
           </Card>
-        </div>
-
-        {/* ── Capture column ────────────────────────────────────────────── */}
-        <div className="flex min-w-0 flex-col gap-4">
           <SequenceBoard
             findings={findings}
             pending={pendingMarkers}
@@ -1398,6 +1471,7 @@ export function RecordingStudio({
               if (phase !== "processing") setCompileProgress(null);
             }}
             onProgress={setCompileProgress}
+            onProcessError={setProcessError}
             onReview={setReview}
             onApi={onCaptureApi}
           />
@@ -1527,10 +1601,10 @@ export function RecordingStudio({
               {published ? "Published" : "Publish case"}
             </Button>
           </Card>
+          {findings.length > 0 && <FindingReviewPanel onDirtyChange={onReviewDirty} caseData={caseData} viewer={controls} ready={ready && rr.phase === "idle"} onChanged={setCaseData} onApprovedCount={setApprovedCount} />}
         </div>
       </div>
 
-      {findings.length > 0 && <FindingReviewPanel onDirtyChange={onReviewDirty} caseData={caseData} viewer={controls} ready={ready && rr.phase === "idle"} onChanged={setCaseData} onApprovedCount={setApprovedCount} />}
 
       {/* Edit-text dialog */}
       <EditFindingDialog

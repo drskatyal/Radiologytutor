@@ -9,6 +9,7 @@ import {
   Download,
   Eraser,
   MapPin,
+  MoreHorizontal,
   MousePointer2,
   PenLine,
   Redo2,
@@ -46,6 +47,7 @@ export function SketchToolPalette({
   onExport,
   exporting,
   container,
+  inline = false,
 }: {
   tool: TeacherSketchTool;
   onTool: (tool: TeacherSketchTool) => void;
@@ -61,20 +63,30 @@ export function SketchToolPalette({
   exporting?: boolean;
   /** Portal target so tooltips survive fullscreen. */
   container?: HTMLElement | null;
+  /**
+   * `inline`: a group on the viewer's own toolbar (the Studio) — no "viewer
+   * tools" button (picking any viewer tool does that) and a second click on
+   * the active tool hands the pointer back to the viewer.
+   */
+  inline?: boolean;
 }) {
+  const side = inline ? "top" : "right";
+  const tools = inline ? TOOLS.filter((t) => t.tool !== "select") : TOOLS;
   return (
     <div
-      role="toolbar"
-      aria-label="Sketch tools"
-      aria-orientation="vertical"
+      role="group"
+      aria-label="Teaching ink"
       data-imaging-chrome
       data-testid="sketch-palette"
-      className="pointer-events-auto flex flex-col items-center gap-1 rounded-xl bg-black/75 p-1 shadow-lg ring-1 ring-white/15 backdrop-blur-md"
+      className={cn(
+        "pointer-events-auto flex items-center gap-1",
+        inline ? "shrink-0 flex-row" : "flex-col rounded-xl bg-black/75 p-1 shadow-lg ring-1 ring-white/15 backdrop-blur-md"
+      )}
     >
-      {TOOLS.map(({ tool: t, label, icon }) => {
+      {tools.map(({ tool: t, label, icon }) => {
         const active = tool === t;
         return (
-          <Tooltip key={t} label={label} shortcut={[STUDIO_TOOL_SHORTCUT[t]]} side="right" container={container}>
+          <Tooltip key={t} label={label} shortcut={[STUDIO_TOOL_SHORTCUT[t]]} side={side} container={container}>
             <IconButton
               variant="imaging"
               size="sm"
@@ -82,7 +94,7 @@ export function SketchToolPalette({
               aria-pressed={active}
               data-tool={t}
               disabled={disabled}
-              onClick={() => onTool(t)}
+              onClick={() => onTool(inline && active ? "select" : t)}
               className={cn(
                 "border-transparent bg-transparent",
                 active && "bg-ink text-black hover:bg-ink focus-visible:ring-ink"
@@ -93,40 +105,77 @@ export function SketchToolPalette({
           </Tooltip>
         );
       })}
-      <span className="my-0.5 h-px w-5 bg-white/15" aria-hidden="true" />
-      <Tooltip label="Undo" shortcut={["⌘Z", "U"]} side="right" container={container}>
-        <IconButton variant="imaging" size="sm" aria-label="Undo" disabled={disabled || !canUndo} onClick={onUndo} className="border-transparent bg-transparent">
-          <Undo2 />
-        </IconButton>
-      </Tooltip>
-      <Tooltip label="Redo" shortcut={["⌘⇧Z"]} side="right" container={container}>
-        <IconButton variant="imaging" size="sm" aria-label="Redo" disabled={disabled || !canRedo} onClick={onRedo} className="border-transparent bg-transparent">
-          <Redo2 />
-        </IconButton>
-      </Tooltip>
-      <Tooltip label="Clear all ink" side="right" container={container}>
-        <IconButton variant="imaging" size="sm" aria-label="Clear all ink" disabled={disabled || !hasInk} onClick={onClear} className="border-transparent bg-transparent hover:text-danger">
-          <Trash2 />
-        </IconButton>
-      </Tooltip>
-      {onExport && (
+      {inline ? (
+        // On the viewer's toolbar space is tight: the ink actions share one menu.
         <Menu
-          side="right"
+          side="top"
           align="end"
-          label="Export marks as DICOM"
-          contentClassName="w-80"
+          label="Ink actions"
+          contentClassName="w-72"
           container={container}
           trigger={
-            <IconButton variant="imaging" size="sm" aria-label="Export marks" loading={exporting} disabled={!hasInk || exporting} className="border-transparent bg-transparent">
-              <Download />
+            <IconButton
+              variant="imaging"
+              size="sm"
+              aria-label="Ink actions: undo, redo, clear, export"
+              loading={exporting}
+              disabled={disabled}
+              className="border-transparent bg-transparent"
+            >
+              <MoreHorizontal />
             </IconButton>
           }
         >
-          <MenuItem label="DICOM SR (TID 1500)" hint="Opens in OHIF" onSelect={() => onExport("sr")} />
-          <MenuItem label="DICOM GSPS" hint="Presentation state" onSelect={() => onExport("gsps")} />
-          <MenuSeparator />
-          <MenuItem label="JSON sidecar" hint="Timing + narration links" onSelect={() => onExport("json")} />
+          <MenuItem label="Undo" shortcut="⌘Z" disabled={!canUndo} onSelect={onUndo} />
+          <MenuItem label="Redo" shortcut="⌘⇧Z" disabled={!canRedo} onSelect={onRedo} />
+          <MenuItem label="Clear all ink" disabled={!hasInk} onSelect={onClear} />
+          {onExport && (
+            <>
+              <MenuSeparator />
+              <MenuItem label="Export DICOM SR (TID 1500)" hint="Opens in OHIF" disabled={!hasInk || exporting} onSelect={() => onExport("sr")} />
+              <MenuItem label="Export DICOM GSPS" hint="Presentation state" disabled={!hasInk || exporting} onSelect={() => onExport("gsps")} />
+              <MenuItem label="Export JSON sidecar" hint="Timing + narration links" disabled={!hasInk || exporting} onSelect={() => onExport("json")} />
+            </>
+          )}
         </Menu>
+      ) : (
+        <>
+        <span className="my-0.5 h-px w-5 bg-white/15" aria-hidden="true" />
+        <Tooltip label="Undo" shortcut={["⌘Z", "U"]} side={side} container={container}>
+          <IconButton variant="imaging" size="sm" aria-label="Undo" disabled={disabled || !canUndo} onClick={onUndo} className="border-transparent bg-transparent">
+            <Undo2 />
+          </IconButton>
+        </Tooltip>
+        <Tooltip label="Redo" shortcut={["⌘⇧Z"]} side={side} container={container}>
+          <IconButton variant="imaging" size="sm" aria-label="Redo" disabled={disabled || !canRedo} onClick={onRedo} className="border-transparent bg-transparent">
+            <Redo2 />
+          </IconButton>
+        </Tooltip>
+        <Tooltip label="Clear all ink" side={side} container={container}>
+          <IconButton variant="imaging" size="sm" aria-label="Clear all ink" disabled={disabled || !hasInk} onClick={onClear} className="border-transparent bg-transparent hover:text-danger">
+            <Trash2 />
+          </IconButton>
+        </Tooltip>
+        {onExport && (
+          <Menu
+            side={side}
+            align="end"
+            label="Export marks as DICOM"
+            contentClassName="w-80"
+            container={container}
+            trigger={
+              <IconButton variant="imaging" size="sm" aria-label="Export marks" loading={exporting} disabled={!hasInk || exporting} className="border-transparent bg-transparent">
+                <Download />
+              </IconButton>
+            }
+          >
+            <MenuItem label="DICOM SR (TID 1500)" hint="Opens in OHIF" onSelect={() => onExport("sr")} />
+            <MenuItem label="DICOM GSPS" hint="Presentation state" onSelect={() => onExport("gsps")} />
+            <MenuSeparator />
+            <MenuItem label="JSON sidecar" hint="Timing + narration links" onSelect={() => onExport("json")} />
+          </Menu>
+        )}
+        </>
       )}
     </div>
   );

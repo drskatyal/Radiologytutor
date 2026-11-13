@@ -107,6 +107,7 @@ export function ContinuousCapture({
   adoptExternalTakes = false,
   onCaseUpdated,
   onPhaseChange,
+  onProcessError,
   onProgress,
   onReview,
   onApi,
@@ -136,6 +137,8 @@ export function ContinuousCapture({
   adoptExternalTakes?: boolean;
   onCaseUpdated: (c: Awaited<ReturnType<typeof addFinding>>) => void;
   onPhaseChange?: (phase: TeacherCapturePhase) => void;
+  /** Processing failed (message for the record bar); null when a new attempt starts. */
+  onProcessError?: (message: string | null) => void;
   onProgress?: (progress: TeacherCompileProgress | null) => void;
   /** Viewport recording + log for the studio review player. Null clears it. */
   onReview?: (review: TeacherReview | null) => void;
@@ -305,6 +308,7 @@ export function ContinuousCapture({
     const report = (index: number) =>
       onProgress?.({ index, total: steps.length, label: steps[index] ?? steps[steps.length - 1] });
     setStructuring(true);
+    onProcessError?.(null);
     onPhaseChange?.("processing");
     report(0);
     const sessionId = take.track.captureSessionId ?? `cap_${Date.now().toString(36)}`;
@@ -415,6 +419,7 @@ export function ContinuousCapture({
     } catch (e) {
       onPhaseChange?.("review");
       onProgress?.(null);
+      onProcessError?.(e instanceof Error && e.message ? e.message : "Processing failed. Try again.");
       if (e instanceof AiUnavailableError) {
         setNotice(e.message);
       } else {

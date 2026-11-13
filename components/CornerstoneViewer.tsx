@@ -869,6 +869,10 @@ export default function CornerstoneViewer({
   chrome: chromeProp,
   modality,
   onReady,
+  onLoadError,
+  hostTools,
+  hostToolActive = false,
+  onViewerToolPicked,
   onEvent,
   className,
   instanceId = "primary",
@@ -933,6 +937,14 @@ export default function CornerstoneViewer({
   modality?: string;
   /** Fired once the series is loaded and the viewport is drivable. */
   onReady?: (controls: CornerstoneControls) => void;
+  /** The series failed to load; the message is the one the viewer shows. */
+  onLoadError?: (message: string) => void;
+  /** A host's own tool group on the viewer's toolbar (the Studio's teaching ink). */
+  hostTools?: ReactNode;
+  /** One of the host's tools is on: no viewer tool shows as selected. */
+  hostToolActive?: boolean;
+  /** A viewer tool was picked on the toolbar (the host turns its own tools off). */
+  onViewerToolPicked?: () => void;
   /**
    * "Next / previous series" (voice) for hosts that own the series list
    * themselves (the free viewer). Without it, the `series` prop is stepped.
@@ -1135,6 +1147,8 @@ export default function CornerstoneViewer({
   // handed to the host once, which saves the reader's place and reloads.
   const onChunkLoadErrorRef = useRef(onChunkLoadError);
   onChunkLoadErrorRef.current = onChunkLoadError;
+  const onLoadErrorRef = useRef(onLoadError);
+  onLoadErrorRef.current = onLoadError;
   const chunkFailureHandled = useRef(false);
   const failureStatus = (err: unknown): string => {
     if (!isChunkLoadError(err)) return VIEWER_SERIES_FAILED;
@@ -3818,7 +3832,9 @@ export default function CornerstoneViewer({
         if (disposed || (err as Error)?.name === "AbortError") return;
         console.error("CornerstoneViewer error", safeErrorText(err));
         setStacking(false);
-        setStatus(failureStatus(err));
+        const message = failureStatus(err);
+        setStatus(message);
+        onLoadErrorRef.current?.(message);
       }
     })();
 
@@ -4956,7 +4972,10 @@ export default function CornerstoneViewer({
       onSelectTool={(name) => {
         setTextBoxTool(false);
         setLeftToolRef.current(name);
+        onViewerToolPicked?.();
       }}
+      hostTools={hostTools}
+      hostToolActive={hostToolActive}
       textBox={f.tools ? { active: textBoxTool, onToggle: () => setTextBoxTool((on) => !on) } : undefined}
       onSaveAnnotated={f.export ? () => setAnnotatedExport(true) : undefined}
       onExport={f.export ? () => openExport("image") : undefined}

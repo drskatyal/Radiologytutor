@@ -7,7 +7,8 @@
 // Pixel OCR is not claimed. Curated public imports do not use this module.
 
 import AdmZip from "adm-zip";
-import { upsertDeidReport } from "./cases";
+import { createStudy, getStudyByUID, updateStudy, upsertDeidReport } from "./cases";
+import { createHash } from "node:crypto";
 import { DeidFailError, type DeidReport } from "./deid";
 import { scheduleSeriesBundle } from "./dicomCdn/jobs";
 import { looksLikeDicomUid, readDicomUids } from "./healthcareDicom";
@@ -15,6 +16,10 @@ import { imagingStudySummary, orthancIngestInstance, orthancSeriesMeta } from ".
 import { TeachingDeidError, deidentifyTeachingInstance } from "./teachingDeidentify";
 import { assertDurableStorageConfigured } from "./envSchema";
 import { persistUploadReceipt } from "./importObjects";
+import { forEachLimited } from "./pool";
+
+/** Instances stored at once per upload request (archive round trips in flight). */
+const STORE_CONCURRENCY = 6;
 
 /** Cover-ready metadata for one uploaded series (mirrors UploadedSeries). */
 export interface UploadSeriesOut {
@@ -138,7 +143,9 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
     else candidates.push({ name, bytes });
   }
 
-  const seriesMap = new Map<string, { studyId: string; count: number }>();
+  // firstSop: an instance this upload just stored — the picker's thumbnail
+  // (the Orthanc series lookup does not name one).
+  const seriesMap = new Map<string, { studyId: string; count: number; firstSop?: string }>();
   const deidByStudy = new Map<string, DeidReport>();
   const seenSop = new Set<string>();
   let stored = 0;
@@ -146,7 +153,11 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
   let deidentified = 0;
   const failed: UploadSkipped[] = [];
 
-  for (const c of candidates) {
+  // Stores run STORE_CONCURRENCY at a time: one archive round trip per
+  // instance, awaited serially, made a 1,000-image MR take minutes. Each
+  // SOP is claimed before its await so a duplicate in the same upload is
+  // still skipped.
+  await forEachLimited(candidates, STORE_CONCURRENCY, async (c) => {
     let bytes = c.bytes;
     try {
       const cleaned = deidentifyTeachingInstance(new Uint8Array(c.bytes));
@@ -154,36 +165,36 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
       bytes = toArrayBuffer(cleaned.bytes);
     } catch (e) {
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
-      continue;
+      return;
     }
 
     const uids = readDicomUids(bytes);
     if (uids && seenSop.has(uids.sop)) {
       duplicates++;
-      continue;
+      return;
     }
+    if (uids) seenSop.add(uids.sop);
 
     try {
       const res = await orthancIngestInstance(bytes);
-      if (uids) seenSop.add(uids.sop);
       if (!deidByStudy.has(res.ParentStudy)) {
         deidByStudy.set(res.ParentStudy, res.deidReport);
       }
-      if (res.Status === "AlreadyStored") {
-        duplicates++;
-        if (!seriesMap.has(res.ParentSeries)) {
-          seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 0 });
-        }
-        continue;
-      }
-      stored++;
+      // A re-upload is all "AlreadyStored": still count it toward its series
+      // (the picker would show "0 images" and no cover); `stored` stays new-only.
+      if (res.Status === "AlreadyStored") duplicates++;
+      else stored++;
       const existing = seriesMap.get(res.ParentSeries);
-      if (existing) existing.count++;
-      else seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 1 });
+      if (existing) {
+        existing.count++;
+        existing.firstSop ??= uids?.sop;
+      } else seriesMap.set(res.ParentSeries, { studyId: res.ParentStudy, count: 1, firstSop: uids?.sop });
     } catch (e) {
+      // A failed store may be retried by a later copy of the same SOP.
+      if (uids) seenSop.delete(uids.sop);
       failed.push({ name: c.name, reason: friendlyStoreError(e) });
     }
-  }
+  });
 
   const series: UploadSeriesOut[] = [];
   const studyCache = new Map<
@@ -214,7 +225,7 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
         modality: meta.modality,
         studyDate: study.studyDate,
         orthancStudyId: info.studyId,
-        firstInstanceUID: meta.firstInstanceUID,
+        firstInstanceUID: meta.firstInstanceUID ?? info.firstSop,
         // Trust our own per-batch tally over the archive's count (which would be
         // global across multiple batches of the same series).
         instances: info.count,
@@ -236,6 +247,7 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
           seriesInstanceUID: seriesId,
           studyDescription: "Study",
           orthancStudyId: info.studyId,
+          firstInstanceUID: info.firstSop,
           instances: info.count,
         });
       } else {
@@ -248,6 +260,11 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
   }
 
   if (stored > 0 || duplicates > 0) await persistUploadReceipt(orgId, series, { stored, duplicates });
+
+  // The org owns what it just uploaded — now, not when the case is saved.
+  // Until then the access gate (lib/studyAccess.ts) 404'd the series picker's
+  // covers. The case route attaches the patient later.
+  await registerUploadedStudies(orgId, series);
 
   // Convert each touched series to HTJ2K + previews once the upload settles
   // (lib/dicomCdn/jobs.ts). Reads the de-identified bytes back from the
@@ -262,4 +279,43 @@ export async function ingestUpload(orgId: string, form: FormData): Promise<Uploa
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/**
+ * One Study record per uploaded StudyInstanceUID for this org, with no patient
+ * yet. The id is derived from org + UID, so concurrent upload batches write the
+ * same record instead of duplicates. Series UIDs are merged in.
+ */
+async function registerUploadedStudies(orgId: string, series: readonly UploadSeriesOut[]): Promise<void> {
+  const byStudy = new Map<string, UploadSeriesOut[]>();
+  for (const s of series) {
+    if (!looksLikeDicomUid(s.studyInstanceUID)) continue;
+    byStudy.set(s.studyInstanceUID, [...(byStudy.get(s.studyInstanceUID) ?? []), s]);
+  }
+  for (const [studyInstanceUID, rows] of byStudy) {
+    const uids = rows.map((r) => r.seriesInstanceUID);
+    try {
+      const existing = await getStudyByUID(orgId, studyInstanceUID);
+      if (existing) {
+        const merged = [...new Set([...existing.seriesInstanceUIDs, ...uids])];
+        if (merged.length !== existing.seriesInstanceUIDs.length) {
+          await updateStudy(orgId, existing.id, { seriesInstanceUIDs: merged });
+        }
+        continue;
+      }
+      const first = rows[0]!;
+      await createStudy(orgId, {
+        id: `stu_up_${createHash("sha256").update(`${orgId}\u0000${studyInstanceUID}`).digest("hex").slice(0, 24)}`,
+        patientId: "",
+        studyInstanceUID,
+        studyDate: first.studyDate,
+        modality: first.modality,
+        description: first.studyDescription,
+        orthancStudyId: first.orthancStudyId,
+        seriesInstanceUIDs: uids,
+      });
+    } catch {
+      // The upload stands; the case route still creates the record on save.
+    }
+  }
 }

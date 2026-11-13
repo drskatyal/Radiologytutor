@@ -15,9 +15,9 @@
 // Cursor capture: while recording we track normalized pointer position over the
 // imaging surface so replay can retrace the teacher's laser pointer.
 
-import { useMemo, useRef, type MutableRefObject, type ReactNode } from "react";
-import { Badge, Skeleton, Spinner } from "@/components/ui";
-import { cn } from "@/components/ui/cn";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import { AlertTriangle, RotateCcw } from "lucide-react";
+import { Badge, Button, Skeleton, Spinner } from "@/components/ui";
 import type { OpenSlice } from "@/lib/viewerLoad";
 import { seriesForSource, type CaseSeries, type ViewerSource } from "@/lib/viewerSource";
 import type { CornerstoneControls } from "@/components/CornerstoneViewer";
@@ -50,6 +50,9 @@ export function RecordStage({
   annotateSlot,
   sketchLayer,
   sketchPalette,
+  sketchTools = null,
+  label,
+  fill = false,
 }: {
   source: ViewerSource;
   /** Multi-series rail; when >1 entry a navigator renders beside the viewer. */
@@ -82,8 +85,17 @@ export function RecordStage({
   annotateSlot?: ReactNode;
   /** Teacher sketch ink + capture layer (Studio). Sits above the replay laser. */
   sketchLayer?: ReactNode;
-  /** Floating sketch tool palette on the imaging surface (Studio). */
+  /**
+   * The Studio's sketch tools. With `sketchTools` they join the viewer's own
+   * toolbar as one group (no second floating palette); the legacy floating
+   * `sketchPalette` stays for callers that have not moved.
+   */
   sketchPalette?: ReactNode;
+  sketchTools?: { tools: ReactNode; active: boolean; onViewerTool: () => void } | null;
+  /** The study's name in the series panel (the case title); else "Local study". */
+  label?: string;
+  /** Fill the parent's height (the Studio) instead of a square image with a docked bar. */
+  fill?: boolean;
 }) {
   const imageRef = useRef<HTMLDivElement>(null);
   const markerPress = useRef<{ x: number; y: number; moved: boolean } | null>(null);
@@ -117,7 +129,28 @@ export function RecordStage({
 
   // The case's series, or the one stack a demo hands in (the bundled sample).
   const rail = useMemo(() => (series && series.length > 0 ? series : seriesForSource(source)), [series, source]);
-  const frameSource = useMemo(() => ({ kind: "cloud" as const, series: rail }), [rail]);
+  const frameSource = useMemo(() => ({ kind: "cloud" as const, series: rail, label }), [rail, label]);
+
+  // Loading is never an unexplained spinner: a failure says so with a retry,
+  // and a slow first image says it is still working. Retry remounts the frame.
+  const [attempt, setAttempt] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (ready) {
+      setLoadError(null);
+      setSlow(false);
+      return;
+    }
+    if (loadError) return;
+    const timer = window.setTimeout(() => setSlow(true), SLOW_FIRST_IMAGE_MS);
+    return () => window.clearTimeout(timer);
+  }, [ready, loadError, attempt]);
+  const retry = () => {
+    setLoadError(null);
+    setSlow(false);
+    setAttempt((n) => n + 1);
+  };
   // Read once by the frame: the series and slice the stage opens on.
   const openSliceRef = useRef(openSlice);
   openSliceRef.current = openSlice;
@@ -195,7 +228,7 @@ export function RecordStage({
         </div>
       )}
 
-      {!ready && <StageSkeleton label="Warming images…" />}
+      {!ready && <StageStatus error={loadError} slow={slow} onRetry={retry} />}
     </div>
   );
 
@@ -216,15 +249,19 @@ export function RecordStage({
         const index = live.current.rail.findIndex((item) => item.seriesInstanceUID === uid);
         if (index >= 0) live.current.onSeriesChange?.(index);
       },
+      onLoadError: (message, pane) => {
+        if (pane.index === 0) setLoadError(message);
+      },
+      toolbar: sketchTools,
     }),
-    [controls, imageOverlay]
+    [controls, imageOverlay, sketchTools]
   );
   // The frame shows its own series panel; there is no separate loading rail.
   void seriesLoading;
   void modality;
 
   return (
-    <div className="viewer-shell relative min-w-0" onPointerMove={handleMove}
+    <div className={fill ? "viewer-shell relative h-full min-w-0" : "viewer-shell relative min-w-0"} onPointerMove={handleMove}
       onPointerDownCapture={e => { markerPress.current = e.button === 0 ? { x: e.clientX, y: e.clientY, moved: false } : null; }}
       onPointerCancel={() => { markerPress.current = null; }}
       onClick={e => {
@@ -233,7 +270,7 @@ export function RecordStage({
       if ((phase !== "recording" && phase !== "starting") || (e.target as HTMLElement).closest("button")) return;
       const point = normFromEvent(e); if (point) onMarker?.(point.x, point.y);
     }}>
-      <ViewerFrame tone="page" source={frameSource} teaching={teaching} initial={initial} />
+      <ViewerFrame key={attempt} tone="page" fill={fill} source={frameSource} teaching={teaching} initial={initial} />
     </div>
   );
 }
@@ -262,13 +299,40 @@ function formatMs(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function StageSkeleton({ label }: { label: string }) {
+/** After this long without a first image, say so and offer a retry. */
+const SLOW_FIRST_IMAGE_MS = 20_000;
+
+function StageStatus({ error, slow, onRetry }: { error: string | null; slow: boolean; onRetry: () => void }) {
+  if (error) {
+    return (
+      <div role="alert" className="pointer-events-auto absolute inset-0 z-40 flex items-center justify-center bg-imaging p-6">
+        <div className="flex max-w-sm flex-col items-center gap-3 text-center text-white">
+          <AlertTriangle className="h-6 w-6 text-warning" aria-hidden="true" />
+          <p className="text-sm font-medium">{error}</p>
+          <p className="text-xs text-white/70">
+            The archive did not return this series. If you just uploaded it, it may still be storing.
+          </p>
+          <Button size="sm" variant="imaging" leadingIcon={<RotateCcw className="h-4 w-4" />} onClick={onRetry}>
+            Try again
+          </Button>
+        </div>
+      </div>
+    );
+  }
+  const label = slow ? "Still loading the first image…" : "Loading images…";
   return (
-    <div className={cn("absolute inset-0 flex items-center justify-center bg-imaging")}>
+    <div role="status" className="absolute inset-0 flex items-center justify-center bg-imaging">
       <Skeleton className="absolute inset-0 rounded-none bg-elevated/30" />
-      <div className="relative flex items-center gap-2 text-sm text-white">
-        <Spinner size="sm" label={label} />
-        {label}
+      <div className="pointer-events-auto relative flex flex-col items-center gap-3 text-sm text-white">
+        <span className="flex items-center gap-2">
+          <Spinner size="sm" label={label} />
+          {label}
+        </span>
+        {slow && (
+          <Button size="sm" variant="imaging" leadingIcon={<RotateCcw className="h-4 w-4" />} onClick={onRetry}>
+            Try again
+          </Button>
+        )}
       </div>
     </div>
   );

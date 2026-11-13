@@ -17,6 +17,7 @@ import {
   createPatient,
   getPatient,
   createStudy,
+  updateStudy,
   getStudyByUID,
 } from "@/lib/cases";
 import {
@@ -153,6 +154,10 @@ export async function POST(req: NextRequest) {
       for (const s of body.studies) {
         if (!s.studyInstanceUID) continue;
         let study = await getStudyByUID(ORG, s.studyInstanceUID);
+        // Registered at upload (lib/uploadIngest.ts) before a patient existed.
+        if (study && !study.patientId) {
+          study = (await updateStudy(ORG, study.id, { patientId: patient.id })) ?? study;
+        }
         if (!study) {
           study = await createStudy(ORG, {
             patientId: patient.id,
