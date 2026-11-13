@@ -51,6 +51,7 @@ export function RecordStage({
   sketchLayer,
   sketchPalette,
   label,
+  fill = false,
 }: {
   source: ViewerSource;
   /** Multi-series rail; when >1 entry a navigator renders beside the viewer. */
@@ -87,6 +88,8 @@ export function RecordStage({
   sketchPalette?: ReactNode;
   /** The study's name in the series panel (the case title); else "Local study". */
   label?: string;
+  /** Fill the parent's height (the Studio) instead of a square image with a docked bar. */
+  fill?: boolean;
 }) {
   const imageRef = useRef<HTMLDivElement>(null);
   const markerPress = useRef<{ x: number; y: number; moved: boolean } | null>(null);
@@ -251,7 +254,7 @@ export function RecordStage({
   void modality;
 
   return (
-    <div className="viewer-shell relative min-w-0" onPointerMove={handleMove}
+    <div className={fill ? "viewer-shell relative h-full min-w-0" : "viewer-shell relative min-w-0"} onPointerMove={handleMove}
       onPointerDownCapture={e => { markerPress.current = e.button === 0 ? { x: e.clientX, y: e.clientY, moved: false } : null; }}
       onPointerCancel={() => { markerPress.current = null; }}
       onClick={e => {
@@ -260,7 +263,7 @@ export function RecordStage({
       if ((phase !== "recording" && phase !== "starting") || (e.target as HTMLElement).closest("button")) return;
       const point = normFromEvent(e); if (point) onMarker?.(point.x, point.y);
     }}>
-      <ViewerFrame key={attempt} tone="page" source={frameSource} teaching={teaching} initial={initial} />
+      <ViewerFrame key={attempt} tone="page" fill={fill} source={frameSource} teaching={teaching} initial={initial} />
     </div>
   );
 }

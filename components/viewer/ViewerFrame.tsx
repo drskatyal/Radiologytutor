@@ -300,8 +300,16 @@ export function ViewerFrame({
   teaching = null,
   initial = null,
   onFrameState,
+  fill = false,
 }: {
   tone?: LocalViewerTone;
+  /**
+   * Page tone only: fill the parent's height (the parent sets it) with the
+   * tool bar along the image's bottom edge, instead of a square image with
+   * the bar docked under it. The Studio uses it so record controls stay on
+   * screen; reading tone always fills.
+   */
+  fill?: boolean;
   source?: ViewerFrameSource;
   /** Teaching on top of the reader. None = the FlowRad free viewer. */
   teaching?: TeachingLayer | null;
@@ -327,6 +335,8 @@ export function ViewerFrame({
   // now — before any study is opened (no request may follow a drop).
   useViewerBindings({ account: true });
   const reading = tone === "reading";
+  // Layout only: fill the parent's height. Reading-room features stay on `reading`.
+  const fills = reading || fill;
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   // Archive series open straight into the reading room (no dropzone), and
   // stay open: closing the study re-hangs the case's series.
@@ -1966,7 +1976,7 @@ export function ViewerFrame({
 
   if (recovery) {
     return (
-      <div className={cn("flex flex-col", reading ? "h-full min-h-0" : "min-h-96")}>
+      <div className={cn("flex flex-col", fills ? "h-full min-h-0" : "min-h-96")}>
         {recovery === "updating" ? (
           <UpdatingNotice />
         ) : (
@@ -1991,7 +2001,7 @@ export function ViewerFrame({
   }
 
   return withStage(
-    <div ref={rootRef} className={cn("flex flex-col gap-4", reading && "h-full min-h-0")}>
+    <div ref={rootRef} className={cn("flex flex-col gap-4", fills && "h-full min-h-0")}>
       {seriesInfoFor && result?.studies[seriesInfoFor.study]?.series[seriesInfoFor.series] && (() => {
         const info = result.studies[seriesInfoFor.study]!.series[seriesInfoFor.series]!;
         return (
@@ -2050,7 +2060,7 @@ export function ViewerFrame({
 
       {showStage && source ? (
         <div
-          className={cn("flex flex-col gap-4 lg:flex-row", reading && "min-h-0 flex-1 gap-0 lg:gap-0")}
+          className={cn("flex flex-col gap-4 lg:flex-row", fills && "min-h-0 flex-1", reading && "gap-0 lg:gap-0")}
           onDragOver={(event) => {
             if (!reading) return;
             event.preventDefault();
@@ -2069,7 +2079,7 @@ export function ViewerFrame({
               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">{sidePanel}</div>
             </CollapsiblePanel>
           ) : (
-            <Panel className="hidden w-full shrink-0 lg:block lg:w-64" title="Series">
+            <Panel className={cn("hidden w-full shrink-0 lg:block lg:w-64", fill && "lg:min-h-0 lg:overflow-y-auto")} title="Series">
               {sidePanel}
             </Panel>
           )}
@@ -2079,7 +2089,7 @@ export function ViewerFrame({
             data-testid="local-stage"
             className={cn(
               "relative min-w-0 flex-1 scroll-mt-4",
-              reading && "flex min-h-0 flex-col bg-imaging",
+              fills && "flex min-h-0 flex-col bg-imaging",
               (expanded || focusMode) && "fixed inset-0 z-40 flex flex-col bg-imaging pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]"
             )}
             data-distraction-free={focusMode ? "true" : undefined}
@@ -2189,7 +2199,7 @@ export function ViewerFrame({
                 </IconButton>
               )}
             </div>
-            <div className={cn((expanded || reading || multi) && "flex min-h-0 flex-1 flex-col")}>
+            <div className={cn((expanded || fills || multi) && "flex min-h-0 flex-1 flex-col")}>
               {/* One tree in every layout, so the main viewer never remounts when
                   the grid appears: in 1 up the grid and pane wrappers are
                   `display: contents`. */}
@@ -2222,7 +2232,7 @@ export function ViewerFrame({
                       onPaneEvent(0, event);
                       teachingRef.current?.onViewerEvent?.(teachingPane(0, series?.seriesInstanceUID ?? null), event);
                     }}
-                    chrome={focusMode ? "off" : expanded || reading || multi ? "edge" : "dock"}
+                    chrome={focusMode ? "off" : expanded || fills || multi ? "edge" : "dock"}
                     toolbarHost={multi && !focusMode ? barHost : undefined}
                     distractionFree={distractionFree}
                     scaleBar={scaleBar}

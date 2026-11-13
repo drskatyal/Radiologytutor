@@ -31,10 +31,8 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { PageHeader } from "@/components/AppShell";
 import {
   Badge,
-  Breadcrumbs,
   Button,
   Card,
   Field,
@@ -42,7 +40,6 @@ import {
   Input,
   Modal,
   Spinner,
-  Stepper,
   Tabs,
   Textarea,
   useToast,
@@ -106,7 +103,6 @@ import {
 } from "@/components/author/lib";
 import { RecordedTakeNote } from "@/components/author/RecordedTakeNote";
 import { updateCase } from "@/components/admin/api";
-import { CASE_FLOW_STEPS } from "@/components/cases/steps";
 import { casePublishReadiness } from "@/lib/findingQuality";
 import { COMPILING_FROM_RECORDING } from "@/lib/compileMedia";
 import {
@@ -959,7 +955,6 @@ export function RecordingStudio({
   }
 
   const published = caseData.status === "published";
-  const stepperStage = published ? "publish" : findings.length > 0 ? "publish" : "record";
   const readiness = casePublishReadiness(findings);
   const showStudentTest =
     !!caseData.liveTeachingPack && (teacherPhase === "idle" || teacherPhase === "ready");
@@ -976,97 +971,83 @@ export function RecordingStudio({
         teacherPhase !== "processing"));
 
   return (
-    <div className="animate-fade-in">
-      <PageHeader
-        breadcrumbs={
-          <Breadcrumbs
-            items={[{ label: "Studio", href: "/studio" }, { label: caseData.title, href: `/studio/cases/${encodeURIComponent(caseData.caseId)}` }, { label: "Record" }]}
-          />
-        }
-        title={
-          <span className="flex items-center gap-2.5">
-            Annotate &amp; teach
-            <Badge variant="accent" dot>
-              {usingSample ? "Sample study" : "Live study"}
-            </Badge>
-          </span>
-        }
-        description={
-          <span className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-secondary">{caseData.title}</span>
-            <Badge variant="neutral">{caseData.modality}</Badge>
-            <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
-            <span className="text-xs text-muted">·</span>
-            <span className="text-xs text-muted">
-              Review the study, then record. {approvedCount}/{findings.length} approved
+    <div className="flex animate-fade-in flex-col lg:h-dvh lg:overflow-hidden">
+      {/* One compact row: where you are, the case, and the two exits (draft /
+          publish). The floating site nav is hidden on this route
+          (components/AppShell.tsx) so the viewer gets the screen. */}
+      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-subtle bg-surface px-4 py-2.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          leadingIcon={<ArrowLeft className="h-4 w-4" />}
+          onClick={() => leaveTo(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
+        >
+          Save &amp; exit
+        </Button>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <h1 className="truncate text-base font-semibold text-primary">{caseData.title}</h1>
+          <Badge variant="neutral">{caseData.modality}</Badge>
+          <Badge variant={published ? "success" : "warning"}>{caseData.status ?? "draft"}</Badge>
+          {usingSample && <Badge variant="accent">Sample study</Badge>}
+          {findings.length > 0 && (
+            <span className="text-xs tabular-nums text-muted">
+              {approvedCount}/{findings.length} approved
             </span>
-          </span>
-        }
-        actions={
-          <div className="flex max-w-full flex-wrap items-center gap-2">
-            {showStudentTest && (
-              <Button size="sm" leadingIcon={<Play className="h-4 w-4" />} onClick={openStudentTest}>
-                Test as student
-              </Button>
-            )}
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {(showStudentTest || caseData.findings.length > 0) && (
             <Button
-              variant="ghost"
+              variant="secondary"
               size="sm"
-              leadingIcon={<ArrowLeft className="h-4 w-4" />}
-              onClick={() => leaveTo(`/studio/cases/${encodeURIComponent(caseData.caseId)}`)}
-            >
-              Save as draft &amp; exit
-            </Button>
-            {caseData.findings.length > 0 && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => leaveTo(`/case/${encodeURIComponent(caseData.caseId)}`)}
-              >
-                Test as student
-              </Button>
-            )}
-            <Button
-              size="sm"
-              leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-              onClick={publish}
-              loading={publishing}
-              disabled={!canDeploy}
-              title={
-                published
-                  ? "In your library"
-                  : packReady
-                    ? "Deploy case"
-                    : caseData.liveTeachingPack
-                      ? "Finish processing before adding this case to the library."
-                      : readiness.blockers[0]
+              leadingIcon={<Play className="h-4 w-4" />}
+              onClick={() =>
+                showStudentTest ? openStudentTest() : leaveTo(`/case/${encodeURIComponent(caseData.caseId)}`)
               }
             >
-              {published ? "In library" : caseData.liveTeachingPack ? "Add to library" : "Review & publish"}
+              Test as student
             </Button>
-          </div>
-        }
-      >
-        <Stepper steps={CASE_FLOW_STEPS} currentId={stepperStage} />
-      </PageHeader>
+          )}
+          <Button
+            size="sm"
+            leadingIcon={published ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            onClick={publish}
+            loading={publishing}
+            disabled={!canDeploy}
+            title={
+              published
+                ? "In your library"
+                : packReady
+                  ? "Deploy case"
+                  : caseData.liveTeachingPack
+                    ? "Finish processing before adding this case to the library."
+                    : readiness.blockers[0]
+            }
+          >
+            {published ? "In library" : caseData.liveTeachingPack ? "Add to library" : "Review & publish"}
+          </Button>
+        </div>
+      </header>
 
-      <div className="mx-auto grid min-w-0 max-w-[1500px] gap-6 overflow-x-clip px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_400px]">
-        {/* ── Capture stage ─────────────────────────────────────────────── */}
-        <div className="min-w-0">
+      <div className="grid min-h-0 min-w-0 flex-1 gap-4 overflow-x-clip p-3 sm:p-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+        {/* ── Capture stage: the viewer takes all the height, the record bar
+            sits right under it, never below the fold. ─────────────────── */}
+        <div className="flex min-h-0 min-w-0 flex-col gap-3">
           {/* The recording-flow frame: a pulsing glow + ring frames the WHOLE
               viewer while capture is live, so it's unmistakable that recording
               is on. Uses the design-system `mic-pulse` keyframe (token-driven). */}
           <div
             className={cn(
-              "relative rounded-2xl border bg-imaging p-1 transition-colors duration-300",
+              "relative h-[70dvh] rounded-2xl border bg-imaging p-1 transition-colors duration-300 lg:h-auto lg:min-h-0 lg:flex-1",
               recording
                 ? "animate-mic-pulse border-danger/70 ring-1 ring-danger/40"
                 : "border-subtle"
             )}
           >
-            <div className="overflow-hidden rounded-xl">
+            <div className="h-full overflow-hidden rounded-xl">
               {mountViewer ? (
               <RecordStage
+                fill
                 label={caseData.title}
                 source={initialSource}
                 series={series}
@@ -1136,7 +1117,7 @@ export function RecordingStudio({
                 }
               />
               ) : (
-                <div className="flex aspect-square w-full items-center justify-center bg-imaging">
+                <div className="flex h-full w-full items-center justify-center bg-imaging">
                   <span className="rounded-md bg-black/80 px-3 py-1.5 text-xs text-white ring-1 ring-white/15">
                     Loading study…
                   </span>
@@ -1145,8 +1126,8 @@ export function RecordingStudio({
             </div>
           </div>
 
-          {/* Transport controls */}
-          <Card padded={false} className="mt-4 p-4">
+          {/* Record bar: one primary action for the current step. */}
+          <div className="shrink-0 rounded-xl border border-subtle bg-surface px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
               {recording ? (
                 <Button
@@ -1237,7 +1218,13 @@ export function RecordingStudio({
               {mic === "denied" && <Badge variant="warning">Mic blocked</Badge>}
               {mic === "unsupported" && <Badge variant="warning">Mic unavailable</Badge>}
             </div>
-            <SketchShortcutHint className="mt-3 border-t border-subtle pt-3" />
+          </div>
+        </div>
+
+        {/* ── Capture column: scrolls on its own beside the fixed stage. ── */}
+        <div className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:pb-2 lg:pr-1">
+          <Card padded={false} className="p-4">
+            <SketchShortcutHint />
 
             {(captureTab === "walk" || !!editingFindingId) && <MarkerGroupChoice track={rr.track} checked={groupMarkers} onChange={setGroupMarkers} />}
             <CaptureStatus rr={rr} controls={controls} />
@@ -1312,10 +1299,6 @@ export function RecordingStudio({
               </div>
             )}
           </Card>
-        </div>
-
-        {/* ── Capture column ────────────────────────────────────────────── */}
-        <div className="flex min-w-0 flex-col gap-4">
           <SequenceBoard
             findings={findings}
             pending={pendingMarkers}
@@ -1528,10 +1511,10 @@ export function RecordingStudio({
               {published ? "Published" : "Publish case"}
             </Button>
           </Card>
+          {findings.length > 0 && <FindingReviewPanel onDirtyChange={onReviewDirty} caseData={caseData} viewer={controls} ready={ready && rr.phase === "idle"} onChanged={setCaseData} onApprovedCount={setApprovedCount} />}
         </div>
       </div>
 
-      {findings.length > 0 && <FindingReviewPanel onDirtyChange={onReviewDirty} caseData={caseData} viewer={controls} ready={ready && rr.phase === "idle"} onChanged={setCaseData} onApprovedCount={setApprovedCount} />}
 
       {/* Edit-text dialog */}
       <EditFindingDialog

@@ -265,7 +265,10 @@ export function AppShell({
   const authScreen = pathname === "/sign-in" || pathname === "/sign-up";
   // The free viewer (public, and its home inside Learn) brings its own reading-room bar.
   const freeViewer = pathname === "/viewer" || pathname === "/viewer/local";
-  const hideChrome = readingRoom || authScreen || freeViewer;
+  // The Studio's record screen is a workspace: its own one-row header, the
+  // viewer filling the rest. The floating nav would cover the image.
+  const studioWorkspace = /^\/studio\/cases\/[^/]+\/record\/?$/.test(pathname);
+  const hideChrome = readingRoom || authScreen || freeViewer || studioWorkspace;
   const showDeveloper = process.env.NODE_ENV === "development";
   const nav = useMemo(() => navGroups(showDeveloper, me), [showDeveloper, me]);
   const flatNav = useMemo(
