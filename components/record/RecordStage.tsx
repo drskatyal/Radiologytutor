@@ -50,6 +50,7 @@ export function RecordStage({
   annotateSlot,
   sketchLayer,
   sketchPalette,
+  sketchTools = null,
   label,
   fill = false,
 }: {
@@ -84,8 +85,13 @@ export function RecordStage({
   annotateSlot?: ReactNode;
   /** Teacher sketch ink + capture layer (Studio). Sits above the replay laser. */
   sketchLayer?: ReactNode;
-  /** Floating sketch tool palette on the imaging surface (Studio). */
+  /**
+   * The Studio's sketch tools. With `sketchTools` they join the viewer's own
+   * toolbar as one group (no second floating palette); the legacy floating
+   * `sketchPalette` stays for callers that have not moved.
+   */
   sketchPalette?: ReactNode;
+  sketchTools?: { tools: ReactNode; active: boolean; onViewerTool: () => void } | null;
   /** The study's name in the series panel (the case title); else "Local study". */
   label?: string;
   /** Fill the parent's height (the Studio) instead of a square image with a docked bar. */
@@ -246,8 +252,9 @@ export function RecordStage({
       onLoadError: (message, pane) => {
         if (pane.index === 0) setLoadError(message);
       },
+      toolbar: sketchTools,
     }),
-    [controls, imageOverlay]
+    [controls, imageOverlay, sketchTools]
   );
   // The frame shows its own series panel; there is no separate loading rail.
   void seriesLoading;

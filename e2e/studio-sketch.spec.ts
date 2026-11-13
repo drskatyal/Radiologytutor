@@ -166,11 +166,11 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   await expect.poll(async () => Math.abs((await markerCenter(page)).x - before.x)).toBeLessThan(2);
 
   // --- Export: DICOM SR (TID 1500), read back with dcmjs -------------------
-  await page.getByRole("button", { name: "Export marks" }).click();
-  await expect(page.getByRole("menuitemradio", { name: /DICOM SR/ })).toBeVisible();
+  await page.getByRole("button", { name: /^Ink actions/ }).click();
+  await expect(page.getByRole("menuitemradio", { name: /Export DICOM SR/ })).toBeVisible();
   await shot(page, "studio-sketch-export-menu");
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("menuitemradio", { name: /DICOM SR/ }).click();
+  await page.getByRole("menuitemradio", { name: /Export DICOM SR/ }).click();
   const download = await downloadPromise;
   const path = await download.path();
   const bytes = await readFile(path!);
@@ -185,9 +185,9 @@ test("teacher sketches while recording; ink stays on its pixels through zoom, sc
   expect(groups.every((g) => g.frameNumber != null && g.frameNumber >= 1)).toBe(true);
 
   // GSPS from the same menu: one graphic annotation per referenced frame.
-  await page.getByRole("button", { name: "Export marks" }).click();
+  await page.getByRole("button", { name: /^Ink actions/ }).click();
   const gspsPromise = page.waitForEvent("download");
-  await page.getByRole("menuitemradio", { name: /DICOM GSPS/ }).click();
+  await page.getByRole("menuitemradio", { name: /Export DICOM GSPS/ }).click();
   const gspsBytes = await readFile((await (await gspsPromise).path())!);
   const pr = readSketchGsps(gspsBytes.buffer.slice(gspsBytes.byteOffset, gspsBytes.byteOffset + gspsBytes.byteLength));
   expect(pr.Modality).toBe("PR");

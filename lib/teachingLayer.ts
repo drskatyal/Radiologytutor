@@ -232,6 +232,12 @@ export interface TeachingLayer {
   /** A pane's series failed to load (the sentence the viewer shows). */
   onLoadError?: (message: string, pane: TeachingPane) => void;
   /**
+   * The layer's own tools as a group on pane 0's viewer toolbar (one bar, not
+   * a second floating palette). `active`: one of them is on, so no viewer tool
+   * shows as selected; `onViewerTool` fires when a viewer tool is picked.
+   */
+  toolbar?: { tools: ReactNode; active: boolean; onViewerTool: () => void } | null;
+  /**
    * A session that already drives the viewer through its own handle refs
    * (record / replay, the tutor's actions) names them here: the frame writes
    * each pane's live handle into the returned ref, as it does into its own.

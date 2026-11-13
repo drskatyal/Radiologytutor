@@ -2280,6 +2280,9 @@ export function ViewerFrame({
                     onLoadError={(message) =>
                       teachingRef.current?.onLoadError?.(message, teachingPane(0, series?.seriesInstanceUID ?? null))
                     }
+                    hostTools={teaching?.toolbar?.tools}
+                    hostToolActive={teaching?.toolbar?.active ?? false}
+                    onViewerToolPicked={() => teachingRef.current?.toolbar?.onViewerTool()}
                   />
                 </ViewerPane>
                 {multi &&
