@@ -229,6 +229,8 @@ export interface TeachingLayer {
   overlay?: (pane: TeachingPane) => ReactNode;
   /** A pane's image is up: the viewer a tour or the tutor drives. */
   onViewer?: (viewer: TeachingViewer, pane: TeachingPane) => void;
+  /** A pane's series failed to load (the sentence the viewer shows). */
+  onLoadError?: (message: string, pane: TeachingPane) => void;
   /**
    * A session that already drives the viewer through its own handle refs
    * (record / replay, the tutor's actions) names them here: the frame writes

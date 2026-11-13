@@ -2267,6 +2267,9 @@ export function ViewerFrame({
                         teachingPane(0, series?.seriesInstanceUID ?? null)
                       );
                     }}
+                    onLoadError={(message) =>
+                      teachingRef.current?.onLoadError?.(message, teachingPane(0, series?.seriesInstanceUID ?? null))
+                    }
                   />
                 </ViewerPane>
                 {multi &&
@@ -2411,7 +2414,7 @@ export function ViewerFrame({
             title={study?.description?.trim() || "Local study"}
             description={
               study
-                ? `${formatCount(study.series.length)} series · ${formatCount(study.imageCount)} images`
+                ? `${formatCount(study.series.length)} series${study.imageCount > 0 ? ` · ${formatCount(study.imageCount)} images` : ""}`
                 : "Reading the study…"
             }
           >
@@ -3013,7 +3016,7 @@ function SeriesList({
           </div>
           )}
           <p className={cn("text-xs tabular-nums", dark ? "text-white/60" : "text-secondary")}>
-            {formatCount(seriesTotal)} series · {formatCount(imageTotal)} images
+            {formatCount(seriesTotal)} series{imageTotal > 0 ? ` · ${formatCount(imageTotal)} images` : ""}
             {!many && only?.studyDate ? ` · ${only.studyDate}` : ""}
           </p>
         </div>
@@ -3104,7 +3107,7 @@ function SeriesList({
                         </span>
                         <span className="min-w-0 flex-1 truncate">{item.description?.trim() || "No description"}</span>
                         {paneBadge}
-                        <span className={cn("shrink-0 tabular-nums", dark ? "text-white/50" : "text-muted")}>{formatCount(item.imageCount)}</span>
+                        {item.imageCount > 0 && <span className={cn("shrink-0 tabular-nums", dark ? "text-white/50" : "text-muted")}>{formatCount(item.imageCount)}</span>}
                       </>
                     ) : (
                     <>
@@ -3121,9 +3124,12 @@ function SeriesList({
                         {item.modality || "DICOM"}
                       </span>
                       {paneBadge}
-                      <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
-                        {formatCount(item.imageCount)} im
-                      </span>
+                      {/* An archive often omits the count: no number beats a false 0. */}
+                      {item.imageCount > 0 && (
+                        <span className={cn("ml-auto shrink-0 font-normal", dark ? "text-white/50" : "text-muted")}>
+                          {formatCount(item.imageCount)} im
+                        </span>
+                      )}
                     </span>
                     <span
                       className={cn(

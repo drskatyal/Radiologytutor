@@ -1067,6 +1067,7 @@ export function RecordingStudio({
             <div className="overflow-hidden rounded-xl">
               {mountViewer ? (
               <RecordStage
+                label={caseData.title}
                 source={initialSource}
                 series={series}
                 activeSeriesIndex={activeSeriesIndex}
